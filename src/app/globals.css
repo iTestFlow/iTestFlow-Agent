@@ -1,0 +1,161 @@
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  background: hsl(var(--background));
+}
+
+body {
+  min-height: 100vh;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family:
+    Inter,
+    "Geist",
+    "Segoe UI",
+    Arial,
+    sans-serif;
+  font-feature-settings: "cv11", "ss01";
+  letter-spacing: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+table {
+  border-collapse: collapse;
+}
+
+thead {
+  background: #edf2f7;
+}
+
+th {
+  color: #5f718e;
+  font-weight: 500;
+}
+
+th,
+td {
+  border-color: #d8e2ef;
+}
+
+::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 999px;
+}
+
+.focus-ring {
+  @apply outline-none ring-offset-2 ring-offset-background focus-visible:ring-2 focus-visible:ring-ring;
+}
+
+@layer base {
+  .theme {
+    --font-heading: var(--font-sans);
+    --font-sans: var(--font-sans);
+  }
+
+  :root {
+    --background: 220 16% 97%;
+    --foreground: 218 55% 20%;
+    --card: 0 0% 100%;
+    --card-foreground: 218 55% 20%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 218 55% 20%;
+    --primary: 214 90% 47%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 216 18% 95%;
+    --secondary-foreground: 218 55% 20%;
+    --muted: 216 17% 94%;
+    --muted-foreground: 216 15% 45%;
+    --accent: 213 100% 96%;
+    --accent-foreground: 214 90% 47%;
+    --destructive: 6 75% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 216 15% 88%;
+    --input: 216 15% 88%;
+    --ring: 214 90% 47%;
+    --chart-1: 214 90% 47%;
+    --chart-2: 157 64% 38%;
+    --chart-3: 48 89% 62%;
+    --chart-4: 6 75% 55%;
+    --chart-5: 249 43% 54%;
+    --radius: 0.75rem;
+    --sidebar: 218 55% 20%;
+    --sidebar-foreground: 0 0% 100%;
+    --sidebar-primary: 214 90% 47%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 213 100% 96%;
+    --sidebar-accent-foreground: 214 90% 47%;
+    --sidebar-border: 217 26% 27%;
+    --sidebar-ring: 214 90% 47%;
+  }
+
+  .dark {
+    --background: 222 28% 9%;
+    --foreground: 210 40% 96%;
+    --card: 222 26% 13%;
+    --card-foreground: 210 40% 96%;
+    --popover: 222 26% 13%;
+    --popover-foreground: 210 40% 96%;
+    --primary: 214 90% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 217 22% 20%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 217 22% 20%;
+    --muted-foreground: 215 20% 70%;
+    --accent: 217 22% 20%;
+    --accent-foreground: 210 40% 96%;
+    --destructive: 6 75% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 217 22% 24%;
+    --input: 217 22% 24%;
+    --ring: 214 90% 58%;
+    --sidebar: 222 28% 9%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-primary: 214 90% 58%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 217 22% 20%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 217 22% 24%;
+    --sidebar-ring: 214 90% 58%;
+  }
+
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  html {
+    @apply font-sans;
+  }
+}
+
+@layer components {
+  .qa-card {
+    @apply rounded-xl border border-border bg-card text-card-foreground shadow-[0_1px_2px_rgba(9,30,66,0.08)];
+  }
+
+  .qa-table-row {
+    @apply transition-colors hover:bg-[#F1F2F4];
+  }
+
+  .qa-table-row-selected {
+    @apply bg-[#E9F2FF] hover:bg-[#E9F2FF];
+  }
+}

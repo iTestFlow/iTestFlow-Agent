@@ -1,0 +1,98 @@
+"use client"
+
+import { useState } from "react"
+import { Eye } from "lucide-react"
+
+import { Button } from "@/components/ui/button"
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { StatusChip } from "@/components/qa/status-chip"
+import { formatDateTime } from "@/shared/lib/utils"
+import type { AuditLog } from "@/types/audit"
+
+export function AuditLogTable({ logs }: { logs: AuditLog[] }) {
+  const [active, setActive] = useState<AuditLog | null>(null)
+
+  return (
+    <>
+      <div className="overflow-hidden rounded-xl border border-[#DCDFE4] bg-white">
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Timestamp</TableHead>
+                <TableHead>Action</TableHead>
+                <TableHead>Entity</TableHead>
+                <TableHead>Project</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>User/local profile</TableHead>
+                <TableHead>Details</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {logs.map((log) => (
+                <TableRow key={log.id} className="qa-table-row">
+                  <TableCell>{formatDateTime(log.timestamp)}</TableCell>
+                  <TableCell className="font-medium text-[#172B4D]">{log.action}</TableCell>
+                  <TableCell className="font-mono text-xs text-[#0C66E4]">{log.entity}</TableCell>
+                  <TableCell>{log.projectId}</TableCell>
+                  <TableCell><StatusChip tone={log.status === "Success" ? "success" : log.status === "Warning" ? "warning" : log.status === "Failed" ? "error" : "draft"}>{log.status}</StatusChip></TableCell>
+                  <TableCell>{log.user}</TableCell>
+                  <TableCell className="max-w-sm truncate text-[#44546F]">{log.details}</TableCell>
+                  <TableCell className="text-right">
+                    <Button size="icon-sm" variant="ghost" onClick={() => setActive(log)} aria-label={`View ${log.id}`}>
+                      <Eye className="size-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+        <div className="flex items-center justify-between border-t border-[#EBECF0] px-4 py-3 text-sm text-[#626F86]">
+          <span>Page 1 of 1</span>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" disabled>Previous</Button>
+            <Button size="sm" variant="outline" disabled>Next</Button>
+          </div>
+        </div>
+      </div>
+
+      <Sheet open={Boolean(active)} onOpenChange={(open) => !open && setActive(null)}>
+        <SheetContent className="sm:max-w-xl">
+          <SheetHeader>
+            <SheetTitle>{active?.action}</SheetTitle>
+          </SheetHeader>
+          <div className="space-y-4 p-4 text-sm text-[#44546F]">
+            <Info label="Run ID" value={active?.runId ?? ""} />
+            <Info label="Details" value={active?.details ?? ""} />
+            <Info label="Payload summary" value={active?.payloadSummary ?? ""} />
+            {active?.errorDetails ? <Info label="Error details" value={active.errorDetails} /> : null}
+          </div>
+        </SheetContent>
+      </Sheet>
+    </>
+  )
+}
+
+function Info({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-[#EBECF0] bg-[#F7F8FA] p-3">
+      <div className="text-xs font-medium uppercase tracking-normal text-[#626F86]">{label}</div>
+      <div className="mt-1 leading-6 text-[#172B4D]">{value}</div>
+    </div>
+  )
+}

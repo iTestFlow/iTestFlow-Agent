@@ -1,0 +1,50 @@
+import { z } from "zod";
+
+export const LLMProviderNameSchema = z.enum(["openai", "gemini", "anthropic"]);
+
+export const RuntimeSettingsInputSchema = z.object({
+  azureDevOps: z.object({
+    organizationUrl: z.string({
+      required_error: "Enter your Azure DevOps organization URL.",
+      invalid_type_error: "Enter your Azure DevOps organization URL.",
+    }).trim().min(1, "Enter your Azure DevOps organization URL.").url("Enter a valid Azure DevOps organization URL, for example https://dev.azure.com/your-org."),
+    personalAccessToken: z.string({
+      required_error: "Enter your Azure DevOps Personal Access Token.",
+      invalid_type_error: "Enter your Azure DevOps Personal Access Token.",
+    }).min(1, "Enter your Azure DevOps Personal Access Token."),
+  }),
+  llm: z.object({
+    provider: LLMProviderNameSchema,
+    model: z.string({
+      required_error: "Select an LLM model.",
+      invalid_type_error: "Select an LLM model.",
+    }).trim().min(1, "Select an LLM model."),
+    apiKey: z.string().optional(),
+    baseUrl: z.string().optional(),
+    temperature: z.number().min(0, "Temperature must be 0 or higher.").max(2, "Temperature must be 2 or lower.").default(0.2),
+    maxTokens: z.number().int("Max tokens must be a whole number.").positive("Max tokens must be greater than 0.").default(4000),
+  }),
+});
+
+export type RuntimeSettingsInput = z.infer<typeof RuntimeSettingsInputSchema>;
+
+export type RuntimeSettings = RuntimeSettingsInput & {
+  savedAt: string;
+};
+
+export type RuntimeSettingsSummary = {
+  configured: boolean;
+  savedAt?: string;
+  azureDevOps?: {
+    organizationUrl: string;
+    hasPersonalAccessToken: boolean;
+  };
+  llm?: {
+    provider: RuntimeSettingsInput["llm"]["provider"];
+    model: string;
+    baseUrl?: string;
+    hasApiKey: boolean;
+    temperature: number;
+    maxTokens: number;
+  };
+};
