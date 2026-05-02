@@ -1,0 +1,610 @@
+CREATE TABLE IF NOT EXISTS local_profile (
+  id TEXT PRIMARY KEY,
+  display_name TEXT,
+  default_project_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (azure_organization_url, azure_project_id)
+);
+
+CREATE TABLE IF NOT EXISTS selected_azure_project (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  selected_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+CREATE TABLE IF NOT EXISTS project_settings (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  settings_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+CREATE TABLE IF NOT EXISTS azure_devops_connections (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  azure_project_id TEXT,
+  azure_organization_url TEXT NOT NULL,
+  encrypted_pat_reference TEXT,
+  connection_status TEXT NOT NULL,
+  last_tested_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS azure_devops_projects (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  state TEXT,
+  visibility TEXT,
+  last_synced_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS azure_devops_sync_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  status TEXT NOT NULL,
+  fetched_count INTEGER NOT NULL DEFAULT 0,
+  indexed_count INTEGER NOT NULL DEFAULT 0,
+  error_count INTEGER NOT NULL DEFAULT 0,
+  push_status TEXT,
+  push_error TEXT,
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  last_synced_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS azure_devops_work_items (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  azure_work_item_id TEXT NOT NULL,
+  work_item_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  acceptance_criteria TEXT,
+  state TEXT,
+  assigned_to TEXT,
+  priority INTEGER,
+  tags TEXT,
+  area_path TEXT,
+  iteration_path TEXT,
+  raw_json TEXT,
+  created_date TEXT,
+  updated_date TEXT,
+  last_synced_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (project_id, azure_work_item_id)
+);
+
+CREATE TABLE IF NOT EXISTS azure_devops_work_item_links (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  source_work_item_id TEXT NOT NULL,
+  target_work_item_id TEXT NOT NULL,
+  relationship_type TEXT NOT NULL,
+  raw_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS azure_devops_test_plans (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  azure_test_plan_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  raw_json TEXT,
+  last_synced_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS azure_devops_test_suites (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  azure_test_plan_id TEXT NOT NULL,
+  azure_test_suite_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  raw_json TEXT,
+  last_synced_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS azure_devops_linked_test_cases (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  azure_work_item_id TEXT NOT NULL,
+  azure_test_case_id TEXT NOT NULL,
+  relationship_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  steps_json TEXT,
+  raw_json TEXT,
+  last_synced_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS documents (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT,
+  source_type TEXT NOT NULL,
+  document_name TEXT NOT NULL,
+  document_type TEXT NOT NULL,
+  file_path TEXT,
+  parse_status TEXT NOT NULL,
+  last_synced_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS document_chunks (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT,
+  source_type TEXT NOT NULL,
+  azure_work_item_id TEXT,
+  work_item_type TEXT,
+  document_id TEXT,
+  document_name TEXT,
+  document_type TEXT,
+  section TEXT,
+  page_number INTEGER,
+  chunk_index INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  metadata_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  chunk_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  vector_reference TEXT NOT NULL,
+  vector_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS requirements (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_work_item_id TEXT NOT NULL,
+  normalized_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS context_suggestion_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  target_work_item_id TEXT NOT NULL,
+  workflow_type TEXT NOT NULL,
+  provider TEXT,
+  model_name TEXT,
+  prompt_version TEXT,
+  status TEXT NOT NULL,
+  raw_output TEXT,
+  validated_output TEXT,
+  error_details TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS context_suggested_items (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  target_work_item_id TEXT NOT NULL,
+  suggested_work_item_id TEXT NOT NULL,
+  relevance_score REAL,
+  reason TEXT,
+  suggested_by TEXT NOT NULL,
+  user_state TEXT NOT NULL DEFAULT 'suggested',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS context_selected_items (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  target_work_item_id TEXT NOT NULL,
+  selected_work_item_id TEXT NOT NULL,
+  selection_source TEXT NOT NULL,
+  selected_state TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS requirement_analysis_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  target_work_item_id TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  provider TEXT,
+  model_name TEXT,
+  selected_context_ids TEXT,
+  user_input TEXT,
+  raw_output TEXT,
+  validated_output TEXT,
+  token_usage TEXT,
+  cost_estimate REAL,
+  status TEXT NOT NULL,
+  error_details TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS requirement_analysis_findings (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  finding_json TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  category TEXT NOT NULL,
+  selected INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS selected_requirement_findings (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  finding_id TEXT NOT NULL,
+  edited_json TEXT NOT NULL,
+  selected INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS azure_devops_comment_drafts (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  azure_work_item_id TEXT NOT NULL,
+  body_markdown TEXT NOT NULL,
+  source_run_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS azure_devops_comment_push_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  azure_work_item_id TEXT NOT NULL,
+  draft_id TEXT NOT NULL,
+  push_status TEXT NOT NULL,
+  push_error TEXT,
+  azure_comment_id TEXT,
+  last_pushed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS test_case_generation_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  target_work_item_id TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  provider TEXT,
+  model_name TEXT,
+  selected_context_ids TEXT,
+  generation_options_json TEXT,
+  raw_output TEXT,
+  validated_output TEXT,
+  token_usage TEXT,
+  cost_estimate REAL,
+  status TEXT NOT NULL,
+  error_details TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS generated_test_cases (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  local_test_case_id TEXT NOT NULL,
+  test_case_json TEXT NOT NULL,
+  selected INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS test_cases (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  target_work_item_id TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  preconditions TEXT,
+  test_data TEXT,
+  expected_result TEXT,
+  priority TEXT,
+  severity TEXT,
+  test_type TEXT,
+  automation_suitability TEXT,
+  tags TEXT,
+  azure_test_case_id TEXT,
+  push_status TEXT,
+  push_error TEXT,
+  last_pushed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS test_case_steps (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  test_case_id TEXT NOT NULL,
+  step_index INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  expected_result TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS selected_test_cases (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  run_id TEXT,
+  test_case_id TEXT NOT NULL,
+  selected INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS manual_test_cases (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  target_work_item_id TEXT NOT NULL,
+  test_case_id TEXT NOT NULL,
+  author TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS test_case_edit_history (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  test_case_id TEXT NOT NULL,
+  field_name TEXT NOT NULL,
+  previous_value TEXT,
+  new_value TEXT,
+  actor TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS existing_test_case_review_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  target_work_item_id TEXT NOT NULL,
+  linked_test_case_ids TEXT,
+  selected_context_ids TEXT,
+  prompt_version TEXT NOT NULL,
+  provider TEXT,
+  model_name TEXT,
+  raw_output TEXT,
+  validated_output TEXT,
+  status TEXT NOT NULL,
+  error_details TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS existing_test_case_review_findings (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  finding_json TEXT NOT NULL,
+  severity TEXT,
+  category TEXT,
+  selected INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS suggested_test_case_additions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  test_case_json TEXT NOT NULL,
+  selected INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS azure_devops_test_case_push_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  azure_work_item_id TEXT NOT NULL,
+  azure_test_plan_id TEXT NOT NULL,
+  azure_test_suite_id TEXT NOT NULL,
+  selected_test_case_ids TEXT NOT NULL,
+  push_status TEXT NOT NULL,
+  push_error TEXT,
+  success_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  last_pushed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS azure_devops_test_case_links (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  azure_work_item_id TEXT NOT NULL,
+  azure_test_case_id TEXT NOT NULL,
+  azure_test_plan_id TEXT,
+  azure_test_suite_id TEXT,
+  relationship_type TEXT NOT NULL,
+  push_status TEXT,
+  push_error TEXT,
+  last_pushed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS coverage_matrix_items (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  target_work_item_id TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  source_text TEXT NOT NULL,
+  mapped_test_case_ids TEXT,
+  status TEXT NOT NULL,
+  confidence_score REAL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scoring_results (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  target_work_item_id TEXT,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  scores_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS llm_providers_config (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  azure_project_id TEXT,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  base_url TEXT,
+  encrypted_api_key_reference TEXT,
+  temperature REAL NOT NULL DEFAULT 0.2,
+  max_tokens INTEGER NOT NULL DEFAULT 4000,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS prompt_versions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  azure_project_id TEXT,
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  input_schema_json TEXT NOT NULL,
+  output_schema_json TEXT NOT NULL,
+  system_instructions TEXT NOT NULL,
+  user_instructions TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (name, version)
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  azure_project_id TEXT,
+  azure_project_name TEXT,
+  azure_organization_url TEXT,
+  entity_type TEXT,
+  entity_id TEXT,
+  action TEXT NOT NULL,
+  status TEXT NOT NULL,
+  actor TEXT,
+  message TEXT NOT NULL,
+  details_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_items_project ON azure_devops_work_items(project_id, azure_project_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_project ON document_chunks(project_id, azure_project_id);
+CREATE INDEX IF NOT EXISTS idx_context_selected_project ON context_selected_items(project_id, azure_project_id);
+CREATE INDEX IF NOT EXISTS idx_test_cases_project ON test_cases(project_id, azure_project_id);
+CREATE INDEX IF NOT EXISTS idx_audit_project ON audit_logs(project_id, azure_project_id);

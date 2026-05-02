@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 213 36% 96%;
+  --foreground: 224 42% 12%;
+  --card: 0 0% 100%;
+  --card-foreground: 224 42% 12%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 224 42% 12%;
+  --primary: 223 82% 55%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 213 45% 94%;
+  --secondary-foreground: 224 42% 12%;
+  --muted: 210 33% 95%;
+  --muted-foreground: 215 25% 43%;
+  --accent: 213 95% 48%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 214 37% 82%;
+  --input: 214 37% 82%;
+  --ring: 223 82% 55%;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+html {
+  background: hsl(var(--background));
+}
+
+body {
+  min-height: 100vh;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family:
+    Inter,
+    "Geist",
+    "Segoe UI",
+    Arial,
+    sans-serif;
+  font-feature-settings: "cv11", "ss01";
+  letter-spacing: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+table {
+  border-collapse: collapse;
+}
+
+thead {
+  background: #edf2f7;
+}
+
+th {
+  color: #5f718e;
+  font-weight: 500;
+}
+
+th,
+td {
+  border-color: #d8e2ef;
+}
+
+::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 999px;
+}
+
+.focus-ring {
+  @apply outline-none ring-offset-2 ring-offset-background focus-visible:ring-2 focus-visible:ring-ring;
+}
