@@ -1,16 +1,13 @@
-import { Button, PageHeader } from "@/shared/components/ui";
-import { AuditLogsClient } from "@/shared/components/live/live-workflows";
+import { ContentShell } from "@/components/layout/content-shell"
+import { AuditLogsClient } from "@/shared/components/live/live-workflows"
 
 export default function AuditLogsPage() {
   return (
-    <>
-      <PageHeader
-        eyebrow="Audit Logs / History"
-        title="Audit Logs"
-        description="Review syncs, AI runs, context selections, edits, publish confirmations, Azure IDs, and failures."
-        action={<Button variant="secondary">Export JSON</Button>}
-      />
+    <ContentShell
+      title="Audit Logs / History"
+      description="Inspect local workflow history, payload summaries, failures, and related run IDs."
+    >
       <AuditLogsClient />
-    </>
-  );
+    </ContentShell>
+  )
 }

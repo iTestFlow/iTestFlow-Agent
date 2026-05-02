@@ -15,7 +15,7 @@ export async function GET(_request: Request, context: { params: Promise<{ kind: 
     kind: params.data.kind,
     exportedAt: new Date().toISOString(),
     message:
-      "No demo export payload is generated. Export a completed live run from the UI or call workflow APIs and export the returned result.",
+      "No export payload is generated until a completed live run is available. Export a completed live run from the UI or call workflow APIs and export the returned result.",
     payload: null,
   });
 }

@@ -85,7 +85,7 @@ export function HeaderProjectSelector() {
           setActiveProject(scope);
         }}
       >
-        <option value="">Project: Select Azure DevOps project</option>
+        {projects.length === 0 ? <option value="">Project: No projects loaded</option> : null}
         {projects.map((project) => (
           <option key={project.id} value={project.id}>
             Project: {project.name}

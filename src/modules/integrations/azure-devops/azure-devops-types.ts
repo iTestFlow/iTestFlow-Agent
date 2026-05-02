@@ -6,6 +6,13 @@ export type AzureProject = {
   visibility?: string;
 };
 
+export type AzureAuthenticatedUser = {
+  id?: string;
+  displayName: string;
+  uniqueName?: string;
+  imageUrl?: string;
+};
+
 export type Requirement = {
   id: string;
   azureProjectId: string;

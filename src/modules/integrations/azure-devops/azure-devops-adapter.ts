@@ -1,7 +1,9 @@
-import type { AzureProject, FinalApprovedTestCase, Requirement, TestCase, TestPlan, TestSuite } from "./azure-devops-types";
+import type { AzureAuthenticatedUser, AzureProject, FinalApprovedTestCase, Requirement, TestCase, TestPlan, TestSuite } from "./azure-devops-types";
 
 export interface AzureDevOpsAdapter {
   testConnection(): Promise<boolean>;
+
+  fetchAuthenticatedUser(): Promise<AzureAuthenticatedUser>;
 
   fetchProjects(): Promise<AzureProject[]>;
 

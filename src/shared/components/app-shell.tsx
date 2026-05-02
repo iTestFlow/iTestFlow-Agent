@@ -2,11 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { Activity, CheckCircle2 } from "lucide-react";
 import { cn } from "@/shared/lib/utils";
 import { HeaderProjectSelector } from "@/shared/components/live/project-status";
-import { readActiveProject } from "@/shared/lib/active-project";
 
 const navigation = [
   { href: "/dashboard", label: "Home" },
@@ -51,14 +48,6 @@ function getPageTitle(pathname: string) {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const [hasActiveProject, setHasActiveProject] = useState(false);
-
-  useEffect(() => {
-    setHasActiveProject(Boolean(readActiveProject()));
-    const onChange = () => setHasActiveProject(Boolean(readActiveProject()));
-    window.addEventListener("itestflow:active-project-changed", onChange);
-    return () => window.removeEventListener("itestflow:active-project-changed", onChange);
-  }, []);
 
   if (pathname === "/configuration" || pathname.startsWith("/configuration/")) {
     return <main className="min-h-screen bg-background text-foreground">{children}</main>;
@@ -105,17 +94,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
           <div className="min-w-0 flex-1">
             <HeaderProjectSelector />
-          </div>
-
-          <div className="flex shrink-0 items-center gap-6">
-            <div className="inline-flex h-7 items-center gap-1.5 rounded-full border border-emerald-400 bg-emerald-50 px-4 text-xs font-medium text-emerald-600">
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              Local Mode
-            </div>
-            <div className="inline-flex h-7 items-center gap-1.5 rounded-full border border-blue-500 bg-blue-50 px-4 text-xs font-medium text-blue-600">
-              <Activity className="h-3.5 w-3.5" />
-              {hasActiveProject ? "ADO Connected" : "ADO Required"}
-            </div>
           </div>
         </header>
 

@@ -1,59 +1,40 @@
-import { Upload } from "lucide-react";
-import { Badge, Button, Card, CardHeader, PageHeader, TextInput } from "@/shared/components/ui";
+import { DatabaseZap, FileSearch } from "lucide-react"
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { ContentShell } from "@/components/layout/content-shell"
+import { EmptyState } from "@/components/qa/empty-state"
 
 export default function ContextPage() {
   return (
-    <>
-      <PageHeader
-        eyebrow="Project Context / RAG"
-        title="Project Context"
-        description="Documents, work items, chunks, and embeddings are stored locally and isolated by the active Azure DevOps project."
-        action={
-          <Button>
-            <Upload className="h-4 w-4" />
-            Upload Documents
-          </Button>
-        }
-      />
-
-      <div className="grid gap-6 lg:grid-cols-[220px_1fr_260px]">
-        <Card>
-          <CardHeader title="Sources" />
-          <div className="space-y-1 p-3">
-            {["Documents", "Azure Work Items", "Indexed Chunks", "Search", "Settings"].map((item) => (
-              <button key={item} className="focus-ring flex w-full rounded-md px-3 py-2 text-left text-sm hover:bg-muted">
-                {item}
-              </button>
-            ))}
-          </div>
-        </Card>
-
-        <Card>
-          <div className="flex gap-3 border-b p-4">
-            <TextInput placeholder="Search documents, work items, chunks..." />
-            <Button variant="secondary">Search</Button>
-          </div>
-          <div className="p-6 text-sm text-muted-foreground">
-            No indexed context is displayed until a live Azure DevOps sync or document ingestion run writes project-scoped chunks.
-          </div>
-        </Card>
-
-        <Card>
-          <CardHeader title="Indexing Status" />
-          <div className="space-y-4 p-4">
-            <div className="mx-auto flex h-28 w-28 items-center justify-center rounded-full border-8 border-emerald-500 text-xl font-semibold text-slate-950">
-              Live
-            </div>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between"><span>Documents</span><span>Runtime</span></div>
-              <div className="flex justify-between"><span>Total Chunks</span><span>From DB</span></div>
-              <div className="flex justify-between"><span>Last Indexed</span><span>Audit log</span></div>
-            </div>
-            <Button className="w-full">Re-index All</Button>
-            <Badge tone="emerald" className="w-full justify-center">All content scoped to selected project</Badge>
-          </div>
-        </Card>
-      </div>
-    </>
-  );
+    <ContentShell
+      title="Project Context / RAG"
+      description="Manage project-scoped documents, synced work items, indexed chunks, and semantic search."
+    >
+      <Alert className="border-[#0C66E4]/20 bg-[#E9F2FF]">
+        <DatabaseZap className="size-4 text-[#0C66E4]" />
+        <AlertTitle>Context sources require live data</AlertTitle>
+        <AlertDescription className="text-[#44546F]">
+          This screen no longer uses prefilled documents or chunks. Sync Azure DevOps work items and connect your real local RAG pipeline before testing context search here.
+        </AlertDescription>
+      </Alert>
+      <Card className="qa-card">
+        <CardHeader>
+          <CardTitle className="text-base">Project Context Status</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <EmptyState
+            title="No context data loaded yet"
+            description="Use your real ingestion/indexing flow to populate documents, indexed chunks, and search results for the selected project."
+            actionLabel="Open Azure DevOps Sync"
+          />
+        </CardContent>
+      </Card>
+      <Button variant="outline">
+        <FileSearch className="size-4" />
+        Context search requires live index data
+      </Button>
+    </ContentShell>
+  )
 }

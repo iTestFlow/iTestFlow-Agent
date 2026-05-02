@@ -1,32 +1,8 @@
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-:root {
-  --background: 213 36% 96%;
-  --foreground: 224 42% 12%;
-  --card: 0 0% 100%;
-  --card-foreground: 224 42% 12%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 224 42% 12%;
-  --primary: 223 82% 55%;
-  --primary-foreground: 0 0% 100%;
-  --secondary: 213 45% 94%;
-  --secondary-foreground: 224 42% 12%;
-  --muted: 210 33% 95%;
-  --muted-foreground: 215 25% 43%;
-  --accent: 213 95% 48%;
-  --accent-foreground: 0 0% 100%;
-  --destructive: 0 84% 60%;
-  --destructive-foreground: 0 0% 100%;
-  --border: 214 37% 82%;
-  --input: 214 37% 82%;
-  --ring: 223 82% 55%;
-}
-
-* {
-  border-color: hsl(var(--border));
-}
 
 html {
   background: hsl(var(--background));
@@ -83,4 +59,103 @@ td {
 
 .focus-ring {
   @apply outline-none ring-offset-2 ring-offset-background focus-visible:ring-2 focus-visible:ring-ring;
+}
+
+@layer base {
+  .theme {
+    --font-heading: var(--font-sans);
+    --font-sans: var(--font-sans);
+  }
+
+  :root {
+    --background: 220 16% 97%;
+    --foreground: 218 55% 20%;
+    --card: 0 0% 100%;
+    --card-foreground: 218 55% 20%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 218 55% 20%;
+    --primary: 214 90% 47%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 216 18% 95%;
+    --secondary-foreground: 218 55% 20%;
+    --muted: 216 17% 94%;
+    --muted-foreground: 216 15% 45%;
+    --accent: 213 100% 96%;
+    --accent-foreground: 214 90% 47%;
+    --destructive: 6 75% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 216 15% 88%;
+    --input: 216 15% 88%;
+    --ring: 214 90% 47%;
+    --chart-1: 214 90% 47%;
+    --chart-2: 157 64% 38%;
+    --chart-3: 48 89% 62%;
+    --chart-4: 6 75% 55%;
+    --chart-5: 249 43% 54%;
+    --radius: 0.75rem;
+    --sidebar: 218 55% 20%;
+    --sidebar-foreground: 0 0% 100%;
+    --sidebar-primary: 214 90% 47%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 213 100% 96%;
+    --sidebar-accent-foreground: 214 90% 47%;
+    --sidebar-border: 217 26% 27%;
+    --sidebar-ring: 214 90% 47%;
+  }
+
+  .dark {
+    --background: 222 28% 9%;
+    --foreground: 210 40% 96%;
+    --card: 222 26% 13%;
+    --card-foreground: 210 40% 96%;
+    --popover: 222 26% 13%;
+    --popover-foreground: 210 40% 96%;
+    --primary: 214 90% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 217 22% 20%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 217 22% 20%;
+    --muted-foreground: 215 20% 70%;
+    --accent: 217 22% 20%;
+    --accent-foreground: 210 40% 96%;
+    --destructive: 6 75% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 217 22% 24%;
+    --input: 217 22% 24%;
+    --ring: 214 90% 58%;
+    --sidebar: 222 28% 9%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-primary: 214 90% 58%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 217 22% 20%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 217 22% 24%;
+    --sidebar-ring: 214 90% 58%;
+  }
+
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  html {
+    @apply font-sans;
+  }
+}
+
+@layer components {
+  .qa-card {
+    @apply rounded-xl border border-border bg-card text-card-foreground shadow-[0_1px_2px_rgba(9,30,66,0.08)];
+  }
+
+  .qa-table-row {
+    @apply transition-colors hover:bg-[#F1F2F4];
+  }
+
+  .qa-table-row-selected {
+    @apply bg-[#E9F2FF] hover:bg-[#E9F2FF];
+  }
 }

@@ -2,7 +2,16 @@ import "server-only";
 
 import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
 import { mapAzureTestCase, mapAzureWorkItem } from "./azure-devops-mapper";
-import type { AzureDevOpsSettings, AzureProject, FinalApprovedTestCase, Requirement, TestCase, TestPlan, TestSuite } from "./azure-devops-types";
+import type {
+  AzureAuthenticatedUser,
+  AzureDevOpsSettings,
+  AzureProject,
+  FinalApprovedTestCase,
+  Requirement,
+  TestCase,
+  TestPlan,
+  TestSuite,
+} from "./azure-devops-types";
 
 type JsonValue = Record<string, unknown>;
 
@@ -18,6 +27,27 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   async testConnection(): Promise<boolean> {
     const response = await this.request("_apis/projects?api-version=7.1");
     return response.ok;
+  }
+
+  async fetchAuthenticatedUser(): Promise<AzureAuthenticatedUser> {
+    const json = await this.requestJson<{
+      authenticatedUser?: {
+        id?: string;
+        providerDisplayName?: string;
+        customDisplayName?: string;
+        displayName?: string;
+        userName?: string;
+        uniqueName?: string;
+        imageUrl?: string;
+      };
+    }>("_apis/connectionData?api-version=7.1-preview.1");
+    const user = json.authenticatedUser;
+    return {
+      id: user?.id,
+      displayName: user?.providerDisplayName ?? user?.customDisplayName ?? user?.displayName ?? user?.userName ?? "Azure DevOps user",
+      uniqueName: user?.uniqueName ?? user?.userName,
+      imageUrl: user?.imageUrl,
+    };
   }
 
   async fetchProjects(): Promise<AzureProject[]> {

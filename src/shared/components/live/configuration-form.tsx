@@ -39,8 +39,17 @@ type ApiErrorPayload = {
   }>;
 };
 
-export function ConfigurationForm() {
+export function ConfigurationForm({
+  mode = "setup",
+  redirectTo = "/dashboard",
+  onSaved,
+}: {
+  mode?: "setup" | "settings";
+  redirectTo?: string | null;
+  onSaved?: () => void;
+}) {
   const router = useRouter();
+  const embedded = mode === "settings";
   const [showSecrets, setShowSecrets] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -220,7 +229,8 @@ export function ConfigurationForm() {
       const json = await response.json();
       if (!response.ok) throw new Error(apiErrorMessage(json, "Could not save runtime settings."));
       setMessage("Configuration saved locally. Live integrations will use these values now.");
-      router.push("/dashboard");
+      onSaved?.();
+      if (redirectTo) router.push(redirectTo);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save runtime settings.");
@@ -230,8 +240,9 @@ export function ConfigurationForm() {
   }
 
   return (
-    <div className="min-h-screen bg-background p-[30px] text-slate-950">
-      <div className="grid min-h-[840px] gap-[120px] xl:grid-cols-[370px_minmax(0,1fr)]">
+    <div className={embedded ? "text-slate-950" : "min-h-screen bg-background p-[30px] text-slate-950"}>
+      <div className={embedded ? "" : "grid min-h-[840px] gap-[120px] xl:grid-cols-[370px_minmax(0,1fr)]"}>
+        {!embedded ? (
         <aside className="flex flex-col rounded-[10px] border border-[#c8d4e4] bg-white p-10">
           <div>
             <h2 className="text-2xl font-bold tracking-tight">QA Intelligence</h2>
@@ -251,15 +262,23 @@ export function ConfigurationForm() {
           </div>
           <div className="mt-auto text-xs text-slate-500">(c) 2026 QA Intelligence</div>
         </aside>
+        ) : null}
 
-        <div className="flex items-center justify-center">
-          <Card className="w-full max-w-[600px] border-[#c8d4e4] bg-white text-slate-950 shadow-none">
-            <div className="p-12">
-              <h1 className="text-3xl font-bold tracking-tight">Initial Configuration</h1>
-              <p className="mt-2 text-sm text-slate-600">Set up your local connections to get started.</p>
+        <div className={embedded ? "" : "flex items-center justify-center"}>
+          <Card className={`${embedded ? "w-full max-w-3xl" : "w-full max-w-[600px]"} border-[#c8d4e4] bg-white text-slate-950 shadow-none`}>
+            <div className={embedded ? "p-6" : "p-12"}>
+              <h1 className={embedded ? "text-xl font-bold tracking-tight" : "text-3xl font-bold tracking-tight"}>
+                {embedded ? "Runtime Configuration" : "Initial Configuration"}
+              </h1>
+              <p className="mt-2 text-sm text-slate-600">
+                {embedded ? "View and update the live integration settings used by this local app." : "Set up your local connections to get started."}
+              </p>
 
               <div className="mt-8 space-y-5">
-                <Field label="Azure DevOps Organization URL">
+                <Field
+                  label="Azure DevOps Organization URL"
+                  description="Required. The PAT authenticates the request; this URL tells QA Intelligence which Azure DevOps organization endpoint to call."
+                >
                   <TextInput
                     className="border-slate-300 bg-white text-slate-950"
                     value={form.organizationUrl}
@@ -432,7 +451,7 @@ export function ConfigurationForm() {
                     disabled={testing || saving}
                   >
                     {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    Continue
+                    {embedded ? "Save Configuration" : "Continue"}
                   </Button>
                 </div>
               </div>
@@ -444,11 +463,12 @@ export function ConfigurationForm() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
   return (
     <label className="block">
       <span className="mb-2 block text-sm font-medium text-slate-900">{label}</span>
       {children}
+      {description ? <span className="mt-2 block text-xs leading-5 text-slate-500">{description}</span> : null}
     </label>
   );
 }

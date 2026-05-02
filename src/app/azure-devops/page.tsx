@@ -1,15 +1,13 @@
-import { PageHeader } from "@/shared/components/ui";
-import { AzureDevOpsWorkItemsClient } from "@/shared/components/live/live-workflows";
+import { ContentShell } from "@/components/layout/content-shell"
+import { AzureDevOpsWorkItemsClient } from "@/shared/components/live/live-workflows"
 
 export default function AzureDevOpsPage() {
   return (
-    <>
-      <PageHeader
-        eyebrow="Azure DevOps"
-        title="Work Items"
-        description="Manual sync fetches work items from the selected Azure DevOps project only and indexes them into project-scoped RAG."
-      />
+    <ContentShell
+      title="Azure DevOps Work Items"
+      description="Sync, filter, inspect, and select project-scoped work items before analysis."
+    >
       <AzureDevOpsWorkItemsClient />
-    </>
-  );
+    </ContentShell>
+  )
 }
