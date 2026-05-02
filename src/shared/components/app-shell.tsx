@@ -43,7 +43,7 @@ const pageTitles = [
 ];
 
 function getPageTitle(pathname: string) {
-  return pageTitles.find((item) => pathname === item.match || pathname.startsWith(`${item.match}/`))?.title ?? "QA Intelligence";
+  return pageTitles.find((item) => pathname === item.match || pathname.startsWith(`${item.match}/`))?.title ?? "iTestFlow";
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -57,7 +57,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-background p-5 text-foreground">
       <aside className="fixed bottom-5 left-5 top-5 z-40 flex w-[190px] flex-col rounded-[10px] bg-[#0f172a] text-slate-100">
         <div className="px-6 pb-7 pt-6">
-          <div className="text-base font-semibold tracking-wide">QA Intelligence</div>
+          <div className="text-base font-semibold tracking-wide">iTestFlow</div>
         </div>
 
         <nav className="flex-1 space-y-2 overflow-y-auto px-3">

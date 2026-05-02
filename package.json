@@ -2,7 +2,7 @@
   "name": "itestflow-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-first QA intelligence command center for Azure DevOps testing workflows.",
+  "description": "Local-first test intelligence command center for Azure DevOps testing workflows.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

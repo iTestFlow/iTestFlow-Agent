@@ -245,7 +245,7 @@ export function ConfigurationForm({
         {!embedded ? (
         <aside className="flex flex-col rounded-[10px] border border-[#c8d4e4] bg-white p-10">
           <div>
-            <h2 className="text-2xl font-bold tracking-tight">QA Intelligence</h2>
+            <h2 className="text-2xl font-bold tracking-tight">iTestFlow</h2>
             <p className="mt-5 max-w-56 text-lg font-semibold leading-6 text-slate-600">
               AI-Powered Testing Lifecycle Assistant
             </p>
@@ -260,7 +260,7 @@ export function ConfigurationForm({
               </div>
             ))}
           </div>
-          <div className="mt-auto text-xs text-slate-500">(c) 2026 QA Intelligence</div>
+          <div className="mt-auto text-xs text-slate-500">(c) 2026 iTestFlow</div>
         </aside>
         ) : null}
 
@@ -277,7 +277,7 @@ export function ConfigurationForm({
               <div className="mt-8 space-y-5">
                 <Field
                   label="Azure DevOps Organization URL"
-                  description="Required. The PAT authenticates the request; this URL tells QA Intelligence which Azure DevOps organization endpoint to call."
+                  description="Required. The PAT authenticates the request; this URL tells iTestFlow which Azure DevOps organization endpoint to call."
                 >
                   <TextInput
                     className="border-slate-300 bg-white text-slate-950"

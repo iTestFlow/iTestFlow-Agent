@@ -9,8 +9,8 @@ import { cn } from "@/lib/utils";
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 
 export const metadata: Metadata = {
-  title: "QA Intelligence",
-  description: "Local-first QA intelligence command center for Azure DevOps testing workflows.",
+  title: "iTestFlow",
+  description: "Local-first test intelligence command center for Azure DevOps testing workflows.",
 };
 
 export default function RootLayout({

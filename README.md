@@ -1,6 +1,6 @@
-# iTestFlow Agent
+# iTestFlow
 
-Local-first QA intelligence command center for Azure DevOps requirement analysis, RAG-assisted context selection, test case design, existing linked test case review, coverage validation, and reviewed publishing back to Azure Test Plans.
+Local-first test intelligence command center for Azure DevOps requirement analysis, RAG-assisted context selection, test case design, existing linked test case review, coverage validation, and reviewed publishing back to Azure Test Plans.
 
 The MVP runs locally with real Azure DevOps and LLM provider APIs. Runtime configuration is initiated from the UI, can be edited later from Settings, and `.env.local` is optional as a bootstrap fallback.
 

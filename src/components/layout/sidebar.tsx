@@ -41,7 +41,7 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
       <div className="px-4 py-5">
         <Link href="/dashboard" onClick={onNavigate} className="flex items-center gap-3">
           <div className="flex size-9 items-center justify-center rounded-lg bg-[#0C66E4] text-sm font-bold">
-            QA
+            IT
           </div>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold">{PRODUCT_NAME}</div>
@@ -89,4 +89,3 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
     </aside>
   )
 }
-

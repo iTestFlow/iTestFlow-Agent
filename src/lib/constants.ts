@@ -1,1 +1,1 @@
-export const PRODUCT_NAME = "QA Intelligence"
+export const PRODUCT_NAME = "iTestFlow"

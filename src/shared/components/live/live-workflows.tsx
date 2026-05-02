@@ -289,7 +289,7 @@ export function RequirementAnalysisClient() {
     if (!scope || !targetWorkItemId || !analysis.data) return;
     const selected = analysis.data.findings.filter((finding) => selectedFindings[finding.id]);
     const commentBody = [
-      `## QA Requirement Analysis for ${targetWorkItemId}`,
+      `## iTestFlow Requirement Analysis for ${targetWorkItemId}`,
       analysis.data.executiveSummary,
       ...selected.map((finding) => `### [${finding.severity}] ${finding.title}\n${snippets[finding.id] ?? finding.azureDevOpsCommentSnippet}`),
     ].join("\n\n");

@@ -5,7 +5,7 @@ export default function DashboardPage() {
   return (
     <ContentShell
       title="Dashboard"
-      description="A project-scoped QA command center for requirement analysis, context management, test design, coverage, and publishing."
+      description="A project-scoped iTestFlow command center for requirement analysis, context management, test design, coverage, and publishing."
     >
       <LiveDashboard />
     </ContentShell>
