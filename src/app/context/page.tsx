@@ -1,6 +1,5 @@
-import { DatabaseZap, FileSearch } from "lucide-react"
+import { FileSearch } from "lucide-react"
 
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ContentShell } from "@/components/layout/content-shell"
@@ -12,13 +11,6 @@ export default function ContextPage() {
       title="Project Context / RAG"
       description="Manage project-scoped documents, synced work items, indexed chunks, and semantic search."
     >
-      <Alert className="border-[#0C66E4]/20 bg-[#E9F2FF]">
-        <DatabaseZap className="size-4 text-[#0C66E4]" />
-        <AlertTitle>Context sources require live data</AlertTitle>
-        <AlertDescription className="text-[#44546F]">
-          This screen no longer uses prefilled documents or chunks. Sync Azure DevOps work items and connect your real local RAG pipeline before testing context search here.
-        </AlertDescription>
-      </Alert>
       <Card className="qa-card">
         <CardHeader>
           <CardTitle className="text-base">Project Context Status</CardTitle>
