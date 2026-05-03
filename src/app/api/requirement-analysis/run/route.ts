@@ -4,6 +4,11 @@ import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
 import { runRequirementAnalysis } from "@/modules/requirement-analysis/application/requirement-analysis.service";
+import {
+  requirementToRetrievalQuery,
+  retrieveStoredProjectContext,
+  workItemToLlmContextSource,
+} from "@/modules/rag/project-context-store.service";
 
 export const runtime = "nodejs";
 
@@ -33,11 +38,17 @@ export async function POST(request: Request) {
       projectId: parsed.data.scope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
-    const selectedContext = await Promise.all(
-      parsed.data.selectedContextIds.map((workItemId) =>
-        adapter.fetchWorkItemById({ projectId: parsed.data.scope.azureProjectId, workItemId }),
-      ),
-    );
+    const selectedContext = parsed.data.selectedContextIds.length
+      ? await loadSelectedContext({
+          scope: parsed.data.scope,
+          selectedContextIds: parsed.data.selectedContextIds,
+          adapter,
+        })
+      : retrieveStoredProjectContext({
+          scope: parsed.data.scope,
+          query: requirementToRetrievalQuery(targetRequirement),
+          topK: 8,
+        });
     const result = await runRequirementAnalysis({
       scope: parsed.data.scope,
       provider,
@@ -59,4 +70,27 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
+}
+
+async function loadSelectedContext(input: {
+  scope: z.infer<typeof ProjectScopeSchema>;
+  selectedContextIds: string[];
+  adapter: ReturnType<typeof getConfiguredAzureDevOpsAdapter>;
+}) {
+  const stored = retrieveStoredProjectContext({
+    scope: input.scope,
+    query: input.selectedContextIds.join(" "),
+    workItemIds: input.selectedContextIds,
+    topK: Math.max(8, input.selectedContextIds.length * 3),
+  });
+  const foundIds = new Set(stored.map((item) => item.workItemId));
+  const missingIds = input.selectedContextIds.filter((id) => !foundIds.has(id));
+  if (!missingIds.length) return stored;
+
+  const fetched = await Promise.all(
+    missingIds.map((workItemId) =>
+      input.adapter.fetchWorkItemById({ projectId: input.scope.azureProjectId, workItemId }),
+    ),
+  );
+  return [...stored, ...fetched.map((item) => workItemToLlmContextSource(item))];
 }

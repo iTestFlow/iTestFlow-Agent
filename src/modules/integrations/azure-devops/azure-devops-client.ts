@@ -64,13 +64,20 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   async fetchWorkItems(input: {
     projectId: string;
     workItemTypes?: string[];
+    states?: string[];
     areaPath?: string;
     iterationPath?: string;
   }): Promise<Requirement[]> {
     const types = input.workItemTypes?.length ? input.workItemTypes : ["Epic", "Feature", "User Story", "Bug"];
-    const where = [`[System.TeamProject] = @project`, `[System.WorkItemType] IN (${types.map((type) => `'${type}'`).join(", ")})`];
-    if (input.areaPath) where.push(`[System.AreaPath] UNDER '${input.areaPath}'`);
-    if (input.iterationPath) where.push(`[System.IterationPath] UNDER '${input.iterationPath}'`);
+    const where = [
+      `[System.TeamProject] = @project`,
+      `[System.WorkItemType] IN (${types.map((type) => `'${escapeWiqlValue(type)}'`).join(", ")})`,
+    ];
+    if (input.states?.length) {
+      where.push(`[System.State] IN (${input.states.map((state) => `'${escapeWiqlValue(state)}'`).join(", ")})`);
+    }
+    if (input.areaPath) where.push(`[System.AreaPath] UNDER '${escapeWiqlValue(input.areaPath)}'`);
+    if (input.iterationPath) where.push(`[System.IterationPath] UNDER '${escapeWiqlValue(input.iterationPath)}'`);
 
     const wiql = {
       query: `SELECT [System.Id] FROM WorkItems WHERE ${where.join(" AND ")} ORDER BY [System.ChangedDate] DESC`,
@@ -269,4 +276,8 @@ function escapeXml(value: string) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function escapeWiqlValue(value: string) {
+  return value.replace(/'/g, "''");
 }
