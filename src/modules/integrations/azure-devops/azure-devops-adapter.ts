@@ -10,6 +10,7 @@ export interface AzureDevOpsAdapter {
   fetchWorkItems(input: {
     projectId: string;
     workItemTypes?: string[];
+    states?: string[];
     areaPath?: string;
     iterationPath?: string;
   }): Promise<Requirement[]>;

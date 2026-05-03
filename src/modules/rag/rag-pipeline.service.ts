@@ -13,7 +13,7 @@ export function chunkText(input: {
   text: string;
   chunkSize?: number;
 }): RagChunk[] {
-  const size = input.chunkSize ?? 900;
+  const size = input.chunkSize ?? 2000;
   const chunks: RagChunk[] = [];
   for (let index = 0; index < input.text.length; index += size) {
     chunks.push({
