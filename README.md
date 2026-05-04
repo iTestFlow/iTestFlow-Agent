@@ -41,6 +41,7 @@ On the Initial Configuration screen, enter:
 - LLM provider
 - LLM model, loaded from the selected provider's real model-list API
 - LLM API token
+- LLM retry attempts for transient provider failures
 
 Then:
 
@@ -67,6 +68,7 @@ DEFAULT_LLM_PROVIDER=openai
 NEXT_PUBLIC_LLM_PROVIDER_LABEL=OpenAI
 OPENAI_API_KEY=YOUR_OPENAI_KEY
 OPENAI_MODEL=MODEL_ID_RETURNED_BY_OPENAI_MODELS_API
+LLM_RETRY_ATTEMPTS=1
 ```
 
 Other supported providers:

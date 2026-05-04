@@ -9,6 +9,7 @@ export type LLMProviderConfig = {
   baseUrl?: string;
   temperature?: number;
   maxTokens?: number;
+  retryAttempts?: number;
 };
 
 export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTypeAny> = {
@@ -18,6 +19,7 @@ export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTy
   schemaName: string;
   temperature?: number;
   maxTokens?: number;
+  repairOnInvalidOutput?: boolean;
 };
 
 export type LLMResult<T = unknown> = {

@@ -14,6 +14,7 @@ export function getConfiguredProviderFromEnv(): LLMProvider | null {
       baseUrl: runtimeSettings.llm.baseUrl,
       temperature: runtimeSettings.llm.temperature,
       maxTokens: runtimeSettings.llm.maxTokens,
+      retryAttempts: runtimeSettings.llm.retryAttempts,
     });
   }
 
@@ -44,5 +45,6 @@ export function getConfiguredProviderFromEnv(): LLMProvider | null {
     model,
     temperature: Number(process.env.LLM_TEMPERATURE ?? "0.2"),
     maxTokens: Number(process.env.LLM_MAX_TOKENS ?? "4000"),
+    retryAttempts: Number(process.env.LLM_RETRY_ATTEMPTS ?? "1"),
   });
 }

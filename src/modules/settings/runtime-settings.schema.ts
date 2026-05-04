@@ -23,6 +23,7 @@ export const RuntimeSettingsInputSchema = z.object({
     baseUrl: z.string().optional(),
     temperature: z.number().min(0, "Temperature must be 0 or higher.").max(2, "Temperature must be 2 or lower.").default(0.2),
     maxTokens: z.number().int("Max tokens must be a whole number.").positive("Max tokens must be greater than 0.").default(4000),
+    retryAttempts: z.number().int("Retry attempts must be a whole number.").min(0, "Retry attempts cannot be negative.").max(5, "Retry attempts must be 5 or lower.").default(1),
   }),
 });
 
@@ -46,5 +47,6 @@ export type RuntimeSettingsSummary = {
     hasApiKey: boolean;
     temperature: number;
     maxTokens: number;
+    retryAttempts: number;
   };
 };

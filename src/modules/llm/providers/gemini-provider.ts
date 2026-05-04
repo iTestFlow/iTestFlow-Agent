@@ -15,7 +15,7 @@ export class GeminiProvider extends BaseJsonProvider {
   protected async callModel<TSchema extends z.ZodTypeAny>(input: GenerateStructuredOutputInput<TSchema>): Promise<string> {
     if (!this.config.apiKey) throw new Error("Gemini API key is not configured.");
     const baseUrl = this.config.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
-    const response = await fetch(`${baseUrl}/models/${this.model}:generateContent?key=${this.config.apiKey}`, {
+    const request = {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({
@@ -31,10 +31,28 @@ export class GeminiProvider extends BaseJsonProvider {
           },
         ],
       }),
-    });
+    };
+    const response = await fetchWithTransientRetry(
+      `${baseUrl}/models/${this.model}:generateContent?key=${this.config.apiKey}`,
+      request,
+      this.config.retryAttempts ?? 1,
+    );
 
     if (!response.ok) throw new Error(`Gemini request failed: ${await response.text()}`);
     const json = await response.json();
     return json.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
   }
+}
+
+async function fetchWithTransientRetry(url: string, init: RequestInit, retryAttempts: number) {
+  let response = await fetch(url, init);
+  for (let attempt = 0; attempt < retryAttempts && isTransientGeminiFailure(response); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 750 * (attempt + 1)));
+    response = await fetch(url, init);
+  }
+  return response;
+}
+
+function isTransientGeminiFailure(response: Response) {
+  return response.status === 429 || response.status === 503;
 }
