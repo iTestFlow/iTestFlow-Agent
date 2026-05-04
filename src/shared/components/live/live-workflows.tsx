@@ -740,12 +740,12 @@ function Metric({ label, value }: { label: string; value: string | number }) {
 
 function ErrorBlock({ message }: { message: string }) {
   return (
-    <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
-      <div className="flex items-center gap-2 font-medium">
-        <AlertTriangle className="h-4 w-4" />
+    <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+      <div className="flex items-center gap-2 font-semibold text-red-800">
+        <AlertTriangle className="h-4 w-4 shrink-0" />
         Action failed
       </div>
-      <p className="mt-2 text-red-100/90">{message}</p>
+      <p className="mt-2 break-words text-red-800">{message}</p>
     </div>
   );
 }
