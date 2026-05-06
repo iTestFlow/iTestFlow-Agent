@@ -6,6 +6,8 @@ The MVP runs locally with real Azure DevOps and LLM provider APIs. Runtime confi
 
 The UI foundation uses Next.js App Router, React, TypeScript, Tailwind CSS, shadcn/ui, Radix-powered shadcn components, and lucide-react icons.
 
+For the living source map and module boundaries, see [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md).
+
 ## Prerequisites
 
 - Node.js 24 or newer
