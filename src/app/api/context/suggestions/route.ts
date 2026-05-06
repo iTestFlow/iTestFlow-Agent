@@ -4,6 +4,7 @@ import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
 import { suggestContextStories } from "@/modules/context-selection/context-selection.service";
+import { requirementToRetrievalQuery, retrieveStoredProjectContext, type LlmContextSource } from "@/modules/rag/project-context-store.service";
 
 export const runtime = "nodejs";
 
@@ -33,15 +34,27 @@ export async function POST(request: Request) {
       projectId: parsed.data.scope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
-    const linkedContext = await adapter.fetchLinkedWorkItems({
-      projectId: parsed.data.scope.azureProjectId,
-      workItemId: parsed.data.targetWorkItemId,
-    });
+    const storedContext = distinctContextByWorkItem(
+      retrieveStoredProjectContext({
+        scope: parsed.data.scope,
+        query: parsed.data.query?.trim() || requirementToRetrievalQuery(targetRequirement),
+        topK: 40,
+      }).filter((item) => item.workItemId !== parsed.data.targetWorkItemId),
+    ).slice(0, 8);
+    if (!storedContext.length) {
+      return NextResponse.json({
+        targetWorkItemId: parsed.data.targetWorkItemId,
+        suggestions: [],
+        rawOutput: null,
+        provider: provider.name,
+        model: provider.model,
+      });
+    }
     const result = await suggestContextStories({
       scope: parsed.data.scope,
       provider,
       targetRequirement,
-      retrievedContext: linkedContext,
+      retrievedContext: storedContext,
     });
 
     return NextResponse.json({
@@ -57,4 +70,13 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
+}
+
+function distinctContextByWorkItem(items: LlmContextSource[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.workItemId)) return false;
+    seen.add(item.workItemId);
+    return true;
+  });
 }

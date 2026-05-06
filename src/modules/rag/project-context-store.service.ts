@@ -107,6 +107,17 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
       AND source_type = 'azure_work_item'
       AND azure_work_item_id = @azureWorkItemId
   `);
+  const deleteProjectChunks = db.prepare(`
+    DELETE FROM document_chunks
+    WHERE project_id = @projectId
+      AND azure_project_id = @azureProjectId
+      AND source_type = 'azure_work_item'
+  `);
+  const deleteProjectWorkItems = db.prepare(`
+    DELETE FROM azure_devops_work_items
+    WHERE project_id = @projectId
+      AND azure_project_id = @azureProjectId
+  `);
   const insertChunk = db.prepare(`
     INSERT INTO document_chunks (
       id, project_id, azure_project_id, azure_project_name, source_type,
@@ -121,6 +132,15 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
 
   try {
     db.exec("BEGIN");
+    deleteProjectChunks.run({
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+    });
+    deleteProjectWorkItems.run({
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+    });
+
     for (const item of workItems) {
       upsertWorkItem.run({
         id: createId("awi"),

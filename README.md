@@ -6,6 +6,8 @@ The MVP runs locally with real Azure DevOps and LLM provider APIs. Runtime confi
 
 The UI foundation uses Next.js App Router, React, TypeScript, Tailwind CSS, shadcn/ui, Radix-powered shadcn components, and lucide-react icons.
 
+For the living source map and module boundaries, see [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md).
+
 ## Prerequisites
 
 - Node.js 24 or newer
@@ -41,6 +43,7 @@ On the Initial Configuration screen, enter:
 - LLM provider
 - LLM model, loaded from the selected provider's real model-list API
 - LLM API token
+- LLM retry attempts for transient provider failures
 
 Then:
 
@@ -67,6 +70,7 @@ DEFAULT_LLM_PROVIDER=openai
 NEXT_PUBLIC_LLM_PROVIDER_LABEL=OpenAI
 OPENAI_API_KEY=YOUR_OPENAI_KEY
 OPENAI_MODEL=MODEL_ID_RETURNED_BY_OPENAI_MODELS_API
+LLM_RETRY_ATTEMPTS=1
 ```
 
 Other supported providers:
@@ -107,7 +111,7 @@ After configuration, open:
 
 1. Configure and test connections from `/setup`.
 2. Select an Azure DevOps project in the header selector.
-3. Go to Azure DevOps and click `Sync Now`.
+3. Fetch and index filtered project context from `/context` when you want RAG-assisted suggestions.
 4. Enter a real Azure DevOps work item ID in Requirement Analysis or Test Case Design.
 5. Run context suggestion, analysis, generation, or existing linked test case review.
 6. Review and edit AI output before pushing comments or publishing test cases.

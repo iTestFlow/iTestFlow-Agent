@@ -25,6 +25,7 @@ export async function runRequirementAnalysis(input: {
         azureProjectName: scope.azureProjectName,
       },
     }),
+    maxTokens: 12000,
   });
 
   writeAuditLog({

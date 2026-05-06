@@ -26,6 +26,7 @@ export async function POST(request: Request) {
     baseUrl: parsed.data.llm.baseUrl,
     temperature: parsed.data.llm.temperature,
     maxTokens: parsed.data.llm.maxTokens,
+    retryAttempts: parsed.data.llm.retryAttempts,
   });
 
   const [azureResult, llmResult] = await Promise.allSettled([

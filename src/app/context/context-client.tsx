@@ -63,9 +63,19 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   })
-  const json = await response.json()
+  const text = await response.text()
+  const json = parseJsonResponse(text, response.ok)
   if (!response.ok) throw new Error(json.error ?? `Request failed: ${response.status}`)
   return json as T
+}
+
+function parseJsonResponse(text: string, ok: boolean) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    if (ok) throw new Error("The server returned an invalid JSON response.")
+    return { error: "The server returned a non-JSON response. Check the server logs or runtime configuration." }
+  }
 }
 
 export function ProjectContextClient() {

@@ -84,6 +84,7 @@ function summarizeRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsSum
       hasApiKey: Boolean(settings.llm.apiKey),
       temperature: settings.llm.temperature,
       maxTokens: settings.llm.maxTokens,
+      retryAttempts: settings.llm.retryAttempts,
     },
   };
 }
@@ -127,6 +128,7 @@ function getSettingsFromEnv(): RuntimeSettings | null {
       baseUrl: undefined,
       temperature: Number(process.env.LLM_TEMPERATURE ?? "0.2"),
       maxTokens: Number(process.env.LLM_MAX_TOKENS ?? "4000"),
+      retryAttempts: Number(process.env.LLM_RETRY_ATTEMPTS ?? "1"),
     },
   });
 

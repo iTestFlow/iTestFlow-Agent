@@ -16,6 +16,7 @@ type FormState = {
   baseUrl: string;
   temperature: number;
   maxTokens: number;
+  retryAttempts: number;
 };
 
 type TestResult = {
@@ -72,6 +73,7 @@ export function ConfigurationForm({
     baseUrl: "",
     temperature: 0.2,
     maxTokens: 4000,
+    retryAttempts: 1,
   });
 
   const selectedModels = useMemo(() => models, [models]);
@@ -98,6 +100,7 @@ export function ConfigurationForm({
           baseUrl: summary.llm?.baseUrl ?? "",
           temperature: summary.llm?.temperature ?? current.temperature,
           maxTokens: summary.llm?.maxTokens ?? current.maxTokens,
+          retryAttempts: summary.llm?.retryAttempts ?? current.retryAttempts,
         }));
         setHasSavedLlmKey(Boolean(summary.llm?.hasApiKey));
         setSavedLlmProvider(summary.llm?.provider ?? null);
@@ -191,6 +194,7 @@ export function ConfigurationForm({
         baseUrl: form.baseUrl.trim() || undefined,
         temperature: form.temperature,
         maxTokens: form.maxTokens,
+        retryAttempts: form.retryAttempts,
       },
     };
   }
@@ -409,6 +413,21 @@ export function ConfigurationForm({
                       : "Enter the provider API token, then open the dropdown to load models from the live provider API."}
                   </div>
                   {modelError ? <div className="mt-1 text-xs text-red-700">{modelError}</div> : null}
+                </Field>
+
+                <Field
+                  label="Retry attempts on transient LLM failure"
+                  description="0 disables automatic retry. Default is 1 retry after the initial request."
+                >
+                  <TextInput
+                    className="border-slate-300 bg-white text-slate-950"
+                    type="number"
+                    min={0}
+                    max={5}
+                    step={1}
+                    value={form.retryAttempts}
+                    onChange={(event) => update("retryAttempts", Number(event.target.value || "0"))}
+                  />
                 </Field>
 
                 <button

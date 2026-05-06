@@ -25,8 +25,12 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   }
 
   async testConnection(): Promise<boolean> {
-    const response = await this.request("_apis/projects?api-version=7.1");
-    return response.ok;
+    try {
+      await this.requestJson<{ value?: Array<JsonValue> }>("_apis/projects?api-version=7.1");
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async fetchAuthenticatedUser(): Promise<AzureAuthenticatedUser> {
@@ -228,11 +232,22 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
 
   private async requestJson<T>(path: string, init?: RequestInit & { contentType?: string }): Promise<T> {
     const response = await this.request(path, init);
+    const body = await response.text();
     if (!response.ok) {
-      const body = await response.text();
       throw new Error(`Azure DevOps request failed (${response.status}): ${body}`);
     }
-    return response.json() as Promise<T>;
+    if (!isJsonResponse(response)) {
+      throw new Error(
+        `Azure DevOps returned a non-JSON response (${response.status}). Check that the organization URL and Personal Access Token are valid.`,
+      );
+    }
+    try {
+      return JSON.parse(body) as T;
+    } catch {
+      throw new Error(
+        `Azure DevOps returned malformed JSON (${response.status}). Check that the organization URL and Personal Access Token are valid.`,
+      );
+    }
   }
 
   private request(path: string, init?: RequestInit & { contentType?: string }) {
@@ -247,6 +262,10 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       },
     });
   }
+}
+
+function isJsonResponse(response: Response) {
+  return response.headers.get("content-type")?.toLowerCase().includes("application/json") ?? false;
 }
 
 function mapPriority(priority?: string) {

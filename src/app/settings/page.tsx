@@ -12,7 +12,7 @@ export default function SettingsPage() {
     configured: boolean
     savedAt?: string
     azureDevOps?: { organizationUrl: string; hasPersonalAccessToken: boolean }
-    llm?: { provider: string; model: string; hasApiKey: boolean; temperature: number; maxTokens: number }
+    llm?: { provider: string; model: string; hasApiKey: boolean; temperature: number; maxTokens: number; retryAttempts: number }
   }>(null)
 
   function refreshSummary() {
@@ -51,6 +51,7 @@ export default function SettingsPage() {
             <p>LLM provider: {summary?.llm?.provider ?? "Not configured"}</p>
             <p>LLM model: {summary?.llm?.model ?? "Not configured"}</p>
             <p>LLM key saved: {summary?.llm?.hasApiKey ? "Yes" : "No"}</p>
+            <p>LLM retry attempts: {summary?.llm?.retryAttempts ?? 1}</p>
           </CardContent>
         </Card>
       </div>

@@ -10,7 +10,6 @@ import {
   Gauge,
   HelpCircle,
   Home,
-  Layers3,
   Settings,
   ShieldCheck,
   TestTube2,
@@ -22,7 +21,6 @@ import { cn } from "@/lib/utils"
 
 const navigation = [
   { href: "/dashboard", label: "Home", icon: Home },
-  { href: "/azure-devops", label: "Azure DevOps", icon: Layers3 },
   { href: "/context", label: "Project Context", icon: FileText },
   { href: "/requirements/analyze", label: "Requirement Analysis", icon: ShieldCheck, section: "/requirements" },
   { href: "/test-cases/design/context", label: "Test Case Design", icon: TestTube2, section: "/test-cases/design" },

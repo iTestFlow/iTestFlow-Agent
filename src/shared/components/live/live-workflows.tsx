@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Copy, Play, RefreshCw, Send, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, Play, Send, Trash2 } from "lucide-react";
 import { Badge, Button, Card, CardHeader, SelectInput, TextArea, TextInput } from "@/shared/components/ui";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
@@ -9,17 +9,6 @@ type ApiState<T> = {
   loading: boolean;
   error: string | null;
   data: T | null;
-};
-
-type WorkItem = {
-  id: string;
-  workItemType: string;
-  title: string;
-  state?: string;
-  assignedTo?: string;
-  priority?: number;
-  iterationPath?: string;
-  updatedDate?: string;
 };
 
 type ContextSuggestion = {
@@ -107,9 +96,19 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const json = await response.json();
+  const text = await response.text();
+  const json = parseJsonResponse(text, response.ok);
   if (!response.ok) throw new Error(json.error ?? `Request failed: ${response.status}`);
   return json as T;
+}
+
+function parseJsonResponse(text: string, ok: boolean) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (ok) throw new Error("The server returned an invalid JSON response.");
+    return { error: "The server returned a non-JSON response. Check the server logs or runtime configuration." };
+  }
 }
 
 function severityTone(value: string) {
@@ -159,90 +158,6 @@ export function LiveDashboard() {
   );
 }
 
-export function AzureDevOpsWorkItemsClient() {
-  const scope = useActiveProject();
-  const [state, setState] = useState<ApiState<{ workItems: WorkItem[]; fetchedCount: number; indexedCount: number }>>({
-    loading: false,
-    error: null,
-    data: null,
-  });
-
-  async function sync() {
-    if (!scope) return;
-    setState({ loading: true, error: null, data: null });
-    try {
-      const data = await postJson<{ workItems: WorkItem[]; fetchedCount: number; indexedCount: number }>("/api/azure-devops/sync", {
-        scope,
-      });
-      setState({ loading: false, error: null, data });
-    } catch (error) {
-      setState({ loading: false, error: error instanceof Error ? error.message : "Azure DevOps sync failed.", data: null });
-    }
-  }
-
-  return (
-    <>
-      {projectWarning(scope)}
-      <Card>
-        <div className="flex flex-col gap-3 border-b p-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="text-sm font-semibold">Live Work Item Sync</div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Fetches work items from {scope?.azureProjectName ?? "the selected Azure DevOps project"} using your PAT.
-            </p>
-          </div>
-          <Button onClick={sync} disabled={!scope || state.loading}>
-            <RefreshCw className="h-4 w-4" />
-            {state.loading ? "Syncing..." : "Sync Now"}
-          </Button>
-        </div>
-        {state.error ? <ErrorBlock message={state.error} /> : null}
-        {state.data ? (
-          <>
-            <div className="grid gap-3 border-b p-4 sm:grid-cols-3">
-              <Metric label="Fetched" value={state.data.fetchedCount} />
-              <Metric label="Indexed" value={state.data.indexedCount} />
-              <Metric label="Project" value={scope?.azureProjectName ?? "-"} />
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[980px] text-sm">
-                <thead className="bg-[#edf2f7] text-left text-sm text-slate-500">
-                  <tr>
-                    <th className="px-4 py-3">ID</th>
-                    <th className="px-4 py-3">Type</th>
-                    <th className="px-4 py-3">Title</th>
-                    <th className="px-4 py-3">State</th>
-                    <th className="px-4 py-3">Assigned To</th>
-                    <th className="px-4 py-3">Priority</th>
-                    <th className="px-4 py-3">Iteration</th>
-                    <th className="px-4 py-3">Updated</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {state.data.workItems.map((item) => (
-                    <tr key={item.id} className="hover:bg-muted/30">
-                      <td className="px-4 py-3 font-mono text-xs text-blue-600">{item.id}</td>
-                      <td className="px-4 py-3">{item.workItemType}</td>
-                      <td className="px-4 py-3 font-medium">{item.title}</td>
-                      <td className="px-4 py-3">{item.state ?? "-"}</td>
-                      <td className="px-4 py-3">{item.assignedTo ?? "-"}</td>
-                      <td className="px-4 py-3">{item.priority ?? "-"}</td>
-                      <td className="px-4 py-3">{item.iterationPath ?? "-"}</td>
-                      <td className="px-4 py-3">{item.updatedDate ?? "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        ) : (
-          <EmptyBlock message="No work items loaded yet. Select a project and run Sync Now." />
-        )}
-      </Card>
-    </>
-  );
-}
-
 export function RequirementAnalysisClient() {
   const scope = useActiveProject();
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
@@ -255,7 +170,15 @@ export function RequirementAnalysisClient() {
   });
   const [selectedFindings, setSelectedFindings] = useState<Record<string, boolean>>({});
   const [snippets, setSnippets] = useState<Record<string, string>>({});
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [finalComment, setFinalComment] = useState("");
+  const [reviewApproved, setReviewApproved] = useState(false);
+  const [pushState, setPushState] = useState<ApiState<{ success: boolean }>>({ loading: false, error: null, data: null });
   const selectedContextIds = useMemo(() => contextIds.split(",").map((item) => item.trim()).filter(Boolean), [contextIds]);
+  const selectedFindingList = useMemo(
+    () => analysis.data?.findings.filter((finding) => selectedFindings[finding.id]) ?? [],
+    [analysis.data, selectedFindings],
+  );
 
   async function suggest() {
     if (!scope || !targetWorkItemId) return;
@@ -280,26 +203,48 @@ export function RequirementAnalysisClient() {
       setAnalysis({ loading: false, error: null, data });
       setSelectedFindings(Object.fromEntries(data.findings.map((finding) => [finding.id, true])));
       setSnippets(Object.fromEntries(data.findings.map((finding) => [finding.id, finding.azureDevOpsCommentSnippet])));
+      setReviewOpen(false);
+      setFinalComment("");
+      setReviewApproved(false);
+      setPushState({ loading: false, error: null, data: null });
     } catch (error) {
       setAnalysis({ loading: false, error: error instanceof Error ? error.message : "Requirement analysis failed.", data: null });
     }
   }
 
-  async function pushComment() {
+  function buildCommentBody() {
     if (!scope || !targetWorkItemId || !analysis.data) return;
-    const selected = analysis.data.findings.filter((finding) => selectedFindings[finding.id]);
-    const commentBody = [
+    return [
       `## iTestFlow Requirement Analysis for ${targetWorkItemId}`,
       analysis.data.executiveSummary,
-      ...selected.map((finding) => `### [${finding.severity}] ${finding.title}\n${snippets[finding.id] ?? finding.azureDevOpsCommentSnippet}`),
+      ...selectedFindingList.map((finding) => `### [${finding.severity}] ${finding.title}\n${snippets[finding.id] ?? finding.azureDevOpsCommentSnippet}`),
     ].join("\n\n");
-    await postJson("/api/requirement-analysis/comment", {
-      scope,
-      targetWorkItemId,
-      selectedFindingIds: selected.map((finding) => finding.id),
-      commentBody,
-    });
-    window.alert("Approved comment pushed to Azure DevOps.");
+  }
+
+  function openReview() {
+    const commentBody = buildCommentBody();
+    if (!commentBody) return;
+    setFinalComment(commentBody);
+    setReviewApproved(false);
+    setPushState({ loading: false, error: null, data: null });
+    setReviewOpen(true);
+  }
+
+  async function pushComment() {
+    if (!scope || !targetWorkItemId || !analysis.data || !selectedFindingList.length || !reviewApproved || !finalComment.trim()) return;
+    setPushState({ loading: true, error: null, data: null });
+    try {
+      await postJson("/api/requirement-analysis/comment", {
+        scope,
+        targetWorkItemId,
+        selectedFindingIds: selectedFindingList.map((finding) => finding.id),
+        commentBody: finalComment,
+      });
+      setPushState({ loading: false, error: null, data: { success: true } });
+      window.alert("Approved comment pushed to Azure DevOps.");
+    } catch (error) {
+      setPushState({ loading: false, error: error instanceof Error ? error.message : "Azure DevOps comment push failed.", data: null });
+    }
   }
 
   return (
@@ -339,9 +284,18 @@ export function RequirementAnalysisClient() {
       ) : null}
 
       {analysis.error ? <ErrorBlock message={analysis.error} /> : null}
+      {pushState.error ? <ErrorBlock message={pushState.error} /> : null}
       {analysis.data ? (
         <Card>
-          <CardHeader title="Requirement Analysis Findings" action={<Button onClick={pushComment}><Send className="h-4 w-4" />Push Comment</Button>} />
+          <CardHeader
+            title="Requirement Analysis Findings"
+            action={
+              <Button onClick={openReview} disabled={!selectedFindingList.length}>
+                <Send className="h-4 w-4" />
+                Review Comment
+              </Button>
+            }
+          />
           <div className="grid gap-3 border-b p-4 md:grid-cols-4">
             {Object.entries(analysis.data.scores).slice(0, 4).map(([key, value]) => (
               <Metric key={key} label={key} value={value} />
@@ -371,6 +325,57 @@ export function RequirementAnalysisClient() {
                 />
               </div>
             ))}
+          </div>
+        </Card>
+      ) : null}
+
+      {reviewOpen ? (
+        <Card>
+          <CardHeader
+            title="Final Comment Review"
+            description="Edit and approve the exact comment before it is pushed to Azure DevOps."
+            action={
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  void navigator.clipboard.writeText(finalComment);
+                }}
+              >
+                <Copy className="h-4 w-4" />
+                Copy
+              </Button>
+            }
+          />
+          <div className="space-y-4 p-4">
+            <TextArea
+              value={finalComment}
+              onChange={(event) => {
+                setFinalComment(event.target.value);
+                setReviewApproved(false);
+              }}
+              className="min-h-[320px] font-mono"
+              aria-label="Final Azure DevOps comment"
+            />
+            <label className="flex items-start gap-3 rounded-md border border-[#c8d4e4] bg-white p-3 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={reviewApproved}
+                onChange={(event) => setReviewApproved(event.target.checked)}
+                className="mt-1 h-4 w-4"
+              />
+              <span>I reviewed the final comment text and selected findings. Push this comment to the Azure DevOps user story.</span>
+            </label>
+            {pushState.data?.success ? (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+                Approved comment pushed to Azure DevOps.
+              </div>
+            ) : null}
+            <div className="flex justify-end">
+              <Button onClick={pushComment} disabled={!selectedFindingList.length || !reviewApproved || !finalComment.trim() || pushState.loading}>
+                <Send className="h-4 w-4" />
+                {pushState.loading ? "Pushing..." : "Push Approved Comment"}
+              </Button>
+            </div>
           </div>
         </Card>
       ) : null}
@@ -740,12 +745,12 @@ function Metric({ label, value }: { label: string; value: string | number }) {
 
 function ErrorBlock({ message }: { message: string }) {
   return (
-    <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
-      <div className="flex items-center gap-2 font-medium">
-        <AlertTriangle className="h-4 w-4" />
+    <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+      <div className="flex items-center gap-2 font-semibold text-red-800">
+        <AlertTriangle className="h-4 w-4 shrink-0" />
         Action failed
       </div>
-      <p className="mt-2 text-red-100/90">{message}</p>
+      <p className="mt-2 break-words text-red-800">{message}</p>
     </div>
   );
 }
