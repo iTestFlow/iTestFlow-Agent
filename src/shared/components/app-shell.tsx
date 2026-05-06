@@ -7,7 +7,6 @@ import { HeaderProjectSelector } from "@/shared/components/live/project-status";
 
 const navigation = [
   { href: "/dashboard", label: "Home" },
-  { href: "/azure-devops", label: "Azure DevOps" },
   { href: "/context", label: "Project Context" },
   { href: "/requirements/select", label: "Requirement Analysis", section: "/requirements" },
   { href: "/test-cases/select", label: "Test Case Design", section: "/test-cases" },
@@ -20,7 +19,6 @@ const navigation = [
 
 const pageTitles = [
   { match: "/dashboard", title: "Home / Dashboard" },
-  { match: "/azure-devops", title: "Azure DevOps - Work Items" },
   { match: "/context", title: "Project Context / RAG" },
   { match: "/requirements/comment", title: "Requirement Analysis - Final Comment Preview" },
   { match: "/requirements/findings", title: "Requirement Analysis - Findings Results List" },

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Copy, Play, RefreshCw, Send, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, Play, Send, Trash2 } from "lucide-react";
 import { Badge, Button, Card, CardHeader, SelectInput, TextArea, TextInput } from "@/shared/components/ui";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
@@ -9,17 +9,6 @@ type ApiState<T> = {
   loading: boolean;
   error: string | null;
   data: T | null;
-};
-
-type WorkItem = {
-  id: string;
-  workItemType: string;
-  title: string;
-  state?: string;
-  assignedTo?: string;
-  priority?: number;
-  iterationPath?: string;
-  updatedDate?: string;
 };
 
 type ContextSuggestion = {
@@ -166,90 +155,6 @@ export function LiveDashboard() {
         <p className="mt-1 text-xs text-slate-500">AI calls run server-side only</p>
       </Card>
     </div>
-  );
-}
-
-export function AzureDevOpsWorkItemsClient() {
-  const scope = useActiveProject();
-  const [state, setState] = useState<ApiState<{ workItems: WorkItem[]; fetchedCount: number; indexedCount: number }>>({
-    loading: false,
-    error: null,
-    data: null,
-  });
-
-  async function sync() {
-    if (!scope) return;
-    setState({ loading: true, error: null, data: null });
-    try {
-      const data = await postJson<{ workItems: WorkItem[]; fetchedCount: number; indexedCount: number }>("/api/azure-devops/sync", {
-        scope,
-      });
-      setState({ loading: false, error: null, data });
-    } catch (error) {
-      setState({ loading: false, error: error instanceof Error ? error.message : "Azure DevOps sync failed.", data: null });
-    }
-  }
-
-  return (
-    <>
-      {projectWarning(scope)}
-      <Card>
-        <div className="flex flex-col gap-3 border-b p-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="text-sm font-semibold">Live Work Item Sync</div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Fetches work items from {scope?.azureProjectName ?? "the selected Azure DevOps project"} using your PAT.
-            </p>
-          </div>
-          <Button onClick={sync} disabled={!scope || state.loading}>
-            <RefreshCw className="h-4 w-4" />
-            {state.loading ? "Syncing..." : "Sync Now"}
-          </Button>
-        </div>
-        {state.error ? <ErrorBlock message={state.error} /> : null}
-        {state.data ? (
-          <>
-            <div className="grid gap-3 border-b p-4 sm:grid-cols-3">
-              <Metric label="Fetched" value={state.data.fetchedCount} />
-              <Metric label="Indexed" value={state.data.indexedCount} />
-              <Metric label="Project" value={scope?.azureProjectName ?? "-"} />
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[980px] text-sm">
-                <thead className="bg-[#edf2f7] text-left text-sm text-slate-500">
-                  <tr>
-                    <th className="px-4 py-3">ID</th>
-                    <th className="px-4 py-3">Type</th>
-                    <th className="px-4 py-3">Title</th>
-                    <th className="px-4 py-3">State</th>
-                    <th className="px-4 py-3">Assigned To</th>
-                    <th className="px-4 py-3">Priority</th>
-                    <th className="px-4 py-3">Iteration</th>
-                    <th className="px-4 py-3">Updated</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {state.data.workItems.map((item) => (
-                    <tr key={item.id} className="hover:bg-muted/30">
-                      <td className="px-4 py-3 font-mono text-xs text-blue-600">{item.id}</td>
-                      <td className="px-4 py-3">{item.workItemType}</td>
-                      <td className="px-4 py-3 font-medium">{item.title}</td>
-                      <td className="px-4 py-3">{item.state ?? "-"}</td>
-                      <td className="px-4 py-3">{item.assignedTo ?? "-"}</td>
-                      <td className="px-4 py-3">{item.priority ?? "-"}</td>
-                      <td className="px-4 py-3">{item.iterationPath ?? "-"}</td>
-                      <td className="px-4 py-3">{item.updatedDate ?? "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        ) : (
-          <EmptyBlock message="No work items loaded yet. Select a project and run Sync Now." />
-        )}
-      </Card>
-    </>
   );
 }
 

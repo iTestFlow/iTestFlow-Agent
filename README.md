@@ -109,7 +109,7 @@ After configuration, open:
 
 1. Configure and test connections from `/setup`.
 2. Select an Azure DevOps project in the header selector.
-3. Go to Azure DevOps and click `Sync Now`.
+3. Fetch and index filtered project context from `/context` when you want RAG-assisted suggestions.
 4. Enter a real Azure DevOps work item ID in Requirement Analysis or Test Case Design.
 5. Run context suggestion, analysis, generation, or existing linked test case review.
 6. Review and edit AI output before pushing comments or publishing test cases.
