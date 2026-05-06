@@ -1,6 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
+import { withStructuredOutputInstruction } from "../prompts";
 import { BaseJsonProvider } from "./base-json-provider";
 import type { GenerateStructuredOutputInput } from "../llm-types";
 
@@ -36,7 +37,7 @@ export class AnthropicProvider extends BaseJsonProvider {
         model: this.model,
         max_tokens: input.maxTokens ?? this.config.maxTokens ?? 4000,
         temperature: input.temperature ?? this.config.temperature ?? 0.2,
-        system: `${input.system}\nReturn only valid JSON matching schema ${input.schemaName}.`,
+        system: withStructuredOutputInstruction(input.system, input.schemaName),
         messages: [{ role: "user", content: input.user }],
       }),
     });

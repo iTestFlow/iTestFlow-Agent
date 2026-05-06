@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { AlertTriangle, ArrowUpDown, Database, RefreshCw } from "lucide-react"
+import { AlertTriangle, ArrowUpDown, BookOpen, ChevronDown, Database, RefreshCw } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -16,6 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   CONTEXT_STATE_OPTIONS,
   CONTEXT_WORK_ITEM_TYPE_OPTIONS,
@@ -57,6 +58,71 @@ type ContextStatusResult = {
   sortDirection: ContextSortDirection
 }
 
+type KnowledgeSource = {
+  sourceWorkItemIds: string[]
+  evidence: string
+}
+
+type ProjectKnowledgeModule = KnowledgeSource & {
+  id: string
+  name: string
+  description: string
+}
+
+type ProjectKnowledgeBusinessRule = KnowledgeSource & {
+  id: string
+  rule: string
+  sourceField: string
+  moduleName?: string
+}
+
+type ProjectKnowledgeStateTransition = KnowledgeSource & {
+  id: string
+  workflowName: string
+  fromState?: string
+  toState?: string
+  triggerOrCondition: string
+  actor?: string
+  moduleName?: string
+}
+
+type ProjectKnowledgeGlossaryTerm = KnowledgeSource & {
+  term: string
+  type?: "term" | "actor" | "role" | "system" | "external_service" | "business_entity" | "data_entity" | "process"
+  definition: string
+}
+
+type ProjectKnowledgeCrossDependency = KnowledgeSource & {
+  id: string
+  sourceModule: string
+  targetModule: string
+  dependencyType: string
+  description: string
+}
+
+type ProjectKnowledgeBase = {
+  modules: ProjectKnowledgeModule[]
+  businessRules: ProjectKnowledgeBusinessRule[]
+  stateTransitions: ProjectKnowledgeStateTransition[]
+  glossary: ProjectKnowledgeGlossaryTerm[]
+  crossDependencies: ProjectKnowledgeCrossDependency[]
+}
+
+type ProjectKnowledgeSnapshot = {
+  id: string
+  promptVersion: string
+  provider?: string | null
+  model?: string | null
+  sourceWorkItemCount: number
+  knowledgeBase: ProjectKnowledgeBase
+  status: string
+  extractedAt: string
+}
+
+type KnowledgeStatusResult = {
+  snapshot: ProjectKnowledgeSnapshot | null
+}
+
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
@@ -80,6 +146,7 @@ function parseJsonResponse(text: string, ok: boolean) {
 
 export function ProjectContextClient() {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null)
+  const [activeTab, setActiveTab] = useState<"step1" | "step2">("step1")
   const [workItemTypes, setWorkItemTypes] = useState<string[]>(DEFAULT_CONTEXT_WORK_ITEM_TYPES)
   const [states, setStates] = useState<string[]>(DEFAULT_CONTEXT_STATES)
   const [loading, setLoading] = useState(false)
@@ -88,6 +155,10 @@ export function ProjectContextClient() {
   const [result, setResult] = useState<IndexResult | null>(null)
   const [recentItems, setRecentItems] = useState<RecentContextItem[]>([])
   const [totalCount, setTotalCount] = useState(0)
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false)
+  const [knowledgeStatusLoading, setKnowledgeStatusLoading] = useState(false)
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null)
+  const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<ProjectKnowledgeSnapshot | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(25)
   const [totalPages, setTotalPages] = useState(1)
@@ -139,8 +210,59 @@ export function ProjectContextClient() {
 
   useEffect(() => {
     if (!scope) return
-    void loadStatus(scope)
-  }, [scope, loadStatus])
+    let cancelled = false
+
+    setActiveTab("step1")
+    setResult(null)
+    setError(null)
+    setKnowledgeError(null)
+    setPage(1)
+    setSortBy("lastIndexedAt")
+    setSortDirection("desc")
+    setStatusLoading(true)
+    setKnowledgeStatusLoading(true)
+
+    void postJson<ContextStatusResult>("/api/context/status", {
+      scope,
+      page: 1,
+      pageSize,
+      sortBy: "lastIndexedAt",
+      sortDirection: "desc",
+    })
+      .then((data) => {
+        if (cancelled) return
+        setRecentItems(data.items)
+        setTotalCount(data.totalCount)
+        setTotalPages(data.totalPages)
+        setPage(data.page)
+        setSortBy(data.sortBy)
+        setSortDirection(data.sortDirection)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setRecentItems([])
+        setTotalCount(0)
+        setTotalPages(1)
+      })
+      .finally(() => {
+        if (!cancelled) setStatusLoading(false)
+      })
+
+    void postJson<KnowledgeStatusResult>("/api/context/knowledge/status", { scope })
+      .then((data) => {
+        if (!cancelled) setKnowledgeSnapshot(data.snapshot)
+      })
+      .catch(() => {
+        if (!cancelled) setKnowledgeSnapshot(null)
+      })
+      .finally(() => {
+        if (!cancelled) setKnowledgeStatusLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [pageSize, scope])
 
   async function indexContext() {
     if (!scope) return
@@ -163,6 +285,22 @@ export function ProjectContextClient() {
     }
   }
 
+  async function extractKnowledgeBase() {
+    if (!scope) return
+    setKnowledgeLoading(true)
+    setKnowledgeError(null)
+    try {
+      const data = await postJson<ProjectKnowledgeSnapshot>("/api/context/knowledge/extract", {
+        scope,
+      })
+      setKnowledgeSnapshot(data)
+    } catch (extractError) {
+      setKnowledgeError(extractError instanceof Error ? extractError.message : "Project knowledge extraction failed.")
+    } finally {
+      setKnowledgeLoading(false)
+    }
+  }
+
   function toggleValue(value: string, selected: boolean, current: string[], update: (next: string[]) => void) {
     update(selected ? [...current, value] : current.filter((item) => item !== value))
   }
@@ -182,6 +320,8 @@ export function ProjectContextClient() {
   }
 
   const canIndex = Boolean(scope) && workItemTypes.length > 0 && states.length > 0 && !loading
+  const step2Unlocked = totalCount > 0 || (result?.indexedWorkItemCount ?? 0) > 0
+  const canExtractKnowledge = Boolean(scope) && step2Unlocked && !knowledgeLoading
   const rangeStart = totalCount === 0 ? 0 : (page - 1) * pageSize + 1
   const rangeEnd = Math.min(totalCount, rangeStart + recentItems.length - 1)
 
@@ -194,111 +334,175 @@ export function ProjectContextClient() {
         </div>
       ) : null}
 
-      <Card className="qa-card">
-        <CardHeader>
-          <CardTitle className="text-base">Context Filters</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          <FilterGroup
-            title="Work item types"
-            values={CONTEXT_WORK_ITEM_TYPE_OPTIONS}
-            selectedValues={workItemTypes}
-            onChange={(value, selected) => toggleValue(value, selected, workItemTypes, setWorkItemTypes)}
-          />
-          <FilterGroup
-            title="States"
-            values={CONTEXT_STATE_OPTIONS}
-            selectedValues={states}
-            onChange={(value, selected) => toggleValue(value, selected, states, setStates)}
-          />
-          <div className="flex flex-col gap-3 border-t border-[#EBECF0] pt-4 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-sm text-[#626F86]">
-              Indexed context is stored locally and reused by requirement analysis and test design.
-            </p>
-            <Button onClick={indexContext} disabled={!canIndex}>
-              {loading ? <RefreshCw className="size-4 animate-spin" /> : <Database className="size-4" />}
-              {loading ? "Indexing context..." : "Fetch and Index Context"}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => {
+          if (value === "step2" && !step2Unlocked) return
+          setActiveTab(value as "step1" | "step2")
+        }}
+        className="flex-col gap-4"
+      >
+        <TabsList className="grid h-auto w-full grid-cols-2 rounded-md border border-[#DCDFE4] bg-white p-1 sm:inline-grid sm:w-fit sm:min-w-[520px]">
+          <TabsTrigger value="step1" className="h-10 px-3 py-2">
+            <span>Step 1</span>
+            <span className="hidden text-xs text-[#626F86] sm:inline">Fetch and Index Context</span>
+          </TabsTrigger>
+          <TabsTrigger
+            value="step2"
+            disabled={!step2Unlocked}
+            className="h-10 px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span>Step 2</span>
+            <span className="hidden text-xs text-[#626F86] sm:inline">Extract Knowledge Base</span>
+          </TabsTrigger>
+        </TabsList>
 
-      {error ? (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
-          {error}
-        </div>
-      ) : null}
-
-      {result ? <IndexSummary result={result} /> : null}
-
-      <Card className="qa-card">
-        <CardHeader>
-          <CardTitle className="text-base">Indexed Project Context</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {statusLoading ? (
-            <div className="text-sm text-[#626F86]">Loading indexed context...</div>
-          ) : recentItems.length ? (
-            <div className="space-y-3">
-              <div className="text-sm text-[#626F86]">
-                Showing {rangeStart}-{rangeEnd} of {totalCount} indexed work items available for retrieval.
+        <TabsContent value="step1" className="space-y-4">
+          <Card className="qa-card">
+            <CardHeader>
+              <CardTitle className="text-base">Step 1 - Fetch and Index Context</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <FilterGroup
+                title="Work item types"
+                values={CONTEXT_WORK_ITEM_TYPE_OPTIONS}
+                selectedValues={workItemTypes}
+                onChange={(value, selected) => toggleValue(value, selected, workItemTypes, setWorkItemTypes)}
+              />
+              <FilterGroup
+                title="States"
+                values={CONTEXT_STATE_OPTIONS}
+                selectedValues={states}
+                onChange={(value, selected) => toggleValue(value, selected, states, setStates)}
+              />
+              <div className="flex flex-col gap-3 border-t border-[#EBECF0] pt-4 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-[#626F86]">
+                  Indexed context is stored locally and reused by requirement analysis and test design.
+                </p>
+                <Button onClick={indexContext} disabled={!canIndex}>
+                  {loading ? <RefreshCw className="size-4 animate-spin" /> : <Database className="size-4" />}
+                  {loading ? "Indexing context..." : "Fetch and Index Context"}
+                </Button>
               </div>
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>ID</TableHead>
-                      <TableHead>
-                        <SortHeader label="Type" active={sortBy === "type"} direction={sortDirection} onClick={() => changeSort("type")} />
-                      </TableHead>
-                      <TableHead className="min-w-[320px]">Title</TableHead>
-                      <TableHead>
-                        <SortHeader label="State" active={sortBy === "state"} direction={sortDirection} onClick={() => changeSort("state")} />
-                      </TableHead>
-                      <TableHead>Chunks</TableHead>
-                      <TableHead>
-                        <SortHeader
-                          label="Last Indexed"
-                          active={sortBy === "lastIndexedAt"}
-                          direction={sortDirection}
-                          onClick={() => changeSort("lastIndexedAt")}
-                        />
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {recentItems.map((item) => (
-                      <TableRow key={item.workItemId}>
-                        <TableCell className="font-mono text-xs font-semibold text-[#0C66E4]">{item.workItemId}</TableCell>
-                        <TableCell><Badge variant="secondary">{item.workItemType}</Badge></TableCell>
-                        <TableCell className="font-medium text-[#172B4D]">{item.title}</TableCell>
-                        <TableCell>{item.state ?? "-"}</TableCell>
-                        <TableCell>{item.chunkCount}</TableCell>
-                        <TableCell>{formatDate(item.lastIndexedAt)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-              <div className="flex items-center justify-between border-t border-[#EBECF0] pt-3 text-sm text-[#626F86]">
-                <span>Page {page} of {totalPages}</span>
-                <div className="flex gap-2">
-                  <Button size="sm" variant="outline" disabled={page <= 1 || statusLoading} onClick={() => changePage(page - 1)}>
-                    Previous
-                  </Button>
-                  <Button size="sm" variant="outline" disabled={page >= totalPages || statusLoading} onClick={() => changePage(page + 1)}>
-                    Next
-                  </Button>
+            </CardContent>
+          </Card>
+
+          {error ? (
+            <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
+              {error}
+            </div>
+          ) : null}
+
+          {result ? <IndexSummary result={result} /> : null}
+
+          <Card className="qa-card">
+            <CardHeader>
+              <CardTitle className="text-base">Indexed Project Context</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {statusLoading ? (
+                <div className="text-sm text-[#626F86]">Loading indexed context...</div>
+              ) : recentItems.length ? (
+                <div className="space-y-3">
+                  <div className="text-sm text-[#626F86]">
+                    Showing {rangeStart}-{rangeEnd} of {totalCount} indexed work items available for retrieval.
+                  </div>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>ID</TableHead>
+                          <TableHead>
+                            <SortHeader label="Type" active={sortBy === "type"} direction={sortDirection} onClick={() => changeSort("type")} />
+                          </TableHead>
+                          <TableHead className="min-w-[320px]">Title</TableHead>
+                          <TableHead>
+                            <SortHeader label="State" active={sortBy === "state"} direction={sortDirection} onClick={() => changeSort("state")} />
+                          </TableHead>
+                          <TableHead>Chunks</TableHead>
+                          <TableHead>
+                            <SortHeader
+                              label="Last Indexed"
+                              active={sortBy === "lastIndexedAt"}
+                              direction={sortDirection}
+                              onClick={() => changeSort("lastIndexedAt")}
+                            />
+                          </TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {recentItems.map((item) => (
+                          <TableRow key={item.workItemId}>
+                            <TableCell className="font-mono text-xs font-semibold text-[#0C66E4]">{item.workItemId}</TableCell>
+                            <TableCell><Badge variant="secondary">{item.workItemType}</Badge></TableCell>
+                            <TableCell className="font-medium text-[#172B4D]">{item.title}</TableCell>
+                            <TableCell>{item.state ?? "-"}</TableCell>
+                            <TableCell>{item.chunkCount}</TableCell>
+                            <TableCell>{formatDate(item.lastIndexedAt)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-[#EBECF0] pt-3 text-sm text-[#626F86]">
+                    <span>Page {page} of {totalPages}</span>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" disabled={page <= 1 || statusLoading} onClick={() => changePage(page - 1)}>
+                        Previous
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={page >= totalPages || statusLoading} onClick={() => changePage(page + 1)}>
+                        Next
+                      </Button>
+                    </div>
+                  </div>
                 </div>
+              ) : (
+                <div className="rounded-md border border-[#DCDFE4] bg-white p-6 text-sm text-[#626F86]">
+                  No project context has been indexed yet. After ingestion, analysis and test design can retrieve stored context from this local knowledge base.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="step2" className="space-y-4">
+          <Card className="qa-card">
+            <CardHeader>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <CardTitle className="text-base">Step 2 - Extract Knowledge Base</CardTitle>
+                {knowledgeSnapshot ? <Badge variant="outline">Prompt {knowledgeSnapshot.promptVersion}</Badge> : null}
               </div>
-            </div>
-          ) : (
-            <div className="rounded-md border border-[#DCDFE4] bg-white p-6 text-sm text-[#626F86]">
-              No project context has been indexed yet. After ingestion, analysis and test design can retrieve stored context from this local knowledge base.
-            </div>
-          )}
-        </CardContent>
-      </Card>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-col gap-3 border-b border-[#EBECF0] pb-4 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-[#626F86]">
+                  Extract modules, business rules, workflows, glossary terms, and dependencies from the indexed context.
+                </p>
+                <Button onClick={extractKnowledgeBase} disabled={!canExtractKnowledge}>
+                  {knowledgeLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
+                  {knowledgeLoading ? "Extracting..." : "Extract Knowledge Base"}
+                </Button>
+              </div>
+
+              {knowledgeError ? (
+                <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
+                  {knowledgeError}
+                </div>
+              ) : null}
+
+              {knowledgeStatusLoading ? (
+                <div className="text-sm text-[#626F86]">Loading saved knowledge base...</div>
+              ) : knowledgeSnapshot ? (
+                <KnowledgeBaseSummary snapshot={knowledgeSnapshot} />
+              ) : (
+                <div className="rounded-md border border-[#DCDFE4] bg-white p-6 text-sm text-[#626F86]">
+                  No knowledge base has been extracted yet. Run Step 2 after indexing context to save categorized project knowledge for analysis and test design.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
@@ -334,20 +538,35 @@ function FilterGroup({
   selectedValues: string[]
   onChange: (value: string, selected: boolean) => void
 }) {
+  const [open, setOpen] = useState(true)
+
   return (
-    <div>
-      <div className="mb-3 text-sm font-semibold text-[#172B4D]">{title}</div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {values.map((value) => {
-          const checked = selectedValues.includes(value)
-          return (
-            <Label key={value} className="flex min-h-10 items-center gap-3 rounded-md border border-[#DCDFE4] bg-white px-3 py-2 text-sm">
-              <Checkbox checked={checked} onCheckedChange={(next) => onChange(value, next === true)} />
-              <span>{value}</span>
-            </Label>
-          )
-        })}
-      </div>
+    <div className="rounded-md border border-[#DCDFE4] bg-white">
+      <button
+        type="button"
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span>
+          <span className="block text-sm font-semibold text-[#172B4D]">{title}</span>
+          <span className="mt-0.5 block text-xs text-[#626F86]">{selectedValues.length} selected</span>
+        </span>
+        <ChevronDown className={`size-4 shrink-0 text-[#626F86] transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open ? (
+        <div className="grid gap-3 border-t border-[#EBECF0] p-3 sm:grid-cols-2 lg:grid-cols-3">
+          {values.map((value) => {
+            const checked = selectedValues.includes(value)
+            return (
+              <Label key={value} className="flex min-h-10 items-center gap-3 rounded-md border border-[#DCDFE4] bg-white px-3 py-2 text-sm">
+                <Checkbox checked={checked} onCheckedChange={(next) => onChange(value, next === true)} />
+                <span>{value}</span>
+              </Label>
+            )
+          })}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -382,6 +601,153 @@ function IndexSummary({ result }: { result: IndexResult }) {
       </CardContent>
     </Card>
   )
+}
+
+const KNOWLEDGE_CATEGORIES = [
+  { key: "modules", label: "Modules" },
+  { key: "businessRules", label: "Business Rules" },
+  { key: "stateTransitions", label: "State Transitions" },
+  { key: "glossary", label: "Glossary" },
+  { key: "crossDependencies", label: "Dependencies" },
+] as const
+
+type KnowledgeCategoryKey = (typeof KNOWLEDGE_CATEGORIES)[number]["key"]
+
+type AnyKnowledgeItem = KnowledgeSource & {
+  id?: string
+  name?: string
+  description?: string
+  rule?: string
+  sourceField?: string
+  moduleName?: string
+  workflowName?: string
+  fromState?: string
+  toState?: string
+  triggerOrCondition?: string
+  actor?: string
+  term?: string
+  type?: string
+  definition?: string
+  sourceModule?: string
+  targetModule?: string
+  dependencyType?: string
+}
+
+function KnowledgeBaseSummary({ snapshot }: { snapshot: ProjectKnowledgeSnapshot }) {
+  const counts = KNOWLEDGE_CATEGORIES.map(({ key, label }) => ({
+    key,
+    label,
+    value: snapshot.knowledgeBase[key].length,
+  }))
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        {counts.map((count) => (
+          <div key={count.key} className="rounded-md border border-[#DCDFE4] bg-white p-3">
+            <div className="text-xs text-[#626F86]">{count.label}</div>
+            <div className="mt-1 text-lg font-semibold text-[#172B4D]">{count.value}</div>
+          </div>
+        ))}
+      </div>
+      <div className="grid gap-3 text-sm text-[#44546F] lg:grid-cols-3">
+        <div><span className="font-semibold">Source items:</span> {snapshot.sourceWorkItemCount}</div>
+        <div><span className="font-semibold">Model:</span> {[snapshot.provider, snapshot.model].filter(Boolean).join(" / ") || "-"}</div>
+        <div><span className="font-semibold">Extracted:</span> {formatDate(snapshot.extractedAt)}</div>
+      </div>
+      <KnowledgeBaseTabs knowledgeBase={snapshot.knowledgeBase} />
+    </div>
+  )
+}
+
+function KnowledgeBaseTabs({ knowledgeBase }: { knowledgeBase: ProjectKnowledgeBase }) {
+  return (
+    <Tabs defaultValue="modules" className="flex-col gap-3">
+      <div className="overflow-x-auto pb-1">
+        <TabsList className="h-auto min-w-max flex-wrap justify-start">
+          {KNOWLEDGE_CATEGORIES.map((category) => (
+            <TabsTrigger key={category.key} value={category.key} className="px-2 py-1">
+              {category.label}
+              <span className="rounded-sm bg-[#F1F2F4] px-1.5 py-0.5 text-xs text-[#44546F]">
+                {knowledgeBase[category.key].length}
+              </span>
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </div>
+      {KNOWLEDGE_CATEGORIES.map((category) => {
+        const items = knowledgeBase[category.key] as AnyKnowledgeItem[]
+        return (
+          <TabsContent key={category.key} value={category.key} className="space-y-3">
+            {items.length ? (
+              items.map((item, index) => (
+                <KnowledgeEntry key={knowledgeItemKey(category.key, item, index)} category={category.key} item={item} />
+              ))
+            ) : (
+              <div className="rounded-md border border-[#DCDFE4] bg-white p-5 text-sm text-[#626F86]">
+                No supported {category.label.toLowerCase()} were found in the indexed context.
+              </div>
+            )}
+          </TabsContent>
+        )
+      })}
+    </Tabs>
+  )
+}
+
+function KnowledgeEntry({ category, item }: { category: KnowledgeCategoryKey; item: AnyKnowledgeItem }) {
+  return (
+    <div className="rounded-md border border-[#DCDFE4] bg-white p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="font-semibold text-[#172B4D]">{knowledgeTitle(category, item)}</div>
+          <div className="mt-1 text-sm text-[#44546F]">{knowledgeDescription(category, item)}</div>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {item.sourceWorkItemIds.map((id) => (
+            <Badge key={id} variant="outline" className="font-mono text-xs">{id}</Badge>
+          ))}
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2 text-xs text-[#626F86]">
+        {item.moduleName ? <Badge variant="secondary">{item.moduleName}</Badge> : null}
+        {item.sourceField ? <Badge variant="secondary">{item.sourceField}</Badge> : null}
+        {category === "glossary" ? <Badge variant="secondary">{formatGlossaryType(item.type)}</Badge> : null}
+        {item.dependencyType ? <Badge variant="secondary">{item.dependencyType}</Badge> : null}
+        {item.actor ? <Badge variant="secondary">Actor: {item.actor}</Badge> : null}
+      </div>
+      <div className="mt-3 rounded-md bg-[#F7F8F9] p-3 text-sm text-[#44546F]">
+        <span className="font-semibold text-[#172B4D]">Evidence:</span> {item.evidence}
+      </div>
+    </div>
+  )
+}
+
+function knowledgeItemKey(category: KnowledgeCategoryKey, item: AnyKnowledgeItem, index: number) {
+  const label = item.id ?? item.term ?? item.name ?? item.rule ?? item.workflowName ?? "item"
+  const sources = item.sourceWorkItemIds.join("-")
+  return `${category}-${label}-${sources}-${index}`
+}
+
+function knowledgeTitle(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) {
+  if (category === "businessRules") return item.rule ?? "Business rule"
+  if (category === "stateTransitions") {
+    const transition = [item.fromState, item.toState].filter(Boolean).join(" -> ")
+    return transition ? `${item.workflowName ?? "Workflow"}: ${transition}` : item.workflowName ?? "Workflow"
+  }
+  if (category === "glossary") return item.term ?? "Glossary term"
+  if (category === "crossDependencies") return `${item.sourceModule ?? "Source"} -> ${item.targetModule ?? "Target"}`
+  return item.name ?? item.id ?? "Knowledge item"
+}
+
+function knowledgeDescription(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) {
+  if (category === "glossary") return item.definition ?? "-"
+  if (category === "stateTransitions") return item.triggerOrCondition ?? "-"
+  return item.description ?? "-"
+}
+
+function formatGlossaryType(value?: string) {
+  return (value ?? "term").replace(/_/g, " ")
 }
 
 function formatDate(value?: string | null) {

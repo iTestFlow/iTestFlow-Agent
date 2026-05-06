@@ -1,6 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
+import { jsonRepairPrompt } from "../prompts";
 import type { GenerateStructuredOutputInput, LLMProvider, LLMProviderConfig, LLMProviderName, LLMResult } from "../llm-types";
 
 export abstract class BaseJsonProvider implements LLMProvider {
@@ -44,11 +45,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
       }
       const repairedRawOutput = await this.callModel({
         ...input,
-        system: [
-          "Repair malformed JSON so it validates against the requested schema.",
-          "Preserve the original meaning and do not add unsupported facts.",
-          "Return compact JSON only, without markdown fences or commentary.",
-        ].join("\n"),
+        system: jsonRepairPrompt.system,
         user: JSON.stringify({
           schemaName: input.schemaName,
           requiredJsonShape: schemaShapeHint(input.schemaName),
@@ -118,6 +115,62 @@ function schemaShapeHint(schemaName: string) {
       ],
       assumptions: ["string"],
       questionsForProductOwner: ["string"],
+    };
+  }
+  if (schemaName === "ProjectKnowledgeBase") {
+    return {
+      modules: [
+        {
+          id: "string",
+          name: "string",
+          description: "string",
+          sourceWorkItemIds: ["string"],
+          evidence: "string",
+        },
+      ],
+      businessRules: [
+        {
+          id: "string",
+          rule: "string",
+          sourceField: "string",
+          moduleName: "string optional",
+          sourceWorkItemIds: ["string"],
+          evidence: "string",
+        },
+      ],
+      stateTransitions: [
+        {
+          id: "string",
+          workflowName: "string",
+          fromState: "string optional",
+          toState: "string optional",
+          triggerOrCondition: "string",
+          actor: "string optional",
+          moduleName: "string optional",
+          sourceWorkItemIds: ["string"],
+          evidence: "string",
+        },
+      ],
+      glossary: [
+        {
+          term: "string",
+          type: "term | actor | role | system | external_service | business_entity | data_entity | process",
+          definition: "string",
+          sourceWorkItemIds: ["string"],
+          evidence: "string",
+        },
+      ],
+      crossDependencies: [
+        {
+          id: "string",
+          sourceModule: "string",
+          targetModule: "string",
+          dependencyType: "string",
+          description: "string",
+          sourceWorkItemIds: ["string"],
+          evidence: "string",
+        },
+      ],
     };
   }
   return "Return a JSON object that matches the requested schema name.";

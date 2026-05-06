@@ -1,6 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
+import { withStructuredOutputInstruction } from "../prompts";
 import { BaseJsonProvider } from "./base-json-provider";
 import type { GenerateStructuredOutputInput } from "../llm-types";
 
@@ -29,7 +30,7 @@ export class OpenAIProvider extends BaseJsonProvider {
         max_tokens: input.maxTokens ?? this.config.maxTokens ?? 4000,
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: `${input.system}\nReturn only valid JSON matching schema ${input.schemaName}.` },
+          { role: "system", content: withStructuredOutputInstruction(input.system, input.schemaName) },
           { role: "user", content: input.user },
         ],
       }),

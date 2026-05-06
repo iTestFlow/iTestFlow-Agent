@@ -1,6 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
+import { buildStructuredOutputUserPrompt } from "../prompts";
 import { BaseJsonProvider } from "./base-json-provider";
 import type { GenerateStructuredOutputInput } from "../llm-types";
 
@@ -27,7 +28,7 @@ export class GeminiProvider extends BaseJsonProvider {
         contents: [
           {
             role: "user",
-            parts: [{ text: `${input.system}\n\n${input.user}\n\nReturn only valid JSON for ${input.schemaName}.` }],
+            parts: [{ text: buildStructuredOutputUserPrompt(input) }],
           },
         ],
       }),
