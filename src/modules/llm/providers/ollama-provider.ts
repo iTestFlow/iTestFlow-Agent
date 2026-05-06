@@ -1,6 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
+import { buildStructuredOutputUserPrompt } from "../prompts";
 import { BaseJsonProvider } from "./base-json-provider";
 import type { GenerateStructuredOutputInput } from "../llm-types";
 
@@ -18,7 +19,7 @@ export class OllamaProvider extends BaseJsonProvider {
         model: this.model,
         stream: false,
         format: "json",
-        prompt: `${input.system}\n\n${input.user}\n\nReturn only valid JSON for ${input.schemaName}.`,
+        prompt: buildStructuredOutputUserPrompt(input),
         options: {
           temperature: input.temperature ?? this.config.temperature ?? 0.2,
         },

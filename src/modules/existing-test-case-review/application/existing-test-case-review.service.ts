@@ -2,9 +2,9 @@ import "server-only";
 
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { LLMProvider } from "@/modules/llm/llm-types";
+import { existingTestCaseReviewPrompt } from "@/modules/llm/prompts";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { ExistingTestCaseReviewOutputSchema } from "../schemas/existing-test-case-review.schema";
-import { existingTestCaseReviewPrompt } from "../prompts/existing-test-case-review.prompt";
 
 export async function reviewExistingLinkedTestCases(input: {
   scope: ProjectScope;
@@ -12,6 +12,7 @@ export async function reviewExistingLinkedTestCases(input: {
   targetRequirement: unknown;
   linkedTestCases: unknown[];
   selectedContext: unknown[];
+  projectKnowledgeBase?: unknown | null;
 }) {
   const scope = assertProjectScope(input.scope);
   const result = await input.provider.generateStructuredOutput({
@@ -22,6 +23,7 @@ export async function reviewExistingLinkedTestCases(input: {
       targetRequirement: input.targetRequirement,
       linkedTestCases: input.linkedTestCases,
       selectedContext: input.selectedContext,
+      projectKnowledgeBase: input.projectKnowledgeBase ?? null,
       projectScope: {
         azureProjectId: scope.azureProjectId,
         azureProjectName: scope.azureProjectName,

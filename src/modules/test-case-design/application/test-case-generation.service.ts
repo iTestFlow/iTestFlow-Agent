@@ -2,8 +2,8 @@ import "server-only";
 
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { LLMProvider } from "@/modules/llm/llm-types";
+import { testCaseGenerationPrompt } from "@/modules/llm/prompts";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { testCaseGenerationPrompt } from "../prompts/test-case-generation.prompt";
 import { TestCaseGenerationOutputSchema } from "../schemas/test-case.schema";
 
 export async function generateTestCases(input: {
@@ -11,6 +11,7 @@ export async function generateTestCases(input: {
   provider: LLMProvider;
   targetRequirement: unknown;
   selectedContext: unknown[];
+  projectKnowledgeBase?: unknown | null;
   options: Record<string, unknown>;
 }) {
   const scope = assertProjectScope(input.scope);
@@ -21,6 +22,7 @@ export async function generateTestCases(input: {
     user: JSON.stringify({
       targetRequirement: input.targetRequirement,
       selectedContext: input.selectedContext,
+      projectKnowledgeBase: input.projectKnowledgeBase ?? null,
       options: input.options,
       projectScope: {
         azureProjectId: scope.azureProjectId,

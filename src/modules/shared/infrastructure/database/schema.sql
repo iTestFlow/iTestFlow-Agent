@@ -271,6 +271,26 @@ CREATE TABLE IF NOT EXISTS context_selected_items (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS project_knowledge_base (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  provider TEXT,
+  model_name TEXT,
+  source_work_item_count INTEGER NOT NULL DEFAULT 0,
+  raw_output TEXT,
+  validated_output TEXT NOT NULL,
+  status TEXT NOT NULL,
+  error_details TEXT,
+  extracted_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (project_id, azure_project_id)
+);
+
 CREATE TABLE IF NOT EXISTS requirement_analysis_runs (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -606,5 +626,6 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_work_items_project ON azure_devops_work_items(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_project ON document_chunks(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_context_selected_project ON context_selected_items(project_id, azure_project_id);
+CREATE INDEX IF NOT EXISTS idx_project_knowledge_base_project ON project_knowledge_base(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_test_cases_project ON test_cases(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_audit_project ON audit_logs(project_id, azure_project_id);

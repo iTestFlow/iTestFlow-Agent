@@ -4,6 +4,7 @@ import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
 import { reviewExistingLinkedTestCases } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
+import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 
 export const runtime = "nodejs";
 
@@ -48,6 +49,7 @@ export async function POST(request: Request) {
       targetRequirement,
       linkedTestCases,
       selectedContext,
+      projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
     });
 
     return NextResponse.json({

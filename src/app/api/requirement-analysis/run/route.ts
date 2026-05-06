@@ -9,6 +9,7 @@ import {
   retrieveStoredProjectContext,
   workItemToLlmContextSource,
 } from "@/modules/rag/project-context-store.service";
+import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 
 export const runtime = "nodejs";
 
@@ -54,6 +55,7 @@ export async function POST(request: Request) {
       provider,
       targetRequirement,
       selectedContext,
+      projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
     });
 
     return NextResponse.json({
