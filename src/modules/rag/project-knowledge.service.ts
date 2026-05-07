@@ -182,7 +182,6 @@ async function extractProjectKnowledgeBase(input: {
       },
     }),
     maxTokens: 20000,
-    repairOnInvalidOutput: false,
   });
 
   return {
@@ -217,7 +216,6 @@ async function extractProjectKnowledgeBatch(input: {
       },
     }),
     maxTokens: 20000,
-    repairOnInvalidOutput: false,
   });
 }
 

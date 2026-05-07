@@ -19,7 +19,6 @@ export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTy
   schemaName: string;
   temperature?: number;
   maxTokens?: number;
-  repairOnInvalidOutput?: boolean;
 };
 
 export type LLMResult<T = unknown> = {

@@ -11,6 +11,7 @@ export const requirementAnalysisPrompt: SystemPromptDefinition = {
     "Do not invent dependencies, rules, systems, roles, or risks that are not supported by the input.",
     "Return compact structured JSON only.",
     "The root object must include executiveSummary, scores, findings, assumptions, and questionsForProductOwner.",
+    "assumptions and questionsForProductOwner must be arrays of strings only, not objects.",
     "Each finding must include id, severity, category, title, explanation, suggestedImprovement, azureDevOpsCommentSnippet, scoreImpact, and sourceContextIds.",
   ].join("\n"),
 };

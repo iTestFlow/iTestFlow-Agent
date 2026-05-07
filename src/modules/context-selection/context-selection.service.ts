@@ -26,7 +26,6 @@ export async function suggestContextStories(input: {
       },
     }),
     maxTokens: 8192,
-    repairOnInvalidOutput: false,
   });
 
   writeAuditLog({

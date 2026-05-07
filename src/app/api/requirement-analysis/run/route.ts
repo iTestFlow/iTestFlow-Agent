@@ -20,12 +20,12 @@ const RequestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const parsed = RequestSchema.safeParse(await request.json());
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Please select an Azure DevOps project before running this action." }, { status: 400 });
-  }
-
   try {
+    const parsed = RequestSchema.safeParse(await request.json());
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Please select an Azure DevOps project before running this action." }, { status: 400 });
+    }
+
     const adapter = getConfiguredAzureDevOpsAdapter();
     const provider = getConfiguredProviderFromEnv();
     if (!provider) {
@@ -67,6 +67,7 @@ export async function POST(request: Request) {
       ...result.validatedOutput,
     });
   } catch (error) {
+    console.error("Requirement analysis failed", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Requirement analysis failed." },
       { status: 503 },

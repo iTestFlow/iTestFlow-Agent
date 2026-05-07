@@ -1,6 +1,5 @@
 import { contextSelectionPrompt } from "./context-selection.prompt";
 import { existingTestCaseReviewPrompt } from "./existing-test-case-review.prompt";
-import { jsonRepairPrompt } from "./json-repair.prompt";
 import {
   projectKnowledgeConsolidationPrompt,
   projectKnowledgeExtractionPrompt,
@@ -12,7 +11,6 @@ import { testCaseGenerationPrompt } from "./test-case-generation.prompt";
 export const llmPromptRegistry = {
   contextSelection: contextSelectionPrompt,
   existingTestCaseReview: existingTestCaseReviewPrompt,
-  jsonRepair: jsonRepairPrompt,
   projectKnowledgeConsolidation: projectKnowledgeConsolidationPrompt,
   projectKnowledgeExtraction: projectKnowledgeExtractionPrompt,
   requirementAnalysis: requirementAnalysisPrompt,

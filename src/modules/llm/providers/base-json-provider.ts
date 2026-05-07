@@ -1,7 +1,6 @@
 import "server-only";
 
 import { z } from "zod";
-import { jsonRepairPrompt } from "../prompts";
 import type { GenerateStructuredOutputInput, LLMProvider, LLMProviderConfig, LLMProviderName, LLMResult } from "../llm-types";
 
 export abstract class BaseJsonProvider implements LLMProvider {
@@ -21,7 +20,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
     input: GenerateStructuredOutputInput<TSchema>,
   ): Promise<LLMResult<z.infer<TSchema>>> {
     const rawOutput = await this.callModel(input);
-    const validatedOutput = await this.parseValidateOrRepair(input, rawOutput);
+    const validatedOutput = this.parseAndValidate(input, rawOutput);
 
     return {
       provider: this.name,
@@ -33,30 +32,25 @@ export abstract class BaseJsonProvider implements LLMProvider {
 
   protected abstract callModel<TSchema extends z.ZodTypeAny>(input: GenerateStructuredOutputInput<TSchema>): Promise<string>;
 
-  private async parseValidateOrRepair<TSchema extends z.ZodTypeAny>(
+  private parseAndValidate<TSchema extends z.ZodTypeAny>(
     input: GenerateStructuredOutputInput<TSchema>,
     rawOutput: string,
-  ): Promise<z.infer<TSchema>> {
+  ): z.infer<TSchema> {
+    let parsedJson: unknown;
+
     try {
-      return input.schema.parse(this.parseJson(rawOutput));
+      parsedJson = this.parseJson(rawOutput);
     } catch (error) {
-      if (input.repairOnInvalidOutput === false) {
-        throw error;
-      }
-      const repairedRawOutput = await this.callModel({
-        ...input,
-        system: jsonRepairPrompt.system,
-        user: JSON.stringify({
-          schemaName: input.schemaName,
-          requiredJsonShape: schemaShapeHint(input.schemaName),
-          error: error instanceof Error ? error.message : "JSON validation failed.",
-          malformedOutput: rawOutput,
-        }),
-        temperature: 0,
-        maxTokens: Math.max(input.maxTokens ?? this.config.maxTokens ?? 4000, 8192),
-      });
-      return input.schema.parse(this.parseJson(repairedRawOutput));
+      const message = error instanceof Error ? error.message : "Unknown JSON parse error.";
+      throw new Error(`LLM output for ${input.schemaName} was not valid JSON: ${message}`);
     }
+
+    const result = input.schema.safeParse(parsedJson);
+    if (!result.success) {
+      throw new Error(`LLM output failed schema validation for ${input.schemaName}: ${result.error.message}`);
+    }
+
+    return result.data;
   }
 
   protected parseJson(rawOutput: string) {
@@ -70,108 +64,4 @@ export abstract class BaseJsonProvider implements LLMProvider {
       "Content-Type": "application/json",
     };
   }
-}
-
-function schemaShapeHint(schemaName: string) {
-  if (schemaName === "ContextSuggestionOutput") {
-    return {
-      suggestedItems: [
-        {
-          workItemId: "string",
-          title: "string",
-          workItemType: "string",
-          relationshipType: "string optional",
-          relevanceScore: "number from 0 to 1",
-          reason: "string",
-        },
-      ],
-    };
-  }
-  if (schemaName === "RequirementAnalysisOutput") {
-    return {
-      executiveSummary: "string",
-      scores: {
-        clarity: "number 0-100",
-        testability: "number 0-100",
-        completeness: "number 0-100",
-        ambiguityRisk: "number 0-100",
-        integrationRisk: "number 0-100",
-        businessRuleCoverage: "number 0-100",
-        acceptanceCriteriaQuality: "number 0-100",
-        overallReadiness: "number 0-100",
-      },
-      findings: [
-        {
-          id: "string",
-          severity: "High | Medium | Low",
-          category: "string",
-          title: "string",
-          explanation: "string",
-          suggestedImprovement: "string",
-          azureDevOpsCommentSnippet: "string",
-          scoreImpact: "number",
-          sourceContextIds: ["string"],
-        },
-      ],
-      assumptions: ["string"],
-      questionsForProductOwner: ["string"],
-    };
-  }
-  if (schemaName === "ProjectKnowledgeBase") {
-    return {
-      modules: [
-        {
-          id: "string",
-          name: "string",
-          description: "string",
-          sourceWorkItemIds: ["string"],
-          evidence: "string",
-        },
-      ],
-      businessRules: [
-        {
-          id: "string",
-          rule: "string",
-          sourceField: "string",
-          moduleName: "string optional",
-          sourceWorkItemIds: ["string"],
-          evidence: "string",
-        },
-      ],
-      stateTransitions: [
-        {
-          id: "string",
-          workflowName: "string",
-          fromState: "string optional",
-          toState: "string optional",
-          triggerOrCondition: "string",
-          actor: "string optional",
-          moduleName: "string optional",
-          sourceWorkItemIds: ["string"],
-          evidence: "string",
-        },
-      ],
-      glossary: [
-        {
-          term: "string",
-          type: "term | actor | role | system | external_service | business_entity | data_entity | process",
-          definition: "string",
-          sourceWorkItemIds: ["string"],
-          evidence: "string",
-        },
-      ],
-      crossDependencies: [
-        {
-          id: "string",
-          sourceModule: "string",
-          targetModule: "string",
-          dependencyType: "string",
-          description: "string",
-          sourceWorkItemIds: ["string"],
-          evidence: "string",
-        },
-      ],
-    };
-  }
-  return "Return a JSON object that matches the requested schema name.";
 }
