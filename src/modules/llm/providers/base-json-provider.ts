@@ -1,7 +1,16 @@
 import "server-only";
 
 import { z } from "zod";
+import { writeLLMRequestLog } from "../llm-request-log.service";
 import type { GenerateStructuredOutputInput, LLMProvider, LLMProviderConfig, LLMProviderName, LLMResult } from "../llm-types";
+
+export type LLMProviderCallResult = {
+  rawOutput: string;
+  requestBody?: unknown;
+  responseBody?: unknown;
+  errorMessage?: string;
+  finishReason?: string;
+};
 
 export abstract class BaseJsonProvider implements LLMProvider {
   readonly name: LLMProviderName;
@@ -19,22 +28,35 @@ export abstract class BaseJsonProvider implements LLMProvider {
   async generateStructuredOutput<TSchema extends z.ZodTypeAny>(
     input: GenerateStructuredOutputInput<TSchema>,
   ): Promise<LLMResult<z.infer<TSchema>>> {
-    const rawOutput = await this.callModel(input);
-    const validatedOutput = this.parseAndValidate(input, rawOutput);
+    const startedAt = Date.now();
+    let callResult: LLMProviderCallResult | null = null;
 
-    return {
-      provider: this.name,
-      model: this.model,
-      rawOutput,
-      validatedOutput,
-    };
+    try {
+      callResult = await this.callModel(input);
+      if (callResult.errorMessage) throw new Error(callResult.errorMessage);
+
+      const validatedOutput = this.parseAndValidate(input, callResult.rawOutput, callResult.finishReason);
+      this.logRequest(input, callResult, "Success", Date.now() - startedAt, undefined, validatedOutput);
+
+      return {
+        provider: this.name,
+        model: this.model,
+        rawOutput: callResult.rawOutput,
+        validatedOutput,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown LLM request error.";
+      this.logRequest(input, callResult, "Failed", Date.now() - startedAt, message);
+      throw error;
+    }
   }
 
-  protected abstract callModel<TSchema extends z.ZodTypeAny>(input: GenerateStructuredOutputInput<TSchema>): Promise<string>;
+  protected abstract callModel<TSchema extends z.ZodTypeAny>(input: GenerateStructuredOutputInput<TSchema>): Promise<LLMProviderCallResult>;
 
   private parseAndValidate<TSchema extends z.ZodTypeAny>(
     input: GenerateStructuredOutputInput<TSchema>,
     rawOutput: string,
+    finishReason?: string,
   ): z.infer<TSchema> {
     let parsedJson: unknown;
 
@@ -42,7 +64,10 @@ export abstract class BaseJsonProvider implements LLMProvider {
       parsedJson = this.parseJson(rawOutput);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown JSON parse error.";
-      throw new Error(`LLM output for ${input.schemaName} was not valid JSON: ${message}`);
+      const truncated = isTokenLimitFinishReason(finishReason)
+        ? " The provider stopped because it exhausted the max output token budget before completing the JSON."
+        : "";
+      throw new Error(`LLM output for ${input.schemaName} was not valid JSON:${truncated} ${message}`);
     }
 
     const result = input.schema.safeParse(parsedJson);
@@ -64,4 +89,38 @@ export abstract class BaseJsonProvider implements LLMProvider {
       "Content-Type": "application/json",
     };
   }
+
+  private logRequest<TSchema extends z.ZodTypeAny>(
+    input: GenerateStructuredOutputInput<TSchema>,
+    callResult: LLMProviderCallResult | null,
+    status: "Success" | "Failed",
+    durationMs: number,
+    errorDetails?: string,
+    validatedOutput?: z.infer<TSchema>,
+  ) {
+    try {
+      writeLLMRequestLog({
+        ...input.metadata,
+        provider: this.name,
+        model: this.model,
+        schemaName: input.schemaName,
+        systemPrompt: input.system,
+        userPrompt: input.user,
+        requestBody: callResult?.requestBody,
+        responseBody: callResult?.responseBody,
+        rawOutput: callResult?.rawOutput,
+        validatedOutput,
+        status,
+        errorDetails,
+        durationMs,
+      });
+    } catch (logError) {
+      console.error("Failed to write LLM request log", logError);
+    }
+  }
+}
+
+function isTokenLimitFinishReason(finishReason?: string) {
+  const normalized = finishReason?.toLowerCase();
+  return normalized === "length" || normalized === "max_tokens";
 }

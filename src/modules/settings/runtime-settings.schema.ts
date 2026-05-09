@@ -25,6 +25,9 @@ export const RuntimeSettingsInputSchema = z.object({
     maxTokens: z.number().int("Max tokens must be a whole number.").positive("Max tokens must be greater than 0.").default(4000),
     retryAttempts: z.number().int("Retry attempts must be a whole number.").min(0, "Retry attempts cannot be negative.").max(5, "Retry attempts must be 5 or lower.").default(1),
   }),
+  context: z.object({
+    retrievalTopK: z.number().int("Context retrieval count must be a whole number.").min(1, "Context retrieval count must be at least 1.").max(25, "Context retrieval count must be 25 or lower.").default(8),
+  }).default({ retrievalTopK: 8 }),
 });
 
 export type RuntimeSettingsInput = z.infer<typeof RuntimeSettingsInputSchema>;
@@ -48,5 +51,8 @@ export type RuntimeSettingsSummary = {
     temperature: number;
     maxTokens: number;
     retryAttempts: number;
+  };
+  context?: {
+    retrievalTopK: number;
   };
 };

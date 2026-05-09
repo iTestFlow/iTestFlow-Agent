@@ -29,6 +29,16 @@ export async function reviewExistingLinkedTestCases(input: {
         azureProjectName: scope.azureProjectName,
       },
     }),
+    metadata: {
+      action: "existing_test_case_review.run",
+      promptName: existingTestCaseReviewPrompt.name,
+      promptVersion: existingTestCaseReviewPrompt.version,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      azureProjectName: scope.azureProjectName,
+      azureOrganizationUrl: scope.azureOrganizationUrl,
+      targetWorkItemId: targetRequirementId(input.targetRequirement),
+    },
   });
 
   writeAuditLog({
@@ -47,4 +57,12 @@ export async function reviewExistingLinkedTestCases(input: {
   });
 
   return result;
+}
+
+function targetRequirementId(value: unknown) {
+  if (value && typeof value === "object" && "id" in value) {
+    const id = (value as { id?: unknown }).id;
+    return typeof id === "string" || typeof id === "number" ? String(id) : undefined;
+  }
+  return undefined;
 }

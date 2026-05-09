@@ -11,40 +11,55 @@ type ApiState<T> = {
   data: T | null;
 };
 
-type ContextSuggestion = {
-  workItemId: string;
-  title: string;
-  workItemType: string;
-  relationshipType?: string;
-  relevanceScore: number;
-  reason: string;
-};
-
 type RequirementFinding = {
   id: string;
-  severity: "High" | "Medium" | "Low";
-  category: string;
+  type: string;
+  severity: "critical" | "high" | "medium" | "low" | "info";
   title: string;
-  explanation: string;
-  suggestedImprovement: string;
-  azureDevOpsCommentSnippet: string;
-  scoreImpact: number;
-  sourceContextIds: string[];
+  description: string;
+  suggestion: string;
+  riskLevel: "high" | "medium" | "low";
+  riskJustification: string;
+  affectedAreas: string[];
+  references: Array<{ module?: string; section?: string; sourceId?: string; description?: string }>;
+  contradiction: boolean;
+};
+
+type RequirementSummary = {
+  totalFindings: number;
+  criticalCount: number;
+  highCount: number;
+  mediumCount: number;
+  lowCount: number;
+  infoCount: number;
+  overallQuality: "poor" | "fair" | "good" | "excellent";
+  completenessScore: number;
+  clarityScore: number;
+  testabilityScore: number;
+  summaryText: string;
 };
 
 type GeneratedTestCase = {
   id: string;
   title: string;
-  description?: string;
-  preconditions?: string;
-  steps: Array<{ index?: number; action: string; expectedResult: string }>;
-  testData?: string;
-  expectedResult: string;
-  priority: "High" | "Medium" | "Low";
-  severity: "High" | "Medium" | "Low";
-  testType: string;
-  automationSuitability: "High" | "Medium" | "Low";
+  description: string;
+  priority: "critical" | "high" | "medium" | "low";
+  type: string;
+  category: string;
   tags?: string[];
+  relatedAcceptanceCriteria?: string[];
+  relatedBusinessRules?: string[];
+  relatedModules?: string[];
+  preconditions: string;
+  testData?: string;
+  steps: Array<{ stepNumber: number; action: string; expectedResult: string }>;
+};
+
+type TestCaseSummary = {
+  totalCases: number;
+  byType: Record<string, number>;
+  byPriority: Record<string, number>;
+  coverageEstimate: number;
 };
 
 type TestPlan = {
@@ -112,8 +127,8 @@ function parseJsonResponse(text: string, ok: boolean) {
 }
 
 function severityTone(value: string) {
-  if (value === "High") return "red" as const;
-  if (value === "Medium") return "amber" as const;
+  if (value === "critical" || value === "high" || value === "High") return "red" as const;
+  if (value === "medium" || value === "Medium") return "amber" as const;
   return "emerald" as const;
 }
 
@@ -161,9 +176,7 @@ export function LiveDashboard() {
 export function RequirementAnalysisClient() {
   const scope = useActiveProject();
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
-  const [contextIds, setContextIds] = useState("");
-  const [suggestions, setSuggestions] = useState<ApiState<{ suggestions: ContextSuggestion[] }>>({ loading: false, error: null, data: null });
-  const [analysis, setAnalysis] = useState<ApiState<{ findings: RequirementFinding[]; scores: Record<string, number>; executiveSummary: string }>>({
+  const [analysis, setAnalysis] = useState<ApiState<{ findings: RequirementFinding[]; summary: RequirementSummary; recommendations: string[]; contextUsed: string[]; resolvedContextUsed?: unknown[] }>>({
     loading: false,
     error: null,
     data: null,
@@ -174,35 +187,22 @@ export function RequirementAnalysisClient() {
   const [finalComment, setFinalComment] = useState("");
   const [reviewApproved, setReviewApproved] = useState(false);
   const [pushState, setPushState] = useState<ApiState<{ success: boolean }>>({ loading: false, error: null, data: null });
-  const selectedContextIds = useMemo(() => contextIds.split(",").map((item) => item.trim()).filter(Boolean), [contextIds]);
   const selectedFindingList = useMemo(
     () => analysis.data?.findings.filter((finding) => selectedFindings[finding.id]) ?? [],
     [analysis.data, selectedFindings],
   );
 
-  async function suggest() {
-    if (!scope || !targetWorkItemId) return;
-    setSuggestions({ loading: true, error: null, data: null });
-    try {
-      const data = await postJson<{ suggestions: ContextSuggestion[] }>("/api/context/suggestions", { scope, targetWorkItemId });
-      setSuggestions({ loading: false, error: null, data });
-      setContextIds(data.suggestions.map((item) => item.workItemId).join(", "));
-    } catch (error) {
-      setSuggestions({ loading: false, error: error instanceof Error ? error.message : "Context suggestion failed.", data: null });
-    }
-  }
-
   async function runAnalysis() {
     if (!scope || !targetWorkItemId) return;
     setAnalysis({ loading: true, error: null, data: null });
     try {
-      const data = await postJson<{ findings: RequirementFinding[]; scores: Record<string, number>; executiveSummary: string }>(
+      const data = await postJson<{ findings: RequirementFinding[]; summary: RequirementSummary; recommendations: string[]; contextUsed: string[]; resolvedContextUsed?: unknown[] }>(
         "/api/requirement-analysis/run",
-        { scope, targetWorkItemId, selectedContextIds },
+        { scope, targetWorkItemId },
       );
       setAnalysis({ loading: false, error: null, data });
       setSelectedFindings(Object.fromEntries(data.findings.map((finding) => [finding.id, true])));
-      setSnippets(Object.fromEntries(data.findings.map((finding) => [finding.id, finding.azureDevOpsCommentSnippet])));
+      setSnippets(Object.fromEntries(data.findings.map((finding) => [finding.id, finding.suggestion])));
       setReviewOpen(false);
       setFinalComment("");
       setReviewApproved(false);
@@ -216,8 +216,13 @@ export function RequirementAnalysisClient() {
     if (!scope || !targetWorkItemId || !analysis.data) return;
     return [
       `## iTestFlow Requirement Analysis for ${targetWorkItemId}`,
-      analysis.data.executiveSummary,
-      ...selectedFindingList.map((finding) => `### [${finding.severity}] ${finding.title}\n${snippets[finding.id] ?? finding.azureDevOpsCommentSnippet}`),
+      analysis.data.summary.summaryText,
+      ...selectedFindingList.map((finding) => [
+        `### [${finding.severity.toUpperCase()}] ${finding.title}`,
+        finding.description,
+        `Risk: ${finding.riskLevel} - ${finding.riskJustification}`,
+        `Suggested resolution: ${snippets[finding.id] ?? finding.suggestion}`,
+      ].join("\n\n")),
     ].join("\n\n");
   }
 
@@ -251,37 +256,15 @@ export function RequirementAnalysisClient() {
     <div className="space-y-6">
       {projectWarning(scope)}
       <Card>
-        <CardHeader title="Target Requirement and Context" description="Enter a real Azure DevOps work item ID from the selected project." />
-        <div className="grid gap-4 p-4 lg:grid-cols-[240px_1fr_auto_auto]">
+        <CardHeader title="Target Requirement" description="Enter a real Azure DevOps work item ID. Project context is selected automatically for this run." />
+        <div className="grid gap-4 p-4 lg:grid-cols-[240px_auto]">
           <TextInput value={targetWorkItemId} onChange={(event) => setTargetWorkItemId(event.target.value)} placeholder="Work item ID, e.g. 1234" />
-          <TextInput value={contextIds} onChange={(event) => setContextIds(event.target.value)} placeholder="Selected context work item IDs, comma separated" />
-          <Button variant="secondary" onClick={suggest} disabled={!scope || !targetWorkItemId || suggestions.loading}>
-            <Play className="h-4 w-4" />
-            Suggest Context
-          </Button>
           <Button onClick={runAnalysis} disabled={!scope || !targetWorkItemId || analysis.loading}>
             <Play className="h-4 w-4" />
             Analyze
           </Button>
         </div>
       </Card>
-
-      {suggestions.error ? <ErrorBlock message={suggestions.error} /> : null}
-      {suggestions.data?.suggestions.length ? (
-        <Card>
-          <CardHeader title="Suggested Context Stories" />
-          <div className="divide-y">
-            {suggestions.data.suggestions.map((item) => (
-              <div key={item.workItemId} className="grid gap-3 p-4 md:grid-cols-[120px_1fr_110px_1fr]">
-                <span className="font-mono text-xs text-blue-600">{item.workItemId}</span>
-                <span className="font-medium">{item.title}</span>
-                <span>{Math.round(item.relevanceScore * 100)}%</span>
-                <span className="text-sm text-muted-foreground">{item.reason}</span>
-              </div>
-            ))}
-          </div>
-        </Card>
-      ) : null}
 
       {analysis.error ? <ErrorBlock message={analysis.error} /> : null}
       {pushState.error ? <ErrorBlock message={pushState.error} /> : null}
@@ -297,9 +280,10 @@ export function RequirementAnalysisClient() {
             }
           />
           <div className="grid gap-3 border-b p-4 md:grid-cols-4">
-            {Object.entries(analysis.data.scores).slice(0, 4).map(([key, value]) => (
-              <Metric key={key} label={key} value={value} />
-            ))}
+            <Metric label="quality" value={analysis.data.summary.overallQuality} />
+            <Metric label="clarity" value={analysis.data.summary.clarityScore} />
+            <Metric label="completeness" value={analysis.data.summary.completenessScore} />
+            <Metric label="testability" value={analysis.data.summary.testabilityScore} />
           </div>
           <div className="divide-y">
             {analysis.data.findings.map((finding) => (
@@ -313,11 +297,12 @@ export function RequirementAnalysisClient() {
                 />
                 <div>
                   <Badge tone={severityTone(finding.severity)}>{finding.severity}</Badge>
-                  <div className="mt-2 text-xs text-muted-foreground">{finding.category}</div>
+                  <div className="mt-2 text-xs text-muted-foreground">{finding.type}</div>
                 </div>
                 <div>
                   <div className="font-medium">{finding.title}</div>
-                  <p className="mt-2 text-sm text-muted-foreground">{finding.explanation}</p>
+                  <p className="mt-2 text-sm text-muted-foreground">{finding.description}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">Risk: {finding.riskLevel} - {finding.riskJustification}</p>
                 </div>
                 <TextArea
                   value={snippets[finding.id] ?? ""}
@@ -386,19 +371,16 @@ export function RequirementAnalysisClient() {
 export function TestCaseGenerationClient() {
   const scope = useActiveProject();
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
-  const [contextIds, setContextIds] = useState("");
-  const [state, setState] = useState<ApiState<{ testCases: GeneratedTestCase[]; summary: string }>>({ loading: false, error: null, data: null });
+  const [state, setState] = useState<ApiState<{ testCases: GeneratedTestCase[]; summary: TestCaseSummary; contextUsed: string[]; resolvedContextUsed?: unknown[] }>>({ loading: false, error: null, data: null });
   const [testCases, setTestCases] = useState<GeneratedTestCase[]>([]);
-  const selectedContextIds = useMemo(() => contextIds.split(",").map((item) => item.trim()).filter(Boolean), [contextIds]);
 
   async function generate() {
     if (!scope || !targetWorkItemId) return;
     setState({ loading: true, error: null, data: null });
     try {
-      const data = await postJson<{ testCases: GeneratedTestCase[]; summary: string }>("/api/test-cases/generate", {
+      const data = await postJson<{ testCases: GeneratedTestCase[]; summary: TestCaseSummary; contextUsed: string[]; resolvedContextUsed?: unknown[] }>("/api/test-cases/generate", {
         scope,
         targetWorkItemId,
-        selectedContextIds,
         options: { depth: "balanced" },
       });
       setState({ loading: false, error: null, data });
@@ -413,10 +395,9 @@ export function TestCaseGenerationClient() {
     <div className="space-y-6">
       {projectWarning(scope)}
       <Card>
-        <CardHeader title="Generate Test Cases from Azure DevOps Requirement" />
-        <div className="grid gap-4 p-4 lg:grid-cols-[240px_1fr_auto]">
+        <CardHeader title="Generate Test Cases from Azure DevOps Requirement" description="Project context is selected automatically for this run." />
+        <div className="grid gap-4 p-4 lg:grid-cols-[240px_auto]">
           <TextInput value={targetWorkItemId} onChange={(event) => setTargetWorkItemId(event.target.value)} placeholder="Work item ID" />
-          <TextInput value={contextIds} onChange={(event) => setContextIds(event.target.value)} placeholder="Selected context IDs, comma separated" />
           <Button onClick={generate} disabled={!scope || !targetWorkItemId || state.loading}>
             <Play className="h-4 w-4" />
             {state.loading ? "Generating..." : "Generate"}
@@ -565,6 +546,7 @@ export function PublishTestCasesClient() {
           localId: testCase.id,
           targetUserStoryId: targetWorkItemId,
           steps: testCase.steps.map((step) => ({ action: step.action, expectedResult: step.expectedResult })),
+          testType: testCase.type,
         })),
       });
       setState({ loading: false, error: null, data });
@@ -617,6 +599,7 @@ export function PublishTestCasesClient() {
 
 export function AuditLogsClient() {
   const [state, setState] = useState<ApiState<{ logs: unknown[] }>>({ loading: true, error: null, data: null });
+  const [llmState, setLlmState] = useState<ApiState<{ logs: unknown[] }>>({ loading: true, error: null, data: null });
 
   useEffect(() => {
     fetch("/api/audit-logs", { cache: "no-store" })
@@ -626,16 +609,30 @@ export function AuditLogsClient() {
         setState({ loading: false, error: null, data: json });
       })
       .catch((error: unknown) => setState({ loading: false, error: error instanceof Error ? error.message : "Audit log fetch failed.", data: null }));
+    fetch("/api/llm-request-logs", { cache: "no-store" })
+      .then(async (response) => {
+        const json = await response.json();
+        if (!response.ok) throw new Error(json.error ?? "LLM request log fetch failed.");
+        setLlmState({ loading: false, error: null, data: json });
+      })
+      .catch((error: unknown) => setLlmState({ loading: false, error: error instanceof Error ? error.message : "LLM request log fetch failed.", data: null }));
   }, []);
 
   if (state.error) return <ErrorBlock message={state.error} />;
-  if (state.loading) return <EmptyBlock message="Loading live audit logs..." />;
+  if (llmState.error) return <ErrorBlock message={llmState.error} />;
+  if (state.loading || llmState.loading) return <EmptyBlock message="Loading live audit and LLM request logs..." />;
 
   return (
-    <Card>
-      <CardHeader title="Live Audit Log Entries" />
-      <pre className="max-h-[620px] overflow-auto p-4 text-xs text-muted-foreground">{JSON.stringify(state.data?.logs ?? [], null, 2)}</pre>
-    </Card>
+    <div className="space-y-6">
+      <Card>
+        <CardHeader title="LLM Request Logs" description="Recent prompts, provider payloads, raw responses, and validation status stored locally." />
+        <pre className="max-h-[620px] overflow-auto p-4 text-xs text-muted-foreground">{JSON.stringify(llmState.data?.logs ?? [], null, 2)}</pre>
+      </Card>
+      <Card>
+        <CardHeader title="Live Audit Log Entries" />
+        <pre className="max-h-[620px] overflow-auto p-4 text-xs text-muted-foreground">{JSON.stringify(state.data?.logs ?? [], null, 2)}</pre>
+      </Card>
+    </div>
   );
 }
 
@@ -672,11 +669,12 @@ function EditableGeneratedCases({
               <span className="font-mono text-xs text-blue-600">{testCase.id}</span>
               <TextInput value={testCase.title} onChange={(event) => updateCase(index, { ...testCase, title: event.target.value })} />
               <SelectInput value={testCase.priority} onChange={(event) => updateCase(index, { ...testCase, priority: event.target.value as GeneratedTestCase["priority"] })}>
-                <option>High</option>
-                <option>Medium</option>
-                <option>Low</option>
+                <option value="critical">critical</option>
+                <option value="high">high</option>
+                <option value="medium">medium</option>
+                <option value="low">low</option>
               </SelectInput>
-              <Badge tone="cyan">{testCase.testType}</Badge>
+              <Badge tone="cyan">{testCase.type}</Badge>
             </div>
             <div className="rounded-md border">
               {testCase.steps.map((step, stepIndex) => (
@@ -713,7 +711,7 @@ function EditableGeneratedCases({
                 onClick={() =>
                   updateCase(index, {
                     ...testCase,
-                    steps: [...testCase.steps, { index: testCase.steps.length + 1, action: "", expectedResult: "" }],
+                    steps: [...testCase.steps, { stepNumber: testCase.steps.length + 1, action: "", expectedResult: "" }],
                   })
                 }
               >

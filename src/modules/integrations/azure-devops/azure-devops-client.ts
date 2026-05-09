@@ -109,6 +109,49 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     return this.fetchWorkItemsBatch(input.projectId, ids.map(Number));
   }
 
+  async fetchLinkedRequirementWorkItems(input: {
+    projectId: string;
+    workItemId: string;
+    workItemTypes: string[];
+  }): Promise<Requirement[]> {
+    if (!input.workItemTypes.length) return [];
+    const workItemId = Number(input.workItemId);
+    if (!Number.isFinite(workItemId)) return [];
+    const ids = new Set<number>();
+    const linkTypes = [
+      "System.LinkTypes.Hierarchy-Forward",
+      "System.LinkTypes.Hierarchy-Reverse",
+      "System.LinkTypes.Related",
+    ];
+    const typeFilter = input.workItemTypes.map((type) => `'${escapeWiqlValue(type)}'`).join(", ");
+    const linkTypeFilter = linkTypes.map((type) => `'${type}'`).join(", ");
+
+    const outgoing = await this.queryLinkedWorkItemIds(
+      input.projectId,
+      `SELECT [System.Id] FROM workItemLinks
+       WHERE ([Source].[System.TeamProject] = @project AND [Source].[System.Id] = ${workItemId})
+         AND ([System.Links.LinkType] IN (${linkTypeFilter}))
+         AND ([Target].[System.TeamProject] = @project AND [Target].[System.WorkItemType] IN (${typeFilter}))
+       MODE (MustContain)`,
+      "target",
+    );
+    outgoing.forEach((id) => ids.add(id));
+
+    const incoming = await this.queryLinkedWorkItemIds(
+      input.projectId,
+      `SELECT [System.Id] FROM workItemLinks
+       WHERE ([Target].[System.TeamProject] = @project AND [Target].[System.Id] = ${workItemId})
+         AND ([System.Links.LinkType] IN (${linkTypeFilter}))
+         AND ([Source].[System.TeamProject] = @project AND [Source].[System.WorkItemType] IN (${typeFilter}))
+       MODE (MustContain)`,
+      "source",
+    );
+    incoming.forEach((id) => ids.add(id));
+
+    if (!ids.size) return [];
+    return this.fetchWorkItemsBatch(input.projectId, [...ids]);
+  }
+
   async fetchLinkedTestCases(input: { projectId: string; userStoryId: string }): Promise<TestCase[]> {
     const item = await this.fetchWorkItemById({ projectId: input.projectId, workItemId: input.userStoryId });
     const ids = [...(item.testedByLinks ?? []), ...(item.testsLinks ?? [])];
@@ -230,6 +273,21 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     return (json.value ?? []).map((workItem) => mapAzureWorkItem(workItem as never, projectId));
   }
 
+  private async queryLinkedWorkItemIds(projectId: string, query: string, side: "source" | "target") {
+    const result = await this.requestJson<{
+      workItemRelations?: Array<{
+        source?: { id?: number };
+        target?: { id?: number };
+      }>;
+    }>(
+      `${encodeURIComponent(projectId)}/_apis/wit/wiql?api-version=7.1`,
+      { method: "POST", body: JSON.stringify({ query }) },
+    );
+    return (result.workItemRelations ?? [])
+      .map((relation) => relation[side]?.id)
+      .filter((id): id is number => typeof id === "number");
+  }
+
   private async requestJson<T>(path: string, init?: RequestInit & { contentType?: string }): Promise<T> {
     const response = await this.request(path, init);
     const body = await response.text();
@@ -269,8 +327,8 @@ function isJsonResponse(response: Response) {
 }
 
 function mapPriority(priority?: string) {
-  if (priority === "High") return 1;
-  if (priority === "Low") return 3;
+  if (priority === "critical" || priority === "high" || priority === "High") return 1;
+  if (priority === "low" || priority === "Low") return 3;
   return 2;
 }
 

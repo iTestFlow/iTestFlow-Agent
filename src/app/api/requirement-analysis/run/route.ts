@@ -4,19 +4,16 @@ import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
 import { runRequirementAnalysis } from "@/modules/requirement-analysis/application/requirement-analysis.service";
-import {
-  requirementToRetrievalQuery,
-  retrieveStoredProjectContext,
-  workItemToLlmContextSource,
-} from "@/modules/rag/project-context-store.service";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
+import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 
 export const runtime = "nodejs";
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   targetWorkItemId: z.string().min(1),
-  selectedContextIds: z.array(z.string()).default([]),
+  selectedContextIds: z.array(z.string()).optional().default([]),
 });
 
 export async function POST(request: Request) {
@@ -39,28 +36,29 @@ export async function POST(request: Request) {
       projectId: parsed.data.scope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
-    const selectedContext = parsed.data.selectedContextIds.length
-      ? await loadSelectedContext({
-          scope: parsed.data.scope,
-          selectedContextIds: parsed.data.selectedContextIds,
-          adapter,
-        })
-      : retrieveStoredProjectContext({
-          scope: parsed.data.scope,
-          query: requirementToRetrievalQuery(targetRequirement),
-          topK: 8,
-        });
+    const autoContext = await resolveWorkflowContext({
+      scope: parsed.data.scope,
+      adapter,
+      provider,
+      targetRequirement,
+      selectedContextIds: parsed.data.selectedContextIds,
+      retrievalTopK: getEffectiveRuntimeSettings()?.context.retrievalTopK ?? 8,
+      workflowType: "requirement_analysis",
+    });
     const result = await runRequirementAnalysis({
       scope: parsed.data.scope,
       provider,
       targetRequirement,
-      selectedContext,
+      relatedWorkItems: autoContext.relatedWorkItems,
+      selectedContext: autoContext.selectedContext,
       projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
     });
 
     return NextResponse.json({
       targetWorkItemId: parsed.data.targetWorkItemId,
       selectedContextIds: parsed.data.selectedContextIds,
+      resolvedContextUsed: autoContext.contextUsed,
+      retrievalTopK: autoContext.retrievalTopK,
       provider: result.provider,
       model: result.model,
       rawOutput: result.rawOutput,
@@ -73,27 +71,4 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
-}
-
-async function loadSelectedContext(input: {
-  scope: z.infer<typeof ProjectScopeSchema>;
-  selectedContextIds: string[];
-  adapter: ReturnType<typeof getConfiguredAzureDevOpsAdapter>;
-}) {
-  const stored = retrieveStoredProjectContext({
-    scope: input.scope,
-    query: input.selectedContextIds.join(" "),
-    workItemIds: input.selectedContextIds,
-    topK: Math.max(8, input.selectedContextIds.length * 3),
-  });
-  const foundIds = new Set(stored.map((item) => item.workItemId));
-  const missingIds = input.selectedContextIds.filter((id) => !foundIds.has(id));
-  if (!missingIds.length) return stored;
-
-  const fetched = await Promise.all(
-    missingIds.map((workItemId) =>
-      input.adapter.fetchWorkItemById({ projectId: input.scope.azureProjectId, workItemId }),
-    ),
-  );
-  return [...stored, ...fetched.map((item) => workItemToLlmContextSource(item))];
 }

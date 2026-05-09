@@ -4,8 +4,8 @@ import { TestCaseGenerationClient } from "@/shared/components/live/live-workflow
 export default function TestCaseDesignContextPage() {
   return (
     <ContentShell
-      title="Test Case Design - Context Selection"
-      description="Select project-scoped stories and documents before generating test cases for a real Azure DevOps work item."
+      title="Test Case Design"
+      description="Generate test cases for a real Azure DevOps work item with automatic project context selection."
     >
       <TestCaseGenerationClient />
     </ContentShell>

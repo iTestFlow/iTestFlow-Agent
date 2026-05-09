@@ -623,9 +623,37 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS llm_request_logs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  azure_project_id TEXT,
+  azure_project_name TEXT,
+  azure_organization_url TEXT,
+  target_work_item_id TEXT,
+  action TEXT,
+  provider TEXT NOT NULL,
+  model_name TEXT NOT NULL,
+  schema_name TEXT NOT NULL,
+  prompt_name TEXT,
+  prompt_version TEXT,
+  system_prompt TEXT NOT NULL,
+  user_prompt TEXT NOT NULL,
+  request_body_json TEXT,
+  response_body_json TEXT,
+  raw_output TEXT,
+  validated_output_json TEXT,
+  status TEXT NOT NULL,
+  error_details TEXT,
+  duration_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_work_items_project ON azure_devops_work_items(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_project ON document_chunks(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_context_selected_project ON context_selected_items(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_project_knowledge_base_project ON project_knowledge_base(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_test_cases_project ON test_cases(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_audit_project ON audit_logs(project_id, azure_project_id);
+CREATE INDEX IF NOT EXISTS idx_llm_request_logs_project ON llm_request_logs(project_id, azure_project_id);
+CREATE INDEX IF NOT EXISTS idx_llm_request_logs_created_at ON llm_request_logs(created_at);

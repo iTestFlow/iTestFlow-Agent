@@ -5,7 +5,7 @@ export default function AuditLogsPage() {
   return (
     <ContentShell
       title="Audit Logs / History"
-      description="Inspect local workflow history, payload summaries, failures, and related run IDs."
+      description="Inspect local workflow history, LLM prompts, provider payloads, responses, failures, and related run IDs."
     >
       <AuditLogsClient />
     </ContentShell>

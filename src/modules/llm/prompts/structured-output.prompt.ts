@@ -53,39 +53,57 @@ function requiredOutputShape(schemaName: string) {
 
   if (schemaName === "RequirementAnalysisOutput") {
     return {
-      executiveSummary: "string",
-      scores: {
-        clarity: "number from 0 to 100",
-        testability: "number from 0 to 100",
-        completeness: "number from 0 to 100",
-        ambiguityRisk: "number from 0 to 100",
-        integrationRisk: "number from 0 to 100",
-        businessRuleCoverage: "number from 0 to 100",
-        acceptanceCriteriaQuality: "number from 0 to 100",
-        overallReadiness: "number from 0 to 100",
-      },
       findings: [
         {
           id: "string",
-          severity: "High | Medium | Low",
-          category: "string",
+          type: "ambiguity | conflict | missing_requirement | incomplete_criteria | inconsistency | security_concern | performance_concern | ux_issue | dependency_issue | business_rule_violation",
+          severity: "critical | high | medium | low | info",
           title: "string",
-          explanation: "string",
-          suggestedImprovement: "string",
-          azureDevOpsCommentSnippet: "string",
-          scoreImpact: "number",
-          sourceContextIds: ["string"],
+          description: "string",
+          suggestion: "string",
+          riskLevel: "high | medium | low",
+          riskJustification: "string",
+          affectedAreas: ["string"],
+          references: [
+            {
+              module: "optional string",
+              section: "optional string",
+              sourceId: "optional string",
+              description: "optional string",
+            },
+          ],
+          contradiction: "boolean",
         },
       ],
-      assumptions: ["string only, not objects"],
+      summary: {
+        totalFindings: "integer 0 or greater",
+        criticalCount: "integer 0 or greater",
+        highCount: "integer 0 or greater",
+        mediumCount: "integer 0 or greater",
+        lowCount: "integer 0 or greater",
+        infoCount: "integer 0 or greater",
+        overallQuality: "poor | fair | good | excellent",
+        completenessScore: "number from 0 to 100",
+        clarityScore: "number from 0 to 100",
+        testabilityScore: "number from 0 to 100",
+        summaryText: "string",
+      },
+      recommendations: ["string only, not objects"],
       questionsForProductOwner: ["string only, not objects"],
+      contextUsed: ["string only, not objects"],
     };
   }
 
   if (schemaName === "TestCaseGenerationOutput") {
     return {
-      summary: "string",
       testCases: [generatedTestCaseShape()],
+      summary: {
+        totalCases: "integer 0 or greater",
+        byType: { regression: "integer count example" },
+        byPriority: { high: "integer count example" },
+        coverageEstimate: "number from 0 to 100",
+      },
+      contextUsed: ["string only, not objects"],
     };
   }
 
@@ -175,24 +193,22 @@ function generatedTestCaseShape() {
   return {
     id: "string",
     title: "string",
-    description: "optional string",
-    preconditions: "optional string",
+    description: "string",
+    priority: "critical | high | medium | low",
+    type: "smoke | sanity | regression | e2e | integration | unit | api | ui | security | performance | accessibility",
+    category: "string",
+    tags: ["string"],
+    relatedAcceptanceCriteria: ["string"],
+    relatedBusinessRules: ["string"],
+    relatedModules: ["string"],
+    preconditions: "string",
+    testData: "optional string",
     steps: [
       {
-        index: "positive integer",
+        stepNumber: "positive integer",
         action: "string",
         expectedResult: "string",
       },
     ],
-    testData: "optional string",
-    expectedResult: "string",
-    priority: "High | Medium | Low",
-    severity: "High | Medium | Low",
-    testType: "Functional | Negative | Edge case | Integration | Regression | API | UI | Security | Performance | Accessibility",
-    automationSuitability: "High | Medium | Low",
-    relatedAcceptanceCriteria: ["string"],
-    relatedBusinessRules: ["string"],
-    relatedRisks: ["string"],
-    tags: ["string"],
   };
 }
