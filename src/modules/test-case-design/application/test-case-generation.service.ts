@@ -2,7 +2,7 @@ import "server-only";
 
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { LLMProvider } from "@/modules/llm/llm-types";
-import { buildTaggedPromptPayload } from "@/modules/llm/prompt-payload";
+import { buildTestCaseGenerationMarkdownPrompt, extractWorkItemId } from "@/modules/llm/markdown-prompt-renderer";
 import { testCaseGenerationPrompt } from "@/modules/llm/prompts";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { TestCaseGenerationOutputSchema } from "../schemas/test-case.schema";
@@ -17,31 +17,23 @@ export async function generateTestCases(input: {
   options: Record<string, unknown>;
 }) {
   const scope = assertProjectScope(input.scope);
-  const userPrompt = buildTaggedPromptPayload([
-    {
-      tag: "current_project",
-      value: {
-        azureProjectId: scope.azureProjectId,
-        azureProjectName: scope.azureProjectName,
-      },
+  const promptPayload = buildTestCaseGenerationMarkdownPrompt({
+    currentProject: {
+      azureProjectId: scope.azureProjectId,
+      azureProjectName: scope.azureProjectName,
     },
-    { tag: "work_item", value: input.targetRequirement },
-    { tag: "related_work_items", value: input.relatedWorkItems ?? [] },
-    {
-      tag: "project_context",
-      value: {
-        selectedContext: input.selectedContext,
-        projectKnowledgeBase: input.projectKnowledgeBase ?? null,
-        options: input.options,
-      },
-    },
-    { tag: "output_contract", value: testCaseOutputContract },
-  ]);
+    targetRequirement: input.targetRequirement,
+    relatedWorkItems: input.relatedWorkItems ?? [],
+    selectedContext: input.selectedContext,
+    projectKnowledgeBase: input.projectKnowledgeBase,
+    options: input.options,
+    outputContract: testCaseOutputContract,
+  });
   const result = await input.provider.generateStructuredOutput({
     schemaName: "TestCaseGenerationOutput",
     schema: TestCaseGenerationOutputSchema,
     system: testCaseGenerationPrompt.system,
-    user: userPrompt,
+    user: promptPayload.prompt,
     metadata: {
       action: "test_case_generation.run",
       promptName: testCaseGenerationPrompt.name,
@@ -50,7 +42,7 @@ export async function generateTestCases(input: {
       azureProjectId: scope.azureProjectId,
       azureProjectName: scope.azureProjectName,
       azureOrganizationUrl: scope.azureOrganizationUrl,
-      targetWorkItemId: targetRequirementId(input.targetRequirement),
+      targetWorkItemId: extractWorkItemId(input.targetRequirement),
     },
   });
 
@@ -109,11 +101,3 @@ const testCaseOutputContract = {
   },
   contextUsed: ["module-id or work-item-id"],
 };
-
-function targetRequirementId(value: unknown) {
-  if (value && typeof value === "object" && "id" in value) {
-    const id = (value as { id?: unknown }).id;
-    return typeof id === "string" || typeof id === "number" ? String(id) : undefined;
-  }
-  return undefined;
-}

@@ -62,10 +62,20 @@ export async function resolveWorkflowContext(input: {
       selectedContextIds: input.selectedContextIds,
       retrievalTopK: Math.max(retrievalTopK, input.selectedContextIds.length * 3),
     });
+    const selectedContext = mergePinnedContextItems({
+      pinned: linkedRequirementContext,
+      ranked: explicitContext,
+      maxItems: contextBudget(retrievalTopK, linkedRequirementContext.length),
+    });
     return {
-      selectedContext: explicitContext,
+      selectedContext,
       relatedWorkItems: linkedRequirementContext,
-      contextUsed: explicitContext.map((item) => toContextUsedItem(item, "explicit")),
+      contextUsed: selectedContext.map((item) =>
+        toContextUsedItem(
+          item,
+          linkedRequirementContext.some((linked) => linked.workItemId === item.workItemId) ? "linked_requirement" : "explicit",
+        ),
+      ),
       retrievalTopK,
     };
   }
@@ -99,7 +109,11 @@ export async function resolveWorkflowContext(input: {
     maxContextItems: retrievalTopK,
     workflowType: input.workflowType,
   });
-  const selectedContext = llmSelected.length ? llmSelected : candidates.slice(0, retrievalTopK);
+  const selectedContext = mergePinnedContextItems({
+    pinned: linkedRequirementContext,
+    ranked: llmSelected.length ? llmSelected : candidates.slice(0, retrievalTopK),
+    maxItems: contextBudget(retrievalTopK, linkedRequirementContext.length),
+  });
   const llmSelectedIds = new Set(llmSelected.map((item) => item.workItemId));
 
   return {
@@ -198,6 +212,18 @@ function distinctContextByWorkItem(items: LlmContextSource[]) {
     seen.add(item.workItemId);
     return true;
   });
+}
+
+function mergePinnedContextItems(input: {
+  pinned: LlmContextSource[];
+  ranked: LlmContextSource[];
+  maxItems: number;
+}) {
+  return distinctContextByWorkItem([...input.pinned, ...input.ranked]).slice(0, input.maxItems);
+}
+
+function contextBudget(retrievalTopK: number, pinnedCount: number) {
+  return Math.min(25, Math.max(retrievalTopK, pinnedCount));
 }
 
 function toContextUsedItem(item: LlmContextSource, source: ContextUsedItem["source"]): ContextUsedItem {

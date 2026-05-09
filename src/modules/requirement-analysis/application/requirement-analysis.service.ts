@@ -3,7 +3,7 @@ import "server-only";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { LLMProvider } from "@/modules/llm/llm-types";
-import { buildTaggedPromptPayload } from "@/modules/llm/prompt-payload";
+import { buildRequirementAnalysisMarkdownPrompt, extractWorkItemId } from "@/modules/llm/markdown-prompt-renderer";
 import { requirementAnalysisPrompt } from "@/modules/llm/prompts";
 import { RequirementAnalysisOutputSchema } from "../schemas/requirement-analysis.schema";
 
@@ -16,30 +16,22 @@ export async function runRequirementAnalysis(input: {
   projectKnowledgeBase?: unknown | null;
 }) {
   const scope = assertProjectScope(input.scope);
-  const userPrompt = buildTaggedPromptPayload([
-    {
-      tag: "current_project",
-      value: {
-        azureProjectId: scope.azureProjectId,
-        azureProjectName: scope.azureProjectName,
-      },
+  const promptPayload = buildRequirementAnalysisMarkdownPrompt({
+    currentProject: {
+      azureProjectId: scope.azureProjectId,
+      azureProjectName: scope.azureProjectName,
     },
-    { tag: "work_item", value: input.targetRequirement },
-    { tag: "related_work_items", value: input.relatedWorkItems ?? [] },
-    {
-      tag: "project_context",
-      value: {
-        selectedContext: input.selectedContext,
-        projectKnowledgeBase: input.projectKnowledgeBase ?? null,
-      },
-    },
-    { tag: "output_contract", value: requirementOutputContract },
-  ]);
+    targetRequirement: input.targetRequirement,
+    relatedWorkItems: input.relatedWorkItems ?? [],
+    selectedContext: input.selectedContext,
+    projectKnowledgeBase: input.projectKnowledgeBase,
+    outputContract: requirementOutputContract,
+  });
   const result = await input.provider.generateStructuredOutput({
     schemaName: "RequirementAnalysisOutput",
     schema: RequirementAnalysisOutputSchema,
     system: requirementAnalysisPrompt.system,
-    user: userPrompt,
+    user: promptPayload.prompt,
     maxTokens: 12000,
     metadata: {
       action: "requirement_analysis.run",
@@ -49,7 +41,7 @@ export async function runRequirementAnalysis(input: {
       azureProjectId: scope.azureProjectId,
       azureProjectName: scope.azureProjectName,
       azureOrganizationUrl: scope.azureOrganizationUrl,
-      targetWorkItemId: targetRequirementId(input.targetRequirement),
+      targetWorkItemId: extractWorkItemId(input.targetRequirement),
     },
   });
 
@@ -104,11 +96,3 @@ const requirementOutputContract = {
   questionsForProductOwner: ["string"],
   contextUsed: ["module-id or work-item-id"],
 };
-
-function targetRequirementId(value: unknown) {
-  if (value && typeof value === "object" && "id" in value) {
-    const id = (value as { id?: unknown }).id;
-    return typeof id === "string" || typeof id === "number" ? String(id) : undefined;
-  }
-  return undefined;
-}
