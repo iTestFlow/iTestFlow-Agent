@@ -1,7 +1,9 @@
 import "server-only";
 
 import { writeAuditLog } from "@/modules/audit/audit.service";
+import { parseExternalStructuredOutput } from "@/modules/llm/external-structured-output";
 import type { LLMProvider } from "@/modules/llm/llm-types";
+import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
 import { buildTestCaseGenerationMarkdownPrompt, extractWorkItemId } from "@/modules/llm/markdown-prompt-renderer";
 import { testCaseGenerationPrompt } from "@/modules/llm/prompts";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
@@ -17,23 +19,19 @@ export async function generateTestCases(input: {
   options: Record<string, unknown>;
 }) {
   const scope = assertProjectScope(input.scope);
-  const promptPayload = buildTestCaseGenerationMarkdownPrompt({
-    currentProject: {
-      azureProjectId: scope.azureProjectId,
-      azureProjectName: scope.azureProjectName,
-    },
+  const promptDraft = buildTestCaseGenerationPromptDraft({
+    scope,
     targetRequirement: input.targetRequirement,
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
     options: input.options,
-    outputContract: testCaseOutputContract,
   });
   const result = await input.provider.generateStructuredOutput({
-    schemaName: "TestCaseGenerationOutput",
+    schemaName: promptDraft.schemaName,
     schema: TestCaseGenerationOutputSchema,
-    system: testCaseGenerationPrompt.system,
-    user: promptPayload.prompt,
+    system: promptDraft.systemPrompt,
+    user: promptDraft.userPrompt,
     metadata: {
       action: "test_case_generation.run",
       promptName: testCaseGenerationPrompt.name,
@@ -62,6 +60,79 @@ export async function generateTestCases(input: {
   });
 
   return result;
+}
+
+export function buildTestCaseGenerationPromptDraft(input: {
+  scope: ProjectScope;
+  targetRequirement: unknown;
+  relatedWorkItems?: unknown[];
+  selectedContext: unknown[];
+  projectKnowledgeBase?: unknown | null;
+  options: Record<string, unknown>;
+}) {
+  const scope = assertProjectScope(input.scope);
+  const promptPayload = buildTestCaseGenerationMarkdownPrompt({
+    currentProject: {
+      azureProjectId: scope.azureProjectId,
+      azureProjectName: scope.azureProjectName,
+    },
+    targetRequirement: input.targetRequirement,
+    relatedWorkItems: input.relatedWorkItems ?? [],
+    selectedContext: input.selectedContext,
+    projectKnowledgeBase: input.projectKnowledgeBase,
+    options: input.options,
+    outputContract: testCaseOutputContract,
+  });
+
+  return {
+    schemaName: "TestCaseGenerationOutput",
+    promptName: testCaseGenerationPrompt.name,
+    promptVersion: testCaseGenerationPrompt.version,
+    systemPrompt: testCaseGenerationPrompt.system,
+    userPrompt: promptPayload.prompt,
+    prompt: buildManualPromptMarkdown({
+      title: "iTestFlow Test Case Design",
+      system: testCaseGenerationPrompt.system,
+      user: promptPayload.prompt,
+    }),
+    relevantProjectKnowledgeBase: promptPayload.relevantProjectKnowledgeBase,
+  };
+}
+
+export function completeManualTestCaseGeneration(input: {
+  scope: ProjectScope;
+  rawOutput: string;
+  targetWorkItemId?: string;
+}) {
+  const scope = assertProjectScope(input.scope);
+  const validatedOutput = parseExternalStructuredOutput({
+    schemaName: "TestCaseGenerationOutput",
+    schema: TestCaseGenerationOutputSchema,
+    rawOutput: input.rawOutput,
+  });
+
+  writeAuditLog({
+    projectId: scope.projectId,
+    azureProjectId: scope.azureProjectId,
+    azureProjectName: scope.azureProjectName,
+    azureOrganizationUrl: scope.azureOrganizationUrl,
+    action: "test_case_generation.manual_complete",
+    status: "Success",
+    message: `Generated ${validatedOutput.testCases.length} validated test cases from external LLM output.`,
+    details: {
+      provider: "external",
+      model: "manual-external",
+      promptVersion: testCaseGenerationPrompt.version,
+      targetWorkItemId: input.targetWorkItemId,
+    },
+  });
+
+  return {
+    provider: "external",
+    model: "manual-external",
+    rawOutput: input.rawOutput,
+    validatedOutput,
+  };
 }
 
 const testCaseOutputContract = {

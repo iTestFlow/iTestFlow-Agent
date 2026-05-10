@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { AlertTriangle, ArrowUpDown, BookOpen, ChevronDown, Database, RefreshCw } from "lucide-react"
+import { AlertTriangle, ArrowUpDown, BookOpen, ChevronDown, Copy, Database, RefreshCw } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -17,6 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Textarea } from "@/components/ui/textarea"
 import {
   CONTEXT_STATE_OPTIONS,
   CONTEXT_WORK_ITEM_TYPE_OPTIONS,
@@ -123,6 +124,25 @@ type KnowledgeStatusResult = {
   snapshot: ProjectKnowledgeSnapshot | null
 }
 
+type KnowledgeManualBatchPrompt = {
+  batchIndex: number
+  batchCount: number
+  workItemCount: number
+  prompt: string
+}
+
+type KnowledgeManualDraft = {
+  promptVersion: string
+  sourceWorkItemCount: number
+  batchCount: number
+  batches: KnowledgeManualBatchPrompt[]
+}
+
+type KnowledgeManualValidationResult = {
+  knowledgeBase: ProjectKnowledgeBase
+  snapshot?: ProjectKnowledgeSnapshot
+}
+
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
@@ -159,6 +179,15 @@ export function ProjectContextClient() {
   const [knowledgeStatusLoading, setKnowledgeStatusLoading] = useState(false)
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null)
   const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<ProjectKnowledgeSnapshot | null>(null)
+  const [knowledgeMode, setKnowledgeMode] = useState<"auto" | "manual">("auto")
+  const [manualKnowledgeDraftLoading, setManualKnowledgeDraftLoading] = useState(false)
+  const [manualKnowledgeDraft, setManualKnowledgeDraft] = useState<KnowledgeManualDraft | null>(null)
+  const [manualKnowledgeCurrentBatch, setManualKnowledgeCurrentBatch] = useState(1)
+  const [manualKnowledgeBatchResponses, setManualKnowledgeBatchResponses] = useState<Record<number, string>>({})
+  const [manualKnowledgeValidatedBatches, setManualKnowledgeValidatedBatches] = useState<Record<number, ProjectKnowledgeBase>>({})
+  const [manualKnowledgeValidationLoading, setManualKnowledgeValidationLoading] = useState(false)
+  const [manualKnowledgeError, setManualKnowledgeError] = useState<string | null>(null)
+  const [manualKnowledgeSaveLoading, setManualKnowledgeSaveLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(25)
   const [totalPages, setTotalPages] = useState(1)
@@ -216,6 +245,11 @@ export function ProjectContextClient() {
     setResult(null)
     setError(null)
     setKnowledgeError(null)
+    setManualKnowledgeError(null)
+    setManualKnowledgeDraft(null)
+    setManualKnowledgeCurrentBatch(1)
+    setManualKnowledgeBatchResponses({})
+    setManualKnowledgeValidatedBatches({})
     setPage(1)
     setSortBy("lastIndexedAt")
     setSortDirection("desc")
@@ -301,6 +335,82 @@ export function ProjectContextClient() {
     }
   }
 
+  async function prepareManualKnowledgeDraft() {
+    if (!scope) return
+    setManualKnowledgeDraftLoading(true)
+    setManualKnowledgeError(null)
+    setManualKnowledgeDraft(null)
+    setManualKnowledgeCurrentBatch(1)
+    setManualKnowledgeBatchResponses({})
+    setManualKnowledgeValidatedBatches({})
+    try {
+      const data = await postJson<KnowledgeManualDraft>("/api/context/knowledge/manual/draft", { scope })
+      setManualKnowledgeDraft(data)
+    } catch (draftError) {
+      setManualKnowledgeError(draftError instanceof Error ? draftError.message : "Manual knowledge prompt preparation failed.")
+    } finally {
+      setManualKnowledgeDraftLoading(false)
+    }
+  }
+
+  async function validateManualKnowledgeBatch() {
+    if (!scope || !manualKnowledgeDraft) return
+    const batch = manualKnowledgeDraft.batches.find((item) => item.batchIndex === manualKnowledgeCurrentBatch)
+    if (!batch) return
+    const rawOutput = manualKnowledgeBatchResponses[batch.batchIndex]?.trim()
+    if (!rawOutput) return
+
+    setManualKnowledgeValidationLoading(true)
+    setManualKnowledgeError(null)
+    try {
+      const shouldSave = manualKnowledgeDraft.batchCount === 1
+      const data = await postJson<KnowledgeManualValidationResult>("/api/context/knowledge/manual/validate", {
+        scope,
+        rawOutput,
+        save: shouldSave,
+      })
+
+      if (shouldSave && data.snapshot) {
+        setKnowledgeSnapshot(data.snapshot)
+        return
+      }
+
+      const nextValidated = {
+        ...manualKnowledgeValidatedBatches,
+        [batch.batchIndex]: data.knowledgeBase,
+      }
+      setManualKnowledgeValidatedBatches(nextValidated)
+      const nextBatch = manualKnowledgeDraft.batches.find((item) => !nextValidated[item.batchIndex])
+      if (nextBatch) setManualKnowledgeCurrentBatch(nextBatch.batchIndex)
+    } catch (validationError) {
+      setManualKnowledgeError(validationError instanceof Error ? validationError.message : "Manual knowledge response validation failed.")
+    } finally {
+      setManualKnowledgeValidationLoading(false)
+    }
+  }
+
+  async function saveManualKnowledgeBatches() {
+    if (!scope || !manualKnowledgeDraft) return
+    const partialKnowledgeBases = manualKnowledgeDraft.batches
+      .map((batch) => manualKnowledgeValidatedBatches[batch.batchIndex])
+      .filter(Boolean)
+    if (partialKnowledgeBases.length !== manualKnowledgeDraft.batchCount) return
+
+    setManualKnowledgeSaveLoading(true)
+    setManualKnowledgeError(null)
+    try {
+      const data = await postJson<KnowledgeManualValidationResult>("/api/context/knowledge/manual/finalize", {
+        scope,
+        partialKnowledgeBases,
+      })
+      if (data.snapshot) setKnowledgeSnapshot(data.snapshot)
+    } catch (saveError) {
+      setManualKnowledgeError(saveError instanceof Error ? saveError.message : "Manual knowledge base save failed.")
+    } finally {
+      setManualKnowledgeSaveLoading(false)
+    }
+  }
+
   function toggleValue(value: string, selected: boolean, current: string[], update: (next: string[]) => void) {
     update(selected ? [...current, value] : current.filter((item) => item !== value))
   }
@@ -322,6 +432,13 @@ export function ProjectContextClient() {
   const canIndex = Boolean(scope) && workItemTypes.length > 0 && states.length > 0 && !loading
   const step2Unlocked = totalCount > 0 || (result?.indexedWorkItemCount ?? 0) > 0
   const canExtractKnowledge = Boolean(scope) && step2Unlocked && !knowledgeLoading
+  const currentManualKnowledgeBatch = manualKnowledgeDraft?.batches.find((batch) => batch.batchIndex === manualKnowledgeCurrentBatch)
+  const manualKnowledgeValidatedCount = manualKnowledgeDraft
+    ? manualKnowledgeDraft.batches.filter((batch) => manualKnowledgeValidatedBatches[batch.batchIndex]).length
+    : 0
+  const manualKnowledgeAllBatchesValidated = manualKnowledgeDraft
+    ? manualKnowledgeValidatedCount === manualKnowledgeDraft.batchCount
+    : false
   const rangeStart = totalCount === 0 ? 0 : (page - 1) * pageSize + 1
   const rangeEnd = Math.min(totalCount, rangeStart + recentItems.length - 1)
 
@@ -474,21 +591,109 @@ export function ProjectContextClient() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex flex-col gap-3 border-b border-[#EBECF0] pb-4 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-sm text-[#626F86]">
-                  Extract modules, business rules, workflows, glossary terms, and dependencies from the indexed context.
-                </p>
-                <Button onClick={extractKnowledgeBase} disabled={!canExtractKnowledge}>
-                  {knowledgeLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-                  {knowledgeLoading ? "Extracting..." : "Extract Knowledge Base"}
-                </Button>
-              </div>
+              <Tabs value={knowledgeMode} onValueChange={(value) => setKnowledgeMode(value as "auto" | "manual")} className="flex-col gap-4">
+                <TabsList className="h-auto w-fit rounded-md border border-[#DCDFE4] bg-white p-1">
+                  <TabsTrigger value="auto" className="h-9 px-3">Auto</TabsTrigger>
+                  <TabsTrigger value="manual" className="h-9 px-3">Manual</TabsTrigger>
+                </TabsList>
 
-              {knowledgeError ? (
-                <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
-                  {knowledgeError}
-                </div>
-              ) : null}
+                <TabsContent value="auto" className="space-y-4">
+                  <div className="flex flex-col gap-3 border-b border-[#EBECF0] pb-4 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-sm text-[#626F86]">
+                      Extract modules, business rules, workflows, glossary terms, and dependencies from the indexed context.
+                    </p>
+                    <Button onClick={extractKnowledgeBase} disabled={!canExtractKnowledge}>
+                      {knowledgeLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
+                      {knowledgeLoading ? "Extracting..." : "Extract Knowledge Base"}
+                    </Button>
+                  </div>
+
+                  {knowledgeError ? (
+                    <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
+                      {knowledgeError}
+                    </div>
+                  ) : null}
+                </TabsContent>
+
+                <TabsContent value="manual" className="space-y-4">
+                  <div className="flex flex-col gap-3 border-b border-[#EBECF0] pb-4 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-sm text-[#626F86]">
+                      Copy each generated prompt to an external LLM, paste the JSON response, then validate it here.
+                    </p>
+                    <Button onClick={prepareManualKnowledgeDraft} disabled={!canExtractKnowledge || manualKnowledgeDraftLoading}>
+                      {manualKnowledgeDraftLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
+                      {manualKnowledgeDraftLoading ? "Preparing..." : "Prepare Manual Prompt"}
+                    </Button>
+                  </div>
+
+                  {manualKnowledgeError ? (
+                    <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
+                      {manualKnowledgeError}
+                    </div>
+                  ) : null}
+
+                  {manualKnowledgeDraft && currentManualKnowledgeBatch ? (
+                    <div className="space-y-4 rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-4">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-[#172B4D]">
+                            Batch {currentManualKnowledgeBatch.batchIndex} of {manualKnowledgeDraft.batchCount}
+                          </div>
+                          <div className="text-xs text-[#626F86]">
+                            {currentManualKnowledgeBatch.workItemCount} work items in this prompt. {manualKnowledgeValidatedCount} validated.
+                          </div>
+                        </div>
+                        <Button variant="outline" onClick={() => void navigator.clipboard.writeText(currentManualKnowledgeBatch.prompt)}>
+                          <Copy className="size-4" />
+                          Copy Prompt
+                        </Button>
+                      </div>
+                      <Textarea value={currentManualKnowledgeBatch.prompt} readOnly className="min-h-[360px] font-mono text-xs" />
+                      <div className="space-y-2">
+                        <Label className="text-sm font-semibold text-[#172B4D]">External LLM Response</Label>
+                        <Textarea
+                          value={manualKnowledgeBatchResponses[currentManualKnowledgeBatch.batchIndex] ?? ""}
+                          onChange={(event) =>
+                            setManualKnowledgeBatchResponses((current) => ({
+                              ...current,
+                              [currentManualKnowledgeBatch.batchIndex]: event.target.value,
+                            }))
+                          }
+                          className="min-h-[240px] font-mono text-xs"
+                          placeholder="Paste the JSON response for this batch."
+                        />
+                      </div>
+                      <div className="flex justify-end">
+                        <Button
+                          onClick={validateManualKnowledgeBatch}
+                          disabled={!manualKnowledgeBatchResponses[currentManualKnowledgeBatch.batchIndex]?.trim() || manualKnowledgeValidationLoading}
+                        >
+                          {manualKnowledgeValidationLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
+                          {manualKnowledgeDraft.batchCount === 1 ? "Validate and Save" : "Validate Batch"}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {manualKnowledgeDraft && manualKnowledgeDraft.batchCount > 1 && manualKnowledgeAllBatchesValidated ? (
+                    <div className="space-y-4 rounded-md border border-[#DCDFE4] bg-white p-4">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-[#172B4D]">Ready to Save Knowledge Base</div>
+                          <div className="text-xs text-[#626F86]">
+                            All {manualKnowledgeDraft.batchCount} batch responses are validated. iTestFlow will merge duplicates locally and save the final
+                            knowledge base.
+                          </div>
+                        </div>
+                        <Button onClick={saveManualKnowledgeBatches} disabled={manualKnowledgeSaveLoading}>
+                          {manualKnowledgeSaveLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
+                          {manualKnowledgeSaveLoading ? "Saving..." : "Save Knowledge Base"}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </TabsContent>
+              </Tabs>
 
               {knowledgeStatusLoading ? (
                 <div className="text-sm text-[#626F86]">Loading saved knowledge base...</div>

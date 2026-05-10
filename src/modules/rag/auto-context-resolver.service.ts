@@ -47,6 +47,31 @@ export async function resolveWorkflowContext(input: {
   retrievalTopK: number;
   workflowType: "requirement_analysis" | "test_case_generation";
 }): Promise<AutoContextResolution> {
+  return resolveWorkflowContextCore(input);
+}
+
+export async function resolveWorkflowContextWithoutLLM(input: {
+  scope: ProjectScope;
+  adapter: AzureDevOpsAdapter;
+  targetRequirement: Requirement;
+  selectedContextIds?: string[];
+  retrievalTopK: number;
+}): Promise<AutoContextResolution> {
+  return resolveWorkflowContextCore({
+    ...input,
+    workflowType: "requirement_analysis",
+  });
+}
+
+async function resolveWorkflowContextCore(input: {
+  scope: ProjectScope;
+  adapter: AzureDevOpsAdapter;
+  provider?: LLMProvider;
+  targetRequirement: Requirement;
+  selectedContextIds?: string[];
+  retrievalTopK: number;
+  workflowType: "requirement_analysis" | "test_case_generation";
+}): Promise<AutoContextResolution> {
   const scope = assertProjectScope(input.scope);
   const retrievalTopK = clampTopK(input.retrievalTopK);
   const linkedRequirementContext = await loadLinkedRequirementContext({
@@ -182,12 +207,14 @@ async function loadExplicitContext(input: {
 
 async function selectContextWithLLM(input: {
   scope: ProjectScope;
-  provider: LLMProvider;
+  provider?: LLMProvider;
   targetRequirement: Requirement;
   candidates: LlmContextSource[];
   maxContextItems: number;
   workflowType: "requirement_analysis" | "test_case_generation";
 }) {
+  if (!input.provider) return [];
+
   try {
     const result = await suggestContextStories({
       scope: input.scope,

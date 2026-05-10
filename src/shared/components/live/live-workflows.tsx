@@ -39,6 +39,14 @@ type RequirementSummary = {
   summaryText: string;
 };
 
+type RequirementAnalysisRunResult = {
+  findings: RequirementFinding[];
+  summary: RequirementSummary;
+  recommendations: string[];
+  contextUsed: string[];
+  resolvedContextUsed?: unknown[];
+};
+
 type GeneratedTestCase = {
   id: string;
   title: string;
@@ -60,6 +68,23 @@ type TestCaseSummary = {
   byType: Record<string, number>;
   byPriority: Record<string, number>;
   coverageEstimate: number;
+};
+
+type TestCaseGenerationRunResult = {
+  testCases: GeneratedTestCase[];
+  summary: TestCaseSummary;
+  contextUsed: string[];
+  resolvedContextUsed?: unknown[];
+};
+
+type WorkflowMode = "auto" | "manual";
+
+type ManualPromptDraft = {
+  prompt: string;
+  promptVersion: string;
+  selectedContextIds?: string[];
+  resolvedContextUsed?: unknown[];
+  retrievalTopK?: number;
 };
 
 type TestPlan = {
@@ -176,11 +201,16 @@ export function LiveDashboard() {
 export function RequirementAnalysisClient() {
   const scope = useActiveProject();
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
-  const [analysis, setAnalysis] = useState<ApiState<{ findings: RequirementFinding[]; summary: RequirementSummary; recommendations: string[]; contextUsed: string[]; resolvedContextUsed?: unknown[] }>>({
+  const [mode, setMode] = useState<WorkflowMode>("auto");
+  const [analysis, setAnalysis] = useState<ApiState<RequirementAnalysisRunResult>>({
     loading: false,
     error: null,
     data: null,
   });
+  const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
+  const [manualResponse, setManualResponse] = useState("");
+  const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
+  const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
   const [selectedFindings, setSelectedFindings] = useState<Record<string, boolean>>({});
   const [snippets, setSnippets] = useState<Record<string, string>>({});
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -192,23 +222,71 @@ export function RequirementAnalysisClient() {
     [analysis.data, selectedFindings],
   );
 
+  function changeTargetWorkItemId(value: string) {
+    setTargetWorkItemId(value);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }
+
+  function applyAnalysisResult(data: RequirementAnalysisRunResult) {
+    setAnalysis({ loading: false, error: null, data });
+    setSelectedFindings(Object.fromEntries(data.findings.map((finding) => [finding.id, true])));
+    setSnippets(Object.fromEntries(data.findings.map((finding) => [finding.id, finding.suggestion])));
+    setReviewOpen(false);
+    setFinalComment("");
+    setReviewApproved(false);
+    setPushState({ loading: false, error: null, data: null });
+  }
+
   async function runAnalysis() {
     if (!scope || !targetWorkItemId) return;
     setAnalysis({ loading: true, error: null, data: null });
     try {
-      const data = await postJson<{ findings: RequirementFinding[]; summary: RequirementSummary; recommendations: string[]; contextUsed: string[]; resolvedContextUsed?: unknown[] }>(
+      const data = await postJson<RequirementAnalysisRunResult>(
         "/api/requirement-analysis/run",
         { scope, targetWorkItemId },
       );
-      setAnalysis({ loading: false, error: null, data });
-      setSelectedFindings(Object.fromEntries(data.findings.map((finding) => [finding.id, true])));
-      setSnippets(Object.fromEntries(data.findings.map((finding) => [finding.id, finding.suggestion])));
-      setReviewOpen(false);
-      setFinalComment("");
-      setReviewApproved(false);
-      setPushState({ loading: false, error: null, data: null });
+      applyAnalysisResult(data);
     } catch (error) {
       setAnalysis({ loading: false, error: error instanceof Error ? error.message : "Requirement analysis failed.", data: null });
+    }
+  }
+
+  async function prepareManualPrompt() {
+    if (!scope || !targetWorkItemId) return;
+    setManualDraft({ loading: true, error: null, data: null });
+    setManualSubmitError(null);
+    setManualResponse("");
+    try {
+      const data = await postJson<ManualPromptDraft>("/api/requirement-analysis/manual/draft", {
+        scope,
+        targetWorkItemId,
+      });
+      setManualDraft({ loading: false, error: null, data });
+    } catch (error) {
+      setManualDraft({ loading: false, error: error instanceof Error ? error.message : "Manual prompt preparation failed.", data: null });
+    }
+  }
+
+  async function submitManualResponse() {
+    if (!scope || !targetWorkItemId || !manualDraft.data || !manualResponse.trim()) return;
+    setManualSubmitLoading(true);
+    setManualSubmitError(null);
+    try {
+      const data = await postJson<RequirementAnalysisRunResult>("/api/requirement-analysis/manual/submit", {
+        scope,
+        targetWorkItemId,
+        rawOutput: manualResponse,
+        selectedContextIds: manualDraft.data.selectedContextIds ?? [],
+        resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
+        retrievalTopK: manualDraft.data.retrievalTopK,
+      });
+      applyAnalysisResult(data);
+    } catch (error) {
+      setManualSubmitError(error instanceof Error ? error.message : "Manual response validation failed.");
+    } finally {
+      setManualSubmitLoading(false);
     }
   }
 
@@ -256,13 +334,37 @@ export function RequirementAnalysisClient() {
     <div className="space-y-6">
       {projectWarning(scope)}
       <Card>
-        <CardHeader title="Target Requirement" description="Enter a real Azure DevOps work item ID. Project context is selected automatically for this run." />
-        <div className="grid gap-4 p-4 lg:grid-cols-[240px_auto]">
-          <TextInput value={targetWorkItemId} onChange={(event) => setTargetWorkItemId(event.target.value)} placeholder="Work item ID, e.g. 1234" />
-          <Button onClick={runAnalysis} disabled={!scope || !targetWorkItemId || analysis.loading}>
-            <Play className="h-4 w-4" />
-            Analyze
-          </Button>
+        <CardHeader
+          title="Target Requirement"
+          description="Enter a real Azure DevOps work item ID. Project context is selected automatically for this run."
+          action={<WorkflowModeTabs mode={mode} onChange={setMode} />}
+        />
+        <div className="space-y-4 p-4">
+          <div className="grid gap-4 lg:grid-cols-[240px_auto]">
+            <TextInput value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="Work item ID, e.g. 1234" />
+            {mode === "auto" ? (
+              <Button onClick={runAnalysis} disabled={!scope || !targetWorkItemId || analysis.loading}>
+                <Play className="h-4 w-4" />
+                {analysis.loading ? "Analyzing..." : "Analyze"}
+              </Button>
+            ) : (
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading}>
+                <Play className="h-4 w-4" />
+                {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
+              </Button>
+            )}
+          </div>
+          {mode === "manual" ? (
+            <ManualLLMPanel
+              draft={manualDraft.data}
+              response={manualResponse}
+              onResponseChange={setManualResponse}
+              onSubmit={submitManualResponse}
+              submitLabel={manualSubmitLoading ? "Validating..." : "Validate and Continue"}
+              submitting={manualSubmitLoading}
+              error={manualDraft.error ?? manualSubmitError}
+            />
+          ) : null}
         </div>
       </Card>
 
@@ -371,23 +473,77 @@ export function RequirementAnalysisClient() {
 export function TestCaseGenerationClient() {
   const scope = useActiveProject();
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
-  const [state, setState] = useState<ApiState<{ testCases: GeneratedTestCase[]; summary: TestCaseSummary; contextUsed: string[]; resolvedContextUsed?: unknown[] }>>({ loading: false, error: null, data: null });
+  const [mode, setMode] = useState<WorkflowMode>("auto");
+  const [state, setState] = useState<ApiState<TestCaseGenerationRunResult>>({ loading: false, error: null, data: null });
+  const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
+  const [manualResponse, setManualResponse] = useState("");
+  const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
+  const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
   const [testCases, setTestCases] = useState<GeneratedTestCase[]>([]);
+
+  function changeTargetWorkItemId(value: string) {
+    setTargetWorkItemId(value);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }
+
+  function applyGeneratedCases(data: TestCaseGenerationRunResult) {
+    setState({ loading: false, error: null, data });
+    setTestCases(data.testCases);
+    window.localStorage.setItem("itestflow.generatedTestCases", JSON.stringify({ targetWorkItemId, testCases: data.testCases }));
+  }
 
   async function generate() {
     if (!scope || !targetWorkItemId) return;
     setState({ loading: true, error: null, data: null });
     try {
-      const data = await postJson<{ testCases: GeneratedTestCase[]; summary: TestCaseSummary; contextUsed: string[]; resolvedContextUsed?: unknown[] }>("/api/test-cases/generate", {
+      const data = await postJson<TestCaseGenerationRunResult>("/api/test-cases/generate", {
         scope,
         targetWorkItemId,
         options: { depth: "balanced" },
       });
-      setState({ loading: false, error: null, data });
-      setTestCases(data.testCases);
-      window.localStorage.setItem("itestflow.generatedTestCases", JSON.stringify({ targetWorkItemId, testCases: data.testCases }));
+      applyGeneratedCases(data);
     } catch (error) {
       setState({ loading: false, error: error instanceof Error ? error.message : "Test case generation failed.", data: null });
+    }
+  }
+
+  async function prepareManualPrompt() {
+    if (!scope || !targetWorkItemId) return;
+    setManualDraft({ loading: true, error: null, data: null });
+    setManualSubmitError(null);
+    setManualResponse("");
+    try {
+      const data = await postJson<ManualPromptDraft>("/api/test-cases/manual/draft", {
+        scope,
+        targetWorkItemId,
+        options: { depth: "balanced" },
+      });
+      setManualDraft({ loading: false, error: null, data });
+    } catch (error) {
+      setManualDraft({ loading: false, error: error instanceof Error ? error.message : "Manual prompt preparation failed.", data: null });
+    }
+  }
+
+  async function submitManualResponse() {
+    if (!scope || !targetWorkItemId || !manualDraft.data || !manualResponse.trim()) return;
+    setManualSubmitLoading(true);
+    setManualSubmitError(null);
+    try {
+      const data = await postJson<TestCaseGenerationRunResult>("/api/test-cases/manual/submit", {
+        scope,
+        targetWorkItemId,
+        rawOutput: manualResponse,
+        selectedContextIds: manualDraft.data.selectedContextIds ?? [],
+        resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
+        retrievalTopK: manualDraft.data.retrievalTopK,
+      });
+      applyGeneratedCases(data);
+    } catch (error) {
+      setManualSubmitError(error instanceof Error ? error.message : "Manual response validation failed.");
+    } finally {
+      setManualSubmitLoading(false);
     }
   }
 
@@ -395,13 +551,37 @@ export function TestCaseGenerationClient() {
     <div className="space-y-6">
       {projectWarning(scope)}
       <Card>
-        <CardHeader title="Generate Test Cases from Azure DevOps Requirement" description="Project context is selected automatically for this run." />
-        <div className="grid gap-4 p-4 lg:grid-cols-[240px_auto]">
-          <TextInput value={targetWorkItemId} onChange={(event) => setTargetWorkItemId(event.target.value)} placeholder="Work item ID" />
-          <Button onClick={generate} disabled={!scope || !targetWorkItemId || state.loading}>
-            <Play className="h-4 w-4" />
-            {state.loading ? "Generating..." : "Generate"}
-          </Button>
+        <CardHeader
+          title="Generate Test Cases from Azure DevOps Requirement"
+          description="Project context is selected automatically for this run."
+          action={<WorkflowModeTabs mode={mode} onChange={setMode} />}
+        />
+        <div className="space-y-4 p-4">
+          <div className="grid gap-4 lg:grid-cols-[240px_auto]">
+            <TextInput value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="Work item ID" />
+            {mode === "auto" ? (
+              <Button onClick={generate} disabled={!scope || !targetWorkItemId || state.loading}>
+                <Play className="h-4 w-4" />
+                {state.loading ? "Generating..." : "Generate"}
+              </Button>
+            ) : (
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading}>
+                <Play className="h-4 w-4" />
+                {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
+              </Button>
+            )}
+          </div>
+          {mode === "manual" ? (
+            <ManualLLMPanel
+              draft={manualDraft.data}
+              response={manualResponse}
+              onResponseChange={setManualResponse}
+              onSubmit={submitManualResponse}
+              submitLabel={manualSubmitLoading ? "Validating..." : "Validate and Continue"}
+              submitting={manualSubmitLoading}
+              error={manualDraft.error ?? manualSubmitError}
+            />
+          ) : null}
         </div>
       </Card>
       {state.error ? <ErrorBlock message={state.error} /> : null}
@@ -632,6 +812,81 @@ export function AuditLogsClient() {
         <CardHeader title="Live Audit Log Entries" />
         <pre className="max-h-[620px] overflow-auto p-4 text-xs text-muted-foreground">{JSON.stringify(state.data?.logs ?? [], null, 2)}</pre>
       </Card>
+    </div>
+  );
+}
+
+function WorkflowModeTabs({ mode, onChange }: { mode: WorkflowMode; onChange: (mode: WorkflowMode) => void }) {
+  const itemClass = (value: WorkflowMode) =>
+    `h-8 rounded-[6px] px-3 text-sm font-medium transition ${
+      mode === value ? "bg-[#2f62e6] text-white" : "text-slate-600 hover:bg-blue-50 hover:text-blue-700"
+    }`;
+
+  return (
+    <div role="tablist" aria-label="LLM execution mode" className="inline-flex rounded-[8px] border border-[#c8d4e4] bg-white p-1">
+      <button type="button" role="tab" aria-selected={mode === "auto"} className={itemClass("auto")} onClick={() => onChange("auto")}>
+        Auto
+      </button>
+      <button type="button" role="tab" aria-selected={mode === "manual"} className={itemClass("manual")} onClick={() => onChange("manual")}>
+        Manual
+      </button>
+    </div>
+  );
+}
+
+function ManualLLMPanel({
+  draft,
+  response,
+  onResponseChange,
+  onSubmit,
+  submitLabel,
+  submitting,
+  error,
+}: {
+  draft: ManualPromptDraft | null;
+  response: string;
+  onResponseChange: (value: string) => void;
+  onSubmit: () => void;
+  submitLabel: string;
+  submitting: boolean;
+  error?: string | null;
+}) {
+  if (!draft && !error) return null;
+
+  return (
+    <div className="space-y-4 rounded-md border border-[#c8d4e4] bg-[#f8fafc] p-4">
+      {error ? <ErrorBlock message={error} /> : null}
+      {draft ? (
+        <>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-slate-950">Manual Prompt</div>
+              <div className="text-xs text-slate-500">Prompt {draft.promptVersion}</div>
+            </div>
+            <Button variant="secondary" onClick={() => void navigator.clipboard.writeText(draft.prompt)}>
+              <Copy className="h-4 w-4" />
+              Copy Prompt
+            </Button>
+          </div>
+          <TextArea value={draft.prompt} readOnly className="min-h-[360px] font-mono text-xs" aria-label="Manual LLM prompt" />
+          <div>
+            <div className="mb-2 text-sm font-semibold text-slate-950">External LLM Response</div>
+            <TextArea
+              value={response}
+              onChange={(event) => onResponseChange(event.target.value)}
+              className="min-h-[260px] font-mono text-xs"
+              placeholder="Paste the external LLM JSON response here."
+              aria-label="External LLM response"
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button onClick={onSubmit} disabled={!response.trim() || submitting}>
+              <Play className="h-4 w-4" />
+              {submitLabel}
+            </Button>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
