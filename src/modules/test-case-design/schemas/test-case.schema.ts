@@ -1,7 +1,22 @@
 import { z } from "zod";
 
+export const TestCasePrioritySchema = z.enum(["critical", "high", "medium", "low"]);
+export const TestCaseTypeSchema = z.enum([
+  "smoke",
+  "sanity",
+  "regression",
+  "e2e",
+  "integration",
+  "unit",
+  "api",
+  "ui",
+  "security",
+  "performance",
+  "accessibility",
+]);
+
 export const TestCaseStepSchema = z.object({
-  index: z.number().int().positive(),
+  stepNumber: z.number().int().positive(),
   action: z.string().min(1),
   expectedResult: z.string().min(1),
 });
@@ -9,35 +24,53 @@ export const TestCaseStepSchema = z.object({
 export const GeneratedTestCaseSchema = z.object({
   id: z.string(),
   title: z.string().min(1),
-  description: z.string().optional(),
-  preconditions: z.string().optional(),
-  steps: z.array(TestCaseStepSchema).min(1),
-  testData: z.string().optional(),
-  expectedResult: z.string().min(1),
-  priority: z.enum(["High", "Medium", "Low"]),
-  severity: z.enum(["High", "Medium", "Low"]),
-  testType: z.enum([
-    "Functional",
-    "Negative",
-    "Edge case",
-    "Integration",
-    "Regression",
-    "API",
-    "UI",
-    "Security",
-    "Performance",
-    "Accessibility",
-  ]),
-  automationSuitability: z.enum(["High", "Medium", "Low"]),
+  description: z.string().min(1),
+  priority: TestCasePrioritySchema,
+  type: TestCaseTypeSchema,
+  category: z.string().min(1),
+  tags: z.array(z.string()).default([]),
   relatedAcceptanceCriteria: z.array(z.string()).default([]),
   relatedBusinessRules: z.array(z.string()).default([]),
-  relatedRisks: z.array(z.string()).default([]),
-  tags: z.array(z.string()).default([]),
+  relatedModules: z.array(z.string()).default([]),
+  preconditions: z.string().min(1),
+  testData: z.string().optional().default(""),
+  steps: z.array(TestCaseStepSchema).min(1),
+}).superRefine((testCase, ctx) => {
+  const firstStep = testCase.steps[0];
+  if (firstStep?.stepNumber !== 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["steps", 0, "stepNumber"],
+      message: "The first step must have stepNumber 1.",
+    });
+  }
+  if (!firstStep?.action.trim().toLowerCase().startsWith("preconditions")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["steps", 0, "action"],
+      message: "The first step action must start with Preconditions.",
+    });
+  }
+  if (firstStep?.expectedResult !== "Preconditions are met") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["steps", 0, "expectedResult"],
+      message: "The first step expectedResult must be Preconditions are met.",
+    });
+  }
+});
+
+export const TestCaseGenerationSummarySchema = z.object({
+  totalCases: z.number().int().min(0),
+  byType: z.record(z.number().int().min(0)).default({}),
+  byPriority: z.record(z.number().int().min(0)).default({}),
+  coverageEstimate: z.number().min(0).max(100),
 });
 
 export const TestCaseGenerationOutputSchema = z.object({
-  summary: z.string(),
   testCases: z.array(GeneratedTestCaseSchema),
+  summary: TestCaseGenerationSummarySchema,
+  contextUsed: z.array(z.string()).default([]),
 });
 
 export type GeneratedTestCase = z.infer<typeof GeneratedTestCaseSchema>;

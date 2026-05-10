@@ -14,7 +14,7 @@ import {
   type ProjectKnowledgeBase,
 } from "./project-knowledge.schema";
 
-const MAX_CONTEXT_INPUT_CHARS = 60000;
+const MAX_CONTEXT_INPUT_CHARS = 30000;
 
 type ProjectKnowledgeWorkItemRow = {
   azure_work_item_id: string;
@@ -182,7 +182,15 @@ async function extractProjectKnowledgeBase(input: {
       },
     }),
     maxTokens: 20000,
-    repairOnInvalidOutput: false,
+    metadata: {
+      action: "project_knowledge.consolidate",
+      promptName: projectKnowledgeConsolidationPrompt.name,
+      promptVersion: projectKnowledgeConsolidationPrompt.version,
+      projectId: input.scope.projectId,
+      azureProjectId: input.scope.azureProjectId,
+      azureProjectName: input.scope.azureProjectName,
+      azureOrganizationUrl: input.scope.azureOrganizationUrl,
+    },
   });
 
   return {
@@ -217,7 +225,15 @@ async function extractProjectKnowledgeBatch(input: {
       },
     }),
     maxTokens: 20000,
-    repairOnInvalidOutput: false,
+    metadata: {
+      action: "project_knowledge.extract",
+      promptName: projectKnowledgeExtractionPrompt.name,
+      promptVersion: projectKnowledgeExtractionPrompt.version,
+      projectId: input.scope.projectId,
+      azureProjectId: input.scope.azureProjectId,
+      azureProjectName: input.scope.azureProjectName,
+      azureOrganizationUrl: input.scope.azureOrganizationUrl,
+    },
   });
 }
 

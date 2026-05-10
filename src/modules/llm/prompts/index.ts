@@ -1,7 +1,6 @@
 export type { SystemPromptDefinition } from "./prompt.types";
 export { contextSelectionPrompt } from "./context-selection.prompt";
 export { existingTestCaseReviewPrompt } from "./existing-test-case-review.prompt";
-export { jsonRepairPrompt } from "./json-repair.prompt";
 export {
   projectKnowledgeConsolidationPrompt,
   projectKnowledgeExtractionPrompt,

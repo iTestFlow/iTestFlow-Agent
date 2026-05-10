@@ -25,6 +25,12 @@ export interface AzureDevOpsAdapter {
     workItemId: string;
   }): Promise<Requirement[]>;
 
+  fetchLinkedRequirementWorkItems(input: {
+    projectId: string;
+    workItemId: string;
+    workItemTypes: string[];
+  }): Promise<Requirement[]>;
+
   fetchLinkedTestCases(input: {
     projectId: string;
     userStoryId: string;

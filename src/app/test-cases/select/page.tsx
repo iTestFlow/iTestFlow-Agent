@@ -6,8 +6,8 @@ export default function TestCaseDesignSelectPage() {
     <>
       <PageHeader
         eyebrow="Test Case Design"
-        title="Select Requirement and Context Stories"
-        description="Choose generation options after approving the final selected context set."
+        title="Generate Test Cases"
+        description="Generate Azure DevOps-ready test cases with automatic project context selection."
       />
       <TestCaseGenerationClient />
     </>

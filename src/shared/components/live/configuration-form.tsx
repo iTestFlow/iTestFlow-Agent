@@ -17,6 +17,7 @@ type FormState = {
   temperature: number;
   maxTokens: number;
   retryAttempts: number;
+  retrievalTopK: number;
 };
 
 type TestResult = {
@@ -74,6 +75,7 @@ export function ConfigurationForm({
     temperature: 0.2,
     maxTokens: 4000,
     retryAttempts: 1,
+    retrievalTopK: 8,
   });
 
   const selectedModels = useMemo(() => models, [models]);
@@ -101,6 +103,7 @@ export function ConfigurationForm({
           temperature: summary.llm?.temperature ?? current.temperature,
           maxTokens: summary.llm?.maxTokens ?? current.maxTokens,
           retryAttempts: summary.llm?.retryAttempts ?? current.retryAttempts,
+          retrievalTopK: summary.context?.retrievalTopK ?? current.retrievalTopK,
         }));
         setHasSavedLlmKey(Boolean(summary.llm?.hasApiKey));
         setSavedLlmProvider(summary.llm?.provider ?? null);
@@ -195,6 +198,9 @@ export function ConfigurationForm({
         temperature: form.temperature,
         maxTokens: form.maxTokens,
         retryAttempts: form.retryAttempts,
+      },
+      context: {
+        retrievalTopK: form.retrievalTopK,
       },
     };
   }
@@ -427,6 +433,21 @@ export function ConfigurationForm({
                     step={1}
                     value={form.retryAttempts}
                     onChange={(event) => update("retryAttempts", Number(event.target.value || "0"))}
+                  />
+                </Field>
+
+                <Field
+                  label="Project context retrieval count"
+                  description="Number of stored context items auto-selected for analysis and test design. Default is 8."
+                >
+                  <TextInput
+                    className="border-slate-300 bg-white text-slate-950"
+                    type="number"
+                    min={1}
+                    max={25}
+                    step={1}
+                    value={form.retrievalTopK}
+                    onChange={(event) => update("retrievalTopK", Number(event.target.value || "8"))}
                   />
                 </Field>
 

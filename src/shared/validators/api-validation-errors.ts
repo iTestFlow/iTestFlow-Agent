@@ -10,6 +10,7 @@ const fieldLabels: Record<string, string> = {
   "llm.temperature": "LLM Temperature",
   "llm.maxTokens": "LLM Max Tokens",
   "llm.retryAttempts": "LLM Retry Attempts",
+  "context.retrievalTopK": "Project Context Retrieval Count",
   provider: "LLM Provider",
   apiKey: "LLM API Token",
   baseUrl: "LLM Base URL",

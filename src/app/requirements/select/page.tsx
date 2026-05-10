@@ -6,8 +6,8 @@ export default function RequirementAnalysisSelectPage() {
     <>
       <PageHeader
         eyebrow="Requirement Analysis"
-        title="Select Requirement and Context Stories"
-        description="Review LLM/RAG suggested context before running analysis. Suggestions can be removed or extended manually."
+        title="Analyze Requirement"
+        description="Run grounded requirement analysis with automatic project context selection."
       />
       <RequirementAnalysisClient />
     </>

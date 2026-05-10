@@ -1,32 +1,62 @@
 import { z } from "zod";
 
+export const RequirementFindingTypeSchema = z.enum([
+  "ambiguity",
+  "conflict",
+  "missing_requirement",
+  "incomplete_criteria",
+  "inconsistency",
+  "security_concern",
+  "performance_concern",
+  "ux_issue",
+  "dependency_issue",
+  "business_rule_violation",
+]);
+
+export const RequirementFindingSeveritySchema = z.enum(["critical", "high", "medium", "low", "info"]);
+export const RequirementRiskLevelSchema = z.enum(["high", "medium", "low"]);
+
+export const RequirementFindingReferenceSchema = z.object({
+  module: z.string().optional(),
+  section: z.string().optional(),
+  sourceId: z.string().optional(),
+  description: z.string().optional(),
+});
+
 export const RequirementAnalysisFindingSchema = z.object({
   id: z.string(),
-  severity: z.enum(["High", "Medium", "Low"]),
-  category: z.string(),
+  type: RequirementFindingTypeSchema,
+  severity: RequirementFindingSeveritySchema,
   title: z.string(),
-  explanation: z.string(),
-  suggestedImprovement: z.string(),
-  azureDevOpsCommentSnippet: z.string(),
-  scoreImpact: z.number(),
-  sourceContextIds: z.array(z.string()).default([]),
+  description: z.string(),
+  suggestion: z.string(),
+  riskLevel: RequirementRiskLevelSchema,
+  riskJustification: z.string(),
+  affectedAreas: z.array(z.string()).default([]),
+  references: z.array(RequirementFindingReferenceSchema).default([]),
+  contradiction: z.boolean().default(false),
+});
+
+export const RequirementAnalysisSummarySchema = z.object({
+  totalFindings: z.number().int().min(0),
+  criticalCount: z.number().int().min(0),
+  highCount: z.number().int().min(0),
+  mediumCount: z.number().int().min(0),
+  lowCount: z.number().int().min(0),
+  infoCount: z.number().int().min(0),
+  overallQuality: z.enum(["poor", "fair", "good", "excellent"]),
+  completenessScore: z.number().min(0).max(100),
+  clarityScore: z.number().min(0).max(100),
+  testabilityScore: z.number().min(0).max(100),
+  summaryText: z.string(),
 });
 
 export const RequirementAnalysisOutputSchema = z.object({
-  executiveSummary: z.string(),
-  scores: z.object({
-    clarity: z.number().min(0).max(100),
-    testability: z.number().min(0).max(100),
-    completeness: z.number().min(0).max(100),
-    ambiguityRisk: z.number().min(0).max(100),
-    integrationRisk: z.number().min(0).max(100),
-    businessRuleCoverage: z.number().min(0).max(100),
-    acceptanceCriteriaQuality: z.number().min(0).max(100),
-    overallReadiness: z.number().min(0).max(100),
-  }),
   findings: z.array(RequirementAnalysisFindingSchema),
-  assumptions: z.array(z.string()).default([]),
+  summary: RequirementAnalysisSummarySchema,
+  recommendations: z.array(z.string()).default([]),
   questionsForProductOwner: z.array(z.string()).default([]),
+  contextUsed: z.array(z.string()).default([]),
 });
 
 export type RequirementAnalysisOutput = z.infer<typeof RequirementAnalysisOutputSchema>;

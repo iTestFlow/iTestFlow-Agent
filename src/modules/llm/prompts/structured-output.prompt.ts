@@ -2,13 +2,17 @@ import type { SystemPromptDefinition } from "./prompt.types";
 
 export const structuredOutputPrompt: SystemPromptDefinition = {
   name: "structured-output-format",
-  version: "1.0.0",
+  version: "1.1.0",
   purpose: "Provider-neutral instruction for returning schema-conformant JSON.",
-  system: "Return only valid JSON matching schema {schemaName}.",
+  system: [
+    "Return only valid JSON matching schema {schemaName}.",
+    "Do not wrap the JSON in markdown fences or add commentary.",
+    "Use the required output shape exactly. Arrays marked as string arrays must contain strings only, never objects.",
+  ].join("\n"),
 };
 
 export function withStructuredOutputInstruction(system: string, schemaName: string) {
-  return `${system}\n${structuredOutputPrompt.system.replace("{schemaName}", schemaName)}`;
+  return `${system}\n${buildStructuredOutputInstruction(schemaName)}`;
 }
 
 export function buildStructuredOutputUserPrompt(input: {
@@ -19,6 +23,192 @@ export function buildStructuredOutputUserPrompt(input: {
   return [
     input.system,
     input.user,
-    structuredOutputPrompt.system.replace("{schemaName}", input.schemaName),
+    buildStructuredOutputInstruction(input.schemaName),
   ].join("\n\n");
+}
+
+function buildStructuredOutputInstruction(schemaName: string) {
+  return [
+    structuredOutputPrompt.system.replace("{schemaName}", schemaName),
+    "Required JSON shape:",
+    JSON.stringify(requiredOutputShape(schemaName), null, 2),
+  ].join("\n");
+}
+
+function requiredOutputShape(schemaName: string) {
+  if (schemaName === "ContextSuggestionOutput") {
+    return {
+      suggestedItems: [
+        {
+          workItemId: "string",
+          title: "string",
+          workItemType: "string",
+          relationshipType: "optional string",
+          relevanceScore: "number from 0 to 1",
+          reason: "string",
+        },
+      ],
+    };
+  }
+
+  if (schemaName === "RequirementAnalysisOutput") {
+    return {
+      findings: [
+        {
+          id: "string",
+          type: "ambiguity | conflict | missing_requirement | incomplete_criteria | inconsistency | security_concern | performance_concern | ux_issue | dependency_issue | business_rule_violation",
+          severity: "critical | high | medium | low | info",
+          title: "string",
+          description: "string",
+          suggestion: "string",
+          riskLevel: "high | medium | low",
+          riskJustification: "string",
+          affectedAreas: ["string"],
+          references: [
+            {
+              module: "optional string",
+              section: "optional string",
+              sourceId: "optional string",
+              description: "optional string",
+            },
+          ],
+          contradiction: "boolean",
+        },
+      ],
+      summary: {
+        totalFindings: "integer 0 or greater",
+        criticalCount: "integer 0 or greater",
+        highCount: "integer 0 or greater",
+        mediumCount: "integer 0 or greater",
+        lowCount: "integer 0 or greater",
+        infoCount: "integer 0 or greater",
+        overallQuality: "poor | fair | good | excellent",
+        completenessScore: "number from 0 to 100",
+        clarityScore: "number from 0 to 100",
+        testabilityScore: "number from 0 to 100",
+        summaryText: "string",
+      },
+      recommendations: ["string only, not objects"],
+      questionsForProductOwner: ["string only, not objects"],
+      contextUsed: ["string only, not objects"],
+    };
+  }
+
+  if (schemaName === "TestCaseGenerationOutput") {
+    return {
+      testCases: [generatedTestCaseShape()],
+      summary: {
+        totalCases: "integer 0 or greater",
+        byType: { regression: "integer count example" },
+        byPriority: { high: "integer count example" },
+        coverageEstimate: "number from 0 to 100",
+      },
+      contextUsed: ["string only, not objects"],
+    };
+  }
+
+  if (schemaName === "ExistingTestCaseReviewOutput") {
+    return {
+      summary: "string",
+      findings: [
+        {
+          id: "string",
+          category:
+            "Missing coverage | Duplicate | Weak steps | Weak expected result | Missing preconditions | Missing test data | Automation readiness",
+          severity: "High | Medium | Low",
+          title: "string",
+          explanation: "string",
+          relatedTestCaseIds: ["string"],
+          suggestedAction: "string",
+        },
+      ],
+      suggestedAdditions: [generatedTestCaseShape()],
+    };
+  }
+
+  if (schemaName === "ProjectKnowledgeBase") {
+    return {
+      modules: [
+        {
+          id: "string",
+          name: "string",
+          description: "string",
+          sourceWorkItemIds: ["string"],
+          evidence: "string",
+        },
+      ],
+      businessRules: [
+        {
+          id: "string",
+          rule: "string",
+          sourceField: "acceptanceCriteria | description | title | metadata",
+          moduleName: "optional string",
+          sourceWorkItemIds: ["string"],
+          evidence: "string",
+        },
+      ],
+      stateTransitions: [
+        {
+          id: "string",
+          workflowName: "string",
+          fromState: "optional string",
+          toState: "optional string",
+          triggerOrCondition: "string",
+          actor: "optional string",
+          moduleName: "optional string",
+          sourceWorkItemIds: ["string"],
+          evidence: "string",
+        },
+      ],
+      glossary: [
+        {
+          term: "string",
+          type: "term | actor | role | system | external_service | business_entity | data_entity | process",
+          definition: "string",
+          sourceWorkItemIds: ["string"],
+          evidence: "string",
+        },
+      ],
+      crossDependencies: [
+        {
+          id: "string",
+          sourceModule: "string",
+          targetModule: "string",
+          dependencyType: "string",
+          description: "string",
+          sourceWorkItemIds: ["string"],
+          evidence: "string",
+        },
+      ],
+    };
+  }
+
+  return {
+    schemaName,
+    instruction: "Return a JSON object that matches this schema.",
+  };
+}
+
+function generatedTestCaseShape() {
+  return {
+    id: "string",
+    title: "string",
+    description: "string",
+    priority: "critical | high | medium | low",
+    type: "smoke | sanity | regression | e2e | integration | unit | api | ui | security | performance | accessibility",
+    category: "string",
+    tags: ["string"],
+    relatedAcceptanceCriteria: ["string"],
+    relatedBusinessRules: ["string"],
+    relatedModules: ["string"],
+    preconditions: "string",
+    testData: "optional string",
+    steps: [
+      {
+        stepNumber: "positive integer",
+        action: "string",
+        expectedResult: "string",
+      },
+    ],
+  };
 }

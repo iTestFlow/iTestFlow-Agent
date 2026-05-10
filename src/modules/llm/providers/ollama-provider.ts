@@ -2,7 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 import { buildStructuredOutputUserPrompt } from "../prompts";
-import { BaseJsonProvider } from "./base-json-provider";
+import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import type { GenerateStructuredOutputInput } from "../llm-types";
 
 export class OllamaProvider extends BaseJsonProvider {
@@ -11,23 +11,36 @@ export class OllamaProvider extends BaseJsonProvider {
     return response.ok;
   }
 
-  protected async callModel<TSchema extends z.ZodTypeAny>(input: GenerateStructuredOutputInput<TSchema>): Promise<string> {
+  protected async callModel<TSchema extends z.ZodTypeAny>(input: GenerateStructuredOutputInput<TSchema>): Promise<LLMProviderCallResult> {
+    const requestBody = {
+      model: this.model,
+      stream: false,
+      format: "json",
+      prompt: buildStructuredOutputUserPrompt(input),
+      options: {
+        temperature: input.temperature ?? this.config.temperature ?? 0.2,
+      },
+    };
     const response = await fetch(`${this.config.baseUrl ?? "http://localhost:11434"}/api/generate`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({
-        model: this.model,
-        stream: false,
-        format: "json",
-        prompt: buildStructuredOutputUserPrompt(input),
-        options: {
-          temperature: input.temperature ?? this.config.temperature ?? 0.2,
-        },
-      }),
+      body: JSON.stringify(requestBody),
     });
 
-    if (!response.ok) throw new Error(`Ollama request failed: ${await response.text()}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      return {
+        rawOutput: "{}",
+        requestBody,
+        responseBody: errorText,
+        errorMessage: `Ollama request failed: ${errorText}`,
+      };
+    }
     const json = await response.json();
-    return json.response ?? "{}";
+    return {
+      rawOutput: json.response ?? "{}",
+      requestBody,
+      responseBody: json,
+    };
   }
 }

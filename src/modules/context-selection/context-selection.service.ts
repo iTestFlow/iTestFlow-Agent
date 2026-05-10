@@ -11,6 +11,8 @@ export async function suggestContextStories(input: {
   provider: LLMProvider;
   targetRequirement: unknown;
   retrievedContext: unknown[];
+  maxContextItems?: number;
+  action?: string;
 }) {
   const scope = assertProjectScope(input.scope);
   const result = await input.provider.generateStructuredOutput({
@@ -20,13 +22,23 @@ export async function suggestContextStories(input: {
     user: JSON.stringify({
       targetRequirement: input.targetRequirement,
       retrievedContext: input.retrievedContext,
+      maxContextItems: input.maxContextItems ?? 8,
       projectScope: {
         azureProjectId: scope.azureProjectId,
         azureProjectName: scope.azureProjectName,
       },
     }),
     maxTokens: 8192,
-    repairOnInvalidOutput: false,
+    metadata: {
+      action: input.action ?? "context_selection.suggest",
+      promptName: contextSelectionPrompt.name,
+      promptVersion: contextSelectionPrompt.version,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      azureProjectName: scope.azureProjectName,
+      azureOrganizationUrl: scope.azureOrganizationUrl,
+      targetWorkItemId: targetRequirementId(input.targetRequirement),
+    },
   });
 
   writeAuditLog({
@@ -41,4 +53,12 @@ export async function suggestContextStories(input: {
   });
 
   return result;
+}
+
+function targetRequirementId(value: unknown) {
+  if (value && typeof value === "object" && "id" in value) {
+    const id = (value as { id?: unknown }).id;
+    return typeof id === "string" || typeof id === "number" ? String(id) : undefined;
+  }
+  return undefined;
 }

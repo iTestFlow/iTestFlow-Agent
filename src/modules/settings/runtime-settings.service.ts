@@ -86,6 +86,9 @@ function summarizeRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsSum
       maxTokens: settings.llm.maxTokens,
       retryAttempts: settings.llm.retryAttempts,
     },
+    context: {
+      retrievalTopK: settings.context.retrievalTopK,
+    },
   };
 }
 
@@ -129,6 +132,9 @@ function getSettingsFromEnv(): RuntimeSettings | null {
       temperature: Number(process.env.LLM_TEMPERATURE ?? "0.2"),
       maxTokens: Number(process.env.LLM_MAX_TOKENS ?? "4000"),
       retryAttempts: Number(process.env.LLM_RETRY_ATTEMPTS ?? "1"),
+    },
+    context: {
+      retrievalTopK: Number(process.env.PROJECT_CONTEXT_TOP_K ?? "8"),
     },
   });
 

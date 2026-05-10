@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { LLMRequestLogMetadata } from "./llm-request-log.service";
 
 export type LLMProviderName = "openai" | "gemini" | "anthropic" | "ollama";
 
@@ -19,7 +20,7 @@ export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTy
   schemaName: string;
   temperature?: number;
   maxTokens?: number;
-  repairOnInvalidOutput?: boolean;
+  metadata?: LLMRequestLogMetadata;
 };
 
 export type LLMResult<T = unknown> = {
