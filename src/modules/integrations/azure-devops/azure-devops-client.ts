@@ -173,7 +173,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   }): Promise<{ success: boolean; commentId?: string; error?: string }> {
     try {
       const json = await this.requestJson<JsonValue>(
-        `${encodeURIComponent(input.projectId)}/_apis/wit/workItems/${input.workItemId}/comments?api-version=7.1-preview.4`,
+        `${encodeURIComponent(input.projectId)}/_apis/wit/workItems/${input.workItemId}/comments?format=markdown&api-version=7.1-preview.4`,
         { method: "POST", body: JSON.stringify({ text: input.commentBody }) },
       );
       return { success: true, commentId: String(json.id ?? "") };

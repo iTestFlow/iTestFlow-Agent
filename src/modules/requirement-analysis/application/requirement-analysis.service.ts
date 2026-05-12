@@ -2,7 +2,9 @@ import "server-only";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { writeAuditLog } from "@/modules/audit/audit.service";
+import { parseExternalStructuredOutput } from "@/modules/llm/external-structured-output";
 import type { LLMProvider } from "@/modules/llm/llm-types";
+import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
 import { buildRequirementAnalysisMarkdownPrompt, extractWorkItemId } from "@/modules/llm/markdown-prompt-renderer";
 import { requirementAnalysisPrompt } from "@/modules/llm/prompts";
 import { RequirementAnalysisOutputSchema } from "../schemas/requirement-analysis.schema";
@@ -16,22 +18,18 @@ export async function runRequirementAnalysis(input: {
   projectKnowledgeBase?: unknown | null;
 }) {
   const scope = assertProjectScope(input.scope);
-  const promptPayload = buildRequirementAnalysisMarkdownPrompt({
-    currentProject: {
-      azureProjectId: scope.azureProjectId,
-      azureProjectName: scope.azureProjectName,
-    },
+  const promptDraft = buildRequirementAnalysisPromptDraft({
+    scope,
     targetRequirement: input.targetRequirement,
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
-    outputContract: requirementOutputContract,
   });
   const result = await input.provider.generateStructuredOutput({
-    schemaName: "RequirementAnalysisOutput",
+    schemaName: promptDraft.schemaName,
     schema: RequirementAnalysisOutputSchema,
-    system: requirementAnalysisPrompt.system,
-    user: promptPayload.prompt,
+    system: promptDraft.systemPrompt,
+    user: promptDraft.userPrompt,
     maxTokens: 12000,
     metadata: {
       action: "requirement_analysis.run",
@@ -61,6 +59,77 @@ export async function runRequirementAnalysis(input: {
   });
 
   return result;
+}
+
+export function buildRequirementAnalysisPromptDraft(input: {
+  scope: ProjectScope;
+  targetRequirement: unknown;
+  relatedWorkItems?: unknown[];
+  selectedContext: unknown[];
+  projectKnowledgeBase?: unknown | null;
+}) {
+  const scope = assertProjectScope(input.scope);
+  const promptPayload = buildRequirementAnalysisMarkdownPrompt({
+    currentProject: {
+      azureProjectId: scope.azureProjectId,
+      azureProjectName: scope.azureProjectName,
+    },
+    targetRequirement: input.targetRequirement,
+    relatedWorkItems: input.relatedWorkItems ?? [],
+    selectedContext: input.selectedContext,
+    projectKnowledgeBase: input.projectKnowledgeBase,
+    outputContract: requirementOutputContract,
+  });
+
+  return {
+    schemaName: "RequirementAnalysisOutput",
+    promptName: requirementAnalysisPrompt.name,
+    promptVersion: requirementAnalysisPrompt.version,
+    systemPrompt: requirementAnalysisPrompt.system,
+    userPrompt: promptPayload.prompt,
+    prompt: buildManualPromptMarkdown({
+      title: "iTestFlow Requirement Analysis",
+      system: requirementAnalysisPrompt.system,
+      user: promptPayload.prompt,
+    }),
+    relevantProjectKnowledgeBase: promptPayload.relevantProjectKnowledgeBase,
+  };
+}
+
+export function completeManualRequirementAnalysis(input: {
+  scope: ProjectScope;
+  rawOutput: string;
+  targetWorkItemId?: string;
+}) {
+  const scope = assertProjectScope(input.scope);
+  const validatedOutput = parseExternalStructuredOutput({
+    schemaName: "RequirementAnalysisOutput",
+    schema: RequirementAnalysisOutputSchema,
+    rawOutput: input.rawOutput,
+  });
+
+  writeAuditLog({
+    projectId: scope.projectId,
+    azureProjectId: scope.azureProjectId,
+    azureProjectName: scope.azureProjectName,
+    azureOrganizationUrl: scope.azureOrganizationUrl,
+    action: "requirement_analysis.manual_complete",
+    status: "Success",
+    message: "Requirement analysis completed from validated external LLM output.",
+    details: {
+      provider: "external",
+      model: "manual-external",
+      promptVersion: requirementAnalysisPrompt.version,
+      targetWorkItemId: input.targetWorkItemId,
+    },
+  });
+
+  return {
+    provider: "external",
+    model: "manual-external",
+    rawOutput: input.rawOutput,
+    validatedOutput,
+  };
 }
 
 const requirementOutputContract = {

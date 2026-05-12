@@ -120,12 +120,13 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         <Menu className="size-4" />
       </Button>
 
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
         <HeaderProjectSelector />
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <ConnectivityChip {...azureStatus} />
-          <ConnectivityChip {...llmStatus} className="max-w-[260px]" />
-        </div>
+      </div>
+
+      <div className="flex min-w-0 items-center gap-2">
+        <ConnectivityChip {...azureStatus} />
+        <ConnectivityChip {...llmStatus} className="max-w-[260px]" />
       </div>
 
       <div className="flex shrink-0 items-center gap-2 rounded-md border border-[#DCDFE4] bg-white px-2 py-1.5">
