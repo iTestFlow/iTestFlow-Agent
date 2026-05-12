@@ -24,7 +24,7 @@ export async function POST(request: Request) {
     }));
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Manual knowledge consolidation prompt preparation failed." },
+      { error: error instanceof Error ? error.message : "External LLM knowledge consolidation prompt preparation failed." },
       { status: 503 },
     );
   }

@@ -39,7 +39,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Manual test case validation failed." },
+      { error: error instanceof Error ? error.message : "External LLM test case validation failed." },
       { status: 422 },
     );
   }

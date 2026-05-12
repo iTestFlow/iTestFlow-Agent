@@ -25,7 +25,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ knowledgeBase: snapshot.knowledgeBase, snapshot });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Manual knowledge base finalization failed." },
+      { error: error instanceof Error ? error.message : "External LLM knowledge base finalization failed." },
       { status: 422 },
     );
   }

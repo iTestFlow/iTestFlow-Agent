@@ -34,7 +34,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Manual knowledge response validation failed." },
+      { error: error instanceof Error ? error.message : "External LLM knowledge response validation failed." },
       { status: 422 },
     );
   }

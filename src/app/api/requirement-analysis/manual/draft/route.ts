@@ -51,7 +51,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Manual requirement analysis prompt preparation failed." },
+      { error: error instanceof Error ? error.message : "External LLM requirement analysis prompt preparation failed." },
       { status: 503 },
     );
   }

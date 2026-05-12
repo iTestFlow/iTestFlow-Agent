@@ -347,7 +347,7 @@ export function ProjectContextClient() {
       const data = await postJson<KnowledgeManualDraft>("/api/context/knowledge/manual/draft", { scope })
       setManualKnowledgeDraft(data)
     } catch (draftError) {
-      setManualKnowledgeError(draftError instanceof Error ? draftError.message : "Manual knowledge prompt preparation failed.")
+      setManualKnowledgeError(draftError instanceof Error ? draftError.message : "External LLM knowledge prompt preparation failed.")
     } finally {
       setManualKnowledgeDraftLoading(false)
     }
@@ -383,7 +383,7 @@ export function ProjectContextClient() {
       const nextBatch = manualKnowledgeDraft.batches.find((item) => !nextValidated[item.batchIndex])
       if (nextBatch) setManualKnowledgeCurrentBatch(nextBatch.batchIndex)
     } catch (validationError) {
-      setManualKnowledgeError(validationError instanceof Error ? validationError.message : "Manual knowledge response validation failed.")
+      setManualKnowledgeError(validationError instanceof Error ? validationError.message : "External LLM knowledge response validation failed.")
     } finally {
       setManualKnowledgeValidationLoading(false)
     }
@@ -405,7 +405,7 @@ export function ProjectContextClient() {
       })
       if (data.snapshot) setKnowledgeSnapshot(data.snapshot)
     } catch (saveError) {
-      setManualKnowledgeError(saveError instanceof Error ? saveError.message : "Manual knowledge base save failed.")
+      setManualKnowledgeError(saveError instanceof Error ? saveError.message : "External LLM knowledge base save failed.")
     } finally {
       setManualKnowledgeSaveLoading(false)
     }
@@ -593,8 +593,8 @@ export function ProjectContextClient() {
             <CardContent className="space-y-4">
               <Tabs value={knowledgeMode} onValueChange={(value) => setKnowledgeMode(value as "auto" | "manual")} className="flex-col gap-4">
                 <TabsList className="h-auto w-fit rounded-md border border-[#DCDFE4] bg-white p-1">
-                  <TabsTrigger value="auto" className="h-9 px-3">Auto</TabsTrigger>
-                  <TabsTrigger value="manual" className="h-9 px-3">Manual</TabsTrigger>
+                  <TabsTrigger value="auto" className="h-9 px-3">Auto Generate</TabsTrigger>
+                  <TabsTrigger value="manual" className="h-9 px-3">External LLM</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="auto" className="space-y-4">
@@ -622,7 +622,7 @@ export function ProjectContextClient() {
                     </p>
                     <Button onClick={prepareManualKnowledgeDraft} disabled={!canExtractKnowledge || manualKnowledgeDraftLoading}>
                       {manualKnowledgeDraftLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-                      {manualKnowledgeDraftLoading ? "Preparing..." : "Prepare Manual Prompt"}
+                      {manualKnowledgeDraftLoading ? "Preparing..." : "Prepare External LLM Prompt"}
                     </Button>
                   </div>
 

@@ -19,7 +19,7 @@ export async function POST(request: Request) {
     return NextResponse.json(buildProjectKnowledgeManualDraft({ scope: parsed.data.scope }));
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Manual knowledge prompt preparation failed." },
+      { error: error instanceof Error ? error.message : "External LLM knowledge prompt preparation failed." },
       { status: 503 },
     );
   }

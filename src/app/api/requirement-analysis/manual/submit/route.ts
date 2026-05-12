@@ -39,7 +39,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Manual requirement analysis validation failed." },
+      { error: error instanceof Error ? error.message : "External LLM requirement analysis validation failed." },
       { status: 422 },
     );
   }
