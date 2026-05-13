@@ -1023,6 +1023,7 @@ export function ExistingTestCaseReviewClient() {
                   title="Suggested Additions"
                   targetWorkItemId={targetWorkItemId}
                   caseActions={false}
+                  allowDelete
                 />
                 <SuggestedAdditionsPublishPanel
                   scope={scope}
@@ -1099,7 +1100,7 @@ function ExistingTraceabilityMatrix({ rows }: { rows: ExistingTraceabilityRow[] 
                     <Badge tone={severityTone(row.severity)} className="mt-2">{row.severity}</Badge>
                   </td>
                   <td className="px-4 py-4">
-                    <div className="font-medium text-slate-950">{formatEnumLabel(row.sourceType)}</div>
+                    <div className="font-medium text-slate-950">{coverageSourceLabel(row.sourceType)}</div>
                     <div className="mt-1 text-xs text-slate-500">{row.sourceReference}</div>
                   </td>
                   <td className="max-w-[320px] px-4 py-4 text-slate-700">
@@ -1165,7 +1166,7 @@ function ExistingReviewInsights({ insights, findings }: { insights: ExistingRevi
           <div className="divide-y divide-[#d8e2ef]">
             {findings.map((finding) => (
               <div key={finding.id} className="grid gap-3 p-4 md:grid-cols-[120px_1fr]">
-                <Badge tone={severityTone(finding.severity)}>{finding.severity}</Badge>
+                <Badge tone={severityTone(finding.severity)} className="self-start justify-self-start whitespace-nowrap">{finding.severity}</Badge>
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium text-slate-950">{finding.title}</span>
@@ -1224,6 +1225,12 @@ function coverageTone(status: ExistingTraceabilityRow["coverageStatus"]) {
   if (status === "Partially covered") return "amber" as const;
   if (status === "Not covered") return "red" as const;
   return "violet" as const;
+}
+
+function coverageSourceLabel(sourceType: ExistingTraceabilityRow["sourceType"]) {
+  if (sourceType === "acceptanceCriteria") return "Acceptance Criteria";
+  if (sourceType === "description") return "Description";
+  return "Story";
 }
 
 function SuggestedAdditionsPublishPanel({
@@ -1729,12 +1736,16 @@ function EditableGeneratedCases({
   title = "Generated Test Cases",
   targetWorkItemId,
   caseActions = true,
+  allowDelete = caseActions,
+  allowAdd = caseActions,
 }: {
   testCases: GeneratedTestCase[];
   setTestCases: (testCases: GeneratedTestCase[]) => void;
   title?: string;
   targetWorkItemId?: string;
   caseActions?: boolean;
+  allowDelete?: boolean;
+  allowAdd?: boolean;
 }) {
   const testCaseStats = useMemo(() => {
     const byPriority: Record<GeneratedTestCase["priority"], number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
@@ -1828,7 +1839,7 @@ function EditableGeneratedCases({
                 <option value={4}>4 - Lowest</option>
               </SelectInput>
               <Badge tone="cyan">{testCase.type}</Badge>
-              {caseActions ? (
+              {allowDelete ? (
                 <Button variant="ghost" onClick={() => deleteCase(index)} aria-label={`Delete ${testCase.id}`}>
                   <Trash2 className="h-4 w-4" />
                 </Button>
@@ -1888,12 +1899,12 @@ function EditableGeneratedCases({
         )) : (
           <div className="p-4">
             <div className="rounded-md border border-dashed border-[#c8d4e4] bg-[#f8fafc] p-5 text-sm text-slate-500">
-              {caseActions ? "No test cases in this list. Add a test case to continue." : "No test cases in this list."}
+              {allowAdd ? "No test cases in this list. Add a test case to continue." : "No test cases in this list."}
             </div>
           </div>
         )}
       </div>
-      {caseActions ? (
+      {allowAdd ? (
         <div className="flex justify-end border-t border-[#d8e2ef] px-5 py-4">
           <Button variant="secondary" onClick={addCase}>
             <Plus className="h-4 w-4" />
