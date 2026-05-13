@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Copy, Loader2, Play, Send, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, Loader2, Play, Plus, Send, Trash2 } from "lucide-react";
+import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { Badge, Button, Card, CardHeader, SelectInput, TextArea, TextInput } from "@/shared/components/ui";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
@@ -51,7 +52,7 @@ type GeneratedTestCase = {
   id: string;
   title: string;
   description: string;
-  priority: "critical" | "high" | "medium" | "low";
+  priority: 1 | 2 | 3 | 4;
   type: string;
   category: string;
   tags?: string[];
@@ -102,6 +103,24 @@ type ExistingReviewResult = {
   linkedTestCases: Array<{ id: string; title: string; testType?: string; automationSuitability?: string; steps?: unknown[] }>;
   findings: Array<{ id: string; severity: string; category: string; title: string; explanation: string; suggestedAction: string }>;
   suggestedAdditions: GeneratedTestCase[];
+};
+
+type PublishRunResult = {
+  results: Array<{
+    localId: string;
+    azureTestCaseId?: string;
+    success: boolean;
+    create?: { success: boolean; error?: string };
+    link?: { success: boolean; error?: string };
+    suite?: { success: boolean; suiteId?: string; suiteName?: string; error?: string };
+    error?: string;
+  }>;
+  requirementSuite?: { success: boolean; suiteId?: string; suiteName?: string; error?: string };
+};
+
+type StoredGeneratedCasesPayload = {
+  targetWorkItemId?: string;
+  testCases?: GeneratedTestCase[];
 };
 
 function useActiveProject() {
@@ -172,6 +191,71 @@ function scrollToNextStep(ref: React.RefObject<HTMLElement | null>) {
   window.setTimeout(() => {
     ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, 120);
+}
+
+function extractAzureId(value: string, kind: "plan" | "suite") {
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return trimmed;
+  const queryPattern = kind === "plan" ? /[?&]planId=(\d+)/i : /[?&]suiteId=(\d+)/i;
+  const pathPattern = kind === "plan" ? /\/plans\/(\d+)(?:\/|$|\?)/i : /\/suites\/(\d+)(?:\/|$|\?)/i;
+  return trimmed.match(queryPattern)?.[1] ?? trimmed.match(pathPattern)?.[1] ?? "";
+}
+
+function readStoredGeneratedCasesPayload(): StoredGeneratedCasesPayload {
+  const previous = window.localStorage.getItem("itestflow.generatedTestCases");
+  try {
+    return previous ? (JSON.parse(previous) as StoredGeneratedCasesPayload) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredGeneratedCasesPayload(payload: StoredGeneratedCasesPayload) {
+  window.localStorage.setItem("itestflow.generatedTestCases", JSON.stringify(payload));
+}
+
+function buildManualGeneratedTestCase(existingCases: GeneratedTestCase[]): GeneratedTestCase {
+  const manualNumbers = existingCases
+    .map((testCase) => testCase.id.match(/^TC-MANUAL-(\d+)$/i)?.[1])
+    .filter((value): value is string => Boolean(value))
+    .map((value) => Number(value));
+  let nextNumber = Math.max(0, ...manualNumbers) + 1;
+  let id = `TC-MANUAL-${String(nextNumber).padStart(3, "0")}`;
+  const existingIds = new Set(existingCases.map((testCase) => testCase.id));
+  while (existingIds.has(id)) {
+    nextNumber += 1;
+    id = `TC-MANUAL-${String(nextNumber).padStart(3, "0")}`;
+  }
+
+  return {
+    id,
+    title: "New manual test case",
+    description: "Manual test case draft.",
+    priority: 2,
+    type: "regression",
+    category: "manual",
+    tags: [],
+    relatedAcceptanceCriteria: [],
+    relatedBusinessRules: [],
+    relatedModules: [],
+    preconditions: "Required setup is available.",
+    testData: "",
+    steps: [
+      {
+        stepNumber: 1,
+        action: "Preconditions:\n1. Required setup is available",
+        expectedResult: "Preconditions are met",
+      },
+    ],
+  };
+}
+
+function normalizeTestCasePriority(value: unknown): GeneratedTestCase["priority"] {
+  if (value === 1 || value === "1" || value === "critical") return 1;
+  if (value === 2 || value === "2" || value === "high") return 2;
+  if (value === 3 || value === "3" || value === "medium") return 3;
+  if (value === 4 || value === "4" || value === "low") return 4;
+  return 2;
 }
 
 const COPY_FEEDBACK_MS = 3000;
@@ -614,6 +698,7 @@ export function RequirementAnalysisClient() {
 
 export function TestCaseGenerationClient() {
   const scope = useActiveProject();
+  const generatedCasesRef = useRef<HTMLDivElement | null>(null);
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const [state, setState] = useState<ApiState<TestCaseGenerationRunResult>>({ loading: false, error: null, data: null });
@@ -633,7 +718,7 @@ export function TestCaseGenerationClient() {
   function applyGeneratedCases(data: TestCaseGenerationRunResult) {
     setState({ loading: false, error: null, data });
     setTestCases(data.testCases);
-    window.localStorage.setItem("itestflow.generatedTestCases", JSON.stringify({ targetWorkItemId, testCases: data.testCases }));
+    writeStoredGeneratedCasesPayload({ targetWorkItemId, testCases: data.testCases });
   }
 
   async function generate() {
@@ -646,6 +731,7 @@ export function TestCaseGenerationClient() {
         options: { depth: "balanced" },
       });
       applyGeneratedCases(data);
+      scrollToNextStep(generatedCasesRef);
     } catch (error) {
       setState({ loading: false, error: error instanceof Error ? error.message : "Test case generation failed.", data: null });
     }
@@ -682,6 +768,7 @@ export function TestCaseGenerationClient() {
         retrievalTopK: manualDraft.data.retrievalTopK,
       });
       applyGeneratedCases(data);
+      scrollToNextStep(generatedCasesRef);
     } catch (error) {
       setManualSubmitError(error instanceof Error ? error.message : "External LLM response validation failed.");
     } finally {
@@ -727,11 +814,16 @@ export function TestCaseGenerationClient() {
         </div>
       </Card>
       {state.error ? <ErrorBlock message={state.error} /> : null}
-      {testCases.length ? (
-        <EditableGeneratedCases testCases={testCases} setTestCases={setTestCases} />
-      ) : (
-        <EmptyBlock message="No generated test cases yet. Run generation against a real Azure DevOps work item." />
-      )}
+      <div ref={generatedCasesRef} className="space-y-6">
+        {state.data || testCases.length ? (
+          <>
+            <EditableGeneratedCases testCases={testCases} setTestCases={setTestCases} targetWorkItemId={targetWorkItemId} />
+            <PublishGeneratedCasesPanel scope={scope} targetWorkItemId={targetWorkItemId} testCases={testCases} />
+          </>
+        ) : (
+          <EmptyBlock message="No generated test cases yet. Run generation against a real Azure DevOps work item." />
+        )}
+      </div>
     </div>
   );
 }
@@ -804,35 +896,34 @@ export function ExistingTestCaseReviewClient() {
               ))}
             </div>
           </Card>
-          <EditableGeneratedCases testCases={state.data.suggestedAdditions} setTestCases={() => undefined} title="Suggested Additions" />
+          <EditableGeneratedCases testCases={state.data.suggestedAdditions} setTestCases={() => undefined} title="Suggested Additions" caseActions={false} />
         </>
       ) : null}
     </div>
   );
 }
 
-export function PublishTestCasesClient() {
-  const scope = useActiveProject();
-  const [targetWorkItemId, setTargetWorkItemId] = useState("");
-  const [testPlanId, setTestPlanId] = useState("");
-  const [testSuiteId, setTestSuiteId] = useState("");
+function PublishGeneratedCasesPanel({
+  scope,
+  targetWorkItemId,
+  testCases,
+}: {
+  scope: ActiveProjectScope | null;
+  targetWorkItemId: string;
+  testCases: GeneratedTestCase[];
+}) {
+  const [testPlanInput, setTestPlanInput] = useState("");
+  const [parentSuiteInput, setParentSuiteInput] = useState("");
+  const [createRequirementSuite, setCreateRequirementSuite] = useState(false);
   const [testPlans, setTestPlans] = useState<TestPlan[]>([]);
   const [testSuites, setTestSuites] = useState<TestSuite[]>([]);
   const [planError, setPlanError] = useState<string | null>(null);
-  const [testCases, setTestCases] = useState<GeneratedTestCase[]>([]);
-  const [state, setState] = useState<ApiState<{ results: unknown[] }>>({ loading: false, error: null, data: null });
-
-  useEffect(() => {
-    const raw = window.localStorage.getItem("itestflow.generatedTestCases");
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as { targetWorkItemId?: string; testCases?: GeneratedTestCase[] };
-      setTargetWorkItemId(parsed.targetWorkItemId ?? "");
-      setTestCases(parsed.testCases ?? []);
-    } catch {
-      setTestCases([]);
-    }
-  }, []);
+  const [state, setState] = useState<ApiState<PublishRunResult>>({ loading: false, error: null, data: null });
+  const selectedTestPlanId = useMemo(() => extractAzureId(testPlanInput, "plan"), [testPlanInput]);
+  const selectedSuiteId = useMemo(() => extractAzureId(parentSuiteInput, "suite"), [parentSuiteInput]);
+  const selectedPlanLabel = testPlans.find((plan) => plan.id === selectedTestPlanId);
+  const selectedSuiteLabel = testSuites.find((suite) => suite.id === selectedSuiteId);
+  const targetControlsDisabled = !createRequirementSuite;
 
   useEffect(() => {
     if (!scope) return;
@@ -843,30 +934,42 @@ export function PublishTestCasesClient() {
   }, [scope]);
 
   useEffect(() => {
-    if (!scope || !testPlanId) return;
+    if (!scope || !selectedTestPlanId || !createRequirementSuite) {
+      setTestSuites([]);
+      return;
+    }
     setPlanError(null);
-    postJson<{ testSuites: TestSuite[] }>("/api/azure-devops/test-suites", { scope, testPlanId })
+    postJson<{ testSuites: TestSuite[] }>("/api/azure-devops/test-suites", { scope, testPlanId: selectedTestPlanId })
       .then((data) => setTestSuites(data.testSuites))
       .catch((error: unknown) => setPlanError(error instanceof Error ? error.message : "Azure Test Suite fetch failed."));
-  }, [scope, testPlanId]);
+  }, [scope, selectedTestPlanId, createRequirementSuite]);
+
+  function selectPlan(value: string) {
+    setTestPlanInput(value);
+    setParentSuiteInput("");
+    setState({ loading: false, error: null, data: null });
+  }
+
+  function selectSuite(value: string) {
+    setParentSuiteInput(value);
+    setState({ loading: false, error: null, data: null });
+  }
 
   async function publish() {
-    if (!scope || !targetWorkItemId || !testPlanId || !testSuiteId || !testCases.length) return;
-    const confirmed = window.confirm(
-      `You are about to add ${testCases.length} selected test cases to:\nProject: ${scope.azureProjectName}\nTest Plan: ${testPlanId}\nTest Suite: ${testSuiteId}\nLinked User Story: ${targetWorkItemId}\nDo you want to continue?`,
-    );
-    if (!confirmed) return;
+    if (!scope || !targetWorkItemId || !createRequirementSuite || !selectedTestPlanId || !selectedSuiteId || !testCases.length) return;
     setState({ loading: true, error: null, data: null });
     try {
-      const data = await postJson<{ results: unknown[] }>("/api/publish/test-cases", {
+      const data = await postJson<PublishRunResult>("/api/publish/test-cases", {
         scope,
         targetWorkItemId,
-        testPlanId,
-        testSuiteId,
+        testPlanId: testPlanInput,
+        suiteMode: "requirement",
+        parentSuiteId: parentSuiteInput,
         testCases: testCases.map((testCase) => ({
           ...testCase,
           localId: testCase.id,
           targetUserStoryId: targetWorkItemId,
+          priority: normalizeTestCasePriority(testCase.priority),
           steps: testCase.steps.map((step) => ({ action: step.action, expectedResult: step.expectedResult })),
           testType: testCase.type,
         })),
@@ -877,44 +980,202 @@ export function PublishTestCasesClient() {
     }
   }
 
+  const disabled =
+    !scope ||
+    !targetWorkItemId ||
+    !createRequirementSuite ||
+    !selectedTestPlanId ||
+    !selectedSuiteId ||
+    !testCases.length ||
+    state.loading;
+
+  return (
+    <Card>
+      <CardHeader
+        title="Publish Generated Test Cases"
+        description="Create Azure Test Case work items, link them to the user story, then add them to a suite or create a requirement-based suite."
+      />
+      <div className="space-y-4 p-4">
+        <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+          <input
+            type="checkbox"
+            checked={createRequirementSuite}
+            onChange={(event) => {
+              setCreateRequirementSuite(event.target.checked);
+              setState({ loading: false, error: null, data: null });
+            }}
+            className="h-4 w-4"
+            aria-label="Create requirement-based suite for this user story"
+          />
+          Create requirement-based suite for this user story
+        </label>
+
+        <div className={`space-y-4 transition ${targetControlsDisabled ? "opacity-50" : "opacity-100"}`}>
+          <div className="grid gap-3 lg:grid-cols-2">
+            <SelectInput
+              value={selectedTestPlanId}
+              onChange={(event) => selectPlan(event.target.value)}
+              disabled={targetControlsDisabled}
+              aria-label="Select Azure Test Plan"
+            >
+              <option value="">Select Azure Test Plan</option>
+              {testPlans.map((plan) => (
+                <option key={plan.id} value={plan.id}>
+                  {plan.id} - {plan.name}
+                </option>
+              ))}
+            </SelectInput>
+            <TextInput
+              value={testPlanInput}
+              onChange={(event) => selectPlan(event.target.value)}
+              placeholder="Or paste Test Plan ID/link"
+              disabled={targetControlsDisabled}
+            />
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <SelectInput
+              value={selectedSuiteId}
+              onChange={(event) => selectSuite(event.target.value)}
+              disabled={targetControlsDisabled || !selectedTestPlanId}
+              aria-label="Select Parent Suite"
+            >
+              <option value="">Select Parent Suite</option>
+              {testSuites.map((suite) => (
+                <option key={suite.id} value={suite.id}>
+                  {suite.id} - {suite.name}
+                </option>
+              ))}
+            </SelectInput>
+            <TextInput
+              value={parentSuiteInput}
+              onChange={(event) => selectSuite(event.target.value)}
+              placeholder="Or paste Parent Suite ID/link"
+              disabled={targetControlsDisabled}
+            />
+          </div>
+        </div>
+
+        {planError ? <ErrorBlock message={planError} /> : null}
+        {state.error ? <ErrorBlock message={state.error} /> : null}
+
+        <div className="flex justify-end">
+          <ConfirmationDialog
+            trigger={
+              <Button disabled={disabled}>
+                {state.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                {state.loading ? "Publishing..." : `Publish ${testCases.length || ""}`}
+              </Button>
+            }
+            title="Publish generated test cases?"
+            description={
+              <div className="space-y-1">
+                <p>Project: {scope?.azureProjectName ?? "Selected Azure DevOps project"}</p>
+                <p>User story: {targetWorkItemId}</p>
+                <p>Test cases: {testCases.length}</p>
+                <p>Test plan: {selectedPlanLabel ? `${selectedPlanLabel.id} - ${selectedPlanLabel.name}` : selectedTestPlanId}</p>
+                <p>Parent suite: {selectedSuiteLabel ? `${selectedSuiteLabel.id} - ${selectedSuiteLabel.name}` : selectedSuiteId}</p>
+              </div>
+            }
+            confirmLabel="Publish cases"
+            onConfirm={publish}
+          />
+        </div>
+
+        {state.data ? <PublishResultSummary data={state.data} /> : null}
+      </div>
+    </Card>
+  );
+}
+
+function PublishResultSummary({ data }: { data: PublishRunResult }) {
+  const successCount = data.results.filter((result) => result.success).length;
+  return (
+    <div className="rounded-md border border-[#c8d4e4] bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
+        <div className="text-sm font-semibold text-slate-950">
+          Publish Results: {successCount} of {data.results.length} completed
+        </div>
+        {data.requirementSuite ? (
+          <Badge tone={data.requirementSuite.success ? "emerald" : "red"}>
+            {data.requirementSuite.success
+              ? `Suite ${data.requirementSuite.suiteId ?? ""}`.trim()
+              : "Suite failed"}
+          </Badge>
+        ) : null}
+      </div>
+      <div className="divide-y">
+        {data.results.map((result) => (
+          <div key={result.localId} className="grid gap-3 p-3 text-sm lg:grid-cols-[140px_120px_120px_120px_minmax(0,1fr)]">
+            <span className="font-mono text-xs text-blue-600">{result.localId}</span>
+            <span>{result.azureTestCaseId ? `Azure ${result.azureTestCaseId}` : "Not created"}</span>
+            <StatusText label="Create" success={result.create?.success} error={result.create?.error ?? result.error} />
+            <StatusText label="Link" success={result.link?.success} error={result.link?.error} />
+            <StatusText
+              label="Suite"
+              success={result.suite?.success}
+              error={result.suite?.error}
+              detail={result.suite?.suiteName ?? result.suite?.suiteId}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StatusText({
+  label,
+  success,
+  error,
+  detail,
+}: {
+  label: string;
+  success?: boolean;
+  error?: string;
+  detail?: string;
+}) {
+  const tone = success ? "text-emerald-700" : "text-red-700";
+  return (
+    <div className={tone}>
+      <span className="font-medium">{label}: </span>
+      {success ? detail ?? "Done" : error ?? "Failed"}
+    </div>
+  );
+}
+
+export function PublishTestCasesClient() {
+  const scope = useActiveProject();
+  const [targetWorkItemId, setTargetWorkItemId] = useState("");
+  const [testCases, setTestCases] = useState<GeneratedTestCase[]>([]);
+
+  useEffect(() => {
+    const parsed = readStoredGeneratedCasesPayload();
+    setTargetWorkItemId(parsed.targetWorkItemId ?? "");
+    setTestCases(parsed.testCases ?? []);
+  }, []);
+
+  function changeTargetWorkItemId(value: string) {
+    setTargetWorkItemId(value);
+    writeStoredGeneratedCasesPayload({ ...readStoredGeneratedCasesPayload(), targetWorkItemId: value, testCases });
+  }
+
   return (
     <div className="space-y-6">
       {projectWarning(scope)}
       <Card>
-        <CardHeader title="Publish Selected Test Cases to Azure Test Plans" />
-        <div className="grid gap-4 p-4 lg:grid-cols-4">
-          <TextInput value={targetWorkItemId} onChange={(event) => setTargetWorkItemId(event.target.value)} placeholder="Target user story ID" />
-          <SelectInput value={testPlanId} onChange={(event) => setTestPlanId(event.target.value)}>
-            <option value="">Select Azure Test Plan</option>
-            {testPlans.map((plan) => (
-              <option key={plan.id} value={plan.id}>
-                {plan.id} - {plan.name}
-              </option>
-            ))}
-          </SelectInput>
-          <SelectInput value={testSuiteId} onChange={(event) => setTestSuiteId(event.target.value)}>
-            <option value="">Select Azure Test Suite</option>
-            {testSuites.map((suite) => (
-              <option key={suite.id} value={suite.id}>
-                {suite.id} - {suite.name}
-              </option>
-            ))}
-          </SelectInput>
-          <Button onClick={publish} disabled={!scope || !targetWorkItemId || !testPlanId || !testSuiteId || !testCases.length || state.loading}>
-            <Send className="h-4 w-4" />
-            {state.loading ? "Publishing..." : `Publish ${testCases.length || ""}`}
-          </Button>
+        <CardHeader title="Target User Story" />
+        <div className="p-4">
+          <TextInput value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="Target user story ID" />
         </div>
       </Card>
-      {planError ? <ErrorBlock message={planError} /> : null}
-      {state.error ? <ErrorBlock message={state.error} /> : null}
-      {testCases.length ? <EditableGeneratedCases testCases={testCases} setTestCases={setTestCases} title="Cases Ready to Publish" /> : <EmptyBlock message="No approved generated cases found in this browser session. Generate or review additions first." />}
-      {state.data ? (
-        <Card>
-          <CardHeader title="Publish Results" />
-          <pre className="overflow-auto p-4 text-xs text-muted-foreground">{JSON.stringify(state.data.results, null, 2)}</pre>
-        </Card>
-      ) : null}
+      <EditableGeneratedCases
+        testCases={testCases}
+        setTestCases={setTestCases}
+        title="Cases Ready to Publish"
+        targetWorkItemId={targetWorkItemId}
+      />
+      <PublishGeneratedCasesPanel scope={scope} targetWorkItemId={targetWorkItemId} testCases={testCases} />
     </div>
   );
 }
@@ -1044,41 +1305,66 @@ function EditableGeneratedCases({
   testCases,
   setTestCases,
   title = "Generated Test Cases",
+  targetWorkItemId,
+  caseActions = true,
 }: {
   testCases: GeneratedTestCase[];
   setTestCases: (testCases: GeneratedTestCase[]) => void;
   title?: string;
+  targetWorkItemId?: string;
+  caseActions?: boolean;
 }) {
+  function persistCases(updated: GeneratedTestCase[]) {
+    setTestCases(updated);
+    const previousPayload = readStoredGeneratedCasesPayload();
+    writeStoredGeneratedCasesPayload({
+      ...previousPayload,
+      targetWorkItemId: targetWorkItemId ?? previousPayload.targetWorkItemId,
+      testCases: updated,
+    });
+  }
+
   function updateCase(index: number, next: GeneratedTestCase) {
     const updated = [...testCases];
     updated[index] = next;
-    setTestCases(updated);
-    const previous = window.localStorage.getItem("itestflow.generatedTestCases");
-    let previousPayload: { targetWorkItemId?: string } = {};
-    try {
-      previousPayload = previous ? (JSON.parse(previous) as { targetWorkItemId?: string }) : {};
-    } catch {
-      previousPayload = {};
-    }
-    window.localStorage.setItem("itestflow.generatedTestCases", JSON.stringify({ ...previousPayload, testCases: updated }));
+    persistCases(updated);
+  }
+
+  function addCase() {
+    persistCases([...testCases, buildManualGeneratedTestCase(testCases)]);
+  }
+
+  function deleteCase(index: number) {
+    persistCases(testCases.filter((_, current) => current !== index));
   }
 
   return (
     <Card>
-      <CardHeader title={title} description="Edit titles and steps inline before publishing." />
+      <CardHeader
+        title={title}
+        description="Edit titles and steps inline before publishing."
+      />
       <div className="divide-y">
-        {testCases.map((testCase, index) => (
+        {testCases.length ? testCases.map((testCase, index) => (
           <div key={testCase.id} className="space-y-3 p-4">
-            <div className="grid gap-3 lg:grid-cols-[120px_1fr_160px_160px]">
+            <div className="grid gap-3 lg:grid-cols-[120px_1fr_160px_160px_42px]">
               <span className="font-mono text-xs text-blue-600">{testCase.id}</span>
               <TextInput value={testCase.title} onChange={(event) => updateCase(index, { ...testCase, title: event.target.value })} />
-              <SelectInput value={testCase.priority} onChange={(event) => updateCase(index, { ...testCase, priority: event.target.value as GeneratedTestCase["priority"] })}>
-                <option value="critical">critical</option>
-                <option value="high">high</option>
-                <option value="medium">medium</option>
-                <option value="low">low</option>
+              <SelectInput
+                value={testCase.priority}
+                onChange={(event) => updateCase(index, { ...testCase, priority: Number(event.target.value) as GeneratedTestCase["priority"] })}
+              >
+                <option value={1}>1 - Highest</option>
+                <option value={2}>2</option>
+                <option value={3}>3</option>
+                <option value={4}>4 - Lowest</option>
               </SelectInput>
               <Badge tone="cyan">{testCase.type}</Badge>
+              {caseActions ? (
+                <Button variant="ghost" onClick={() => deleteCase(index)} aria-label={`Delete ${testCase.id}`}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              ) : null}
             </div>
             <div className="rounded-md border">
               {testCase.steps.map((step, stepIndex) => (
@@ -1103,6 +1389,7 @@ function EditableGeneratedCases({
                   <Button
                     variant="ghost"
                     onClick={() => updateCase(index, { ...testCase, steps: testCase.steps.filter((_, current) => current !== stepIndex) })}
+                    aria-label={`Delete step ${stepIndex + 1} from ${testCase.id}`}
                   >
                     <Trash2 className="h-4 w-4" />
                   </Button>
@@ -1130,8 +1417,22 @@ function EditableGeneratedCases({
               </Button>
             </div>
           </div>
-        ))}
+        )) : (
+          <div className="p-4">
+            <div className="rounded-md border border-dashed border-[#c8d4e4] bg-[#f8fafc] p-5 text-sm text-slate-500">
+              {caseActions ? "No test cases in this list. Add a test case to continue." : "No test cases in this list."}
+            </div>
+          </div>
+        )}
       </div>
+      {caseActions ? (
+        <div className="flex justify-end border-t border-[#d8e2ef] px-5 py-4">
+          <Button variant="secondary" onClick={addCase}>
+            <Plus className="h-4 w-4" />
+            Add Test Case
+          </Button>
+        </div>
+      ) : null}
     </Card>
   );
 }

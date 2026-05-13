@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { ContextUsedSchema } from "@/modules/llm/context-used";
 
-export const TestCasePrioritySchema = z.enum(["critical", "high", "medium", "low"]);
+export const TestCasePrioritySchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]);
 export const TestCaseTypeSchema = z.enum([
   "smoke",
   "sanity",
@@ -70,7 +71,7 @@ export const TestCaseGenerationSummarySchema = z.object({
 export const TestCaseGenerationOutputSchema = z.object({
   testCases: z.array(GeneratedTestCaseSchema),
   summary: TestCaseGenerationSummarySchema,
-  contextUsed: z.array(z.string()).default([]),
+  contextUsed: ContextUsedSchema,
 });
 
 export type GeneratedTestCase = z.infer<typeof GeneratedTestCaseSchema>;

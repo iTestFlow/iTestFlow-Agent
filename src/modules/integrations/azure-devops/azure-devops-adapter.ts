@@ -74,6 +74,18 @@ export interface AzureDevOpsAdapter {
     error?: string;
   }>;
 
+  createRequirementBasedSuite(input: {
+    projectId: string;
+    testPlanId: string;
+    parentSuiteId: string;
+    requirementId: string;
+    name: string;
+  }): Promise<{
+    success: boolean;
+    suite?: TestSuite;
+    error?: string;
+  }>;
+
   linkTestCaseToUserStory(input: {
     projectId: string;
     userStoryId: string;

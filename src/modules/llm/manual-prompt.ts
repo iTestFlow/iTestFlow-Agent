@@ -12,6 +12,7 @@ export function buildManualPromptMarkdown(input: {
     "",
     "Your entire response must be one valid JSON object only. Do not include markdown fences, commentary, explanations, acknowledgements, or any text before or after the JSON.",
     "Escape all double quotes that appear inside JSON string values, for example use \\\"Health Declaration\\\" inside a string. Do not use smart quotes.",
+    "If your chat UI labels the pasted prompt as a file such as Pasted markdown.md, do not treat that label as source context and do not include it in contextUsed.",
     "",
     `TASK: ${input.title}`,
     "",

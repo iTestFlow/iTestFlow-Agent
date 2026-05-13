@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ContextUsedSchema } from "@/modules/llm/context-used";
 
 export const RequirementFindingTypeSchema = z.enum([
   "ambiguity",
@@ -56,7 +57,7 @@ export const RequirementAnalysisOutputSchema = z.object({
   summary: RequirementAnalysisSummarySchema,
   recommendations: z.array(z.string()).default([]),
   questionsForProductOwner: z.array(z.string()).default([]),
-  contextUsed: z.array(z.string()).default([]),
+  contextUsed: ContextUsedSchema,
 });
 
 export type RequirementAnalysisOutput = z.infer<typeof RequirementAnalysisOutputSchema>;
