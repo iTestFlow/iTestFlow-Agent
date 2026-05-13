@@ -331,7 +331,6 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
           value: {
             rel: "System.LinkTypes.Hierarchy-Reverse",
             url: parentUrl,
-            attributes: { comment: "Created by iTestFlow bulk task creation." },
           },
         },
       ];
