@@ -46,7 +46,7 @@ iTestFlow is a local-first QA command center for Azure DevOps testing workflows.
 - Fetch and index filtered project context for RAG-assisted retrieval.
 - Analyze one real Azure DevOps requirement at a time.
 - Generate and edit test cases for a selected work item.
-- Review existing linked Azure DevOps test cases.
+- Build a Test Coverage Matrix from existing linked Azure DevOps test cases.
 - Publish approved comments and test cases back to Azure DevOps.
 - Audit local workflow activity.
 
@@ -125,10 +125,11 @@ Test Case Design:
 - `/api/publish/test-cases` publishes approved test cases to Azure Test Plans.
 - Prompt, schema, and generation logic live under `src/modules/test-case-design`.
 
-Existing Linked Test Case Review:
+Test Coverage Matrix:
 
-- UI routes live under `/existing-test-case-review*` and `/test-cases/existing-review`.
+- UI routes live under `/test-coverage-matrix`, `/existing-test-case-review*`, and `/test-cases/existing-review`.
 - `/api/existing-test-case-review/run` fetches linked test cases from Azure DevOps and runs the review service.
+- `/api/test-coverage-matrix/suggested-additions/publish` creates suggested Azure Test Case work items and links them to the user story.
 - Service, prompt, and schema code live under `src/modules/existing-test-case-review`.
 
 Audit:

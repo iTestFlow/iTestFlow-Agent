@@ -1,7 +1,7 @@
-import { ContentShell } from "@/components/layout/content-shell"
-import { ExistingTestCaseReviewClient } from "@/shared/components/live/live-workflows"
+import { ContentShell } from "@/components/layout/content-shell";
+import { ExistingTestCaseReviewClient } from "@/shared/components/live/live-workflows";
 
-export default function ExistingReviewPage() {
+export default function TestCoverageMatrixPage() {
   return (
     <ContentShell
       title="Test Coverage Matrix"
@@ -9,5 +9,5 @@ export default function ExistingReviewPage() {
     >
       <ExistingTestCaseReviewClient />
     </ContentShell>
-  )
+  );
 }

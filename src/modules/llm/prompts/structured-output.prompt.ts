@@ -111,6 +111,33 @@ function requiredOutputShape(schemaName: string) {
   if (schemaName === "ExistingTestCaseReviewOutput") {
     return {
       summary: "string",
+      coverageScore: "number from 0 to 100",
+      traceabilityMatrix: [
+        {
+          id: "TM-001",
+          sourceType: "story | description | acceptanceCriteria",
+          sourceReference: "Title | Description paragraph 1 | AC-1",
+          requirementText: "atomic testable story point",
+          coverageStatus: "Covered | Partially covered | Not covered | Needs review",
+          severity: "High | Medium | Low",
+          linkedTestCaseIds: ["string"],
+          evidenceSummary: "what the linked tests actually validate",
+          missingCoverage: "what is missing, or empty string when fully covered",
+          recommendedMinimumTestCount: "integer 0 or greater",
+          recommendedAction: "specific next action",
+        },
+      ],
+      insights: [
+        {
+          id: "INS-001",
+          severity: "High | Medium | Low",
+          title: "string",
+          explanation: "string",
+          relatedMatrixRowIds: ["string"],
+          relatedTestCaseIds: ["string"],
+          suggestedAction: "string",
+        },
+      ],
       findings: [
         {
           id: "string",
@@ -119,11 +146,13 @@ function requiredOutputShape(schemaName: string) {
           severity: "High | Medium | Low",
           title: "string",
           explanation: "string",
+          relatedMatrixRowIds: ["string"],
           relatedTestCaseIds: ["string"],
           suggestedAction: "string",
         },
       ],
       suggestedAdditions: [generatedTestCaseShape()],
+      contextUsed: ["source ID string only, not objects or prompt filenames"],
     };
   }
 

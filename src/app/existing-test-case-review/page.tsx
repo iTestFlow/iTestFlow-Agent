@@ -5,9 +5,9 @@ export default function ExistingTestCaseReviewPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Existing Linked Test Case Review"
-        title="Fetch and Review Azure DevOps Linked Test Cases"
-        description="Only TestedBy / Tests linked cases for the selected user story are reviewed. No paste or import is used."
+        eyebrow="Test Coverage Matrix"
+        title="Test Coverage Matrix"
+        description="Review linked Azure DevOps test cases against each user story detail, description point, and acceptance criterion."
       />
       <ExistingTestCaseReviewClient />
     </>

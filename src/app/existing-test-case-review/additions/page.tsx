@@ -5,9 +5,9 @@ export default function SuggestedAdditionsPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Existing Linked Test Case Review"
+        eyebrow="Test Coverage Matrix"
         title="Suggested Additions"
-        description="Suggested additions are drafts only. Select, edit, and approve before publishing to Azure Test Plans."
+        description="Review suggested additions, then create and link them to the selected Azure DevOps user story."
       />
       <ExistingTestCaseReviewClient />
     </>

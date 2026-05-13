@@ -1,6 +1,6 @@
 # iTestFlow
 
-Local-first test intelligence command center for Azure DevOps requirement analysis, RAG-assisted context selection, test case design, existing linked test case review, coverage validation, and reviewed publishing back to Azure Test Plans.
+Local-first test intelligence command center for Azure DevOps requirement analysis, RAG-assisted context selection, test case design, Test Coverage Matrix review, coverage validation, and reviewed publishing back to Azure Test Plans.
 
 The MVP runs locally with real Azure DevOps and LLM provider APIs. Runtime configuration is initiated from the UI, can be edited later from Settings, and `.env.local` is optional as a bootstrap fallback.
 
@@ -113,7 +113,7 @@ After configuration, open:
 2. Select an Azure DevOps project in the header selector.
 3. Fetch and index filtered project context from `/context` when you want RAG-assisted suggestions.
 4. Enter a real Azure DevOps work item ID in Requirement Analysis or Test Case Design.
-5. Run context suggestion, analysis, generation, or existing linked test case review.
+5. Run context suggestion, analysis, generation, or Test Coverage Matrix review.
 6. Review and edit AI output before pushing comments or publishing test cases.
 7. Publish selected test cases to a fetched Azure Test Plan and Test Suite.
 8. Check Audit Logs for local execution history.
