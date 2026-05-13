@@ -131,10 +131,9 @@ Existing Linked Test Case Review:
 - `/api/existing-test-case-review/run` fetches linked test cases from Azure DevOps and runs the review service.
 - Service, prompt, and schema code live under `src/modules/existing-test-case-review`.
 
-Audit and reporting:
+Audit:
 
 - `/audit-logs` reads local audit activity through `/api/audit-logs`.
-- `/reports` and `/api/export/[kind]` provide export surfaces.
 
 ## Integration Boundaries
 

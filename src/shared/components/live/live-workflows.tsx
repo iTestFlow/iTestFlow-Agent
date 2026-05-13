@@ -1314,6 +1314,22 @@ function EditableGeneratedCases({
   targetWorkItemId?: string;
   caseActions?: boolean;
 }) {
+  const testCaseStats = useMemo(() => {
+    const byPriority: Record<GeneratedTestCase["priority"], number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
+    const byType: Record<string, number> = {};
+
+    for (const testCase of testCases) {
+      byPriority[testCase.priority] += 1;
+      byType[testCase.type] = (byType[testCase.type] ?? 0) + 1;
+    }
+
+    return {
+      total: testCases.length,
+      byPriority,
+      byType: Object.entries(byType).sort(([firstType], [secondType]) => firstType.localeCompare(secondType)),
+    };
+  }, [testCases]);
+
   function persistCases(updated: GeneratedTestCase[]) {
     setTestCases(updated);
     const previousPayload = readStoredGeneratedCasesPayload();
@@ -1344,6 +1360,36 @@ function EditableGeneratedCases({
         title={title}
         description="Edit titles and steps inline before publishing."
       />
+      <div className="grid gap-3 border-b border-[#d8e2ef] bg-[#f8fafc] px-5 py-4 text-sm text-slate-700 lg:grid-cols-[160px_1fr_1fr]">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-normal text-slate-500">Total</div>
+          <div className="mt-1 text-2xl font-bold text-slate-950">{testCaseStats.total}</div>
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-normal text-slate-500">By Priority</div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {([1, 2, 3, 4] as const).map((priority) => (
+              <Badge key={priority} tone={priority === 1 ? "red" : priority === 2 ? "amber" : priority === 3 ? "blue" : "slate"}>
+                Priority {priority}: {testCaseStats.byPriority[priority]}
+              </Badge>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-normal text-slate-500">By Type</div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {testCaseStats.byType.length ? (
+              testCaseStats.byType.map(([type, count]) => (
+                <Badge key={type} tone="cyan">
+                  {formatEnumLabel(type)}: {count}
+                </Badge>
+              ))
+            ) : (
+              <span className="text-xs text-slate-500">No types yet</span>
+            )}
+          </div>
+        </div>
+      </div>
       <div className="divide-y">
         {testCases.length ? testCases.map((testCase, index) => (
           <div key={testCase.id} className="space-y-3 p-4">

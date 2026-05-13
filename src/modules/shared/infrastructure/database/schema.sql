@@ -548,21 +548,6 @@ CREATE TABLE IF NOT EXISTS azure_devops_test_case_links (
   updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS coverage_matrix_items (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL,
-  azure_project_id TEXT NOT NULL,
-  target_work_item_id TEXT NOT NULL,
-  source_type TEXT NOT NULL,
-  source_id TEXT NOT NULL,
-  source_text TEXT NOT NULL,
-  mapped_test_case_ids TEXT,
-  status TEXT NOT NULL,
-  confidence_score REAL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS scoring_results (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
