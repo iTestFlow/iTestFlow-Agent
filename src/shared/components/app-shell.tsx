@@ -10,7 +10,7 @@ const navigation = [
   { href: "/context", label: "Project Context" },
   { href: "/requirements/select", label: "Requirement Analysis", section: "/requirements" },
   { href: "/test-cases/select", label: "Test Case Design", section: "/test-cases" },
-  { href: "/existing-test-case-review", label: "Existing Test Case Review" },
+  { href: "/test-coverage-matrix", label: "Test Coverage Matrix" },
   { href: "/audit-logs", label: "Audit Logs" },
   { href: "/settings", label: "Settings" },
 ];
@@ -29,8 +29,9 @@ const pageTitles = [
   { match: "/test-cases/select", title: "Test Case Design" },
   { match: "/publish/summary", title: "Publish Result Summary" },
   { match: "/publish", title: "Publish Test Cases to Azure Test Plan Suite" },
-  { match: "/existing-test-case-review/additions", title: "Suggested Additions from Existing Test Case Review" },
-  { match: "/existing-test-case-review", title: "Existing Linked Test Case Review" },
+  { match: "/test-coverage-matrix", title: "Test Coverage Matrix" },
+  { match: "/existing-test-case-review/additions", title: "Suggested Additions from Test Coverage Matrix" },
+  { match: "/existing-test-case-review", title: "Test Coverage Matrix" },
   { match: "/audit-logs", title: "Audit Logs / History" },
   { match: "/settings", title: "Settings" },
 ];

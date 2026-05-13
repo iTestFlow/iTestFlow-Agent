@@ -99,10 +99,58 @@ type TestSuite = {
   planId: string;
 };
 
+type ExistingLinkedTestCase = {
+  id: string;
+  title: string;
+  testType?: string;
+  automationSuitability?: string;
+  steps?: unknown[];
+};
+
+type ExistingTraceabilityRow = {
+  id: string;
+  sourceType: "story" | "description" | "acceptanceCriteria";
+  sourceReference: string;
+  requirementText: string;
+  coverageStatus: "Covered" | "Partially covered" | "Not covered" | "Needs review";
+  severity: "High" | "Medium" | "Low";
+  linkedTestCaseIds: string[];
+  evidenceSummary: string;
+  missingCoverage: string;
+  recommendedMinimumTestCount: number;
+  recommendedAction: string;
+};
+
+type ExistingReviewInsight = {
+  id: string;
+  severity: "High" | "Medium" | "Low";
+  title: string;
+  explanation: string;
+  relatedMatrixRowIds: string[];
+  relatedTestCaseIds: string[];
+  suggestedAction: string;
+};
+
+type ExistingReviewFinding = {
+  id: string;
+  severity: "High" | "Medium" | "Low";
+  category: string;
+  title: string;
+  explanation: string;
+  relatedMatrixRowIds?: string[];
+  relatedTestCaseIds?: string[];
+  suggestedAction: string;
+};
+
 type ExistingReviewResult = {
-  linkedTestCases: Array<{ id: string; title: string; testType?: string; automationSuitability?: string; steps?: unknown[] }>;
-  findings: Array<{ id: string; severity: string; category: string; title: string; explanation: string; suggestedAction: string }>;
+  summary: string;
+  coverageScore: number;
+  traceabilityMatrix: ExistingTraceabilityRow[];
+  insights: ExistingReviewInsight[];
+  linkedTestCases: ExistingLinkedTestCase[];
+  findings: ExistingReviewFinding[];
   suggestedAdditions: GeneratedTestCase[];
+  contextUsed: string[];
 };
 
 type PublishRunResult = {
@@ -116,6 +164,17 @@ type PublishRunResult = {
     error?: string;
   }>;
   requirementSuite?: { success: boolean; suiteId?: string; suiteName?: string; error?: string };
+};
+
+type SuggestedAdditionsPublishResult = {
+  results: Array<{
+    localId: string;
+    azureTestCaseId?: string;
+    success: boolean;
+    create?: { success: boolean; error?: string };
+    link?: { success: boolean; error?: string };
+    error?: string;
+  }>;
 };
 
 type StoredGeneratedCasesPayload = {
@@ -830,10 +889,33 @@ export function TestCaseGenerationClient() {
 
 export function ExistingTestCaseReviewClient() {
   const scope = useActiveProject();
+  const resultsRef = useRef<HTMLDivElement | null>(null);
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
-  const [contextIds, setContextIds] = useState("");
+  const [mode, setMode] = useState<WorkflowMode>("auto");
   const [state, setState] = useState<ApiState<ExistingReviewResult>>({ loading: false, error: null, data: null });
-  const selectedContextIds = useMemo(() => contextIds.split(",").map((item) => item.trim()).filter(Boolean), [contextIds]);
+  const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
+  const [manualResponse, setManualResponse] = useState("");
+  const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
+  const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
+
+  function changeTargetWorkItemId(value: string) {
+    setTargetWorkItemId(value);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }
+
+  function applyReviewResult(data: ExistingReviewResult) {
+    setState({ loading: false, error: null, data });
+    writeStoredGeneratedCasesPayload({ targetWorkItemId, testCases: data.suggestedAdditions });
+  }
+
+  function updateSuggestedAdditions(testCases: GeneratedTestCase[]) {
+    setState((current) => ({
+      ...current,
+      data: current.data ? { ...current.data, suggestedAdditions: testCases } : current.data,
+    }));
+  }
 
   async function review() {
     if (!scope || !targetWorkItemId) return;
@@ -842,12 +924,49 @@ export function ExistingTestCaseReviewClient() {
       const data = await postJson<ExistingReviewResult>("/api/existing-test-case-review/run", {
         scope,
         targetWorkItemId,
-        selectedContextIds,
       });
-      setState({ loading: false, error: null, data });
-      window.localStorage.setItem("itestflow.generatedTestCases", JSON.stringify({ targetWorkItemId, testCases: data.suggestedAdditions }));
+      applyReviewResult(data);
+      scrollToNextStep(resultsRef);
     } catch (error) {
-      setState({ loading: false, error: error instanceof Error ? error.message : "Existing linked test case review failed.", data: null });
+      setState({ loading: false, error: error instanceof Error ? error.message : "Test Coverage Matrix generation failed.", data: null });
+    }
+  }
+
+  async function prepareManualPrompt() {
+    if (!scope || !targetWorkItemId) return;
+    setManualDraft({ loading: true, error: null, data: null });
+    setManualSubmitError(null);
+    setManualResponse("");
+    try {
+      const data = await postJson<ManualPromptDraft>("/api/existing-test-case-review/manual/draft", {
+        scope,
+        targetWorkItemId,
+      });
+      setManualDraft({ loading: false, error: null, data });
+    } catch (error) {
+      setManualDraft({ loading: false, error: error instanceof Error ? error.message : "External LLM prompt preparation failed.", data: null });
+    }
+  }
+
+  async function submitManualResponse() {
+    if (!scope || !targetWorkItemId || !manualDraft.data || !manualResponse.trim()) return;
+    setManualSubmitLoading(true);
+    setManualSubmitError(null);
+    try {
+      const data = await postJson<ExistingReviewResult>("/api/existing-test-case-review/manual/submit", {
+        scope,
+        targetWorkItemId,
+        rawOutput: manualResponse,
+        selectedContextIds: manualDraft.data.selectedContextIds ?? [],
+        resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
+        retrievalTopK: manualDraft.data.retrievalTopK,
+      });
+      applyReviewResult(data);
+      scrollToNextStep(resultsRef);
+    } catch (error) {
+      setManualSubmitError(error instanceof Error ? error.message : "External LLM response validation failed.");
+    } finally {
+      setManualSubmitLoading(false);
     }
   }
 
@@ -855,50 +974,360 @@ export function ExistingTestCaseReviewClient() {
     <div className="space-y-6">
       {projectWarning(scope)}
       <Card>
-        <CardHeader title="Review Existing Azure DevOps Linked Test Cases" description="Fetches TestedBy / Tests relationships from the selected story." />
-        <div className="grid gap-4 p-4 lg:grid-cols-[240px_1fr_auto]">
-          <TextInput value={targetWorkItemId} onChange={(event) => setTargetWorkItemId(event.target.value)} placeholder="User story ID" />
-          <TextInput value={contextIds} onChange={(event) => setContextIds(event.target.value)} placeholder="Selected context IDs, comma separated" />
-          <Button onClick={review} disabled={!scope || !targetWorkItemId || state.loading}>
-            <Play className="h-4 w-4" />
-            {state.loading ? "Reviewing..." : "Run Review"}
-          </Button>
+        <CardHeader
+          title="Test Coverage Matrix"
+          description="Enter a user story ID. Linked test cases and project context are selected automatically for this run."
+          action={<WorkflowModeTabs mode={mode} onChange={setMode} />}
+        />
+        <div className="space-y-4 p-4">
+          <div className="grid gap-4 lg:grid-cols-[240px_auto]">
+            <TextInput value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="User story ID" />
+            {mode === "auto" ? (
+              <Button onClick={review} disabled={!scope || !targetWorkItemId || state.loading}>
+                <Play className="h-4 w-4" />
+                {state.loading ? "Reviewing..." : "Auto Generate"}
+              </Button>
+            ) : (
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading}>
+                <Play className="h-4 w-4" />
+                {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
+              </Button>
+            )}
+          </div>
+          {mode === "manual" ? (
+            <ManualLLMPanel
+              draft={manualDraft.data}
+              response={manualResponse}
+              onResponseChange={setManualResponse}
+              onSubmit={submitManualResponse}
+              submitLabel={manualSubmitLoading ? "Validating..." : "Validate and Continue"}
+              submitting={manualSubmitLoading}
+              error={manualDraft.error ?? manualSubmitError}
+            />
+          ) : null}
         </div>
       </Card>
       {state.error ? <ErrorBlock message={state.error} /> : null}
-      {state.data ? (
-        <>
-          <Card>
-            <CardHeader title="Linked Test Cases from Azure DevOps" />
-            <div className="divide-y">
-              {state.data.linkedTestCases.map((testCase) => (
-                <div key={testCase.id} className="grid gap-3 p-4 md:grid-cols-[140px_1fr_120px]">
-                  <span className="font-mono text-xs text-blue-600">{testCase.id}</span>
-                  <span className="font-medium">{testCase.title}</span>
-                  <span>{testCase.steps?.length ?? 0} steps</span>
-                </div>
-              ))}
+      <div ref={resultsRef} className="space-y-6">
+        {state.data ? (
+          <>
+            <ExistingTraceabilitySummary result={state.data} />
+            <ExistingTraceabilityMatrix rows={state.data.traceabilityMatrix} />
+            <ExistingReviewInsights insights={state.data.insights} findings={state.data.findings} />
+            <ExistingLinkedTestCasesList linkedTestCases={state.data.linkedTestCases} />
+            {state.data.suggestedAdditions.length ? (
+              <>
+                <EditableGeneratedCases
+                  testCases={state.data.suggestedAdditions}
+                  setTestCases={updateSuggestedAdditions}
+                  title="Suggested Additions"
+                  targetWorkItemId={targetWorkItemId}
+                  caseActions={false}
+                  allowDelete
+                />
+                <SuggestedAdditionsPublishPanel
+                  scope={scope}
+                  targetWorkItemId={targetWorkItemId}
+                  testCases={state.data.suggestedAdditions}
+                />
+              </>
+            ) : (
+              <EmptyBlock message="No draft additions were suggested. The current linked test cases may already cover the reviewed points, or only clarification is needed." />
+            )}
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ExistingTraceabilitySummary({ result }: { result: ExistingReviewResult }) {
+  const counts = countTraceabilityStatuses(result.traceabilityMatrix);
+  const metrics = [
+    { title: "Coverage Score", value: formatPercentage(result.coverageScore), tone: scoreTone(result.coverageScore), description: "Overall matrix coverage" },
+    { title: "Story Points", value: String(result.traceabilityMatrix.length), tone: "blue" as const, description: "Atomic review rows" },
+    { title: "Covered", value: String(counts.Covered), tone: "emerald" as const, description: "Validated by linked tests" },
+    { title: "Partial", value: String(counts["Partially covered"]), tone: "amber" as const, description: "Needs stronger tests" },
+    { title: "Not Covered", value: String(counts["Not covered"]), tone: "red" as const, description: "Missing linked coverage" },
+    { title: "Needs Review", value: String(counts["Needs review"]), tone: "violet" as const, description: "Ambiguous or unclear" },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+        {metrics.map((metric) => (
+          <Card key={metric.title} className="p-4">
+            <div className="text-xs font-semibold uppercase tracking-normal text-slate-500">{metric.title}</div>
+            <div className="mt-2 flex items-baseline gap-2">
+              <span className="text-2xl font-bold text-slate-950">{metric.value}</span>
+              <Badge tone={metric.tone}>{metric.tone === "emerald" ? "Good" : metric.tone === "red" ? "Gap" : metric.tone === "amber" ? "Watch" : "Info"}</Badge>
             </div>
+            <p className="mt-1 text-xs text-slate-500">{metric.description}</p>
           </Card>
-          <Card>
-            <CardHeader title="Review Findings" />
-            <div className="divide-y">
-              {state.data.findings.map((finding) => (
-                <div key={finding.id} className="grid gap-3 p-4 md:grid-cols-[120px_160px_1fr]">
-                  <Badge tone={severityTone(finding.severity)}>{finding.severity}</Badge>
-                  <span>{finding.category}</span>
-                  <div>
-                    <div className="font-medium">{finding.title}</div>
-                    <p className="mt-1 text-sm text-muted-foreground">{finding.explanation}</p>
-                    <p className="mt-1 text-sm text-blue-600">{finding.suggestedAction}</p>
+        ))}
+      </div>
+      <Card className="p-4">
+        <div className="text-sm font-semibold text-slate-950">Review Summary</div>
+        <p className="mt-2 text-sm leading-6 text-slate-600">{result.summary}</p>
+      </Card>
+    </div>
+  );
+}
+
+function ExistingTraceabilityMatrix({ rows }: { rows: ExistingTraceabilityRow[] }) {
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader title="Test Coverage Matrix" description="Every row is one atomic story point mapped to linked Azure DevOps test cases." />
+      {rows.length ? (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1180px] border-collapse text-left text-sm">
+            <thead className="bg-[#f8fafc] text-xs uppercase tracking-normal text-slate-500">
+              <tr>
+                <th className="px-4 py-3 font-semibold">Point</th>
+                <th className="px-4 py-3 font-semibold">Source</th>
+                <th className="px-4 py-3 font-semibold">Requirement</th>
+                <th className="px-4 py-3 font-semibold">Coverage</th>
+                <th className="px-4 py-3 font-semibold">Linked Cases</th>
+                <th className="px-4 py-3 font-semibold">Evidence</th>
+                <th className="px-4 py-3 font-semibold">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#d8e2ef]">
+              {rows.map((row) => (
+                <tr key={row.id} className="align-top">
+                  <td className="px-4 py-4">
+                    <div className="font-mono text-xs font-semibold text-blue-600">{row.id}</div>
+                    <Badge tone={severityTone(row.severity)} className="mt-2">{row.severity}</Badge>
+                  </td>
+                  <td className="px-4 py-4">
+                    <div className="font-medium text-slate-950">{coverageSourceLabel(row.sourceType)}</div>
+                    <div className="mt-1 text-xs text-slate-500">{row.sourceReference}</div>
+                  </td>
+                  <td className="max-w-[320px] px-4 py-4 text-slate-700">
+                    <p className="break-words leading-6">{row.requirementText}</p>
+                    {row.missingCoverage ? <p className="mt-2 text-xs leading-5 text-red-600">{row.missingCoverage}</p> : null}
+                  </td>
+                  <td className="px-4 py-4">
+                    <Badge tone={coverageTone(row.coverageStatus)}>{row.coverageStatus}</Badge>
+                    <div className="mt-2 text-xs text-slate-500">Min tests: {row.recommendedMinimumTestCount}</div>
+                  </td>
+                  <td className="px-4 py-4">
+                    {row.linkedTestCaseIds.length ? (
+                      <div className="flex max-w-[180px] flex-wrap gap-1">
+                        {row.linkedTestCaseIds.map((id) => <Badge key={id} tone="blue">{id}</Badge>)}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-slate-500">No linked case</span>
+                    )}
+                  </td>
+                  <td className="max-w-[260px] px-4 py-4 text-slate-600">
+                    <p className="break-words leading-6">{row.evidenceSummary || "No evidence supplied."}</p>
+                  </td>
+                  <td className="max-w-[260px] px-4 py-4 text-blue-600">
+                    <p className="break-words leading-6">{row.recommendedAction}</p>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <EmptyBlock message="No traceability rows were returned by the LLM." />
+      )}
+    </Card>
+  );
+}
+
+function ExistingReviewInsights({ insights, findings }: { insights: ExistingReviewInsight[]; findings: ExistingReviewFinding[] }) {
+  return (
+    <div className="grid gap-6 xl:grid-cols-2">
+      <Card>
+        <CardHeader title="Coverage Insights" />
+        {insights.length ? (
+          <div className="divide-y divide-[#d8e2ef]">
+            {insights.map((insight) => (
+              <div key={insight.id} className="p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={severityTone(insight.severity)}>{insight.severity}</Badge>
+                  <span className="font-medium text-slate-950">{insight.title}</span>
+                </div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">{insight.explanation}</p>
+                <p className="mt-2 text-sm leading-6 text-blue-600">{insight.suggestedAction}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyBlock message="No additional insights were returned." />
+        )}
+      </Card>
+      <Card>
+        <CardHeader title="Review Findings" />
+        {findings.length ? (
+          <div className="divide-y divide-[#d8e2ef]">
+            {findings.map((finding) => (
+              <div key={finding.id} className="grid gap-3 p-4 md:grid-cols-[120px_1fr]">
+                <Badge tone={severityTone(finding.severity)} className="self-start justify-self-start whitespace-nowrap">{finding.severity}</Badge>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-slate-950">{finding.title}</span>
+                    <Badge tone="slate">{finding.category}</Badge>
                   </div>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">{finding.explanation}</p>
+                  <p className="mt-2 text-sm leading-6 text-blue-600">{finding.suggestedAction}</p>
                 </div>
-              ))}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyBlock message="No review findings were returned." />
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function ExistingLinkedTestCasesList({ linkedTestCases }: { linkedTestCases: ExistingLinkedTestCase[] }) {
+  return (
+    <Card>
+      <CardHeader title="Linked Test Cases from Azure DevOps" />
+      {linkedTestCases.length ? (
+        <div className="divide-y divide-[#d8e2ef]">
+          {linkedTestCases.map((testCase) => (
+            <div key={testCase.id} className="grid gap-3 p-4 md:grid-cols-[140px_1fr_120px]">
+              <span className="font-mono text-xs text-blue-600">{testCase.id}</span>
+              <div>
+                <div className="font-medium text-slate-950">{testCase.title}</div>
+                <div className="mt-1 text-xs text-slate-500">{testCase.testType ?? "Test Case"}</div>
+              </div>
+              <span className="text-sm text-slate-600">{testCase.steps?.length ?? 0} steps</span>
             </div>
-          </Card>
-          <EditableGeneratedCases testCases={state.data.suggestedAdditions} setTestCases={() => undefined} title="Suggested Additions" caseActions={false} />
-        </>
-      ) : null}
+          ))}
+        </div>
+      ) : (
+        <EmptyBlock message="No TestedBy / Tests linked Azure DevOps test cases were found for this story." />
+      )}
+    </Card>
+  );
+}
+
+function countTraceabilityStatuses(rows: ExistingTraceabilityRow[]) {
+  return rows.reduce(
+    (counts, row) => {
+      counts[row.coverageStatus] += 1;
+      return counts;
+    },
+    { Covered: 0, "Partially covered": 0, "Not covered": 0, "Needs review": 0 },
+  );
+}
+
+function coverageTone(status: ExistingTraceabilityRow["coverageStatus"]) {
+  if (status === "Covered") return "emerald" as const;
+  if (status === "Partially covered") return "amber" as const;
+  if (status === "Not covered") return "red" as const;
+  return "violet" as const;
+}
+
+function coverageSourceLabel(sourceType: ExistingTraceabilityRow["sourceType"]) {
+  if (sourceType === "acceptanceCriteria") return "Acceptance Criteria";
+  if (sourceType === "description") return "Description";
+  return "Story";
+}
+
+function SuggestedAdditionsPublishPanel({
+  scope,
+  targetWorkItemId,
+  testCases,
+}: {
+  scope: ActiveProjectScope | null;
+  targetWorkItemId: string;
+  testCases: GeneratedTestCase[];
+}) {
+  const [state, setState] = useState<ApiState<SuggestedAdditionsPublishResult>>({ loading: false, error: null, data: null });
+
+  async function publish() {
+    if (!scope || !targetWorkItemId || !testCases.length || state.loading) return;
+    setState({ loading: true, error: null, data: null });
+    try {
+      const data = await postJson<SuggestedAdditionsPublishResult>("/api/test-coverage-matrix/suggested-additions/publish", {
+        scope,
+        targetWorkItemId,
+        testCases: testCases.map((testCase) => ({
+          ...testCase,
+          localId: testCase.id,
+          targetUserStoryId: targetWorkItemId,
+          priority: normalizeTestCasePriority(testCase.priority),
+          steps: testCase.steps.map((step) => ({ action: step.action, expectedResult: step.expectedResult })),
+          testType: testCase.type,
+        })),
+      });
+      setState({ loading: false, error: null, data });
+    } catch (error) {
+      setState({ loading: false, error: error instanceof Error ? error.message : "Suggested additions publish failed.", data: null });
+    }
+  }
+
+  const disabled = !scope || !targetWorkItemId || !testCases.length || state.loading;
+
+  return (
+    <Card>
+      <CardHeader
+        title="Add Suggested Additions to Azure"
+        description="Create the suggested Azure Test Case work items and link them to the selected user story."
+      />
+      <div className="space-y-4 p-4">
+        {state.error ? <ErrorBlock message={state.error} /> : null}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm leading-6 text-slate-600">
+            {testCases.length} suggested test case{testCases.length === 1 ? "" : "s"} will be created and linked to user story {targetWorkItemId || "the selected story"}.
+          </div>
+          <ConfirmationDialog
+            trigger={
+              <Button disabled={disabled}>
+                {state.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                {state.loading ? "Adding..." : "Add to Azure"}
+              </Button>
+            }
+            title="Add suggested test cases to Azure?"
+            description={
+              <div className="space-y-1">
+                <p>Project: {scope?.azureProjectName ?? "Selected Azure DevOps project"}</p>
+                <p>User story: {targetWorkItemId}</p>
+                <p>Suggested test cases: {testCases.length}</p>
+                <p>Each created test case will be linked to this user story.</p>
+              </div>
+            }
+            confirmLabel="Create and link cases"
+            onConfirm={publish}
+          />
+        </div>
+        {state.data ? <SuggestedAdditionsPublishResultSummary data={state.data} /> : null}
+      </div>
+    </Card>
+  );
+}
+
+function SuggestedAdditionsPublishResultSummary({ data }: { data: SuggestedAdditionsPublishResult }) {
+  const successCount = data.results.filter((result) => result.success).length;
+  return (
+    <div className="rounded-md border border-[#c8d4e4] bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
+        <div className="text-sm font-semibold text-slate-950">
+          Azure Add Results: {successCount} of {data.results.length} created and linked
+        </div>
+        <Badge tone={successCount === data.results.length ? "emerald" : "amber"}>
+          {successCount === data.results.length ? "Complete" : "Partial"}
+        </Badge>
+      </div>
+      <div className="divide-y">
+        {data.results.map((result) => (
+          <div key={result.localId} className="grid gap-3 p-3 text-sm lg:grid-cols-[140px_140px_140px_minmax(0,1fr)]">
+            <span className="font-mono text-xs text-blue-600">{result.localId}</span>
+            <span>{result.azureTestCaseId ? `Azure ${result.azureTestCaseId}` : "Not created"}</span>
+            <StatusText label="Create" success={result.create?.success} error={result.create?.error ?? result.error} />
+            <StatusText label="Link" success={result.link?.success} error={result.link?.error} />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1307,12 +1736,16 @@ function EditableGeneratedCases({
   title = "Generated Test Cases",
   targetWorkItemId,
   caseActions = true,
+  allowDelete = caseActions,
+  allowAdd = caseActions,
 }: {
   testCases: GeneratedTestCase[];
   setTestCases: (testCases: GeneratedTestCase[]) => void;
   title?: string;
   targetWorkItemId?: string;
   caseActions?: boolean;
+  allowDelete?: boolean;
+  allowAdd?: boolean;
 }) {
   const testCaseStats = useMemo(() => {
     const byPriority: Record<GeneratedTestCase["priority"], number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
@@ -1406,7 +1839,7 @@ function EditableGeneratedCases({
                 <option value={4}>4 - Lowest</option>
               </SelectInput>
               <Badge tone="cyan">{testCase.type}</Badge>
-              {caseActions ? (
+              {allowDelete ? (
                 <Button variant="ghost" onClick={() => deleteCase(index)} aria-label={`Delete ${testCase.id}`}>
                   <Trash2 className="h-4 w-4" />
                 </Button>
@@ -1466,12 +1899,12 @@ function EditableGeneratedCases({
         )) : (
           <div className="p-4">
             <div className="rounded-md border border-dashed border-[#c8d4e4] bg-[#f8fafc] p-5 text-sm text-slate-500">
-              {caseActions ? "No test cases in this list. Add a test case to continue." : "No test cases in this list."}
+              {allowAdd ? "No test cases in this list. Add a test case to continue." : "No test cases in this list."}
             </div>
           </div>
         )}
       </div>
-      {caseActions ? (
+      {allowAdd ? (
         <div className="flex justify-end border-t border-[#d8e2ef] px-5 py-4">
           <Button variant="secondary" onClick={addCase}>
             <Plus className="h-4 w-4" />

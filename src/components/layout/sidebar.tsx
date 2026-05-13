@@ -23,7 +23,7 @@ const navigation = [
   { href: "/context", label: "Project Context", icon: FileText },
   { href: "/requirements/analyze", label: "Requirement Analysis", icon: ShieldCheck, section: "/requirements" },
   { href: "/test-cases/design/context", label: "Test Case Design", icon: TestTube2, section: "/test-cases/design" },
-  { href: "/test-cases/existing-review", label: "Existing Test Case Review", icon: ClipboardCheck },
+  { href: "/test-coverage-matrix", label: "Test Coverage Matrix", icon: ClipboardCheck },
   { href: "/bulk-tasks", label: "Bulk Task Creation", icon: ListPlus },
   { href: "/audit-logs", label: "Audit Logs", icon: Gauge },
   { href: "/settings", label: "Settings", icon: Settings },

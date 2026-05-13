@@ -80,6 +80,38 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
   };
 }
 
+export function buildExistingTestCaseReviewMarkdownPrompt(input: MarkdownPromptInput & { linkedTestCases?: unknown[] }) {
+  const relevantKnowledge = selectRelevantProjectKnowledge({
+    projectKnowledgeBase: input.projectKnowledgeBase,
+    queryText: [
+      stringifyForPromptSearch(input.targetRequirement),
+      stringifyForPromptSearch(input.linkedTestCases ?? []),
+      stringifyForPromptSearch(input.relatedWorkItems ?? []),
+      stringifyForPromptSearch(input.selectedContext ?? []),
+    ].join("\n"),
+    prioritySourceIds: [
+      extractWorkItemId(input.targetRequirement),
+      ...extractWorkItemIds(input.relatedWorkItems ?? []),
+      ...extractWorkItemIds(input.selectedContext ?? []),
+    ].filter(Boolean) as string[],
+  });
+
+  return {
+    prompt: [
+      renderCurrentProject(input.currentProject),
+      renderTargetWorkItem("User Story Under Traceability Review", input.targetRequirement),
+      renderLinkedTestCaseCollection("Linked Azure DevOps Test Cases Under Review", input.linkedTestCases ?? []),
+      renderWorkItemCollection("Project Context", input.selectedContext ?? []),
+      renderExistingCoverageReviewInstructions(),
+      renderProjectKnowledge(relevantKnowledge),
+      renderOutputContract(input.outputContract),
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+    relevantProjectKnowledgeBase: relevantKnowledge,
+  };
+}
+
 export function extractWorkItemId(value: unknown) {
   if (!value || typeof value !== "object") return undefined;
   const item = value as {
@@ -117,6 +149,14 @@ function renderWorkItemCollection(title: string, items: unknown[]) {
   }
 
   return [`# ${title}`, ...items.map((item) => renderWorkItem(item, 2))].join("\n\n");
+}
+
+function renderLinkedTestCaseCollection(title: string, items: unknown[]) {
+  if (!items.length) {
+    return [`# ${title}`, "No linked Azure DevOps test cases were supplied."].join("\n\n");
+  }
+
+  return [`# ${title}`, ...items.map((item) => renderLinkedTestCase(item, 2))].join("\n\n");
 }
 
 function renderWorkItem(value: unknown, headingLevel: number) {
@@ -183,6 +223,66 @@ function renderCoverageExpectations() {
     "- Step 1 in every test case must start with Preconditions and use expectedResult exactly \"Preconditions are met\".",
     "- Avoid duplicate, trivial, overly broad, or non-executable test cases.",
   ].join("\n");
+}
+
+function renderExistingCoverageReviewInstructions() {
+  return [
+    "# Coverage Review Instructions",
+    "- Decompose the story title, description, and acceptance criteria into atomic testable points.",
+    "- Every meaningful story point must appear in traceabilityMatrix.",
+    "- A single acceptance criterion may produce multiple matrix rows when it contains multiple flows, roles, states, validations, integrations, errors, or edge cases.",
+    "- Map linked test cases only when their steps and expected results provide real evidence.",
+    "- Do not count a title-only, vague, or setup-only test case as covered.",
+    "- Recommend more than one test case when a point has multiple flows, roles, validations, integrations, or negative paths.",
+    "- Suggested additions should cover only uncovered or partially covered matrix rows.",
+  ].join("\n");
+}
+
+function renderLinkedTestCase(value: unknown, headingLevel: number) {
+  const testCase = toPromptTestCase(value);
+  const heading = `${"#".repeat(headingLevel)} ${testCase.id ? `#${testCase.id} - ` : ""}${testCase.title ?? "Untitled Test Case"}`;
+  const lines = [heading];
+
+  const metadata = [
+    testCase.priority !== undefined ? `Priority: ${testCase.priority}` : undefined,
+    testCase.testType ? `Test Type: ${testCase.testType}` : undefined,
+    testCase.automationSuitability ? `Automation Suitability: ${testCase.automationSuitability}` : undefined,
+    testCase.tags.length ? `Tags: ${testCase.tags.join(", ")}` : undefined,
+  ].filter(Boolean);
+
+  if (metadata.length) lines.push(...metadata.map((line) => `- ${line}`));
+
+  if (testCase.description) {
+    lines.push("", "Description:", testCase.description);
+  }
+
+  if (testCase.preconditions) {
+    lines.push("", "Preconditions:", testCase.preconditions);
+  }
+
+  if (testCase.testData) {
+    lines.push("", "Test Data:", testCase.testData);
+  }
+
+  if (testCase.expectedResult) {
+    lines.push("", "Overall Expected Result:", testCase.expectedResult);
+  }
+
+  lines.push("", "Steps:");
+  if (!testCase.steps.length) {
+    lines.push("No test steps were supplied.");
+  } else {
+    lines.push(
+      ...testCase.steps.map((step, index) =>
+        [
+          `${index + 1}. Action: ${step.action || "(empty action)"}`,
+          `   Expected Result: ${step.expectedResult || "(empty expected result)"}`,
+        ].join("\n"),
+      ),
+    );
+  }
+
+  return lines.join("\n");
 }
 
 function renderProjectKnowledge(knowledgeBase: ProjectKnowledgeBase | null) {
@@ -351,6 +451,53 @@ function toPromptWorkItem(value: unknown) {
     acceptanceCriteria: undefined,
     content: undefined,
   };
+}
+
+function toPromptTestCase(value: unknown) {
+  if (value && typeof value === "object") {
+    const objectValue = value as Record<string, unknown>;
+    return {
+      id: stringValue(objectValue.id ?? objectValue.azureTestCaseId),
+      title: stringValue(objectValue.title),
+      description: cleanPromptText(stringValue(objectValue.description)),
+      preconditions: cleanPromptText(stringValue(objectValue.preconditions)),
+      testData: cleanPromptText(stringValue(objectValue.testData)),
+      expectedResult: cleanPromptText(stringValue(objectValue.expectedResult)),
+      priority: numberOrStringValue(objectValue.priority),
+      testType: stringValue(objectValue.testType),
+      automationSuitability: stringValue(objectValue.automationSuitability),
+      tags: stringArrayValue(objectValue.tags),
+      steps: testStepsValue(objectValue.steps),
+    };
+  }
+
+  return {
+    id: undefined,
+    title: "Untitled Test Case",
+    description: undefined,
+    preconditions: undefined,
+    testData: undefined,
+    expectedResult: undefined,
+    priority: undefined,
+    testType: undefined,
+    automationSuitability: undefined,
+    tags: [],
+    steps: [],
+  };
+}
+
+function testStepsValue(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.map((step) => {
+    if (!step || typeof step !== "object") {
+      return { action: cleanPromptText(String(step ?? "")) ?? "", expectedResult: "" };
+    }
+    const objectValue = step as Record<string, unknown>;
+    return {
+      action: cleanPromptText(stringValue(objectValue.action)) ?? "",
+      expectedResult: cleanPromptText(stringValue(objectValue.expectedResult ?? objectValue.expected)) ?? "",
+    };
+  });
 }
 
 function selectRelevantProjectKnowledge(input: {
