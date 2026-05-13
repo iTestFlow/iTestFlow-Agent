@@ -197,6 +197,8 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       id: String(suite.id),
       name: String(suite.name),
       planId: input.testPlanId,
+      suiteType: typeof suite.suiteType === "string" ? suite.suiteType : undefined,
+      requirementId: suite.requirementId !== undefined ? String(suite.requirementId) : undefined,
       raw: suite,
     }));
   }
@@ -209,7 +211,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       const patch = [
         { op: "add", path: "/fields/System.Title", value: input.testCase.title },
         { op: "add", path: "/fields/System.Description", value: input.testCase.description ?? "" },
-        { op: "add", path: "/fields/Microsoft.VSTS.Common.Priority", value: mapPriority(input.testCase.priority) },
+        { op: "add", path: "/fields/Microsoft.VSTS.Common.Priority", value: input.testCase.priority },
         { op: "add", path: "/fields/Microsoft.VSTS.TCM.Steps", value: toAzureStepsXml(input.testCase.steps) },
         ...(input.testCase.tags?.length ? [{ op: "add", path: "/fields/System.Tags", value: input.testCase.tags.join("; ") }] : []),
       ];
@@ -241,6 +243,42 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : "Unknown Azure DevOps suite add error" };
+    }
+  }
+
+  async createRequirementBasedSuite(input: {
+    projectId: string;
+    testPlanId: string;
+    parentSuiteId: string;
+    requirementId: string;
+    name: string;
+  }): Promise<{ success: boolean; suite?: TestSuite; error?: string }> {
+    try {
+      const json = await this.requestJson<JsonValue>(
+        `${encodeURIComponent(input.projectId)}/_apis/testplan/Plans/${input.testPlanId}/suites?api-version=7.1`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            suiteType: "requirementTestSuite",
+            name: input.name,
+            requirementId: Number(input.requirementId),
+            parentSuite: { id: Number(input.parentSuiteId) },
+          }),
+        },
+      );
+      return {
+        success: true,
+        suite: {
+          id: String(json.id),
+          name: String(json.name ?? input.name),
+          planId: input.testPlanId,
+          suiteType: typeof json.suiteType === "string" ? json.suiteType : "requirementTestSuite",
+          requirementId: json.requirementId !== undefined ? String(json.requirementId) : input.requirementId,
+          raw: json,
+        },
+      };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Unknown Azure DevOps requirement suite creation error" };
     }
   }
 
@@ -324,12 +362,6 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
 
 function isJsonResponse(response: Response) {
   return response.headers.get("content-type")?.toLowerCase().includes("application/json") ?? false;
-}
-
-function mapPriority(priority?: string) {
-  if (priority === "critical" || priority === "high" || priority === "High") return 1;
-  if (priority === "low" || priority === "Low") return 3;
-  return 2;
 }
 
 function toAzureStepsXml(steps: FinalApprovedTestCase["steps"]) {

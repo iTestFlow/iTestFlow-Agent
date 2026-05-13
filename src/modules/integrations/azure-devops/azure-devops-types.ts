@@ -41,6 +41,8 @@ export type TestStep = {
   expectedResult: string;
 };
 
+export type TestCasePriority = 1 | 2 | 3 | 4;
+
 export type TestCase = {
   id: string;
   title: string;
@@ -49,8 +51,7 @@ export type TestCase = {
   steps: TestStep[];
   testData?: string;
   expectedResult?: string;
-  priority?: string;
-  severity?: string;
+  priority?: TestCasePriority;
   testType?: string;
   automationSuitability?: string;
   tags?: string[];
@@ -73,6 +74,8 @@ export type TestSuite = {
   id: string;
   name: string;
   planId: string;
+  suiteType?: string;
+  requirementId?: string;
   raw?: unknown;
 };
 

@@ -1,4 +1,5 @@
 import type { LucideIcon } from "lucide-react";
+import { forwardRef } from "react";
 import { cn } from "@/shared/lib/utils";
 
 export function PageHeader({
@@ -56,16 +57,15 @@ export function CardHeader({
   );
 }
 
-export function Button({
-  children,
-  variant = "primary",
-  className,
-  ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "secondary" | "ghost" | "danger";
-}) {
+export const Button = forwardRef<
+  HTMLButtonElement,
+  React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    variant?: "primary" | "secondary" | "ghost" | "danger";
+  }
+>(function Button({ children, variant = "primary", className, ...props }, ref) {
   return (
     <button
+      ref={ref}
       className={cn(
         "focus-ring inline-flex h-10 items-center justify-center gap-2 rounded-[7px] px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
         variant === "primary" && "bg-[#2f62e6] text-white hover:bg-[#2554d9]",
@@ -79,7 +79,7 @@ export function Button({
       {children}
     </button>
   );
-}
+});
 
 export function Badge({
   children,

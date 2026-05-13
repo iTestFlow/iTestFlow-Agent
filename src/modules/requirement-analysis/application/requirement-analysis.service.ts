@@ -163,5 +163,5 @@ const requirementOutputContract = {
   },
   recommendations: ["string"],
   questionsForProductOwner: ["string"],
-  contextUsed: ["module-id or work-item-id"],
+  contextUsed: ["source IDs only, such as module-id or work-item-id"],
 };

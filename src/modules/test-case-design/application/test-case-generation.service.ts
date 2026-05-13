@@ -141,7 +141,7 @@ const testCaseOutputContract = {
       id: "TC-MODULE-001",
       title: "Validate clear behavior",
       description: "Brief description of what the test validates",
-      priority: "critical|high|medium|low",
+      priority: "number only: 1|2|3|4, where 1 is highest and 4 is lowest",
       type: "smoke|sanity|regression|e2e|integration|unit|api|ui|security|performance|accessibility",
       category: "happy_path|negative|edge|boundary|integration|workflow|security|accessibility",
       tags: ["string"],
@@ -167,8 +167,8 @@ const testCaseOutputContract = {
   summary: {
     totalCases: 0,
     byType: { regression: 0 },
-    byPriority: { high: 0 },
+    byPriority: { "1": 0 },
     coverageEstimate: 0,
   },
-  contextUsed: ["module-id or work-item-id"],
+  contextUsed: ["source IDs only, such as module-id or work-item-id"],
 };

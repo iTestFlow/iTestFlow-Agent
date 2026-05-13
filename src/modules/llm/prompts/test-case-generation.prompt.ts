@@ -13,6 +13,7 @@ export const testCaseGenerationPrompt: SystemPromptDefinition = {
     "Focus heavily on business-critical flows, edge cases, negative scenarios, validation rules, integration points, workflow transitions, state management, permissions/roles, concurrency risks, API/UI consistency, data integrity, error handling, retry/recovery behavior, usability risks, audit/logging validation, localization/timezone concerns, accessibility concerns, and security-sensitive flows.",
     "Avoid duplicate test cases, trivial validations, overly broad scenarios, and vague expected results.",
     "Every test case must have a clear objective, validate one logical behavior, include measurable expected results, be executable, be traceable to requirements, and be suitable for automation when applicable.",
+    "Use numeric test case priority only: 1, 2, 3, or 4. Priority 1 is highest; priority 4 is lowest. Do not use labels such as critical, high, medium, or low for test case priority.",
     "Prioritize tests using risk and business impact.",
     "Design tests from functional, integration, user experience, security, data validation, workflow consistency, regression risk, and automation feasibility perspectives.",
     "Think critically and comprehensively before generating output.",

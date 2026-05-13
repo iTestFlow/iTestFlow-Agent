@@ -8,6 +8,7 @@ export const structuredOutputPrompt: SystemPromptDefinition = {
     "Return only valid JSON matching schema {schemaName}.",
     "Do not wrap the JSON in markdown fences or add commentary.",
     "Use the required output shape exactly. Arrays marked as string arrays must contain strings only, never objects.",
+    "For contextUsed, include source IDs only. Never include prompt filenames, upload labels, browser labels, or pasted-file names.",
   ].join("\n"),
 };
 
@@ -90,7 +91,7 @@ function requiredOutputShape(schemaName: string) {
       },
       recommendations: ["string only, not objects"],
       questionsForProductOwner: ["string only, not objects"],
-      contextUsed: ["string only, not objects"],
+      contextUsed: ["source ID string only, not objects or prompt filenames"],
     };
   }
 
@@ -100,10 +101,10 @@ function requiredOutputShape(schemaName: string) {
       summary: {
         totalCases: "integer 0 or greater",
         byType: { regression: "integer count example" },
-        byPriority: { high: "integer count example" },
+        byPriority: { "1": "integer count example" },
         coverageEstimate: "number from 0 to 100",
       },
-      contextUsed: ["string only, not objects"],
+      contextUsed: ["source ID string only, not objects or prompt filenames"],
     };
   }
 
@@ -194,7 +195,7 @@ function generatedTestCaseShape() {
     id: "string",
     title: "string",
     description: "string",
-    priority: "critical | high | medium | low",
+    priority: "number only: 1 | 2 | 3 | 4, where 1 is highest and 4 is lowest",
     type: "smoke | sanity | regression | e2e | integration | unit | api | ui | security | performance | accessibility",
     category: "string",
     tags: ["string"],

@@ -1,4 +1,4 @@
-import type { Requirement, TestCase } from "./azure-devops-types";
+import type { Requirement, TestCase, TestCasePriority } from "./azure-devops-types";
 
 type AzureWorkItem = {
   id: number;
@@ -66,11 +66,15 @@ export function mapAzureTestCase(item: AzureWorkItem, azureProjectId: string): T
     preconditions: text(item.fields?.["Microsoft.VSTS.TCM.LocalDataSource"]),
     steps: parseAzureTestSteps(text(item.fields?.["Microsoft.VSTS.TCM.Steps"])),
     expectedResult: requirement.acceptanceCriteria,
-    priority: requirement.priority ? String(requirement.priority) : undefined,
+    priority: toTestCasePriority(requirement.priority),
     testType: requirement.workItemType,
     tags: requirement.tags,
     raw: item,
   };
+}
+
+function toTestCasePriority(value?: number): TestCasePriority | undefined {
+  return value === 1 || value === 2 || value === 3 || value === 4 ? value : undefined;
 }
 
 function parseAzureTestSteps(stepsXml?: string) {

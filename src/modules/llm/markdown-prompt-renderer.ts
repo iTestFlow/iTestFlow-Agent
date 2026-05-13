@@ -297,6 +297,7 @@ function renderOutputContract(outputContract: unknown) {
   return [
     "# Required JSON Output",
     "Respond with one valid JSON object matching this shape. Do not wrap the response in markdown fences and do not include any text before or after the JSON.",
+    "For contextUsed, include only source IDs explicitly present in the work item, selected context, or saved project knowledge. Never include prompt filenames, upload labels, browser labels, or pasted-file names such as Pasted markdown.md.",
     JSON.stringify(outputContract, null, 2),
   ].join("\n\n");
 }
