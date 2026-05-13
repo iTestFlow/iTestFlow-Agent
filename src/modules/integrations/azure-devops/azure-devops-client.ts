@@ -5,7 +5,9 @@ import { mapAzureTestCase, mapAzureWorkItem } from "./azure-devops-mapper";
 import type {
   AzureAuthenticatedUser,
   AzureDevOpsSettings,
+  AzureIteration,
   AzureProject,
+  AzureProjectUser,
   FinalApprovedTestCase,
   Requirement,
   TestCase,
@@ -14,6 +16,32 @@ import type {
 } from "./azure-devops-types";
 
 type JsonValue = Record<string, unknown>;
+
+type AzureClassificationNode = {
+  id?: number;
+  identifier?: string;
+  name?: string;
+  path?: string;
+  attributes?: {
+    startDate?: string;
+    finishDate?: string;
+  };
+  children?: AzureClassificationNode[];
+};
+
+type AzureTeam = {
+  id?: string;
+  name?: string;
+};
+
+type AzureTeamMember = {
+  identity?: {
+    id?: string;
+    displayName?: string;
+    uniqueName?: string;
+    imageUrl?: string;
+  };
+};
 
 export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   private readonly organizationUrl: string;
@@ -65,6 +93,42 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     }));
   }
 
+  async fetchIterations(input: { projectId: string }): Promise<AzureIteration[]> {
+    const root = await this.requestJson<AzureClassificationNode>(
+      `${encodeURIComponent(input.projectId)}/_apis/wit/classificationnodes/iterations?$depth=10&api-version=7.1`,
+    );
+    return flattenIterations(root).sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  async fetchProjectUsers(input: { projectId: string }): Promise<AzureProjectUser[]> {
+    const teams = await this.requestJson<{ value?: AzureTeam[] }>(
+      `_apis/projects/${encodeURIComponent(input.projectId)}/teams?api-version=7.1`,
+    );
+    const users = new Map<string, AzureProjectUser>();
+
+    for (const team of teams.value ?? []) {
+      if (!team.id) continue;
+      const members = await this.requestJson<{ value?: AzureTeamMember[] }>(
+        `_apis/projects/${encodeURIComponent(input.projectId)}/teams/${encodeURIComponent(team.id)}/members?api-version=7.1`,
+      );
+
+      for (const member of members.value ?? []) {
+        const identity = member.identity;
+        const displayName = identity?.displayName?.trim();
+        if (!identity?.id || !displayName) continue;
+        const user = {
+          id: identity.id,
+          displayName,
+          uniqueName: identity.uniqueName,
+          imageUrl: identity.imageUrl,
+        };
+        users.set(user.uniqueName ?? user.id, user);
+      }
+    }
+
+    return [...users.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }
+
   async fetchWorkItems(input: {
     projectId: string;
     workItemTypes?: string[];
@@ -80,8 +144,9 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     if (input.states?.length) {
       where.push(`[System.State] IN (${input.states.map((state) => `'${escapeWiqlValue(state)}'`).join(", ")})`);
     }
+    const iterationPath = normalizeIterationPathForWiql(input.iterationPath);
     if (input.areaPath) where.push(`[System.AreaPath] UNDER '${escapeWiqlValue(input.areaPath)}'`);
-    if (input.iterationPath) where.push(`[System.IterationPath] UNDER '${escapeWiqlValue(input.iterationPath)}'`);
+    if (iterationPath) where.push(`[System.IterationPath] UNDER '${escapeWiqlValue(iterationPath)}'`);
 
     const wiql = {
       query: `SELECT [System.Id] FROM WorkItems WHERE ${where.join(" AND ")} ORDER BY [System.ChangedDate] DESC`,
@@ -100,6 +165,12 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       `${encodeURIComponent(input.projectId)}/_apis/wit/workitems/${input.workItemId}?$expand=Relations&api-version=7.1`,
     );
     return mapAzureWorkItem(item as never, input.projectId);
+  }
+
+  async fetchWorkItemsByIds(input: { projectId: string; workItemIds: string[] }): Promise<Requirement[]> {
+    const ids = input.workItemIds.map((id) => Number(id)).filter((id) => Number.isInteger(id));
+    if (!ids.length) return [];
+    return this.fetchWorkItemsBatch(input.projectId, ids);
   }
 
   async fetchLinkedWorkItems(input: { projectId: string; workItemId: string }): Promise<Requirement[]> {
@@ -226,6 +297,55 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       return { success: true, azureTestCaseId: String(json.id) };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : "Unknown Azure DevOps test case creation error" };
+    }
+  }
+
+  async createChildTask(input: {
+    projectId: string;
+    parentStoryId: string;
+    title: string;
+    description?: string;
+    assignedTo?: string;
+    originalEstimate?: number;
+    copyEstimateToRemainingWork?: boolean;
+    areaPath?: string;
+    iterationPath?: string;
+  }): Promise<{ success: boolean; azureTaskId?: string; error?: string }> {
+    try {
+      const parentUrl = `${this.organizationUrl}/${encodeURIComponent(input.projectId)}/_apis/wit/workItems/${input.parentStoryId}`;
+      const patch: Array<{ op: "add"; path: string; value: unknown }> = [
+        { op: "add", path: "/fields/System.Title", value: input.title },
+        ...(input.description ? [{ op: "add" as const, path: "/fields/System.Description", value: input.description }] : []),
+        ...(input.areaPath ? [{ op: "add" as const, path: "/fields/System.AreaPath", value: input.areaPath }] : []),
+        ...(input.iterationPath ? [{ op: "add" as const, path: "/fields/System.IterationPath", value: input.iterationPath }] : []),
+        ...(input.assignedTo ? [{ op: "add" as const, path: "/fields/System.AssignedTo", value: input.assignedTo }] : []),
+        ...(input.originalEstimate !== undefined
+          ? [{ op: "add" as const, path: "/fields/Microsoft.VSTS.Scheduling.OriginalEstimate", value: input.originalEstimate }]
+          : []),
+        ...(input.originalEstimate !== undefined && (input.copyEstimateToRemainingWork ?? true)
+          ? [{ op: "add" as const, path: "/fields/Microsoft.VSTS.Scheduling.RemainingWork", value: input.originalEstimate }]
+          : []),
+        {
+          op: "add",
+          path: "/relations/-",
+          value: {
+            rel: "System.LinkTypes.Hierarchy-Reverse",
+            url: parentUrl,
+            attributes: { comment: "Created by iTestFlow bulk task creation." },
+          },
+        },
+      ];
+      const json = await this.requestJson<JsonValue>(
+        `${encodeURIComponent(input.projectId)}/_apis/wit/workitems/$Task?api-version=7.1`,
+        {
+          method: "POST",
+          body: JSON.stringify(patch),
+          contentType: "application/json-patch+json",
+        },
+      );
+      return { success: true, azureTaskId: String(json.id) };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Unknown Azure DevOps task creation error" };
     }
   }
 
@@ -389,4 +509,35 @@ function escapeXml(value: string) {
 
 function escapeWiqlValue(value: string) {
   return value.replace(/'/g, "''");
+}
+
+function flattenIterations(node: AzureClassificationNode): AzureIteration[] {
+  const items: AzureIteration[] = [];
+  const path = normalizeClassificationPath(node.path);
+  if (path) {
+    items.push({
+      id: node.identifier ?? String(node.id ?? path),
+      name: node.name ?? path.split("\\").pop() ?? path,
+      path,
+      startDate: node.attributes?.startDate,
+      finishDate: node.attributes?.finishDate,
+    });
+  }
+
+  for (const child of node.children ?? []) {
+    items.push(...flattenIterations(child));
+  }
+
+  return items;
+}
+
+function normalizeClassificationPath(value?: string) {
+  return normalizeIterationPathForWiql(value);
+}
+
+function normalizeIterationPathForWiql(value?: string) {
+  const parts = value?.replace(/^\\+/, "").split("\\").filter(Boolean) ?? [];
+  const iterationSegmentIndex = parts.findIndex((part) => part.toLocaleLowerCase() === "iteration");
+  if (iterationSegmentIndex >= 0) parts.splice(iterationSegmentIndex, 1);
+  return parts.join("\\");
 }

@@ -13,6 +13,21 @@ export type AzureAuthenticatedUser = {
   imageUrl?: string;
 };
 
+export type AzureIteration = {
+  id: string;
+  name: string;
+  path: string;
+  startDate?: string;
+  finishDate?: string;
+};
+
+export type AzureProjectUser = {
+  id: string;
+  displayName: string;
+  uniqueName?: string;
+  imageUrl?: string;
+};
+
 export type Requirement = {
   id: string;
   azureProjectId: string;
@@ -82,4 +97,37 @@ export type TestSuite = {
 export type AzureDevOpsSettings = {
   organizationUrl: string;
   personalAccessToken: string;
+};
+
+export type BulkTaskTemplate = {
+  title: string;
+  description?: string;
+  assignedTo?: string;
+  originalEstimate?: number;
+  copyEstimateToRemainingWork?: boolean;
+};
+
+export type BulkTaskTarget = {
+  storyId: string;
+  assignedTo?: string;
+  originalEstimate?: number;
+};
+
+export type CreatedBulkTask = {
+  storyId: string;
+  taskId: string;
+  title: string;
+};
+
+export type FailedBulkTask = {
+  storyId: string;
+  error: string;
+  status: "failed" | "skipped";
+};
+
+export type BulkTaskResult = {
+  storyId: string;
+  status: "created" | "failed" | "skipped";
+  taskId?: string;
+  error?: string;
 };

@@ -10,6 +10,7 @@ import {
   Gauge,
   HelpCircle,
   Home,
+  ListPlus,
   Settings,
   ShieldCheck,
   TestTube2,
@@ -27,6 +28,7 @@ const navigation = [
   { href: "/test-cases/existing-review", label: "Existing Test Case Review", icon: ClipboardCheck },
   { href: "/coverage", label: "Coverage Matrix", icon: BarChart3 },
   { href: "/reports", label: "Reports / Export", icon: FileClock },
+  { href: "/bulk-tasks", label: "Bulk Task Creation", icon: ListPlus },
   { href: "/audit-logs", label: "Audit Logs", icon: Gauge },
   { href: "/settings", label: "Settings", icon: Settings },
 ]

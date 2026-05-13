@@ -1,4 +1,4 @@
-import type { AzureAuthenticatedUser, AzureProject, FinalApprovedTestCase, Requirement, TestCase, TestPlan, TestSuite } from "./azure-devops-types";
+import type { AzureAuthenticatedUser, AzureIteration, AzureProject, AzureProjectUser, FinalApprovedTestCase, Requirement, TestCase, TestPlan, TestSuite } from "./azure-devops-types";
 
 export interface AzureDevOpsAdapter {
   testConnection(): Promise<boolean>;
@@ -6,6 +6,14 @@ export interface AzureDevOpsAdapter {
   fetchAuthenticatedUser(): Promise<AzureAuthenticatedUser>;
 
   fetchProjects(): Promise<AzureProject[]>;
+
+  fetchIterations(input: {
+    projectId: string;
+  }): Promise<AzureIteration[]>;
+
+  fetchProjectUsers(input: {
+    projectId: string;
+  }): Promise<AzureProjectUser[]>;
 
   fetchWorkItems(input: {
     projectId: string;
@@ -19,6 +27,11 @@ export interface AzureDevOpsAdapter {
     projectId: string;
     workItemId: string;
   }): Promise<Requirement>;
+
+  fetchWorkItemsByIds(input: {
+    projectId: string;
+    workItemIds: string[];
+  }): Promise<Requirement[]>;
 
   fetchLinkedWorkItems(input: {
     projectId: string;
@@ -61,6 +74,22 @@ export interface AzureDevOpsAdapter {
   }): Promise<{
     success: boolean;
     azureTestCaseId?: string;
+    error?: string;
+  }>;
+
+  createChildTask(input: {
+    projectId: string;
+    parentStoryId: string;
+    title: string;
+    description?: string;
+    assignedTo?: string;
+    originalEstimate?: number;
+    copyEstimateToRemainingWork?: boolean;
+    areaPath?: string;
+    iterationPath?: string;
+  }): Promise<{
+    success: boolean;
+    azureTaskId?: string;
     error?: string;
   }>;
 
