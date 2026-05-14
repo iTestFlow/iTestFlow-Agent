@@ -21,7 +21,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-[#F7F8FA] text-[#172B4D]">
+    <div className="min-h-screen bg-background text-foreground">
       <div className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:z-40 lg:block lg:w-64">
         <Sidebar />
       </div>

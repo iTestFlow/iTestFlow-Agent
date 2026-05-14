@@ -5,6 +5,7 @@ import { useEffect, useState } from "react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
+import { ThemeToggle } from "@/components/theme/theme-toggle"
 import { HeaderProjectSelector } from "@/shared/components/live/project-status"
 
 type AzureProfile = {
@@ -109,7 +110,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
       }
 
   return (
-    <header className="sticky top-0 z-30 flex min-h-16 items-center gap-3 border-b border-[#DCDFE4] bg-white px-4 lg:px-6">
+    <header className="sticky top-0 z-30 flex min-h-16 items-center gap-3 border-b border-border bg-card/95 px-4 text-card-foreground shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/85 lg:px-6">
       <Button
         variant="ghost"
         size="icon"
@@ -129,18 +130,20 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         <ConnectivityChip {...llmStatus} className="max-w-[260px]" />
       </div>
 
-      <div className="flex shrink-0 items-center gap-2 rounded-md border border-[#DCDFE4] bg-white px-2 py-1.5">
+      <ThemeToggle />
+
+      <div className="flex shrink-0 items-center gap-2 rounded-lg border border-border bg-background/70 px-2 py-1.5">
         <Avatar className="size-7">
           {profile?.imageUrl ? <AvatarImage src={profile.imageUrl} alt="" /> : null}
-          <AvatarFallback className="bg-[#E9F2FF] text-xs font-semibold text-[#0C66E4]">
+          <AvatarFallback className="bg-primary/10 text-xs font-semibold text-primary">
             {initialsFromName(profile?.displayName)}
           </AvatarFallback>
         </Avatar>
         <div className="hidden min-w-0 sm:block">
-          <div className="max-w-48 truncate text-sm font-medium text-[#172B4D]">
+          <div className="max-w-48 truncate text-sm font-medium text-foreground">
             {profile?.displayName ?? (profileError ? "Azure DevOps user unavailable" : "Loading Azure DevOps user")}
           </div>
-          {profile?.uniqueName ? <div className="max-w-48 truncate text-xs text-[#626F86]">{profile.uniqueName}</div> : null}
+          {profile?.uniqueName ? <div className="max-w-48 truncate text-xs text-muted-foreground">{profile.uniqueName}</div> : null}
         </div>
       </div>
 
@@ -160,10 +163,10 @@ function ConnectivityChip({
   className?: string
 }) {
   const styles = {
-    connected: "border-emerald-200 bg-emerald-50 text-emerald-700 before:bg-emerald-500",
-    checking: "border-slate-200 bg-slate-50 text-slate-600 before:bg-slate-400",
-    missing: "border-amber-200 bg-amber-50 text-amber-700 before:bg-amber-500",
-    warning: "border-red-200 bg-red-50 text-red-700 before:bg-red-500",
+    connected: "border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 before:bg-emerald-500",
+    checking: "border-slate-500/25 bg-slate-500/10 text-slate-600 dark:text-slate-300 before:bg-slate-400",
+    missing: "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300 before:bg-amber-500",
+    warning: "border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300 before:bg-red-500",
   }[tone]
 
   return (
