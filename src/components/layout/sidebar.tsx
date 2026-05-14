@@ -33,15 +33,15 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
   const pathname = usePathname()
 
   return (
-    <aside className={cn("flex h-full flex-col bg-[#172B4D] text-white", className)}>
+    <aside className={cn("flex h-full flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground", className)}>
       <div className="px-4 py-5">
         <Link href="/dashboard" onClick={onNavigate} className="flex items-center gap-3">
-          <div className="flex size-9 items-center justify-center rounded-lg bg-[#0C66E4] text-sm font-bold">
+          <div className="flex size-9 items-center justify-center rounded-lg bg-sidebar-primary text-sm font-bold text-sidebar-primary-foreground shadow-sm shadow-primary/20">
             IT
           </div>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold">{PRODUCT_NAME}</div>
-            <div className="text-xs text-white/60">Local command center</div>
+            <div className="text-xs text-sidebar-foreground/60">Local command center</div>
           </div>
         </Link>
       </div>
@@ -60,8 +60,8 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
               href={item.href}
               onClick={onNavigate}
               className={cn(
-                "flex min-h-9 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-white/75 transition hover:bg-white/10 hover:text-white",
-                active && "bg-[#E9F2FF] text-[#0C66E4] hover:bg-[#E9F2FF] hover:text-[#0C66E4]"
+                "flex min-h-9 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                active && "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm ring-1 ring-sidebar-ring/20 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
               )}
             >
               <Icon className="size-4 shrink-0" aria-hidden="true" />
@@ -72,11 +72,11 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
       </nav>
 
       <div className="px-3 pb-4">
-        <Separator className="mb-3 bg-white/10" />
+        <Separator className="mb-3 bg-sidebar-border" />
         <Link
           href="/settings"
           onClick={onNavigate}
-          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-white/70 transition hover:bg-white/10 hover:text-white"
+          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
         >
           <HelpCircle className="size-4" aria-hidden="true" />
           Help & Support

@@ -14,7 +14,7 @@ export function ContentShell({
   children: ReactNode
 }) {
   return (
-    <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 p-4 lg:p-6">
+    <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-5 p-4 lg:p-6">
       <PageHeader title={title} description={description} actions={actions} />
       {children}
     </div>

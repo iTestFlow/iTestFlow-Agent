@@ -14,15 +14,15 @@ export function ScoreCard({
   return (
     <Card className="qa-card">
       <CardHeader className="pb-2">
-        <CardTitle className="text-base font-semibold text-[#172B4D]">{title}</CardTitle>
+        <CardTitle className="text-base font-semibold text-foreground">{title}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex items-end justify-between">
-          <span className="text-3xl font-bold text-[#172B4D]">{score}</span>
-          <span className="text-xs font-medium text-[#626F86]">{scoreLabel(score)}</span>
+          <span className="text-3xl font-bold text-foreground">{score}</span>
+          <span className="text-xs font-medium text-muted-foreground">{scoreLabel(score)}</span>
         </div>
         <Progress value={score} aria-label={`${title} score ${score}`} />
-        <p className="text-xs leading-5 text-[#626F86]">{description}</p>
+        <p className="text-xs leading-5 text-muted-foreground">{description}</p>
       </CardContent>
     </Card>
   )

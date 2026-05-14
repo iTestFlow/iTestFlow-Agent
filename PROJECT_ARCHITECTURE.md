@@ -103,6 +103,12 @@ Project scoping:
 - Active project scope is stored client-side by `src/shared/lib/active-project.ts`.
 - Server actions validate scope through `src/modules/projects/project-isolation.guard.ts`.
 
+Dashboard analytics:
+
+- `/dashboard` renders local DevOps analytics from existing workflow, context, LLM, publish, and audit data.
+- `/api/dashboard/analytics` returns project-scoped or all-project local SQLite aggregates for KPI cards, charts, and recent activity.
+- Dashboard UI uses reusable components under `src/components/dashboard` and theme-aware Recharts visualizations.
+
 Project Context:
 
 - `/context` fetches and indexes filtered Azure DevOps work items.
