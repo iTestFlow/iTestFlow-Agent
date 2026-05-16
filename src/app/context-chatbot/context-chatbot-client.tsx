@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { AlertTriangle, Bot, Database, RefreshCw, Send, Trash2, UserRound } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -291,7 +291,11 @@ function ChatBubble({ message }: { message: ChatMessage }) {
               : "border-border bg-background text-foreground",
           )}
         >
-          <div className="whitespace-pre-wrap break-words">{message.content}</div>
+          {isUser ? (
+            <div className="whitespace-pre-wrap break-words">{message.content}</div>
+          ) : (
+            <MarkdownMessage content={message.content} />
+          )}
           <div className={cn("mt-2 text-[11px]", isUser ? "text-primary-foreground/75" : "text-muted-foreground")}>
             {formatTime(message.timestamp)}
           </div>
@@ -317,6 +321,143 @@ function ChatBubble({ message }: { message: ChatMessage }) {
       ) : null}
     </div>
   );
+}
+
+function MarkdownMessage({ content }: { content: string }) {
+  return <div className="space-y-2 break-words">{renderMarkdownBlocks(content)}</div>;
+}
+
+function renderMarkdownBlocks(content: string) {
+  const blocks: ReactNode[] = [];
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    if (line.startsWith("```")) {
+      const language = line.slice(3).trim();
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      blocks.push(
+        <pre key={`code-${blocks.length}`} className="overflow-x-auto rounded-md bg-muted p-3 text-xs leading-5 text-muted-foreground">
+          {language ? <div className="mb-2 text-[11px] font-medium uppercase text-muted-foreground/70">{language}</div> : null}
+          <code>{codeLines.join("\n")}</code>
+        </pre>,
+      );
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      const level = heading[1].length;
+      const Tag = level === 1 ? "h3" : level === 2 ? "h4" : "h5";
+      blocks.push(
+        <Tag key={`heading-${blocks.length}`} className="font-semibold text-foreground">
+          {renderInlineMarkdown(heading[2])}
+        </Tag>,
+      );
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\s*[-*]\s+/, ""));
+        index += 1;
+      }
+      blocks.push(
+        <ul key={`ul-${blocks.length}`} className="list-disc space-y-1 pl-5">
+          {items.map((item, itemIndex) => (
+            <li key={itemIndex}>{renderInlineMarkdown(item)}</li>
+          ))}
+        </ul>,
+      );
+      continue;
+    }
+
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\s*\d+\.\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\s*\d+\.\s+/, ""));
+        index += 1;
+      }
+      blocks.push(
+        <ol key={`ol-${blocks.length}`} className="list-decimal space-y-1 pl-5">
+          {items.map((item, itemIndex) => (
+            <li key={itemIndex}>{renderInlineMarkdown(item)}</li>
+          ))}
+        </ol>,
+      );
+      continue;
+    }
+
+    const paragraphLines = [line];
+    index += 1;
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !lines[index].startsWith("```") &&
+      !/^(#{1,3})\s+/.test(lines[index]) &&
+      !/^\s*[-*]\s+/.test(lines[index]) &&
+      !/^\s*\d+\.\s+/.test(lines[index])
+    ) {
+      paragraphLines.push(lines[index]);
+      index += 1;
+    }
+    blocks.push(
+      <p key={`p-${blocks.length}`} className="whitespace-pre-wrap">
+        {renderInlineMarkdown(paragraphLines.join("\n"))}
+      </p>,
+    );
+  }
+
+  return blocks.length ? blocks : content;
+}
+
+function renderInlineMarkdown(value: string) {
+  const nodes: ReactNode[] = [];
+  const tokenPattern = /(\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|`([^`]+?)`|\[([^\]]+?)\]\((https?:\/\/[^)\s]+)\)|\*([^*\n]+?)\*|_([^_\n]+?)_)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenPattern.exec(value))) {
+    if (match.index > lastIndex) nodes.push(value.slice(lastIndex, match.index));
+    const [, token, boldStar, boldUnderscore, code, linkText, href, italicStar, italicUnderscore] = match;
+    const key = `${match.index}-${token}`;
+
+    if (boldStar || boldUnderscore) {
+      nodes.push(<strong key={key}>{renderInlineMarkdown(boldStar ?? boldUnderscore)}</strong>);
+    } else if (code) {
+      nodes.push(
+        <code key={key} className="rounded bg-muted px-1 py-0.5 text-[0.9em] text-foreground">
+          {code}
+        </code>,
+      );
+    } else if (linkText && href) {
+      nodes.push(
+        <a key={key} href={href} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2">
+          {renderInlineMarkdown(linkText)}
+        </a>,
+      );
+    } else {
+      nodes.push(<em key={key}>{renderInlineMarkdown(italicStar ?? italicUnderscore ?? "")}</em>);
+    }
+    lastIndex = match.index + token.length;
+  }
+
+  if (lastIndex < value.length) nodes.push(value.slice(lastIndex));
+  return nodes.length ? nodes : value;
 }
 
 function CitationList({ citations }: { citations: ContextChatbotCitation[] }) {
