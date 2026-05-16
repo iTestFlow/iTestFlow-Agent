@@ -9,6 +9,7 @@ import {
   HelpCircle,
   Home,
   ListPlus,
+  MessageSquareText,
   Settings,
   ShieldCheck,
   TestTube2,
@@ -21,6 +22,7 @@ import { cn } from "@/lib/utils"
 const navigation = [
   { href: "/dashboard", label: "Home", icon: Home },
   { href: "/context", label: "Project Context", icon: FileText },
+  { href: "/context-chatbot", label: "Context Chatbot", icon: MessageSquareText },
   { href: "/requirements/analyze", label: "Requirement Analysis", icon: ShieldCheck, section: "/requirements" },
   { href: "/test-cases/design/context", label: "Test Case Design", icon: TestTube2, section: "/test-cases/design" },
   { href: "/test-coverage-matrix", label: "Test Coverage Matrix", icon: ClipboardCheck },

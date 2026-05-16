@@ -2,7 +2,15 @@ import "server-only";
 
 import { z } from "zod";
 import { writeLLMRequestLog } from "../llm-request-log.service";
-import type { GenerateStructuredOutputInput, LLMProvider, LLMProviderConfig, LLMProviderName, LLMResult } from "../llm-types";
+import type {
+  GenerateStructuredOutputInput,
+  GenerateTextInput,
+  LLMProvider,
+  LLMProviderConfig,
+  LLMProviderName,
+  LLMResult,
+  LLMTextResult,
+} from "../llm-types";
 
 export type LLMProviderCallResult = {
   rawOutput: string;
@@ -24,6 +32,29 @@ export abstract class BaseJsonProvider implements LLMProvider {
   }
 
   abstract testConnection(): Promise<boolean>;
+
+  async generateText(input: GenerateTextInput): Promise<LLMTextResult> {
+    const startedAt = Date.now();
+    let callResult: LLMProviderCallResult | null = null;
+
+    try {
+      callResult = await this.callTextModel(input);
+      if (callResult.errorMessage) throw new Error(callResult.errorMessage);
+
+      this.logTextRequest(input, callResult, "Success", Date.now() - startedAt);
+
+      return {
+        provider: this.name,
+        model: this.model,
+        rawOutput: callResult.rawOutput,
+        text: callResult.rawOutput.trim(),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown LLM text request error.";
+      this.logTextRequest(input, callResult, "Failed", Date.now() - startedAt, message);
+      throw error;
+    }
+  }
 
   async generateStructuredOutput<TSchema extends z.ZodTypeAny>(
     input: GenerateStructuredOutputInput<TSchema>,
@@ -50,6 +81,8 @@ export abstract class BaseJsonProvider implements LLMProvider {
       throw error;
     }
   }
+
+  protected abstract callTextModel(input: GenerateTextInput): Promise<LLMProviderCallResult>;
 
   protected abstract callModel<TSchema extends z.ZodTypeAny>(input: GenerateStructuredOutputInput<TSchema>): Promise<LLMProviderCallResult>;
 
@@ -116,6 +149,34 @@ export abstract class BaseJsonProvider implements LLMProvider {
       });
     } catch (logError) {
       console.error("Failed to write LLM request log", logError);
+    }
+  }
+
+  private logTextRequest(
+    input: GenerateTextInput,
+    callResult: LLMProviderCallResult | null,
+    status: "Success" | "Failed",
+    durationMs: number,
+    errorDetails?: string,
+  ) {
+    try {
+      writeLLMRequestLog({
+        ...input.metadata,
+        provider: this.name,
+        model: this.model,
+        schemaName: "PlainText",
+        systemPrompt: input.system,
+        userPrompt: input.user,
+        requestBody: callResult?.requestBody,
+        responseBody: callResult?.responseBody,
+        rawOutput: callResult?.rawOutput,
+        validatedOutput: undefined,
+        status,
+        errorDetails,
+        durationMs,
+      });
+    } catch (logError) {
+      console.error("Failed to write LLM text request log", logError);
     }
   }
 }
