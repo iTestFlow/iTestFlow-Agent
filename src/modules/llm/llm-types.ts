@@ -23,6 +23,14 @@ export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTy
   metadata?: LLMRequestLogMetadata;
 };
 
+export type GenerateTextInput = {
+  system: string;
+  user: string;
+  temperature?: number;
+  maxTokens?: number;
+  metadata?: LLMRequestLogMetadata;
+};
+
 export type LLMResult<T = unknown> = {
   provider: LLMProviderName;
   model: string;
@@ -36,10 +44,24 @@ export type LLMResult<T = unknown> = {
   costEstimate?: number;
 };
 
+export type LLMTextResult = {
+  provider: LLMProviderName;
+  model: string;
+  rawOutput: string;
+  text: string;
+  tokenUsage?: {
+    input?: number;
+    output?: number;
+    total?: number;
+  };
+  costEstimate?: number;
+};
+
 export interface LLMProvider {
   readonly name: LLMProviderName;
   readonly model: string;
   testConnection(): Promise<boolean>;
+  generateText(input: GenerateTextInput): Promise<LLMTextResult>;
   generateStructuredOutput<TSchema extends z.ZodTypeAny>(
     input: GenerateStructuredOutputInput<TSchema>,
   ): Promise<LLMResult<z.infer<TSchema>>>;

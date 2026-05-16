@@ -15,6 +15,7 @@ import {
   ProjectKnowledgeBaseSchema,
   type ProjectKnowledgeBase,
 } from "./project-knowledge.schema";
+import { refreshProjectKnowledgeSearchIndex } from "./context-chatbot-retrieval.service";
 
 const MAX_CONTEXT_INPUT_CHARS = 30000;
 const GLOSSARY_TYPE_PRIORITY: Record<ProjectKnowledgeBase["glossary"][number]["type"], number> = {
@@ -654,6 +655,11 @@ function saveProjectKnowledgeBaseSnapshot(input: {
         createdAt: now,
         updatedAt: now,
       });
+    refreshProjectKnowledgeSearchIndex({
+      scope: input.scope,
+      knowledgeBaseId: id,
+      knowledgeBase: input.knowledgeBase,
+    });
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");

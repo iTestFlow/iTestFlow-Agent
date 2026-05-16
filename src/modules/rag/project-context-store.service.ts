@@ -6,6 +6,7 @@ import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { chunkText } from "./rag-pipeline.service";
+import { refreshProjectContextSearchIndex } from "./context-chatbot-retrieval.service";
 
 export type LlmContextSource = {
   sourceType: "azure_work_item";
@@ -219,6 +220,8 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
       indexedWorkItemCount += 1;
       indexedChunkCount += chunks.length;
     }
+
+    refreshProjectContextSearchIndex({ scope });
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");

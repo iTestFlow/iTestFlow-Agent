@@ -216,6 +216,18 @@ CREATE TABLE IF NOT EXISTS embeddings (
   updated_at TEXT NOT NULL
 );
 
+CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5(
+  project_id UNINDEXED,
+  azure_project_id UNINDEXED,
+  chunk_id UNINDEXED,
+  azure_work_item_id UNINDEXED,
+  work_item_type UNINDEXED,
+  title,
+  content,
+  metadata_json UNINDEXED,
+  tokenize = 'unicode61'
+);
+
 CREATE TABLE IF NOT EXISTS requirements (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -289,6 +301,38 @@ CREATE TABLE IF NOT EXISTS project_knowledge_base (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (project_id, azure_project_id)
+);
+
+CREATE TABLE IF NOT EXISTS project_knowledge_entries (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  knowledge_base_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  entry_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  source_work_item_ids TEXT NOT NULL,
+  evidence TEXT NOT NULL,
+  metadata_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS project_knowledge_entries_fts USING fts5(
+  project_id UNINDEXED,
+  azure_project_id UNINDEXED,
+  entry_id UNINDEXED,
+  category UNINDEXED,
+  entry_key UNINDEXED,
+  title,
+  content,
+  source_work_item_ids UNINDEXED,
+  evidence,
+  metadata_json UNINDEXED,
+  tokenize = 'unicode61'
 );
 
 CREATE TABLE IF NOT EXISTS requirement_analysis_runs (
@@ -638,6 +682,7 @@ CREATE INDEX IF NOT EXISTS idx_work_items_project ON azure_devops_work_items(pro
 CREATE INDEX IF NOT EXISTS idx_chunks_project ON document_chunks(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_context_selected_project ON context_selected_items(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_project_knowledge_base_project ON project_knowledge_base(project_id, azure_project_id);
+CREATE INDEX IF NOT EXISTS idx_project_knowledge_entries_project ON project_knowledge_entries(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_test_cases_project ON test_cases(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_audit_project ON audit_logs(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_llm_request_logs_project ON llm_request_logs(project_id, azure_project_id);
