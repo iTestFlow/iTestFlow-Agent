@@ -327,6 +327,12 @@ function MarkdownMessage({ content }: { content: string }) {
   return <div className="space-y-2 break-words">{renderMarkdownBlocks(content)}</div>;
 }
 
+type MarkdownTable = {
+  headers: string[];
+  rows: string[][];
+  alignments: Array<"left" | "center" | "right">;
+};
+
 function renderMarkdownBlocks(content: string) {
   const blocks: ReactNode[] = [];
   const lines = content.replace(/\r\n/g, "\n").split("\n");
@@ -370,6 +376,13 @@ function renderMarkdownBlocks(content: string) {
       continue;
     }
 
+    const table = parseMarkdownTable(lines, index);
+    if (table) {
+      blocks.push(<MarkdownTable key={`table-${blocks.length}`} table={table.table} />);
+      index = table.nextIndex;
+      continue;
+    }
+
     if (/^\s*[-*]\s+/.test(line)) {
       const items: string[] = [];
       while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
@@ -409,6 +422,7 @@ function renderMarkdownBlocks(content: string) {
       lines[index].trim() &&
       !lines[index].startsWith("```") &&
       !/^(#{1,3})\s+/.test(lines[index]) &&
+      !parseMarkdownTable(lines, index) &&
       !/^\s*[-*]\s+/.test(lines[index]) &&
       !/^\s*\d+\.\s+/.test(lines[index])
     ) {
@@ -423,6 +437,115 @@ function renderMarkdownBlocks(content: string) {
   }
 
   return blocks.length ? blocks : content;
+}
+
+function MarkdownTable({ table }: { table: MarkdownTable }) {
+  return (
+    <div className="max-w-full overflow-x-auto rounded-md border border-border">
+      <table className="w-full min-w-max border-collapse text-left text-sm">
+        <thead className="bg-muted/70 text-foreground">
+          <tr>
+            {table.headers.map((header, cellIndex) => (
+              <th
+                key={cellIndex}
+                className={cn("border-b border-r border-border px-3 py-2 font-semibold last:border-r-0", tableCellAlignment(table.alignments[cellIndex]))}
+              >
+                {renderInlineMarkdown(header)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {table.rows.map((row, rowIndex) => (
+            <tr key={rowIndex} className="odd:bg-background even:bg-muted/25">
+              {table.headers.map((_, cellIndex) => (
+                <td
+                  key={cellIndex}
+                  className={cn("max-w-[28rem] whitespace-normal border-r border-t border-border px-3 py-2 align-top last:border-r-0", tableCellAlignment(table.alignments[cellIndex]))}
+                >
+                  {renderInlineMarkdown(row[cellIndex] ?? "")}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function parseMarkdownTable(lines: string[], startIndex: number): { table: MarkdownTable; nextIndex: number } | null {
+  if (startIndex + 1 >= lines.length) return null;
+  const header = splitMarkdownTableRow(lines[startIndex]);
+  const delimiter = splitMarkdownTableRow(lines[startIndex + 1]);
+  if (header.length < 2 || delimiter.length !== header.length || !delimiter.every(isMarkdownTableDelimiterCell)) {
+    return null;
+  }
+
+  const rows: string[][] = [];
+  let index = startIndex + 2;
+  while (index < lines.length && isMarkdownTableRow(lines[index])) {
+    const row = splitMarkdownTableRow(lines[index]);
+    if (!row.length) break;
+    rows.push(row);
+    index += 1;
+  }
+
+  return {
+    table: {
+      headers: header,
+      rows,
+      alignments: delimiter.map(parseMarkdownTableAlignment),
+    },
+    nextIndex: index,
+  };
+}
+
+function isMarkdownTableRow(line: string) {
+  return line.includes("|") && splitMarkdownTableRow(line).length >= 2;
+}
+
+function splitMarkdownTableRow(line: string) {
+  const trimmed = line.trim();
+  const withoutOuterPipes = trimmed.replace(/^\|/, "").replace(/\|$/, "");
+  const cells: string[] = [];
+  let current = "";
+
+  for (let index = 0; index < withoutOuterPipes.length; index += 1) {
+    const char = withoutOuterPipes[index];
+    const nextChar = withoutOuterPipes[index + 1];
+    if (char === "\\" && nextChar === "|") {
+      current += "|";
+      index += 1;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  cells.push(current.trim());
+  return cells;
+}
+
+function isMarkdownTableDelimiterCell(cell: string) {
+  return /^:?-{3,}:?$/.test(cell.trim());
+}
+
+function parseMarkdownTableAlignment(cell: string) {
+  const trimmed = cell.trim();
+  if (trimmed.startsWith(":") && trimmed.endsWith(":")) return "center";
+  if (trimmed.endsWith(":")) return "right";
+  return "left";
+}
+
+function tableCellAlignment(alignment: "left" | "center" | "right" | undefined) {
+  if (alignment === "center") return "text-center";
+  if (alignment === "right") return "text-right";
+  return "text-left";
 }
 
 function renderInlineMarkdown(value: string) {
