@@ -8,6 +8,7 @@ export const runtime = "nodejs";
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema.optional().nullable(),
+  recentActivityLimit: z.number().int().min(1).max(100).optional(),
 });
 
 async function readJson(request: Request) {
@@ -25,7 +26,12 @@ export async function POST(request: Request) {
   }
 
   try {
-    return NextResponse.json(getDashboardAnalytics({ scope: parsed.data.scope ?? undefined }));
+    return NextResponse.json(
+      getDashboardAnalytics({
+        scope: parsed.data.scope ?? undefined,
+        recentActivityLimit: parsed.data.recentActivityLimit,
+      }),
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Dashboard analytics failed." },

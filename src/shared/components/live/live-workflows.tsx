@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Copy, Loader2, Play, Plus, Send, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, Copy, Loader2, Play, Plus, Send, Trash2 } from "lucide-react";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { Badge, Button, Card, CardHeader, SelectInput, TextArea, TextInput } from "@/shared/components/ui";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
@@ -109,7 +109,7 @@ type ExistingLinkedTestCase = {
 
 type ExistingTraceabilityRow = {
   id: string;
-  sourceType: "story" | "description" | "acceptanceCriteria";
+  sourceType: "story" | "description" | "acceptanceCriteria" | "businessRules";
   sourceReference: string;
   requirementText: string;
   coverageStatus: "Covered" | "Partially covered" | "Not covered" | "Needs review";
@@ -1043,27 +1043,19 @@ export function ExistingTestCaseReviewClient() {
 
 function ExistingTraceabilitySummary({ result }: { result: ExistingReviewResult }) {
   const counts = countTraceabilityStatuses(result.traceabilityMatrix);
+  const gapCount = counts["Partially covered"] + counts["Not covered"] + counts["Needs review"];
   const metrics = [
-    { title: "Coverage Score", value: formatPercentage(result.coverageScore), tone: scoreTone(result.coverageScore), description: "Overall matrix coverage" },
-    { title: "Story Points", value: String(result.traceabilityMatrix.length), tone: "blue" as const, description: "Atomic review rows" },
-    { title: "Covered", value: String(counts.Covered), tone: "emerald" as const, description: "Validated by linked tests" },
-    { title: "Partial", value: String(counts["Partially covered"]), tone: "amber" as const, description: "Needs stronger tests" },
-    { title: "Not Covered", value: String(counts["Not covered"]), tone: "red" as const, description: "Missing linked coverage" },
-    { title: "Needs Review", value: String(counts["Needs review"]), tone: "violet" as const, description: "Ambiguous or unclear" },
+    { title: "Coverage Score", value: formatPercentage(result.coverageScore), tone: scoreTone(result.coverageScore) },
+    { title: "Coverage Points", value: String(result.traceabilityMatrix.length), tone: "blue" as const },
+    { title: "Covered", value: String(counts.Covered), tone: "emerald" as const },
+    { title: "Gaps", value: String(gapCount), tone: gapCount ? "red" as const : "emerald" as const },
   ];
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+      <div className="grid gap-3 md:grid-cols-4">
         {metrics.map((metric) => (
-          <Card key={metric.title} className="p-4">
-            <div className="text-xs font-semibold uppercase tracking-normal text-slate-500">{metric.title}</div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-2xl font-bold text-slate-950">{metric.value}</span>
-              <Badge tone={metric.tone}>{metric.tone === "emerald" ? "Good" : metric.tone === "red" ? "Gap" : metric.tone === "amber" ? "Watch" : "Info"}</Badge>
-            </div>
-            <p className="mt-1 text-xs text-slate-500">{metric.description}</p>
-          </Card>
+          <CoverageMetric key={metric.title} label={metric.title} value={metric.value} tone={metric.tone} />
         ))}
       </div>
       <Card className="p-4">
@@ -1074,10 +1066,34 @@ function ExistingTraceabilitySummary({ result }: { result: ExistingReviewResult 
   );
 }
 
+function CoverageMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "emerald" | "amber" | "red" | "blue";
+}) {
+  const toneStyles = {
+    emerald: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    amber: "border-amber-200 bg-amber-50 text-amber-700",
+    red: "border-red-200 bg-red-50 text-red-700",
+    blue: "border-blue-200 bg-blue-50 text-blue-700",
+  }[tone];
+
+  return (
+    <div className={`rounded-md border p-4 ${toneStyles}`}>
+      <div className="text-base font-semibold text-slate-600">{label}</div>
+      <div className="mt-1 text-2xl font-bold">{value}</div>
+    </div>
+  );
+}
+
 function ExistingTraceabilityMatrix({ rows }: { rows: ExistingTraceabilityRow[] }) {
   return (
     <Card className="overflow-hidden">
-      <CardHeader title="Test Coverage Matrix" description="Every row is one atomic story point mapped to linked Azure DevOps test cases." />
+      <CardHeader title="Test Coverage Matrix" description="Every row is one atomic coverage point mapped to linked Azure DevOps test cases." />
       {rows.length ? (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1180px] border-collapse text-left text-sm">
@@ -1187,10 +1203,26 @@ function ExistingReviewInsights({ insights, findings }: { insights: ExistingRevi
 }
 
 function ExistingLinkedTestCasesList({ linkedTestCases }: { linkedTestCases: ExistingLinkedTestCase[] }) {
+  const [open, setOpen] = useState(false);
+
   return (
     <Card>
-      <CardHeader title="Linked Test Cases from Azure DevOps" />
-      {linkedTestCases.length ? (
+      <CardHeader
+        title="Linked Test Cases from Azure DevOps"
+        action={
+          <Button
+            type="button"
+            variant="secondary"
+            className="h-8 px-3"
+            aria-expanded={open}
+            onClick={() => setOpen((current) => !current)}
+          >
+            <ChevronDown className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`} />
+            {open ? "Hide" : "Show"}
+          </Button>
+        }
+      />
+      {open && linkedTestCases.length ? (
         <div className="divide-y divide-[#d8e2ef]">
           {linkedTestCases.map((testCase) => (
             <div key={testCase.id} className="grid gap-3 p-4 md:grid-cols-[140px_1fr_120px]">
@@ -1203,9 +1235,9 @@ function ExistingLinkedTestCasesList({ linkedTestCases }: { linkedTestCases: Exi
             </div>
           ))}
         </div>
-      ) : (
+      ) : open ? (
         <EmptyBlock message="No TestedBy / Tests linked Azure DevOps test cases were found for this story." />
-      )}
+      ) : null}
     </Card>
   );
 }
@@ -1228,6 +1260,7 @@ function coverageTone(status: ExistingTraceabilityRow["coverageStatus"]) {
 }
 
 function coverageSourceLabel(sourceType: ExistingTraceabilityRow["sourceType"]) {
+  if (sourceType === "businessRules") return "Business Rules";
   if (sourceType === "acceptanceCriteria") return "Acceptance Criteria";
   if (sourceType === "description") return "Description";
   return "Story";
@@ -1609,45 +1642,6 @@ export function PublishTestCasesClient() {
   );
 }
 
-export function AuditLogsClient() {
-  const [state, setState] = useState<ApiState<{ logs: unknown[] }>>({ loading: true, error: null, data: null });
-  const [llmState, setLlmState] = useState<ApiState<{ logs: unknown[] }>>({ loading: true, error: null, data: null });
-
-  useEffect(() => {
-    fetch("/api/audit-logs", { cache: "no-store" })
-      .then(async (response) => {
-        const json = await response.json();
-        if (!response.ok) throw new Error(json.error ?? "Audit log fetch failed.");
-        setState({ loading: false, error: null, data: json });
-      })
-      .catch((error: unknown) => setState({ loading: false, error: error instanceof Error ? error.message : "Audit log fetch failed.", data: null }));
-    fetch("/api/llm-request-logs", { cache: "no-store" })
-      .then(async (response) => {
-        const json = await response.json();
-        if (!response.ok) throw new Error(json.error ?? "LLM request log fetch failed.");
-        setLlmState({ loading: false, error: null, data: json });
-      })
-      .catch((error: unknown) => setLlmState({ loading: false, error: error instanceof Error ? error.message : "LLM request log fetch failed.", data: null }));
-  }, []);
-
-  if (state.error) return <ErrorBlock message={state.error} />;
-  if (llmState.error) return <ErrorBlock message={llmState.error} />;
-  if (state.loading || llmState.loading) return <EmptyBlock message="Loading live audit and LLM request logs..." />;
-
-  return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader title="LLM Request Logs" description="Recent prompts, provider payloads, raw responses, and validation status stored locally." />
-        <pre className="max-h-[620px] overflow-auto p-4 text-xs text-muted-foreground">{JSON.stringify(llmState.data?.logs ?? [], null, 2)}</pre>
-      </Card>
-      <Card>
-        <CardHeader title="Live Audit Log Entries" />
-        <pre className="max-h-[620px] overflow-auto p-4 text-xs text-muted-foreground">{JSON.stringify(state.data?.logs ?? [], null, 2)}</pre>
-      </Card>
-    </div>
-  );
-}
-
 function WorkflowModeTabs({ mode, onChange }: { mode: WorkflowMode; onChange: (mode: WorkflowMode) => void }) {
   const itemClass = (value: WorkflowMode) =>
     `h-8 rounded-[6px] px-3 text-sm font-medium transition ${
@@ -1762,6 +1756,17 @@ function EditableGeneratedCases({
       byType: Object.entries(byType).sort(([firstType], [secondType]) => firstType.localeCompare(secondType)),
     };
   }, [testCases]);
+  const priorityBreakdown = useMemo<GeneratedCaseSummaryRow[]>(() =>
+    ([1, 2, 3, 4] as const).map((priority) => ({
+      label: `Priority ${priority}`,
+      value: testCaseStats.byPriority[priority],
+      tone: priority === 1 ? "red" : priority === 2 ? "amber" : priority === 3 ? "blue" : "slate",
+    })),
+  [testCaseStats]);
+  const scopeBreakdown = useMemo<GeneratedCaseSummaryRow[]>(
+    () => testCaseStats.byType.map(([type, count]) => ({ label: formatEnumLabel(type), value: count, tone: "cyan" as const })),
+    [testCaseStats],
+  );
 
   function persistCases(updated: GeneratedTestCase[]) {
     setTestCases(updated);
@@ -1793,35 +1798,14 @@ function EditableGeneratedCases({
         title={title}
         description="Edit titles and steps inline before publishing."
       />
-      <div className="grid gap-3 border-b border-[#d8e2ef] bg-[#f8fafc] px-5 py-4 text-sm text-slate-700 lg:grid-cols-[160px_1fr_1fr]">
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-normal text-slate-500">Total</div>
-          <div className="mt-1 text-2xl font-bold text-slate-950">{testCaseStats.total}</div>
-        </div>
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-normal text-slate-500">By Priority</div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {([1, 2, 3, 4] as const).map((priority) => (
-              <Badge key={priority} tone={priority === 1 ? "red" : priority === 2 ? "amber" : priority === 3 ? "blue" : "slate"}>
-                Priority {priority}: {testCaseStats.byPriority[priority]}
-              </Badge>
-            ))}
-          </div>
-        </div>
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-normal text-slate-500">By Type</div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {testCaseStats.byType.length ? (
-              testCaseStats.byType.map(([type, count]) => (
-                <Badge key={type} tone="cyan">
-                  {formatEnumLabel(type)}: {count}
-                </Badge>
-              ))
-            ) : (
-              <span className="text-xs text-slate-500">No types yet</span>
-            )}
-          </div>
-        </div>
+      <div className="grid gap-3 border-b border-[#d8e2ef] bg-[#f8fafc] p-4 lg:grid-cols-[180px_minmax(260px,1fr)_minmax(260px,1fr)]">
+        <GeneratedCaseTotalCard total={testCaseStats.total} />
+        <GeneratedCaseSummaryCard title="Priority Breakdown" rows={priorityBreakdown} />
+        <GeneratedCaseSummaryCard
+          title="Type"
+          rows={scopeBreakdown}
+          emptyLabel="No scope values yet"
+        />
       </div>
       <div className="divide-y">
         {testCases.length ? testCases.map((testCase, index) => (
@@ -1913,6 +1897,71 @@ function EditableGeneratedCases({
         </div>
       ) : null}
     </Card>
+  );
+}
+
+type GeneratedCaseSummaryRow = {
+  label: string;
+  value: number;
+  tone: "red" | "amber" | "blue" | "cyan" | "slate";
+};
+
+function GeneratedCaseTotalCard({ total }: { total: number }) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-4">
+      <div className="text-base font-semibold text-slate-600">Total</div>
+      <div className="mt-2 text-4xl font-bold text-slate-950">{total}</div>
+    </div>
+  );
+}
+
+function GeneratedCaseSummaryCard({
+  title,
+  rows,
+  emptyLabel = "No values yet",
+  footer,
+}: {
+  title: string;
+  rows: GeneratedCaseSummaryRow[];
+  emptyLabel?: string;
+  footer?: React.ReactNode;
+}) {
+  const hasValues = rows.some((row) => row.value > 0);
+
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-4">
+      <div className="text-base font-semibold text-slate-600">{title}</div>
+      {hasValues ? (
+        <div className="mt-3 grid gap-2">
+          {rows.map((row) => (
+            <GeneratedCaseSummaryRowItem key={row.label} row={row} />
+          ))}
+        </div>
+      ) : (
+        <div className="mt-3 rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-400">
+          {emptyLabel}
+        </div>
+      )}
+      {footer}
+    </div>
+  );
+}
+
+function GeneratedCaseSummaryRowItem({ row }: { row: GeneratedCaseSummaryRow }) {
+  const toneStyles = {
+    red: "bg-red-50 text-red-700",
+    amber: "bg-amber-50 text-amber-700",
+    blue: "bg-blue-50 text-blue-700",
+    cyan: "bg-cyan-50 text-cyan-700",
+    slate: "bg-slate-100 text-slate-700",
+  }[row.tone];
+  const empty = row.value === 0;
+
+  return (
+    <div className={`flex items-center justify-between gap-3 rounded-md px-3 py-2 text-sm ${empty ? "bg-slate-50 text-slate-400" : toneStyles}`}>
+      <span className={empty ? "text-slate-400" : "font-medium"}>{row.label}</span>
+      <span className={empty ? "text-xs text-slate-400" : "text-base font-bold"}>{empty ? "None" : row.value}</span>
+    </div>
   );
 }
 

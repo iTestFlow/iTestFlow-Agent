@@ -533,9 +533,6 @@ export function ProjectContextClient() {
                             <SortHeader label="Type" active={sortBy === "type"} direction={sortDirection} onClick={() => changeSort("type")} />
                           </TableHead>
                           <TableHead className="min-w-[320px]">Title</TableHead>
-                          <TableHead>
-                            <SortHeader label="State" active={sortBy === "state"} direction={sortDirection} onClick={() => changeSort("state")} />
-                          </TableHead>
                           <TableHead>Chunks</TableHead>
                           <TableHead>
                             <SortHeader
@@ -553,7 +550,6 @@ export function ProjectContextClient() {
                             <TableCell className="font-mono text-xs font-semibold text-[#0C66E4]">{item.workItemId}</TableCell>
                             <TableCell><Badge variant="secondary">{item.workItemType}</Badge></TableCell>
                             <TableCell className="font-medium text-[#172B4D]">{item.title}</TableCell>
-                            <TableCell>{item.state ?? "-"}</TableCell>
                             <TableCell>{item.chunkCount}</TableCell>
                             <TableCell>{formatDate(item.lastIndexedAt)}</TableCell>
                           </TableRow>

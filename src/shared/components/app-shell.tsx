@@ -11,7 +11,6 @@ const navigation = [
   { href: "/requirements/select", label: "Requirement Analysis", section: "/requirements" },
   { href: "/test-cases/select", label: "Test Case Design", section: "/test-cases" },
   { href: "/test-coverage-matrix", label: "Test Coverage Matrix" },
-  { href: "/audit-logs", label: "Audit Logs" },
   { href: "/settings", label: "Settings" },
 ];
 
@@ -32,7 +31,6 @@ const pageTitles = [
   { match: "/test-coverage-matrix", title: "Test Coverage Matrix" },
   { match: "/existing-test-case-review/additions", title: "Suggested Additions from Test Coverage Matrix" },
   { match: "/existing-test-case-review", title: "Test Coverage Matrix" },
-  { match: "/audit-logs", title: "Audit Logs / History" },
   { match: "/settings", title: "Settings" },
 ];
 

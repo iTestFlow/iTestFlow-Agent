@@ -115,8 +115,8 @@ function requiredOutputShape(schemaName: string) {
       traceabilityMatrix: [
         {
           id: "TM-001",
-          sourceType: "story | description | acceptanceCriteria",
-          sourceReference: "Title | Description paragraph 1 | AC-1",
+          sourceType: "story | description | acceptanceCriteria | businessRules",
+          sourceReference: "Title | Description paragraph 1 | AC-1 | Business rule ID",
           requirementText: "atomic testable story point",
           coverageStatus: "Covered | Partially covered | Not covered | Needs review",
           severity: "High | Medium | Low",

@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation"
 import {
   ClipboardCheck,
   FileText,
-  Gauge,
   HelpCircle,
   Home,
   ListPlus,
@@ -27,7 +26,6 @@ const navigation = [
   { href: "/test-cases/design/context", label: "Test Case Design", icon: TestTube2, section: "/test-cases/design" },
   { href: "/test-coverage-matrix", label: "Test Coverage Matrix", icon: ClipboardCheck },
   { href: "/bulk-tasks", label: "Bulk Task Creation", icon: ListPlus },
-  { href: "/audit-logs", label: "Audit Logs", icon: Gauge },
   { href: "/settings", label: "Settings", icon: Settings },
 ]
 

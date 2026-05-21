@@ -10,17 +10,26 @@ type ScopeFilter = {
 };
 
 type CountRow = { count: number };
-type AvgRow = { average: number | null };
-type BreakdownRow = { name: string | null; value: number };
-type ActivityRow = { day: string; workflow: string; value: number };
+type MessageRow = { message: string };
 type RecentActivityRow = {
   id: string;
+  project_id: string | null;
+  azure_project_id: string | null;
   action: string;
   status: string;
+  actor: string | null;
   message: string;
   azure_project_name: string | null;
+  azure_organization_url: string | null;
+  entity_type: string | null;
+  entity_id: string | null;
+  details_json: string | null;
   created_at: string;
+  updated_at: string;
 };
+
+const DEFAULT_RECENT_ACTIVITY_LIMIT = 8;
+const MAX_RECENT_ACTIVITY_LIMIT = 100;
 
 function scopeParams(scope?: ProjectScope): ScopeFilter {
   if (!scope) return { projectId: null, azureProjectId: null };
@@ -41,24 +50,21 @@ function getCount(sql: string, params: ScopeFilter) {
   return (getDatabase().prepare(sql).get(params) as CountRow | undefined)?.count ?? 0;
 }
 
-function getAverage(sql: string, params: ScopeFilter) {
-  return (getDatabase().prepare(sql).get(params) as AvgRow | undefined)?.average ?? null;
-}
+function sumGeneratedCaseAuditMessages(params: ScopeFilter) {
+  const rows = getDatabase()
+    .prepare(
+      `SELECT message
+       FROM audit_logs
+       WHERE ${scopeWhere()}
+         AND status = 'Success'
+         AND action IN ('test_case_generation.run', 'test_case_generation.manual_complete')`,
+    )
+    .all(params) as MessageRow[];
 
-function formatDayLabel(value: string) {
-  const date = new Date(`${value}T00:00:00`);
-  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(date);
-}
-
-function buildRecentDays() {
-  const days: Array<{ day: string; label: string }> = [];
-  for (let offset = 13; offset >= 0; offset -= 1) {
-    const date = new Date();
-    date.setDate(date.getDate() - offset);
-    const day = date.toISOString().slice(0, 10);
-    days.push({ day, label: formatDayLabel(day) });
-  }
-  return days;
+  return rows.reduce((total, row) => {
+    const match = row.message.match(/Generated\s+(\d+)/i);
+    return total + (match ? Number(match[1]) : 0);
+  }, 0);
 }
 
 function normalizeStatus(value: string | null) {
@@ -70,33 +76,47 @@ function normalizeStatus(value: string | null) {
     .join(" ");
 }
 
-export function getDashboardAnalytics(input: { scope?: ProjectScope }): DashboardAnalytics {
+function clampRecentActivityLimit(value: number | undefined) {
+  if (!value) return DEFAULT_RECENT_ACTIVITY_LIMIT;
+  return Math.min(Math.max(Math.trunc(value), 1), MAX_RECENT_ACTIVITY_LIMIT);
+}
+
+function parseDetailsJson(value: string | null) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+export function getDashboardAnalytics(input: { scope?: ProjectScope; recentActivityLimit?: number }): DashboardAnalytics {
   const db = getDatabase();
   const params = scopeParams(input.scope);
   const where = scopeWhere();
+  const recentActivityLimit = clampRecentActivityLimit(input.recentActivityLimit);
 
   const indexedWorkItems = getCount(
     `SELECT COUNT(*) AS count FROM azure_devops_work_items WHERE ${where}`,
     params,
   );
-  const contextChunks = getCount(
-    `SELECT COUNT(*) AS count FROM document_chunks WHERE ${where}`,
+  const businessRules = getCount(
+    `SELECT COUNT(*) AS count FROM project_knowledge_entries WHERE ${where} AND category = 'business_rule'`,
     params,
   );
   const requirementRuns = getCount(
-    `SELECT COUNT(*) AS count FROM requirement_analysis_runs WHERE ${where}`,
+    `SELECT COUNT(*) AS count FROM audit_logs
+     WHERE ${where}
+       AND status = 'Success'
+       AND action IN ('requirement_analysis.run', 'requirement_analysis.manual_complete')`,
     params,
   );
-  const generatedCases = getCount(
-    `SELECT COUNT(*) AS count FROM generated_test_cases WHERE ${where}`,
-    params,
-  );
+  const generatedCases = sumGeneratedCaseAuditMessages(params);
   const coverageReviews = getCount(
-    `SELECT COUNT(*) AS count FROM existing_test_case_review_runs WHERE ${where}`,
-    params,
-  );
-  const publishAttempts = getCount(
-    `SELECT COUNT(*) AS count FROM azure_devops_test_case_push_runs WHERE ${where}`,
+    `SELECT COUNT(*) AS count FROM audit_logs
+     WHERE ${where}
+       AND status = 'Success'
+       AND action IN ('existing_test_case_review.run', 'existing_test_case_review.manual_complete')`,
     params,
   );
   const llmRequests = getCount(
@@ -107,127 +127,54 @@ export function getDashboardAnalytics(input: { scope?: ProjectScope }): Dashboar
     `SELECT COUNT(*) AS count FROM llm_request_logs WHERE ${where} AND status = 'Success'`,
     params,
   );
-  const averageLlmDuration = getAverage(
-    `SELECT AVG(duration_ms) AS average FROM llm_request_logs WHERE ${where}`,
-    params,
-  );
-
-  const workItemStates = db
-    .prepare(
-      `SELECT COALESCE(NULLIF(state, ''), 'Unknown') AS name, COUNT(*) AS value
-       FROM azure_devops_work_items
-       WHERE ${where}
-       GROUP BY COALESCE(NULLIF(state, ''), 'Unknown')
-       ORDER BY value DESC
-       LIMIT 8`,
-    )
-    .all(params) as BreakdownRow[];
-
-  const llmProviderStatus = db
-    .prepare(
-      `SELECT provider || ' / ' || status AS name, COUNT(*) AS value
-       FROM llm_request_logs
-       WHERE ${where}
-       GROUP BY provider, status
-       ORDER BY value DESC
-       LIMIT 10`,
-    )
-    .all(params) as BreakdownRow[];
-
-  const auditStatus = db
-    .prepare(
-      `SELECT status AS name, COUNT(*) AS value
-       FROM audit_logs
-       WHERE ${where}
-       GROUP BY status
-       ORDER BY value DESC`,
-    )
-    .all(params) as BreakdownRow[];
-
-  const publishOutcomes = db
-    .prepare(
-      `SELECT push_status AS name, COUNT(*) AS value
-       FROM azure_devops_test_case_push_runs
-       WHERE ${where}
-       GROUP BY push_status
-       ORDER BY value DESC`,
-    )
-    .all(params) as BreakdownRow[];
-
-  const activityRows = db
-    .prepare(
-      `
-      SELECT date(created_at) AS day, 'Requirement' AS workflow, COUNT(*) AS value
-      FROM requirement_analysis_runs
-      WHERE ${where} AND created_at >= date('now', '-13 days')
-      GROUP BY date(created_at)
-      UNION ALL
-      SELECT date(created_at) AS day, 'Test cases' AS workflow, COUNT(*) AS value
-      FROM test_case_generation_runs
-      WHERE ${where} AND created_at >= date('now', '-13 days')
-      GROUP BY date(created_at)
-      UNION ALL
-      SELECT date(created_at) AS day, 'Coverage' AS workflow, COUNT(*) AS value
-      FROM existing_test_case_review_runs
-      WHERE ${where} AND created_at >= date('now', '-13 days')
-      GROUP BY date(created_at)
-      UNION ALL
-      SELECT date(created_at) AS day, 'Publish' AS workflow, COUNT(*) AS value
-      FROM azure_devops_test_case_push_runs
-      WHERE ${where} AND created_at >= date('now', '-13 days')
-      GROUP BY date(created_at)
-      ORDER BY day ASC
-      `,
-    )
-    .all(params) as ActivityRow[];
 
   const recentActivity = db
     .prepare(
-      `SELECT id, action, status, message, azure_project_name, created_at
+      `SELECT id, project_id, azure_project_id, azure_project_name, azure_organization_url,
+              entity_type, entity_id, action, status, actor, message, details_json, created_at, updated_at
        FROM audit_logs
        WHERE ${where}
        ORDER BY created_at DESC
-       LIMIT 8`,
+       LIMIT @recentActivityQueryLimit`,
     )
-    .all(params) as RecentActivityRow[];
+    .all({ ...params, recentActivityQueryLimit: recentActivityLimit + 1 }) as RecentActivityRow[];
 
-  const activityByDay = buildRecentDays().map((day) => {
-    const rows = activityRows.filter((row) => row.day === day.day);
-    return {
-      day: day.label,
-      Requirement: rows.find((row) => row.workflow === "Requirement")?.value ?? 0,
-      "Test cases": rows.find((row) => row.workflow === "Test cases")?.value ?? 0,
-      Coverage: rows.find((row) => row.workflow === "Coverage")?.value ?? 0,
-      Publish: rows.find((row) => row.workflow === "Publish")?.value ?? 0,
-    };
-  });
+  const visibleRecentActivity = recentActivity.slice(0, recentActivityLimit);
 
   return {
     generatedAt: new Date().toISOString(),
     kpis: {
       indexedWorkItems,
-      contextChunks,
+      businessRules,
       requirementRuns,
       generatedCases,
       coverageReviews,
-      publishAttempts,
       llmSuccessRate: llmRequests ? Math.round((llmSuccesses / llmRequests) * 100) : 0,
-      averageLlmDurationMs: averageLlmDuration ? Math.round(averageLlmDuration) : 0,
     },
-    charts: {
-      activityByDay,
-      workItemStates: workItemStates.map((row) => ({ name: row.name ?? "Unknown", value: row.value })),
-      llmProviderStatus: llmProviderStatus.map((row) => ({ name: row.name ?? "Unknown", value: row.value })),
-      auditStatus: auditStatus.map((row) => ({ name: normalizeStatus(row.name), value: row.value })),
-      publishOutcomes: publishOutcomes.map((row) => ({ name: normalizeStatus(row.name), value: row.value })),
-    },
-    recentActivity: recentActivity.map((row) => ({
+    recentActivity: visibleRecentActivity.map((row) => ({
       id: row.id,
       action: row.action,
       status: normalizeStatus(row.status),
       message: row.message,
       projectName: row.azure_project_name,
       createdAt: row.created_at,
+      audit: {
+        id: row.id,
+        projectId: row.project_id,
+        azureProjectId: row.azure_project_id,
+        azureProjectName: row.azure_project_name,
+        azureOrganizationUrl: row.azure_organization_url,
+        entityType: row.entity_type,
+        entityId: row.entity_id,
+        action: row.action,
+        status: row.status,
+        actor: row.actor,
+        message: row.message,
+        detailsJson: parseDetailsJson(row.details_json),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      },
     })),
+    recentActivityHasMore: recentActivity.length > recentActivityLimit,
   };
 }

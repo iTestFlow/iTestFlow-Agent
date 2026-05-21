@@ -53,11 +53,11 @@ export function HeaderProjectSelector() {
 
   if (error) {
     return (
-      <div className="flex min-w-0 items-center justify-end gap-5">
+      <div className="flex min-w-0 items-center gap-2 sm:gap-5">
         <div className="hidden h-8 w-[260px] shrink-0 items-center rounded-lg border border-border bg-background px-3 text-sm text-foreground 2xl:flex">
           Org: Not configured
         </div>
-        <div className="flex h-8 w-[330px] items-center rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 text-sm text-amber-700 dark:text-amber-200">
+        <div className="flex h-8 w-[min(330px,calc(100vw-8rem))] min-w-0 items-center truncate rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 text-sm text-amber-700 dark:text-amber-200">
           Azure DevOps not configured
         </div>
       </div>
@@ -65,12 +65,12 @@ export function HeaderProjectSelector() {
   }
 
   return (
-    <div className="flex min-w-0 items-center justify-end gap-5">
+    <div className="flex min-w-0 items-center gap-2 sm:gap-5">
       <div className="hidden h-8 w-[260px] shrink-0 items-center truncate rounded-lg border border-border bg-background px-3 text-sm text-foreground 2xl:flex">
         {organizationLabel(activeProject?.azureOrganizationUrl ?? projects[0]?.azureOrganizationUrl)}
       </div>
       <select
-        className="focus-ring h-8 w-[280px] shrink-0 rounded-lg border border-border bg-background px-3 text-sm text-foreground xl:w-[330px]"
+        className="focus-ring h-8 w-[min(330px,calc(100vw-8rem))] min-w-[120px] rounded-lg border border-border bg-background px-3 text-sm text-foreground"
         value={activeProject?.azureProjectId ?? ""}
         onChange={(event) => {
           const project = projects.find((item) => item.id === event.target.value);

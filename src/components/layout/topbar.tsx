@@ -1,12 +1,13 @@
 "use client"
 
-import { Menu } from "lucide-react"
-import { useEffect, useState } from "react"
+import { Menu, RefreshCw } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme/theme-toggle"
 import { HeaderProjectSelector } from "@/shared/components/live/project-status"
+import { cn } from "@/lib/utils"
 
 type AzureProfile = {
   displayName: string
@@ -47,34 +48,47 @@ function providerLabel(value?: string) {
 export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   const [profile, setProfile] = useState<AzureProfile | null>(null)
   const [profileError, setProfileError] = useState<string | null>(null)
+  const [profileLoading, setProfileLoading] = useState(true)
   const [settingsSummary, setSettingsSummary] = useState<RuntimeSettingsSummary | null>(null)
   const [settingsError, setSettingsError] = useState(false)
+  const [settingsLoading, setSettingsLoading] = useState(true)
+
+  const loadProfile = useCallback(async () => {
+    setProfileLoading(true)
+    try {
+      const response = await fetch("/api/azure-devops/profile", { cache: "no-store" })
+      const json = await response.json()
+      if (!response.ok) throw new Error(json.error ?? "Failed to fetch Azure DevOps profile.")
+      setProfile(json.user ?? null)
+      setProfileError(null)
+    } catch (error: unknown) {
+      setProfile(null)
+      setProfileError(error instanceof Error ? error.message : "Azure DevOps user unavailable.")
+    } finally {
+      setProfileLoading(false)
+    }
+  }, [])
+
+  const loadSettingsSummary = useCallback(async () => {
+    setSettingsLoading(true)
+    try {
+      const response = await fetch("/api/settings/runtime", { cache: "no-store" })
+      const json = await response.json()
+      if (!response.ok) throw new Error(json.error ?? "Failed to fetch runtime settings.")
+      setSettingsSummary(json)
+      setSettingsError(false)
+    } catch {
+      setSettingsSummary({ configured: false })
+      setSettingsError(true)
+    } finally {
+      setSettingsLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
-    fetch("/api/azure-devops/profile", { cache: "no-store" })
-      .then(async (response) => {
-        const json = await response.json()
-        if (!response.ok) throw new Error(json.error ?? "Failed to fetch Azure DevOps profile.")
-        setProfile(json.user ?? null)
-        setProfileError(null)
-      })
-      .catch((error: unknown) => {
-        setProfile(null)
-        setProfileError(error instanceof Error ? error.message : "Azure DevOps user unavailable.")
-      })
-
-    fetch("/api/settings/runtime", { cache: "no-store" })
-      .then(async (response) => {
-        const json = await response.json()
-        if (!response.ok) throw new Error(json.error ?? "Failed to fetch runtime settings.")
-        setSettingsSummary(json)
-        setSettingsError(false)
-      })
-      .catch(() => {
-        setSettingsSummary({ configured: false })
-        setSettingsError(true)
-      })
-  }, [])
+    void loadProfile()
+    void loadSettingsSummary()
+  }, [loadProfile, loadSettingsSummary])
 
   const azureConfiguredError = profileError?.toLowerCase().includes("not configured")
   const azureStatus = profile
@@ -125,14 +139,28 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         <HeaderProjectSelector />
       </div>
 
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="hidden min-w-0 items-center gap-2 xl:flex">
         <ConnectivityChip {...azureStatus} />
         <ConnectivityChip {...llmStatus} className="max-w-[260px]" />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => {
+            void loadProfile()
+            void loadSettingsSummary()
+          }}
+          disabled={profileLoading || settingsLoading}
+          aria-label="Refresh Azure DevOps and LLM status"
+          title="Refresh Azure DevOps and LLM status"
+        >
+          <RefreshCw className={cn("size-3.5", (profileLoading || settingsLoading) && "animate-spin")} />
+        </Button>
       </div>
 
       <ThemeToggle />
 
-      <div className="flex shrink-0 items-center gap-2 rounded-lg border border-border bg-background/70 px-2 py-1.5">
+      <div className="hidden shrink-0 items-center gap-2 rounded-lg border border-border bg-background/70 px-2 py-1.5 sm:flex">
         <Avatar className="size-7">
           {profile?.imageUrl ? <AvatarImage src={profile.imageUrl} alt="" /> : null}
           <AvatarFallback className="bg-primary/10 text-xs font-semibold text-primary">

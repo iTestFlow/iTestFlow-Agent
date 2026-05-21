@@ -22,6 +22,7 @@ export const existingTestCaseReviewPrompt: SystemPromptDefinition = {
     "Identify duplicate or overlapping test cases only when their objectives and validation steps substantially repeat each other.",
     "Suggested additions must be Azure DevOps-compatible draft test cases and must trace back to uncovered or partially covered matrix row IDs through relatedAcceptanceCriteria or tags.",
     "Use Azure DevOps grid-compatible steps. Step 1 must be Preconditions with expectedResult exactly \"Preconditions are met\".",
+    "For traceabilityMatrix.sourceType, use only story, description, acceptanceCriteria, or businessRules.",
     "Use the existing output contract fields only. Do not add unsupported fields.",
     "Return only valid JSON matching the output contract. Do not include markdown fences or any text before or after the JSON.",
   ].join("\n"),

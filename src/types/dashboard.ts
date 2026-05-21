@@ -1,12 +1,10 @@
 export type DashboardKpis = {
   indexedWorkItems: number;
-  contextChunks: number;
+  businessRules: number;
   requirementRuns: number;
   generatedCases: number;
   coverageReviews: number;
-  publishAttempts: number;
   llmSuccessRate: number;
-  averageLlmDurationMs: number;
 };
 
 export type DashboardChartDatum = {
@@ -29,17 +27,29 @@ export type DashboardRecentActivity = {
   message: string;
   projectName: string | null;
   createdAt: string;
+  audit: DashboardAuditLog;
+};
+
+export type DashboardAuditLog = {
+  id: string;
+  projectId: string | null;
+  azureProjectId: string | null;
+  azureProjectName: string | null;
+  azureOrganizationUrl: string | null;
+  entityType: string | null;
+  entityId: string | null;
+  action: string;
+  status: string;
+  actor: string | null;
+  message: string;
+  detailsJson: unknown;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type DashboardAnalytics = {
   generatedAt: string;
   kpis: DashboardKpis;
-  charts: {
-    activityByDay: DashboardActivityDatum[];
-    workItemStates: DashboardChartDatum[];
-    llmProviderStatus: DashboardChartDatum[];
-    auditStatus: DashboardChartDatum[];
-    publishOutcomes: DashboardChartDatum[];
-  };
   recentActivity: DashboardRecentActivity[];
+  recentActivityHasMore: boolean;
 };

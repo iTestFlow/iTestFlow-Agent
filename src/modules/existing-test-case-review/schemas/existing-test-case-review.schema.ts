@@ -11,9 +11,20 @@ export const ExistingTestCaseCoverageStatusSchema = z.enum([
 
 export const ExistingTestCaseReviewSeveritySchema = z.enum(["High", "Medium", "Low"]);
 
+export const ExistingTestCaseSourceTypeSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const normalized = value.trim().replace(/[\s_-]+/g, "").toLowerCase();
+    if (normalized === "acceptancecriteria") return "acceptanceCriteria";
+    if (normalized === "businessrule" || normalized === "businessrules") return "businessRules";
+    return value;
+  },
+  z.enum(["story", "description", "acceptanceCriteria", "businessRules"]),
+);
+
 export const ExistingTestCaseTraceabilityMatrixRowSchema = z.object({
   id: z.string(),
-  sourceType: z.enum(["story", "description", "acceptanceCriteria"]),
+  sourceType: ExistingTestCaseSourceTypeSchema,
   sourceReference: z.string(),
   requirementText: z.string(),
   coverageStatus: ExistingTestCaseCoverageStatusSchema,

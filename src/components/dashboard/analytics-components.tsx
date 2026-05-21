@@ -1,7 +1,7 @@
 "use client";
 
-import type { LucideIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { ChevronDown, type LucideIcon } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import {
   Bar,
   BarChart as RechartsBarChart,
@@ -18,6 +18,7 @@ import type {
   DashboardChartDatum,
   DashboardRecentActivity,
 } from "@/types/dashboard";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const palette = [
@@ -30,15 +31,6 @@ const palette = [
 ];
 
 type Tone = "blue" | "green" | "purple" | "cyan" | "yellow" | "red";
-
-const toneClasses: Record<Tone, string> = {
-  blue: "border-t-[hsl(var(--chart-1))]",
-  green: "border-t-[hsl(var(--chart-2))]",
-  purple: "border-t-[hsl(var(--chart-3))]",
-  cyan: "border-t-[hsl(var(--chart-4))]",
-  yellow: "border-t-[hsl(var(--chart-5))]",
-  red: "border-t-[hsl(var(--chart-6))]",
-};
 
 const iconToneClasses: Record<Tone, string> = {
   blue: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
@@ -111,14 +103,14 @@ export function MetricCard({
   tone?: Tone;
 }) {
   return (
-    <section className={cn("analytics-card border-t-4 p-5", toneClasses[tone])}>
-      <div className="flex items-start justify-between gap-4">
+    <section className="qa-card p-4">
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">{title}</p>
-          <div className="mt-3 truncate text-3xl font-bold text-foreground">{value}</div>
-          <p className="mt-2 text-xs leading-5 text-muted-foreground">{description}</p>
+          <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">{title}</p>
+          <div className="mt-2 truncate text-2xl font-bold text-foreground">{value}</div>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{description}</p>
         </div>
-        <div className={cn("rounded-xl border p-2.5", iconToneClasses[tone])}>
+        <div className={cn("rounded-lg border p-2", iconToneClasses[tone])}>
           <Icon className="size-4" aria-hidden="true" />
         </div>
       </div>
@@ -169,7 +161,7 @@ export function ChartCard({
   }[marker];
 
   return (
-    <section className="analytics-card p-5">
+    <section className="qa-card p-5">
       <div className="mb-5 flex items-start gap-2">
         <span className={cn("mt-1.5 size-2 rounded-full", markerClass)} />
         <div className="min-w-0">
@@ -275,31 +267,85 @@ export function StatusBreakdown({ data }: { data: DashboardChartDatum[] }) {
   );
 }
 
-export function RecentActivityList({ items }: { items: DashboardRecentActivity[] }) {
+export function RecentActivityList({
+  items,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
+}: {
+  items: DashboardRecentActivity[];
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
+}) {
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+
+  function toggleActivity(id: string) {
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
   if (!items.length) {
     return <EmptyChart label="No recent local activity yet" />;
   }
 
   return (
     <div className="space-y-3">
-      {items.map((item) => (
-        <div key={item.id} className="rounded-xl border border-border bg-background/60 p-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-foreground">{item.action}</div>
-              <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.message}</p>
+      {items.map((item) => {
+        const expanded = expandedIds.has(item.id);
+        const label = expanded ? "Hide audit details" : "Show audit details";
+
+        return (
+          <div key={item.id} className="rounded-xl border border-border bg-background/60 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-foreground">{item.action}</div>
+                <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.message}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="rounded-full border border-border bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">
+                  {item.status}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-sm"
+                  aria-expanded={expanded}
+                  aria-label={`${label} for ${item.action}`}
+                  title={label}
+                  onClick={() => toggleActivity(item.id)}
+                >
+                  <ChevronDown className={cn("size-4 transition-transform", expanded && "rotate-180")} aria-hidden="true" />
+                </Button>
+              </div>
             </div>
-            <span className="shrink-0 rounded-full border border-border bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">
-              {item.status}
-            </span>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span>{item.projectName ?? "All projects"}</span>
+              <span aria-hidden="true">/</span>
+              <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time>
+            </div>
+            {expanded ? (
+              <pre className="mt-3 max-h-96 overflow-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-[11px] leading-5 text-muted-foreground">
+                {JSON.stringify(item.audit, null, 2)}
+              </pre>
+            ) : null}
           </div>
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span>{item.projectName ?? "All projects"}</span>
-            <span aria-hidden="true">/</span>
-            <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time>
-          </div>
+        );
+      })}
+      {hasMore && onLoadMore ? (
+        <div className="flex justify-center pt-1">
+          <Button type="button" variant="outline" onClick={onLoadMore} disabled={loadingMore}>
+            {loadingMore ? "Loading..." : "Load more"}
+          </Button>
         </div>
-      ))}
+      ) : null}
     </div>
   );
 }
