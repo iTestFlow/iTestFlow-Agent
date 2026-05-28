@@ -1,13 +1,15 @@
 "use client"
 
-import { Menu, RefreshCw } from "lucide-react"
-import { useCallback, useEffect, useState } from "react"
+import { CalendarClock, Menu, RefreshCw } from "lucide-react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ThemeToggle } from "@/components/theme/theme-toggle"
 import { HeaderProjectSelector } from "@/shared/components/live/project-status"
 import { cn } from "@/lib/utils"
+import { isCronExpressionDue } from "@/modules/settings/cron-expression"
 
 type AzureProfile = {
   displayName: string
@@ -21,6 +23,15 @@ type RuntimeSettingsSummary = {
     provider?: string
     model?: string
     hasApiKey?: boolean
+  }
+  context?: {
+    autoUpdate?: {
+      enabled: boolean
+      cronExpression: string
+      projectScope?: {
+        azureProjectName: string
+      } | null
+    }
   }
 }
 
@@ -122,6 +133,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           ? "Runtime settings could not be loaded."
           : "Configure an LLM provider, model, and API key in Settings.",
       }
+  const cronStatus = useMemo(() => getCronStatus(settingsSummary, settingsError), [settingsSummary, settingsError])
 
   return (
     <header className="sticky top-0 z-30 flex min-h-16 items-center gap-3 border-b border-border bg-card/95 px-4 text-card-foreground shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/85 lg:px-6">
@@ -142,6 +154,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
       <div className="hidden min-w-0 items-center gap-2 xl:flex">
         <ConnectivityChip {...azureStatus} />
         <ConnectivityChip {...llmStatus} className="max-w-[260px]" />
+        <ConnectivityChip {...cronStatus} className="max-w-[150px]" icon={<CalendarClock className="size-3.5 shrink-0" />} />
         <Button
           type="button"
           variant="ghost"
@@ -184,11 +197,13 @@ function ConnectivityChip({
   title,
   tone,
   className = "",
+  icon,
 }: {
   text: string
   title: string
   tone: "connected" | "checking" | "missing" | "warning"
   className?: string
+  icon?: React.ReactNode
 }) {
   const styles = {
     connected: "border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 before:bg-emerald-500",
@@ -198,11 +213,79 @@ function ConnectivityChip({
   }[tone]
 
   return (
-    <span
-      className={`inline-flex h-8 min-w-0 items-center gap-1.5 rounded-[6px] border px-2.5 text-xs font-medium ${styles} before:size-1.5 before:shrink-0 before:rounded-full ${className}`}
-      title={title}
-    >
-      <span className="truncate">{text}</span>
-    </span>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={`inline-flex h-8 min-w-0 items-center gap-1.5 rounded-[6px] border px-2.5 text-xs font-medium ${styles} before:size-1.5 before:shrink-0 before:rounded-full ${className}`}
+          aria-label={title}
+        >
+          {icon}
+          <span className="truncate">{text}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent sideOffset={8} className="max-w-sm text-left">
+        {title}
+      </TooltipContent>
+    </Tooltip>
   )
+}
+
+function getCronStatus(summary: RuntimeSettingsSummary | null, settingsError: boolean) {
+  if (!summary && !settingsError) {
+    return {
+      text: "Cron: Checking",
+      tone: "checking" as const,
+      title: "Checking automatic project context update schedule.",
+    }
+  }
+
+  if (settingsError) {
+    return {
+      text: "Cron: Unavailable",
+      tone: "warning" as const,
+      title: "Runtime settings could not be loaded, so the automatic project context update schedule is unavailable.",
+    }
+  }
+
+  const autoUpdate = summary?.context?.autoUpdate
+  if (!summary?.configured || !autoUpdate?.enabled) {
+    return {
+      text: "Cron: Off",
+      tone: "missing" as const,
+      title: "Automatic project context and knowledge base updates are disabled. Enable them in Settings.",
+    }
+  }
+
+  const nextRun = findNextCronRun(autoUpdate.cronExpression)
+  const projectName = autoUpdate.projectScope?.azureProjectName
+  const projectText = projectName ? ` for ${projectName}` : ""
+
+  return {
+    text: "Cron: Active",
+    tone: "connected" as const,
+    title: nextRun
+      ? `Next automatic project context update${projectText}: ${formatDateTime(nextRun)} local server time. Cron: ${autoUpdate.cronExpression}.`
+      : `Automatic project context updates are enabled${projectText}, but the next trigger could not be calculated from cron: ${autoUpdate.cronExpression}.`,
+  }
+}
+
+function findNextCronRun(expression: string, from = new Date()) {
+  const candidate = new Date(from)
+  candidate.setSeconds(0, 0)
+  candidate.setMinutes(candidate.getMinutes() + 1)
+
+  const maxChecks = 60 * 24 * 366
+  for (let index = 0; index < maxChecks; index += 1) {
+    if (isCronExpressionDue(expression, candidate)) return new Date(candidate)
+    candidate.setMinutes(candidate.getMinutes() + 1)
+  }
+
+  return null
+}
+
+function formatDateTime(value: Date) {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(value)
 }

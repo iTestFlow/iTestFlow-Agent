@@ -1,23 +1,33 @@
 import "server-only";
 
-import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+type DatabaseSyncConstructor = new (path: string) => {
+  exec: (sql: string) => unknown;
+  prepare: (sql: string) => {
+    all: (parameters?: unknown) => unknown[];
+    get: (parameters?: unknown) => unknown;
+    run: (parameters?: unknown) => unknown;
+  };
+};
+type CryptoModule = typeof import("crypto");
+type FsModule = typeof import("fs");
+type PathModule = typeof import("path");
 
-let instance: DatabaseSync | undefined;
+let instance: InstanceType<DatabaseSyncConstructor> | undefined;
 
 export function getDatabase() {
   if (instance) return instance;
 
-  const dbPath = join(process.cwd(), "data", "itestflow.sqlite");
-  mkdirSync(dirname(dbPath), { recursive: true });
+  const fs = getFs();
+  const path = getPath();
+  const dbPath = path.join(process.cwd(), "data", "itestflow.sqlite");
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
+  const { DatabaseSync } = nativeRequire("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
   instance = new DatabaseSync(dbPath);
   instance.exec("PRAGMA journal_mode = WAL");
   instance.exec("PRAGMA foreign_keys = ON");
 
-  const schema = readFileSync(join(process.cwd(), "src", "modules", "shared", "infrastructure", "database", "schema.sql"), "utf8");
+  const schema = fs.readFileSync(path.join(process.cwd(), "src", "modules", "shared", "infrastructure", "database", "schema.sql"), "utf8");
   instance.exec(schema);
 
   return instance;
@@ -28,5 +38,22 @@ export function nowIso() {
 }
 
 export function createId(prefix: string) {
-  return `${prefix}_${randomUUID()}`;
+  return `${prefix}_${getCrypto().randomUUID()}`;
+}
+
+function getCrypto() {
+  return nativeRequire("crypto") as CryptoModule;
+}
+
+function getFs() {
+  return nativeRequire("fs") as FsModule;
+}
+
+function getPath() {
+  return nativeRequire("path") as PathModule;
+}
+
+function nativeRequire(specifier: string): unknown {
+  const requireFunction = eval("require") as NodeRequire;
+  return requireFunction(specifier);
 }
