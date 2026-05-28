@@ -1,9 +1,11 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, CheckCircle2, ChevronDown, Eye, EyeOff, Loader2, Search, ShieldCheck, XCircle } from "lucide-react";
 import { Button, Card, TextInput } from "@/shared/components/ui";
+import { BRAND_LOGO_FULL_SRC } from "@/lib/constants";
 
 type Provider = "openai" | "gemini" | "anthropic";
 
@@ -88,6 +90,7 @@ export function ConfigurationForm({
   }, [modelSearch, selectedModels]);
   const selectedModelLabel = selectedModels.find((model) => model.id === form.model)?.displayName ?? (form.model || "Select a model from live provider API");
   const canUseSavedLlmKey = hasSavedLlmKey && savedLlmProvider === form.provider;
+  const showAdvancedSettings = mode === "settings";
 
   useEffect(() => {
     fetch("/api/settings/runtime", { cache: "no-store" })
@@ -255,10 +258,14 @@ export function ConfigurationForm({
         {!embedded ? (
         <aside className="flex flex-col rounded-[10px] border border-[#c8d4e4] bg-white p-10">
           <div>
-            <h2 className="text-2xl font-bold tracking-tight">iTestFlow</h2>
-            <p className="mt-5 max-w-56 text-lg font-semibold leading-6 text-slate-600">
-              AI-Powered Testing Lifecycle Assistant
-            </p>
+            <Image
+              src={BRAND_LOGO_FULL_SRC}
+              alt="iTestFlow"
+              width={1554}
+              height={346}
+              priority
+              className="h-auto w-full max-w-[300px]"
+            />
           </div>
           <div className="mt-16 space-y-6">
             {["Connect Azure DevOps", "Configure LLM Provider", "Secure & Local First", "Start Intelligent Testing"].map((item) => (
@@ -421,35 +428,39 @@ export function ConfigurationForm({
                   {modelError ? <div className="mt-1 text-xs text-red-700">{modelError}</div> : null}
                 </Field>
 
-                <Field
-                  label="Retry attempts on transient LLM failure"
-                  description="0 disables automatic retry. Default is 1 retry after the initial request."
-                >
-                  <TextInput
-                    className="border-slate-300 bg-white text-slate-950"
-                    type="number"
-                    min={0}
-                    max={5}
-                    step={1}
-                    value={form.retryAttempts}
-                    onChange={(event) => update("retryAttempts", Number(event.target.value || "0"))}
-                  />
-                </Field>
+                {showAdvancedSettings ? (
+                  <>
+                    <Field
+                      label="Retry attempts on transient LLM failure"
+                      description="0 disables automatic retry. Default is 1 retry after the initial request."
+                    >
+                      <TextInput
+                        className="border-slate-300 bg-white text-slate-950"
+                        type="number"
+                        min={0}
+                        max={5}
+                        step={1}
+                        value={form.retryAttempts}
+                        onChange={(event) => update("retryAttempts", Number(event.target.value || "0"))}
+                      />
+                    </Field>
 
-                <Field
-                  label="Project context retrieval count"
-                  description="Number of stored context items auto-selected for analysis and test design. Default is 8."
-                >
-                  <TextInput
-                    className="border-slate-300 bg-white text-slate-950"
-                    type="number"
-                    min={1}
-                    max={25}
-                    step={1}
-                    value={form.retrievalTopK}
-                    onChange={(event) => update("retrievalTopK", Number(event.target.value || "8"))}
-                  />
-                </Field>
+                    <Field
+                      label="Project context retrieval count"
+                      description="Number of stored context items auto-selected for analysis and test design. Default is 8."
+                    >
+                      <TextInput
+                        className="border-slate-300 bg-white text-slate-950"
+                        type="number"
+                        min={1}
+                        max={25}
+                        step={1}
+                        value={form.retrievalTopK}
+                        onChange={(event) => update("retrievalTopK", Number(event.target.value || "8"))}
+                      />
+                    </Field>
+                  </>
+                ) : null}
 
                 <button
                   type="button"

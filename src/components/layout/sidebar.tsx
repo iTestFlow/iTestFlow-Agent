@@ -1,5 +1,6 @@
 "use client"
 
+import Image from "next/image"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
@@ -15,7 +16,7 @@ import {
 } from "lucide-react"
 
 import { Separator } from "@/components/ui/separator"
-import { PRODUCT_NAME } from "@/lib/constants"
+import { BRAND_ICON_SRC, PRODUCT_NAME } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 
 const navigation = [
@@ -36,12 +37,19 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
     <aside className={cn("flex h-full flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground", className)}>
       <div className="px-4 py-5">
         <Link href="/dashboard" onClick={onNavigate} className="flex items-center gap-3">
-          <div className="flex size-9 items-center justify-center rounded-lg bg-sidebar-primary text-sm font-bold text-sidebar-primary-foreground shadow-sm shadow-primary/20">
-            IT
+          <div className="flex h-10 w-12 shrink-0 items-center justify-center rounded-lg bg-white p-1.5 shadow-sm ring-1 ring-sidebar-border">
+            <Image
+              src={BRAND_ICON_SRC}
+              alt=""
+              width={510}
+              height={342}
+              priority
+              className="h-full w-full object-contain"
+            />
           </div>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold">{PRODUCT_NAME}</div>
-            <div className="text-xs text-sidebar-foreground/60">Local command center</div>
+            <div className="text-[11px] leading-4 text-sidebar-foreground/60">AI-Powered Software Testing Lifecycle</div>
           </div>
         </Link>
       </div>
