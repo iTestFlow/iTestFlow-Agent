@@ -518,7 +518,7 @@ export function ConfigurationForm({
                       />
                     </Field>
 
-                    <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
+                    <div className="rounded-md border border-border bg-muted/40 p-4 text-foreground">
                       <Label className="flex items-start gap-3">
                         <Checkbox
                           checked={form.autoUpdateEnabled}
@@ -526,17 +526,17 @@ export function ConfigurationForm({
                           className="mt-0.5"
                         />
                         <span>
-                          <span className="block text-sm font-medium text-slate-900">
+                          <span className="block text-sm font-medium text-foreground">
                             Auto update project context and knowledge base
                           </span>
-                          <span className="mt-1 block text-xs leading-5 text-slate-500">
+                          <span className="mt-1 block text-xs leading-5 text-muted-foreground">
                             Runs on the local server for the selected Azure DevOps project using the filters configured here.
                           </span>
                         </span>
                       </Label>
 
                       {form.autoUpdateEnabled ? (
-                        <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
+                        <div className="mt-4 space-y-3 border-t border-border pt-4">
                           <Field
                             label="Cron expression"
                             description="Use 5 fields: minute hour day-of-month month day-of-week. Example: 0 2 * * * runs daily at 2:00 AM local server time."
@@ -548,7 +548,7 @@ export function ConfigurationForm({
                               placeholder={DEFAULT_AUTO_UPDATE_CRON_EXPRESSION}
                             />
                           </Field>
-                          <div className={`rounded-md border p-3 text-xs ${autoUpdateProject ? "border-blue-200 bg-blue-50 text-blue-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+                          <div className={`rounded-md border p-3 text-xs ${autoUpdateProject ? "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300" : "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"}`}>
                             Scheduled project: {autoUpdateProject ? autoUpdateProject.azureProjectName : "Select an Azure DevOps project in the header before saving."}
                           </div>
                           <ContextFilterSelector
