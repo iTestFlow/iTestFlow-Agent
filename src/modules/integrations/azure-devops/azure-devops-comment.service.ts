@@ -4,12 +4,19 @@ import { assertProjectScope, type ProjectScope } from "@/modules/projects/projec
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
 
+type MentionedUser = {
+  id: string;
+  displayName: string;
+  uniqueName?: string;
+};
+
 export async function pushApprovedRequirementComment(
   adapter: AzureDevOpsAdapter,
   scopeInput: ProjectScope,
-  input: { workItemId: string; commentBody: string },
+  input: { workItemId: string; commentBody: string; mentionedUsers?: MentionedUser[] },
 ) {
   const scope = assertProjectScope(scopeInput);
+  const mentionedUsers = input.mentionedUsers ?? [];
   const result = await adapter.addWorkItemComment({
     projectId: scope.azureProjectId,
     workItemId: input.workItemId,
@@ -26,7 +33,7 @@ export async function pushApprovedRequirementComment(
     action: "azure_devops.push_requirement_comment",
     status: result.success ? "Success" : "Failed",
     message: result.success ? "Approved requirement analysis comment pushed." : "Requirement comment push failed.",
-    details: result,
+    details: { ...result, mentionedUsers },
   });
 
   return result;

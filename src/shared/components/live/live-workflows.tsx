@@ -1,8 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, Copy, Loader2, Play, Plus, Send, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, Copy, Loader2, Play, Plus, Send, Trash2, Users, X } from "lucide-react";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge as UiBadge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge, Button, Card, CardHeader, SelectInput, TextArea, TextInput } from "@/shared/components/ui";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
@@ -97,6 +102,13 @@ type TestSuite = {
   id: string;
   name: string;
   planId: string;
+};
+
+type ProjectUser = {
+  id: string;
+  displayName: string;
+  uniqueName?: string;
+  imageUrl?: string;
 };
 
 type ExistingLinkedTestCase = {
@@ -362,6 +374,22 @@ function scoreTone(value: number) {
   return "red" as const;
 }
 
+function initialsFromName(value?: string) {
+  if (!value) return "AD";
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  return words.slice(0, 2).map((word) => word[0]?.toUpperCase()).join("") || "AD";
+}
+
+function projectUserLabel(user: ProjectUser) {
+  return user.uniqueName ? `${user.displayName} (${user.uniqueName})` : user.displayName;
+}
+
+function buildCommentBodyWithMentions(commentBody: string, mentionedUsers: ProjectUser[]) {
+  if (!mentionedUsers.length) return commentBody;
+  const mentionLine = mentionedUsers.map((user) => `@<${user.id}>`).join(" ");
+  return `${mentionLine}\n\n${commentBody.trim()}`;
+}
+
 function countFindingsBySeverity(findings: RequirementFinding[]) {
   return findings.reduce(
     (counts, finding) => {
@@ -457,6 +485,8 @@ export function RequirementAnalysisClient() {
   const [finalCommentCopied, setFinalCommentCopied] = useState(false);
   const [reviewApproved, setReviewApproved] = useState(false);
   const [pushState, setPushState] = useState<ApiState<{ success: boolean }>>({ loading: false, error: null, data: null });
+  const [projectUsersState, setProjectUsersState] = useState<ApiState<ProjectUser[]>>({ loading: false, error: null, data: [] });
+  const [selectedMentionUserIds, setSelectedMentionUserIds] = useState<string[]>([]);
   const sortedFindingList = useMemo(
     () => [...(analysis.data?.findings ?? [])].sort((left, right) => severityRank(left.severity) - severityRank(right.severity)),
     [analysis.data],
@@ -465,12 +495,43 @@ export function RequirementAnalysisClient() {
     () => sortedFindingList.filter((finding) => selectedFindings[finding.id]),
     [selectedFindings, sortedFindingList],
   );
+  const projectUsers = useMemo(() => projectUsersState.data ?? [], [projectUsersState.data]);
+  const selectedMentionUsers = useMemo(() => {
+    const selectedIds = new Set(selectedMentionUserIds);
+    return projectUsers.filter((user) => selectedIds.has(user.id));
+  }, [projectUsers, selectedMentionUserIds]);
+
+  useEffect(() => {
+    setSelectedMentionUserIds([]);
+    setProjectUsersState({ loading: Boolean(scope), error: null, data: [] });
+    if (!scope) return;
+
+    let cancelled = false;
+    void postJson<{ users: ProjectUser[] }>("/api/azure-devops/project-users", { scope })
+      .then((data) => {
+        if (cancelled) return;
+        setProjectUsersState({ loading: false, error: null, data: data.users ?? [] });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setProjectUsersState({
+          loading: false,
+          error: error instanceof Error ? error.message : "Azure DevOps project user fetch failed.",
+          data: [],
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [scope]);
 
   function changeTargetWorkItemId(value: string) {
     setTargetWorkItemId(value);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
+    setSelectedMentionUserIds([]);
   }
 
   function applyAnalysisResult(data: RequirementAnalysisRunResult) {
@@ -481,6 +542,7 @@ export function RequirementAnalysisClient() {
     setFinalCommentCopied(false);
     setReviewApproved(false);
     setPushState({ loading: false, error: null, data: null });
+    setSelectedMentionUserIds([]);
   }
 
   async function runAnalysis() {
@@ -579,6 +641,12 @@ export function RequirementAnalysisClient() {
     setPushState({ loading: false, error: null, data: null });
   }
 
+  function changeMentionUsers(userIds: string[]) {
+    setSelectedMentionUserIds(userIds);
+    setReviewApproved(false);
+    setPushState({ loading: false, error: null, data: null });
+  }
+
   async function pushComment() {
     if (
       !scope ||
@@ -595,7 +663,12 @@ export function RequirementAnalysisClient() {
         scope,
         targetWorkItemId,
         selectedFindingIds: selectedFindingList.map((finding) => finding.id),
-        commentBody: finalComment,
+        commentBody: buildCommentBodyWithMentions(finalComment, selectedMentionUsers),
+        mentionedUsers: selectedMentionUsers.map((user) => ({
+          id: user.id,
+          displayName: user.displayName,
+          uniqueName: user.uniqueName,
+        })),
       });
       setPushState({ loading: false, error: null, data: { success: true } });
     } catch (error) {
@@ -714,6 +787,15 @@ export function RequirementAnalysisClient() {
             }
           />
           <div className="space-y-4 p-4">
+            <RequirementMentionPicker
+              users={projectUsers}
+              selectedUserIds={selectedMentionUserIds}
+              selectedUsers={selectedMentionUsers}
+              loading={projectUsersState.loading}
+              error={projectUsersState.error}
+              disabled={!scope}
+              onSelectionChange={changeMentionUsers}
+            />
             <TextArea
               value={finalComment}
               onChange={(event) => changeFinalComment(event.target.value)}
@@ -751,6 +833,127 @@ export function RequirementAnalysisClient() {
         </Card>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function RequirementMentionPicker({
+  users,
+  selectedUserIds,
+  selectedUsers,
+  loading,
+  error,
+  disabled,
+  onSelectionChange,
+}: {
+  users: ProjectUser[];
+  selectedUserIds: string[];
+  selectedUsers: ProjectUser[];
+  loading: boolean;
+  error: string | null;
+  disabled: boolean;
+  onSelectionChange: (userIds: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selectedIdSet = useMemo(() => new Set(selectedUserIds), [selectedUserIds]);
+  const triggerLabel = loading ? "Loading members" : selectedUsers.length ? `${selectedUsers.length} selected` : "Mention members";
+
+  function setUserSelected(userId: string, selected: boolean) {
+    const nextIds = selected
+      ? [...selectedUserIds, userId].filter((value, index, values) => values.indexOf(value) === index)
+      : selectedUserIds.filter((value) => value !== userId);
+    onSelectionChange(nextIds);
+  }
+
+  function toggleUser(userId: string) {
+    setUserSelected(userId, !selectedIdSet.has(userId));
+  }
+
+  return (
+    <div className="rounded-md border border-[#c8d4e4] bg-white p-3">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-slate-950">Mention members</div>
+          <div className="mt-2 flex min-h-8 flex-wrap items-center gap-2">
+            {selectedUsers.length ? selectedUsers.map((user) => (
+              <UiBadge key={user.id} variant="secondary" className="h-7 max-w-full gap-1 rounded-md pl-2 pr-1">
+                <span className="max-w-[220px] truncate">{projectUserLabel(user)}</span>
+                <button
+                  type="button"
+                  className="rounded-[4px] p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
+                  onClick={() => setUserSelected(user.id, false)}
+                  aria-label={`Remove ${user.displayName}`}
+                >
+                  <X className="size-3" />
+                </button>
+              </UiBadge>
+            )) : (
+              <span className="text-sm text-muted-foreground">No members selected</span>
+            )}
+          </div>
+          {error ? <div className="mt-2 text-xs text-red-700">{error}</div> : null}
+        </div>
+
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button type="button" variant="secondary" disabled={disabled} className="w-full justify-between lg:w-auto">
+              <span className="inline-flex items-center gap-2">
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Users className="h-4 w-4" />}
+                {triggerLabel}
+              </span>
+              <ChevronDown className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`} />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-[360px] max-w-[calc(100vw-2rem)] p-0">
+            <Command>
+              <CommandInput placeholder="Search project users" />
+              <CommandList>
+                {loading ? (
+                  <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading project users
+                  </div>
+                ) : null}
+                {!loading && error ? <div className="px-3 py-4 text-sm text-red-700">{error}</div> : null}
+                {!loading && !error ? (
+                  <>
+                    <CommandEmpty>No project users found.</CommandEmpty>
+                    <CommandGroup>
+                      {users.map((user) => {
+                        const selected = selectedIdSet.has(user.id);
+                        return (
+                          <CommandItem
+                            key={user.id}
+                            value={projectUserLabel(user)}
+                            onSelect={() => toggleUser(user.id)}
+                            className="items-start gap-3 py-2"
+                          >
+                            <Checkbox
+                              checked={selected}
+                              onClick={(event) => event.stopPropagation()}
+                              onCheckedChange={(checked) => setUserSelected(user.id, checked === true)}
+                              aria-label={`Mention ${user.displayName}`}
+                              className="mt-2"
+                            />
+                            <Avatar size="sm" className="mt-0.5">
+                              {user.imageUrl ? <AvatarImage src={user.imageUrl} alt="" /> : null}
+                              <AvatarFallback>{initialsFromName(user.displayName)}</AvatarFallback>
+                            </Avatar>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-sm font-medium text-foreground">{user.displayName}</div>
+                              {user.uniqueName ? <div className="truncate text-xs text-muted-foreground">{user.uniqueName}</div> : null}
+                            </div>
+                          </CommandItem>
+                        );
+                      })}
+                    </CommandGroup>
+                  </>
+                ) : null}
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+      </div>
     </div>
   );
 }
