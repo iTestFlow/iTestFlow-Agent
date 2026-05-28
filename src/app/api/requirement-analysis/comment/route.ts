@@ -6,11 +6,18 @@ import { pushApprovedRequirementComment } from "@/modules/integrations/azure-dev
 
 export const runtime = "nodejs";
 
+const MentionedUserSchema = z.object({
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  uniqueName: z.string().optional(),
+});
+
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   targetWorkItemId: z.string().min(1),
   selectedFindingIds: z.array(z.string()).min(1),
   commentBody: z.string().min(1),
+  mentionedUsers: z.array(MentionedUserSchema).default([]),
 });
 
 export async function POST(request: Request) {
@@ -24,6 +31,7 @@ export async function POST(request: Request) {
     const result = await pushApprovedRequirementComment(adapter, parsed.data.scope, {
       workItemId: parsed.data.targetWorkItemId,
       commentBody: parsed.data.commentBody,
+      mentionedUsers: parsed.data.mentionedUsers,
     });
 
     return NextResponse.json(result, { status: result.success ? 200 : 502 });
