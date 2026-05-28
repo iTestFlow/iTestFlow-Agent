@@ -321,6 +321,28 @@ CREATE TABLE IF NOT EXISTS project_knowledge_entries (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS context_auto_update_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  azure_project_name TEXT NOT NULL,
+  azure_organization_url TEXT NOT NULL,
+  cron_expression TEXT NOT NULL,
+  context_work_item_types TEXT NOT NULL DEFAULT '[]',
+  context_states TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  context_fetched_count INTEGER NOT NULL DEFAULT 0,
+  context_indexed_work_item_count INTEGER NOT NULL DEFAULT 0,
+  context_indexed_chunk_count INTEGER NOT NULL DEFAULT 0,
+  knowledge_base_id TEXT,
+  knowledge_source_work_item_count INTEGER NOT NULL DEFAULT 0,
+  error_details TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS project_knowledge_entries_fts USING fts5(
   project_id UNINDEXED,
   azure_project_id UNINDEXED,
@@ -683,6 +705,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_project ON document_chunks(project_id, azu
 CREATE INDEX IF NOT EXISTS idx_context_selected_project ON context_selected_items(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_project_knowledge_base_project ON project_knowledge_base(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_project_knowledge_entries_project ON project_knowledge_entries(project_id, azure_project_id);
+CREATE INDEX IF NOT EXISTS idx_context_auto_update_runs_project ON context_auto_update_runs(project_id, azure_project_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_test_cases_project ON test_cases(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_audit_project ON audit_logs(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_llm_request_logs_project ON llm_request_logs(project_id, azure_project_id);

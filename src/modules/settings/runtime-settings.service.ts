@@ -1,13 +1,16 @@
 import "server-only";
 
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { z } from "zod";
+import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
+import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION } from "./cron-expression";
 import { RuntimeSettingsInputSchema, type RuntimeSettings, type RuntimeSettingsInput, type RuntimeSettingsSummary } from "./runtime-settings.schema";
 
-const settingsPath = () => join(process.cwd(), "data", "runtime-settings.json");
-const keyPath = () => join(process.cwd(), "data", ".runtime-settings-key");
+type CryptoModule = typeof import("crypto");
+type FsModule = typeof import("fs");
+type PathModule = typeof import("path");
+
+const settingsPath = () => getPath().join(process.cwd(), "data", "runtime-settings.json");
+const keyPath = () => getPath().join(process.cwd(), "data", ".runtime-settings-key");
 
 type PersistedSettings = {
   version: 1;
@@ -26,8 +29,10 @@ export function saveRuntimeSettings(input: RuntimeSettingsInput): RuntimeSetting
     savedAt: new Date().toISOString(),
   };
   const path = settingsPath();
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(
+  const fs = getFs();
+  const pathModule = getPath();
+  fs.mkdirSync(pathModule.dirname(path), { recursive: true });
+  fs.writeFileSync(
     path,
     JSON.stringify(
       {
@@ -46,10 +51,11 @@ export function saveRuntimeSettings(input: RuntimeSettingsInput): RuntimeSetting
 
 export function getRuntimeSettings(): RuntimeSettings | null {
   const path = settingsPath();
-  if (!existsSync(path)) return null;
+  const fs = getFs();
+  if (!fs.existsSync(path)) return null;
 
   try {
-    const persisted = JSON.parse(readFileSync(path, "utf8")) as PersistedSettings;
+    const persisted = JSON.parse(fs.readFileSync(path, "utf8")) as PersistedSettings;
     const decrypted = decrypt(persisted.encryptedPayload);
     return RuntimeSettingsSchema.parse(JSON.parse(decrypted));
   } catch {
@@ -88,6 +94,13 @@ function summarizeRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsSum
     },
     context: {
       retrievalTopK: settings.context.retrievalTopK,
+      autoUpdate: {
+        enabled: settings.context.autoUpdate.enabled,
+        cronExpression: settings.context.autoUpdate.cronExpression,
+        projectScope: settings.context.autoUpdate.projectScope,
+        workItemTypes: settings.context.autoUpdate.workItemTypes,
+        states: settings.context.autoUpdate.states,
+      },
     },
   };
 }
@@ -135,6 +148,13 @@ function getSettingsFromEnv(): RuntimeSettings | null {
     },
     context: {
       retrievalTopK: Number(process.env.PROJECT_CONTEXT_TOP_K ?? "8"),
+      autoUpdate: {
+        enabled: false,
+        cronExpression: DEFAULT_AUTO_UPDATE_CRON_EXPRESSION,
+        projectScope: null,
+        workItemTypes: DEFAULT_CONTEXT_WORK_ITEM_TYPES,
+        states: DEFAULT_CONTEXT_STATES,
+      },
     },
   });
 
@@ -147,14 +167,17 @@ function getSettingsFromEnv(): RuntimeSettings | null {
 
 function getOrCreateKey() {
   const path = keyPath();
-  mkdirSync(dirname(path), { recursive: true });
-  if (existsSync(path)) return Buffer.from(readFileSync(path, "utf8"), "base64");
-  const key = randomBytes(32);
-  writeFileSync(path, key.toString("base64"), "utf8");
+  const fs = getFs();
+  const pathModule = getPath();
+  fs.mkdirSync(pathModule.dirname(path), { recursive: true });
+  if (fs.existsSync(path)) return Buffer.from(fs.readFileSync(path, "utf8"), "base64");
+  const key = getCrypto().randomBytes(32);
+  fs.writeFileSync(path, key.toString("base64"), "utf8");
   return key;
 }
 
 function encrypt(value: string) {
+  const { createCipheriv, randomBytes } = getCrypto();
   const key = getOrCreateKey();
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
@@ -164,6 +187,7 @@ function encrypt(value: string) {
 }
 
 function decrypt(value: string) {
+  const { createDecipheriv } = getCrypto();
   const payload = Buffer.from(value, "base64");
   const iv = payload.subarray(0, 12);
   const tag = payload.subarray(12, 28);
@@ -171,4 +195,21 @@ function decrypt(value: string) {
   const decipher = createDecipheriv("aes-256-gcm", getOrCreateKey(), iv);
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
+}
+
+function getCrypto() {
+  return nativeRequire("crypto") as CryptoModule;
+}
+
+function getFs() {
+  return nativeRequire("fs") as FsModule;
+}
+
+function getPath() {
+  return nativeRequire("path") as PathModule;
+}
+
+function nativeRequire(specifier: string): unknown {
+  const requireFunction = eval("require") as NodeRequire;
+  return requireFunction(specifier);
 }

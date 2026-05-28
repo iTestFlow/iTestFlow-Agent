@@ -5,7 +5,18 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, CheckCircle2, ChevronDown, Eye, EyeOff, Loader2, Search, ShieldCheck, XCircle } from "lucide-react";
 import { Button, Card, TextInput } from "@/shared/components/ui";
+import { ContextFilterSelector } from "@/components/domain/context-filter-selector";
 import { BRAND_LOGO_FULL_SRC } from "@/lib/constants";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import {
+  CONTEXT_STATE_OPTIONS,
+  CONTEXT_WORK_ITEM_TYPE_OPTIONS,
+  DEFAULT_CONTEXT_STATES,
+  DEFAULT_CONTEXT_WORK_ITEM_TYPES,
+} from "@/lib/project-context-defaults";
+import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION } from "@/modules/settings/cron-expression";
+import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
 type Provider = "openai" | "gemini" | "anthropic";
 
@@ -20,6 +31,11 @@ type FormState = {
   maxTokens: number;
   retryAttempts: number;
   retrievalTopK: number;
+  autoUpdateEnabled: boolean;
+  autoUpdateCronExpression: string;
+  autoUpdateProjectScope: ActiveProjectScope | null;
+  autoUpdateWorkItemTypes: string[];
+  autoUpdateStates: string[];
 };
 
 type TestResult = {
@@ -64,6 +80,7 @@ export function ConfigurationForm({
   const [models, setModels] = useState<ModelOption[]>([]);
   const [hasSavedLlmKey, setHasSavedLlmKey] = useState(false);
   const [savedLlmProvider, setSavedLlmProvider] = useState<Provider | null>(null);
+  const [activeProject, setActiveProject] = useState<ActiveProjectScope | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
@@ -78,6 +95,11 @@ export function ConfigurationForm({
     maxTokens: 4000,
     retryAttempts: 1,
     retrievalTopK: 8,
+    autoUpdateEnabled: false,
+    autoUpdateCronExpression: DEFAULT_AUTO_UPDATE_CRON_EXPRESSION,
+    autoUpdateProjectScope: null,
+    autoUpdateWorkItemTypes: DEFAULT_CONTEXT_WORK_ITEM_TYPES,
+    autoUpdateStates: DEFAULT_CONTEXT_STATES,
   });
 
   const selectedModels = useMemo(() => models, [models]);
@@ -91,6 +113,7 @@ export function ConfigurationForm({
   const selectedModelLabel = selectedModels.find((model) => model.id === form.model)?.displayName ?? (form.model || "Select a model from live provider API");
   const canUseSavedLlmKey = hasSavedLlmKey && savedLlmProvider === form.provider;
   const showAdvancedSettings = mode === "settings";
+  const autoUpdateProject = activeProject ?? form.autoUpdateProjectScope;
 
   useEffect(() => {
     fetch("/api/settings/runtime", { cache: "no-store" })
@@ -107,6 +130,11 @@ export function ConfigurationForm({
           maxTokens: summary.llm?.maxTokens ?? current.maxTokens,
           retryAttempts: summary.llm?.retryAttempts ?? current.retryAttempts,
           retrievalTopK: summary.context?.retrievalTopK ?? current.retrievalTopK,
+          autoUpdateEnabled: summary.context?.autoUpdate?.enabled ?? current.autoUpdateEnabled,
+          autoUpdateCronExpression: summary.context?.autoUpdate?.cronExpression ?? current.autoUpdateCronExpression,
+          autoUpdateProjectScope: summary.context?.autoUpdate?.projectScope ?? current.autoUpdateProjectScope,
+          autoUpdateWorkItemTypes: summary.context?.autoUpdate?.workItemTypes ?? current.autoUpdateWorkItemTypes,
+          autoUpdateStates: summary.context?.autoUpdate?.states ?? current.autoUpdateStates,
         }));
         setHasSavedLlmKey(Boolean(summary.llm?.hasApiKey));
         setSavedLlmProvider(summary.llm?.provider ?? null);
@@ -117,6 +145,16 @@ export function ConfigurationForm({
         );
       })
       .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    setActiveProject(readActiveProject());
+    const onChange = (event: Event) => {
+      const custom = event as CustomEvent<ActiveProjectScope>;
+      setActiveProject(custom.detail ?? readActiveProject());
+    };
+    window.addEventListener("itestflow:active-project-changed", onChange);
+    return () => window.removeEventListener("itestflow:active-project-changed", onChange);
   }, []);
 
   useEffect(() => {
@@ -204,8 +242,28 @@ export function ConfigurationForm({
       },
       context: {
         retrievalTopK: form.retrievalTopK,
+        autoUpdate: {
+          enabled: form.autoUpdateEnabled,
+          cronExpression: form.autoUpdateCronExpression.trim() || DEFAULT_AUTO_UPDATE_CRON_EXPRESSION,
+          projectScope: form.autoUpdateEnabled ? autoUpdateProject : null,
+          workItemTypes: form.autoUpdateWorkItemTypes,
+          states: form.autoUpdateStates,
+        },
       },
     };
+  }
+
+  function toggleAutoUpdate(enabled: boolean) {
+    const selectedProject = readActiveProject();
+    if (selectedProject) setActiveProject(selectedProject);
+    setForm((current) => ({
+      ...current,
+      autoUpdateEnabled: enabled,
+      autoUpdateProjectScope: enabled ? selectedProject ?? current.autoUpdateProjectScope : current.autoUpdateProjectScope,
+    }));
+    setError(null);
+    setMessage(null);
+    setTestResult(null);
   }
 
   async function testConnections() {
@@ -459,6 +517,61 @@ export function ConfigurationForm({
                         onChange={(event) => update("retrievalTopK", Number(event.target.value || "8"))}
                       />
                     </Field>
+
+                    <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
+                      <Label className="flex items-start gap-3">
+                        <Checkbox
+                          checked={form.autoUpdateEnabled}
+                          onCheckedChange={(checked) => toggleAutoUpdate(checked === true)}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          <span className="block text-sm font-medium text-slate-900">
+                            Auto update project context and knowledge base
+                          </span>
+                          <span className="mt-1 block text-xs leading-5 text-slate-500">
+                            Runs on the local server for the selected Azure DevOps project using the filters configured here.
+                          </span>
+                        </span>
+                      </Label>
+
+                      {form.autoUpdateEnabled ? (
+                        <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
+                          <Field
+                            label="Cron expression"
+                            description="Use 5 fields: minute hour day-of-month month day-of-week. Example: 0 2 * * * runs daily at 2:00 AM local server time."
+                          >
+                            <TextInput
+                              className="border-slate-300 bg-white font-mono text-slate-950"
+                              value={form.autoUpdateCronExpression}
+                              onChange={(event) => update("autoUpdateCronExpression", event.target.value)}
+                              placeholder={DEFAULT_AUTO_UPDATE_CRON_EXPRESSION}
+                            />
+                          </Field>
+                          <div className={`rounded-md border p-3 text-xs ${autoUpdateProject ? "border-blue-200 bg-blue-50 text-blue-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+                            Scheduled project: {autoUpdateProject ? autoUpdateProject.azureProjectName : "Select an Azure DevOps project in the header before saving."}
+                          </div>
+                          <ContextFilterSelector
+                            title="Work item types"
+                            description="Custom values must match Azure DevOps work item type names exactly."
+                            options={CONTEXT_WORK_ITEM_TYPE_OPTIONS}
+                            selectedValues={form.autoUpdateWorkItemTypes}
+                            customPlaceholder="Add work item type"
+                            duplicateMessage="This work item type is already selected."
+                            onChange={(next) => update("autoUpdateWorkItemTypes", next)}
+                          />
+                          <ContextFilterSelector
+                            title="States"
+                            description="Custom values must match Azure DevOps state names exactly."
+                            options={CONTEXT_STATE_OPTIONS}
+                            selectedValues={form.autoUpdateStates}
+                            customPlaceholder="Add state"
+                            duplicateMessage="This state is already selected."
+                            onChange={(next) => update("autoUpdateStates", next)}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
                   </>
                 ) : null}
 

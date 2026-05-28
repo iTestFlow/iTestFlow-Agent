@@ -1,6 +1,52 @@
 import { z } from "zod";
+import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
+import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION, validateCronExpression } from "./cron-expression";
 
 export const LLMProviderNameSchema = z.enum(["openai", "gemini", "anthropic"]);
+
+const ProjectScopeSettingsSchema = z.object({
+  projectId: z.string().min(1),
+  azureProjectId: z.string().min(1),
+  azureProjectName: z.string().min(1),
+  azureOrganizationUrl: z.string().url(),
+});
+
+const FilterValuesSchema = (defaults: string[]) =>
+  z.array(z.string()).default(defaults).transform((values) => normalizeFilterValues(values));
+
+const AutoUpdateSettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+  cronExpression: z.string().trim().default(DEFAULT_AUTO_UPDATE_CRON_EXPRESSION).superRefine((value, ctx) => {
+    const error = validateCronExpression(value);
+    if (error) ctx.addIssue({ code: z.ZodIssueCode.custom, message: error });
+  }),
+  projectScope: ProjectScopeSettingsSchema.nullable().default(null),
+  workItemTypes: FilterValuesSchema(DEFAULT_CONTEXT_WORK_ITEM_TYPES),
+  states: FilterValuesSchema(DEFAULT_CONTEXT_STATES),
+}).superRefine((value, ctx) => {
+  if (!value.enabled) return;
+  if (!value.projectScope) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["projectScope"],
+      message: "Select an Azure DevOps project before enabling automatic project context updates.",
+    });
+  }
+  if (!value.workItemTypes.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["workItemTypes"],
+      message: "Select at least one work item type for automatic project context updates.",
+    });
+  }
+  if (!value.states.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["states"],
+      message: "Select at least one state for automatic project context updates.",
+    });
+  }
+});
 
 export const RuntimeSettingsInputSchema = z.object({
   azureDevOps: z.object({
@@ -27,6 +73,13 @@ export const RuntimeSettingsInputSchema = z.object({
   }),
   context: z.object({
     retrievalTopK: z.number().int("Context retrieval count must be a whole number.").min(1, "Context retrieval count must be at least 1.").max(25, "Context retrieval count must be 25 or lower.").default(8),
+    autoUpdate: AutoUpdateSettingsSchema.default({
+      enabled: false,
+      cronExpression: DEFAULT_AUTO_UPDATE_CRON_EXPRESSION,
+      projectScope: null,
+      workItemTypes: DEFAULT_CONTEXT_WORK_ITEM_TYPES,
+      states: DEFAULT_CONTEXT_STATES,
+    }),
   }).default({ retrievalTopK: 8 }),
 });
 
@@ -54,5 +107,39 @@ export type RuntimeSettingsSummary = {
   };
   context?: {
     retrievalTopK: number;
+    autoUpdate: {
+      enabled: boolean;
+      cronExpression: string;
+      projectScope: z.infer<typeof ProjectScopeSettingsSchema> | null;
+      workItemTypes: string[];
+      states: string[];
+      latestRun?: {
+        id: string;
+        status: string;
+        startedAt: string;
+        completedAt?: string | null;
+        workItemTypes?: string[];
+        states?: string[];
+        contextIndexedWorkItemCount?: number;
+        contextIndexedChunkCount?: number;
+        knowledgeSourceWorkItemCount?: number;
+        errorDetails?: string | null;
+      } | null;
+    };
   };
 };
+
+function normalizeFilterValues(values: string[]) {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const value of values) {
+    const trimmed = value.trim();
+    const key = trimmed.toLowerCase();
+    if (!trimmed || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(trimmed);
+  }
+
+  return normalized;
+}

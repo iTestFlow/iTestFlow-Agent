@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { getRuntimeSettingsSummary, saveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
-import { RuntimeSettingsInputSchema } from "@/modules/settings/runtime-settings.schema";
+import { RuntimeSettingsInputSchema, type RuntimeSettingsSummary } from "@/modules/settings/runtime-settings.schema";
+import { getLatestContextAutoUpdateRun } from "@/modules/rag/context-auto-update-run-history.service";
 import { zodErrorResponse } from "@/shared/validators/api-validation-errors";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  return NextResponse.json(getRuntimeSettingsSummary());
+  return NextResponse.json(withContextAutoUpdateStatus(getRuntimeSettingsSummary()));
 }
 
 export async function POST(request: Request) {
@@ -19,5 +20,20 @@ export async function POST(request: Request) {
   }
 
   const summary = saveRuntimeSettings(parsed.data);
-  return NextResponse.json(summary);
+  return NextResponse.json(withContextAutoUpdateStatus(summary));
+}
+
+function withContextAutoUpdateStatus(summary: RuntimeSettingsSummary): RuntimeSettingsSummary {
+  if (!summary.context?.autoUpdate) return summary;
+
+  return {
+    ...summary,
+    context: {
+      ...summary.context,
+      autoUpdate: {
+        ...summary.context.autoUpdate,
+        latestRun: getLatestContextAutoUpdateRun(),
+      },
+    },
+  };
 }

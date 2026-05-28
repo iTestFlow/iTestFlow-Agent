@@ -1,12 +1,12 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { AlertTriangle, ArrowUpDown, BookOpen, ChevronDown, Copy, Database, RefreshCw } from "lucide-react"
+import { AlertTriangle, ArrowUpDown, BookOpen, Copy, Database, RefreshCw } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Checkbox } from "@/components/ui/checkbox"
+import { ContextFilterSelector } from "@/components/domain/context-filter-selector"
 import { Label } from "@/components/ui/label"
 import {
   Table,
@@ -411,10 +411,6 @@ export function ProjectContextClient() {
     }
   }
 
-  function toggleValue(value: string, selected: boolean, current: string[], update: (next: string[]) => void) {
-    update(selected ? [...current, value] : current.filter((item) => item !== value))
-  }
-
   function changeSort(nextSortBy: ContextSortBy) {
     const nextDirection = sortBy === nextSortBy && sortDirection === "asc" ? "desc" : "asc"
     setSortBy(nextSortBy)
@@ -480,17 +476,25 @@ export function ProjectContextClient() {
               <CardTitle className="text-base">Step 1 - Fetch and Index Context</CardTitle>
             </CardHeader>
             <CardContent className="space-y-5">
-              <FilterGroup
+              <ContextFilterSelector
                 title="Work item types"
-                values={CONTEXT_WORK_ITEM_TYPE_OPTIONS}
+                description="Custom values must match Azure DevOps work item type names exactly."
+                options={CONTEXT_WORK_ITEM_TYPE_OPTIONS}
                 selectedValues={workItemTypes}
-                onChange={(value, selected) => toggleValue(value, selected, workItemTypes, setWorkItemTypes)}
+                customPlaceholder="Add work item type"
+                duplicateMessage="This work item type is already selected."
+                optionGridClassName="sm:grid-cols-2 lg:grid-cols-3"
+                onChange={setWorkItemTypes}
               />
-              <FilterGroup
+              <ContextFilterSelector
                 title="States"
-                values={CONTEXT_STATE_OPTIONS}
+                description="Custom values must match Azure DevOps state names exactly."
+                options={CONTEXT_STATE_OPTIONS}
                 selectedValues={states}
-                onChange={(value, selected) => toggleValue(value, selected, states, setStates)}
+                customPlaceholder="Add state"
+                duplicateMessage="This state is already selected."
+                optionGridClassName="sm:grid-cols-2 lg:grid-cols-3"
+                onChange={setStates}
               />
               <div className="flex flex-col gap-3 border-t border-[#EBECF0] pt-4 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm text-[#626F86]">
@@ -725,50 +729,6 @@ function SortHeader({
       <ArrowUpDown className="size-3.5" />
       {active ? <span className="text-xs text-[#626F86]">{direction === "asc" ? "Asc" : "Desc"}</span> : null}
     </Button>
-  )
-}
-
-function FilterGroup({
-  title,
-  values,
-  selectedValues,
-  onChange,
-}: {
-  title: string
-  values: string[]
-  selectedValues: string[]
-  onChange: (value: string, selected: boolean) => void
-}) {
-  const [open, setOpen] = useState(true)
-
-  return (
-    <div className="rounded-md border border-[#DCDFE4] bg-white">
-      <button
-        type="button"
-        aria-expanded={open}
-        className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left"
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span>
-          <span className="block text-sm font-semibold text-[#172B4D]">{title}</span>
-          <span className="mt-0.5 block text-xs text-[#626F86]">{selectedValues.length} selected</span>
-        </span>
-        <ChevronDown className={`size-4 shrink-0 text-[#626F86] transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open ? (
-        <div className="grid gap-3 border-t border-[#EBECF0] p-3 sm:grid-cols-2 lg:grid-cols-3">
-          {values.map((value) => {
-            const checked = selectedValues.includes(value)
-            return (
-              <Label key={value} className="flex min-h-10 items-center gap-3 rounded-md border border-[#DCDFE4] bg-white px-3 py-2 text-sm">
-                <Checkbox checked={checked} onCheckedChange={(next) => onChange(value, next === true)} />
-                <span>{value}</span>
-              </Label>
-            )
-          })}
-        </div>
-      ) : null}
-    </div>
   )
 }
 
