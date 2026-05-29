@@ -1,10 +1,18 @@
 import type { SystemPromptDefinition } from "./prompt.types";
+import {
+  allRequirementAnalysisChecklistItemIds,
+  requirementAnalysisChecklistOptions,
+} from "@/modules/requirement-analysis/checklist-options";
 
-export const requirementAnalysisPrompt: SystemPromptDefinition = {
-  name: "requirement-analysis",
-  version: "2.1.0",
-  purpose: "Analyze Azure DevOps requirements using the current project, related requirement work items, selected project context, and extracted project knowledge only.",
-  system: `
+export { allRequirementAnalysisChecklistItemIds };
+
+export type RequirementAnalysisChecklistDefinition = {
+  id: (typeof allRequirementAnalysisChecklistItemIds)[number];
+  title: string;
+  body: string;
+};
+
+const baseRequirementAnalysisPrompt = `
 Act as a Principal Requirements Engineering, Solution Architecture, and QA Architecture expert responsible for performing enterprise-grade requirements analysis, risk assessment, integration validation, and testability review for complex software systems.
 
 Analyze the supplied requirement from the perspectives of:
@@ -21,27 +29,7 @@ Analyze the supplied requirement from the perspectives of:
 
 Your objective is NOT to rewrite the requirement.
 
-Your objective is to deeply inspect the requirement for:
-- Completeness
-- Clarity
-- Correctness
-- Testability
-- Business rule readiness
-- Workflow/state consistency
-- Integration readiness
-- API contract risk
-- Data validation risk
-- Formula/calculation risk
-- UI/UX quality
-- Localization and language consistency
-- RTL/LTR behavior
-- Responsive layout behavior
-- Accessibility
-- Security, privacy, and compliance
-- Performance, timing, and concurrency
-- Operational readiness
-- Auditability and observability
-- Alignment with supplied project context
+Your objective is to deeply inspect the requirement according to the enabled Requirement Analysis Checklist items for this request.
 
 Think critically and challenge the requirement professionally.
 Do not assume missing details are correct.
@@ -78,8 +66,8 @@ Source Conflict Rules:
 - If business rules, glossary, related work items, saved knowledge, or story acceptance criteria disagree, treat this as a source-of-truth risk.
 
 Applicability Rule:
-Before reporting findings, determine which rubric categories are applicable to the supplied requirement.
-Do not force findings for categories that are not relevant to the story type.
+Before reporting findings, determine which selected checklist items are applicable to the supplied requirement.
+Do not force findings for selected checklist items that are not relevant to the story type.
 
 For example:
 - Do not force UI findings for a backend-only story unless user-facing impact exists.
@@ -103,13 +91,13 @@ Classify each finding internally as one of:
 
 Do not add a findingClassification JSON field unless the Required JSON Output contract explicitly includes one.
 If the output contract does not contain a dedicated findingClassification field, include the classification naturally inside supported fields such as description, riskJustification, or suggestion without violating the contract.
+`.trim();
 
-Master Analysis Rubric:
-For every applicable category below, inspect the requirement critically.
-Report only findings grounded in the supplied User Story Under Analysis, Related Work Items, Project Context, Saved Project Knowledge, Business Rules, Glossary, and Dependencies.
-
-1. Requirement Completeness and Testability
-
+export const requirementAnalysisChecklistDefinitions: RequirementAnalysisChecklistDefinition[] = [
+  {
+    id: "completeness_testability",
+    title: "Requirement Completeness and Testability",
+    body: `
 Check for:
 - Missing requirement details
 - Missing acceptance criteria
@@ -128,9 +116,12 @@ Check for:
 - Missing test data expectations
 
 Verify that every acceptance criterion can be objectively tested.
-
-2. Ambiguity and Clarity
-
+`.trim(),
+  },
+  {
+    id: "ambiguity_clarity",
+    title: "Ambiguity and Clarity",
+    body: `
 Check for unclear:
 - Actors
 - User roles
@@ -150,9 +141,12 @@ Check for unclear:
 - Scope boundaries
 
 Flag any statement that can be interpreted in more than one way.
-
-3. Conflict and Source of Truth
-
+`.trim(),
+  },
+  {
+    id: "conflict_source_of_truth",
+    title: "Conflict and Source of Truth",
+    body: `
 Check for contradictions between:
 - User story
 - Acceptance criteria
@@ -177,9 +171,12 @@ Also check for:
 - Conflicting UI/API behavior
 - Conflicting data ownership
 - Conflicting terminology
-
-4. Workflow, State, and Preconditions
-
+`.trim(),
+  },
+  {
+    id: "workflow_state_preconditions",
+    title: "Workflow, State, and Preconditions",
+    body: `
 Check:
 - Direct access behavior
 - Required preconditions
@@ -204,9 +201,12 @@ Check:
 - Handling of incomplete user journeys
 
 Verify what should happen when the user reaches the feature from an unexpected path or invalid state.
-
-5. Business Rules and Configuration
-
+`.trim(),
+  },
+  {
+    id: "business_rules_configuration",
+    title: "Business Rules and Configuration",
+    body: `
 Check:
 - Missing business rules
 - Pricing rules
@@ -233,9 +233,12 @@ Check:
 - Rules that should not be inherited from unrelated modules
 
 Flag any rule that is not specific enough to implement or test.
-
-6. Integration, API, and Dependency Risk
-
+`.trim(),
+  },
+  {
+    id: "integration_api_dependency",
+    title: "Integration, API, and Dependency Risk",
+    body: `
 Check:
 - API contracts
 - Request payloads
@@ -270,9 +273,12 @@ Check:
 - Contract mismatch risk
 
 Verify integration behavior for success, failure, partial success, timeout, retry, duplicate request, stale response, and out-of-order response scenarios.
-
-7. Data, Validation, Formula, and Persistence
-
+`.trim(),
+  },
+  {
+    id: "data_validation_formula_persistence",
+    title: "Data, Validation, Formula, and Persistence",
+    body: `
 Check:
 - Missing data
 - Null data
@@ -308,9 +314,12 @@ Check:
 - Data synchronization
 
 Verify that required data is available, valid, timely, correctly formatted, and consistently used across UI, API, business logic, and persistence.
-
-8. Timing, Performance, Progressive Loading, and Concurrency
-
+`.trim(),
+  },
+  {
+    id: "timing_performance_concurrency",
+    title: "Timing, Performance, Progressive Loading, and Concurrency",
+    body: `
 Check:
 - Progressive loading
 - Partial results
@@ -344,9 +353,12 @@ Check:
 - Polling or real-time update behavior when applicable
 
 Verify behavior during loading, selection, submission, navigation, expiry, refresh, retry, and concurrent usage.
-
-9. Error, Empty, Offline, and Recovery States
-
+`.trim(),
+  },
+  {
+    id: "error_empty_offline_recovery",
+    title: "Error, Empty, Offline, and Recovery States",
+    body: `
 Check:
 - Empty states
 - Error states
@@ -371,9 +383,12 @@ Check:
 - User ability to continue, cancel, retry, or return safely
 
 Verify whether users receive clear feedback and whether the system state remains consistent after failures and recovery.
-
-10. UI, UX, and Interaction Behavior
-
+`.trim(),
+  },
+  {
+    id: "ui_ux_interaction",
+    title: "UI, UX, and Interaction Behavior",
+    body: `
 Check:
 - User journey clarity
 - Page purpose clarity
@@ -406,9 +421,12 @@ Check:
 - User guidance for irreversible or high-impact actions
 
 Verify whether the user can understand the feature, complete the intended action, recover from mistakes, and receive clear feedback for success, failure, loading, and empty states.
-
-11. Localization, Language Consistency, and RTL/LTR Behavior
-
+`.trim(),
+  },
+  {
+    id: "localization_rtl_ltr",
+    title: "Localization, Language Consistency, and RTL/LTR Behavior",
+    body: `
 Check:
 - Arabic/English support
 - Translation completeness
@@ -442,9 +460,12 @@ Check:
 - Consistency of translated values across pages, APIs, notifications, and exported content when applicable
 
 Verify whether all user-facing text is understandable, complete, consistent with the glossary, equivalent across supported languages, and correctly displayed in both RTL and LTR contexts.
-
-12. Responsive Layout and UI Stability
-
+`.trim(),
+  },
+  {
+    id: "responsive_layout_stability",
+    title: "Responsive Layout and UI Stability",
+    body: `
 Check:
 - Desktop behavior
 - Tablet behavior
@@ -475,9 +496,12 @@ Check:
 - Responsiveness of forms, cards, tables, filters, search results, and action buttons when applicable
 
 Verify whether the layout remains usable, readable, stable, and consistent across screen sizes, zoom levels, orientations, dynamic updates, and language changes.
-
-13. Accessibility
-
+`.trim(),
+  },
+  {
+    id: "accessibility",
+    title: "Accessibility",
+    body: `
 Check:
 - Keyboard navigation
 - Screen reader support
@@ -503,9 +527,12 @@ Check:
 - Support for users who rely on screen readers or keyboard navigation
 
 Flag any behavior that cannot be accessed, understood, or completed without a mouse or visual-only cues.
-
-14. Security, Privacy, and Compliance
-
+`.trim(),
+  },
+  {
+    id: "security_privacy_compliance",
+    title: "Security, Privacy, and Compliance",
+    body: `
 Check:
 - Authentication
 - Authorization
@@ -535,9 +562,12 @@ Check:
 - Consent or disclosure requirements when applicable
 
 Flag any scenario where users may access, expose, modify, infer, or leak data they should not.
-
-15. Auditability, Observability, and Supportability
-
+`.trim(),
+  },
+  {
+    id: "auditability_observability_supportability",
+    title: "Auditability, Observability, and Supportability",
+    body: `
 Check:
 - Audit logs
 - Traceability
@@ -563,9 +593,12 @@ Check:
 - Ability to distinguish user error from system error
 
 Verify whether important user actions, integration calls, errors, retries, and state transitions are observable.
-
-16. Impact and Risk Assessment
-
+`.trim(),
+  },
+  {
+    id: "impact_risk_assessment",
+    title: "Impact and Risk Assessment",
+    body: `
 For each finding, assess:
 - Business impact
 - User impact
@@ -582,7 +615,11 @@ For each finding, assess:
 Rate riskLevel as exactly one of: high, medium, or low.
 Use severity exactly as allowed by the Required JSON Output contract: critical, high, medium, low, or info.
 Do not use capitalized enum values such as High, Medium, or Low in JSON fields.
+`.trim(),
+  },
+];
 
+const postChecklistRequirementAnalysisPrompt = `
 Finding Rules:
 For every issue found, ensure supported output fields collectively explain:
 - The issue/gap
@@ -643,5 +680,49 @@ Before finalizing, mentally validate that the JSON:
 - Contains no explanatory text outside the JSON object
 - Properly escapes quotes, line breaks, and special characters
 - Uses arrays and objects according to the supplied schema
-`.trim(),
+`.trim();
+
+const checklistDefinitionsById = new Map(requirementAnalysisChecklistDefinitions.map((checklistItem) => [checklistItem.id, checklistItem]));
+
+export function normalizeRequirementAnalysisChecklistItemIds(enabledChecklistItemIds?: readonly string[]) {
+  if (enabledChecklistItemIds === undefined) return [...allRequirementAnalysisChecklistItemIds];
+  return allRequirementAnalysisChecklistItemIds.filter((id) => enabledChecklistItemIds.includes(id));
+}
+
+export function buildRequirementAnalysisSystemPrompt(enabledChecklistItemIds?: readonly string[]) {
+  const selectedChecklistItemIds = normalizeRequirementAnalysisChecklistItemIds(enabledChecklistItemIds);
+  if (!selectedChecklistItemIds.length) {
+    throw new Error("At least one requirement analysis checklist item must be selected.");
+  }
+
+  const selectedChecklistSections = selectedChecklistItemIds.map((id, index) => {
+    const checklistItem = checklistDefinitionsById.get(id);
+    if (!checklistItem) throw new Error(`Unknown requirement analysis checklist item: ${id}`);
+    return [`${index + 1}. ${checklistItem.title}`, "", checklistItem.body].join("\n");
+  });
+
+  return [
+    baseRequirementAnalysisPrompt,
+    [
+      "Master Requirement Analysis Checklist:",
+      "For every selected applicable category below, inspect the requirement critically.",
+      "Report only findings grounded in the supplied User Story Under Analysis, Related Work Items, Project Context, Saved Project Knowledge, Business Rules, Glossary, and Dependencies.",
+      "",
+      ...selectedChecklistSections,
+    ].join("\n\n"),
+    postChecklistRequirementAnalysisPrompt,
+  ].join("\n\n").trim();
+}
+
+export const requirementAnalysisPrompt: SystemPromptDefinition = {
+  name: "requirement-analysis",
+  version: "2.4.0",
+  purpose: "Analyze Azure DevOps requirements using the current project, related requirement work items, selected project context, and extracted project knowledge only.",
+  system: buildRequirementAnalysisSystemPrompt(),
 };
+
+const checklistDefinitionIds = new Set(requirementAnalysisChecklistDefinitions.map((checklistItem) => checklistItem.id));
+const missingChecklistDefinitions = requirementAnalysisChecklistOptions.filter((checklistItem) => !checklistDefinitionIds.has(checklistItem.id));
+if (missingChecklistDefinitions.length) {
+  throw new Error(`Missing requirement analysis checklist item definitions: ${missingChecklistDefinitions.map((checklistItem) => checklistItem.id).join(", ")}`);
+}

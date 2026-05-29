@@ -6,7 +6,12 @@ import { parseExternalStructuredOutput } from "@/modules/llm/external-structured
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
 import { buildRequirementAnalysisMarkdownPrompt, extractWorkItemId } from "@/modules/llm/markdown-prompt-renderer";
-import { requirementAnalysisPrompt } from "@/modules/llm/prompts";
+import {
+  buildRequirementAnalysisSystemPrompt,
+  normalizeRequirementAnalysisChecklistItemIds,
+  requirementAnalysisPrompt,
+} from "@/modules/llm/prompts";
+import type { RequirementAnalysisChecklistItemId } from "@/modules/requirement-analysis/checklist-options";
 import { RequirementAnalysisOutputSchema } from "../schemas/requirement-analysis.schema";
 
 export async function runRequirementAnalysis(input: {
@@ -16,6 +21,7 @@ export async function runRequirementAnalysis(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
 }) {
   const scope = assertProjectScope(input.scope);
   const promptDraft = buildRequirementAnalysisPromptDraft({
@@ -24,6 +30,7 @@ export async function runRequirementAnalysis(input: {
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
+    enabledChecklistItemIds: input.enabledChecklistItemIds,
   });
   const result = await input.provider.generateStructuredOutput({
     schemaName: promptDraft.schemaName,
@@ -55,10 +62,11 @@ export async function runRequirementAnalysis(input: {
       provider: result.provider,
       model: result.model,
       promptVersion: requirementAnalysisPrompt.version,
+      enabledChecklistItemIds: promptDraft.enabledChecklistItemIds,
     },
   });
 
-  return result;
+  return { ...result, enabledChecklistItemIds: promptDraft.enabledChecklistItemIds };
 }
 
 export function buildRequirementAnalysisPromptDraft(input: {
@@ -67,8 +75,11 @@ export function buildRequirementAnalysisPromptDraft(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
 }) {
   const scope = assertProjectScope(input.scope);
+  const enabledChecklistItemIds = normalizeRequirementAnalysisChecklistItemIds(input.enabledChecklistItemIds);
+  const systemPrompt = buildRequirementAnalysisSystemPrompt(enabledChecklistItemIds);
   const promptPayload = buildRequirementAnalysisMarkdownPrompt({
     currentProject: {
       azureProjectId: scope.azureProjectId,
@@ -85,11 +96,12 @@ export function buildRequirementAnalysisPromptDraft(input: {
     schemaName: "RequirementAnalysisOutput",
     promptName: requirementAnalysisPrompt.name,
     promptVersion: requirementAnalysisPrompt.version,
-    systemPrompt: requirementAnalysisPrompt.system,
+    enabledChecklistItemIds,
+    systemPrompt,
     userPrompt: promptPayload.prompt,
     prompt: buildManualPromptMarkdown({
       title: "iTestFlow Requirement Analysis",
-      system: requirementAnalysisPrompt.system,
+      system: systemPrompt,
       user: promptPayload.prompt,
     }),
     relevantProjectKnowledgeBase: promptPayload.relevantProjectKnowledgeBase,

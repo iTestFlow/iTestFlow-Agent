@@ -5,7 +5,13 @@ export {
   projectKnowledgeConsolidationPrompt,
   projectKnowledgeExtractionPrompt,
 } from "./project-knowledge-extraction.prompt";
-export { requirementAnalysisPrompt } from "./requirement-analysis.prompt";
+export {
+  allRequirementAnalysisChecklistItemIds,
+  buildRequirementAnalysisSystemPrompt,
+  normalizeRequirementAnalysisChecklistItemIds,
+  requirementAnalysisPrompt,
+  requirementAnalysisChecklistDefinitions,
+} from "./requirement-analysis.prompt";
 export {
   buildStructuredOutputUserPrompt,
   structuredOutputPrompt,

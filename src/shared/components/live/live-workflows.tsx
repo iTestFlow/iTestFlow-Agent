@@ -10,6 +10,11 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge, Button, Card, CardHeader, SelectInput, TextArea, TextInput } from "@/shared/components/ui";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import {
+  allRequirementAnalysisChecklistItemIds,
+  requirementAnalysisChecklistOptions,
+  type RequirementAnalysisChecklistItemId,
+} from "@/modules/requirement-analysis/checklist-options";
 
 type ApiState<T> = {
   loading: boolean;
@@ -50,6 +55,7 @@ type RequirementAnalysisRunResult = {
   summary: RequirementSummary;
   recommendations: string[];
   contextUsed: string[];
+  enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   resolvedContextUsed?: unknown[];
 };
 
@@ -88,6 +94,7 @@ type WorkflowMode = "auto" | "manual";
 type ManualPromptDraft = {
   prompt: string;
   promptVersion: string;
+  enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   selectedContextIds?: string[];
   resolvedContextUsed?: unknown[];
   retrievalTopK?: number;
@@ -469,6 +476,7 @@ export function RequirementAnalysisClient() {
   const finalReviewCardRef = useRef<HTMLDivElement | null>(null);
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const [mode, setMode] = useState<WorkflowMode>("auto");
+  const [enabledChecklistItemIds, setEnabledChecklistItemIds] = useState<RequirementAnalysisChecklistItemId[]>(() => [...allRequirementAnalysisChecklistItemIds]);
   const [analysis, setAnalysis] = useState<ApiState<RequirementAnalysisRunResult>>({
     loading: false,
     error: null,
@@ -500,6 +508,7 @@ export function RequirementAnalysisClient() {
     const selectedIds = new Set(selectedMentionUserIds);
     return projectUsers.filter((user) => selectedIds.has(user.id));
   }, [projectUsers, selectedMentionUserIds]);
+  const checklistSelectionValid = enabledChecklistItemIds.length > 0;
 
   useEffect(() => {
     setSelectedMentionUserIds([]);
@@ -534,6 +543,35 @@ export function RequirementAnalysisClient() {
     setSelectedMentionUserIds([]);
   }
 
+  function resetManualDraftForChecklistChange() {
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }
+
+  function changeChecklistSelection(checklistItemId: RequirementAnalysisChecklistItemId, checked: boolean) {
+    setEnabledChecklistItemIds((current) => {
+      const nextIds = new Set(current);
+      if (checked) {
+        nextIds.add(checklistItemId);
+      } else {
+        nextIds.delete(checklistItemId);
+      }
+      return allRequirementAnalysisChecklistItemIds.filter((id) => nextIds.has(id));
+    });
+    resetManualDraftForChecklistChange();
+  }
+
+  function selectAllChecklistItems() {
+    setEnabledChecklistItemIds([...allRequirementAnalysisChecklistItemIds]);
+    resetManualDraftForChecklistChange();
+  }
+
+  function clearAllChecklistItems() {
+    setEnabledChecklistItemIds([]);
+    resetManualDraftForChecklistChange();
+  }
+
   function applyAnalysisResult(data: RequirementAnalysisRunResult) {
     setAnalysis({ loading: false, error: null, data });
     setSelectedFindings(Object.fromEntries(data.findings.map((finding) => [finding.id, true])));
@@ -546,12 +584,12 @@ export function RequirementAnalysisClient() {
   }
 
   async function runAnalysis() {
-    if (!scope || !targetWorkItemId) return;
+    if (!scope || !targetWorkItemId || !checklistSelectionValid) return;
     setAnalysis({ loading: true, error: null, data: null });
     try {
       const data = await postJson<RequirementAnalysisRunResult>(
         "/api/requirement-analysis/run",
-        { scope, targetWorkItemId },
+        { scope, targetWorkItemId, enabledChecklistItemIds },
       );
       applyAnalysisResult(data);
     } catch (error) {
@@ -560,7 +598,7 @@ export function RequirementAnalysisClient() {
   }
 
   async function prepareManualPrompt() {
-    if (!scope || !targetWorkItemId) return;
+    if (!scope || !targetWorkItemId || !checklistSelectionValid) return;
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
@@ -568,6 +606,7 @@ export function RequirementAnalysisClient() {
       const data = await postJson<ManualPromptDraft>("/api/requirement-analysis/manual/draft", {
         scope,
         targetWorkItemId,
+        enabledChecklistItemIds,
       });
       setManualDraft({ loading: false, error: null, data });
     } catch (error) {
@@ -689,17 +728,23 @@ export function RequirementAnalysisClient() {
           <div className="grid gap-4 lg:grid-cols-[240px_auto]">
             <TextInput value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="Work item ID, e.g. 1234" />
             {mode === "auto" ? (
-              <Button onClick={runAnalysis} disabled={!scope || !targetWorkItemId || analysis.loading}>
+              <Button onClick={runAnalysis} disabled={!scope || !targetWorkItemId || analysis.loading || !checklistSelectionValid}>
                 <Play className="h-4 w-4" />
                 {analysis.loading ? "Analyzing..." : "Analyze"}
               </Button>
             ) : (
-              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading}>
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading || !checklistSelectionValid}>
                 <Play className="h-4 w-4" />
                 {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
               </Button>
             )}
           </div>
+          <RequirementChecklistSelector
+            selectedIds={enabledChecklistItemIds}
+            onToggle={changeChecklistSelection}
+            onSelectAll={selectAllChecklistItems}
+            onClearAll={clearAllChecklistItems}
+          />
           {mode === "manual" ? (
             <ManualLLMPanel
               draft={manualDraft.data}
@@ -1841,6 +1886,64 @@ export function PublishTestCasesClient() {
         targetWorkItemId={targetWorkItemId}
       />
       <PublishGeneratedCasesPanel scope={scope} targetWorkItemId={targetWorkItemId} testCases={testCases} />
+    </div>
+  );
+}
+
+function RequirementChecklistSelector({
+  selectedIds,
+  onToggle,
+  onSelectAll,
+  onClearAll,
+}: {
+  selectedIds: RequirementAnalysisChecklistItemId[];
+  onToggle: (checklistItemId: RequirementAnalysisChecklistItemId, checked: boolean) => void;
+  onSelectAll: () => void;
+  onClearAll: () => void;
+}) {
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const allSelected = selectedIds.length === allRequirementAnalysisChecklistItemIds.length;
+  const noneSelected = selectedIds.length === 0;
+
+  return (
+    <div className="rounded-md border border-[#c8d4e4] bg-[#f8fafc] p-4">
+      <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="text-sm font-semibold text-slate-950">Requirement Analysis Checklist</div>
+          <div className="text-xs text-slate-500">
+            {selectedIds.length} of {allRequirementAnalysisChecklistItemIds.length} selected
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={onSelectAll} disabled={allSelected} className="h-8 px-3 text-xs">
+            Select all
+          </Button>
+          <Button variant="ghost" onClick={onClearAll} disabled={noneSelected} className="h-8 px-3 text-xs">
+            Clear all
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        {requirementAnalysisChecklistOptions.map((checklistItem) => {
+          const checked = selectedIdSet.has(checklistItem.id);
+          return (
+            <label
+              key={checklistItem.id}
+              className="flex min-h-12 cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-blue-200 hover:bg-blue-50"
+            >
+              <Checkbox checked={checked} onCheckedChange={(value) => onToggle(checklistItem.id, value === true)} aria-label={checklistItem.title} />
+              <span className="leading-5">{checklistItem.title}</span>
+            </label>
+          );
+        })}
+      </div>
+
+      {noneSelected ? (
+        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          Select at least one checklist item to run analysis or prepare the external LLM prompt.
+        </div>
+      ) : null}
     </div>
   );
 }
