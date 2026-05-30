@@ -24,7 +24,8 @@ type ApiState<T> = {
 
 type RequirementFinding = {
   id: string;
-  type: string;
+  checklistItemId: RequirementAnalysisChecklistItemId;
+  issueType: string;
   severity: "critical" | "high" | "medium" | "low" | "info";
   title: string;
   description: string;
@@ -369,6 +370,10 @@ function severityMarker(value: RequirementFinding["severity"]) {
   return `[${formatEnumLabel(value)}]`;
 }
 
+function checklistItemTitle(checklistItemId: RequirementAnalysisChecklistItemId) {
+  return requirementAnalysisChecklistOptions.find((checklistItem) => checklistItem.id === checklistItemId)?.title ?? formatEnumLabel(checklistItemId);
+}
+
 function qualityTone(value: string) {
   if (value === "excellent" || value === "good") return "emerald" as const;
   if (value === "fair") return "amber" as const;
@@ -623,6 +628,7 @@ export function RequirementAnalysisClient() {
         scope,
         targetWorkItemId,
         rawOutput: manualResponse,
+        enabledChecklistItemIds: manualDraft.data.enabledChecklistItemIds ?? enabledChecklistItemIds,
         selectedContextIds: manualDraft.data.selectedContextIds ?? [],
         resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
         retrievalTopK: manualDraft.data.retrievalTopK,
@@ -647,7 +653,8 @@ export function RequirementAnalysisClient() {
       ...selectedFindingList.map((finding) => [
         `### ${severityMarker(finding.severity)} ${finding.title}`,
         finding.description,
-        `**Type:** ${formatEnumLabel(finding.type)}`,
+        `**Checklist:** ${checklistItemTitle(finding.checklistItemId)}`,
+        `**Issue Type:** ${formatEnumLabel(finding.issueType)}`,
         `**Risk:** ${formatEnumLabel(finding.riskLevel)} - ${finding.riskJustification}`,
         `**Suggested resolution:** ${finding.suggestion}`, "---",
       ].join("\n\n")),
@@ -773,7 +780,7 @@ export function RequirementAnalysisClient() {
             </div>
             <div className="divide-y">
               {sortedFindingList.map((finding) => (
-                <div key={finding.id} className="grid gap-4 p-4 xl:grid-cols-[32px_150px_minmax(0,1fr)_minmax(260px,0.85fr)]">
+                <div key={finding.id} className="grid gap-4 p-4 xl:grid-cols-[32px_240px_minmax(0,1fr)_minmax(260px,0.85fr)]">
                   <input
                     type="checkbox"
                     checked={Boolean(selectedFindings[finding.id])}
@@ -783,7 +790,8 @@ export function RequirementAnalysisClient() {
                   />
                   <div>
                     <Badge tone={severityTone(finding.severity)}>{formatEnumLabel(finding.severity)}</Badge>
-                    <div className="mt-2 text-xs font-medium text-slate-500">{formatEnumLabel(finding.type)}</div>
+                    <div className="mt-2 text-xs font-medium text-slate-600">{checklistItemTitle(finding.checklistItemId)}</div>
+                    <div className="mt-1 text-xs text-slate-500">Issue Type: {formatEnumLabel(finding.issueType)}</div>
                   </div>
                   <div>
                     <div className="font-medium">{finding.title}</div>

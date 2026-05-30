@@ -12,7 +12,7 @@ import {
   requirementAnalysisPrompt,
 } from "@/modules/llm/prompts";
 import type { RequirementAnalysisChecklistItemId } from "@/modules/requirement-analysis/checklist-options";
-import { RequirementAnalysisOutputSchema } from "../schemas/requirement-analysis.schema";
+import { RequirementAnalysisOutputSchema, type RequirementAnalysisOutput } from "../schemas/requirement-analysis.schema";
 
 export async function runRequirementAnalysis(input: {
   scope: ProjectScope;
@@ -49,6 +49,7 @@ export async function runRequirementAnalysis(input: {
       targetWorkItemId: extractWorkItemId(input.targetRequirement),
     },
   });
+  assertRequirementAnalysisChecklistScope(result.validatedOutput, promptDraft.enabledChecklistItemIds);
 
   writeAuditLog({
     projectId: scope.projectId,
@@ -89,7 +90,7 @@ export function buildRequirementAnalysisPromptDraft(input: {
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
-    outputContract: requirementOutputContract,
+    outputContract: buildRequirementOutputContract(enabledChecklistItemIds),
   });
 
   return {
@@ -112,13 +113,16 @@ export function completeManualRequirementAnalysis(input: {
   scope: ProjectScope;
   rawOutput: string;
   targetWorkItemId?: string;
+  enabledChecklistItemIds: RequirementAnalysisChecklistItemId[];
 }) {
   const scope = assertProjectScope(input.scope);
+  const enabledChecklistItemIds = normalizeRequirementAnalysisChecklistItemIds(input.enabledChecklistItemIds);
   const validatedOutput = parseExternalStructuredOutput({
     schemaName: "RequirementAnalysisOutput",
     schema: RequirementAnalysisOutputSchema,
     rawOutput: input.rawOutput,
   });
+  assertRequirementAnalysisChecklistScope(validatedOutput, enabledChecklistItemIds);
 
   writeAuditLog({
     projectId: scope.projectId,
@@ -133,6 +137,7 @@ export function completeManualRequirementAnalysis(input: {
       model: "manual-external",
       promptVersion: requirementAnalysisPrompt.version,
       targetWorkItemId: input.targetWorkItemId,
+      enabledChecklistItemIds,
     },
   });
 
@@ -144,36 +149,52 @@ export function completeManualRequirementAnalysis(input: {
   };
 }
 
-const requirementOutputContract = {
-  findings: [
-    {
-      id: "F-001",
-      type: "ambiguity|conflict|missing_requirement|incomplete_criteria|inconsistency|security_concern|performance_concern|ux_issue|dependency_issue|business_rule_violation",
-      severity: "critical|high|medium|low|info",
-      title: "Brief finding title",
-      description: "Detailed grounded description",
-      suggestion: "Specific recommended resolution",
-      riskLevel: "high|medium|low",
-      riskJustification: "Business-impact justification for risk",
-      affectedAreas: ["module/page/component/api/workflow"],
-      references: [{ module: "module-id", section: "section name", sourceId: "work item or rule id", description: "source detail" }],
-      contradiction: false,
+function buildRequirementOutputContract(enabledChecklistItemIds: RequirementAnalysisChecklistItemId[]) {
+  return {
+    findings: [
+      {
+        id: "F-001",
+        checklistItemId: enabledChecklistItemIds.join("|"),
+        issueType:
+          "ambiguity|conflict|missing_requirement|incomplete_criteria|inconsistency|non_testable_requirement|unsupported_assumption|unhandled_edge_case|ownership_gap|traceability_gap|risk_gap",
+        severity: "critical|high|medium|low|info",
+        title: "Brief finding title",
+        description: "Detailed grounded description",
+        suggestion: "Specific recommended resolution",
+        riskLevel: "high|medium|low",
+        riskJustification: "Business-impact justification for risk",
+        affectedAreas: ["module/page/component/api/workflow"],
+        references: [{ module: "module-id", section: "section name", sourceId: "work item or rule id", description: "source detail" }],
+        contradiction: false,
+      },
+    ],
+    summary: {
+      totalFindings: 0,
+      criticalCount: 0,
+      highCount: 0,
+      mediumCount: 0,
+      lowCount: 0,
+      infoCount: 0,
+      overallQuality: "poor|fair|good|excellent",
+      completenessScore: 0,
+      clarityScore: 0,
+      testabilityScore: 0,
+      summaryText: "Concise summary; acknowledge if the story is well-written.",
     },
-  ],
-  summary: {
-    totalFindings: 0,
-    criticalCount: 0,
-    highCount: 0,
-    mediumCount: 0,
-    lowCount: 0,
-    infoCount: 0,
-    overallQuality: "poor|fair|good|excellent",
-    completenessScore: 0,
-    clarityScore: 0,
-    testabilityScore: 0,
-    summaryText: "Concise summary; acknowledge if the story is well-written.",
-  },
-  recommendations: ["string"],
-  questionsForProductOwner: ["string"],
-  contextUsed: ["source IDs only, such as module-id or work-item-id"],
-};
+    recommendations: ["string"],
+    questionsForProductOwner: ["string"],
+    contextUsed: ["source IDs only, such as module-id or work-item-id"],
+  };
+}
+
+function assertRequirementAnalysisChecklistScope(output: RequirementAnalysisOutput, enabledChecklistItemIds: RequirementAnalysisChecklistItemId[]) {
+  const enabledChecklistItemIdSet = new Set(enabledChecklistItemIds);
+  const invalidFindings = output.findings.filter((finding) => !enabledChecklistItemIdSet.has(finding.checklistItemId));
+
+  if (!invalidFindings.length) return;
+
+  const invalidSummary = invalidFindings.map((finding) => `${finding.id} uses ${finding.checklistItemId}`).join(", ");
+  throw new Error(
+    `Requirement analysis output included findings for disabled checklist items: ${invalidSummary}. Enabled checklist items: ${enabledChecklistItemIds.join(", ")}.`,
+  );
+}

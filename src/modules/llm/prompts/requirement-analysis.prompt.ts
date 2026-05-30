@@ -627,6 +627,8 @@ For every issue found, ensure supported output fields collectively explain:
 - The risk/impact
 - Severity using exactly: critical, high, medium, low, or info
 - Risk level using exactly: high, medium, or low
+- checklistItemId using exactly one enabled checklist item ID
+- issueType using exactly one allowed generic defect-shape value
 - Finding classification: Confirmed issue, Clarification needed, or Testability concern
 - Affected areas
 - Evidence/reference from supplied context when available
@@ -695,6 +697,25 @@ export function buildRequirementAnalysisSystemPrompt(enabledChecklistItemIds?: r
     throw new Error("At least one requirement analysis checklist item must be selected.");
   }
 
+  const enabledChecklistScope = [
+    "Enabled checklist items for this run:",
+    ...selectedChecklistItemIds.map((id) => {
+      const checklistItem = checklistDefinitionsById.get(id);
+      if (!checklistItem) throw new Error(`Unknown requirement analysis checklist item: ${id}`);
+      return `- ${id}: ${checklistItem.title}`;
+    }),
+    "",
+    "All checklist items not listed above are disabled for this run.",
+    "",
+    "For each finding:",
+    "- Set checklistItemId to exactly one enabled checklist item ID.",
+    "- The finding is valid only if that checklist item is the primary reason for reporting it.",
+    "- Disabled checklist areas may be mentioned only as affected context, evidence, or impact.",
+    "- If no enabled checklist item is the primary reason for the finding, discard it.",
+    "- checklistItemId identifies the selected checklist lens that found the issue.",
+    "- issueType identifies the generic defect shape, not the checklist category.",
+  ].join("\n");
+
   const selectedChecklistSections = selectedChecklistItemIds.map((id, index) => {
     const checklistItem = checklistDefinitionsById.get(id);
     if (!checklistItem) throw new Error(`Unknown requirement analysis checklist item: ${id}`);
@@ -703,6 +724,7 @@ export function buildRequirementAnalysisSystemPrompt(enabledChecklistItemIds?: r
 
   return [
     baseRequirementAnalysisPrompt,
+    enabledChecklistScope,
     [
       "Master Requirement Analysis Checklist:",
       "For every selected applicable category below, inspect the requirement critically.",
@@ -716,7 +738,7 @@ export function buildRequirementAnalysisSystemPrompt(enabledChecklistItemIds?: r
 
 export const requirementAnalysisPrompt: SystemPromptDefinition = {
   name: "requirement-analysis",
-  version: "2.4.0",
+  version: "2.6.0",
   purpose: "Analyze Azure DevOps requirements using the current project, related requirement work items, selected project context, and extracted project knowledge only.",
   system: buildRequirementAnalysisSystemPrompt(),
 };
