@@ -15,6 +15,16 @@ import {
   requirementAnalysisChecklistOptions,
   type RequirementAnalysisChecklistItemId,
 } from "@/modules/requirement-analysis/checklist-options";
+import {
+  allCoverageFocusIds,
+  coverageFocusOptions,
+  defaultTestDesignOptions,
+  maxCustomTestCaseRange,
+  targetTestCaseRangeOptions,
+  type CoverageFocusId,
+  type TargetTestCaseRangeId,
+  type TestDesignOptions,
+} from "@/modules/test-case-design/test-design-options";
 
 type ApiState<T> = {
   loading: boolean;
@@ -88,6 +98,7 @@ type TestCaseGenerationRunResult = {
   summary: TestCaseSummary;
   contextUsed: string[];
   resolvedContextUsed?: unknown[];
+  options?: TestDesignOptions;
 };
 
 type WorkflowMode = "auto" | "manual";
@@ -96,6 +107,7 @@ type ManualPromptDraft = {
   prompt: string;
   promptVersion: string;
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
+  options?: TestDesignOptions;
   selectedContextIds?: string[];
   resolvedContextUsed?: unknown[];
   retrievalTopK?: number;
@@ -1022,12 +1034,92 @@ export function TestCaseGenerationClient() {
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
   const [testCases, setTestCases] = useState<GeneratedTestCase[]>([]);
+  const [testDesignSettings, setTestDesignSettings] = useState<TestDesignOptions>(() => ({
+    ...defaultTestDesignOptions,
+    coverageFocusIds: [...defaultTestDesignOptions.coverageFocusIds],
+  }));
+  const selectedTargetRangeOption = useMemo(
+    () =>
+      targetTestCaseRangeOptions.find((option) => option.id === testDesignSettings.targetTestCaseRange) ??
+      targetTestCaseRangeOptions[0],
+    [testDesignSettings.targetTestCaseRange],
+  );
+  const coverageFocusSelectionValid = testDesignSettings.coverageFocusIds.length > 0;
+  const customRangeValid =
+    testDesignSettings.targetTestCaseRange !== "custom" ||
+    (Number.isInteger(testDesignSettings.customMinCases) &&
+      Number.isInteger(testDesignSettings.customMaxCases) &&
+      (testDesignSettings.customMinCases ?? 0) >= 1 &&
+      (testDesignSettings.customMaxCases ?? 0) <= maxCustomTestCaseRange &&
+      (testDesignSettings.customMinCases ?? 0) <= (testDesignSettings.customMaxCases ?? 0));
+  const testDesignOptionsValid = coverageFocusSelectionValid && customRangeValid;
 
   function changeTargetWorkItemId(value: string) {
     setTargetWorkItemId(value);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
+  }
+
+  function resetManualDraftForTestDesignOptionsChange() {
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }
+
+  function changeTargetTestCaseRange(targetTestCaseRange: TargetTestCaseRangeId) {
+    const nextRangeOption = targetTestCaseRangeOptions.find((option) => option.id === targetTestCaseRange) ?? selectedTargetRangeOption;
+    setTestDesignSettings((current) => ({
+      ...current,
+      targetTestCaseRange,
+      customMinCases: targetTestCaseRange === "custom" ? current.customMinCases ?? nextRangeOption.minCases : undefined,
+      customMaxCases: targetTestCaseRange === "custom" ? current.customMaxCases ?? nextRangeOption.maxCases : undefined,
+    }));
+    resetManualDraftForTestDesignOptionsChange();
+  }
+
+  function changeCustomRange(field: "customMinCases" | "customMaxCases", value: string) {
+    const parsed = value ? Number(value) : undefined;
+    setTestDesignSettings((current) => ({
+      ...current,
+      [field]: Number.isFinite(parsed) ? parsed : undefined,
+    }));
+    resetManualDraftForTestDesignOptionsChange();
+  }
+
+  function changeCoverageFocusSelection(focusId: CoverageFocusId, checked: boolean) {
+    setTestDesignSettings((current) => {
+      const nextIds = new Set(current.coverageFocusIds);
+      if (checked) {
+        nextIds.add(focusId);
+      } else {
+        nextIds.delete(focusId);
+      }
+      return {
+        ...current,
+        coverageFocusIds: allCoverageFocusIds.filter((id) => nextIds.has(id)),
+      };
+    });
+    resetManualDraftForTestDesignOptionsChange();
+  }
+
+  function selectAllCoverageFocusItems() {
+    setTestDesignSettings((current) => ({ ...current, coverageFocusIds: [...allCoverageFocusIds] }));
+    resetManualDraftForTestDesignOptionsChange();
+  }
+
+  function clearAllCoverageFocusItems() {
+    setTestDesignSettings((current) => ({ ...current, coverageFocusIds: [] }));
+    resetManualDraftForTestDesignOptionsChange();
+  }
+
+  function buildTestDesignOptionsRequest(): TestDesignOptions {
+    return {
+      targetTestCaseRange: testDesignSettings.targetTestCaseRange,
+      customMinCases: testDesignSettings.targetTestCaseRange === "custom" ? testDesignSettings.customMinCases : undefined,
+      customMaxCases: testDesignSettings.targetTestCaseRange === "custom" ? testDesignSettings.customMaxCases : undefined,
+      coverageFocusIds: testDesignSettings.coverageFocusIds,
+    };
   }
 
   function applyGeneratedCases(data: TestCaseGenerationRunResult) {
@@ -1037,13 +1129,13 @@ export function TestCaseGenerationClient() {
   }
 
   async function generate() {
-    if (!scope || !targetWorkItemId) return;
+    if (!scope || !targetWorkItemId || !testDesignOptionsValid) return;
     setState({ loading: true, error: null, data: null });
     try {
       const data = await postJson<TestCaseGenerationRunResult>("/api/test-cases/generate", {
         scope,
         targetWorkItemId,
-        options: { depth: "balanced" },
+        options: buildTestDesignOptionsRequest(),
       });
       applyGeneratedCases(data);
       scrollToNextStep(generatedCasesRef);
@@ -1053,7 +1145,7 @@ export function TestCaseGenerationClient() {
   }
 
   async function prepareManualPrompt() {
-    if (!scope || !targetWorkItemId) return;
+    if (!scope || !targetWorkItemId || !testDesignOptionsValid) return;
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
@@ -1061,7 +1153,7 @@ export function TestCaseGenerationClient() {
       const data = await postJson<ManualPromptDraft>("/api/test-cases/manual/draft", {
         scope,
         targetWorkItemId,
-        options: { depth: "balanced" },
+        options: buildTestDesignOptionsRequest(),
       });
       setManualDraft({ loading: false, error: null, data });
     } catch (error) {
@@ -1104,17 +1196,27 @@ export function TestCaseGenerationClient() {
           <div className="grid gap-4 lg:grid-cols-[240px_auto]">
             <TextInput value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="Work item ID" />
             {mode === "auto" ? (
-              <Button onClick={generate} disabled={!scope || !targetWorkItemId || state.loading}>
+              <Button onClick={generate} disabled={!scope || !targetWorkItemId || state.loading || !testDesignOptionsValid}>
                 <Play className="h-4 w-4" />
                 {state.loading ? "Generating..." : "Generate"}
               </Button>
             ) : (
-              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading}>
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading || !testDesignOptionsValid}>
                 <Play className="h-4 w-4" />
                 {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
               </Button>
             )}
           </div>
+          <TestDesignOptionsSelector
+            settings={testDesignSettings}
+            customRangeValid={customRangeValid}
+            coverageFocusSelectionValid={coverageFocusSelectionValid}
+            onTargetRangeChange={changeTargetTestCaseRange}
+            onCustomRangeChange={changeCustomRange}
+            onCoverageFocusToggle={changeCoverageFocusSelection}
+            onSelectAllCoverageFocus={selectAllCoverageFocusItems}
+            onClearAllCoverageFocus={clearAllCoverageFocusItems}
+          />
           {mode === "manual" ? (
             <ManualLLMPanel
               draft={manualDraft.data}
@@ -1894,6 +1996,127 @@ export function PublishTestCasesClient() {
         targetWorkItemId={targetWorkItemId}
       />
       <PublishGeneratedCasesPanel scope={scope} targetWorkItemId={targetWorkItemId} testCases={testCases} />
+    </div>
+  );
+}
+
+function TestDesignOptionsSelector({
+  settings,
+  customRangeValid,
+  coverageFocusSelectionValid,
+  onTargetRangeChange,
+  onCustomRangeChange,
+  onCoverageFocusToggle,
+  onSelectAllCoverageFocus,
+  onClearAllCoverageFocus,
+}: {
+  settings: TestDesignOptions;
+  customRangeValid: boolean;
+  coverageFocusSelectionValid: boolean;
+  onTargetRangeChange: (targetTestCaseRange: TargetTestCaseRangeId) => void;
+  onCustomRangeChange: (field: "customMinCases" | "customMaxCases", value: string) => void;
+  onCoverageFocusToggle: (focusId: CoverageFocusId, checked: boolean) => void;
+  onSelectAllCoverageFocus: () => void;
+  onClearAllCoverageFocus: () => void;
+}) {
+  const selectedFocusIdSet = useMemo(() => new Set(settings.coverageFocusIds), [settings.coverageFocusIds]);
+  const allSelected = settings.coverageFocusIds.length === allCoverageFocusIds.length;
+  const noneSelected = settings.coverageFocusIds.length === 0;
+
+  return (
+    <div className="rounded-md border border-[#c8d4e4] bg-[#f8fafc] p-4">
+      <div className="grid gap-4 lg:grid-cols-[minmax(240px,320px)_1fr]">
+        <div className="space-y-3">
+          <div>
+            <div className="text-sm font-semibold text-slate-950">Target Test Case Range</div>
+            <div className="mt-2">
+              <SelectInput
+                value={settings.targetTestCaseRange}
+                onChange={(event) => onTargetRangeChange(event.target.value as TargetTestCaseRangeId)}
+              >
+                {targetTestCaseRangeOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.id === "custom" ? option.label : `${option.label} (${option.minCases}-${option.maxCases})`}
+                  </option>
+                ))}
+              </SelectInput>
+            </div>
+          </div>
+
+          {settings.targetTestCaseRange === "custom" ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-xs font-semibold text-slate-600">
+                Minimum
+                <TextInput
+                  type="number"
+                  min={1}
+                  max={maxCustomTestCaseRange}
+                  value={settings.customMinCases ?? ""}
+                  onChange={(event) => onCustomRangeChange("customMinCases", event.target.value)}
+                  className="mt-1"
+                />
+              </label>
+              <label className="text-xs font-semibold text-slate-600">
+                Maximum
+                <TextInput
+                  type="number"
+                  min={1}
+                  max={maxCustomTestCaseRange}
+                  value={settings.customMaxCases ?? ""}
+                  onChange={(event) => onCustomRangeChange("customMaxCases", event.target.value)}
+                  className="mt-1"
+                />
+              </label>
+            </div>
+          ) : null}
+
+          {!customRangeValid ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Custom range must be between 1 and {maxCustomTestCaseRange}, with minimum not greater than maximum.
+            </div>
+          ) : null}
+        </div>
+
+        <div>
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-slate-950">Coverage Focus Rules</div>
+              <div className="text-xs text-slate-500">
+                {settings.coverageFocusIds.length} of {allCoverageFocusIds.length} selected
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={onSelectAllCoverageFocus} disabled={allSelected} className="h-8 px-3 text-xs">
+                Select all
+              </Button>
+              <Button variant="ghost" onClick={onClearAllCoverageFocus} disabled={noneSelected} className="h-8 px-3 text-xs">
+                Clear all
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {coverageFocusOptions.map((focusItem) => {
+              const checked = selectedFocusIdSet.has(focusItem.id);
+              return (
+                <label
+                  key={focusItem.id}
+                  className="flex min-h-12 cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-blue-200 hover:bg-blue-50"
+                >
+                  <Checkbox checked={checked} onCheckedChange={(value) => onCoverageFocusToggle(focusItem.id, value === true)} aria-label={focusItem.title} />
+                  <span className="leading-5">{focusItem.title}</span>
+                </label>
+              );
+            })}
+          </div>
+
+          {!coverageFocusSelectionValid ? (
+            <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Select at least one Coverage Focus item to generate or prepare the external LLM prompt.
+            </div>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }

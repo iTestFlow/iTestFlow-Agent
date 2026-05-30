@@ -5,8 +5,9 @@ import { parseExternalStructuredOutput } from "@/modules/llm/external-structured
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
 import { buildTestCaseGenerationMarkdownPrompt, extractWorkItemId } from "@/modules/llm/markdown-prompt-renderer";
-import { testCaseGenerationPrompt } from "@/modules/llm/prompts";
+import { buildTestCaseGenerationSystemPrompt, testCaseGenerationPrompt } from "@/modules/llm/prompts";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
+import { normalizeTestDesignOptions, type TestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import { TestCaseGenerationOutputSchema } from "../schemas/test-case.schema";
 
 export async function generateTestCases(input: {
@@ -16,7 +17,7 @@ export async function generateTestCases(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
-  options: Record<string, unknown>;
+  options?: Partial<TestDesignOptions>;
 }) {
   const scope = assertProjectScope(input.scope);
   const promptDraft = buildTestCaseGenerationPromptDraft({
@@ -32,6 +33,7 @@ export async function generateTestCases(input: {
     schema: TestCaseGenerationOutputSchema,
     system: promptDraft.systemPrompt,
     user: promptDraft.userPrompt,
+    maxTokens: 16000,
     metadata: {
       action: "test_case_generation.run",
       promptName: testCaseGenerationPrompt.name,
@@ -56,6 +58,7 @@ export async function generateTestCases(input: {
       provider: result.provider,
       model: result.model,
       promptVersion: testCaseGenerationPrompt.version,
+      testDesignOptions: promptDraft.testDesignOptions,
     },
   });
 
@@ -68,9 +71,11 @@ export function buildTestCaseGenerationPromptDraft(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
-  options: Record<string, unknown>;
+  options?: Partial<TestDesignOptions>;
 }) {
   const scope = assertProjectScope(input.scope);
+  const testDesignOptions = normalizeTestDesignOptions(input.options);
+  const systemPrompt = buildTestCaseGenerationSystemPrompt(input.options);
   const promptPayload = buildTestCaseGenerationMarkdownPrompt({
     currentProject: {
       azureProjectId: scope.azureProjectId,
@@ -80,7 +85,7 @@ export function buildTestCaseGenerationPromptDraft(input: {
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
-    options: input.options,
+    options: testDesignOptions,
     outputContract: testCaseOutputContract,
   });
 
@@ -88,13 +93,14 @@ export function buildTestCaseGenerationPromptDraft(input: {
     schemaName: "TestCaseGenerationOutput",
     promptName: testCaseGenerationPrompt.name,
     promptVersion: testCaseGenerationPrompt.version,
-    systemPrompt: testCaseGenerationPrompt.system,
+    systemPrompt,
     userPrompt: promptPayload.prompt,
     prompt: buildManualPromptMarkdown({
       title: "iTestFlow Test Case Design",
-      system: testCaseGenerationPrompt.system,
+      system: systemPrompt,
       user: promptPayload.prompt,
     }),
+    testDesignOptions,
     relevantProjectKnowledgeBase: promptPayload.relevantProjectKnowledgeBase,
   };
 }
