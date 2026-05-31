@@ -9,6 +9,7 @@ import { TestDesignOptionsRequestSchema } from "@/modules/test-case-design/test-
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
+import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 
 export const runtime = "nodejs";
 
@@ -17,6 +18,7 @@ const RequestSchema = z.object({
   targetWorkItemId: z.string().min(1),
   selectedContextIds: z.array(z.string()).optional().default([]),
   options: TestDesignOptionsRequestSchema.optional(),
+  extraInstructions: z.string().max(EXTRA_INSTRUCTIONS_MAX_LENGTH, `Extra Instructions must be ${EXTRA_INSTRUCTIONS_MAX_LENGTH} characters or fewer.`).optional(),
 });
 
 export async function POST(request: Request) {
@@ -60,6 +62,7 @@ export async function POST(request: Request) {
       selectedContext: autoContext.selectedContext,
       projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
       options,
+      extraInstructions: parsed.data.extraInstructions,
     });
 
     return NextResponse.json({

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, Copy, Loader2, Play, Plus, Send, Trash2, Users, X } from "lucide-react";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -25,6 +25,12 @@ import {
   type TargetTestCaseRangeId,
   type TestDesignOptions,
 } from "@/modules/test-case-design/test-design-options";
+import {
+  EXTRA_INSTRUCTIONS_HELPER_TEXT,
+  EXTRA_INSTRUCTIONS_MAX_LENGTH,
+  EXTRA_INSTRUCTIONS_WARNING_TEXT,
+  normalizeExtraInstructions,
+} from "@/modules/llm/extra-instructions";
 
 type ApiState<T> = {
   loading: boolean;
@@ -493,6 +499,7 @@ export function RequirementAnalysisClient() {
   const finalReviewCardRef = useRef<HTMLDivElement | null>(null);
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const [mode, setMode] = useState<WorkflowMode>("auto");
+  const [extraInstructions, setExtraInstructions] = useState("");
   const [enabledChecklistItemIds, setEnabledChecklistItemIds] = useState<RequirementAnalysisChecklistItemId[]>(() => [...allRequirementAnalysisChecklistItemIds]);
   const [analysis, setAnalysis] = useState<ApiState<RequirementAnalysisRunResult>>({
     loading: false,
@@ -526,6 +533,7 @@ export function RequirementAnalysisClient() {
     return projectUsers.filter((user) => selectedIds.has(user.id));
   }, [projectUsers, selectedMentionUserIds]);
   const checklistSelectionValid = enabledChecklistItemIds.length > 0;
+  const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
 
   useEffect(() => {
     setSelectedMentionUserIds([]);
@@ -558,6 +566,13 @@ export function RequirementAnalysisClient() {
     setManualResponse("");
     setManualSubmitError(null);
     setSelectedMentionUserIds([]);
+  }
+
+  function changeExtraInstructions(value: string) {
+    setExtraInstructions(value);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
   }
 
   function resetManualDraftForChecklistChange() {
@@ -601,12 +616,12 @@ export function RequirementAnalysisClient() {
   }
 
   async function runAnalysis() {
-    if (!scope || !targetWorkItemId || !checklistSelectionValid) return;
+    if (!scope || !targetWorkItemId || !checklistSelectionValid || !extraInstructionsValid) return;
     setAnalysis({ loading: true, error: null, data: null });
     try {
       const data = await postJson<RequirementAnalysisRunResult>(
         "/api/requirement-analysis/run",
-        { scope, targetWorkItemId, enabledChecklistItemIds },
+        { scope, targetWorkItemId, enabledChecklistItemIds, extraInstructions: normalizeExtraInstructions(extraInstructions) },
       );
       applyAnalysisResult(data);
     } catch (error) {
@@ -615,7 +630,7 @@ export function RequirementAnalysisClient() {
   }
 
   async function prepareManualPrompt() {
-    if (!scope || !targetWorkItemId || !checklistSelectionValid) return;
+    if (!scope || !targetWorkItemId || !checklistSelectionValid || !extraInstructionsValid) return;
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
@@ -624,6 +639,7 @@ export function RequirementAnalysisClient() {
         scope,
         targetWorkItemId,
         enabledChecklistItemIds,
+        extraInstructions: normalizeExtraInstructions(extraInstructions),
       });
       setManualDraft({ loading: false, error: null, data });
     } catch (error) {
@@ -747,17 +763,18 @@ export function RequirementAnalysisClient() {
           <div className="grid gap-4 lg:grid-cols-[240px_auto]">
             <TextInput value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="Work item ID, e.g. 1234" />
             {mode === "auto" ? (
-              <Button onClick={runAnalysis} disabled={!scope || !targetWorkItemId || analysis.loading || !checklistSelectionValid}>
+              <Button onClick={runAnalysis} disabled={!scope || !targetWorkItemId || analysis.loading || !checklistSelectionValid || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
                 {analysis.loading ? "Analyzing..." : "Analyze"}
               </Button>
             ) : (
-              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading || !checklistSelectionValid}>
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading || !checklistSelectionValid || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
                 {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
               </Button>
             )}
           </div>
+          <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
           <RequirementChecklistSelector
             selectedIds={enabledChecklistItemIds}
             onToggle={changeChecklistSelection}
@@ -1028,6 +1045,7 @@ export function TestCaseGenerationClient() {
   const generatedCasesRef = useRef<HTMLDivElement | null>(null);
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const [mode, setMode] = useState<WorkflowMode>("auto");
+  const [extraInstructions, setExtraInstructions] = useState("");
   const [state, setState] = useState<ApiState<TestCaseGenerationRunResult>>({ loading: false, error: null, data: null });
   const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
   const [manualResponse, setManualResponse] = useState("");
@@ -1053,9 +1071,17 @@ export function TestCaseGenerationClient() {
       (testDesignSettings.customMaxCases ?? 0) <= maxCustomTestCaseRange &&
       (testDesignSettings.customMinCases ?? 0) <= (testDesignSettings.customMaxCases ?? 0));
   const testDesignOptionsValid = coverageFocusSelectionValid && customRangeValid;
+  const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
 
   function changeTargetWorkItemId(value: string) {
     setTargetWorkItemId(value);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }
+
+  function changeExtraInstructions(value: string) {
+    setExtraInstructions(value);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
@@ -1129,13 +1155,14 @@ export function TestCaseGenerationClient() {
   }
 
   async function generate() {
-    if (!scope || !targetWorkItemId || !testDesignOptionsValid) return;
+    if (!scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
     setState({ loading: true, error: null, data: null });
     try {
       const data = await postJson<TestCaseGenerationRunResult>("/api/test-cases/generate", {
         scope,
         targetWorkItemId,
         options: buildTestDesignOptionsRequest(),
+        extraInstructions: normalizeExtraInstructions(extraInstructions),
       });
       applyGeneratedCases(data);
       scrollToNextStep(generatedCasesRef);
@@ -1145,7 +1172,7 @@ export function TestCaseGenerationClient() {
   }
 
   async function prepareManualPrompt() {
-    if (!scope || !targetWorkItemId || !testDesignOptionsValid) return;
+    if (!scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
@@ -1154,6 +1181,7 @@ export function TestCaseGenerationClient() {
         scope,
         targetWorkItemId,
         options: buildTestDesignOptionsRequest(),
+        extraInstructions: normalizeExtraInstructions(extraInstructions),
       });
       setManualDraft({ loading: false, error: null, data });
     } catch (error) {
@@ -1196,17 +1224,18 @@ export function TestCaseGenerationClient() {
           <div className="grid gap-4 lg:grid-cols-[240px_auto]">
             <TextInput value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="Work item ID" />
             {mode === "auto" ? (
-              <Button onClick={generate} disabled={!scope || !targetWorkItemId || state.loading || !testDesignOptionsValid}>
+              <Button onClick={generate} disabled={!scope || !targetWorkItemId || state.loading || !testDesignOptionsValid || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
                 {state.loading ? "Generating..." : "Generate"}
               </Button>
             ) : (
-              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading || !testDesignOptionsValid}>
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading || !testDesignOptionsValid || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
                 {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
               </Button>
             )}
           </div>
+          <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
           <TestDesignOptionsSelector
             settings={testDesignSettings}
             customRangeValid={customRangeValid}
@@ -1250,14 +1279,23 @@ export function ExistingTestCaseReviewClient() {
   const resultsRef = useRef<HTMLDivElement | null>(null);
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const [mode, setMode] = useState<WorkflowMode>("auto");
+  const [extraInstructions, setExtraInstructions] = useState("");
   const [state, setState] = useState<ApiState<ExistingReviewResult>>({ loading: false, error: null, data: null });
   const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
+  const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
 
   function changeTargetWorkItemId(value: string) {
     setTargetWorkItemId(value);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }
+
+  function changeExtraInstructions(value: string) {
+    setExtraInstructions(value);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
@@ -1276,12 +1314,13 @@ export function ExistingTestCaseReviewClient() {
   }
 
   async function review() {
-    if (!scope || !targetWorkItemId) return;
+    if (!scope || !targetWorkItemId || !extraInstructionsValid) return;
     setState({ loading: true, error: null, data: null });
     try {
       const data = await postJson<ExistingReviewResult>("/api/existing-test-case-review/run", {
         scope,
         targetWorkItemId,
+        extraInstructions: normalizeExtraInstructions(extraInstructions),
       });
       applyReviewResult(data);
       scrollToNextStep(resultsRef);
@@ -1291,7 +1330,7 @@ export function ExistingTestCaseReviewClient() {
   }
 
   async function prepareManualPrompt() {
-    if (!scope || !targetWorkItemId) return;
+    if (!scope || !targetWorkItemId || !extraInstructionsValid) return;
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
@@ -1299,6 +1338,7 @@ export function ExistingTestCaseReviewClient() {
       const data = await postJson<ManualPromptDraft>("/api/existing-test-case-review/manual/draft", {
         scope,
         targetWorkItemId,
+        extraInstructions: normalizeExtraInstructions(extraInstructions),
       });
       setManualDraft({ loading: false, error: null, data });
     } catch (error) {
@@ -1341,17 +1381,18 @@ export function ExistingTestCaseReviewClient() {
           <div className="grid gap-4 lg:grid-cols-[240px_auto]">
             <TextInput value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="User story ID" />
             {mode === "auto" ? (
-              <Button onClick={review} disabled={!scope || !targetWorkItemId || state.loading}>
+              <Button onClick={review} disabled={!scope || !targetWorkItemId || state.loading || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
                 {state.loading ? "Reviewing..." : "Auto Generate"}
               </Button>
             ) : (
-              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading}>
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
                 {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
               </Button>
             )}
           </div>
+          <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
           {mode === "manual" ? (
             <ManualLLMPanel
               draft={manualDraft.data}
@@ -2193,6 +2234,48 @@ function WorkflowModeTabs({ mode, onChange }: { mode: WorkflowMode; onChange: (m
       <button type="button" role="tab" aria-selected={mode === "manual"} className={itemClass("manual")} onClick={() => onChange("manual")}>
         External LLM
       </button>
+    </div>
+  );
+}
+
+function ExtraInstructionsField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const id = useId();
+  const overLimit = value.length > EXTRA_INSTRUCTIONS_MAX_LENGTH;
+  const showWarning = value.length > 0;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <label htmlFor={id} className="block text-sm font-semibold text-slate-950">
+            Extra Instructions
+          </label>
+          <p className="mt-1 text-xs leading-5 text-slate-500">{EXTRA_INSTRUCTIONS_HELPER_TEXT}</p>
+        </div>
+        <div className={`text-xs font-medium ${overLimit ? "text-red-700" : "text-slate-500"}`}>
+          {value.length} / {EXTRA_INSTRUCTIONS_MAX_LENGTH}
+        </div>
+      </div>
+      <TextArea
+        id={id}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        maxLength={EXTRA_INSTRUCTIONS_MAX_LENGTH}
+        aria-invalid={overLimit}
+        className="min-h-[120px]"
+        placeholder="Add optional instructions for this run."
+      />
+      {overLimit ? (
+        <div className="text-xs font-medium text-red-700">
+          Extra Instructions must be {EXTRA_INSTRUCTIONS_MAX_LENGTH} characters or fewer.
+        </div>
+      ) : null}
+      {showWarning ? (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs leading-5 text-amber-800 dark:text-amber-200">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{EXTRA_INSTRUCTIONS_WARNING_TEXT}</p>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -3,6 +3,7 @@ import "server-only";
 import type { NormalizedTestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import type { ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema";
 import type { LlmContextSource } from "@/modules/rag/project-context-store.service";
+import { renderExtraInstructionsSection } from "@/modules/llm/extra-instructions";
 
 type CurrentProjectPromptInput = {
   azureProjectId: string;
@@ -15,6 +16,7 @@ type MarkdownPromptInput = {
   relatedWorkItems?: unknown[];
   selectedContext?: unknown[];
   projectKnowledgeBase?: unknown | null;
+  extraInstructions?: string;
   outputContract: unknown;
 };
 
@@ -40,6 +42,7 @@ export function buildRequirementAnalysisMarkdownPrompt(input: MarkdownPromptInpu
       renderWorkItemCollection("Related Work Items", input.relatedWorkItems ?? []),
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
       renderProjectKnowledge(relevantKnowledge),
+      renderExtraInstructionsSection(input.extraInstructions),
       renderOutputContract(input.outputContract),
     ]
       .filter(Boolean)
@@ -73,6 +76,7 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
       renderTestDesignOptions(input.options ?? {}),
       renderCoverageExpectations(),
       renderProjectKnowledge(relevantKnowledge),
+      renderExtraInstructionsSection(input.extraInstructions),
       renderOutputContract(input.outputContract),
     ]
       .filter(Boolean)
@@ -105,6 +109,7 @@ export function buildExistingTestCaseReviewMarkdownPrompt(input: MarkdownPromptI
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
       renderExistingCoverageReviewInstructions(),
       renderProjectKnowledge(relevantKnowledge),
+      renderExtraInstructionsSection(input.extraInstructions),
       renderOutputContract(input.outputContract),
     ]
       .filter(Boolean)

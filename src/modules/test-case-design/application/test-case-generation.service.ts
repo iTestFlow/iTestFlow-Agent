@@ -18,6 +18,7 @@ export async function generateTestCases(input: {
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
   options?: Partial<TestDesignOptions>;
+  extraInstructions?: string;
 }) {
   const scope = assertProjectScope(input.scope);
   const promptDraft = buildTestCaseGenerationPromptDraft({
@@ -27,6 +28,7 @@ export async function generateTestCases(input: {
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
     options: input.options,
+    extraInstructions: input.extraInstructions,
   });
   const result = await input.provider.generateStructuredOutput({
     schemaName: promptDraft.schemaName,
@@ -72,6 +74,7 @@ export function buildTestCaseGenerationPromptDraft(input: {
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
   options?: Partial<TestDesignOptions>;
+  extraInstructions?: string;
 }) {
   const scope = assertProjectScope(input.scope);
   const testDesignOptions = normalizeTestDesignOptions(input.options);
@@ -86,6 +89,7 @@ export function buildTestCaseGenerationPromptDraft(input: {
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
     options: testDesignOptions,
+    extraInstructions: input.extraInstructions,
     outputContract: testCaseOutputContract,
   });
 
