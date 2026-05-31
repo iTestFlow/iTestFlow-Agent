@@ -17,6 +17,7 @@ export async function reviewExistingLinkedTestCases(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  extraInstructions?: string;
 }) {
   const scope = assertProjectScope(input.scope);
   const promptDraft = buildExistingTestCaseReviewPromptDraft({
@@ -26,6 +27,7 @@ export async function reviewExistingLinkedTestCases(input: {
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
+    extraInstructions: input.extraInstructions,
   });
   const result = await input.provider.generateStructuredOutput({
     schemaName: promptDraft.schemaName,
@@ -70,6 +72,7 @@ export function buildExistingTestCaseReviewPromptDraft(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  extraInstructions?: string;
 }) {
   const scope = assertProjectScope(input.scope);
   const promptPayload = buildExistingTestCaseReviewMarkdownPrompt({
@@ -82,6 +85,7 @@ export function buildExistingTestCaseReviewPromptDraft(input: {
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
+    extraInstructions: input.extraInstructions,
     outputContract: existingTestCaseReviewOutputContract,
   });
 

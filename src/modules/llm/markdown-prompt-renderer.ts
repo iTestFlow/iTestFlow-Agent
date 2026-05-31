@@ -1,7 +1,9 @@
 import "server-only";
 
+import type { NormalizedTestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import type { ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema";
 import type { LlmContextSource } from "@/modules/rag/project-context-store.service";
+import { renderExtraInstructionsSection } from "@/modules/llm/extra-instructions";
 
 type CurrentProjectPromptInput = {
   azureProjectId: string;
@@ -14,6 +16,7 @@ type MarkdownPromptInput = {
   relatedWorkItems?: unknown[];
   selectedContext?: unknown[];
   projectKnowledgeBase?: unknown | null;
+  extraInstructions?: string;
   outputContract: unknown;
 };
 
@@ -39,6 +42,7 @@ export function buildRequirementAnalysisMarkdownPrompt(input: MarkdownPromptInpu
       renderWorkItemCollection("Related Work Items", input.relatedWorkItems ?? []),
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
       renderProjectKnowledge(relevantKnowledge),
+      renderExtraInstructionsSection(input.extraInstructions),
       renderOutputContract(input.outputContract),
     ]
       .filter(Boolean)
@@ -47,7 +51,7 @@ export function buildRequirementAnalysisMarkdownPrompt(input: MarkdownPromptInpu
   };
 }
 
-export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput & { options?: Record<string, unknown> }) {
+export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput & { options?: Record<string, unknown> | NormalizedTestDesignOptions }) {
   const relevantKnowledge = selectRelevantProjectKnowledge({
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
@@ -72,6 +76,7 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
       renderTestDesignOptions(input.options ?? {}),
       renderCoverageExpectations(),
       renderProjectKnowledge(relevantKnowledge),
+      renderExtraInstructionsSection(input.extraInstructions),
       renderOutputContract(input.outputContract),
     ]
       .filter(Boolean)
@@ -104,6 +109,7 @@ export function buildExistingTestCaseReviewMarkdownPrompt(input: MarkdownPromptI
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
       renderExistingCoverageReviewInstructions(),
       renderProjectKnowledge(relevantKnowledge),
+      renderExtraInstructionsSection(input.extraInstructions),
       renderOutputContract(input.outputContract),
     ]
       .filter(Boolean)
@@ -206,12 +212,33 @@ function renderWorkItem(value: unknown, headingLevel: number) {
   return lines.join("\n");
 }
 
-function renderTestDesignOptions(options: Record<string, unknown>) {
+function renderTestDesignOptions(options: Record<string, unknown> | NormalizedTestDesignOptions) {
+  if (isNormalizedTestDesignOptions(options)) {
+    return [
+      "# Test Design Options",
+      `- Target Test Case Range: ${options.targetTestCaseRangeLabel}`,
+      `- Target test case range: ${options.minCases}-${options.maxCases}`,
+      "- Coverage Focus:",
+      ...options.coverageFocusLabels.map((label) => `  - ${label}`),
+      "",
+      "Only the Coverage Focus items listed above are selected for this run.",
+    ].join("\n");
+  }
+
   const entries = Object.entries(options).filter(([, value]) => value !== undefined && value !== null && value !== "");
   return [
     "# Test Design Options",
     entries.length ? entries.map(([key, value]) => `- ${key}: ${formatScalar(value)}`).join("\n") : "No additional test design options were supplied.",
   ].join("\n\n");
+}
+
+function isNormalizedTestDesignOptions(value: Record<string, unknown> | NormalizedTestDesignOptions): value is NormalizedTestDesignOptions {
+  return (
+    typeof value.targetTestCaseRangeLabel === "string" &&
+    typeof value.minCases === "number" &&
+    typeof value.maxCases === "number" &&
+    Array.isArray(value.coverageFocusLabels)
+  );
 }
 
 function renderCoverageExpectations() {

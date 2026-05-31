@@ -6,6 +6,7 @@ import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.se
 import { resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 
 export const runtime = "nodejs";
 
@@ -13,13 +14,14 @@ const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   targetWorkItemId: z.string().min(1),
   selectedContextIds: z.array(z.string()).optional().default([]),
+  extraInstructions: z.string().max(EXTRA_INSTRUCTIONS_MAX_LENGTH, `Extra Instructions must be ${EXTRA_INSTRUCTIONS_MAX_LENGTH} characters or fewer.`).optional(),
 });
 
 export async function POST(request: Request) {
   const parsed = RequestSchema.safeParse(await request.json());
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Please select an Azure DevOps project and target user story before preparing the prompt." },
+      { error: parsed.error.issues[0]?.message ?? "Please select an Azure DevOps project and target user story before preparing the prompt." },
       { status: 400 },
     );
   }
@@ -48,6 +50,7 @@ export async function POST(request: Request) {
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
       projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      extraInstructions: parsed.data.extraInstructions,
     });
 
     return NextResponse.json({

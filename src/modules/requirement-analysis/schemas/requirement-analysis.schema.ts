@@ -1,17 +1,19 @@
 import { z } from "zod";
 import { ContextUsedSchema } from "@/modules/llm/context-used";
+import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
 
-export const RequirementFindingTypeSchema = z.enum([
+export const RequirementIssueTypeSchema = z.enum([
   "ambiguity",
   "conflict",
   "missing_requirement",
   "incomplete_criteria",
   "inconsistency",
-  "security_concern",
-  "performance_concern",
-  "ux_issue",
-  "dependency_issue",
-  "business_rule_violation",
+  "non_testable_requirement",
+  "unsupported_assumption",
+  "unhandled_edge_case",
+  "ownership_gap",
+  "traceability_gap",
+  "risk_gap",
 ]);
 
 export const RequirementFindingSeveritySchema = z.enum(["critical", "high", "medium", "low", "info"]);
@@ -26,7 +28,8 @@ export const RequirementFindingReferenceSchema = z.object({
 
 export const RequirementAnalysisFindingSchema = z.object({
   id: z.string(),
-  type: RequirementFindingTypeSchema,
+  checklistItemId: z.enum(requirementAnalysisChecklistItemIdValues),
+  issueType: RequirementIssueTypeSchema,
   severity: RequirementFindingSeveritySchema,
   title: z.string(),
   description: z.string(),
@@ -36,7 +39,7 @@ export const RequirementAnalysisFindingSchema = z.object({
   affectedAreas: z.array(z.string()).default([]),
   references: z.array(RequirementFindingReferenceSchema).default([]),
   contradiction: z.boolean().default(false),
-});
+}).strict();
 
 export const RequirementAnalysisSummarySchema = z.object({
   totalFindings: z.number().int().min(0),

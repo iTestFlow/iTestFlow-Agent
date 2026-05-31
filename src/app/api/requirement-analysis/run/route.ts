@@ -7,6 +7,8 @@ import { runRequirementAnalysis } from "@/modules/requirement-analysis/applicati
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
+import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
+import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 
 export const runtime = "nodejs";
 
@@ -14,13 +16,23 @@ const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   targetWorkItemId: z.string().min(1),
   selectedContextIds: z.array(z.string()).optional().default([]),
+  extraInstructions: z.string().max(EXTRA_INSTRUCTIONS_MAX_LENGTH, `Extra Instructions must be ${EXTRA_INSTRUCTIONS_MAX_LENGTH} characters or fewer.`).optional(),
+  enabledChecklistItemIds: z
+    .array(z.enum(requirementAnalysisChecklistItemIdValues))
+    .min(1, "Select at least one requirement analysis checklist item.")
+    .optional(),
 });
 
 export async function POST(request: Request) {
   try {
     const parsed = RequestSchema.safeParse(await request.json());
     if (!parsed.success) {
-      return NextResponse.json({ error: "Please select an Azure DevOps project before running this action." }, { status: 400 });
+      const checklistError = parsed.error.issues.find((issue) => issue.path[0] === "enabledChecklistItemIds");
+      const extraInstructionsError = parsed.error.issues.find((issue) => issue.path[0] === "extraInstructions");
+      return NextResponse.json(
+        { error: checklistError?.message ?? extraInstructionsError?.message ?? "Please select an Azure DevOps project before running this action." },
+        { status: 400 },
+      );
     }
 
     const adapter = getConfiguredAzureDevOpsAdapter();
@@ -52,6 +64,8 @@ export async function POST(request: Request) {
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
       projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      enabledChecklistItemIds: parsed.data.enabledChecklistItemIds,
+      extraInstructions: parsed.data.extraInstructions,
     });
 
     return NextResponse.json({
@@ -59,6 +73,7 @@ export async function POST(request: Request) {
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: autoContext.contextUsed,
       retrievalTopK: autoContext.retrievalTopK,
+      enabledChecklistItemIds: result.enabledChecklistItemIds,
       provider: result.provider,
       model: result.model,
       rawOutput: result.rawOutput,

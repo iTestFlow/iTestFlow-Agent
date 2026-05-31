@@ -57,7 +57,9 @@ function requiredOutputShape(schemaName: string) {
       findings: [
         {
           id: "string",
-          type: "ambiguity | conflict | missing_requirement | incomplete_criteria | inconsistency | security_concern | performance_concern | ux_issue | dependency_issue | business_rule_violation",
+          checklistItemId: "string",
+          issueType:
+            "ambiguity | conflict | missing_requirement | incomplete_criteria | inconsistency | non_testable_requirement | unsupported_assumption | unhandled_edge_case | ownership_gap | traceability_gap | risk_gap",
           severity: "critical | high | medium | low | info",
           title: "string",
           description: "string",

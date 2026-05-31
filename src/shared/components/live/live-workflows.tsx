@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, Copy, Loader2, Play, Plus, Send, Trash2, Users, X } from "lucide-react";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -10,6 +10,27 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge, Button, Card, CardHeader, SelectInput, TextArea, TextInput } from "@/shared/components/ui";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import {
+  allRequirementAnalysisChecklistItemIds,
+  requirementAnalysisChecklistOptions,
+  type RequirementAnalysisChecklistItemId,
+} from "@/modules/requirement-analysis/checklist-options";
+import {
+  allCoverageFocusIds,
+  coverageFocusOptions,
+  defaultTestDesignOptions,
+  maxCustomTestCaseRange,
+  targetTestCaseRangeOptions,
+  type CoverageFocusId,
+  type TargetTestCaseRangeId,
+  type TestDesignOptions,
+} from "@/modules/test-case-design/test-design-options";
+import {
+  EXTRA_INSTRUCTIONS_HELPER_TEXT,
+  EXTRA_INSTRUCTIONS_MAX_LENGTH,
+  EXTRA_INSTRUCTIONS_WARNING_TEXT,
+  normalizeExtraInstructions,
+} from "@/modules/llm/extra-instructions";
 
 type ApiState<T> = {
   loading: boolean;
@@ -19,7 +40,8 @@ type ApiState<T> = {
 
 type RequirementFinding = {
   id: string;
-  type: string;
+  checklistItemId: RequirementAnalysisChecklistItemId;
+  issueType: string;
   severity: "critical" | "high" | "medium" | "low" | "info";
   title: string;
   description: string;
@@ -50,6 +72,7 @@ type RequirementAnalysisRunResult = {
   summary: RequirementSummary;
   recommendations: string[];
   contextUsed: string[];
+  enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   resolvedContextUsed?: unknown[];
 };
 
@@ -81,6 +104,7 @@ type TestCaseGenerationRunResult = {
   summary: TestCaseSummary;
   contextUsed: string[];
   resolvedContextUsed?: unknown[];
+  options?: TestDesignOptions;
 };
 
 type WorkflowMode = "auto" | "manual";
@@ -88,6 +112,8 @@ type WorkflowMode = "auto" | "manual";
 type ManualPromptDraft = {
   prompt: string;
   promptVersion: string;
+  enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
+  options?: TestDesignOptions;
   selectedContextIds?: string[];
   resolvedContextUsed?: unknown[];
   retrievalTopK?: number;
@@ -362,6 +388,10 @@ function severityMarker(value: RequirementFinding["severity"]) {
   return `[${formatEnumLabel(value)}]`;
 }
 
+function checklistItemTitle(checklistItemId: RequirementAnalysisChecklistItemId) {
+  return requirementAnalysisChecklistOptions.find((checklistItem) => checklistItem.id === checklistItemId)?.title ?? formatEnumLabel(checklistItemId);
+}
+
 function qualityTone(value: string) {
   if (value === "excellent" || value === "good") return "emerald" as const;
   if (value === "fair") return "amber" as const;
@@ -469,6 +499,8 @@ export function RequirementAnalysisClient() {
   const finalReviewCardRef = useRef<HTMLDivElement | null>(null);
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const [mode, setMode] = useState<WorkflowMode>("auto");
+  const [extraInstructions, setExtraInstructions] = useState("");
+  const [enabledChecklistItemIds, setEnabledChecklistItemIds] = useState<RequirementAnalysisChecklistItemId[]>(() => [...allRequirementAnalysisChecklistItemIds]);
   const [analysis, setAnalysis] = useState<ApiState<RequirementAnalysisRunResult>>({
     loading: false,
     error: null,
@@ -500,6 +532,8 @@ export function RequirementAnalysisClient() {
     const selectedIds = new Set(selectedMentionUserIds);
     return projectUsers.filter((user) => selectedIds.has(user.id));
   }, [projectUsers, selectedMentionUserIds]);
+  const checklistSelectionValid = enabledChecklistItemIds.length > 0;
+  const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
 
   useEffect(() => {
     setSelectedMentionUserIds([]);
@@ -534,6 +568,42 @@ export function RequirementAnalysisClient() {
     setSelectedMentionUserIds([]);
   }
 
+  function changeExtraInstructions(value: string) {
+    setExtraInstructions(value);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }
+
+  function resetManualDraftForChecklistChange() {
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }
+
+  function changeChecklistSelection(checklistItemId: RequirementAnalysisChecklistItemId, checked: boolean) {
+    setEnabledChecklistItemIds((current) => {
+      const nextIds = new Set(current);
+      if (checked) {
+        nextIds.add(checklistItemId);
+      } else {
+        nextIds.delete(checklistItemId);
+      }
+      return allRequirementAnalysisChecklistItemIds.filter((id) => nextIds.has(id));
+    });
+    resetManualDraftForChecklistChange();
+  }
+
+  function selectAllChecklistItems() {
+    setEnabledChecklistItemIds([...allRequirementAnalysisChecklistItemIds]);
+    resetManualDraftForChecklistChange();
+  }
+
+  function clearAllChecklistItems() {
+    setEnabledChecklistItemIds([]);
+    resetManualDraftForChecklistChange();
+  }
+
   function applyAnalysisResult(data: RequirementAnalysisRunResult) {
     setAnalysis({ loading: false, error: null, data });
     setSelectedFindings(Object.fromEntries(data.findings.map((finding) => [finding.id, true])));
@@ -546,12 +616,12 @@ export function RequirementAnalysisClient() {
   }
 
   async function runAnalysis() {
-    if (!scope || !targetWorkItemId) return;
+    if (!scope || !targetWorkItemId || !checklistSelectionValid || !extraInstructionsValid) return;
     setAnalysis({ loading: true, error: null, data: null });
     try {
       const data = await postJson<RequirementAnalysisRunResult>(
         "/api/requirement-analysis/run",
-        { scope, targetWorkItemId },
+        { scope, targetWorkItemId, enabledChecklistItemIds, extraInstructions: normalizeExtraInstructions(extraInstructions) },
       );
       applyAnalysisResult(data);
     } catch (error) {
@@ -560,7 +630,7 @@ export function RequirementAnalysisClient() {
   }
 
   async function prepareManualPrompt() {
-    if (!scope || !targetWorkItemId) return;
+    if (!scope || !targetWorkItemId || !checklistSelectionValid || !extraInstructionsValid) return;
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
@@ -568,6 +638,8 @@ export function RequirementAnalysisClient() {
       const data = await postJson<ManualPromptDraft>("/api/requirement-analysis/manual/draft", {
         scope,
         targetWorkItemId,
+        enabledChecklistItemIds,
+        extraInstructions: normalizeExtraInstructions(extraInstructions),
       });
       setManualDraft({ loading: false, error: null, data });
     } catch (error) {
@@ -584,6 +656,7 @@ export function RequirementAnalysisClient() {
         scope,
         targetWorkItemId,
         rawOutput: manualResponse,
+        enabledChecklistItemIds: manualDraft.data.enabledChecklistItemIds ?? enabledChecklistItemIds,
         selectedContextIds: manualDraft.data.selectedContextIds ?? [],
         resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
         retrievalTopK: manualDraft.data.retrievalTopK,
@@ -608,7 +681,8 @@ export function RequirementAnalysisClient() {
       ...selectedFindingList.map((finding) => [
         `### ${severityMarker(finding.severity)} ${finding.title}`,
         finding.description,
-        `**Type:** ${formatEnumLabel(finding.type)}`,
+        `**Checklist:** ${checklistItemTitle(finding.checklistItemId)}`,
+        `**Issue Type:** ${formatEnumLabel(finding.issueType)}`,
         `**Risk:** ${formatEnumLabel(finding.riskLevel)} - ${finding.riskJustification}`,
         `**Suggested resolution:** ${finding.suggestion}`, "---",
       ].join("\n\n")),
@@ -689,17 +763,24 @@ export function RequirementAnalysisClient() {
           <div className="grid gap-4 lg:grid-cols-[240px_auto]">
             <TextInput value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="Work item ID, e.g. 1234" />
             {mode === "auto" ? (
-              <Button onClick={runAnalysis} disabled={!scope || !targetWorkItemId || analysis.loading}>
+              <Button onClick={runAnalysis} disabled={!scope || !targetWorkItemId || analysis.loading || !checklistSelectionValid || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
                 {analysis.loading ? "Analyzing..." : "Analyze"}
               </Button>
             ) : (
-              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading}>
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading || !checklistSelectionValid || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
                 {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
               </Button>
             )}
           </div>
+          <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
+          <RequirementChecklistSelector
+            selectedIds={enabledChecklistItemIds}
+            onToggle={changeChecklistSelection}
+            onSelectAll={selectAllChecklistItems}
+            onClearAll={clearAllChecklistItems}
+          />
           {mode === "manual" ? (
             <ManualLLMPanel
               draft={manualDraft.data}
@@ -728,7 +809,7 @@ export function RequirementAnalysisClient() {
             </div>
             <div className="divide-y">
               {sortedFindingList.map((finding) => (
-                <div key={finding.id} className="grid gap-4 p-4 xl:grid-cols-[32px_150px_minmax(0,1fr)_minmax(260px,0.85fr)]">
+                <div key={finding.id} className="grid gap-4 p-4 xl:grid-cols-[32px_240px_minmax(0,1fr)_minmax(260px,0.85fr)]">
                   <input
                     type="checkbox"
                     checked={Boolean(selectedFindings[finding.id])}
@@ -738,7 +819,8 @@ export function RequirementAnalysisClient() {
                   />
                   <div>
                     <Badge tone={severityTone(finding.severity)}>{formatEnumLabel(finding.severity)}</Badge>
-                    <div className="mt-2 text-xs font-medium text-slate-500">{formatEnumLabel(finding.type)}</div>
+                    <div className="mt-2 text-xs font-medium text-slate-600">{checklistItemTitle(finding.checklistItemId)}</div>
+                    <div className="mt-1 text-xs text-slate-500">Issue Type: {formatEnumLabel(finding.issueType)}</div>
                   </div>
                   <div>
                     <div className="font-medium">{finding.title}</div>
@@ -963,18 +1045,107 @@ export function TestCaseGenerationClient() {
   const generatedCasesRef = useRef<HTMLDivElement | null>(null);
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const [mode, setMode] = useState<WorkflowMode>("auto");
+  const [extraInstructions, setExtraInstructions] = useState("");
   const [state, setState] = useState<ApiState<TestCaseGenerationRunResult>>({ loading: false, error: null, data: null });
   const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
   const [testCases, setTestCases] = useState<GeneratedTestCase[]>([]);
+  const [testDesignSettings, setTestDesignSettings] = useState<TestDesignOptions>(() => ({
+    ...defaultTestDesignOptions,
+    coverageFocusIds: [...defaultTestDesignOptions.coverageFocusIds],
+  }));
+  const selectedTargetRangeOption = useMemo(
+    () =>
+      targetTestCaseRangeOptions.find((option) => option.id === testDesignSettings.targetTestCaseRange) ??
+      targetTestCaseRangeOptions[0],
+    [testDesignSettings.targetTestCaseRange],
+  );
+  const coverageFocusSelectionValid = testDesignSettings.coverageFocusIds.length > 0;
+  const customRangeValid =
+    testDesignSettings.targetTestCaseRange !== "custom" ||
+    (Number.isInteger(testDesignSettings.customMinCases) &&
+      Number.isInteger(testDesignSettings.customMaxCases) &&
+      (testDesignSettings.customMinCases ?? 0) >= 1 &&
+      (testDesignSettings.customMaxCases ?? 0) <= maxCustomTestCaseRange &&
+      (testDesignSettings.customMinCases ?? 0) <= (testDesignSettings.customMaxCases ?? 0));
+  const testDesignOptionsValid = coverageFocusSelectionValid && customRangeValid;
+  const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
 
   function changeTargetWorkItemId(value: string) {
     setTargetWorkItemId(value);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
+  }
+
+  function changeExtraInstructions(value: string) {
+    setExtraInstructions(value);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }
+
+  function resetManualDraftForTestDesignOptionsChange() {
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }
+
+  function changeTargetTestCaseRange(targetTestCaseRange: TargetTestCaseRangeId) {
+    const nextRangeOption = targetTestCaseRangeOptions.find((option) => option.id === targetTestCaseRange) ?? selectedTargetRangeOption;
+    setTestDesignSettings((current) => ({
+      ...current,
+      targetTestCaseRange,
+      customMinCases: targetTestCaseRange === "custom" ? current.customMinCases ?? nextRangeOption.minCases : undefined,
+      customMaxCases: targetTestCaseRange === "custom" ? current.customMaxCases ?? nextRangeOption.maxCases : undefined,
+    }));
+    resetManualDraftForTestDesignOptionsChange();
+  }
+
+  function changeCustomRange(field: "customMinCases" | "customMaxCases", value: string) {
+    const parsed = value ? Number(value) : undefined;
+    setTestDesignSettings((current) => ({
+      ...current,
+      [field]: Number.isFinite(parsed) ? parsed : undefined,
+    }));
+    resetManualDraftForTestDesignOptionsChange();
+  }
+
+  function changeCoverageFocusSelection(focusId: CoverageFocusId, checked: boolean) {
+    setTestDesignSettings((current) => {
+      const nextIds = new Set(current.coverageFocusIds);
+      if (checked) {
+        nextIds.add(focusId);
+      } else {
+        nextIds.delete(focusId);
+      }
+      return {
+        ...current,
+        coverageFocusIds: allCoverageFocusIds.filter((id) => nextIds.has(id)),
+      };
+    });
+    resetManualDraftForTestDesignOptionsChange();
+  }
+
+  function selectAllCoverageFocusItems() {
+    setTestDesignSettings((current) => ({ ...current, coverageFocusIds: [...allCoverageFocusIds] }));
+    resetManualDraftForTestDesignOptionsChange();
+  }
+
+  function clearAllCoverageFocusItems() {
+    setTestDesignSettings((current) => ({ ...current, coverageFocusIds: [] }));
+    resetManualDraftForTestDesignOptionsChange();
+  }
+
+  function buildTestDesignOptionsRequest(): TestDesignOptions {
+    return {
+      targetTestCaseRange: testDesignSettings.targetTestCaseRange,
+      customMinCases: testDesignSettings.targetTestCaseRange === "custom" ? testDesignSettings.customMinCases : undefined,
+      customMaxCases: testDesignSettings.targetTestCaseRange === "custom" ? testDesignSettings.customMaxCases : undefined,
+      coverageFocusIds: testDesignSettings.coverageFocusIds,
+    };
   }
 
   function applyGeneratedCases(data: TestCaseGenerationRunResult) {
@@ -984,13 +1155,14 @@ export function TestCaseGenerationClient() {
   }
 
   async function generate() {
-    if (!scope || !targetWorkItemId) return;
+    if (!scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
     setState({ loading: true, error: null, data: null });
     try {
       const data = await postJson<TestCaseGenerationRunResult>("/api/test-cases/generate", {
         scope,
         targetWorkItemId,
-        options: { depth: "balanced" },
+        options: buildTestDesignOptionsRequest(),
+        extraInstructions: normalizeExtraInstructions(extraInstructions),
       });
       applyGeneratedCases(data);
       scrollToNextStep(generatedCasesRef);
@@ -1000,7 +1172,7 @@ export function TestCaseGenerationClient() {
   }
 
   async function prepareManualPrompt() {
-    if (!scope || !targetWorkItemId) return;
+    if (!scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
@@ -1008,7 +1180,8 @@ export function TestCaseGenerationClient() {
       const data = await postJson<ManualPromptDraft>("/api/test-cases/manual/draft", {
         scope,
         targetWorkItemId,
-        options: { depth: "balanced" },
+        options: buildTestDesignOptionsRequest(),
+        extraInstructions: normalizeExtraInstructions(extraInstructions),
       });
       setManualDraft({ loading: false, error: null, data });
     } catch (error) {
@@ -1051,17 +1224,28 @@ export function TestCaseGenerationClient() {
           <div className="grid gap-4 lg:grid-cols-[240px_auto]">
             <TextInput value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="Work item ID" />
             {mode === "auto" ? (
-              <Button onClick={generate} disabled={!scope || !targetWorkItemId || state.loading}>
+              <Button onClick={generate} disabled={!scope || !targetWorkItemId || state.loading || !testDesignOptionsValid || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
                 {state.loading ? "Generating..." : "Generate"}
               </Button>
             ) : (
-              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading}>
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading || !testDesignOptionsValid || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
                 {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
               </Button>
             )}
           </div>
+          <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
+          <TestDesignOptionsSelector
+            settings={testDesignSettings}
+            customRangeValid={customRangeValid}
+            coverageFocusSelectionValid={coverageFocusSelectionValid}
+            onTargetRangeChange={changeTargetTestCaseRange}
+            onCustomRangeChange={changeCustomRange}
+            onCoverageFocusToggle={changeCoverageFocusSelection}
+            onSelectAllCoverageFocus={selectAllCoverageFocusItems}
+            onClearAllCoverageFocus={clearAllCoverageFocusItems}
+          />
           {mode === "manual" ? (
             <ManualLLMPanel
               draft={manualDraft.data}
@@ -1095,14 +1279,23 @@ export function ExistingTestCaseReviewClient() {
   const resultsRef = useRef<HTMLDivElement | null>(null);
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const [mode, setMode] = useState<WorkflowMode>("auto");
+  const [extraInstructions, setExtraInstructions] = useState("");
   const [state, setState] = useState<ApiState<ExistingReviewResult>>({ loading: false, error: null, data: null });
   const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
+  const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
 
   function changeTargetWorkItemId(value: string) {
     setTargetWorkItemId(value);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }
+
+  function changeExtraInstructions(value: string) {
+    setExtraInstructions(value);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
@@ -1121,12 +1314,13 @@ export function ExistingTestCaseReviewClient() {
   }
 
   async function review() {
-    if (!scope || !targetWorkItemId) return;
+    if (!scope || !targetWorkItemId || !extraInstructionsValid) return;
     setState({ loading: true, error: null, data: null });
     try {
       const data = await postJson<ExistingReviewResult>("/api/existing-test-case-review/run", {
         scope,
         targetWorkItemId,
+        extraInstructions: normalizeExtraInstructions(extraInstructions),
       });
       applyReviewResult(data);
       scrollToNextStep(resultsRef);
@@ -1136,7 +1330,7 @@ export function ExistingTestCaseReviewClient() {
   }
 
   async function prepareManualPrompt() {
-    if (!scope || !targetWorkItemId) return;
+    if (!scope || !targetWorkItemId || !extraInstructionsValid) return;
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
@@ -1144,6 +1338,7 @@ export function ExistingTestCaseReviewClient() {
       const data = await postJson<ManualPromptDraft>("/api/existing-test-case-review/manual/draft", {
         scope,
         targetWorkItemId,
+        extraInstructions: normalizeExtraInstructions(extraInstructions),
       });
       setManualDraft({ loading: false, error: null, data });
     } catch (error) {
@@ -1186,17 +1381,18 @@ export function ExistingTestCaseReviewClient() {
           <div className="grid gap-4 lg:grid-cols-[240px_auto]">
             <TextInput value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="User story ID" />
             {mode === "auto" ? (
-              <Button onClick={review} disabled={!scope || !targetWorkItemId || state.loading}>
+              <Button onClick={review} disabled={!scope || !targetWorkItemId || state.loading || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
                 {state.loading ? "Reviewing..." : "Auto Generate"}
               </Button>
             ) : (
-              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading}>
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
                 {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
               </Button>
             )}
           </div>
+          <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
           {mode === "manual" ? (
             <ManualLLMPanel
               draft={manualDraft.data}
@@ -1845,6 +2041,185 @@ export function PublishTestCasesClient() {
   );
 }
 
+function TestDesignOptionsSelector({
+  settings,
+  customRangeValid,
+  coverageFocusSelectionValid,
+  onTargetRangeChange,
+  onCustomRangeChange,
+  onCoverageFocusToggle,
+  onSelectAllCoverageFocus,
+  onClearAllCoverageFocus,
+}: {
+  settings: TestDesignOptions;
+  customRangeValid: boolean;
+  coverageFocusSelectionValid: boolean;
+  onTargetRangeChange: (targetTestCaseRange: TargetTestCaseRangeId) => void;
+  onCustomRangeChange: (field: "customMinCases" | "customMaxCases", value: string) => void;
+  onCoverageFocusToggle: (focusId: CoverageFocusId, checked: boolean) => void;
+  onSelectAllCoverageFocus: () => void;
+  onClearAllCoverageFocus: () => void;
+}) {
+  const selectedFocusIdSet = useMemo(() => new Set(settings.coverageFocusIds), [settings.coverageFocusIds]);
+  const allSelected = settings.coverageFocusIds.length === allCoverageFocusIds.length;
+  const noneSelected = settings.coverageFocusIds.length === 0;
+
+  return (
+    <div className="rounded-md border border-[#c8d4e4] bg-[#f8fafc] p-4">
+      <div className="grid gap-4 lg:grid-cols-[minmax(240px,320px)_1fr]">
+        <div className="space-y-3">
+          <div>
+            <div className="text-sm font-semibold text-slate-950">Target Test Case Range</div>
+            <div className="mt-2">
+              <SelectInput
+                value={settings.targetTestCaseRange}
+                onChange={(event) => onTargetRangeChange(event.target.value as TargetTestCaseRangeId)}
+              >
+                {targetTestCaseRangeOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.id === "custom" ? option.label : `${option.label} (${option.minCases}-${option.maxCases})`}
+                  </option>
+                ))}
+              </SelectInput>
+            </div>
+          </div>
+
+          {settings.targetTestCaseRange === "custom" ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-xs font-semibold text-slate-600">
+                Minimum
+                <TextInput
+                  type="number"
+                  min={1}
+                  max={maxCustomTestCaseRange}
+                  value={settings.customMinCases ?? ""}
+                  onChange={(event) => onCustomRangeChange("customMinCases", event.target.value)}
+                  className="mt-1"
+                />
+              </label>
+              <label className="text-xs font-semibold text-slate-600">
+                Maximum
+                <TextInput
+                  type="number"
+                  min={1}
+                  max={maxCustomTestCaseRange}
+                  value={settings.customMaxCases ?? ""}
+                  onChange={(event) => onCustomRangeChange("customMaxCases", event.target.value)}
+                  className="mt-1"
+                />
+              </label>
+            </div>
+          ) : null}
+
+          {!customRangeValid ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Custom range must be between 1 and {maxCustomTestCaseRange}, with minimum not greater than maximum.
+            </div>
+          ) : null}
+        </div>
+
+        <div>
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-slate-950">Coverage Focus Rules</div>
+              <div className="text-xs text-slate-500">
+                {settings.coverageFocusIds.length} of {allCoverageFocusIds.length} selected
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={onSelectAllCoverageFocus} disabled={allSelected} className="h-8 px-3 text-xs">
+                Select all
+              </Button>
+              <Button variant="ghost" onClick={onClearAllCoverageFocus} disabled={noneSelected} className="h-8 px-3 text-xs">
+                Clear all
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {coverageFocusOptions.map((focusItem) => {
+              const checked = selectedFocusIdSet.has(focusItem.id);
+              return (
+                <label
+                  key={focusItem.id}
+                  className="flex min-h-12 cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-blue-200 hover:bg-blue-50"
+                >
+                  <Checkbox checked={checked} onCheckedChange={(value) => onCoverageFocusToggle(focusItem.id, value === true)} aria-label={focusItem.title} />
+                  <span className="leading-5">{focusItem.title}</span>
+                </label>
+              );
+            })}
+          </div>
+
+          {!coverageFocusSelectionValid ? (
+            <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Select at least one Coverage Focus item to generate or prepare the external LLM prompt.
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RequirementChecklistSelector({
+  selectedIds,
+  onToggle,
+  onSelectAll,
+  onClearAll,
+}: {
+  selectedIds: RequirementAnalysisChecklistItemId[];
+  onToggle: (checklistItemId: RequirementAnalysisChecklistItemId, checked: boolean) => void;
+  onSelectAll: () => void;
+  onClearAll: () => void;
+}) {
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const allSelected = selectedIds.length === allRequirementAnalysisChecklistItemIds.length;
+  const noneSelected = selectedIds.length === 0;
+
+  return (
+    <div className="rounded-md border border-[#c8d4e4] bg-[#f8fafc] p-4">
+      <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="text-sm font-semibold text-slate-950">Requirement Analysis Checklist</div>
+          <div className="text-xs text-slate-500">
+            {selectedIds.length} of {allRequirementAnalysisChecklistItemIds.length} selected
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={onSelectAll} disabled={allSelected} className="h-8 px-3 text-xs">
+            Select all
+          </Button>
+          <Button variant="ghost" onClick={onClearAll} disabled={noneSelected} className="h-8 px-3 text-xs">
+            Clear all
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        {requirementAnalysisChecklistOptions.map((checklistItem) => {
+          const checked = selectedIdSet.has(checklistItem.id);
+          return (
+            <label
+              key={checklistItem.id}
+              className="flex min-h-12 cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-blue-200 hover:bg-blue-50"
+            >
+              <Checkbox checked={checked} onCheckedChange={(value) => onToggle(checklistItem.id, value === true)} aria-label={checklistItem.title} />
+              <span className="leading-5">{checklistItem.title}</span>
+            </label>
+          );
+        })}
+      </div>
+
+      {noneSelected ? (
+        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          Select at least one checklist item to run analysis or prepare the external LLM prompt.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function WorkflowModeTabs({ mode, onChange }: { mode: WorkflowMode; onChange: (mode: WorkflowMode) => void }) {
   const itemClass = (value: WorkflowMode) =>
     `h-8 rounded-[6px] px-3 text-sm font-medium transition ${
@@ -1859,6 +2234,48 @@ function WorkflowModeTabs({ mode, onChange }: { mode: WorkflowMode; onChange: (m
       <button type="button" role="tab" aria-selected={mode === "manual"} className={itemClass("manual")} onClick={() => onChange("manual")}>
         External LLM
       </button>
+    </div>
+  );
+}
+
+function ExtraInstructionsField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const id = useId();
+  const overLimit = value.length > EXTRA_INSTRUCTIONS_MAX_LENGTH;
+  const showWarning = value.length > 0;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <label htmlFor={id} className="block text-sm font-semibold text-slate-950">
+            Extra Instructions
+          </label>
+          <p className="mt-1 text-xs leading-5 text-slate-500">{EXTRA_INSTRUCTIONS_HELPER_TEXT}</p>
+        </div>
+        <div className={`text-xs font-medium ${overLimit ? "text-red-700" : "text-slate-500"}`}>
+          {value.length} / {EXTRA_INSTRUCTIONS_MAX_LENGTH}
+        </div>
+      </div>
+      <TextArea
+        id={id}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        maxLength={EXTRA_INSTRUCTIONS_MAX_LENGTH}
+        aria-invalid={overLimit}
+        className="min-h-[120px]"
+        placeholder="Add optional instructions for this run."
+      />
+      {overLimit ? (
+        <div className="text-xs font-medium text-red-700">
+          Extra Instructions must be {EXTRA_INSTRUCTIONS_MAX_LENGTH} characters or fewer.
+        </div>
+      ) : null}
+      {showWarning ? (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs leading-5 text-amber-800 dark:text-amber-200">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{EXTRA_INSTRUCTIONS_WARNING_TEXT}</p>
+        </div>
+      ) : null}
     </div>
   );
 }
