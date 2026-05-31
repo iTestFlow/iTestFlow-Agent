@@ -3,16 +3,22 @@ import "server-only";
 import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
 import { mapAzureTestCase, mapAzureWorkItem } from "./azure-devops-mapper";
 import type {
+  AddSuiteTestCaseInput,
   AzureAuthenticatedUser,
   AzureDevOpsSettings,
+  AzureIdentityRef,
   AzureIteration,
   AzureProject,
   AzureProjectUser,
+  AzureTestPoint,
+  CreateTestSuiteInput,
   FinalApprovedTestCase,
   Requirement,
   TestCase,
+  TestConfigurationReference,
   TestPlan,
   TestSuite,
+  UpdateTestPointInput,
 } from "./azure-devops-types";
 
 type JsonValue = Record<string, unknown>;
@@ -261,17 +267,165 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   }
 
   async fetchTestSuites(input: { projectId: string; testPlanId: string }): Promise<TestSuite[]> {
-    const json = await this.requestJson<{ value?: Array<JsonValue> }>(
-      `${encodeURIComponent(input.projectId)}/_apis/testplan/Plans/${input.testPlanId}/suites?api-version=7.1`,
-    );
-    return (json.value ?? []).map((suite) => ({
-      id: String(suite.id),
-      name: String(suite.name),
-      planId: input.testPlanId,
-      suiteType: typeof suite.suiteType === "string" ? suite.suiteType : undefined,
-      requirementId: suite.requirementId !== undefined ? String(suite.requirementId) : undefined,
-      raw: suite,
-    }));
+    const suites: TestSuite[] = [];
+    let continuationToken: string | undefined;
+
+    do {
+      const query = new URLSearchParams({ "api-version": "7.1" });
+      if (continuationToken) query.set("continuationToken", continuationToken);
+      const { json, headers } = await this.requestJsonWithHeaders<{ value?: Array<JsonValue> }>(
+        `${encodeURIComponent(input.projectId)}/_apis/testplan/Plans/${input.testPlanId}/suites?${query.toString()}`,
+      );
+      suites.push(...(json.value ?? []).map((suite) => mapAzureTestSuite(suite, input.testPlanId)));
+      continuationToken = headers.get("x-ms-continuationtoken") ?? undefined;
+    } while (continuationToken);
+
+    return suites;
+  }
+
+  async fetchTestSuiteTree(input: { projectId: string; testPlanId: string }): Promise<TestSuite[]> {
+    const suites: TestSuite[] = [];
+    let continuationToken: string | undefined;
+
+    do {
+      const query = new URLSearchParams({
+        asTreeView: "true",
+        expand: "children",
+        "api-version": "7.1",
+      });
+      if (continuationToken) query.set("continuationToken", continuationToken);
+      const { json, headers } = await this.requestJsonWithHeaders<{ value?: Array<JsonValue> }>(
+        `${encodeURIComponent(input.projectId)}/_apis/testplan/Plans/${input.testPlanId}/suites?${query.toString()}`,
+      );
+      suites.push(...(json.value ?? []).map((suite) => mapAzureTestSuite(suite, input.testPlanId)));
+      continuationToken = headers.get("x-ms-continuationtoken") ?? undefined;
+    } while (continuationToken);
+
+    return suites;
+  }
+
+  async createTestSuite(input: CreateTestSuiteInput): Promise<{ success: boolean; suite?: TestSuite; error?: string }> {
+    try {
+      const body: JsonValue = {
+        suiteType: input.suiteType ?? "staticTestSuite",
+        name: input.name,
+        parentSuite: { id: Number(input.parentSuiteId) },
+      };
+      if (input.requirementId) body.requirementId = Number(input.requirementId);
+      if (input.queryString) body.queryString = input.queryString;
+      if (input.inheritDefaultConfigurations !== undefined) {
+        body.inheritDefaultConfigurations = input.inheritDefaultConfigurations;
+      }
+      if (input.defaultConfigurations?.length) {
+        body.defaultConfigurations = input.defaultConfigurations.map((configuration) => ({ id: Number(configuration.id) }));
+      }
+      if (input.defaultTesters?.length) {
+        body.defaultTesters = input.defaultTesters.map(toAzureIdentityBody);
+      }
+
+      const json = await this.requestJson<JsonValue>(
+        `${encodeURIComponent(input.projectId)}/_apis/testplan/Plans/${input.testPlanId}/suites?api-version=7.1`,
+        { method: "POST", body: JSON.stringify(body) },
+      );
+      return { success: true, suite: mapAzureTestSuite(json, input.testPlanId) };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Unknown Azure DevOps suite creation error" };
+    }
+  }
+
+  async deleteTestSuite(input: { projectId: string; testPlanId: string; testSuiteId: string }): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.requestNoJson(
+        `${encodeURIComponent(input.projectId)}/_apis/testplan/Plans/${input.testPlanId}/suites/${input.testSuiteId}?api-version=7.1`,
+        { method: "DELETE" },
+      );
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Unknown Azure DevOps suite deletion error" };
+    }
+  }
+
+  async fetchTestPoints(input: { projectId: string; testPlanId: string; testSuiteId: string }): Promise<AzureTestPoint[]> {
+    const top = 200;
+    let skip = 0;
+    const points: AzureTestPoint[] = [];
+
+    while (true) {
+      const query = new URLSearchParams({
+        includePointDetails: "true",
+        "$skip": String(skip),
+        "$top": String(top),
+        "api-version": "7.1",
+      });
+      const json = await this.requestJson<Array<JsonValue> | { value?: Array<JsonValue> }>(
+        `${encodeURIComponent(input.projectId)}/_apis/test/Plans/${input.testPlanId}/Suites/${input.testSuiteId}/points?${query.toString()}`,
+      );
+      const batch = extractArrayPayload(json).map(mapAzureTestPoint);
+      points.push(...batch);
+      if (batch.length < top) break;
+      skip += top;
+    }
+
+    return points;
+  }
+
+  async addTestCasesToSuite(input: {
+    projectId: string;
+    testPlanId: string;
+    testSuiteId: string;
+    testCases: AddSuiteTestCaseInput[];
+  }): Promise<{ success: boolean; addedCount: number; errors: Array<{ testCaseId: string; error: string }> }> {
+    let addedCount = 0;
+    const errors: Array<{ testCaseId: string; error: string }> = [];
+
+    for (const testCase of input.testCases) {
+      try {
+        const configurationIds = [...new Set(testCase.configurationIds ?? [])].filter(Boolean);
+        if (configurationIds.length) {
+          await this.requestJson<JsonValue>(
+            `${encodeURIComponent(input.projectId)}/_apis/testplan/Plans/${input.testPlanId}/Suites/${input.testSuiteId}/TestCase?api-version=7.1`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                workItem: { id: Number(testCase.testCaseId) },
+                pointAssignments: configurationIds.map((configurationId) => ({
+                  configurationId: Number(configurationId),
+                })),
+              }),
+            },
+          );
+        } else {
+          await this.requestJson<JsonValue>(
+            `${encodeURIComponent(input.projectId)}/_apis/test/Plans/${input.testPlanId}/suites/${input.testSuiteId}/testcases/${testCase.testCaseId}?api-version=7.1`,
+            { method: "POST" },
+          );
+        }
+        addedCount += 1;
+      } catch (error) {
+        errors.push({
+          testCaseId: testCase.testCaseId,
+          error: error instanceof Error ? error.message : "Azure DevOps suite test case add failed.",
+        });
+      }
+    }
+
+    return { success: errors.length === 0, addedCount, errors };
+  }
+
+  async updateTestPoints(input: UpdateTestPointInput): Promise<{ success: boolean; updatedPoints?: AzureTestPoint[]; error?: string }> {
+    if (!input.pointIds.length) return { success: true, updatedPoints: [] };
+    try {
+      const body: JsonValue = {};
+      if (input.outcome) body.outcome = input.outcome;
+      if (input.tester) body.tester = toAzureIdentityBody(input.tester);
+      const json = await this.requestJson<Array<JsonValue> | { value?: Array<JsonValue> }>(
+        `${encodeURIComponent(input.projectId)}/_apis/test/Plans/${input.testPlanId}/Suites/${input.testSuiteId}/points/${input.pointIds.join(",")}?api-version=7.1`,
+        { method: "PATCH", body: JSON.stringify(body) },
+      );
+      return { success: true, updatedPoints: extractArrayPayload(json).map(mapAzureTestPoint) };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Unknown Azure DevOps test point update error" };
+    }
   }
 
   async createTestCase(input: {
@@ -446,6 +600,11 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   }
 
   private async requestJson<T>(path: string, init?: RequestInit & { contentType?: string }): Promise<T> {
+    const { json } = await this.requestJsonWithHeaders<T>(path, init);
+    return json;
+  }
+
+  private async requestJsonWithHeaders<T>(path: string, init?: RequestInit & { contentType?: string }): Promise<{ json: T; headers: Headers }> {
     const response = await this.request(path, init);
     const body = await response.text();
     if (!response.ok) {
@@ -457,7 +616,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       );
     }
     try {
-      return JSON.parse(body) as T;
+      return { json: JSON.parse(body) as T, headers: response.headers };
     } catch {
       throw new Error(
         `Azure DevOps returned malformed JSON (${response.status}). Check that the organization URL and Personal Access Token are valid.`,
@@ -465,22 +624,166 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     }
   }
 
-  private request(path: string, init?: RequestInit & { contentType?: string }) {
+  private async requestNoJson(path: string, init?: RequestInit & { contentType?: string }) {
+    const response = await this.request(path, init);
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Azure DevOps request failed (${response.status}): ${body}`);
+    }
+  }
+
+  private async request(path: string, init?: RequestInit & { contentType?: string }) {
     const token = Buffer.from(`:${this.pat}`).toString("base64");
-    return fetch(`${this.organizationUrl}/${path}`, {
-      ...init,
-      headers: {
-        Authorization: `Basic ${token}`,
-        Accept: "application/json",
-        "Content-Type": init?.contentType ?? "application/json",
-        ...(init?.headers ?? {}),
-      },
-    });
+    let response: Response | undefined;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        response = await fetch(`${this.organizationUrl}/${path}`, {
+          ...init,
+          headers: {
+            Authorization: `Basic ${token}`,
+            Accept: "application/json",
+            "Content-Type": init?.contentType ?? "application/json",
+            ...(init?.headers ?? {}),
+          },
+        });
+        if (!isTransientStatus(response.status) || attempt === 2) return response;
+        await delay(retryDelayMs(response, attempt));
+      } catch (error) {
+        lastError = error;
+        if (attempt === 2) throw error;
+        await delay(250 * (attempt + 1));
+      }
+    }
+
+    if (response) return response;
+    throw lastError instanceof Error ? lastError : new Error("Azure DevOps request failed.");
   }
 }
 
 function isJsonResponse(response: Response) {
   return response.headers.get("content-type")?.toLowerCase().includes("application/json") ?? false;
+}
+
+function isTransientStatus(status: number) {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+function retryDelayMs(response: Response, attempt: number) {
+  const retryAfter = Number(response.headers.get("retry-after"));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) return retryAfter * 1000;
+  return 300 * (attempt + 1);
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractArrayPayload(value: Array<JsonValue> | { value?: Array<JsonValue> }) {
+  return Array.isArray(value) ? value : value.value ?? [];
+}
+
+function mapAzureTestSuite(suite: JsonValue, planId: string): TestSuite {
+  const parentSuite = objectValue(suite.parentSuite) ?? objectValue(suite.parent);
+  return {
+    id: stringValue(suite.id),
+    name: stringValue(suite.name),
+    planId,
+    parentSuiteId: idValue(parentSuite?.id),
+    parentSuiteName: textValue(parentSuite?.name),
+    suiteType: textValue(suite.suiteType),
+    requirementId: idValue(suite.requirementId),
+    queryString: textValue(suite.queryString),
+    inheritDefaultConfigurations:
+      typeof suite.inheritDefaultConfigurations === "boolean" ? suite.inheritDefaultConfigurations : undefined,
+    defaultConfigurations: arrayValue(suite.defaultConfigurations).map(mapConfigurationReference).filter(isDefined),
+    defaultTesters: arrayValue(suite.defaultTesters).map(mapIdentityRef).filter(isDefined),
+    children: arrayValue(suite.children).map((child) => mapAzureTestSuite(child, planId)),
+    raw: suite,
+  };
+}
+
+function mapAzureTestPoint(point: JsonValue): AzureTestPoint {
+  const testCase = objectValue(point.testCase) ?? objectValue(point.testCaseReference);
+  const configuration = objectValue(point.configuration);
+  const suite = objectValue(point.suite) ?? objectValue(point.testSuite);
+  const plan = objectValue(point.testPlan);
+  const results = objectValue(point.results);
+  const lastResultDetails = objectValue(point.lastResultDetails) ?? objectValue(results?.lastResultDetails);
+
+  return {
+    id: stringValue(point.id),
+    testCaseId: idValue(testCase?.id),
+    testCaseTitle: textValue(testCase?.name),
+    configurationId: idValue(configuration?.id),
+    configurationName: textValue(configuration?.name),
+    suiteId: idValue(suite?.id),
+    suiteName: textValue(suite?.name),
+    planId: idValue(plan?.id),
+    outcome: textValue(point.outcome) ?? textValue(results?.outcome),
+    state: textValue(point.state) ?? textValue(results?.state),
+    lastUpdatedDate: textValue(point.lastUpdatedDate),
+    lastRunDate: textValue(lastResultDetails?.dateCompleted) ?? textValue(point.lastRunDate),
+    tester: mapIdentityRef(objectValue(point.tester)),
+    assignedTo: mapIdentityRef(objectValue(point.assignedTo)),
+    raw: point,
+  };
+}
+
+function mapConfigurationReference(value: unknown): TestConfigurationReference | undefined {
+  const item = objectValue(value);
+  const id = idValue(item?.id);
+  if (!id) return undefined;
+  return { id, name: textValue(item?.name) };
+}
+
+function mapIdentityRef(value: unknown): AzureIdentityRef | undefined {
+  const item = objectValue(value);
+  if (!item) return undefined;
+  const identity: AzureIdentityRef = {
+    id: textValue(item.id),
+    displayName: textValue(item.displayName),
+    uniqueName: textValue(item.uniqueName),
+    descriptor: textValue(item.descriptor),
+    imageUrl: textValue(item.imageUrl),
+    url: textValue(item.url),
+  };
+  return Object.values(identity).some(Boolean) ? identity : undefined;
+}
+
+function toAzureIdentityBody(identity: AzureIdentityRef): JsonValue {
+  return {
+    ...(identity.id ? { id: identity.id } : {}),
+    ...(identity.displayName ? { displayName: identity.displayName } : {}),
+    ...(identity.uniqueName ? { uniqueName: identity.uniqueName } : {}),
+    ...(identity.descriptor ? { descriptor: identity.descriptor } : {}),
+  };
+}
+
+function objectValue(value: unknown): JsonValue | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonValue) : undefined;
+}
+
+function arrayValue(value: unknown): JsonValue[] {
+  return Array.isArray(value) ? value.filter((item): item is JsonValue => Boolean(objectValue(item))) : [];
+}
+
+function idValue(value: unknown) {
+  if (value === undefined || value === null || value === "") return undefined;
+  return String(value);
+}
+
+function stringValue(value: unknown) {
+  return value === undefined || value === null ? "" : String(value);
+}
+
+function textValue(value: unknown) {
+  return typeof value === "string" ? value : value === undefined || value === null ? undefined : String(value);
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
 }
 
 function toAzureStepsXml(steps: FinalApprovedTestCase["steps"]) {

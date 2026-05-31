@@ -10,6 +10,7 @@ import {
   Home,
   ListPlus,
   MessageSquareText,
+  Replace,
   Settings,
   ShieldCheck,
   TestTube2,
@@ -26,6 +27,7 @@ const navigation = [
   { href: "/requirements/analyze", label: "Requirement Analysis", icon: ShieldCheck, section: "/requirements" },
   { href: "/test-cases/design/context", label: "Test Case Design", icon: TestTube2, section: "/test-cases/design" },
   { href: "/test-coverage-matrix", label: "Test Coverage Matrix", icon: ClipboardCheck },
+  { href: "/test-suite-migration", label: "Suite Migration", icon: Replace },
   { href: "/bulk-tasks", label: "Bulk Task Creation", icon: ListPlus },
   { href: "/settings", label: "Settings", icon: Settings },
 ]
