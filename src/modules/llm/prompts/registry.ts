@@ -1,4 +1,5 @@
 import { contextSelectionPrompt } from "./context-selection.prompt";
+import { bugReportPrompt } from "./bug-report.prompt";
 import { existingTestCaseReviewPrompt } from "./existing-test-case-review.prompt";
 import {
   projectKnowledgeConsolidationPrompt,
@@ -9,6 +10,7 @@ import { structuredOutputPrompt } from "./structured-output.prompt";
 import { testCaseGenerationPrompt } from "./test-case-generation.prompt";
 
 export const llmPromptRegistry = {
+  bugReport: bugReportPrompt,
   contextSelection: contextSelectionPrompt,
   existingTestCaseReview: existingTestCaseReviewPrompt,
   projectKnowledgeConsolidation: projectKnowledgeConsolidationPrompt,

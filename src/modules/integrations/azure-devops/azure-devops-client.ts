@@ -5,12 +5,17 @@ import { mapAzureTestCase, mapAzureWorkItem } from "./azure-devops-mapper";
 import type {
   AddSuiteTestCaseInput,
   AzureAuthenticatedUser,
+  AzureArea,
+  AzureAttachmentUpload,
+  AzureBugWorkItemInput,
   AzureDevOpsSettings,
   AzureIdentityRef,
   AzureIteration,
   AzureProject,
   AzureProjectUser,
   AzureTestPoint,
+  AzureWorkItemFieldValue,
+  AzureWorkItemTypeField,
   CreateTestSuiteInput,
   FinalApprovedTestCase,
   Requirement,
@@ -56,6 +61,11 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   constructor(settings: AzureDevOpsSettings) {
     this.organizationUrl = settings.organizationUrl.replace(/\/$/, "");
     this.pat = settings.personalAccessToken;
+  }
+
+  buildWorkItemWebUrl(input: { projectId: string; projectName?: string; workItemId: string }): string {
+    const projectSegment = encodeURIComponent(input.projectName?.trim() || input.projectId);
+    return `${this.organizationUrl}/${projectSegment}/_workitems/edit/${encodeURIComponent(input.workItemId)}`;
   }
 
   async testConnection(): Promise<boolean> {
@@ -106,6 +116,13 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     return flattenIterations(root).sort((a, b) => a.path.localeCompare(b.path));
   }
 
+  async fetchAreas(input: { projectId: string }): Promise<AzureArea[]> {
+    const root = await this.requestJson<AzureClassificationNode>(
+      `${encodeURIComponent(input.projectId)}/_apis/wit/classificationnodes/areas?$depth=10&api-version=7.1`,
+    );
+    return flattenAreas(root).sort((a, b) => a.path.localeCompare(b.path));
+  }
+
   async fetchProjectUsers(input: { projectId: string }): Promise<AzureProjectUser[]> {
     const teams = await this.requestJson<{ value?: AzureTeam[] }>(
       `_apis/projects/${encodeURIComponent(input.projectId)}/teams?api-version=7.1`,
@@ -133,6 +150,16 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     }
 
     return [...users.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }
+
+  async fetchWorkItemTypeFields(input: { projectId: string; workItemType: string }): Promise<AzureWorkItemTypeField[]> {
+    const json = await this.requestJson<{ value?: Array<JsonValue> }>(
+      `${encodeURIComponent(input.projectId)}/_apis/wit/workitemtypes/${encodeURIComponent(input.workItemType)}/fields?$expand=All&api-version=7.1`,
+    );
+
+    return (json.value ?? [])
+      .map(mapWorkItemTypeField)
+      .filter((field): field is AzureWorkItemTypeField => Boolean(field?.referenceName && field.name));
   }
 
   async fetchWorkItems(input: {
@@ -454,6 +481,126 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     }
   }
 
+  async createBug(input: {
+    projectId: string;
+    bug: AzureBugWorkItemInput;
+  }): Promise<{ success: boolean; azureBugId?: string; error?: string }> {
+    try {
+      const parentUrl = input.bug.parentStoryId
+        ? `${this.organizationUrl}/${encodeURIComponent(input.projectId)}/_apis/wit/workItems/${input.bug.parentStoryId}`
+        : undefined;
+      const standardFields = new Set([
+        "System.Title",
+        "System.State",
+        "Microsoft.VSTS.TCM.ReproSteps",
+        "Microsoft.VSTS.Common.Priority",
+        "Microsoft.VSTS.Common.Severity",
+        "System.AssignedTo",
+        "System.AreaPath",
+        "System.AreaId",
+        "System.IterationPath",
+        "System.IterationId",
+        "Microsoft.VSTS.Common.ValueArea",
+      ]);
+      const customFields = (input.bug.customFields ?? []).filter(
+        (field) => field.referenceName && !standardFields.has(field.referenceName),
+      );
+      const patch: Array<{ op: "add"; path: string; value: unknown }> = [
+        { op: "add", path: "/fields/System.Title", value: input.bug.title },
+        { op: "add", path: "/fields/Microsoft.VSTS.TCM.ReproSteps", value: input.bug.reproStepsHtml },
+        { op: "add", path: "/fields/Microsoft.VSTS.Common.Priority", value: input.bug.priority },
+        { op: "add", path: "/fields/Microsoft.VSTS.Common.Severity", value: input.bug.severity },
+        ...(input.bug.areaPath ? [{ op: "add" as const, path: "/fields/System.AreaPath", value: input.bug.areaPath }] : []),
+        ...(input.bug.iterationPath
+          ? [{ op: "add" as const, path: "/fields/System.IterationPath", value: input.bug.iterationPath }]
+          : []),
+        ...(input.bug.assignedTo ? [{ op: "add" as const, path: "/fields/System.AssignedTo", value: input.bug.assignedTo }] : []),
+        ...customFields.map((field) => ({
+          op: "add" as const,
+          path: `/fields/${escapeJsonPointerSegment(field.referenceName)}`,
+          value: field.value,
+        })),
+        ...(parentUrl
+          ? [
+              {
+                op: "add" as const,
+                path: "/relations/-",
+                value: {
+                  rel: "System.LinkTypes.Hierarchy-Reverse",
+                  url: parentUrl,
+                },
+              },
+            ]
+          : []),
+      ];
+
+      const json = await this.requestJson<JsonValue>(
+        `${encodeURIComponent(input.projectId)}/_apis/wit/workitems/$Bug?api-version=7.1`,
+        {
+          method: "POST",
+          body: JSON.stringify(patch),
+          contentType: "application/json-patch+json",
+        },
+      );
+      return { success: true, azureBugId: String(json.id) };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Unknown Azure DevOps bug creation error" };
+    }
+  }
+
+  async uploadWorkItemAttachment(input: {
+    projectId: string;
+    attachment: AzureAttachmentUpload;
+  }): Promise<{ success: boolean; attachmentUrl?: string; error?: string }> {
+    try {
+      const json = await this.requestJson<JsonValue>(
+        `${encodeURIComponent(input.projectId)}/_apis/wit/attachments?fileName=${encodeURIComponent(input.attachment.fileName)}&api-version=7.1`,
+        {
+          method: "POST",
+          body: new Blob([input.attachment.content]),
+          contentType: "application/octet-stream",
+        },
+      );
+      return { success: true, attachmentUrl: textValue(json.url) };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Unknown Azure DevOps attachment upload error" };
+    }
+  }
+
+  async attachFileToWorkItem(input: {
+    projectId: string;
+    workItemId: string;
+    attachmentUrl: string;
+    fileName: string;
+    comment?: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.requestJson<JsonValue>(
+        `${encodeURIComponent(input.projectId)}/_apis/wit/workitems/${input.workItemId}?api-version=7.1`,
+        {
+          method: "PATCH",
+          contentType: "application/json-patch+json",
+          body: JSON.stringify([
+            {
+              op: "add",
+              path: "/relations/-",
+              value: {
+                rel: "AttachedFile",
+                url: input.attachmentUrl,
+                attributes: {
+                  comment: input.comment ?? input.fileName,
+                },
+              },
+            },
+          ]),
+        },
+      );
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Unknown Azure DevOps attachment link error" };
+    }
+  }
+
   async createChildTask(input: {
     projectId: string;
     parentStoryId: string;
@@ -684,6 +831,23 @@ function extractArrayPayload(value: Array<JsonValue> | { value?: Array<JsonValue
   return Array.isArray(value) ? value : value.value ?? [];
 }
 
+function mapWorkItemTypeField(value: JsonValue): AzureWorkItemTypeField | undefined {
+  const referenceName = textValue(value.referenceName);
+  const name = textValue(value.name);
+  if (!referenceName || !name) return undefined;
+  return {
+    name,
+    referenceName,
+    type: textValue(value.type),
+    helpText: textValue(value.helpText),
+    required: booleanValue(value.required) ?? booleanValue(value.alwaysRequired),
+    alwaysRequired: booleanValue(value.alwaysRequired),
+    readOnly: booleanValue(value.readOnly),
+    defaultValue: value.defaultValue,
+    allowedValues: primitiveArrayValue(value.allowedValues),
+  };
+}
+
 function mapAzureTestSuite(suite: JsonValue, planId: string): TestSuite {
   const parentSuite = objectValue(suite.parentSuite) ?? objectValue(suite.parent);
   return {
@@ -769,6 +933,24 @@ function arrayValue(value: unknown): JsonValue[] {
   return Array.isArray(value) ? value.filter((item): item is JsonValue => Boolean(objectValue(item))) : [];
 }
 
+function primitiveArrayValue(value: unknown): AzureWorkItemFieldValue[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === "string" || typeof item === "number" || typeof item === "boolean") return item;
+      const objectItem = objectValue(item);
+      if (objectItem?.value !== undefined) return primitiveFieldValue(objectItem.value);
+      if (objectItem?.name !== undefined) return primitiveFieldValue(objectItem.name);
+      return undefined;
+    })
+    .filter((item): item is AzureWorkItemFieldValue => item !== undefined);
+}
+
+function primitiveFieldValue(value: unknown): AzureWorkItemFieldValue | undefined {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  return value === undefined || value === null ? undefined : String(value);
+}
+
 function idValue(value: unknown) {
   if (value === undefined || value === null || value === "") return undefined;
   return String(value);
@@ -780,6 +962,10 @@ function stringValue(value: unknown) {
 
 function textValue(value: unknown) {
   return typeof value === "string" ? value : value === undefined || value === null ? undefined : String(value);
+}
+
+function booleanValue(value: unknown) {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function isDefined<T>(value: T | undefined): value is T {
@@ -809,13 +995,17 @@ function escapeXml(value: string) {
     .replace(/'/g, "&#39;");
 }
 
+function escapeJsonPointerSegment(value: string) {
+  return value.replace(/~/g, "~0").replace(/\//g, "~1");
+}
+
 function escapeWiqlValue(value: string) {
   return value.replace(/'/g, "''");
 }
 
 function flattenIterations(node: AzureClassificationNode): AzureIteration[] {
   const items: AzureIteration[] = [];
-  const path = normalizeClassificationPath(node.path);
+  const path = normalizeClassificationPath(node.path, "iteration");
   if (path) {
     items.push({
       id: node.identifier ?? String(node.id ?? path),
@@ -833,13 +1023,31 @@ function flattenIterations(node: AzureClassificationNode): AzureIteration[] {
   return items;
 }
 
-function normalizeClassificationPath(value?: string) {
-  return normalizeIterationPathForWiql(value);
+function flattenAreas(node: AzureClassificationNode): AzureArea[] {
+  const items: AzureArea[] = [];
+  const path = normalizeClassificationPath(node.path, "area");
+  if (path) {
+    items.push({
+      id: node.identifier ?? String(node.id ?? path),
+      name: node.name ?? path.split("\\").pop() ?? path,
+      path,
+    });
+  }
+
+  for (const child of node.children ?? []) {
+    items.push(...flattenAreas(child));
+  }
+
+  return items;
+}
+
+function normalizeClassificationPath(value: string | undefined, kind: "area" | "iteration") {
+  const parts = value?.replace(/^\\+/, "").split("\\").filter(Boolean) ?? [];
+  const segmentIndex = parts.findIndex((part) => part.toLocaleLowerCase() === kind);
+  if (segmentIndex >= 0) parts.splice(segmentIndex, 1);
+  return parts.join("\\");
 }
 
 function normalizeIterationPathForWiql(value?: string) {
-  const parts = value?.replace(/^\\+/, "").split("\\").filter(Boolean) ?? [];
-  const iterationSegmentIndex = parts.findIndex((part) => part.toLocaleLowerCase() === "iteration");
-  if (iterationSegmentIndex >= 0) parts.splice(iterationSegmentIndex, 1);
-  return parts.join("\\");
+  return normalizeClassificationPath(value, "iteration");
 }

@@ -1,10 +1,14 @@
 import type {
   AddSuiteTestCaseInput,
   AzureAuthenticatedUser,
+  AzureArea,
+  AzureAttachmentUpload,
+  AzureBugWorkItemInput,
   AzureIteration,
   AzureProject,
   AzureProjectUser,
   AzureTestPoint,
+  AzureWorkItemTypeField,
   CreateTestSuiteInput,
   FinalApprovedTestCase,
   Requirement,
@@ -25,9 +29,18 @@ export interface AzureDevOpsAdapter {
     projectId: string;
   }): Promise<AzureIteration[]>;
 
+  fetchAreas(input: {
+    projectId: string;
+  }): Promise<AzureArea[]>;
+
   fetchProjectUsers(input: {
     projectId: string;
   }): Promise<AzureProjectUser[]>;
+
+  fetchWorkItemTypeFields(input: {
+    projectId: string;
+    workItemType: string;
+  }): Promise<AzureWorkItemTypeField[]>;
 
   fetchWorkItems(input: {
     projectId: string;
@@ -133,6 +146,41 @@ export interface AzureDevOpsAdapter {
     azureTestCaseId?: string;
     error?: string;
   }>;
+
+  createBug(input: {
+    projectId: string;
+    bug: AzureBugWorkItemInput;
+  }): Promise<{
+    success: boolean;
+    azureBugId?: string;
+    error?: string;
+  }>;
+
+  uploadWorkItemAttachment(input: {
+    projectId: string;
+    attachment: AzureAttachmentUpload;
+  }): Promise<{
+    success: boolean;
+    attachmentUrl?: string;
+    error?: string;
+  }>;
+
+  attachFileToWorkItem(input: {
+    projectId: string;
+    workItemId: string;
+    attachmentUrl: string;
+    fileName: string;
+    comment?: string;
+  }): Promise<{
+    success: boolean;
+    error?: string;
+  }>;
+
+  buildWorkItemWebUrl(input: {
+    projectId: string;
+    projectName?: string;
+    workItemId: string;
+  }): string;
 
   createChildTask(input: {
     projectId: string;
