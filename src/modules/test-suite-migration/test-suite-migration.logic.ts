@@ -49,7 +49,6 @@ export function toSuiteTreeNodes(suites: TestSuite[], parentPath = ""): SuiteTre
       queryString: suite.queryString,
       inheritDefaultConfigurations: suite.inheritDefaultConfigurations,
       defaultConfigurations: suite.defaultConfigurations,
-      defaultTesters: suite.defaultTesters,
       path,
       children: toSuiteTreeNodes(suite.children ?? [], path),
     };
@@ -210,7 +209,6 @@ export function planTargetSuites(input: {
       queryString: sourceNode.queryString,
       inheritDefaultConfigurations: sourceNode.inheritDefaultConfigurations,
       defaultConfigurations: sourceNode.defaultConfigurations,
-      defaultTesters: sourceNode.defaultTesters,
     });
 
     const childNameState = new Set<string>();

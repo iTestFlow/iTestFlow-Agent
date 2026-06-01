@@ -1,8 +1,8 @@
-import type { AzureIdentityRef, TestConfigurationReference, TestSuiteType } from "@/modules/integrations/azure-devops/azure-devops-types";
+import type { TestConfigurationReference, TestSuiteType } from "@/modules/integrations/azure-devops/azure-devops-types";
 import type { ActiveProjectScope } from "@/shared/lib/active-project";
 
 export type SuiteMigrationOperationMode = "copy" | "move";
-export type OutcomeMigrationMode = "none" | "latestOutcome" | "latestOutcomeAndTester";
+export type OutcomeMigrationMode = "none" | "latestOutcome";
 export type SuiteConflictStrategy = "renameWithMigratedSuffix";
 export type MigrationStatus = "draftPreview" | "readyToMigrate" | "migrating" | "completed" | "partiallyCompleted" | "failed" | "cancelled";
 
@@ -17,7 +17,6 @@ export type SuiteTreeNode = {
   queryString?: string;
   inheritDefaultConfigurations?: boolean;
   defaultConfigurations?: TestConfigurationReference[];
-  defaultTesters?: AzureIdentityRef[];
   path: string;
   children: SuiteTreeNode[];
 };
@@ -57,7 +56,6 @@ export type RecursiveSuiteMigrationNode = {
   queryString?: string;
   inheritDefaultConfigurations?: boolean;
   defaultConfigurations?: TestConfigurationReference[];
-  defaultTesters?: AzureIdentityRef[];
 };
 
 export type SourceTestPointSnapshot = {
@@ -72,7 +70,6 @@ export type SourceTestPointSnapshot = {
   latestOutcomeCategory: string;
   lastRunDate?: string;
   lastUpdatedDate?: string;
-  tester?: AzureIdentityRef;
 };
 
 export type TargetSuiteMapping = {
@@ -123,7 +120,6 @@ export type MigrationPreviewRow = {
   targetSuitePath: string;
   targetTestCaseId?: string;
   targetConfiguration?: string;
-  mappingStatus: "mapped" | "unmapped" | "willUpdate" | "willSkip" | "willOverwrite" | "warning" | "error";
   plannedAction: string;
   warningOrError?: string;
 };

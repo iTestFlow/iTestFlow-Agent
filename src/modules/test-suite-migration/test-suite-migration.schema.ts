@@ -10,7 +10,7 @@ export const SuiteMigrationRequestSchema = z.object({
   targetTestPlanId: azureIdSchema("plan"),
   targetParentSuiteId: azureIdSchema("suite"),
   operationMode: z.enum(["copy", "move"]).default("copy"),
-  outcomeMode: z.enum(["none", "latestOutcome", "latestOutcomeAndTester"]).default("latestOutcomeAndTester"),
+  outcomeMode: z.enum(["none", "latestOutcome"]).default("latestOutcome"),
   overwriteTargetOutcomes: z.boolean().default(false),
   conflictStrategy: z.literal("renameWithMigratedSuffix").default("renameWithMigratedSuffix"),
 }).superRefine((value, ctx) => {
@@ -18,7 +18,7 @@ export const SuiteMigrationRequestSchema = z.object({
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["targetProjectId"],
-      message: "This release supports same-project test suite migration only.",
+      message: "Test suite migration must stay within the selected Azure DevOps project.",
     });
   }
 });

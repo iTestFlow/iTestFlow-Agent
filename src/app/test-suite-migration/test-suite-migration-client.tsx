@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowRight, ClipboardList, GitBranch, Loader2, MoveRight, RefreshCw, Send, ShieldAlert } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ArrowRight, Check, ChevronsUpDown, ClipboardList, GitBranch, Loader2, MoveRight, RefreshCw, Send, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
@@ -10,7 +10,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Table,
   TableBody,
@@ -40,18 +43,6 @@ type ApiState = {
   error: string | null;
 };
 
-type PreviewFilter =
-  | "all"
-  | "roots"
-  | "children"
-  | "mapped"
-  | "unmapped"
-  | "willUpdate"
-  | "willSkip"
-  | "willOverwrite"
-  | "errors"
-  | "warnings";
-
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
@@ -74,6 +65,8 @@ function parseJsonResponse(text: string, ok: boolean) {
 }
 
 export function TestSuiteMigrationClient() {
+  const previewSectionRef = useRef<HTMLDivElement | null>(null);
+  const reportSectionRef = useRef<HTMLDivElement | null>(null);
   const [scope, setScope] = useState<ActiveProjectScope | null>(null);
   const [plans, setPlans] = useState<TestPlan[]>([]);
   const [sourcePlanId, setSourcePlanId] = useState("");
@@ -83,7 +76,7 @@ export function TestSuiteMigrationClient() {
   const [selectedSuiteIds, setSelectedSuiteIds] = useState<string[]>([]);
   const [targetParentSuiteId, setTargetParentSuiteId] = useState("");
   const [operationMode, setOperationMode] = useState<SuiteMigrationOperationMode>("copy");
-  const [outcomeMode, setOutcomeMode] = useState<OutcomeMigrationMode>("latestOutcomeAndTester");
+  const [outcomeMode, setOutcomeMode] = useState<OutcomeMigrationMode>("latestOutcome");
   const [overwriteTargetOutcomes, setOverwriteTargetOutcomes] = useState(false);
   const [plansState, setPlansState] = useState<ApiState>({ loading: false, error: null });
   const [sourceTreeState, setSourceTreeState] = useState<ApiState>({ loading: false, error: null });
@@ -92,7 +85,8 @@ export function TestSuiteMigrationClient() {
   const [executeState, setExecuteState] = useState<ApiState>({ loading: false, error: null });
   const [preview, setPreview] = useState<MigrationPreview | null>(null);
   const [report, setReport] = useState<MigrationReport | null>(null);
-  const [previewFilter, setPreviewFilter] = useState<PreviewFilter>("all");
+  const [sourceSuiteSearch, setSourceSuiteSearch] = useState("");
+  const [targetParentOpen, setTargetParentOpen] = useState(false);
 
   useEffect(() => {
     setScope(readActiveProject());
@@ -170,11 +164,15 @@ export function TestSuiteMigrationClient() {
 
   const sourceFlatSuites = useMemo(() => flattenTree(sourceTree), [sourceTree]);
   const targetFlatSuites = useMemo(() => flattenTree(targetTree), [targetTree]);
+  const filteredSourceTree = useMemo(() => filterSuiteTree(sourceTree, sourceSuiteSearch), [sourceTree, sourceSuiteSearch]);
+  const selectedTargetParentSuite = useMemo(
+    () => targetFlatSuites.find((suite) => suite.id === targetParentSuiteId),
+    [targetFlatSuites, targetParentSuiteId],
+  );
   const selectedSuiteNames = useMemo(
     () => selectedSuiteIds.map((suiteId) => sourceFlatSuites.find((suite) => suite.id === suiteId)?.name ?? suiteId),
     [selectedSuiteIds, sourceFlatSuites],
   );
-  const filteredRows = useMemo(() => filterPreviewRows(preview, previewFilter), [preview, previewFilter]);
   const canPreview = Boolean(scope && sourcePlanId && targetPlanId && targetParentSuiteId && selectedSuiteIds.length && !previewState.loading);
   const canExecute = Boolean(preview && !preview.errors.length && !executeState.loading);
 
@@ -204,7 +202,11 @@ export function TestSuiteMigrationClient() {
     try {
       const data = await postJson<{ preview: MigrationPreview }>("/api/test-suite-migration/preview", request);
       setPreview(data.preview);
-      setPreviewFilter("all");
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          previewSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      });
       if (data.preview.errors.length) {
         toast.error("Preview found blocking errors.");
       } else {
@@ -228,6 +230,11 @@ export function TestSuiteMigrationClient() {
       const data = await postJson<{ report: MigrationReport; preview: MigrationPreview }>("/api/test-suite-migration/execute", request);
       setPreview(data.preview);
       setReport(data.report);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          reportSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      });
       toast.success(`Migration ${formatStatus(data.report.status)}.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Suite migration failed.";
@@ -246,6 +253,8 @@ export function TestSuiteMigrationClient() {
     setTargetTree([]);
     setSelectedSuiteIds([]);
     setTargetParentSuiteId("");
+    setSourceSuiteSearch("");
+    setTargetParentOpen(false);
     setPreview(null);
     setReport(null);
   }
@@ -262,8 +271,8 @@ export function TestSuiteMigrationClient() {
 
       <Alert className="border-blue-500/30 bg-blue-500/10">
         <ShieldAlert className="size-4 text-blue-700" />
-        <AlertTitle>Latest outcome migration</AlertTitle>
-        <AlertDescription>
+        <AlertTitle className="justify-self-start text-left [justify-self:left]">Latest outcome migration</AlertTitle>
+        <AlertDescription className="col-start-2 text-left">
           Azure DevOps native suite copy does not preserve execution outcomes. iTestFlow migrates the latest matching test point outcome and does not recreate historical runs.
         </AlertDescription>
       </Alert>
@@ -297,11 +306,26 @@ export function TestSuiteMigrationClient() {
                 <span className="text-sm font-semibold">Source suites</span>
                 <Badge variant="secondary">{selectedSuiteIds.length} selected</Badge>
               </div>
+              <div className="border-b p-3">
+                <Input
+                  value={sourceSuiteSearch}
+                  onChange={(event) => setSourceSuiteSearch(event.target.value)}
+                  placeholder="Search suites by name, ID, path, or type"
+                  aria-label="Search source suites"
+                />
+                {sourceSuiteSearch.trim() ? (
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    {flattenTree(filteredSourceTree).length} of {sourceFlatSuites.length} suites visible
+                  </div>
+                ) : null}
+              </div>
               <div className="max-h-[420px] overflow-auto p-3">
                 {sourceTreeState.loading ? (
                   <LoadingInline label="Loading source suites..." />
+                ) : filteredSourceTree.length ? (
+                  <SuiteCheckboxTree nodes={filteredSourceTree} selectedIds={selectedSuiteIds} onChange={setSelectedSuiteIds} />
                 ) : sourceTree.length ? (
-                  <SuiteCheckboxTree nodes={sourceTree} selectedIds={selectedSuiteIds} onChange={setSelectedSuiteIds} />
+                  <EmptyInline label="No source suites match the search." />
                 ) : (
                   <EmptyInline label="No source suites loaded." />
                 )}
@@ -315,26 +339,22 @@ export function TestSuiteMigrationClient() {
               <PlanSelect value={targetPlanId} plans={plans} loading={plansState.loading} onChange={(value) => { setTargetPlanId(value); setTargetParentSuiteId(""); }} />
             </Field>
             <Field label="Target parent suite">
-              <select
-                className="focus-ring h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={targetParentSuiteId}
-                onChange={(event) => {
-                  setTargetParentSuiteId(event.target.value);
+              <TargetParentSuitePicker
+                open={targetParentOpen}
+                onOpenChange={setTargetParentOpen}
+                suites={targetFlatSuites}
+                selectedSuite={selectedTargetParentSuite}
+                loading={targetTreeState.loading}
+                disabled={!targetPlanId || targetTreeState.loading}
+                onSelect={(suiteId) => {
+                  setTargetParentSuiteId(suiteId);
                   setPreview(null);
                   setReport(null);
                 }}
-                disabled={!targetPlanId || targetTreeState.loading}
-              >
-                <option value="">{targetTreeState.loading ? "Loading target suites..." : "Select target parent suite"}</option>
-                {targetFlatSuites.map((suite) => (
-                  <option key={suite.id} value={suite.id}>
-                    {suite.id} - {suite.path}
-                  </option>
-                ))}
-              </select>
+              />
             </Field>
             <div className="rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
-              Same-project migration is enabled for this release. Cross-project mapping is intentionally blocked until test case and configuration ID translation is implemented.
+              Suite migration runs within the selected Azure DevOps project only.
             </div>
           </section>
 
@@ -365,8 +385,7 @@ export function TestSuiteMigrationClient() {
                 }}
               >
                 <option value="none">Do not migrate outcomes</option>
-                <option value="latestOutcome">Migrate latest outcome only</option>
-                <option value="latestOutcomeAndTester">Migrate latest outcome + tester</option>
+                <option value="latestOutcome">Migrate latest outcome</option>
               </select>
             </Field>
             <Label className="flex items-start gap-3 rounded-md border border-border bg-background p-3 text-sm">
@@ -389,17 +408,17 @@ export function TestSuiteMigrationClient() {
       </Card>
 
       <Card className="qa-card">
-        <CardContent className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
-          <div className="min-w-0 text-sm text-muted-foreground">
+        <CardContent className="grid gap-3 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+          <div className="min-w-0 overflow-hidden text-sm text-muted-foreground">
             <div className="font-semibold text-foreground">Selected suites</div>
             <div className="mt-1 truncate">{selectedSuiteNames.length ? selectedSuiteNames.join(", ") : "No source suites selected"}</div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" onClick={() => sourcePlanId && void loadSuiteTree("source", sourcePlanId)} disabled={!sourcePlanId || sourceTreeState.loading}>
+          <div className="flex shrink-0 flex-col gap-2 sm:flex-row md:justify-self-end">
+            <Button className="whitespace-nowrap" variant="outline" onClick={() => sourcePlanId && void loadSuiteTree("source", sourcePlanId)} disabled={!sourcePlanId || sourceTreeState.loading}>
               {sourceTreeState.loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               Refresh Source
             </Button>
-            <Button onClick={previewMigration} disabled={!canPreview}>
+            <Button className="whitespace-nowrap" onClick={previewMigration} disabled={!canPreview}>
               {previewState.loading ? <Loader2 className="size-4 animate-spin" /> : <ArrowRight className="size-4" />}
               Preview Migration
             </Button>
@@ -408,19 +427,22 @@ export function TestSuiteMigrationClient() {
       </Card>
 
       {preview ? (
-        <PreviewPanel
-          preview={preview}
-          filter={previewFilter}
-          filteredRows={filteredRows}
-          onFilterChange={setPreviewFilter}
-          canExecute={canExecute}
-          operationMode={operationMode}
-          executing={executeState.loading}
-          onExecute={executeMigration}
-        />
+        <div ref={previewSectionRef} className="scroll-mt-5">
+          <PreviewPanel
+            preview={preview}
+            canExecute={canExecute}
+            operationMode={operationMode}
+            executing={executeState.loading}
+            onExecute={executeMigration}
+          />
+        </div>
       ) : null}
 
-      {report ? <ReportPanel report={report} /> : null}
+      {report ? (
+        <div ref={reportSectionRef} className="scroll-mt-5">
+          <ReportPanel report={report} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -458,6 +480,82 @@ function PlanSelect({ value, plans, loading, onChange }: { value: string; plans:
         </option>
       ))}
     </select>
+  );
+}
+
+function TargetParentSuitePicker({
+  open,
+  onOpenChange,
+  suites,
+  selectedSuite,
+  loading,
+  disabled,
+  onSelect,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  suites: SuiteTreeNode[];
+  selectedSuite?: SuiteTreeNode;
+  loading: boolean;
+  disabled: boolean;
+  onSelect: (suiteId: string) => void;
+}) {
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          disabled={disabled}
+          className="h-10 w-full justify-between px-3 text-left font-normal"
+        >
+          <span className="min-w-0 truncate">
+            {loading ? "Loading target suites..." : selectedSuite ? `${selectedSuite.id} - ${selectedSuite.path}` : "Select target parent suite"}
+          </span>
+          <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" aria-hidden="true" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[min(520px,calc(100vw-3rem))] p-0">
+        <Command
+          filter={(value, search) => {
+            const query = normalizeSearch(search);
+            if (!query) return 1;
+            return normalizeSearch(value).includes(query) ? 1 : 0;
+          }}
+        >
+          <CommandInput placeholder="Search target suites by name, ID, or path" />
+          <CommandList className="max-h-80">
+            <CommandEmpty>No target suites found.</CommandEmpty>
+            <CommandGroup>
+              {suites.map((suite) => (
+                <CommandItem
+                  key={suite.id}
+                  value={`${suite.id} ${suite.name} ${suite.path} ${suite.suiteType ?? ""}`}
+                  onSelect={() => {
+                    onSelect(suite.id);
+                    onOpenChange(false);
+                  }}
+                  className="items-start"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate font-medium">{suite.name}</div>
+                    <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                      {suite.id} - {suite.path}
+                    </div>
+                  </div>
+                  <Check
+                    className={`ml-auto mt-1 size-4 shrink-0 ${selectedSuite?.id === suite.id ? "opacity-100" : "opacity-0"}`}
+                    aria-hidden="true"
+                  />
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -524,18 +622,12 @@ function SuiteCheckboxTree({
 
 function PreviewPanel({
   preview,
-  filter,
-  filteredRows,
-  onFilterChange,
   canExecute,
   operationMode,
   executing,
   onExecute,
 }: {
   preview: MigrationPreview;
-  filter: PreviewFilter;
-  filteredRows: MigrationPreviewRow[];
-  onFilterChange: (filter: PreviewFilter) => void;
   canExecute: boolean;
   operationMode: SuiteMigrationOperationMode;
   executing: boolean;
@@ -587,24 +679,8 @@ function PreviewPanel({
           <div className="rounded-md border border-border">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
               <div className="text-sm font-semibold">Preview rows</div>
-              <select
-                className="focus-ring h-9 rounded-md border border-input bg-background px-3 text-sm"
-                value={filter}
-                onChange={(event) => onFilterChange(event.target.value as PreviewFilter)}
-              >
-                <option value="all">All</option>
-                <option value="roots">Selected root suites</option>
-                <option value="children">Auto-included child suites</option>
-                <option value="mapped">Mapped</option>
-                <option value="unmapped">Unmapped</option>
-                <option value="willUpdate">Will update</option>
-                <option value="willSkip">Will skip</option>
-                <option value="willOverwrite">Will overwrite</option>
-                <option value="errors">Errors</option>
-                <option value="warnings">Warnings</option>
-              </select>
             </div>
-            <PreviewTable rows={filteredRows} />
+            <PreviewTable rows={preview.rows} />
           </div>
 
           <div className="space-y-4">
@@ -620,10 +696,25 @@ function PreviewPanel({
 }
 
 function PreviewTable({ rows }: { rows: MigrationPreviewRow[] }) {
-  if (!rows.length) return <div className="p-4 text-sm text-muted-foreground">No rows match this filter.</div>;
+  if (!rows.length) return <div className="p-4 text-sm text-muted-foreground">No preview rows.</div>;
   return (
-    <Table>
+    <Table className="min-w-[1680px]">
       <TableHeader>
+        <TableRow className="bg-muted/40 hover:bg-muted/40">
+          <TableHead colSpan={8} className="h-8 text-xs font-semibold text-muted-foreground">
+            Source
+          </TableHead>
+          <TableHead className="h-8 w-10 border-x border-border bg-background/70 text-center text-muted-foreground">
+            <ArrowRight className="mx-auto size-4" aria-hidden="true" />
+            <span className="sr-only">Maps to</span>
+          </TableHead>
+          <TableHead colSpan={3} className="h-8 text-xs font-semibold text-muted-foreground">
+            Target
+          </TableHead>
+          <TableHead colSpan={2} className="h-8 text-xs font-semibold text-muted-foreground">
+            Migration
+          </TableHead>
+        </TableRow>
         <TableRow>
           <TableHead>Source Root Suite</TableHead>
           <TableHead className="min-w-[240px]">Source Suite Path</TableHead>
@@ -633,10 +724,12 @@ function PreviewTable({ rows }: { rows: MigrationPreviewRow[] }) {
           <TableHead>Source Configuration</TableHead>
           <TableHead>Source Latest Outcome</TableHead>
           <TableHead>Source Last Run Date</TableHead>
+          <TableHead className="w-10 border-x border-border bg-muted/30 text-center">
+            <span className="sr-only">Maps to</span>
+          </TableHead>
           <TableHead className="min-w-[240px]">Target Suite Path</TableHead>
           <TableHead>Target Test Case ID</TableHead>
           <TableHead>Target Configuration</TableHead>
-          <TableHead>Mapping Status</TableHead>
           <TableHead>Planned Action</TableHead>
           <TableHead>Warning/Error</TableHead>
         </TableRow>
@@ -652,10 +745,13 @@ function PreviewTable({ rows }: { rows: MigrationPreviewRow[] }) {
             <TableCell>{row.sourceConfiguration ?? "-"}</TableCell>
             <TableCell>{row.sourceLatestOutcome ?? "-"}</TableCell>
             <TableCell>{formatDate(row.sourceLastRunDate)}</TableCell>
+            <TableCell className="w-10 border-x border-border bg-muted/20 text-center text-muted-foreground">
+              <ArrowRight className="mx-auto size-4" aria-hidden="true" />
+              <span className="sr-only">maps to</span>
+            </TableCell>
             <TableCell className="whitespace-normal">{row.targetSuitePath}</TableCell>
             <TableCell className="font-mono text-xs">{row.targetTestCaseId ?? "-"}</TableCell>
             <TableCell>{row.targetConfiguration ?? "-"}</TableCell>
-            <TableCell><StatusBadge status={row.mappingStatus} /></TableCell>
             <TableCell className="whitespace-normal">{row.plannedAction}</TableCell>
             <TableCell className="whitespace-normal">{row.warningOrError ?? "-"}</TableCell>
           </TableRow>
@@ -772,29 +868,35 @@ function EmptyInline({ label }: { label: string }) {
   return <div className="text-sm text-muted-foreground">{label}</div>;
 }
 
-function StatusBadge({ status }: { status: MigrationPreviewRow["mappingStatus"] }) {
-  if (status === "willUpdate") return <Badge className="bg-emerald-600 text-white">Will update</Badge>;
-  if (status === "willSkip") return <Badge variant="outline">Will skip</Badge>;
-  if (status === "unmapped") return <Badge className="bg-amber-500 text-white">Unmapped</Badge>;
-  if (status === "error") return <Badge variant="destructive">Error</Badge>;
-  if (status === "warning") return <Badge variant="outline">Warning</Badge>;
-  if (status === "willOverwrite") return <Badge className="bg-blue-600 text-white">Will overwrite</Badge>;
-  return <Badge variant="secondary">Mapped</Badge>;
+function filterSuiteTree(nodes: SuiteTreeNode[], search: string): SuiteTreeNode[] {
+  const query = normalizeSearch(search);
+  if (!query) return nodes;
+
+  return nodes
+    .map((node) => {
+      const children = filterSuiteTree(node.children, search);
+      if (suiteMatches(node, query) || children.length) {
+        return { ...node, children };
+      }
+      return undefined;
+    })
+    .filter((node): node is SuiteTreeNode => Boolean(node));
 }
 
-function filterPreviewRows(preview: MigrationPreview | null, filter: PreviewFilter) {
-  if (!preview) return [];
-  const rootPaths = new Set(preview.selectedRoots.map((root) => root.path));
-  if (filter === "all") return preview.rows;
-  if (filter === "roots") return preview.rows.filter((row) => rootPaths.has(row.sourceSuitePath));
-  if (filter === "children") return preview.rows.filter((row) => !rootPaths.has(row.sourceSuitePath));
-  if (filter === "mapped") return preview.rows.filter((row) => row.mappingStatus !== "unmapped" && row.mappingStatus !== "error");
-  if (filter === "unmapped") return preview.rows.filter((row) => row.mappingStatus === "unmapped");
-  if (filter === "willUpdate") return preview.rows.filter((row) => row.mappingStatus === "willUpdate");
-  if (filter === "willSkip") return preview.rows.filter((row) => row.mappingStatus === "willSkip");
-  if (filter === "willOverwrite") return preview.rows.filter((row) => row.mappingStatus === "willOverwrite");
-  if (filter === "errors") return preview.rows.filter((row) => row.mappingStatus === "error");
-  return preview.rows.filter((row) => row.warningOrError || row.mappingStatus === "warning");
+function suiteMatches(node: SuiteTreeNode, normalizedQuery: string) {
+  return [
+    node.id,
+    node.name,
+    node.path,
+    node.suiteType,
+    node.requirementId,
+  ]
+    .filter(Boolean)
+    .some((value) => normalizeSearch(String(value)).includes(normalizedQuery));
+}
+
+function normalizeSearch(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
 
 function flattenTree(nodes: SuiteTreeNode[]): SuiteTreeNode[] {

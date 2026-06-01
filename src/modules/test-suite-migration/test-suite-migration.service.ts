@@ -235,7 +235,6 @@ export async function executeSuiteMigration(adapter: AzureDevOpsAdapter, request
         testSuiteId: mapping.targetSuiteId,
         pointIds: [targetPoint.id],
         outcome: normalizedOutcome,
-        tester: request.outcomeMode === "latestOutcomeAndTester" ? sourcePoint.tester : undefined,
       });
       actions.push({
         action: "updateOutcome",
@@ -311,8 +310,8 @@ async function buildMigrationPlan(adapter: AzureDevOpsAdapter, request: TestSuit
 
   if (request.sourceProjectId !== scope.azureProjectId || request.targetProjectId !== scope.azureProjectId) {
     errors.push({
-      code: "cross-project-unsupported",
-      message: "Cross-project test suite migration is not supported in this release.",
+      code: "project-scope-mismatch",
+      message: "Source and target suites must be in the selected Azure DevOps project.",
     });
   }
 
@@ -372,7 +371,7 @@ async function buildMigrationPlan(adapter: AzureDevOpsAdapter, request: TestSuit
   }
 
   const plannedBySourceSuite = new Map(planned.plannedSuites.map((suite) => [suite.sourceSuiteId, suite]));
-  const rows = buildPreviewRows(sourcePoints, normalized.roots, plannedBySourceSuite, request);
+  const rows = buildPreviewRows(sourcePoints, normalized.roots, plannedBySourceSuite, request, warnings, errors);
   const outcomeBreakdown = buildOutcomeBreakdown(sourcePoints);
   const uniqueTestCases = new Set(sourcePoints.map((point) => point.testCaseId).filter(Boolean));
   const mappableOutcomeCount = sourcePoints.filter((point) => hasActionableOutcome(point) && point.testCaseId && point.configurationId).length;
@@ -422,7 +421,6 @@ function toSourcePointSnapshot(point: AzureTestPoint, suite: SuiteTreeNode): Sou
     latestOutcomeCategory: outcomeCategory(point.outcome),
     lastRunDate: point.lastRunDate,
     lastUpdatedDate: point.lastUpdatedDate,
-    tester: point.tester ?? point.assignedTo,
   };
 }
 
@@ -431,18 +429,22 @@ function buildPreviewRows(
   roots: Array<{ name: string; path: string }>,
   plannedBySourceSuite: Map<string, RecursiveSuiteMigrationNode>,
   request: TestSuiteMigrationRequest,
+  warnings: MigrationWarning[],
+  errors: MigrationError[],
 ): MigrationPreviewRow[] {
+  const issueMessagesBySuiteId = buildIssueMessagesBySuiteId(warnings, errors);
   return points.map((point) => {
     const plannedSuite = plannedBySourceSuite.get(point.sourceSuiteId);
     const root = roots.find((candidate) => point.sourceSuitePath === candidate.path || point.sourceSuitePath.startsWith(`${candidate.path} / `));
     const hasRequiredKey = Boolean(point.testCaseId && point.configurationId);
     const actionableOutcome = hasActionableOutcome(point);
-    const mappingStatus = !hasRequiredKey ? "unmapped" : request.outcomeMode === "none" || !actionableOutcome ? "willSkip" : "willUpdate";
-    const warningOrError = !hasRequiredKey
+    const pointWarningOrError = !hasRequiredKey
       ? "Missing test case or configuration ID."
       : !actionableOutcome
         ? "No source outcome to migrate."
         : undefined;
+    const suiteIssueMessages = issueMessagesBySuiteId.get(point.sourceSuiteId) ?? [];
+    const warningOrError = [pointWarningOrError, ...suiteIssueMessages].filter(Boolean).join(" ");
 
     return {
       sourceRootSuite: root?.name ?? point.sourceSuitePath,
@@ -456,11 +458,19 @@ function buildPreviewRows(
       targetSuitePath: plannedSuite?.targetSuitePath ?? "",
       targetTestCaseId: point.testCaseId,
       targetConfiguration: point.configurationName ?? point.configurationId,
-      mappingStatus,
       plannedAction: request.outcomeMode === "none" ? "Copy suite/test case only" : actionableOutcome ? "Copy and migrate latest outcome" : "Copy only",
-      warningOrError,
+      warningOrError: warningOrError || undefined,
     };
   });
+}
+
+function buildIssueMessagesBySuiteId(warnings: MigrationWarning[], errors: MigrationError[]) {
+  const messages = new Map<string, string[]>();
+  for (const issue of [...warnings, ...errors]) {
+    if (!issue.suiteId) continue;
+    messages.set(issue.suiteId, [...(messages.get(issue.suiteId) ?? []), issue.message]);
+  }
+  return messages;
 }
 
 function buildOutcomeBreakdown(points: SourceTestPointSnapshot[]) {
@@ -500,7 +510,6 @@ async function createTargetSuiteWithFallback(
     queryString: preferredType === "dynamicTestSuite" ? plannedSuite.queryString : undefined,
     inheritDefaultConfigurations: plannedSuite.inheritDefaultConfigurations,
     defaultConfigurations: plannedSuite.defaultConfigurations,
-    defaultTesters: plannedSuite.defaultTesters,
   };
   const result = await adapter.createTestSuite(createInput);
   if (result.success && result.suite) {
