@@ -1,4 +1,5 @@
 export type { SystemPromptDefinition } from "./prompt.types";
+export { buildBugReportSystemPrompt, bugReportPrompt } from "./bug-report.prompt";
 export { contextSelectionPrompt } from "./context-selection.prompt";
 export { existingTestCaseReviewPrompt } from "./existing-test-case-review.prompt";
 export {

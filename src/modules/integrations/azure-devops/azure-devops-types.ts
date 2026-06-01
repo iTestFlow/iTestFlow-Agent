@@ -21,11 +21,48 @@ export type AzureIteration = {
   finishDate?: string;
 };
 
+export type AzureArea = {
+  id: string;
+  name: string;
+  path: string;
+};
+
 export type AzureProjectUser = {
   id: string;
   displayName: string;
   uniqueName?: string;
   imageUrl?: string;
+};
+
+export type AzureWorkItemFieldValue = string | number | boolean;
+
+export type AzureWorkItemFieldType =
+  | "string"
+  | "integer"
+  | "dateTime"
+  | "plainText"
+  | "html"
+  | "treePath"
+  | "history"
+  | "double"
+  | "guid"
+  | "boolean"
+  | "identity"
+  | "picklistInteger"
+  | "picklistString"
+  | "picklistDouble"
+  | string;
+
+export type AzureWorkItemTypeField = {
+  name: string;
+  referenceName: string;
+  type?: AzureWorkItemFieldType;
+  helpText?: string;
+  required?: boolean;
+  alwaysRequired?: boolean;
+  readOnly?: boolean;
+  defaultValue?: unknown;
+  allowedValues?: AzureWorkItemFieldValue[];
 };
 
 export type Requirement = {
@@ -77,6 +114,29 @@ export type TestCase = {
 export type FinalApprovedTestCase = Omit<TestCase, "id" | "azureTestCaseId"> & {
   localId: string;
   targetUserStoryId: string;
+};
+
+export type AzureBugCustomField = {
+  referenceName: string;
+  value: AzureWorkItemFieldValue;
+};
+
+export type AzureBugWorkItemInput = {
+  title: string;
+  reproStepsHtml: string;
+  priority: 1 | 2 | 3 | 4;
+  severity: string;
+  assignedTo?: string;
+  areaPath?: string;
+  iterationPath?: string;
+  parentStoryId?: string;
+  customFields?: AzureBugCustomField[];
+};
+
+export type AzureAttachmentUpload = {
+  fileName: string;
+  contentType?: string;
+  content: ArrayBuffer;
 };
 
 export type TestPlan = {

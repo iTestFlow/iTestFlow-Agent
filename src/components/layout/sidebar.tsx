@@ -5,6 +5,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
   ClipboardCheck,
+  Bug,
   FileText,
   HelpCircle,
   Home,
@@ -26,6 +27,7 @@ const navigation = [
   { href: "/context-chatbot", label: "Context Chatbot", icon: MessageSquareText },
   { href: "/requirements/analyze", label: "Requirement Analysis", icon: ShieldCheck, section: "/requirements" },
   { href: "/test-cases/design/context", label: "Test Case Design", icon: TestTube2, section: "/test-cases/design" },
+  { href: "/bugs/create", label: "Create Bug", icon: Bug, section: "/bugs" },
   { href: "/test-coverage-matrix", label: "Test Coverage Matrix", icon: ClipboardCheck },
   { href: "/test-suite-migration", label: "Suite Migration", icon: Replace },
   { href: "/bulk-tasks", label: "Bulk Task Creation", icon: ListPlus },
