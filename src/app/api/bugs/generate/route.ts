@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { BugAttachmentDescriptorSchema, BugCustomFieldValueSchema } from "@/modules/bug-reporting/schemas/bug-report.schema";
+import { BugAttachmentDescriptorSchema, BugCustomFieldValueSchema, BugRelatedTestCaseContextSchema } from "@/modules/bug-reporting/schemas/bug-report.schema";
 import { generateBugReport } from "@/modules/bug-reporting/bug-reporting.service";
 import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
@@ -13,6 +13,7 @@ const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   bugDescription: z.string().trim().min(1, "Describe the bug before generating a report."),
   parentStoryId: z.string().trim().optional(),
+  selectedRelatedTestCase: BugRelatedTestCaseContextSchema.optional(),
   customFields: z.array(BugCustomFieldValueSchema).optional().default([]),
   attachments: z.array(BugAttachmentDescriptorSchema).optional().default([]),
 });
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
       provider,
       bugDescription: parsed.data.bugDescription,
       parentStory,
+      selectedRelatedTestCase: parsed.data.selectedRelatedTestCase,
       customFields: parsed.data.customFields,
       attachments: parsed.data.attachments,
       projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),

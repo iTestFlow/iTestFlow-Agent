@@ -26,20 +26,22 @@ export function parseExternalJson(rawOutput: string) {
   const attempts = [
     candidate,
     normalizeJsonDelimiters(candidate),
+    repairCommonExternalJsonMistakes(normalizeJsonDelimiters(candidate)),
     escapeLikelyUnescapedStringQuotes(normalizeJsonDelimiters(candidate)),
-  ];
-  let firstError: unknown;
+    escapeLikelyUnescapedStringQuotes(repairCommonExternalJsonMistakes(normalizeJsonDelimiters(candidate))),
+  ].filter(uniqueStrings);
+  let lastError: unknown;
 
   for (const attempt of attempts) {
     try {
       return JSON.parse(attempt);
     } catch (error) {
-      firstError ??= error;
+      lastError = error;
     }
   }
 
-  const message = firstError instanceof Error ? firstError.message : "Unknown JSON parse error.";
-  throw new Error(`External LLM output was not valid JSON: ${message}`);
+  const message = lastError instanceof Error ? lastError.message : "Unknown JSON parse error.";
+  throw new Error(`External LLM output was not valid JSON: ${formatJsonParseError(message, candidate)}`);
 }
 
 function extractJsonCandidate(rawOutput: string) {
@@ -63,6 +65,100 @@ function normalizeJsonDelimiters(value: string) {
   return value
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2018\u2019]/g, "'");
+}
+
+function uniqueStrings(value: string, index: number, values: string[]) {
+  return values.indexOf(value) === index;
+}
+
+function repairCommonExternalJsonMistakes(value: string) {
+  return quoteBareNumberDashLabels(stripTrailingCommas(value));
+}
+
+function stripTrailingCommas(value: string) {
+  let repaired = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (inString) {
+      repaired += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      repaired += char;
+      continue;
+    }
+
+    if (char === ",") {
+      const next = nextSignificantIndex(value, index + 1);
+      if (next !== -1 && (value[next] === "}" || value[next] === "]")) continue;
+    }
+
+    repaired += char;
+  }
+
+  return repaired;
+}
+
+function quoteBareNumberDashLabels(value: string) {
+  let repaired = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (inString) {
+      repaired += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      repaired += char;
+      continue;
+    }
+
+    if (char === ":") {
+      repaired += char;
+      let cursor = index + 1;
+      while (cursor < value.length && /\s/.test(value[cursor])) {
+        repaired += value[cursor];
+        cursor += 1;
+      }
+      const match = value.slice(cursor).match(/^([1-4])\s*-\s*([^,\}\]\n\r]+)/);
+      if (match) {
+        repaired += `"${escapeJsonString(`${match[1]} - ${match[2].trim()}`)}"`;
+        index = cursor + match[0].length - 1;
+      }
+      continue;
+    }
+
+    repaired += char;
+  }
+
+  return repaired;
+}
+
+function escapeJsonString(value: string) {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function findBalancedJsonEnd(value: string, startIndex: number) {
@@ -138,8 +234,12 @@ function escapeLikelyUnescapedStringQuotes(value: string) {
     }
 
     if (char === "\\") {
-      repaired += char;
-      escaped = true;
+      if (isValidJsonEscapeStart(value[index + 1])) {
+        repaired += char;
+        escaped = true;
+      } else {
+        repaired += "\\\\";
+      }
       continue;
     }
 
@@ -173,6 +273,10 @@ function escapeLikelyUnescapedStringQuotes(value: string) {
   }
 
   return repaired;
+}
+
+function isValidJsonEscapeStart(value: string | undefined) {
+  return value !== undefined && /["\\\/bfnrtu]/.test(value);
 }
 
 function inferStringRole(container: "object" | "array" | undefined, lastSignificant: string) {
@@ -231,6 +335,17 @@ function quotedTokenIsFollowedByColon(value: string, quoteIndex: number) {
   }
 
   return false;
+}
+
+function formatJsonParseError(message: string, candidate: string) {
+  const positionMatch = message.match(/position\s+(\d+)/i);
+  if (!positionMatch) return `${message}. Paste one complete JSON object from the opening { to the final }.`;
+  const position = Number(positionMatch[1]);
+  if (!Number.isFinite(position)) return `${message}. Paste one complete JSON object from the opening { to the final }.`;
+  const start = Math.max(0, position - 80);
+  const end = Math.min(candidate.length, position + 80);
+  const snippet = candidate.slice(start, end).replace(/\s+/g, " ").trim();
+  return `${message}. Check the JSON near: ${snippet}`;
 }
 
 function formatZodIssues(error: z.ZodError) {
