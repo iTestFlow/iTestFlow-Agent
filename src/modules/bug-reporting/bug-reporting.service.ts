@@ -12,6 +12,7 @@ import {
   BugAttachmentDescriptorSchema,
   type BugCustomFieldValue,
   BugCustomFieldValueSchema,
+  type BugRelatedTestCaseContext,
   GeneratedBugReportSchema,
 } from "./schemas/bug-report.schema";
 
@@ -20,6 +21,7 @@ export async function generateBugReport(input: {
   provider: LLMProvider;
   bugDescription: string;
   parentStory?: Requirement | null;
+  selectedRelatedTestCase?: BugRelatedTestCaseContext;
   customFields?: BugCustomFieldValue[];
   attachments?: BugAttachmentDescriptor[];
   projectKnowledgeBase?: unknown | null;
@@ -68,6 +70,7 @@ export function buildBugReportPromptDraft(input: {
   scope: ProjectScope;
   bugDescription: string;
   parentStory?: Requirement | null;
+  selectedRelatedTestCase?: BugRelatedTestCaseContext;
   customFields?: BugCustomFieldValue[];
   attachments?: BugAttachmentDescriptor[];
   projectKnowledgeBase?: unknown | null;
@@ -78,6 +81,7 @@ export function buildBugReportPromptDraft(input: {
     scope,
     bugDescription: input.bugDescription,
     parentStory: input.parentStory,
+    selectedRelatedTestCase: input.selectedRelatedTestCase,
     customFields: normalizePromptCustomFields(input.customFields),
     attachments: normalizePromptAttachments(input.attachments),
     projectKnowledgeBase: input.projectKnowledgeBase,
@@ -137,6 +141,7 @@ function buildBugReportMarkdownPrompt(input: {
   scope: ProjectScope;
   bugDescription: string;
   parentStory?: Requirement | null;
+  selectedRelatedTestCase?: BugRelatedTestCaseContext;
   customFields: BugCustomFieldValue[];
   attachments: BugAttachmentDescriptor[];
   projectKnowledgeBase?: unknown | null;
@@ -151,6 +156,9 @@ function buildBugReportMarkdownPrompt(input: {
     "",
     "# Parent User Story Context",
     renderParentStory(input.parentStory),
+    "",
+    "# Selected Related Test Case Context",
+    renderSelectedRelatedTestCase(input.selectedRelatedTestCase),
     "",
     "# User-Supplied Azure DevOps Fields",
     renderCustomFields(input.customFields),
@@ -178,6 +186,36 @@ function renderParentStory(story?: Requirement | null) {
     story.areaPath ? `- Area Path: ${story.areaPath}` : undefined,
     story.iterationPath ? `- Iteration Path: ${story.iterationPath}` : undefined,
   ].filter(Boolean).join("\n");
+}
+
+function renderSelectedRelatedTestCase(testCase?: BugRelatedTestCaseContext) {
+  if (!testCase) return "No related test case was selected.";
+  const id = testCase.azureTestCaseId ?? testCase.id;
+  const lines = [
+    "Use this selected story test case as grounding and inspiration for the bug reproduction steps, expected behavior, setup, and test data. Do not blindly copy the test case steps; adapt them to the user's reported defect and only include steps that help reproduce the bug.",
+    "",
+    id ? `- ID: ${id}` : undefined,
+    `- Title: ${testCase.title}`,
+    testCase.testType ? `- Type: ${testCase.testType}` : undefined,
+    testCase.priority ? `- Priority: ${testCase.priority}` : undefined,
+    testCase.description ? `- Description: ${stripHtml(testCase.description)}` : undefined,
+    testCase.preconditions ? `- Preconditions: ${stripHtml(testCase.preconditions)}` : undefined,
+    testCase.testData ? `- Test Data: ${stripHtml(testCase.testData)}` : undefined,
+    testCase.expectedResult ? `- Overall Expected Result: ${stripHtml(testCase.expectedResult)}` : undefined,
+    "",
+    "Steps:",
+    ...renderTestCaseSteps(testCase.steps),
+  ];
+  return lines.filter((line) => line !== undefined).join("\n");
+}
+
+function renderTestCaseSteps(steps: BugRelatedTestCaseContext["steps"]) {
+  if (!steps.length) return ["No structured steps were supplied."];
+  return steps.map((step, index) => {
+    const action = step.action ? stripHtml(step.action) : "No action supplied";
+    const expectedResult = step.expectedResult ? stripHtml(step.expectedResult) : "No expected result supplied";
+    return `${index + 1}. Action: ${action}\n   Expected Result: ${expectedResult}`;
+  });
 }
 
 function renderCustomFields(fields: BugCustomFieldValue[]) {

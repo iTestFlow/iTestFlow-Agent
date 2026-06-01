@@ -228,4 +228,13 @@ export interface AzureDevOpsAdapter {
     success: boolean;
     error?: string;
   }>;
+
+  linkTestCaseToWorkItem(input: {
+    projectId: string;
+    workItemId: string;
+    azureTestCaseId: string;
+  }): Promise<{
+    success: boolean;
+    error?: string;
+  }>;
 }

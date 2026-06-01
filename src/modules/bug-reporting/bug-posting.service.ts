@@ -203,18 +203,12 @@ function buildReproStepsHtml(report: {
   stepsToReproduce: string;
   expectedResult: string;
   actualResult: string;
-  systemInfo?: string;
-  environment?: string;
-  category?: string;
 }) {
   const sections = [
     ["Precondition", report.precondition],
     ["Steps to Reproduce", report.stepsToReproduce],
     ["Expected Result", report.expectedResult],
     ["Actual Result", report.actualResult],
-    ["System Info", report.systemInfo],
-    ["Environment", report.environment],
-    ["Category", report.category],
   ] as const;
 
   return sections

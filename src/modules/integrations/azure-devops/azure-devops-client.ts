@@ -707,10 +707,22 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     userStoryId: string;
     azureTestCaseId: string;
   }): Promise<{ success: boolean; error?: string }> {
+    return this.linkTestCaseToWorkItem({
+      projectId: input.projectId,
+      workItemId: input.userStoryId,
+      azureTestCaseId: input.azureTestCaseId,
+    });
+  }
+
+  async linkTestCaseToWorkItem(input: {
+    projectId: string;
+    workItemId: string;
+    azureTestCaseId: string;
+  }): Promise<{ success: boolean; error?: string }> {
     try {
       const testCaseUrl = `${this.organizationUrl}/${encodeURIComponent(input.projectId)}/_apis/wit/workItems/${input.azureTestCaseId}`;
       await this.requestJson<JsonValue>(
-        `${encodeURIComponent(input.projectId)}/_apis/wit/workitems/${input.userStoryId}?api-version=7.1`,
+        `${encodeURIComponent(input.projectId)}/_apis/wit/workitems/${input.workItemId}?api-version=7.1`,
         {
           method: "PATCH",
           contentType: "application/json-patch+json",

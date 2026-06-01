@@ -6,6 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -109,6 +110,48 @@ type PostBugResult = {
   attachmentResults: Array<{ fileName: string; success: boolean; attachmentUrl?: string; error?: string }>;
 };
 
+type TestCaseStep = {
+  stepNumber?: number;
+  action: string;
+  expectedResult: string;
+};
+
+type LinkedTestCase = {
+  id: string;
+  title: string;
+  description?: string;
+  preconditions?: string;
+  steps: Array<{ action: string; expectedResult: string }>;
+  testData?: string;
+  expectedResult?: string;
+  priority?: 1 | 2 | 3 | 4;
+  testType?: string;
+  automationSuitability?: string;
+  azureTestCaseId?: string;
+};
+
+type GeneratedTestCase = {
+  id: string;
+  title: string;
+  description: string;
+  priority: 1 | 2 | 3 | 4;
+  type: string;
+  category: string;
+  preconditions: string;
+  testData?: string;
+  steps: TestCaseStep[];
+};
+
+type ReproductionPublishResult = {
+  mode: "existing" | "suggested";
+  azureTestCaseId?: string;
+  success: boolean;
+  create?: { success: boolean; azureTestCaseId?: string; error?: string };
+  storyLink?: { success: boolean; error?: string };
+  bugLink?: { success: boolean; error?: string };
+  error?: string;
+};
+
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
@@ -152,6 +195,11 @@ export function BugCreateClient() {
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
   const [report, setReport] = useState<BugReport | null>(null);
   const [postState, setPostState] = useState<ApiState<PostBugResult>>({ loading: false, error: null, data: null });
+  const [linkedTestCases, setLinkedTestCases] = useState<ApiState<LinkedTestCase[]>>({ loading: false, error: null, data: null });
+  const [selectedTestCaseId, setSelectedTestCaseId] = useState("");
+  const [suggestTestCaseChecked, setSuggestTestCaseChecked] = useState(false);
+  const [suggestedTestCase, setSuggestedTestCase] = useState<GeneratedTestCase | null>(null);
+  const [testCasePublishState, setTestCasePublishState] = useState<ApiState<ReproductionPublishResult>>({ loading: false, error: null, data: null });
 
   const fields = useMemo(() => metadata.data?.fields ?? [], [metadata.data?.fields]);
   const users = useMemo(() => metadata.data?.users ?? [], [metadata.data?.users]);
@@ -159,6 +207,7 @@ export function BugCreateClient() {
   const iterations = useMemo(() => metadata.data?.iterations ?? [], [metadata.data?.iterations]);
   const fieldOptionsId = "bug-custom-field-options";
   const parentStoryInvalid = Boolean(parentStory && parentStory.workItemType !== "User Story");
+  const parentStoryValid = Boolean(parentStory && parentStory.workItemType === "User Story");
   const customFields = useMemo(() => rowsToCustomFields(customFieldRows, fields), [customFieldRows, fields]);
 
   useEffect(() => {
@@ -175,6 +224,7 @@ export function BugCreateClient() {
       setCustomFieldRows([]);
       setReport(null);
       setPostState({ loading: false, error: null, data: null });
+      resetTestCaseWorkflow();
     };
     window.addEventListener("itestflow:active-project-changed", onChange);
     return () => window.removeEventListener("itestflow:active-project-changed", onChange);
@@ -208,18 +258,29 @@ export function BugCreateClient() {
     setParentStory(null);
     setParentState({ loading: false, error: null, data: null });
     resetManual();
+    resetTestCaseWorkflow();
     setPostState({ loading: false, error: null, data: null });
   }
 
   function changeBugDescription(value: string) {
     setBugDescription(value);
     resetManual();
+    setSuggestedTestCase(null);
+    setTestCasePublishState({ loading: false, error: null, data: null });
   }
 
   function resetManual() {
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
+  }
+
+  function resetTestCaseWorkflow() {
+    setLinkedTestCases({ loading: false, error: null, data: null });
+    setSelectedTestCaseId("");
+    setSuggestTestCaseChecked(false);
+    setSuggestedTestCase(null);
+    setTestCasePublishState({ loading: false, error: null, data: null });
   }
 
   const loadParentStory = useCallback(async () => {
@@ -252,6 +313,43 @@ export function BugCreateClient() {
     }, 700);
     return () => window.clearTimeout(timeoutId);
   }, [loadParentStory, parentStoryId, scope]);
+
+  useEffect(() => {
+    if (!scope || !parentStoryValid || !parentStory?.id) {
+      setLinkedTestCases({ loading: false, error: null, data: null });
+      setSelectedTestCaseId("");
+      setSuggestTestCaseChecked(false);
+      setSuggestedTestCase(null);
+      setTestCasePublishState({ loading: false, error: null, data: null });
+      return;
+    }
+
+    let cancelled = false;
+    setSelectedTestCaseId("");
+    setSuggestedTestCase(null);
+    setTestCasePublishState({ loading: false, error: null, data: null });
+    setLinkedTestCases({ loading: true, error: null, data: null });
+    void postJson<{ linkedTestCases: LinkedTestCase[] }>("/api/azure-devops/linked-test-cases", {
+      scope,
+      userStoryId: parentStory.id,
+    })
+      .then((data) => {
+        if (!cancelled) setLinkedTestCases({ loading: false, error: null, data: data.linkedTestCases });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setLinkedTestCases({
+            loading: false,
+            error: error instanceof Error ? error.message : "Linked test case fetch failed.",
+            data: null,
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [parentStory?.id, parentStoryValid, scope]);
 
   useEffect(() => {
     if (!report || !shouldScrollToReviewRef.current) return;
@@ -305,12 +403,35 @@ export function BugCreateClient() {
   }
 
   function buildGenerationPayload(activeScope: ActiveProjectScope) {
+    const selectedRelatedTestCase = buildSelectedRelatedTestCaseContext();
     return {
       scope: activeScope,
       bugDescription,
       parentStoryId: parentStoryId.trim() || undefined,
+      selectedRelatedTestCase,
       customFields,
       attachments: attachments.map((file) => ({ fileName: file.name, contentType: file.type || undefined, size: file.size })),
+    };
+  }
+
+  function buildSelectedRelatedTestCaseContext() {
+    if (!selectedTestCaseId) return undefined;
+    const selected = linkedTestCases.data?.find((testCase) => testCaseId(testCase) === selectedTestCaseId);
+    if (!selected) return undefined;
+    return {
+      id: selected.id,
+      azureTestCaseId: selected.azureTestCaseId,
+      title: selected.title,
+      description: selected.description,
+      preconditions: selected.preconditions,
+      steps: (selected.steps ?? []).map((step) => ({
+        action: step.action,
+        expectedResult: step.expectedResult,
+      })),
+      testData: selected.testData,
+      expectedResult: selected.expectedResult,
+      priority: selected.priority,
+      testType: selected.testType,
     };
   }
 
@@ -320,6 +441,8 @@ export function BugCreateClient() {
     shouldScrollToReviewRef.current = true;
     setReport(nextReport);
     setCustomFieldRows(customFieldsToRows(mergedCustomFields, fields));
+    setSuggestedTestCase(suggestTestCaseChecked ? buildSuggestedTestCaseFromBugReport(nextReport, bugDescription) : null);
+    setTestCasePublishState({ loading: false, error: null, data: null });
   }
 
   function updateReport<K extends keyof BugReport>(key: K, value: BugReport[K]) {
@@ -353,9 +476,88 @@ export function BugCreateClient() {
     setCustomFieldRows((current) => current.filter((row) => row.id !== rowId));
   }
 
+  function selectRelatedTestCase(testCaseId: string) {
+    setSelectedTestCaseId(testCaseId);
+    if (testCaseId) {
+      setSuggestTestCaseChecked(false);
+      setSuggestedTestCase(null);
+    }
+    setTestCasePublishState({ loading: false, error: null, data: null });
+  }
+
+  function changeSuggestTestCaseChecked(checked: boolean) {
+    setSuggestTestCaseChecked(checked);
+    setTestCasePublishState({ loading: false, error: null, data: null });
+    setSuggestedTestCase(checked && report ? buildSuggestedTestCaseFromBugReport(report, bugDescription) : null);
+  }
+
+  function updateSuggestedTestCase(patch: Partial<GeneratedTestCase>) {
+    setSuggestedTestCase((current) => (current ? { ...current, ...patch } : current));
+    setTestCasePublishState({ loading: false, error: null, data: null });
+  }
+
+  function updateSuggestedStep(index: number, patch: Partial<TestCaseStep>) {
+    setSuggestedTestCase((current) => {
+      if (!current) return current;
+      const steps = current.steps.map((step, stepIndex) => (stepIndex === index ? { ...step, ...patch } : step));
+      return { ...current, steps };
+    });
+    setTestCasePublishState({ loading: false, error: null, data: null });
+  }
+
+  function addSuggestedStep() {
+    setSuggestedTestCase((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        steps: [
+          ...current.steps,
+          { stepNumber: current.steps.length + 1, action: "", expectedResult: "" },
+        ],
+      };
+    });
+    setTestCasePublishState({ loading: false, error: null, data: null });
+  }
+
+  function removeSuggestedStep(index: number) {
+    setSuggestedTestCase((current) => {
+      if (!current || current.steps.length <= 1) return current;
+      return {
+        ...current,
+        steps: current.steps
+          .filter((_, stepIndex) => stepIndex !== index)
+          .map((step, stepIndex) => ({ ...step, stepNumber: stepIndex + 1 })),
+      };
+    });
+    setTestCasePublishState({ loading: false, error: null, data: null });
+  }
+
+  async function publishReproductionTestCase() {
+    if (!scope || !parentStoryValid || !parentStory?.id || !postState.data || testCasePublishState.loading) return;
+    if (selectedTestCaseId || !suggestedTestCase) return;
+
+    setTestCasePublishState({ loading: true, error: null, data: null });
+    try {
+      const data = await postJson<ReproductionPublishResult>("/api/bugs/reproduction-test-case/publish", {
+        scope,
+        parentStoryId: parentStory.id,
+        bugId: postState.data.bugId,
+        suggestedTestCase,
+      });
+      setTestCasePublishState({ loading: false, error: null, data });
+    } catch (error) {
+      setTestCasePublishState({
+        loading: false,
+        error: error instanceof Error ? error.message : "Reproduction test case publish failed.",
+        data: null,
+      });
+    }
+  }
+
   async function postBug() {
     if (!scope || !report || parentStoryInvalid) return;
     setPostState({ loading: true, error: null, data: null });
+    setTestCasePublishState({ loading: false, error: null, data: null });
     try {
       const formData = new FormData();
       formData.append(
@@ -382,6 +584,12 @@ export function BugCreateClient() {
 
   const generateDisabled = !scope || !bugDescription.trim() || generateState.loading || manualDraft.loading || parentStoryInvalid;
   const postDisabled = !scope || !report || !report.title.trim() || !report.actualResult.trim() || !report.stepsToReproduce.trim() || postState.loading || parentStoryInvalid;
+  const publishTestCaseDisabled =
+    !scope ||
+    !parentStoryValid ||
+    !postState.data ||
+    testCasePublishState.loading ||
+    !isGeneratedTestCaseReady(suggestedTestCase);
 
   return (
     <div className="space-y-5">
@@ -389,7 +597,7 @@ export function BugCreateClient() {
       <Card>
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <CardTitle className="text-base">Step 1 - Describe Bug</CardTitle>
+            <CardTitle className="text-base">Describe Bug</CardTitle>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">Capture the defect, parent story, Azure fields, assignee, and evidence.</p>
           </div>
           <ModeTabs mode={mode} onChange={setMode} />
@@ -412,11 +620,20 @@ export function BugCreateClient() {
                 onChange={(event) => changeParentStoryId(event.target.value)}
                 inputMode="numeric"
                 maxLength={10}
-                placeholder="e.g. 358867"
+                placeholder="e.g. 123456"
               />
             </Field>
             <ParentStoryPanel story={parentStory} loading={parentState.loading} error={parentState.error} />
           </div>
+
+          <RelatedTestCasePanel
+            parentStory={parentStory}
+            linkedTestCases={linkedTestCases}
+            selectedTestCaseId={selectedTestCaseId}
+            suggestTestCaseChecked={suggestTestCaseChecked}
+            onSelectTestCase={selectRelatedTestCase}
+            onSuggestTestCaseChange={changeSuggestTestCaseChecked}
+          />
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Field label="Assignee">
@@ -529,13 +746,14 @@ export function BugCreateClient() {
       {report ? (
         <Card ref={reviewSectionRef}>
           <CardHeader>
-            <CardTitle className="text-base">Step 3 - Review & Post</CardTitle>
+            <CardTitle className="text-base">Review & Post</CardTitle>
           </CardHeader>
           <CardContent className="space-y-5 pt-5">
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(220px,280px)]">
-              <Field label="Title">
-                <Input value={report.title} onChange={(event) => updateReport("title", event.target.value)} />
-              </Field>
+            <Field label="Title">
+              <Input value={report.title} onChange={(event) => updateReport("title", event.target.value)} />
+            </Field>
+
+            <div className="grid gap-3 lg:grid-cols-2">
               <SuggestionSelect
                 label="Priority"
                 rationale={report.priorityRationale}
@@ -576,9 +794,6 @@ export function BugCreateClient() {
                 <Textarea value={report.actualResult} onChange={(event) => updateReport("actualResult", event.target.value)} />
               </Field>
             </div>
-            <Field label="System Info">
-              <Textarea value={report.systemInfo} onChange={(event) => updateReport("systemInfo", event.target.value)} />
-            </Field>
 
             <CustomFieldsSummary customFields={customFields} />
 
@@ -591,6 +806,20 @@ export function BugCreateClient() {
                 {postState.loading ? "Posting..." : "Post to Azure DevOps"}
               </Button>
             </div>
+
+            {suggestedTestCase && !selectedTestCaseId ? (
+              <SuggestedReproductionTestCasePanel
+                testCase={suggestedTestCase}
+                publishState={testCasePublishState}
+                bugId={postState.data?.bugId}
+                publishDisabled={publishTestCaseDisabled}
+                onChange={updateSuggestedTestCase}
+                onStepChange={updateSuggestedStep}
+                onAddStep={addSuggestedStep}
+                onRemoveStep={removeSuggestedStep}
+                onPublish={publishReproductionTestCase}
+              />
+            ) : null}
           </CardContent>
         </Card>
       ) : (
@@ -620,7 +849,7 @@ function ModeTabs({ mode, onChange }: { mode: WorkflowMode; onChange: (mode: Wor
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid gap-2">
+    <div className="grid content-start gap-2">
       <Label>{label}</Label>
       {children}
     </div>
@@ -745,29 +974,27 @@ function SuggestionSelect({
   onChange: (value: string) => void;
 }) {
   return (
-    <div className="grid gap-2 rounded-md border border-input bg-muted/20 p-3">
-      <div className="flex min-h-6 items-center justify-between gap-2">
-        <Label>{label}</Label>
-        <Badge variant="secondary" className="shrink-0">LLM suggested</Badge>
-      </div>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label} - {option.hint}
-          </option>
-        ))}
-      </select>
-      {rationale ? (
-        <p className="min-h-10 text-xs leading-5 text-muted-foreground">
-          {rationale}
+    <div className="rounded-md border border-input bg-background p-3">
+      <div className="grid gap-3 md:grid-cols-[120px_minmax(180px,240px)_minmax(0,1fr)] md:items-start">
+        <div className="flex min-h-10 flex-wrap items-center gap-2">
+          <Label>{label}</Label>
+          <Badge variant="secondary" className="shrink-0">LLM</Badge>
+        </div>
+        <select
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label} - {option.hint}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs leading-5 text-muted-foreground">
+          {rationale || "No rationale provided."}
         </p>
-      ) : (
-        <p className="min-h-10 text-xs leading-5 text-muted-foreground">No rationale provided.</p>
-      )}
+      </div>
     </div>
   );
 }
@@ -790,6 +1017,295 @@ function ParentStoryPanel({ story, loading, error }: { story: WorkItem | null; l
         {story.areaPath ? <span>Area: {story.areaPath}</span> : null}
         {story.iterationPath ? <span>Iteration: {story.iterationPath}</span> : null}
       </div>
+    </div>
+  );
+}
+
+function RelatedTestCasePanel({
+  parentStory,
+  linkedTestCases,
+  selectedTestCaseId,
+  suggestTestCaseChecked,
+  onSelectTestCase,
+  onSuggestTestCaseChange,
+}: {
+  parentStory: WorkItem | null;
+  linkedTestCases: ApiState<LinkedTestCase[]>;
+  selectedTestCaseId: string;
+  suggestTestCaseChecked: boolean;
+  onSelectTestCase: (testCaseId: string) => void;
+  onSuggestTestCaseChange: (checked: boolean) => void;
+}) {
+  const storyReady = parentStory?.workItemType === "User Story";
+  const cases = linkedTestCases.data ?? [];
+  const selectedCase = cases.find((testCase) => testCaseId(testCase) === selectedTestCaseId);
+
+  return (
+    <div className="grid gap-4 rounded-md border border-input bg-muted/10 p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Label>Related test case</Label>
+            <Badge variant="secondary">Optional</Badge>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            Select an existing story test case, or review the generated reproduction test case after the bug draft is created.
+          </p>
+        </div>
+        {storyReady ? <Badge variant="outline">Story #{parentStory.id}</Badge> : null}
+      </div>
+
+      {!storyReady ? <InfoBlock message="Load a valid parent User Story to fetch related test cases." /> : null}
+      {linkedTestCases.error ? <ErrorBlock message={linkedTestCases.error} /> : null}
+
+      <TestCasePicker
+        value={selectedTestCaseId}
+        testCases={cases}
+        loading={linkedTestCases.loading}
+        disabled={!storyReady}
+        onChange={onSelectTestCase}
+      />
+
+      {selectedCase ? <SelectedTestCasePreview testCase={selectedCase} /> : null}
+
+      {!selectedTestCaseId ? (
+        <label className={`flex items-start gap-3 rounded-md border border-input bg-background p-3 text-sm ${storyReady ? "" : "opacity-60"}`}>
+          <Checkbox
+            checked={suggestTestCaseChecked}
+            disabled={!storyReady}
+            onCheckedChange={(checked) => onSuggestTestCaseChange(checked === true)}
+            className="mt-0.5"
+          />
+          <span className="grid gap-1">
+            <span className="font-medium">Suggest test case</span>
+            <span className="text-xs leading-5 text-muted-foreground">
+              Build an editable reproduction test case after the bug draft is generated.
+            </span>
+          </span>
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
+function TestCasePicker({
+  value,
+  testCases,
+  loading,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  testCases: LinkedTestCase[];
+  loading: boolean;
+  disabled: boolean;
+  onChange: (testCaseId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = testCases.find((testCase) => testCaseId(testCase) === value);
+  const label = loading ? "Loading linked test cases..." : selected ? `#${testCaseId(selected)} - ${selected.title}` : "No related test case selected";
+
+  function selectTestCase(testCase: LinkedTestCase) {
+    onChange(testCaseId(testCase));
+    setOpen(false);
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <div className="flex gap-2">
+        <PopoverTrigger asChild>
+          <Button type="button" variant="outline" disabled={disabled || loading} className="h-10 min-w-0 flex-1 justify-between px-3">
+            <span className="inline-flex min-w-0 items-center gap-2">
+              {loading ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+              <span className="truncate">{label}</span>
+            </span>
+            <ChevronDown className={`size-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+          </Button>
+        </PopoverTrigger>
+        {value ? (
+          <Button type="button" variant="ghost" size="icon" onClick={() => onChange("")} aria-label="Clear related test case">
+            <X className="size-4" />
+          </Button>
+        ) : null}
+      </div>
+      <PopoverContent align="start" className="w-[520px] max-w-[calc(100vw-2rem)] p-0">
+        <Command>
+          <CommandInput placeholder="Search linked test cases" />
+          <CommandList>
+            <CommandEmpty>No linked test cases found.</CommandEmpty>
+            <CommandGroup>
+              {testCases.map((testCase) => {
+                const id = testCaseId(testCase);
+                return (
+                  <CommandItem
+                    key={id}
+                    value={`${id} ${testCase.title}`}
+                    data-checked={value === id}
+                    onSelect={() => selectTestCase(testCase)}
+                    className="items-start gap-3 py-2"
+                  >
+                    <span className="mt-0.5 font-mono text-xs text-primary">#{id}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium">{testCase.title}</span>
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        {testCase.steps?.length ?? 0} steps{testCase.priority ? ` - Priority ${testCase.priority}` : ""}
+                      </span>
+                    </span>
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function SelectedTestCasePreview({ testCase }: { testCase: LinkedTestCase }) {
+  return (
+    <div className="grid gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-xs font-semibold">#{testCaseId(testCase)}</span>
+        <Badge variant="secondary">{testCase.testType ?? "Test Case"}</Badge>
+        {testCase.priority ? <Badge variant="outline">Priority {testCase.priority}</Badge> : null}
+      </div>
+      <div className="font-medium">{testCase.title}</div>
+      <div className="text-xs text-emerald-800">
+        This existing story test case is selected as the related reproduction case.
+      </div>
+    </div>
+  );
+}
+
+function SuggestedReproductionTestCasePanel({
+  testCase,
+  publishState,
+  bugId,
+  publishDisabled,
+  onChange,
+  onStepChange,
+  onAddStep,
+  onRemoveStep,
+  onPublish,
+}: {
+  testCase: GeneratedTestCase;
+  publishState: ApiState<ReproductionPublishResult>;
+  bugId?: string;
+  publishDisabled: boolean;
+  onChange: (patch: Partial<GeneratedTestCase>) => void;
+  onStepChange: (index: number, patch: Partial<TestCaseStep>) => void;
+  onAddStep: () => void;
+  onRemoveStep: (index: number) => void;
+  onPublish: () => void;
+}) {
+  return (
+    <div className="overflow-hidden rounded-md border border-blue-100 bg-white shadow-sm">
+      <div className="flex flex-col gap-2 border-b border-blue-100 bg-white p-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="text-sm font-semibold text-slate-950">Suggested Reproduction Test Case</div>
+          <div className="mt-1 text-xs leading-5 text-muted-foreground">Edit the generated regression case after reviewing the bug draft, then create and link it after the bug is posted.</div>
+        </div>
+      </div>
+
+      <div className="space-y-4 bg-white p-4">
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_170px]">
+          <Input className="bg-white" value={testCase.title} onChange={(event) => onChange({ title: event.target.value })} aria-label="Suggested test case title" />
+          <select
+            value={String(testCase.priority)}
+            onChange={(event) => onChange({ priority: Number(event.target.value) as GeneratedTestCase["priority"] })}
+            className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm"
+            aria-label="Suggested test case priority"
+          >
+            <option value="1">1 - Highest</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4 - Lowest</option>
+          </select>
+        </div>
+
+        <div className="overflow-hidden rounded-md border border-blue-100 bg-white">
+          <div className="grid grid-cols-[48px_minmax(0,1fr)_minmax(0,1fr)_42px] gap-2 border-b border-blue-100 bg-blue-50/60 px-3 py-2 text-xs font-semibold text-slate-600">
+            <span>#</span>
+            <span>Action</span>
+            <span>Expected result</span>
+            <span />
+          </div>
+          {testCase.steps.map((step, index) => (
+            <div key={index} className="grid gap-2 border-b border-blue-50 bg-white p-3 last:border-b-0 lg:grid-cols-[48px_minmax(0,1fr)_minmax(0,1fr)_42px]">
+              <span className="pt-2 font-mono text-xs text-muted-foreground">{index + 1}</span>
+              <Textarea className="bg-white" value={step.action} onChange={(event) => onStepChange(index, { action: event.target.value })} placeholder="Action" />
+              <Textarea className="bg-white" value={step.expectedResult} onChange={(event) => onStepChange(index, { expectedResult: event.target.value })} placeholder="Expected result" />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => onRemoveStep(index)}
+                disabled={testCase.steps.length <= 1}
+                aria-label={`Remove step ${index + 1}`}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" onClick={onAddStep}>
+            <Plus className="size-4" />
+            Add Step
+          </Button>
+          <Button type="button" variant="outline" onClick={() => navigator.clipboard.writeText(JSON.stringify(testCase, null, 2))}>
+            <Copy className="size-4" />
+            Copy JSON
+          </Button>
+        </div>
+
+        <div className="grid gap-3 rounded-md border border-blue-100 bg-blue-50/50 p-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm leading-6 text-muted-foreground">
+              {bugId
+                ? `Bug ${bugId} is ready for the test case creation and linking action.`
+                : "Post the bug first, then create and link this generated reproduction test case."}
+            </div>
+            <Button type="button" onClick={onPublish} disabled={publishDisabled}>
+              {publishState.loading ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+              {publishState.loading ? "Linking..." : "Create / link test case"}
+            </Button>
+          </div>
+          {publishState.error ? <ErrorBlock message={publishState.error} /> : null}
+          {publishState.data ? <ReproductionPublishSummary result={publishState.data} /> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReproductionPublishSummary({ result }: { result: ReproductionPublishResult }) {
+  return (
+    <div className={`rounded-md border p-3 text-sm ${result.success ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="font-semibold">
+          {result.success ? "Reproduction test case linked" : "Reproduction test case partially linked"}
+        </div>
+        <Badge variant={result.success ? "default" : "secondary"}>{result.mode === "suggested" ? "Suggested" : "Existing"}</Badge>
+      </div>
+      <div className="mt-2 grid gap-1 text-xs">
+        <StatusLine label="Test case" success={Boolean(result.azureTestCaseId)} detail={result.azureTestCaseId ? `Azure ${result.azureTestCaseId}` : result.error} />
+        {result.mode === "suggested" ? <StatusLine label="Create" success={result.create?.success} detail={result.create?.error} /> : null}
+        {result.mode === "suggested" ? <StatusLine label="Story link" success={result.storyLink?.success} detail={result.storyLink?.error} /> : null}
+        <StatusLine label="Bug link" success={result.bugLink?.success} detail={result.bugLink?.error} />
+      </div>
+    </div>
+  );
+}
+
+function StatusLine({ label, success, detail }: { label: string; success?: boolean; detail?: string }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="font-medium">{label}:</span>
+      <span>{success ? "Success" : "Failed"}</span>
+      {detail ? <span className="break-words opacity-80">{detail}</span> : null}
     </div>
   );
 }
@@ -940,12 +1456,18 @@ function ManualLLMPanel({
   error?: string | null;
 }) {
   const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timeoutId = window.setTimeout(() => setCopied(false), 3000);
+    return () => window.clearTimeout(timeoutId);
+  }, [copied]);
+
   if (!draft && !error) return null;
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Step 2 - External LLM</CardTitle>
+        <CardTitle className="text-base">External LLM Prompt</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4 pt-5">
         {error ? <ErrorBlock message={error} /> : null}
@@ -1054,6 +1576,98 @@ function EmptyBlock({ message }: { message: string }) {
       </div>
     </div>
   );
+}
+
+function buildSuggestedTestCaseFromBugReport(report: BugReport, sourceBugDescription: string): GeneratedTestCase {
+  const parsedSteps = parseBugSteps(report.stepsToReproduce);
+  const reproductionSteps = parsedSteps.length ? parsedSteps : [report.stepsToReproduce || sourceBugDescription || report.title];
+  const steps: TestCaseStep[] = [
+    {
+      stepNumber: 1,
+      action: `Preconditions:\n${report.precondition || "No specific preconditions were generated."}`,
+      expectedResult: "Preconditions are met",
+    },
+    ...reproductionSteps.map((step, index) => ({
+      stepNumber: index + 2,
+      action: step,
+      expectedResult: index === reproductionSteps.length - 1 ? report.expectedResult : "Step completes successfully.",
+    })),
+  ];
+
+  return {
+    id: createLocalId("bug-repro-tc"),
+    title: buildReproductionTestCaseTitle(report),
+    description: [
+      sourceBugDescription.trim() ? `Bug description:\n${sourceBugDescription.trim()}` : "",
+      report.actualResult ? `Actual result to prevent:\n${report.actualResult}` : "",
+    ].filter(Boolean).join("\n\n"),
+    priority: report.priority,
+    type: "regression",
+    category: report.category || "Functional",
+    preconditions: report.precondition,
+    testData: report.systemInfo || report.environment || "",
+    steps,
+  };
+}
+
+function buildReproductionTestCaseTitle(report: BugReport) {
+  const expectedBehaviorTitle = testCaseTitleFromExpectedResult(report.expectedResult);
+  if (expectedBehaviorTitle && !sameText(expectedBehaviorTitle, report.title)) return expectedBehaviorTitle;
+
+  const firstStep = parseBugSteps(report.stepsToReproduce)[0];
+  const stepTitle = firstStep ? compactText(`Verify reproduction flow: ${firstStep}`) : "";
+  if (stepTitle && !sameText(stepTitle, report.title)) return truncateText(stepTitle, 140);
+
+  const category = report.category || "reported defect";
+  return `Verify ${category.toLowerCase()} reproduction scenario`;
+}
+
+function testCaseTitleFromExpectedResult(value: string) {
+  const expected = compactText(value).split(/(?<=[.!?])\s+|,\s+/)[0]?.replace(/[.!?]+$/, "").trim();
+  if (!expected) return "";
+
+  const systemShould = expected.match(/^the\s+system\s+should\s+(.+)$/i);
+  if (systemShould?.[1]) return truncateText(`Verify the system ${systemShould[1]}`, 140);
+
+  const shouldMatch = expected.match(/^(.+?)\s+should\s+(.+)$/i);
+  if (shouldMatch?.[1] && shouldMatch[2]) {
+    return truncateText(`Verify ${shouldMatch[1].trim()} ${shouldMatch[2].trim()}`, 140);
+  }
+
+  return truncateText(`Verify ${expected}`, 140);
+}
+
+function compactText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateText(value: string, maxLength: number) {
+  const normalized = compactText(value);
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function sameText(first: string, second: string) {
+  return compactText(first).toLowerCase() === compactText(second).toLowerCase();
+}
+
+function parseBugSteps(value: string) {
+  const normalized = value.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+  const numberedMatches = [...normalized.matchAll(/(?:^|\n)\s*(?:\d+[\).\:-]\s+)([\s\S]*?)(?=\n\s*\d+[\).\:-]\s+|$)/g)]
+    .map((match) => match[1].trim())
+    .filter(Boolean);
+  if (numberedMatches.length) return numberedMatches;
+  return normalized.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+function testCaseId(testCase: LinkedTestCase) {
+  return testCase.azureTestCaseId ?? testCase.id;
+}
+
+function isGeneratedTestCaseReady(testCase: GeneratedTestCase | null) {
+  if (!testCase?.title.trim()) return false;
+  return testCase.steps.length > 0 && testCase.steps.every((step) => step.action.trim() && step.expectedResult.trim());
 }
 
 function buildRequiredFieldRows(fields: BugFieldMetadata[]): CustomFieldRow[] {
