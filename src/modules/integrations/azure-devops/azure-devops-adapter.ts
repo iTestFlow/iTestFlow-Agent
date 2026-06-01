@@ -1,4 +1,18 @@
-import type { AzureAuthenticatedUser, AzureIteration, AzureProject, AzureProjectUser, FinalApprovedTestCase, Requirement, TestCase, TestPlan, TestSuite } from "./azure-devops-types";
+import type {
+  AddSuiteTestCaseInput,
+  AzureAuthenticatedUser,
+  AzureIteration,
+  AzureProject,
+  AzureProjectUser,
+  AzureTestPoint,
+  CreateTestSuiteInput,
+  FinalApprovedTestCase,
+  Requirement,
+  TestCase,
+  TestPlan,
+  TestSuite,
+  UpdateTestPointInput,
+} from "./azure-devops-types";
 
 export interface AzureDevOpsAdapter {
   testConnection(): Promise<boolean>;
@@ -67,6 +81,49 @@ export interface AzureDevOpsAdapter {
     projectId: string;
     testPlanId: string;
   }): Promise<TestSuite[]>;
+
+  fetchTestSuiteTree(input: {
+    projectId: string;
+    testPlanId: string;
+  }): Promise<TestSuite[]>;
+
+  createTestSuite(input: CreateTestSuiteInput): Promise<{
+    success: boolean;
+    suite?: TestSuite;
+    error?: string;
+  }>;
+
+  deleteTestSuite(input: {
+    projectId: string;
+    testPlanId: string;
+    testSuiteId: string;
+  }): Promise<{
+    success: boolean;
+    error?: string;
+  }>;
+
+  fetchTestPoints(input: {
+    projectId: string;
+    testPlanId: string;
+    testSuiteId: string;
+  }): Promise<AzureTestPoint[]>;
+
+  addTestCasesToSuite(input: {
+    projectId: string;
+    testPlanId: string;
+    testSuiteId: string;
+    testCases: AddSuiteTestCaseInput[];
+  }): Promise<{
+    success: boolean;
+    addedCount: number;
+    errors: Array<{ testCaseId: string; error: string }>;
+  }>;
+
+  updateTestPoints(input: UpdateTestPointInput): Promise<{
+    success: boolean;
+    updatedPoints?: AzureTestPoint[];
+    error?: string;
+  }>;
 
   createTestCase(input: {
     projectId: string;

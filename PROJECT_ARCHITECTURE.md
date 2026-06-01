@@ -138,6 +138,12 @@ Test Coverage Matrix:
 - `/api/test-coverage-matrix/suggested-additions/publish` creates suggested Azure Test Case work items and links them to the user story.
 - Service, prompt, and schema code live under `src/modules/existing-test-case-review`.
 
+Test Suite Migration:
+
+- `/test-suite-migration` lets a user preview and run same-project Azure Test Suite copy/move operations.
+- `/api/test-suite-migration/tree`, `/preview`, and `/execute` load suite trees, build dry-run plans, and execute confirmed migrations.
+- `src/modules/test-suite-migration` owns selection normalization, recursive hierarchy planning, test point outcome mapping, guarded move deletion, and migration reporting.
+
 Audit:
 
 - `/audit-logs` reads local audit activity through `/api/audit-logs`.
@@ -149,7 +155,7 @@ Azure DevOps:
 - Adapter interface: `src/modules/integrations/azure-devops/azure-devops-adapter.ts`.
 - REST implementation: `src/modules/integrations/azure-devops/azure-devops-client.ts`.
 - Mapping: `src/modules/integrations/azure-devops/azure-devops-mapper.ts`.
-- Workflow-specific services handle comments, linked test cases, and test plan publishing.
+- Workflow-specific services handle comments, linked test cases, test plan publishing, and test suite migration.
 
 LLM providers:
 

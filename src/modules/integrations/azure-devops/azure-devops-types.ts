@@ -89,9 +89,77 @@ export type TestSuite = {
   id: string;
   name: string;
   planId: string;
-  suiteType?: string;
+  parentSuiteId?: string;
+  parentSuiteName?: string;
+  suiteType?: TestSuiteType | string;
   requirementId?: string;
+  queryString?: string;
+  inheritDefaultConfigurations?: boolean;
+  defaultConfigurations?: TestConfigurationReference[];
+  defaultTesters?: AzureIdentityRef[];
+  children?: TestSuite[];
   raw?: unknown;
+};
+
+export type TestSuiteType = "staticTestSuite" | "requirementTestSuite" | "dynamicTestSuite" | "none";
+
+export type AzureIdentityRef = {
+  id?: string;
+  displayName?: string;
+  uniqueName?: string;
+  descriptor?: string;
+  imageUrl?: string;
+  url?: string;
+};
+
+export type TestConfigurationReference = {
+  id: string;
+  name?: string;
+};
+
+export type AzureTestPoint = {
+  id: string;
+  testCaseId?: string;
+  testCaseTitle?: string;
+  configurationId?: string;
+  configurationName?: string;
+  suiteId?: string;
+  suiteName?: string;
+  planId?: string;
+  outcome?: string;
+  state?: string;
+  lastUpdatedDate?: string;
+  lastRunDate?: string;
+  tester?: AzureIdentityRef;
+  assignedTo?: AzureIdentityRef;
+  raw?: unknown;
+};
+
+export type CreateTestSuiteInput = {
+  projectId: string;
+  testPlanId: string;
+  parentSuiteId: string;
+  name: string;
+  suiteType?: TestSuiteType;
+  requirementId?: string;
+  queryString?: string;
+  inheritDefaultConfigurations?: boolean;
+  defaultConfigurations?: TestConfigurationReference[];
+  defaultTesters?: AzureIdentityRef[];
+};
+
+export type AddSuiteTestCaseInput = {
+  testCaseId: string;
+  configurationIds?: string[];
+};
+
+export type UpdateTestPointInput = {
+  projectId: string;
+  testPlanId: string;
+  testSuiteId: string;
+  pointIds: string[];
+  outcome?: string;
+  tester?: AzureIdentityRef;
 };
 
 export type AzureDevOpsSettings = {
