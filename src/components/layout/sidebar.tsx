@@ -14,6 +14,7 @@ import {
   Replace,
   Settings,
   ShieldCheck,
+  TimerReset,
   TestTube2,
 } from "lucide-react"
 
@@ -29,6 +30,7 @@ const navigation = [
   { href: "/test-cases/design/context", label: "Test Case Design", icon: TestTube2, section: "/test-cases/design" },
   { href: "/bugs/create", label: "Create Bug", icon: Bug, section: "/bugs" },
   { href: "/test-coverage-matrix", label: "Test Coverage Matrix", icon: ClipboardCheck },
+  { href: "/test-execution-effort", label: "Test Execution Effort", icon: TimerReset },
   { href: "/test-suite-migration", label: "Suite Migration", icon: Replace },
   { href: "/bulk-tasks", label: "Bulk Task Creation", icon: ListPlus },
   { href: "/settings", label: "Settings", icon: Settings },

@@ -8,6 +8,7 @@ import {
 import { requirementAnalysisPrompt } from "./requirement-analysis.prompt";
 import { structuredOutputPrompt } from "./structured-output.prompt";
 import { testCaseGenerationPrompt } from "./test-case-generation.prompt";
+import { testExecutionEffortPrompt } from "./test-execution-effort.prompt";
 
 export const llmPromptRegistry = {
   bugReport: bugReportPrompt,
@@ -18,6 +19,7 @@ export const llmPromptRegistry = {
   requirementAnalysis: requirementAnalysisPrompt,
   structuredOutput: structuredOutputPrompt,
   testCaseGeneration: testCaseGenerationPrompt,
+  testExecutionEffort: testExecutionEffortPrompt,
 } as const;
 
 export type LlmPromptKey = keyof typeof llmPromptRegistry;

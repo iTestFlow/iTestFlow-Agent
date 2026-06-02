@@ -47,6 +47,7 @@ iTestFlow is a local-first QA command center for Azure DevOps testing workflows.
 - Analyze one real Azure DevOps requirement at a time.
 - Generate and edit test cases for a selected work item.
 - Build a Test Coverage Matrix from existing linked Azure DevOps test cases.
+- Estimate manual Test Execution Effort for linked Azure DevOps test cases on a selected story.
 - Publish approved comments and test cases back to Azure DevOps.
 - Audit local workflow activity.
 
@@ -139,6 +140,12 @@ Test Coverage Matrix:
 - `/api/existing-test-case-review/run` fetches linked test cases from Azure DevOps and runs the review service.
 - `/api/test-coverage-matrix/suggested-additions/publish` creates suggested Azure Test Case work items and links them to the user story.
 - Service, prompt, and schema code live under `src/modules/existing-test-case-review`.
+
+Test Execution Effort:
+
+- `/test-execution-effort` estimates realistic manual QA execution effort for linked Azure DevOps test cases on one selected story or requirement work item.
+- `/api/test-execution-effort/prepare`, `/generate`, `/external-prompt`, and `/manual/submit` fetch project-scoped story/test case data, resolve project context, build prompts, call or validate LLM output, and return structured estimates.
+- Service, prompt, schema, and data-loading code live under `src/modules/test-execution-effort`.
 
 Test Suite Migration:
 
