@@ -391,6 +391,7 @@ export function getRecentProjectContext(input: {
   pageSize?: number;
   sortBy?: ProjectContextSortBy;
   sortDirection?: ProjectContextSortDirection;
+  query?: string;
 }) {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
@@ -399,20 +400,41 @@ export function getRecentProjectContext(input: {
   const sortBy = input.sortBy ?? "lastIndexedAt";
   const sortDirection = input.sortDirection ?? "desc";
   const orderBy = contextSortSql(sortBy, sortDirection);
+  const query = input.query?.trim() ?? "";
+  const searchWhere = query
+    ? `
+        AND (
+          wi.azure_work_item_id LIKE @queryLike ESCAPE '\\'
+          OR wi.title LIKE @queryLike ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1
+            FROM document_chunks dc_search
+            WHERE dc_search.project_id = wi.project_id
+              AND dc_search.azure_project_id = wi.azure_project_id
+              AND dc_search.azure_work_item_id = wi.azure_work_item_id
+              AND dc_search.source_type = 'azure_work_item'
+              AND dc_search.content LIKE @queryLike ESCAPE '\\'
+          )
+        )
+      `
+    : "";
+  const queryParams = query ? { queryLike: `%${escapeSqlLike(query)}%` } : {};
   const db = getDatabase();
   const total = db
     .prepare(
       `
       SELECT COUNT(*) AS total
-      FROM azure_devops_work_items
-      WHERE project_id = @projectId
-        AND azure_project_id = @azureProjectId
-        AND COALESCE(sync_status, 'active') = 'active'
+      FROM azure_devops_work_items wi
+      WHERE wi.project_id = @projectId
+        AND wi.azure_project_id = @azureProjectId
+        AND COALESCE(wi.sync_status, 'active') = 'active'
+        ${searchWhere}
     `,
     )
     .get({
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
+      ...queryParams,
     }) as { total: number };
   const totalCount = total.total;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
@@ -438,6 +460,7 @@ export function getRecentProjectContext(input: {
       WHERE wi.project_id = @projectId
         AND wi.azure_project_id = @azureProjectId
         AND COALESCE(wi.sync_status, 'active') = 'active'
+        ${searchWhere}
       GROUP BY wi.azure_work_item_id
       ORDER BY ${orderBy}
       LIMIT @limit OFFSET @offset
@@ -448,6 +471,7 @@ export function getRecentProjectContext(input: {
       azureProjectId: scope.azureProjectId,
       limit: pageSize,
       offset: (safePage - 1) * pageSize,
+      ...queryParams,
     }) as RecentContextRow[];
 
   return {
@@ -467,6 +491,7 @@ export function getRecentProjectContext(input: {
     totalPages,
     sortBy,
     sortDirection,
+    query,
   };
 }
 
@@ -659,4 +684,8 @@ function contextSortSql(sortBy: ProjectContextSortBy, direction: ProjectContextS
   if (sortBy === "type") return `wi.work_item_type ${directionSql}, wi.last_synced_at DESC, wi.updated_date DESC`;
   if (sortBy === "state") return `COALESCE(wi.state, '') ${directionSql}, wi.last_synced_at DESC, wi.updated_date DESC`;
   return `wi.last_synced_at ${directionSql}, wi.updated_date ${directionSql}`;
+}
+
+function escapeSqlLike(value: string) {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
 }

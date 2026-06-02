@@ -1,12 +1,28 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
-import { AlertTriangle, ArrowUpDown, BookOpen, Copy, Database, Download, History, RefreshCw, ShieldCheck } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react"
+import {
+  AlertTriangle,
+  ArrowUpDown,
+  BookOpen,
+  ChevronLeft,
+  ChevronRight,
+  CheckCircle2,
+  Copy,
+  Database,
+  Download,
+  History,
+  RefreshCw,
+  Save,
+  Search,
+  ShieldCheck,
+} from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
   Table,
@@ -25,6 +41,8 @@ import {
   DEFAULT_CONTEXT_WORK_ITEM_TYPES,
 } from "@/lib/project-context-defaults"
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project"
+
+const COPY_FEEDBACK_MS = 3000
 
 type IndexResult = {
   mode: "incremental" | "rebuild"
@@ -63,6 +81,7 @@ type ContextStatusResult = {
   totalPages: number
   sortBy: ContextSortBy
   sortDirection: ContextSortDirection
+  query?: string
 }
 
 type KnowledgeCompileMode = "incremental" | "full"
@@ -123,9 +142,29 @@ type ProjectKnowledgeSnapshot = {
   provider?: string | null
   model?: string | null
   sourceWorkItemCount: number
+  rawOutput?: string | null
   knowledgeBase: ProjectKnowledgeBase
   status: string
   extractedAt: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+type KnowledgeGeneratedDraft = {
+  promptVersion: string
+  provider: string
+  model: string
+  requestedMode: KnowledgeCompileMode
+  mode: KnowledgeCompileMode
+  fallbackReason?: string
+  sourceWorkItemCount: number
+  promptedSourceWorkItemCount: number
+  changedSourceWorkItemCount: number
+  retiredSourceWorkItemCount: number
+  rawOutput: string
+  knowledgeBase: ProjectKnowledgeBase
+  generatedAt: string
+  alreadyCurrent?: boolean
 }
 
 type KnowledgeStatusResult = {
@@ -200,6 +239,54 @@ type KnowledgeManualValidationResult = {
   snapshot?: ProjectKnowledgeSnapshot
 }
 
+type BuildMode = "auto" | "manual"
+type BuildStep = "index" | "prepare" | "preview"
+type TopTab = "hub" | "build"
+
+const KNOWLEDGE_CATEGORIES = [
+  { key: "modules", label: "Modules", badge: "Module" },
+  { key: "businessRules", label: "Business Rules", badge: "Business Rule" },
+  { key: "stateTransitions", label: "State Transitions", badge: "State Transition" },
+  { key: "glossary", label: "Glossary", badge: "Glossary" },
+  { key: "crossDependencies", label: "Dependencies", badge: "Dependency" },
+] as const
+
+type KnowledgeCategoryKey = (typeof KNOWLEDGE_CATEGORIES)[number]["key"]
+type KnowledgeExplorerCategory = KnowledgeCategoryKey | "all"
+
+type AnyKnowledgeItem = KnowledgeSource & {
+  id?: string
+  name?: string
+  description?: string
+  rule?: string
+  sourceField?: string
+  moduleName?: string
+  workflowName?: string
+  fromState?: string
+  toState?: string
+  triggerOrCondition?: string
+  actor?: string
+  term?: string
+  type?: string
+  definition?: string
+  sourceModule?: string
+  targetModule?: string
+  dependencyType?: string
+}
+
+type KnowledgeExplorerEntry = {
+  key: string
+  category: KnowledgeCategoryKey
+  categoryLabel: string
+  badge: string
+  title: string
+  description: string
+  evidence: string
+  sourceWorkItemIds: string[]
+  meta: string[]
+  searchText: string
+}
+
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
@@ -223,16 +310,19 @@ function parseJsonResponse(text: string, ok: boolean) {
 
 export function ProjectContextClient() {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null)
-  const [activeTab, setActiveTab] = useState<"step1" | "step2">("step1")
+  const [activeTab, setActiveTab] = useState<TopTab>("hub")
+  const [buildMode, setBuildMode] = useState<BuildMode>("auto")
+  const [buildStep, setBuildStep] = useState<BuildStep>("index")
+  const [compileMode, setCompileMode] = useState<KnowledgeCompileMode>("incremental")
   const [workItemTypes, setWorkItemTypes] = useState<string[]>(DEFAULT_CONTEXT_WORK_ITEM_TYPES)
   const [states, setStates] = useState<string[]>(DEFAULT_CONTEXT_STATES)
-  const [loading, setLoading] = useState(false)
+  const [buildLoading, setBuildLoading] = useState(false)
   const [statusLoading, setStatusLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [buildError, setBuildError] = useState<string | null>(null)
   const [result, setResult] = useState<IndexResult | null>(null)
   const [recentItems, setRecentItems] = useState<RecentContextItem[]>([])
   const [totalCount, setTotalCount] = useState(0)
-  const [knowledgeLoading, setKnowledgeLoading] = useState(false)
+  const [contextSearch, setContextSearch] = useState("")
   const [knowledgeStatusLoading, setKnowledgeStatusLoading] = useState(false)
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null)
   const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<ProjectKnowledgeSnapshot | null>(null)
@@ -243,20 +333,27 @@ export function ProjectContextClient() {
   const [knowledgeHealthLoading, setKnowledgeHealthLoading] = useState(false)
   const [knowledgeLogLoading, setKnowledgeLogLoading] = useState(false)
   const [knowledgeExportLoading, setKnowledgeExportLoading] = useState(false)
-  const [knowledgeMode, setKnowledgeMode] = useState<"auto" | "manual">("auto")
-  const [manualKnowledgeDraftLoadingMode, setManualKnowledgeDraftLoadingMode] = useState<KnowledgeCompileMode | null>(null)
+  const [generatedDraft, setGeneratedDraft] = useState<KnowledgeGeneratedDraft | null>(null)
+  const [generatedSaveLoading, setGeneratedSaveLoading] = useState(false)
   const [manualKnowledgeDraft, setManualKnowledgeDraft] = useState<KnowledgeManualDraft | null>(null)
   const [manualKnowledgeCurrentBatch, setManualKnowledgeCurrentBatch] = useState(1)
   const [manualKnowledgeBatchResponses, setManualKnowledgeBatchResponses] = useState<Record<number, string>>({})
   const [manualKnowledgeValidatedBatches, setManualKnowledgeValidatedBatches] = useState<Record<number, ProjectKnowledgeBase>>({})
   const [manualKnowledgeValidationLoading, setManualKnowledgeValidationLoading] = useState(false)
-  const [manualKnowledgeError, setManualKnowledgeError] = useState<string | null>(null)
   const [manualKnowledgeSaveLoading, setManualKnowledgeSaveLoading] = useState(false)
+  const [promptCopied, setPromptCopied] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(25)
   const [totalPages, setTotalPages] = useState(1)
   const [sortBy, setSortBy] = useState<ContextSortBy>("lastIndexedAt")
   const [sortDirection, setSortDirection] = useState<ContextSortDirection>("desc")
+  const autoIndexStepRef = useRef<HTMLDivElement | null>(null)
+  const autoPrepareStepRef = useRef<HTMLDivElement | null>(null)
+  const autoPreviewStepRef = useRef<HTMLDivElement | null>(null)
+  const manualIndexStepRef = useRef<HTMLDivElement | null>(null)
+  const manualPrepareStepRef = useRef<HTMLDivElement | null>(null)
+  const manualPreviewStepRef = useRef<HTMLDivElement | null>(null)
+  const manualBatchRef = useRef<HTMLDivElement | null>(null)
 
   const refreshKnowledgeLog = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
     if (!activeScope) return
@@ -271,6 +368,59 @@ export function ProjectContextClient() {
     }
   }, [scope])
 
+  const refreshKnowledgeStatus = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
+    if (!activeScope) return
+    setKnowledgeStatusLoading(true)
+    try {
+      const data = await postJson<KnowledgeStatusResult>("/api/context/knowledge/status", { scope: activeScope })
+      setKnowledgeSnapshot(data.snapshot)
+    } catch {
+      setKnowledgeSnapshot(null)
+    } finally {
+      setKnowledgeStatusLoading(false)
+    }
+  }, [scope])
+
+  const loadStatus = useCallback(async (
+    activeScope: ActiveProjectScope | null,
+    options?: {
+      page?: number
+      sortBy?: ContextSortBy
+      sortDirection?: ContextSortDirection
+      query?: string
+    },
+  ) => {
+    if (!activeScope) return
+    const nextPage = options?.page ?? 1
+    const nextSortBy = options?.sortBy ?? "lastIndexedAt"
+    const nextSortDirection = options?.sortDirection ?? "desc"
+    const nextQuery = options?.query ?? ""
+
+    setStatusLoading(true)
+    try {
+      const data = await postJson<ContextStatusResult>("/api/context/status", {
+        scope: activeScope,
+        page: nextPage,
+        pageSize,
+        sortBy: nextSortBy,
+        sortDirection: nextSortDirection,
+        query: nextQuery,
+      })
+      setRecentItems(data.items)
+      setTotalCount(data.totalCount)
+      setTotalPages(data.totalPages)
+      setPage(data.page)
+      setSortBy(data.sortBy)
+      setSortDirection(data.sortDirection)
+    } catch {
+      setRecentItems([])
+      setTotalCount(0)
+      setTotalPages(1)
+    } finally {
+      setStatusLoading(false)
+    }
+  }, [pageSize])
+
   useEffect(() => {
     setScope(readActiveProject())
     const onChange = (event: Event) => {
@@ -281,59 +431,28 @@ export function ProjectContextClient() {
     return () => window.removeEventListener("itestflow:active-project-changed", onChange)
   }, [])
 
-  const loadStatus = useCallback(async (
-    activeScope = scope,
-    options?: {
-      page?: number
-      sortBy?: ContextSortBy
-      sortDirection?: ContextSortDirection
-    },
-  ) => {
-    if (!activeScope) return
-    setStatusLoading(true)
-    try {
-      const data = await postJson<ContextStatusResult>("/api/context/status", {
-        scope: activeScope,
-        page: options?.page ?? page,
-        pageSize,
-        sortBy: options?.sortBy ?? sortBy,
-        sortDirection: options?.sortDirection ?? sortDirection,
-      })
-      setRecentItems(data.items)
-      setTotalCount(data.totalCount)
-      setTotalPages(data.totalPages)
-      if (data.page !== page) setPage(data.page)
-      if (data.sortBy !== sortBy) setSortBy(data.sortBy)
-      if (data.sortDirection !== sortDirection) setSortDirection(data.sortDirection)
-    } catch {
-      setRecentItems([])
-      setTotalCount(0)
-      setTotalPages(1)
-    } finally {
-      setStatusLoading(false)
-    }
-  }, [page, pageSize, scope, sortBy, sortDirection])
-
   useEffect(() => {
     if (!scope) return
     let cancelled = false
 
-    setActiveTab("step1")
+    setBuildStep("index")
+    setBuildError(null)
     setResult(null)
-    setError(null)
+    setGeneratedDraft(null)
+    setManualKnowledgeDraft(null)
+    setManualKnowledgeCurrentBatch(1)
+    setManualKnowledgeBatchResponses({})
+    setManualKnowledgeValidatedBatches({})
+    setPromptCopied(false)
     setKnowledgeError(null)
     setKnowledgeLint(null)
     setKnowledgeLog([])
     setKnowledgeLogVisible(false)
     setKnowledgeExport(null)
-    setManualKnowledgeError(null)
-    setManualKnowledgeDraft(null)
-    setManualKnowledgeCurrentBatch(1)
-    setManualKnowledgeBatchResponses({})
-    setManualKnowledgeValidatedBatches({})
     setPage(1)
     setSortBy("lastIndexedAt")
     setSortDirection("desc")
+    setContextSearch("")
     setStatusLoading(true)
     setKnowledgeStatusLoading(true)
 
@@ -343,6 +462,7 @@ export function ProjectContextClient() {
       pageSize,
       sortBy: "lastIndexedAt",
       sortDirection: "desc",
+      query: "",
     })
       .then((data) => {
         if (cancelled) return
@@ -381,61 +501,166 @@ export function ProjectContextClient() {
     }
   }, [pageSize, refreshKnowledgeLog, scope])
 
-  async function indexContext(mode: "incremental" | "rebuild" = "incremental") {
+  useEffect(() => {
     if (!scope) return
-    setLoading(true)
-    setError(null)
-    setResult(null)
-    try {
-      const data = await postJson<IndexResult>("/api/context/index", {
-        scope,
-        workItemTypes,
-        states,
-        mode,
-      })
-      setResult(data)
+    const timeoutId = window.setTimeout(() => {
       setPage(1)
-      await loadStatus(scope, { page: 1 })
-    } catch (indexError) {
-      setError(indexError instanceof Error ? indexError.message : "Project context indexing failed.")
-    } finally {
-      setLoading(false)
-    }
+      void loadStatus(scope, { page: 1, sortBy, sortDirection, query: contextSearch })
+    }, 300)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [contextSearch, loadStatus, scope, sortBy, sortDirection])
+
+  useEffect(() => {
+    if (!promptCopied) return
+    const timeoutId = window.setTimeout(() => setPromptCopied(false), COPY_FEEDBACK_MS)
+    return () => window.clearTimeout(timeoutId)
+  }, [promptCopied])
+
+  useEffect(() => {
+    setPromptCopied(false)
+  }, [manualKnowledgeCurrentBatch])
+
+  function scrollBuildSection(ref: RefObject<HTMLDivElement | null>) {
+    window.requestAnimationFrame(() => {
+      ref.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+    })
   }
 
-  async function extractKnowledgeBase(mode: "incremental" | "full" = "incremental") {
+  function activeIndexStepRef() {
+    return buildMode === "manual" ? manualIndexStepRef : autoIndexStepRef
+  }
+
+  function activePrepareStepRef() {
+    return buildMode === "manual" ? manualPrepareStepRef : autoPrepareStepRef
+  }
+
+  function clearPreparedKnowledge() {
+    setGeneratedDraft(null)
+    setManualKnowledgeDraft(null)
+    setManualKnowledgeCurrentBatch(1)
+    setManualKnowledgeBatchResponses({})
+    setManualKnowledgeValidatedBatches({})
+    setPromptCopied(false)
+  }
+
+  function resetBuildState() {
+    setBuildStep("index")
+    setBuildError(null)
+    setResult(null)
+    clearPreparedKnowledge()
+  }
+
+  function invalidateBuildIndex() {
+    setBuildStep("index")
+    setBuildError(null)
+    setResult(null)
+    clearPreparedKnowledge()
+  }
+
+  function changeWorkItemTypes(values: string[]) {
+    setWorkItemTypes(values)
+    invalidateBuildIndex()
+  }
+
+  function changeStates(values: string[]) {
+    setStates(values)
+    invalidateBuildIndex()
+  }
+
+  function changeCompileMode(nextMode: KnowledgeCompileMode) {
+    setCompileMode(nextMode)
+    setBuildError(null)
+    clearPreparedKnowledge()
+    if (buildStep === "preview") setBuildStep(result ? "prepare" : "index")
+  }
+
+  async function indexContextForBuild() {
+    if (!scope) throw new Error("Select an Azure DevOps project before loading the project index.")
+    const data = await postJson<IndexResult>("/api/context/index", {
+      scope,
+      workItemTypes,
+      states,
+      mode: "incremental",
+    })
+    setResult(data)
+    setPage(1)
+    await loadStatus(scope, { page: 1, sortBy, sortDirection, query: contextSearch })
+    return data
+  }
+
+  async function loadProjectIndexForBuild() {
     if (!scope) return
-    setKnowledgeLoading(true)
-    setKnowledgeError(null)
+    setBuildLoading(true)
+    setBuildError(null)
+    clearPreparedKnowledge()
     try {
-      const data = await postJson<ProjectKnowledgeSnapshot>("/api/context/knowledge/extract", {
-        scope,
-        mode,
-      })
-      setKnowledgeSnapshot(data)
-      await refreshKnowledgeLog(scope)
-    } catch (extractError) {
-      setKnowledgeError(extractError instanceof Error ? extractError.message : "Project knowledge extraction failed.")
+      await indexContextForBuild()
+      setBuildStep("prepare")
+      scrollBuildSection(activePrepareStepRef())
+    } catch (indexError) {
+      setBuildStep("index")
+      setBuildError(indexError instanceof Error ? indexError.message : "Project index loading failed.")
     } finally {
-      setKnowledgeLoading(false)
+      setBuildLoading(false)
     }
   }
 
-  async function prepareManualKnowledgeDraft(mode: KnowledgeCompileMode) {
+  async function prepareAutoKnowledge() {
     if (!scope) return
-    setManualKnowledgeDraftLoadingMode(mode)
-    setManualKnowledgeError(null)
+    if (!result) {
+      setBuildStep("index")
+      setBuildError("Load the project index before preparing a knowledge preview.")
+      scrollBuildSection(activeIndexStepRef())
+      return
+    }
+
+    setBuildLoading(true)
+    setBuildError(null)
+    setGeneratedDraft(null)
+    setManualKnowledgeDraft(null)
+    setManualKnowledgeValidatedBatches({})
+    try {
+      const draft = await postJson<KnowledgeGeneratedDraft>("/api/context/knowledge/preview", {
+        scope,
+        mode: compileMode,
+      })
+      setGeneratedDraft(draft)
+      setBuildStep(draft.alreadyCurrent ? "prepare" : "preview")
+      scrollBuildSection(draft.alreadyCurrent ? autoPrepareStepRef : autoPreviewStepRef)
+    } catch (prepareError) {
+      setBuildError(prepareError instanceof Error ? prepareError.message : "Knowledge preparation failed.")
+    } finally {
+      setBuildLoading(false)
+    }
+  }
+
+  async function prepareExternalKnowledge() {
+    if (!scope) return
+    if (!result) {
+      setBuildStep("index")
+      setBuildError("Load the project index before preparing an external LLM prompt.")
+      scrollBuildSection(activeIndexStepRef())
+      return
+    }
+
+    setBuildLoading(true)
+    setBuildError(null)
+    setGeneratedDraft(null)
     setManualKnowledgeDraft(null)
     setManualKnowledgeCurrentBatch(1)
     setManualKnowledgeBatchResponses({})
     setManualKnowledgeValidatedBatches({})
     try {
-      const data = await postJson<KnowledgeManualDraft>("/api/context/knowledge/manual/draft", { scope, mode })
+      const data = await postJson<KnowledgeManualDraft>("/api/context/knowledge/manual/draft", { scope, mode: compileMode })
       setManualKnowledgeDraft(data)
-    } catch (draftError) {
-      setManualKnowledgeError(draftError instanceof Error ? draftError.message : "External LLM knowledge prompt preparation failed.")
+      const nextStep = data.batchCount === 0 && data.retiredSourceWorkItemCount > 0 ? "preview" : "prepare"
+      setBuildStep(nextStep)
+      scrollBuildSection(nextStep === "preview" ? manualPreviewStepRef : manualPrepareStepRef)
+    } catch (prepareError) {
+      setBuildError(prepareError instanceof Error ? prepareError.message : "External LLM knowledge prompt preparation failed.")
     } finally {
-      setManualKnowledgeDraftLoadingMode(null)
+      setBuildLoading(false)
     }
   }
 
@@ -447,21 +672,14 @@ export function ProjectContextClient() {
     if (!rawOutput) return
 
     setManualKnowledgeValidationLoading(true)
-    setManualKnowledgeError(null)
+    setBuildError(null)
     try {
-      const shouldSave = manualKnowledgeDraft.batchCount === 1
       const data = await postJson<KnowledgeManualValidationResult>("/api/context/knowledge/manual/validate", {
         scope,
         rawOutput,
         mode: manualKnowledgeDraft.mode,
-        save: shouldSave,
+        save: false,
       })
-
-      if (shouldSave && data.snapshot) {
-        setKnowledgeSnapshot(data.snapshot)
-        await refreshKnowledgeLog(scope)
-        return
-      }
 
       const nextValidated = {
         ...manualKnowledgeValidatedBatches,
@@ -469,11 +687,46 @@ export function ProjectContextClient() {
       }
       setManualKnowledgeValidatedBatches(nextValidated)
       const nextBatch = manualKnowledgeDraft.batches.find((item) => !nextValidated[item.batchIndex])
-      if (nextBatch) setManualKnowledgeCurrentBatch(nextBatch.batchIndex)
+      if (nextBatch) {
+        setManualKnowledgeCurrentBatch(nextBatch.batchIndex)
+        scrollBuildSection(manualBatchRef)
+      } else {
+        setBuildStep("preview")
+        scrollBuildSection(manualPreviewStepRef)
+      }
     } catch (validationError) {
-      setManualKnowledgeError(validationError instanceof Error ? validationError.message : "External LLM knowledge response validation failed.")
+      setBuildError(validationError instanceof Error ? validationError.message : "External LLM knowledge response validation failed.")
     } finally {
       setManualKnowledgeValidationLoading(false)
+    }
+  }
+
+  async function saveGeneratedKnowledge() {
+    if (!scope || !generatedDraft) return
+    setGeneratedSaveLoading(true)
+    setBuildError(null)
+    try {
+      const snapshot = await postJson<ProjectKnowledgeSnapshot>("/api/context/knowledge/save", {
+        scope,
+        provider: generatedDraft.provider,
+        model: generatedDraft.model,
+        rawOutput: generatedDraft.rawOutput,
+        requestedMode: generatedDraft.requestedMode,
+        mode: generatedDraft.mode,
+        knowledgeBase: generatedDraft.knowledgeBase,
+      })
+      setKnowledgeSnapshot(snapshot)
+      resetBuildState()
+      setActiveTab("hub")
+      await Promise.all([
+        loadStatus(scope, { page: 1, sortBy, sortDirection, query: contextSearch }),
+        refreshKnowledgeStatus(scope),
+        refreshKnowledgeLog(scope),
+      ])
+    } catch (saveError) {
+      setBuildError(saveError instanceof Error ? saveError.message : "Project knowledge save failed.")
+    } finally {
+      setGeneratedSaveLoading(false)
     }
   }
 
@@ -486,7 +739,7 @@ export function ProjectContextClient() {
     if (manualKnowledgeDraft.batchCount === 0 && manualKnowledgeDraft.mode !== "incremental") return
 
     setManualKnowledgeSaveLoading(true)
-    setManualKnowledgeError(null)
+    setBuildError(null)
     try {
       const data = await postJson<KnowledgeManualValidationResult>("/api/context/knowledge/manual/finalize", {
         scope,
@@ -494,9 +747,15 @@ export function ProjectContextClient() {
         partialKnowledgeBases,
       })
       if (data.snapshot) setKnowledgeSnapshot(data.snapshot)
-      await refreshKnowledgeLog(scope)
+      resetBuildState()
+      setActiveTab("hub")
+      await Promise.all([
+        loadStatus(scope, { page: 1, sortBy, sortDirection, query: contextSearch }),
+        refreshKnowledgeStatus(scope),
+        refreshKnowledgeLog(scope),
+      ])
     } catch (saveError) {
-      setManualKnowledgeError(saveError instanceof Error ? saveError.message : "External LLM knowledge base save failed.")
+      setBuildError(saveError instanceof Error ? saveError.message : "External LLM knowledge base save failed.")
     } finally {
       setManualKnowledgeSaveLoading(false)
     }
@@ -547,18 +806,20 @@ export function ProjectContextClient() {
     setSortBy(nextSortBy)
     setSortDirection(nextDirection)
     setPage(1)
-    if (scope) void loadStatus(scope, { page: 1, sortBy: nextSortBy, sortDirection: nextDirection })
+    if (scope) void loadStatus(scope, { page: 1, sortBy: nextSortBy, sortDirection: nextDirection, query: contextSearch })
   }
 
   function changePage(nextPage: number) {
     const safePage = Math.min(Math.max(1, nextPage), totalPages)
     setPage(safePage)
-    if (scope) void loadStatus(scope, { page: safePage })
+    if (scope) void loadStatus(scope, { page: safePage, sortBy, sortDirection, query: contextSearch })
   }
 
-  const canIndex = Boolean(scope) && workItemTypes.length > 0 && states.length > 0 && !loading
-  const step2Unlocked = totalCount > 0 || (result?.indexedWorkItemCount ?? 0) > 0
-  const canExtractKnowledge = Boolean(scope) && step2Unlocked && !knowledgeLoading
+  function changeBuildMode(nextMode: BuildMode) {
+    setBuildMode(nextMode)
+    resetBuildState()
+  }
+
   const currentManualKnowledgeBatch = manualKnowledgeDraft?.batches.find((batch) => batch.batchIndex === manualKnowledgeCurrentBatch)
   const manualKnowledgeValidatedCount = manualKnowledgeDraft
     ? manualKnowledgeDraft.batches.filter((batch) => manualKnowledgeValidatedBatches[batch.batchIndex]).length
@@ -568,358 +829,703 @@ export function ProjectContextClient() {
     : false
   const rangeStart = totalCount === 0 ? 0 : (page - 1) * pageSize + 1
   const rangeEnd = Math.min(totalCount, rangeStart + recentItems.length - 1)
+  const totalKnowledgeItems = knowledgeSnapshot ? countKnowledgeItems(knowledgeSnapshot.knowledgeBase) : 0
+  const canLoadIndex = Boolean(scope) && workItemTypes.length > 0 && states.length > 0 && !buildLoading
+  const canPrepareKnowledge = Boolean(scope) && Boolean(result) && !buildLoading
 
   return (
     <div className="space-y-4">
       {!scope ? (
         <div className="flex items-center gap-2 rounded-md border border-[#F5CD47]/60 bg-[#FFF7D6] p-3 text-sm text-[#7F5F01]">
           <AlertTriangle className="size-4" />
-          Select an Azure DevOps project before indexing context.
+          Select an Azure DevOps project before building project knowledge.
         </div>
       ) : null}
 
-      <Tabs
-        value={activeTab}
-        onValueChange={(value) => {
-          if (value === "step2" && !step2Unlocked) return
-          setActiveTab(value as "step1" | "step2")
-        }}
-        className="flex-col gap-4"
-      >
-        <TabsList className="grid h-auto w-full grid-cols-2 rounded-md border border-[#DCDFE4] bg-white p-1 sm:inline-grid sm:w-fit sm:min-w-[520px]">
-          <TabsTrigger value="step1" className="h-10 px-3 py-2">
-            <span>Step 1</span>
-            <span className="hidden text-xs text-[#626F86] sm:inline">Fetch and Index Context</span>
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TopTab)} className="flex-col gap-4">
+        <TabsList className="grid h-auto w-full grid-cols-2 rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-1 sm:inline-grid sm:w-fit sm:min-w-[460px]">
+          <TabsTrigger
+            value="hub"
+            className="h-10 px-3 py-2 transition-all duration-200 data-active:bg-[#0C66E4] data-active:text-white data-active:shadow-sm data-[state=active]:bg-[#0C66E4] data-[state=active]:text-white data-[state=active]:shadow-sm"
+          >
+            Knowledge Hub
           </TabsTrigger>
           <TabsTrigger
-            value="step2"
-            disabled={!step2Unlocked}
-            className="h-10 px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50"
+            value="build"
+            className="h-10 px-3 py-2 transition-all duration-200 data-active:bg-[#0C66E4] data-active:text-white data-active:shadow-sm data-[state=active]:bg-[#0C66E4] data-[state=active]:text-white data-[state=active]:shadow-sm"
           >
-            <span>Step 2</span>
-            <span className="hidden text-xs text-[#626F86] sm:inline">Extract Knowledge Base</span>
+            Build Knowledge
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="step1" className="space-y-4">
-          <Card className="qa-card">
-            <CardHeader>
-              <CardTitle className="text-base">Step 1 - Fetch and Index Context</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-5">
-              <ContextFilterSelector
-                title="Work item types"
-                description="Custom values must match Azure DevOps work item type names exactly."
-                options={CONTEXT_WORK_ITEM_TYPE_OPTIONS}
-                selectedValues={workItemTypes}
-                customPlaceholder="Add work item type"
-                duplicateMessage="This work item type is already selected."
-                optionGridClassName="sm:grid-cols-2 lg:grid-cols-3"
-                onChange={setWorkItemTypes}
-              />
-              <ContextFilterSelector
-                title="States"
-                description="Custom values must match Azure DevOps state names exactly."
-                options={CONTEXT_STATE_OPTIONS}
-                selectedValues={states}
-                customPlaceholder="Add state"
-                duplicateMessage="This state is already selected."
-                optionGridClassName="sm:grid-cols-2 lg:grid-cols-3"
-                onChange={setStates}
-              />
-              <div className="flex flex-col gap-3 border-t border-[#EBECF0] pt-4 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-sm text-[#626F86]">
-                  Indexed context is stored locally and reused by requirement analysis and test design.
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  <Button onClick={() => indexContext("incremental")} disabled={!canIndex}>
-                    {loading ? <RefreshCw className="size-4 animate-spin" /> : <Database className="size-4" />}
-                    {loading ? "Syncing..." : "Incremental Sync"}
-                  </Button>
-                  <Button variant="outline" onClick={() => indexContext("rebuild")} disabled={!canIndex}>
-                    <RefreshCw className="size-4" />
-                    Rebuild
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+        <TabsContent value="hub" className="space-y-4">
+          <HubSummary
+            activeSourceCount={totalCount}
+            totalKnowledgeItems={totalKnowledgeItems}
+            snapshot={knowledgeSnapshot}
+            loading={knowledgeStatusLoading}
+          />
 
-          {error ? (
+          <KnowledgeOpsPanel
+            lint={knowledgeLint}
+            logItems={knowledgeLog}
+            logVisible={knowledgeLogVisible}
+            exportResult={knowledgeExport}
+            healthLoading={knowledgeHealthLoading}
+            logLoading={knowledgeLogLoading}
+            exportLoading={knowledgeExportLoading}
+            onRunHealthCheck={runKnowledgeHealthCheck}
+            onToggleLog={toggleKnowledgeLog}
+            onExport={exportKnowledgeWiki}
+          />
+
+          {knowledgeError ? (
             <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
-              {error}
+              {knowledgeError}
             </div>
           ) : null}
 
-          {result ? <IndexSummary result={result} /> : null}
-
           <Card className="qa-card">
             <CardHeader>
-              <CardTitle className="text-base">Indexed Project Context</CardTitle>
+              <CardTitle className="text-base">Knowledge Explorer</CardTitle>
             </CardHeader>
             <CardContent>
-              {statusLoading ? (
-                <div className="text-sm text-[#626F86]">Loading indexed context...</div>
-              ) : recentItems.length ? (
-                <div className="space-y-3">
-                  <div className="text-sm text-[#626F86]">
-                    Showing {rangeStart}-{rangeEnd} of {totalCount} indexed work items available for retrieval.
-                  </div>
-                  <div className="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>ID</TableHead>
-                          <TableHead>
-                            <SortHeader label="Type" active={sortBy === "type"} direction={sortDirection} onClick={() => changeSort("type")} />
-                          </TableHead>
-                          <TableHead className="min-w-[320px]">Title</TableHead>
-                          <TableHead>Chunks</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead>
-                            <SortHeader
-                              label="Last Indexed"
-                              active={sortBy === "lastIndexedAt"}
-                              direction={sortDirection}
-                              onClick={() => changeSort("lastIndexedAt")}
-                            />
-                          </TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {recentItems.map((item) => (
-                          <TableRow key={item.workItemId}>
-                            <TableCell className="font-mono text-xs font-semibold text-[#0C66E4]">{item.workItemId}</TableCell>
-                            <TableCell><Badge variant="secondary">{item.workItemType}</Badge></TableCell>
-                            <TableCell className="font-medium text-[#172B4D]">{item.title}</TableCell>
-                            <TableCell>{item.chunkCount}</TableCell>
-                            <TableCell><Badge variant="outline">{item.syncStatus ?? "active"}</Badge></TableCell>
-                            <TableCell>{formatDate(item.lastIndexedAt)}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                  <div className="flex items-center justify-between border-t border-[#EBECF0] pt-3 text-sm text-[#626F86]">
-                    <span>Page {page} of {totalPages}</span>
-                    <div className="flex gap-2">
-                      <Button size="sm" variant="outline" disabled={page <= 1 || statusLoading} onClick={() => changePage(page - 1)}>
-                        Previous
-                      </Button>
-                      <Button size="sm" variant="outline" disabled={page >= totalPages || statusLoading} onClick={() => changePage(page + 1)}>
-                        Next
-                      </Button>
-                    </div>
-                  </div>
-                </div>
+              {knowledgeStatusLoading ? (
+                <div className="text-sm text-[#626F86]">Loading saved knowledge base...</div>
+              ) : knowledgeSnapshot ? (
+                <KnowledgeExplorer knowledgeBase={knowledgeSnapshot.knowledgeBase} />
               ) : (
                 <div className="rounded-md border border-[#DCDFE4] bg-white p-6 text-sm text-[#626F86]">
-                  No project context has been indexed yet. After ingestion, analysis and test design can retrieve stored context from this local knowledge base.
+                  No knowledge base has been saved yet. Use Build Knowledge to compile source-backed project knowledge.
                 </div>
               )}
             </CardContent>
           </Card>
+
+          <IndexedContextPanel
+            items={recentItems}
+            totalCount={totalCount}
+            rangeStart={rangeStart}
+            rangeEnd={rangeEnd}
+            page={page}
+            totalPages={totalPages}
+            sortBy={sortBy}
+            sortDirection={sortDirection}
+            search={contextSearch}
+            loading={statusLoading}
+            emptyMessage="No project context has been indexed yet. Use Build Knowledge to prepare context from Azure DevOps work items."
+            onSearchChange={setContextSearch}
+            onSortChange={changeSort}
+            onPageChange={changePage}
+          />
         </TabsContent>
 
-        <TabsContent value="step2" className="space-y-4">
+        <TabsContent value="build" className="space-y-4">
           <Card className="qa-card">
             <CardHeader>
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <CardTitle className="text-base">Step 2 - Extract Knowledge Base</CardTitle>
+                <CardTitle className="text-base">Build Knowledge</CardTitle>
                 {knowledgeSnapshot ? <Badge variant="outline">Prompt {knowledgeSnapshot.promptVersion}</Badge> : null}
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <Tabs value={knowledgeMode} onValueChange={(value) => setKnowledgeMode(value as "auto" | "manual")} className="flex-col gap-4">
-                <TabsList className="h-auto w-fit rounded-md border border-[#DCDFE4] bg-white p-1">
-                  <TabsTrigger value="auto" className="h-9 px-3">Auto Generate</TabsTrigger>
-                  <TabsTrigger value="manual" className="h-9 px-3">External LLM</TabsTrigger>
+              <Tabs value={buildMode} onValueChange={(value) => changeBuildMode(value as BuildMode)} className="flex-col gap-4">
+                <TabsList className="h-auto w-fit rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-1">
+                  <TabsTrigger
+                    value="auto"
+                    className="h-9 px-3 transition-all duration-200 data-active:bg-[#0C66E4] data-active:text-white data-active:shadow-sm data-[state=active]:bg-[#0C66E4] data-[state=active]:text-white data-[state=active]:shadow-sm"
+                  >
+                    Auto Generate
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="manual"
+                    className="h-9 px-3 transition-all duration-200 data-active:bg-[#0C66E4] data-active:text-white data-active:shadow-sm data-[state=active]:bg-[#0C66E4] data-[state=active]:text-white data-[state=active]:shadow-sm"
+                  >
+                    External LLM
+                  </TabsTrigger>
                 </TabsList>
 
+                <BuildStepper step={buildStep} />
+
+                {buildError ? (
+                  <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
+                    {buildError}
+                  </div>
+                ) : null}
+
                 <TabsContent value="auto" className="space-y-4">
-                  <div className="flex flex-col gap-3 border-b border-[#EBECF0] pb-4 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-sm text-[#626F86]">
-                      Extract modules, business rules, workflows, glossary terms, and dependencies from the indexed context.
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      <Button onClick={() => extractKnowledgeBase("incremental")} disabled={!canExtractKnowledge}>
-                        {knowledgeLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-                        {knowledgeLoading ? "Compiling..." : "Compile Knowledge"}
-                      </Button>
-                      <Button variant="outline" onClick={() => extractKnowledgeBase("full")} disabled={!canExtractKnowledge}>
-                        <RefreshCw className="size-4" />
-                        Full Recompile
-                      </Button>
-                    </div>
+                  <div ref={autoIndexStepRef} className="scroll-mt-4 space-y-4">
+                    <IndexLoadPanel
+                      workItemTypes={workItemTypes}
+                      states={states}
+                      canLoad={canLoadIndex}
+                      loading={buildLoading}
+                      onWorkItemTypesChange={changeWorkItemTypes}
+                      onStatesChange={changeStates}
+                      onLoad={loadProjectIndexForBuild}
+                    />
+
+                    {result ? (
+                      <>
+                        <IndexSummary result={result} />
+                        <IndexedContextPanel
+                          items={recentItems}
+                          totalCount={totalCount}
+                          rangeStart={rangeStart}
+                          rangeEnd={rangeEnd}
+                          page={page}
+                          totalPages={totalPages}
+                          sortBy={sortBy}
+                          sortDirection={sortDirection}
+                          search={contextSearch}
+                          loading={statusLoading}
+                          emptyMessage="No indexed work items matched the loaded project index."
+                          onSearchChange={setContextSearch}
+                          onSortChange={changeSort}
+                          onPageChange={changePage}
+                        />
+                      </>
+                    ) : null}
                   </div>
 
-                  {knowledgeError ? (
-                    <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
-                      {knowledgeError}
+                  {result ? (
+                    <div ref={autoPrepareStepRef} className="scroll-mt-4 space-y-4">
+                      <KnowledgePreparePanel
+                        compileMode={compileMode}
+                        canPrepare={canPrepareKnowledge}
+                        loading={buildLoading}
+                        onCompileModeChange={changeCompileMode}
+                        onPrepare={prepareAutoKnowledge}
+                        actionLabel={buildLoading ? "Preparing..." : "Prepare Knowledge Preview"}
+                      />
+
+                      {generatedDraft?.alreadyCurrent ? (
+                        <GeneratedPreviewPanel
+                          draft={generatedDraft}
+                          saving={generatedSaveLoading}
+                          onSave={saveGeneratedKnowledge}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {generatedDraft && !generatedDraft.alreadyCurrent ? (
+                    <div ref={autoPreviewStepRef} className="scroll-mt-4">
+                      <GeneratedPreviewPanel
+                        draft={generatedDraft}
+                        saving={generatedSaveLoading}
+                        onSave={saveGeneratedKnowledge}
+                      />
                     </div>
                   ) : null}
                 </TabsContent>
 
                 <TabsContent value="manual" className="space-y-4">
-                  <div className="flex flex-col gap-3 border-b border-[#EBECF0] pb-4 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-sm text-[#626F86]">
-                      Copy generated prompts to an external LLM, paste the JSON response, then validate it here.
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      <Button onClick={() => prepareManualKnowledgeDraft("incremental")} disabled={!canExtractKnowledge || Boolean(manualKnowledgeDraftLoadingMode)}>
-                        {manualKnowledgeDraftLoadingMode === "incremental" ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-                        {manualKnowledgeDraftLoadingMode === "incremental" ? "Preparing..." : "Prepare Compile Prompt"}
-                      </Button>
-                      <Button variant="outline" onClick={() => prepareManualKnowledgeDraft("full")} disabled={!canExtractKnowledge || Boolean(manualKnowledgeDraftLoadingMode)}>
-                        {manualKnowledgeDraftLoadingMode === "full" ? <RefreshCw className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                        {manualKnowledgeDraftLoadingMode === "full" ? "Preparing..." : "Prepare Full Recompile Prompt"}
-                      </Button>
-                    </div>
+                  <div ref={manualIndexStepRef} className="scroll-mt-4 space-y-4">
+                    <IndexLoadPanel
+                      workItemTypes={workItemTypes}
+                      states={states}
+                      canLoad={canLoadIndex}
+                      loading={buildLoading}
+                      onWorkItemTypesChange={changeWorkItemTypes}
+                      onStatesChange={changeStates}
+                      onLoad={loadProjectIndexForBuild}
+                    />
+
+                    {result ? (
+                      <>
+                        <IndexSummary result={result} />
+                        <IndexedContextPanel
+                          items={recentItems}
+                          totalCount={totalCount}
+                          rangeStart={rangeStart}
+                          rangeEnd={rangeEnd}
+                          page={page}
+                          totalPages={totalPages}
+                          sortBy={sortBy}
+                          sortDirection={sortDirection}
+                          search={contextSearch}
+                          loading={statusLoading}
+                          emptyMessage="No indexed work items matched the loaded project index."
+                          onSearchChange={setContextSearch}
+                          onSortChange={changeSort}
+                          onPageChange={changePage}
+                        />
+                      </>
+                    ) : null}
                   </div>
 
-                  {manualKnowledgeError ? (
-                    <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
-                      {manualKnowledgeError}
-                    </div>
-                  ) : null}
+                  {result ? (
+                    <div ref={manualPrepareStepRef} className="scroll-mt-4 space-y-4">
+                      <KnowledgePreparePanel
+                        compileMode={compileMode}
+                        canPrepare={canPrepareKnowledge}
+                        loading={buildLoading}
+                        onCompileModeChange={changeCompileMode}
+                        onPrepare={prepareExternalKnowledge}
+                        actionLabel={buildLoading ? "Preparing prompt..." : "Prepare Knowledge Preview Prompt"}
+                      />
 
-                  {manualKnowledgeDraft ? (
-                    <div className="rounded-md border border-[#DCDFE4] bg-white p-4 text-sm text-[#44546F]">
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div>
-                          <div className="font-semibold text-[#172B4D]">
-                            {manualKnowledgeDraft.mode === "incremental" ? "Compile Knowledge Prompt" : "Full Recompile Prompt"}
-                          </div>
-                          <div className="text-xs text-[#626F86]">
-                            {manualKnowledgeDraft.sourceWorkItemCount} of {manualKnowledgeDraft.totalSourceWorkItemCount} active work items in prompt input.
-                            {manualKnowledgeDraft.mode === "incremental"
-                              ? ` ${manualKnowledgeDraft.changedSourceWorkItemCount} changed, ${manualKnowledgeDraft.retiredSourceWorkItemCount} retired.`
-                              : null}
-                          </div>
-                        </div>
-                        <Badge variant="outline">{manualKnowledgeDraft.batchCount} {manualKnowledgeDraft.batchCount === 1 ? "batch" : "batches"}</Badge>
-                      </div>
-                      {manualKnowledgeDraft.fallbackReason ? (
-                        <div className="mt-3 rounded-md border border-[#F5CD47]/60 bg-[#FFF7D6] p-3 text-xs text-[#7F5F01]">
-                          {manualKnowledgeDraft.fallbackReason}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {manualKnowledgeDraft && currentManualKnowledgeBatch ? (
-                    <div className="space-y-4 rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-4">
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div>
-                          <div className="text-sm font-semibold text-[#172B4D]">
-                            Batch {currentManualKnowledgeBatch.batchIndex} of {manualKnowledgeDraft.batchCount}
-                          </div>
-                          <div className="text-xs text-[#626F86]">
-                            {currentManualKnowledgeBatch.workItemCount} work items in this prompt. {manualKnowledgeValidatedCount} validated.
-                          </div>
-                        </div>
-                        <Button variant="outline" onClick={() => void navigator.clipboard.writeText(currentManualKnowledgeBatch.prompt)}>
-                          <Copy className="size-4" />
-                          Copy Prompt
-                        </Button>
-                      </div>
-                      <Textarea value={currentManualKnowledgeBatch.prompt} readOnly className="min-h-[360px] font-mono text-xs" />
-                      <div className="space-y-2">
-                        <Label className="text-sm font-semibold text-[#172B4D]">External LLM Response</Label>
-                        <Textarea
-                          value={manualKnowledgeBatchResponses[currentManualKnowledgeBatch.batchIndex] ?? ""}
-                          onChange={(event) =>
+                      {manualKnowledgeDraft && buildStep === "prepare" ? (
+                        <ExternalPromptPanel
+                          draft={manualKnowledgeDraft}
+                          currentBatch={currentManualKnowledgeBatch}
+                          responses={manualKnowledgeBatchResponses}
+                          validatedCount={manualKnowledgeValidatedCount}
+                          allValidated={manualKnowledgeAllBatchesValidated}
+                          validationLoading={manualKnowledgeValidationLoading}
+                          saveLoading={manualKnowledgeSaveLoading}
+                          copied={promptCopied}
+                          validatedBatches={manualKnowledgeValidatedBatches}
+                          batchRef={manualBatchRef}
+                          showPrompt
+                          showPreview={false}
+                          onResponseChange={(batchIndex, value) =>
                             setManualKnowledgeBatchResponses((current) => ({
                               ...current,
-                              [currentManualKnowledgeBatch.batchIndex]: event.target.value,
+                              [batchIndex]: value,
                             }))
                           }
-                          className="min-h-[240px] font-mono text-xs"
-                          placeholder="Paste the JSON response for this batch."
+                          onCopy={(prompt) => {
+                            void navigator.clipboard.writeText(prompt)
+                            setPromptCopied(true)
+                          }}
+                          onValidate={validateManualKnowledgeBatch}
+                          onSave={saveManualKnowledgeBatches}
                         />
-                      </div>
-                      <div className="flex justify-end">
-                        <Button
-                          onClick={validateManualKnowledgeBatch}
-                          disabled={!manualKnowledgeBatchResponses[currentManualKnowledgeBatch.batchIndex]?.trim() || manualKnowledgeValidationLoading}
-                        >
-                          {manualKnowledgeValidationLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-                          {manualKnowledgeDraft.batchCount === 1 ? "Validate and Save" : "Validate Batch"}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {manualKnowledgeDraft && manualKnowledgeDraft.batchCount === 0 ? (
-                    <div className="space-y-3 rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-4">
-                      <div>
-                        <div className="text-sm font-semibold text-[#172B4D]">No External Prompt Needed</div>
-                        <div className="text-xs text-[#626F86]">
-                          The current incremental baseline has no changed work items.
-                        </div>
-                      </div>
-                      {manualKnowledgeDraft.retiredSourceWorkItemCount > 0 || manualKnowledgeDraft.fallbackReason ? (
-                        <div className="flex justify-end">
-                          <Button onClick={saveManualKnowledgeBatches} disabled={manualKnowledgeSaveLoading}>
-                            {manualKnowledgeSaveLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-                            {manualKnowledgeSaveLoading
-                              ? "Saving..."
-                              : manualKnowledgeDraft.fallbackReason
-                                ? "Save Incremental Baseline"
-                                : "Save Knowledge Base"}
-                          </Button>
-                        </div>
                       ) : null}
                     </div>
                   ) : null}
 
-                  {manualKnowledgeDraft && manualKnowledgeDraft.batchCount > 1 && manualKnowledgeAllBatchesValidated ? (
-                    <div className="space-y-4 rounded-md border border-[#DCDFE4] bg-white p-4">
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div>
-                          <div className="text-sm font-semibold text-[#172B4D]">Ready to Save Knowledge Base</div>
-                          <div className="text-xs text-[#626F86]">
-                            All {manualKnowledgeDraft.batchCount} batch responses are validated. iTestFlow will merge duplicates locally and save the final
-                            knowledge base.
-                          </div>
-                        </div>
-                        <Button onClick={saveManualKnowledgeBatches} disabled={manualKnowledgeSaveLoading}>
-                          {manualKnowledgeSaveLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-                          {manualKnowledgeSaveLoading ? "Saving..." : "Save Knowledge Base"}
-                        </Button>
-                      </div>
+                  {manualKnowledgeDraft && buildStep === "preview" ? (
+                    <div ref={manualPreviewStepRef} className="scroll-mt-4">
+                      <ExternalPromptPanel
+                        draft={manualKnowledgeDraft}
+                        currentBatch={currentManualKnowledgeBatch}
+                        responses={manualKnowledgeBatchResponses}
+                        validatedCount={manualKnowledgeValidatedCount}
+                        allValidated={manualKnowledgeAllBatchesValidated}
+                        validationLoading={manualKnowledgeValidationLoading}
+                        saveLoading={manualKnowledgeSaveLoading}
+                        copied={promptCopied}
+                        validatedBatches={manualKnowledgeValidatedBatches}
+                        batchRef={manualBatchRef}
+                        showPrompt={false}
+                        showPreview
+                        onResponseChange={(batchIndex, value) =>
+                          setManualKnowledgeBatchResponses((current) => ({
+                            ...current,
+                            [batchIndex]: value,
+                          }))
+                        }
+                        onCopy={(prompt) => {
+                          void navigator.clipboard.writeText(prompt)
+                          setPromptCopied(true)
+                        }}
+                        onValidate={validateManualKnowledgeBatch}
+                        onSave={saveManualKnowledgeBatches}
+                      />
                     </div>
                   ) : null}
                 </TabsContent>
               </Tabs>
-
-              {knowledgeStatusLoading ? (
-                <div className="text-sm text-[#626F86]">Loading saved knowledge base...</div>
-              ) : knowledgeSnapshot ? (
-                <div className="space-y-4">
-                  <KnowledgeOpsPanel
-                    lint={knowledgeLint}
-                    logItems={knowledgeLog}
-                    logVisible={knowledgeLogVisible}
-                    exportResult={knowledgeExport}
-                    healthLoading={knowledgeHealthLoading}
-                    logLoading={knowledgeLogLoading}
-                    exportLoading={knowledgeExportLoading}
-                    onRunHealthCheck={runKnowledgeHealthCheck}
-                    onToggleLog={toggleKnowledgeLog}
-                    onExport={exportKnowledgeWiki}
-                  />
-                  <KnowledgeBaseSummary snapshot={knowledgeSnapshot} />
-                </div>
-              ) : (
-                <div className="rounded-md border border-[#DCDFE4] bg-white p-6 text-sm text-[#626F86]">
-                  No knowledge base has been extracted yet. Run Step 2 after indexing context to save categorized project knowledge for analysis and test design.
-                </div>
-              )}
             </CardContent>
           </Card>
         </TabsContent>
       </Tabs>
+    </div>
+  )
+}
+
+function HubSummary({
+  activeSourceCount,
+  totalKnowledgeItems,
+  snapshot,
+  loading,
+}: {
+  activeSourceCount: number
+  totalKnowledgeItems: number
+  snapshot: ProjectKnowledgeSnapshot | null
+  loading: boolean
+}) {
+  return (
+    <Card className="qa-card">
+      <CardContent className="space-y-3 p-4">
+        <div className="grid gap-3 md:grid-cols-2">
+          <MetricPanel label="Active source work items" value={activeSourceCount} />
+          <MetricPanel label="Knowledge base items" value={loading ? "-" : totalKnowledgeItems} />
+        </div>
+        <div className="text-sm text-[#44546F]">
+          <div><span className="font-semibold text-[#172B4D]">Last extracted:</span> {formatDate(snapshot?.extractedAt)}</div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function MetricPanel({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="rounded-md border border-[#DCDFE4] bg-white p-3">
+      <div className="text-xs text-[#626F86]">{label}</div>
+      <div className="mt-1 text-xl font-semibold text-[#172B4D]">{value}</div>
+    </div>
+  )
+}
+
+function BuildStepper({ step }: { step: BuildStep }) {
+  const steps = [
+    { key: "index", label: "Load Project Index" },
+    { key: "prepare", label: "Prepare Knowledge Preview" },
+    { key: "preview", label: "Preview & Save" },
+  ] as const
+  const activeIndex = steps.findIndex((item) => item.key === step)
+
+  return (
+    <div className="grid gap-2 rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-3 lg:grid-cols-3">
+      {steps.map((item, index) => {
+        const done = index < activeIndex
+        const active = item.key === step
+        return (
+          <div
+            key={item.key}
+            className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${
+              active
+                ? "border-[#0C66E4] bg-[#E9F2FF] text-[#0C66E4]"
+                : done
+                  ? "border-[#BAF3DB] bg-[#E3FCEF] text-[#216E4E]"
+                  : "border-[#DCDFE4] bg-white text-[#44546F]"
+            }`}
+          >
+            {done ? <CheckCircle2 className="size-4" /> : <span className="font-mono text-xs">{index + 1}</span>}
+            <span className="font-semibold">{item.label}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function IndexLoadPanel({
+  workItemTypes,
+  states,
+  canLoad,
+  loading,
+  onWorkItemTypesChange,
+  onStatesChange,
+  onLoad,
+}: {
+  workItemTypes: string[]
+  states: string[]
+  canLoad: boolean
+  loading: boolean
+  onWorkItemTypesChange: (values: string[]) => void
+  onStatesChange: (values: string[]) => void
+  onLoad: () => void
+}) {
+  return (
+    <div className="space-y-4 rounded-md border border-[#DCDFE4] bg-white p-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 flex-1 space-y-4">
+          <ContextFilterSelector
+            title="Work item types"
+            description="Load matching Azure DevOps work items into the indexed project context before building knowledge."
+            options={CONTEXT_WORK_ITEM_TYPE_OPTIONS}
+            selectedValues={workItemTypes}
+            customPlaceholder="Add work item type"
+            duplicateMessage="This work item type is already selected."
+            optionGridClassName="sm:grid-cols-2 lg:grid-cols-3"
+            onChange={onWorkItemTypesChange}
+          />
+          <ContextFilterSelector
+            title="States"
+            description="Only active source work items in these states are used for knowledge building."
+            options={CONTEXT_STATE_OPTIONS}
+            selectedValues={states}
+            customPlaceholder="Add state"
+            duplicateMessage="This state is already selected."
+            optionGridClassName="sm:grid-cols-2 lg:grid-cols-3"
+            onChange={onStatesChange}
+          />
+        </div>
+        <div className="rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-3 lg:w-[360px]">
+          <div className="mb-3 text-xs leading-5 text-[#626F86]">
+            This step syncs the selected source work items and refreshes the retrieval index used by knowledge preparation.
+          </div>
+          <Button className="h-11 w-full justify-center" onClick={onLoad} disabled={!canLoad}>
+            {loading ? <RefreshCw className="size-4 animate-spin" /> : <Database className="size-4" />}
+            {loading ? "Loading..." : "Load Project Index"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function KnowledgePreparePanel({
+  compileMode,
+  canPrepare,
+  loading,
+  onCompileModeChange,
+  onPrepare,
+  actionLabel,
+}: {
+  compileMode: KnowledgeCompileMode
+  canPrepare: boolean
+  loading: boolean
+  onCompileModeChange: (mode: KnowledgeCompileMode) => void
+  onPrepare: () => void
+  actionLabel: string
+}) {
+  return (
+    <div className="space-y-4 rounded-md border border-[#DCDFE4] bg-white p-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 flex-1">
+          <Label className="text-sm font-semibold text-[#172B4D]">Compile mode</Label>
+          <div className="mt-2 grid gap-2 rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-1 sm:grid-cols-2">
+            <button
+              type="button"
+              className={`rounded-md border px-3 py-2 text-sm font-semibold transition-all duration-200 ${
+                compileMode === "incremental"
+                  ? "border-[#0C66E4] bg-[#E9F2FF] text-[#0C66E4] shadow-sm"
+                  : "border-transparent bg-white text-[#172B4D] hover:border-[#B3D4FF] hover:bg-[#F4F8FF]"
+              }`}
+              onClick={() => onCompileModeChange("incremental")}
+            >
+              Incremental
+            </button>
+            <button
+              type="button"
+              className={`rounded-md border px-3 py-2 text-sm font-semibold transition-all duration-200 ${
+                compileMode === "full"
+                  ? "border-[#0C66E4] bg-[#E9F2FF] text-[#0C66E4] shadow-sm"
+                  : "border-transparent bg-white text-[#172B4D] hover:border-[#B3D4FF] hover:bg-[#F4F8FF]"
+              }`}
+              onClick={() => onCompileModeChange("full")}
+            >
+              Full recompile
+            </button>
+          </div>
+          <div className="mt-2 text-xs leading-5 text-[#626F86]">
+            Prepare the knowledge preview from the project index loaded in step 1.
+          </div>
+        </div>
+        <div className="rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-3 lg:w-[360px]">
+          <div className="mb-3 text-xs leading-5 text-[#626F86]">
+            Review the compile mode, then prepare the next knowledge preview.
+          </div>
+          <Button className="h-11 w-full justify-center" onClick={onPrepare} disabled={!canPrepare}>
+            {loading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
+            {actionLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function GeneratedPreviewPanel({
+  draft,
+  saving,
+  onSave,
+}: {
+  draft: KnowledgeGeneratedDraft
+  saving: boolean
+  onSave: () => void
+}) {
+  const totalItems = countKnowledgeItems(draft.knowledgeBase)
+
+  if (draft.alreadyCurrent) {
+    return (
+      <div className="rounded-md border border-[#BAF3DB] bg-[#E3FCEF] p-4 text-sm text-[#216E4E]">
+        <div className="font-semibold">No Knowledge Changes Needed</div>
+        <div className="mt-1">
+          The current incremental baseline has no changed work items, so there is no generated preview to save.
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4 rounded-md border border-[#DCDFE4] bg-white p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="text-sm font-semibold text-[#172B4D]">Generated Knowledge Preview</div>
+          <div className="text-xs text-[#626F86]">
+            {totalItems} entries from {draft.sourceWorkItemCount} active source work items.
+            {draft.mode === "incremental"
+              ? ` ${draft.changedSourceWorkItemCount} changed, ${draft.retiredSourceWorkItemCount} retired.`
+              : null}
+          </div>
+        </div>
+        <Badge variant="outline">Prompt {draft.promptVersion}</Badge>
+      </div>
+      {draft.fallbackReason ? (
+        <div className="rounded-md border border-[#F5CD47]/60 bg-[#FFF7D6] p-3 text-xs text-[#7F5F01]">
+          {draft.fallbackReason}
+        </div>
+      ) : null}
+      <KnowledgeExplorer knowledgeBase={draft.knowledgeBase} compact />
+      <div className="flex justify-end gap-2 border-t border-[#EBECF0] pt-3">
+        <Button onClick={onSave} disabled={saving}>
+          {saving ? <RefreshCw className="size-4 animate-spin" /> : <Save className="size-4" />}
+          {saving ? "Saving..." : "Save Knowledge Base"}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function ExternalPromptPanel({
+  draft,
+  currentBatch,
+  responses,
+  validatedCount,
+  allValidated,
+  validationLoading,
+  saveLoading,
+  copied,
+  validatedBatches,
+  batchRef,
+  showPrompt = true,
+  showPreview = true,
+  onResponseChange,
+  onCopy,
+  onValidate,
+  onSave,
+}: {
+  draft: KnowledgeManualDraft
+  currentBatch?: KnowledgeManualBatchPrompt
+  responses: Record<number, string>
+  validatedCount: number
+  allValidated: boolean
+  validationLoading: boolean
+  saveLoading: boolean
+  copied: boolean
+  validatedBatches: Record<number, ProjectKnowledgeBase>
+  batchRef: RefObject<HTMLDivElement | null>
+  showPrompt?: boolean
+  showPreview?: boolean
+  onResponseChange: (batchIndex: number, value: string) => void
+  onCopy: (prompt: string) => void
+  onValidate: () => void
+  onSave: () => void
+}) {
+  const hasRetiredOnlyUpdate = draft.batchCount === 0 && draft.retiredSourceWorkItemCount > 0
+  const previewKnowledgeBase = useMemo(() => {
+    const bases = Object.values(validatedBatches)
+    if (bases.length === 1) return bases[0]
+    if (!bases.length) return null
+    return combineKnowledgeBasesForPreview(bases)
+  }, [validatedBatches])
+
+  if (draft.batchCount === 0) {
+    return (
+      <div
+        className={`rounded-md border p-4 text-sm ${
+          hasRetiredOnlyUpdate
+            ? "border-[#F5CD47]/60 bg-[#FFF7D6] text-[#7F5F01]"
+            : "border-[#BAF3DB] bg-[#E3FCEF] text-[#216E4E]"
+        }`}
+      >
+        <div className="font-semibold">
+          {hasRetiredOnlyUpdate ? "Knowledge Baseline Update Needed" : "No Knowledge Changes Needed"}
+        </div>
+        <div className="mt-1">
+          {hasRetiredOnlyUpdate
+            ? `${draft.retiredSourceWorkItemCount} retired source work item${
+                draft.retiredSourceWorkItemCount === 1 ? "" : "s"
+              } should be removed from the saved knowledge base. No external prompt is needed.`
+            : "The current incremental baseline has no changed work items, so there is no external prompt to copy or save."}
+        </div>
+        {draft.fallbackReason ? <div className="mt-2 text-xs">{draft.fallbackReason}</div> : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {showPrompt ? (
+      <div className="rounded-md border border-[#DCDFE4] bg-white p-4 text-sm text-[#44546F]">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="font-semibold text-[#172B4D]">
+              {draft.mode === "incremental" ? "Compile Knowledge Prompt" : "Full Recompile Prompt"}
+            </div>
+            <div className="text-xs text-[#626F86]">
+              {draft.sourceWorkItemCount} of {draft.totalSourceWorkItemCount} active work items in prompt input.
+              {draft.mode === "incremental"
+                ? ` ${draft.changedSourceWorkItemCount} changed, ${draft.retiredSourceWorkItemCount} retired.`
+                : null}
+            </div>
+          </div>
+          <Badge variant="outline">{draft.batchCount} {draft.batchCount === 1 ? "batch" : "batches"}</Badge>
+        </div>
+        {draft.fallbackReason ? (
+          <div className="mt-3 rounded-md border border-[#F5CD47]/60 bg-[#FFF7D6] p-3 text-xs text-[#7F5F01]">
+            {draft.fallbackReason}
+          </div>
+        ) : null}
+      </div>
+      ) : null}
+
+      {showPrompt && currentBatch ? (
+        <div ref={batchRef} className="space-y-4 rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-[#172B4D]">
+                Batch {currentBatch.batchIndex} of {draft.batchCount}
+              </div>
+              <div className="text-xs text-[#626F86]">
+                {currentBatch.workItemCount} work items in this prompt. {validatedCount} validated.
+              </div>
+            </div>
+            <Button variant="outline" onClick={() => onCopy(currentBatch.prompt)} disabled={copied}>
+              <Copy className="size-4" />
+              {copied ? "Copied" : "Copy Prompt"}
+            </Button>
+          </div>
+          <Textarea value={currentBatch.prompt} readOnly className="min-h-[320px] font-mono text-xs" />
+          <div className="space-y-2">
+            <Label className="text-sm font-semibold text-[#172B4D]">External LLM Response</Label>
+            <Textarea
+              value={responses[currentBatch.batchIndex] ?? ""}
+              onChange={(event) => onResponseChange(currentBatch.batchIndex, event.target.value)}
+              className="min-h-[220px] font-mono text-xs"
+              placeholder="Paste the JSON response for this batch."
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button
+              onClick={onValidate}
+              disabled={!responses[currentBatch.batchIndex]?.trim() || validationLoading}
+            >
+              {validationLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
+              {validationLoading ? "Validating..." : "Validate Batch"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {showPreview && allValidated && previewKnowledgeBase ? (
+        <div className="space-y-4 rounded-md border border-[#DCDFE4] bg-white p-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-[#172B4D]">Validated Knowledge Preview</div>
+              <div className="text-xs text-[#626F86]">
+                {validatedCount} batch {validatedCount === 1 ? "response" : "responses"} validated. Save to persist the final knowledge base.
+              </div>
+            </div>
+            <Badge variant="outline">{countKnowledgeItems(previewKnowledgeBase)} entries</Badge>
+          </div>
+          <KnowledgeExplorer knowledgeBase={previewKnowledgeBase} compact />
+          <div className="flex justify-end gap-2 border-t border-[#EBECF0] pt-3">
+            <Button onClick={onSave} disabled={saveLoading}>
+              {saveLoading ? <RefreshCw className="size-4 animate-spin" /> : <Save className="size-4" />}
+              {saveLoading ? "Saving..." : "Save Knowledge Base"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -941,6 +1547,141 @@ function SortHeader({
       <ArrowUpDown className="size-3.5" />
       {active ? <span className="text-xs text-[#626F86]">{direction === "asc" ? "Asc" : "Desc"}</span> : null}
     </Button>
+  )
+}
+
+function IndexedContextPanel({
+  items,
+  totalCount,
+  rangeStart,
+  rangeEnd,
+  page,
+  totalPages,
+  sortBy,
+  sortDirection,
+  search,
+  loading,
+  emptyMessage,
+  onSearchChange,
+  onSortChange,
+  onPageChange,
+}: {
+  items: RecentContextItem[]
+  totalCount: number
+  rangeStart: number
+  rangeEnd: number
+  page: number
+  totalPages: number
+  sortBy: ContextSortBy
+  sortDirection: ContextSortDirection
+  search: string
+  loading: boolean
+  emptyMessage: string
+  onSearchChange: (value: string) => void
+  onSortChange: (sortBy: ContextSortBy) => void
+  onPageChange: (page: number) => void
+}) {
+  const safeTotalPages = Math.max(1, totalPages)
+  const safePage = Math.min(Math.max(1, page), safeTotalPages)
+  const canGoPrevious = safePage > 1
+  const canGoNext = safePage < safeTotalPages
+
+  return (
+    <Card className="qa-card">
+      <CardHeader>
+        <CardTitle className="text-base">Indexed Project Context</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="text-sm text-[#626F86]">
+            Showing {rangeStart}-{rangeEnd} of {totalCount} active source work items available for retrieval.
+          </div>
+          <div className="relative w-full lg:w-[360px]">
+            <Search className="pointer-events-none absolute left-2.5 top-2 size-4 text-[#626F86]" />
+            <Input
+              value={search}
+              onChange={(event) => onSearchChange(event.target.value)}
+              className="pl-8"
+              placeholder="Search ID, title, or indexed text"
+            />
+          </div>
+        </div>
+
+        {!items.length && loading ? (
+          <div className="text-sm text-[#626F86]">Loading indexed context...</div>
+        ) : items.length ? (
+          <div className="space-y-3">
+            <div className="overflow-x-auto">
+              <Table className={loading ? "opacity-60" : undefined}>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>ID</TableHead>
+                    <TableHead>
+                      <SortHeader label="Type" active={sortBy === "type"} direction={sortDirection} onClick={() => onSortChange("type")} />
+                    </TableHead>
+                    <TableHead className="min-w-[320px]">Title</TableHead>
+                    <TableHead>Chunks</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>
+                      <SortHeader
+                        label="Last Indexed"
+                        active={sortBy === "lastIndexedAt"}
+                        direction={sortDirection}
+                        onClick={() => onSortChange("lastIndexedAt")}
+                      />
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {items.map((item) => (
+                    <TableRow key={item.workItemId}>
+                      <TableCell className="font-mono text-xs font-semibold text-[#0C66E4]">{item.workItemId}</TableCell>
+                      <TableCell><Badge variant="secondary">{item.workItemType}</Badge></TableCell>
+                      <TableCell className="font-medium text-[#172B4D]">{item.title}</TableCell>
+                      <TableCell>{item.chunkCount}</TableCell>
+                      <TableCell><Badge variant="outline">{item.syncStatus ?? "active"}</Badge></TableCell>
+                      <TableCell>{formatDate(item.lastIndexedAt)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <div className="flex flex-col gap-3 border-t border-[#EBECF0] pt-3 text-sm text-[#626F86] sm:flex-row sm:items-center sm:justify-between">
+              <span>
+                Page {safePage} of {safeTotalPages}
+                {loading ? " - Loading" : ""}
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  size="icon-sm"
+                  variant="outline"
+                  disabled={!canGoPrevious || loading}
+                  onClick={() => onPageChange(safePage - 1)}
+                  aria-label="Previous page"
+                  title="Previous page"
+                >
+                  <ChevronLeft className="size-4" />
+                </Button>
+                <Button
+                  size="icon-sm"
+                  variant="outline"
+                  disabled={!canGoNext || loading}
+                  onClick={() => onPageChange(safePage + 1)}
+                  aria-label="Next page"
+                  title="Next page"
+                >
+                  <ChevronRight className="size-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-md border border-[#DCDFE4] bg-white p-6 text-sm text-[#626F86]">
+            {search.trim() ? "No indexed work items match the current search." : emptyMessage}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
@@ -978,36 +1719,6 @@ function IndexSummary({ result }: { result: IndexResult }) {
       </CardContent>
     </Card>
   )
-}
-
-const KNOWLEDGE_CATEGORIES = [
-  { key: "modules", label: "Modules" },
-  { key: "businessRules", label: "Business Rules" },
-  { key: "stateTransitions", label: "State Transitions" },
-  { key: "glossary", label: "Glossary" },
-  { key: "crossDependencies", label: "Dependencies" },
-] as const
-
-type KnowledgeCategoryKey = (typeof KNOWLEDGE_CATEGORIES)[number]["key"]
-
-type AnyKnowledgeItem = KnowledgeSource & {
-  id?: string
-  name?: string
-  description?: string
-  rule?: string
-  sourceField?: string
-  moduleName?: string
-  workflowName?: string
-  fromState?: string
-  toState?: string
-  triggerOrCondition?: string
-  actor?: string
-  term?: string
-  type?: string
-  definition?: string
-  sourceModule?: string
-  targetModule?: string
-  dependencyType?: string
 }
 
 function KnowledgeOpsPanel({
@@ -1124,94 +1835,171 @@ function KnowledgeMetric({ label, value, tone }: { label: string; value: number;
   )
 }
 
-function KnowledgeBaseSummary({ snapshot }: { snapshot: ProjectKnowledgeSnapshot }) {
-  const counts = KNOWLEDGE_CATEGORIES.map(({ key, label }) => ({
-    key,
-    label,
-    value: snapshot.knowledgeBase[key].length,
-  }))
+function KnowledgeExplorer({ knowledgeBase, compact = false }: { knowledgeBase: ProjectKnowledgeBase; compact?: boolean }) {
+  const [category, setCategory] = useState<KnowledgeExplorerCategory>("all")
+  const [query, setQuery] = useState("")
+  const [page, setPage] = useState(1)
+  const entries = useMemo(() => flattenKnowledgeEntries(knowledgeBase), [knowledgeBase])
+  const counts = useMemo(() => getKnowledgeCategoryCounts(knowledgeBase), [knowledgeBase])
+  const normalizedQuery = normalizeSearch(query)
+  const filteredEntries = entries.filter((entry) => {
+    const categoryMatch = category === "all" || entry.category === category
+    const textMatch = !normalizedQuery || normalizeSearch(entry.searchText).includes(normalizedQuery)
+    return categoryMatch && textMatch
+  })
+  const pageSize = compact ? 5 : 8
+  const totalPages = Math.max(1, Math.ceil(filteredEntries.length / pageSize))
+  const safePage = Math.min(page, totalPages)
+  const pageStart = filteredEntries.length === 0 ? 0 : (safePage - 1) * pageSize + 1
+  const pageEnd = Math.min(filteredEntries.length, safePage * pageSize)
+  const visibleEntries = filteredEntries.slice((safePage - 1) * pageSize, safePage * pageSize)
+
+  useEffect(() => {
+    setPage(1)
+  }, [category, query, compact, knowledgeBase])
 
   return (
-    <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        {counts.map((count) => (
-          <div key={count.key} className="rounded-md border border-[#DCDFE4] bg-white p-3">
-            <div className="text-xs text-[#626F86]">{count.label}</div>
-            <div className="mt-1 text-lg font-semibold text-[#172B4D]">{count.value}</div>
-          </div>
-        ))}
+    <div className="space-y-3">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="text-sm text-[#626F86]">
+          {filteredEntries.length} entries match the current filters.
+        </div>
+        <div className="w-full lg:w-[420px]">
+          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search knowledge or source IDs" />
+        </div>
       </div>
-      <div className="grid gap-3 text-sm text-[#44546F] lg:grid-cols-3">
-        <div><span className="font-semibold">Source items:</span> {snapshot.sourceWorkItemCount}</div>
-        <div><span className="font-semibold">Model:</span> {[snapshot.provider, snapshot.model].filter(Boolean).join(" / ") || "-"}</div>
-        <div><span className="font-semibold">Extracted:</span> {formatDate(snapshot.extractedAt)}</div>
+      <div className={`grid gap-4 ${compact ? "lg:grid-cols-[180px_1fr]" : "lg:grid-cols-[190px_1fr]"}`}>
+        <div className="space-y-1">
+          <KnowledgeCategoryButton
+            label="All"
+            count={entries.length}
+            active={category === "all"}
+            onClick={() => setCategory("all")}
+          />
+          {KNOWLEDGE_CATEGORIES.map((item) => (
+            <KnowledgeCategoryButton
+              key={item.key}
+              label={item.label}
+              count={counts[item.key]}
+              active={category === item.key}
+              onClick={() => setCategory(item.key)}
+            />
+          ))}
+        </div>
+        <div className={`space-y-3 ${compact ? "max-h-[520px] overflow-y-auto pr-1" : ""}`}>
+          {visibleEntries.length ? (
+            visibleEntries.map((entry) => <KnowledgeExplorerEntryCard key={entry.key} entry={entry} compact={compact} />)
+          ) : (
+            <div className="rounded-md border border-[#DCDFE4] bg-white p-5 text-sm text-[#626F86]">
+              No knowledge entries match the current filters.
+            </div>
+          )}
+          {filteredEntries.length > pageSize ? (
+            <div className="flex items-center justify-between border-t border-[#EBECF0] pt-3 text-sm text-[#626F86]">
+              <span>Showing {pageStart}-{pageEnd} of {filteredEntries.length}</span>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" disabled={safePage <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>
+                  Previous
+                </Button>
+                <Button size="sm" variant="outline" disabled={safePage >= totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>
+                  Next
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </div>
       </div>
-      <KnowledgeBaseTabs knowledgeBase={snapshot.knowledgeBase} />
     </div>
   )
 }
 
-function KnowledgeBaseTabs({ knowledgeBase }: { knowledgeBase: ProjectKnowledgeBase }) {
+function KnowledgeCategoryButton({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string
+  count: number
+  active: boolean
+  onClick: () => void
+}) {
   return (
-    <Tabs defaultValue="modules" className="flex-col gap-3">
-      <div className="overflow-x-auto pb-1">
-        <TabsList className="h-auto min-w-max flex-wrap justify-start">
-          {KNOWLEDGE_CATEGORIES.map((category) => (
-            <TabsTrigger key={category.key} value={category.key} className="px-2 py-1">
-              {category.label}
-              <span className="rounded-sm bg-[#F1F2F4] px-1.5 py-0.5 text-xs text-[#44546F]">
-                {knowledgeBase[category.key].length}
-              </span>
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </div>
-      {KNOWLEDGE_CATEGORIES.map((category) => {
-        const items = knowledgeBase[category.key] as AnyKnowledgeItem[]
-        return (
-          <TabsContent key={category.key} value={category.key} className="space-y-3">
-            {items.length ? (
-              items.map((item, index) => (
-                <KnowledgeEntry key={knowledgeItemKey(category.key, item, index)} category={category.key} item={item} />
-              ))
-            ) : (
-              <div className="rounded-md border border-[#DCDFE4] bg-white p-5 text-sm text-[#626F86]">
-                No supported {category.label.toLowerCase()} were found in the indexed context.
-              </div>
-            )}
-          </TabsContent>
-        )
-      })}
-    </Tabs>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-medium ${
+        active ? "bg-[#F1F2F4] text-[#172B4D]" : "text-[#44546F] hover:bg-[#F7F8F9]"
+      }`}
+    >
+      <span>{label}</span>
+      <span className="rounded-sm border border-[#DCDFE4] bg-white px-1.5 py-0.5 text-xs text-[#44546F]">{count}</span>
+    </button>
   )
 }
 
-function KnowledgeEntry({ category, item }: { category: KnowledgeCategoryKey; item: AnyKnowledgeItem }) {
+function KnowledgeExplorerEntryCard({ entry, compact }: { entry: KnowledgeExplorerEntry; compact?: boolean }) {
   return (
-    <div className="rounded-md border border-[#DCDFE4] bg-white p-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <div className="font-semibold text-[#172B4D]">{knowledgeTitle(category, item)}</div>
-          <div className="mt-1 text-sm text-[#44546F]">{knowledgeDescription(category, item)}</div>
+    <div className="rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-4">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary">{entry.badge}</Badge>
+            <span className="font-semibold text-[#172B4D]">{entry.title}</span>
+          </div>
+          <div className={`mt-2 text-sm text-[#44546F] ${compact ? "line-clamp-2" : ""}`}>
+            {entry.description}
+          </div>
         </div>
-        <div className="flex flex-wrap gap-1">
-          {item.sourceWorkItemIds.map((id) => (
+        <div className="flex max-w-[420px] flex-wrap gap-1">
+          {entry.sourceWorkItemIds.slice(0, compact ? 6 : 10).map((id) => (
             <Badge key={id} variant="outline" className="font-mono text-xs">{id}</Badge>
           ))}
+          {entry.sourceWorkItemIds.length > (compact ? 6 : 10) ? (
+            <Badge variant="outline" className="font-mono text-xs">+{entry.sourceWorkItemIds.length - (compact ? 6 : 10)}</Badge>
+          ) : null}
         </div>
       </div>
-      <div className="mt-3 flex flex-wrap gap-2 text-xs text-[#626F86]">
-        {item.moduleName ? <Badge variant="secondary">{item.moduleName}</Badge> : null}
-        {item.sourceField ? <Badge variant="secondary">{item.sourceField}</Badge> : null}
-        {category === "glossary" ? <Badge variant="secondary">{formatGlossaryType(item.type)}</Badge> : null}
-        {item.dependencyType ? <Badge variant="secondary">{item.dependencyType}</Badge> : null}
-        {item.actor ? <Badge variant="secondary">Actor: {item.actor}</Badge> : null}
-      </div>
-      <div className="mt-3 rounded-md bg-[#F7F8F9] p-3 text-sm text-[#44546F]">
-        <span className="font-semibold text-[#172B4D]">Evidence:</span> {item.evidence}
+      {entry.meta.length ? (
+        <div className="mt-3 flex flex-wrap gap-2 text-xs text-[#626F86]">
+          {entry.meta.map((meta) => <Badge key={meta} variant="secondary">{meta}</Badge>)}
+        </div>
+      ) : null}
+      <div className={`mt-3 rounded-md bg-white p-3 text-sm text-[#44546F] ${compact ? "line-clamp-2" : ""}`}>
+        <span className="font-semibold text-[#172B4D]">Evidence:</span> {entry.evidence}
       </div>
     </div>
   )
+}
+
+function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): KnowledgeExplorerEntry[] {
+  return KNOWLEDGE_CATEGORIES.flatMap((category) => {
+    const items = knowledgeBase[category.key] as AnyKnowledgeItem[]
+    return items.map((item, index) => {
+      const title = knowledgeTitle(category.key, item)
+      const description = knowledgeDescription(category.key, item)
+      const meta = knowledgeMeta(category.key, item)
+      return {
+        key: knowledgeItemKey(category.key, item, index),
+        category: category.key,
+        categoryLabel: category.label,
+        badge: category.badge,
+        title,
+        description,
+        evidence: item.evidence,
+        sourceWorkItemIds: item.sourceWorkItemIds,
+        meta,
+        searchText: [
+          category.label,
+          title,
+          description,
+          item.evidence,
+          item.sourceWorkItemIds.join(" "),
+          meta.join(" "),
+        ].join(" "),
+      }
+    })
+  })
 }
 
 function knowledgeItemKey(category: KnowledgeCategoryKey, item: AnyKnowledgeItem, index: number) {
@@ -1237,6 +2025,40 @@ function knowledgeDescription(category: KnowledgeCategoryKey, item: AnyKnowledge
   return item.description ?? "-"
 }
 
+function knowledgeMeta(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) {
+  return [
+    item.moduleName,
+    item.sourceField,
+    category === "glossary" ? formatGlossaryType(item.type) : undefined,
+    item.dependencyType,
+    item.actor ? `Actor: ${item.actor}` : undefined,
+  ].filter((value): value is string => Boolean(value))
+}
+
+function getKnowledgeCategoryCounts(knowledgeBase: ProjectKnowledgeBase) {
+  return {
+    modules: knowledgeBase.modules.length,
+    businessRules: knowledgeBase.businessRules.length,
+    stateTransitions: knowledgeBase.stateTransitions.length,
+    glossary: knowledgeBase.glossary.length,
+    crossDependencies: knowledgeBase.crossDependencies.length,
+  } satisfies Record<KnowledgeCategoryKey, number>
+}
+
+function countKnowledgeItems(knowledgeBase: ProjectKnowledgeBase) {
+  return Object.values(getKnowledgeCategoryCounts(knowledgeBase)).reduce((sum, count) => sum + count, 0)
+}
+
+function combineKnowledgeBasesForPreview(knowledgeBases: ProjectKnowledgeBase[]): ProjectKnowledgeBase {
+  return {
+    modules: knowledgeBases.flatMap((base) => base.modules),
+    businessRules: knowledgeBases.flatMap((base) => base.businessRules),
+    stateTransitions: knowledgeBases.flatMap((base) => base.stateTransitions),
+    glossary: knowledgeBases.flatMap((base) => base.glossary),
+    crossDependencies: knowledgeBases.flatMap((base) => base.crossDependencies),
+  }
+}
+
 function formatGlossaryType(value?: string) {
   return (value ?? "term").replace(/_/g, " ")
 }
@@ -1247,4 +2069,8 @@ function formatDate(value?: string | null) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value))
+}
+
+function normalizeSearch(value: string) {
+  return value.trim().toLowerCase()
 }

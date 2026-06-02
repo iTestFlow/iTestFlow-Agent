@@ -97,6 +97,23 @@ export type ProjectKnowledgeSnapshot = {
   updatedAt: string;
 };
 
+export type ProjectKnowledgeGeneratedDraft = {
+  promptVersion: string;
+  provider: string;
+  model: string;
+  requestedMode: ProjectKnowledgeCompileMode;
+  mode: ProjectKnowledgeCompileMode;
+  fallbackReason?: string;
+  sourceWorkItemCount: number;
+  promptedSourceWorkItemCount: number;
+  changedSourceWorkItemCount: number;
+  retiredSourceWorkItemCount: number;
+  rawOutput: string;
+  knowledgeBase: ProjectKnowledgeBase;
+  generatedAt: string;
+  alreadyCurrent?: boolean;
+};
+
 export async function extractAndSaveProjectKnowledgeBase(input: {
   scope: ProjectScope;
   provider: LLMProvider;
@@ -235,6 +252,159 @@ export async function extractAndSaveProjectKnowledgeBase(input: {
       promptedSourceWorkItemCount: selection.workItems.length,
       changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
       retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
+      counts: getKnowledgeCounts(knowledgeBase),
+    },
+  });
+
+  return snapshot;
+}
+
+export async function previewGeneratedProjectKnowledgeBase(input: {
+  scope: ProjectScope;
+  provider: LLMProvider;
+  mode?: ProjectKnowledgeCompileMode;
+}): Promise<ProjectKnowledgeGeneratedDraft> {
+  const scope = assertProjectScope(input.scope);
+  const workItems = loadProjectKnowledgeWorkItems(scope);
+  if (!workItems.length) {
+    throw new Error("Fetch and index project context before extracting the knowledge base.");
+  }
+
+  const selection = selectProjectKnowledgeWorkItemsForCompilation({
+    scope,
+    workItems,
+    mode: input.mode ?? "incremental",
+  });
+
+  if (selection.mode === "incremental" && !selection.workItems.length) {
+    const existingSnapshot = getProjectKnowledgeBaseSnapshot({ scope });
+    if (!existingSnapshot) throw new Error("Run a full knowledge recompile before incremental compilation.");
+
+    const knowledgeBase = selection.retiredSourceWorkItemIds.length
+      ? mergeIncrementalProjectKnowledgeBase({
+          existingKnowledgeBase: existingSnapshot.knowledgeBase,
+          partialKnowledgeBases: [],
+          affectedSourceWorkItemIds: selection.affectedSourceWorkItemIds,
+          activeSourceWorkItemIds: workItems.map((item) => item.id),
+        })
+      : existingSnapshot.knowledgeBase;
+
+    return {
+      promptVersion: projectKnowledgeExtractionPrompt.version,
+      provider: "local",
+      model: "local-deterministic",
+      requestedMode: selection.requestedMode,
+      mode: selection.mode,
+      fallbackReason: selection.fallbackReason,
+      sourceWorkItemCount: workItems.length,
+      promptedSourceWorkItemCount: selection.workItems.length,
+      changedSourceWorkItemCount: selection.changedSourceWorkItemIds.length,
+      retiredSourceWorkItemCount: selection.retiredSourceWorkItemIds.length,
+      rawOutput: JSON.stringify({
+        mode: "incremental",
+        noModelCall: true,
+        retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
+      }),
+      knowledgeBase,
+      generatedAt: nowIso(),
+      alreadyCurrent: !selection.retiredSourceWorkItemIds.length,
+    };
+  }
+
+  const result = await extractProjectKnowledgeBase({
+    scope,
+    provider: input.provider,
+    workItems: selection.workItems,
+    mode: selection.mode,
+  });
+  const knowledgeBase = selection.mode === "incremental"
+    ? mergeIncrementalProjectKnowledgeBase({
+        existingKnowledgeBase: getRequiredExistingProjectKnowledgeBase(scope),
+        partialKnowledgeBases: [result.validatedOutput],
+        affectedSourceWorkItemIds: selection.affectedSourceWorkItemIds,
+        activeSourceWorkItemIds: workItems.map((item) => item.id),
+      })
+    : result.validatedOutput;
+
+  return {
+    promptVersion: projectKnowledgeExtractionPrompt.version,
+    provider: result.provider,
+    model: result.model,
+    requestedMode: selection.requestedMode,
+    mode: selection.mode,
+    fallbackReason: selection.fallbackReason,
+    sourceWorkItemCount: workItems.length,
+    promptedSourceWorkItemCount: selection.workItems.length,
+    changedSourceWorkItemCount: selection.changedSourceWorkItemIds.length,
+    retiredSourceWorkItemCount: selection.retiredSourceWorkItemIds.length,
+    rawOutput: selection.mode === "incremental"
+      ? JSON.stringify({
+          mode: "incremental",
+          changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
+          retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
+          extraction: result.rawOutput,
+        })
+      : result.rawOutput,
+    knowledgeBase,
+    generatedAt: nowIso(),
+  };
+}
+
+export function saveGeneratedProjectKnowledgeBaseDraft(input: {
+  scope: ProjectScope;
+  provider: string;
+  model: string;
+  rawOutput: string;
+  knowledgeBase: ProjectKnowledgeBase;
+  requestedMode?: ProjectKnowledgeCompileMode;
+  mode: ProjectKnowledgeCompileMode;
+}) {
+  const scope = assertProjectScope(input.scope);
+  const workItems = loadProjectKnowledgeWorkItems(scope);
+  if (!workItems.length) {
+    throw new Error("Fetch and index project context before saving the knowledge base.");
+  }
+
+  const knowledgeBase = ProjectKnowledgeBaseSchema.parse(input.knowledgeBase);
+  const selection = selectProjectKnowledgeWorkItemsForCompilation({
+    scope,
+    workItems,
+    mode: input.requestedMode ?? input.mode,
+  });
+  const snapshot = saveProjectKnowledgeBaseSnapshot({
+    scope,
+    provider: input.provider,
+    model: input.model,
+    rawOutput: input.rawOutput,
+    knowledgeBase,
+    sourceWorkItemCount: workItems.length,
+    sourceWorkItems: workItems,
+    mode: input.mode,
+    sourceChangeSummary: buildCompilationSourceChangeSummary({
+      knowledgeBase,
+      sourceWorkItems: workItems,
+      selection: {
+        ...selection,
+        mode: input.mode,
+      },
+    }),
+  });
+
+  writeAuditLog({
+    projectId: scope.projectId,
+    azureProjectId: scope.azureProjectId,
+    azureProjectName: scope.azureProjectName,
+    azureOrganizationUrl: scope.azureOrganizationUrl,
+    action: "rag.extract_project_knowledge_base.generated_save",
+    status: "Success",
+    message: "Saved generated project knowledge base after preview.",
+    details: {
+      provider: input.provider,
+      model: input.model,
+      promptVersion: projectKnowledgeExtractionPrompt.version,
+      requestedMode: input.requestedMode ?? input.mode,
+      mode: input.mode,
+      sourceWorkItemCount: workItems.length,
       counts: getKnowledgeCounts(knowledgeBase),
     },
   });

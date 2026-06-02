@@ -4,8 +4,8 @@ import { ProjectContextClient } from "./context-client"
 export default function ContextPage() {
   return (
     <ContentShell
-      title="Project Context / RAG"
-      description="Manage project-scoped documents, synced work items, indexed chunks, and semantic search."
+      title="Project Context"
+      description="Explore indexed source work items, build compiled knowledge, and monitor project knowledge health."
     >
       <ProjectContextClient />
     </ContentShell>
