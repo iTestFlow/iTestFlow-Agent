@@ -361,10 +361,7 @@ export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
     const sourceById = new Map(sourceRows.map((source) => [source.azure_work_item_id, source]));
     const activeSourceIds = new Set(sourceRows.filter((source) => source.sync_status !== "inactive").map((source) => source.azure_work_item_id));
     const modules = new Set(knowledgeBase.modules.map((module) => normalizeKey(module.name)));
-    const dependencyEndpoints = new Set([
-      ...Array.from(modules),
-      ...knowledgeBase.glossary.map((term) => normalizeKey(term.term)),
-    ]);
+    const dependencyEndpoints = buildKnownDependencyEndpoints(knowledgeBase);
 
     addDuplicateEntryKeyIssues(entries, issues);
 
@@ -436,8 +433,9 @@ export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
 
     knowledgeBase.crossDependencies.forEach((dependency) => {
       const missingEndpoints = [
-        dependencyEndpoints.has(normalizeKey(dependency.sourceModule)) ? "" : dependency.sourceModule,
-        dependencyEndpoints.has(normalizeKey(dependency.targetModule)) || isExternalDependencyEndpoint(dependency.targetModule, dependency.dependencyType)
+        isKnownDependencyEndpoint(dependency.sourceModule, dependencyEndpoints, dependency, dependency.targetModule) ? "" : dependency.sourceModule,
+        isKnownDependencyEndpoint(dependency.targetModule, dependencyEndpoints, dependency, dependency.sourceModule) ||
+        isExternalDependencyEndpoint(dependency.targetModule, dependency.dependencyType)
           ? ""
           : dependency.targetModule,
       ].filter(Boolean);
@@ -446,7 +444,7 @@ export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
         issueType: "unknown_dependency_endpoint",
         severity: "warning",
         title: `Unknown dependency endpoint for ${dependency.id}`,
-        message: `Dependency references endpoints not present as compiled modules or glossary terms: ${missingEndpoints.join(", ")}.`,
+        message: `Dependency references endpoints not present as compiled modules, glossary terms, or workflow names: ${missingEndpoints.join(", ")}.`,
         category: "dependency",
         entryKey: dependency.id,
         sourceWorkItemIds: dependency.sourceWorkItemIds,
@@ -973,6 +971,111 @@ function yamlString(value: string) {
 
 function normalizeKey(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+type KnownDependencyEndpoint = {
+  name: string;
+  key: string;
+  slug: string;
+  priority: number;
+};
+
+function buildKnownDependencyEndpoints(knowledgeBase: ProjectKnowledgeBase) {
+  const endpoints = new Map<string, KnownDependencyEndpoint>();
+  const addEndpoint = (name: string | undefined, priority: number) => {
+    const trimmed = name?.trim();
+    if (!trimmed) return;
+    const key = normalizeKey(trimmed);
+    const existing = endpoints.get(key);
+    if (existing && existing.priority <= priority) return;
+    endpoints.set(key, {
+      name: trimmed,
+      key,
+      slug: slugKey(trimmed),
+      priority,
+    });
+  };
+
+  knowledgeBase.modules.forEach((module) => addEndpoint(module.name, 1));
+  knowledgeBase.glossary.forEach((term) => addEndpoint(term.term, 2));
+  knowledgeBase.stateTransitions.forEach((transition) => {
+    addEndpoint(transition.workflowName, 3);
+    addEndpoint(transition.moduleName, 3);
+  });
+
+  return Array.from(endpoints.values());
+}
+
+function isKnownDependencyEndpoint(
+  endpoint: string,
+  knownEndpoints: KnownDependencyEndpoint[],
+  dependency: ProjectKnowledgeBase["crossDependencies"][number],
+  oppositeEndpoint: string,
+) {
+  return Boolean(resolveKnownDependencyEndpoint(endpoint, knownEndpoints, dependency, oppositeEndpoint));
+}
+
+function resolveKnownDependencyEndpoint(
+  endpoint: string,
+  knownEndpoints: KnownDependencyEndpoint[],
+  dependency: ProjectKnowledgeBase["crossDependencies"][number],
+  oppositeEndpoint: string,
+) {
+  const endpointKey = normalizeKey(endpoint);
+  const exact = knownEndpoints.find((candidate) => candidate.key === endpointKey);
+  if (exact) return exact;
+
+  const workflowStepParent = getWorkflowStepParentEndpoint(endpoint);
+  if (workflowStepParent) {
+    const parentKey = normalizeKey(workflowStepParent);
+    const parentExact = knownEndpoints.find((candidate) => candidate.key === parentKey);
+    if (parentExact) return parentExact;
+
+    const parentSlug = slugKey(workflowStepParent);
+    const parentMatch = chooseBestDependencyEndpoint(
+      knownEndpoints.filter((candidate) => endpointMatchesAlias(candidate, parentKey, parentSlug)),
+    );
+    if (parentMatch) return parentMatch;
+  }
+
+  const dependencySlug = slugKey(dependency.id);
+  const oppositeKey = normalizeKey(oppositeEndpoint);
+  const idMatch = chooseBestDependencyEndpoint(
+    knownEndpoints.filter((candidate) => candidate.key !== oppositeKey && dependencySlug.includes(candidate.slug)),
+  );
+  return idMatch ?? null;
+}
+
+function endpointMatchesAlias(candidate: KnownDependencyEndpoint, aliasKey: string, aliasSlug: string) {
+  if (aliasKey.length < 4 || aliasSlug.length < 4) return false;
+  return candidate.key.includes(aliasKey) || candidate.slug.includes(aliasSlug);
+}
+
+function chooseBestDependencyEndpoint(candidates: KnownDependencyEndpoint[]) {
+  return candidates
+    .filter((candidate) => candidate.slug.length >= 4)
+    .sort((first, second) => first.priority - second.priority || first.key.length - second.key.length)[0];
+}
+
+function getWorkflowStepParentEndpoint(endpoint: string) {
+  const trimmed = endpoint.trim();
+  const suffixMatch = trimmed.match(/^(.*?)\s+(?:workflow\s+)?step\s*#?\d+\.?\s*$/i);
+  const suffixParent = suffixMatch?.[1] ? cleanWorkflowStepParent(suffixMatch[1]) : "";
+  if (suffixParent) return suffixParent;
+
+  const prefixMatch = trimmed.match(/^step\s*#?\d+\.?\s*[-:]\s*(.*?)$/i);
+  const prefixParent = prefixMatch?.[1] ? cleanWorkflowStepParent(prefixMatch[1]) : "";
+  if (prefixParent) return prefixParent;
+
+  return null;
+}
+
+function cleanWorkflowStepParent(value: string) {
+  return value.trim().replace(/[-:]+$/g, "").trim();
+}
+
+function slugKey(value: string) {
+  return normalizeKey(value).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
 function isExternalDependencyEndpoint(endpoint: string, dependencyType: string) {

@@ -2,7 +2,7 @@ import type { SystemPromptDefinition } from "./prompt.types";
 
 export const projectKnowledgeExtractionPrompt: SystemPromptDefinition = {
   name: "project-knowledge-extraction",
-  version: "1.4.0",
+  version: "1.4.1",
   purpose: "Extract a reusable project knowledge base from already indexed Azure DevOps project context.",
   system: [
     "You extract a reusable project knowledge base from already indexed Azure DevOps work items.",
@@ -26,6 +26,7 @@ export const projectKnowledgeExtractionPrompt: SystemPromptDefinition = {
     "- stateTransitions: supported workflows and state movement only. Include a transition only when the input supports a from state, to state, trigger, condition, actor, or workflow step. If unsupported, return an empty array.",
     "- glossary: typed domain vocabulary found in the input, including terms, actors, roles, systems, external services, business entities, data entities, and processes. Do not include common software words unless they have domain-specific meaning.",
     "- crossDependencies: supported module-to-module or system-to-module dependencies only. Do not infer architecture from names alone.",
+    "- crossDependencies.sourceModule and targetModule must be canonical module names, glossary terms, external systems/services, or workflow names. Do not use step-specific endpoints such as Purchase Flow Step 1; put the step detail in description instead.",
     "",
     "Field rules:",
     "- Return exactly one JSON object with all five root arrays: modules, businessRules, stateTransitions, glossary, crossDependencies.",
@@ -48,7 +49,7 @@ export const projectKnowledgeExtractionPrompt: SystemPromptDefinition = {
 
 export const projectKnowledgeConsolidationPrompt: SystemPromptDefinition = {
   name: "project-knowledge-consolidation",
-  version: "1.4.0",
+  version: "1.4.1",
   purpose: "Consolidate batch-level project knowledge extraction output into one deduplicated project knowledge base.",
   system: [
     "You consolidate partial project knowledge bases extracted from Azure DevOps work item batches.",
@@ -63,6 +64,7 @@ export const projectKnowledgeConsolidationPrompt: SystemPromptDefinition = {
     "",
     "Do not broaden a rule while merging. Do not convert examples into rules. Do not infer cross dependencies from module names alone.",
     "When two rules overlap, keep concrete values, formulas, limits, durations, source systems, UI states, and named identifiers from the most specific partial input.",
+    "For crossDependencies, keep sourceModule and targetModule as canonical module names, glossary terms, external systems/services, or workflow names. If a partial dependency endpoint names a workflow step, normalize the endpoint to the parent workflow and keep the step detail in description.",
     "Return exactly one JSON object with all five root arrays: modules, businessRules, stateTransitions, glossary, crossDependencies. Use [] for empty categories.",
     "Do not return an entities root key. Put entity-like items into glossary with the correct type.",
     "glossary.type must be one of: term, actor, role, system, external_service, business_entity, data_entity, process.",

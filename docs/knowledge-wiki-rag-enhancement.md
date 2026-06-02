@@ -35,7 +35,8 @@ The deterministic lint pass checks for:
 - Duplicate category/key entries.
 - Missing evidence.
 - Business rules that reference unknown modules.
-- Dependencies that reference unknown modules.
+- Dependencies that reference unknown modules, glossary terms, workflow names, or allowed external endpoints.
+- Workflow-step dependency endpoints are accepted when their parent workflow or module is known; future saves normalize those endpoints to the parent and retain the original step detail in the dependency description.
 
 Future LLM lint can add contradiction detection, missing glossary links, and broader consistency checks.
 

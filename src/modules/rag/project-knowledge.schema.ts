@@ -70,6 +70,8 @@ export const ProjectKnowledgeGlossaryTermSchema = z.object({
 });
 
 type ProjectKnowledgeGlossaryTerm = z.infer<typeof ProjectKnowledgeGlossaryTermSchema>;
+type ProjectKnowledgeModule = z.infer<typeof ProjectKnowledgeModuleSchema>;
+type ProjectKnowledgeStateTransition = z.infer<typeof ProjectKnowledgeStateTransitionSchema>;
 
 const GLOSSARY_TYPE_PRIORITY: Record<ProjectKnowledgeGlossaryTerm["type"], number> = {
   business_entity: 1,
@@ -97,6 +99,8 @@ export const ProjectKnowledgeCrossDependencySchema = z
     description: dependency.description || dependency.evidence,
   }));
 
+type ProjectKnowledgeCrossDependency = z.infer<typeof ProjectKnowledgeCrossDependencySchema>;
+
 export const ProjectKnowledgeBaseSchema = z
   .object({
     modules: z.array(ProjectKnowledgeModuleSchema).default([]),
@@ -105,10 +109,17 @@ export const ProjectKnowledgeBaseSchema = z
     glossary: z.array(ProjectKnowledgeGlossaryTermSchema).default([]),
     crossDependencies: z.array(ProjectKnowledgeCrossDependencySchema).default([]),
   })
-  .transform((knowledgeBase) => ({
-    ...knowledgeBase,
-    glossary: deduplicateGlossaryTerms(knowledgeBase.glossary),
-  }));
+  .transform((knowledgeBase) => {
+    const glossary = deduplicateGlossaryTerms(knowledgeBase.glossary);
+    return {
+      ...knowledgeBase,
+      glossary,
+      crossDependencies: normalizeWorkflowStepDependencies({
+        ...knowledgeBase,
+        glossary,
+      }),
+    };
+  });
 
 function deduplicateGlossaryTerms(glossary: ProjectKnowledgeGlossaryTerm[]) {
   const grouped = new Map<
@@ -150,6 +161,155 @@ function deduplicateGlossaryTerms(glossary: ProjectKnowledgeGlossaryTerm[]) {
 
 function normalizeGlossaryTerm(term: string) {
   return term.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizeWorkflowStepDependencies(knowledgeBase: {
+  modules: ProjectKnowledgeModule[];
+  stateTransitions: ProjectKnowledgeStateTransition[];
+  glossary: ProjectKnowledgeGlossaryTerm[];
+  crossDependencies: ProjectKnowledgeCrossDependency[];
+}) {
+  const canonicalEndpoints = buildCanonicalDependencyEndpoints(knowledgeBase);
+
+  return knowledgeBase.crossDependencies.map((dependency) => {
+    const source = normalizeDependencyEndpoint(dependency.sourceModule, canonicalEndpoints, dependency.id, dependency.targetModule);
+    const target = normalizeDependencyEndpoint(dependency.targetModule, canonicalEndpoints, dependency.id, dependency.sourceModule);
+    let description = dependency.description;
+
+    if (source.originalEndpoint) {
+      description = appendOriginalEndpointNote(description, "source", source.originalEndpoint);
+    }
+    if (target.originalEndpoint) {
+      description = appendOriginalEndpointNote(description, "target", target.originalEndpoint);
+    }
+
+    return {
+      ...dependency,
+      sourceModule: source.endpoint,
+      targetModule: target.endpoint,
+      description,
+    };
+  });
+}
+
+function buildCanonicalDependencyEndpoints(input: {
+  modules: ProjectKnowledgeModule[];
+  stateTransitions: ProjectKnowledgeStateTransition[];
+  glossary: ProjectKnowledgeGlossaryTerm[];
+}) {
+  const endpoints = new Map<string, CanonicalDependencyEndpoint>();
+  const addEndpoint = (value: string | undefined, priority: number) => {
+    const trimmed = value?.trim();
+    if (!trimmed) return;
+    const key = normalizeDependencyEndpointKey(trimmed);
+    const existing = endpoints.get(key);
+    if (existing && existing.priority <= priority) return;
+    endpoints.set(key, {
+      name: trimmed,
+      key,
+      slug: slugDependencyEndpointKey(trimmed),
+      priority,
+    });
+  };
+
+  input.modules.forEach((module) => addEndpoint(module.name, 1));
+  input.glossary.forEach((term) => addEndpoint(term.term, 2));
+  input.stateTransitions.forEach((transition) => {
+    addEndpoint(transition.workflowName, 3);
+    addEndpoint(transition.moduleName, 3);
+  });
+
+  return Array.from(endpoints.values());
+}
+
+type CanonicalDependencyEndpoint = {
+  name: string;
+  key: string;
+  slug: string;
+  priority: number;
+};
+
+function normalizeDependencyEndpoint(
+  endpoint: string,
+  canonicalEndpoints: CanonicalDependencyEndpoint[],
+  dependencyId: string,
+  oppositeEndpoint: string,
+) {
+  const exactEndpoint = resolveCanonicalDependencyEndpoint(endpoint, canonicalEndpoints, dependencyId, oppositeEndpoint);
+  if (exactEndpoint) return { endpoint: exactEndpoint.name, originalEndpoint: exactEndpoint.key === normalizeDependencyEndpointKey(endpoint) ? undefined : endpoint };
+
+  return { endpoint };
+}
+
+function resolveCanonicalDependencyEndpoint(
+  endpoint: string,
+  canonicalEndpoints: CanonicalDependencyEndpoint[],
+  dependencyId: string,
+  oppositeEndpoint: string,
+) {
+  const endpointKey = normalizeDependencyEndpointKey(endpoint);
+  const exactEndpoint = canonicalEndpoints.find((candidate) => candidate.key === endpointKey);
+  if (exactEndpoint) return exactEndpoint;
+
+  const parentEndpoint = getWorkflowStepParentEndpoint(endpoint);
+  if (parentEndpoint) {
+    const parentKey = normalizeDependencyEndpointKey(parentEndpoint);
+    const canonicalParentEndpoint = canonicalEndpoints.find((candidate) => candidate.key === parentKey);
+    if (canonicalParentEndpoint) return canonicalParentEndpoint;
+
+    const parentSlug = slugDependencyEndpointKey(parentEndpoint);
+    const parentMatch = chooseBestCanonicalEndpoint(
+      canonicalEndpoints.filter((candidate) => endpointMatchesAlias(candidate, parentKey, parentSlug)),
+    );
+    if (parentMatch) return parentMatch;
+  }
+
+  const dependencySlug = slugDependencyEndpointKey(dependencyId);
+  const oppositeKey = normalizeDependencyEndpointKey(oppositeEndpoint);
+  return chooseBestCanonicalEndpoint(
+    canonicalEndpoints.filter((candidate) => candidate.key !== oppositeKey && dependencySlug.includes(candidate.slug)),
+  ) ?? null;
+}
+
+function endpointMatchesAlias(candidate: CanonicalDependencyEndpoint, aliasKey: string, aliasSlug: string) {
+  if (aliasKey.length < 4 || aliasSlug.length < 4) return false;
+  return candidate.key.includes(aliasKey) || candidate.slug.includes(aliasSlug);
+}
+
+function chooseBestCanonicalEndpoint(candidates: CanonicalDependencyEndpoint[]) {
+  return candidates
+    .filter((candidate) => candidate.slug.length >= 4)
+    .sort((first, second) => first.priority - second.priority || first.key.length - second.key.length)[0];
+}
+
+function getWorkflowStepParentEndpoint(endpoint: string) {
+  const trimmed = endpoint.trim();
+  const suffixMatch = trimmed.match(/^(.*?)\s+(?:workflow\s+)?step\s*#?\d+\.?\s*$/i);
+  const suffixParent = suffixMatch?.[1] ? cleanWorkflowStepParent(suffixMatch[1]) : "";
+  if (suffixParent) return suffixParent;
+
+  const prefixMatch = trimmed.match(/^step\s*#?\d+\.?\s*[-:]\s*(.*?)$/i);
+  const prefixParent = prefixMatch?.[1] ? cleanWorkflowStepParent(prefixMatch[1]) : "";
+  if (prefixParent) return prefixParent;
+
+  return null;
+}
+
+function cleanWorkflowStepParent(value: string) {
+  return value.trim().replace(/[-:]+$/g, "").trim();
+}
+
+function normalizeDependencyEndpointKey(endpoint: string) {
+  return endpoint.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function slugDependencyEndpointKey(endpoint: string) {
+  return normalizeDependencyEndpointKey(endpoint).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+function appendOriginalEndpointNote(description: string, kind: "source" | "target", originalEndpoint: string) {
+  const note = `Original ${kind} endpoint: ${originalEndpoint}.`;
+  return description.includes(note) ? description : [description, note].filter(Boolean).join("\n\n");
 }
 
 function splitEvidence(evidence: string) {
