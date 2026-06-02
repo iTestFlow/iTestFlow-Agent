@@ -10,6 +10,7 @@ const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   workItemTypes: z.array(z.string().min(1)).min(1),
   states: z.array(z.string().min(1)).min(1),
+  mode: z.enum(["incremental", "rebuild"]).optional(),
 });
 
 export async function POST(request: Request) {
@@ -28,9 +29,10 @@ export async function POST(request: Request) {
       adapter,
       workItemTypes: parsed.data.workItemTypes,
       states: parsed.data.states,
+      mode: parsed.data.mode ?? "incremental",
     });
 
-    return NextResponse.json({ mode: "live", ...result });
+    return NextResponse.json({ source: "live", ...result });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Project context indexing failed." },

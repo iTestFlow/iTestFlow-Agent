@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { AlertTriangle, Bot, Database, RefreshCw, Send, Trash2, UserRound } from "lucide-react";
+import { AlertTriangle, BookOpen, Bot, Database, RefreshCw, Send, Trash2, UserRound } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -72,6 +72,7 @@ export function ContextChatbotClient() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [promotingMessageId, setPromotingMessageId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -190,6 +191,33 @@ export function ContextChatbotClient() {
     setInput("");
   }
 
+  async function promoteAnswer(message: ChatMessage) {
+    if (!scope || !message.citations?.length) return;
+    setPromotingMessageId(message.id);
+    setError(null);
+    try {
+      await postJson("/api/context/knowledge/promote", {
+        scope,
+        answer: message.content,
+        citations: message.citations,
+      });
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === message.id
+            ? {
+                ...item,
+                content: `${item.content}\n\n_Saved as candidate project knowledge._`,
+              }
+            : item,
+        ),
+      );
+    } catch (promoteError) {
+      setError(promoteError instanceof Error ? promoteError.message : "Could not save this answer as candidate knowledge.");
+    } finally {
+      setPromotingMessageId(null);
+    }
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || isMobile || event.shiftKey) return;
     event.preventDefault();
@@ -226,7 +254,12 @@ export function ContextChatbotClient() {
           ) : null}
 
           {messages.map((message) => (
-            <ChatBubble key={message.id} message={message} />
+            <ChatBubble
+              key={message.id}
+              message={message}
+              promoting={promotingMessageId === message.id}
+              onPromote={() => promoteAnswer(message)}
+            />
           ))}
 
           {loading ? (
@@ -273,8 +306,17 @@ export function ContextChatbotClient() {
   );
 }
 
-function ChatBubble({ message }: { message: ChatMessage }) {
+function ChatBubble({
+  message,
+  promoting,
+  onPromote,
+}: {
+  message: ChatMessage;
+  promoting: boolean;
+  onPromote: () => void;
+}) {
   const isUser = message.role === "user";
+  const canPromote = !isUser && !message.welcome && Boolean(message.citations?.length);
   return (
     <div className={cn("flex gap-3", isUser && "justify-end")}>
       {!isUser ? (
@@ -313,6 +355,12 @@ function ChatBubble({ message }: { message: ChatMessage }) {
         ) : null}
 
         {!isUser && message.citations?.length ? <CitationList citations={message.citations} /> : null}
+        {canPromote ? (
+          <Button variant="outline" size="sm" onClick={onPromote} disabled={promoting}>
+            {promoting ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
+            Save insight
+          </Button>
+        ) : null}
       </div>
       {isUser ? (
         <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">

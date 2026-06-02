@@ -115,7 +115,9 @@ Project Context:
 - `/api/context/index` calls `indexAzureWorkItemsAsProjectContext`.
 - `/api/context/status` reads locally indexed context status.
 - `/api/context/suggestions` retrieves and ranks context for a target work item.
-- RAG storage and chunking live in `src/modules/rag`.
+- Context sync defaults to incremental content-hash updates; full rebuild remains available for recovery.
+- RAG storage, chunking, compiled knowledge, knowledge health, and Markdown wiki export live in `src/modules/rag`.
+- The compiled knowledge design is documented in `docs/knowledge-wiki-rag-enhancement.md`.
 
 Requirement Analysis:
 

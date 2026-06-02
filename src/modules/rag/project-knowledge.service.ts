@@ -16,8 +16,18 @@ import {
   type ProjectKnowledgeBase,
 } from "./project-knowledge.schema";
 import { refreshProjectKnowledgeSearchIndex } from "./context-chatbot-retrieval.service";
+import {
+  recordProjectKnowledgeLog,
+  recordProjectKnowledgeRevision,
+  runProjectKnowledgeLint,
+  type ProjectKnowledgeCompilationMode,
+} from "./project-knowledge-compiled.service";
+import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 
 const MAX_CONTEXT_INPUT_CHARS = 30000;
+type ProjectKnowledgeCompileMode = Extract<ProjectKnowledgeCompilationMode, "incremental" | "full">;
+type ProjectKnowledgeSourceHashMap = Record<string, string | null>;
+
 const GLOSSARY_TYPE_PRIORITY: Record<ProjectKnowledgeBase["glossary"][number]["type"], number> = {
   business_entity: 1,
   process: 2,
@@ -40,6 +50,7 @@ type ProjectKnowledgeWorkItemRow = {
   area_path: string | null;
   iteration_path: string | null;
   updated_date: string | null;
+  content_hash: string | null;
 };
 
 type ProjectKnowledgeWorkItem = {
@@ -53,6 +64,7 @@ type ProjectKnowledgeWorkItem = {
   areaPath?: string;
   iterationPath?: string;
   updatedDate?: string;
+  contentHash?: string | null;
 };
 
 type ProjectKnowledgeSnapshotRow = {
@@ -88,25 +100,120 @@ export type ProjectKnowledgeSnapshot = {
 export async function extractAndSaveProjectKnowledgeBase(input: {
   scope: ProjectScope;
   provider: LLMProvider;
+  mode?: ProjectKnowledgeCompileMode;
 }) {
   const scope = assertProjectScope(input.scope);
   const workItems = loadProjectKnowledgeWorkItems(scope);
   if (!workItems.length) {
     throw new Error("Fetch and index project context before extracting the knowledge base.");
   }
+  const selection = selectProjectKnowledgeWorkItemsForCompilation({
+    scope,
+    workItems,
+    mode: input.mode ?? "incremental",
+  });
+
+  if (selection.mode === "incremental" && !selection.workItems.length) {
+    const existingSnapshot = getProjectKnowledgeBaseSnapshot({ scope });
+    if (!existingSnapshot) throw new Error("Run a full knowledge recompile before incremental compilation.");
+
+    if (!selection.retiredSourceWorkItemIds.length) {
+      recordProjectKnowledgeLog({
+        scope,
+        eventType: "knowledge.compile_skipped",
+        severity: "info",
+        title: "Knowledge compile skipped",
+        message: "No source work item changes were found since the latest knowledge revision.",
+        metadata: {
+          requestedMode: selection.requestedMode,
+          mode: selection.mode,
+          totalSourceWorkItemCount: workItems.length,
+        },
+      });
+      return existingSnapshot;
+    }
+
+    const knowledgeBase = mergeIncrementalProjectKnowledgeBase({
+      existingKnowledgeBase: existingSnapshot.knowledgeBase,
+      partialKnowledgeBases: [],
+      affectedSourceWorkItemIds: selection.affectedSourceWorkItemIds,
+      activeSourceWorkItemIds: workItems.map((item) => item.id),
+    });
+    const snapshot = saveProjectKnowledgeBaseSnapshot({
+      scope,
+      provider: "local",
+      model: "local-deterministic",
+      rawOutput: JSON.stringify({
+        mode: "incremental",
+        noModelCall: true,
+        retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
+      }),
+      knowledgeBase,
+      sourceWorkItemCount: workItems.length,
+      sourceWorkItems: workItems,
+      mode: "incremental",
+      sourceChangeSummary: buildCompilationSourceChangeSummary({
+        knowledgeBase,
+        sourceWorkItems: workItems,
+        selection,
+      }),
+    });
+
+    writeAuditLog({
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      azureProjectName: scope.azureProjectName,
+      azureOrganizationUrl: scope.azureOrganizationUrl,
+      action: "rag.extract_project_knowledge_base",
+      status: "Success",
+      message: "Updated project knowledge base locally for retired source work items.",
+      details: {
+        requestedMode: selection.requestedMode,
+        mode: selection.mode,
+        sourceWorkItemCount: workItems.length,
+        retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
+        counts: getKnowledgeCounts(knowledgeBase),
+      },
+    });
+
+    return snapshot;
+  }
 
   const result = await extractProjectKnowledgeBase({
     scope,
     provider: input.provider,
-    workItems,
+    workItems: selection.workItems,
+    mode: selection.mode,
   });
+  const knowledgeBase = selection.mode === "incremental"
+    ? mergeIncrementalProjectKnowledgeBase({
+        existingKnowledgeBase: getRequiredExistingProjectKnowledgeBase(scope),
+        partialKnowledgeBases: [result.validatedOutput],
+        affectedSourceWorkItemIds: selection.affectedSourceWorkItemIds,
+        activeSourceWorkItemIds: workItems.map((item) => item.id),
+      })
+    : result.validatedOutput;
   const snapshot = saveProjectKnowledgeBaseSnapshot({
     scope,
     provider: result.provider,
     model: result.model,
-    rawOutput: result.rawOutput,
-    knowledgeBase: result.validatedOutput,
+    rawOutput: selection.mode === "incremental"
+      ? JSON.stringify({
+          mode: "incremental",
+          changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
+          retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
+          extraction: result.rawOutput,
+        })
+      : result.rawOutput,
+    knowledgeBase,
     sourceWorkItemCount: workItems.length,
+    sourceWorkItems: workItems,
+    mode: selection.mode,
+    sourceChangeSummary: buildCompilationSourceChangeSummary({
+      knowledgeBase,
+      sourceWorkItems: workItems,
+      selection,
+    }),
   });
 
   writeAuditLog({
@@ -121,8 +228,14 @@ export async function extractAndSaveProjectKnowledgeBase(input: {
       provider: result.provider,
       model: result.model,
       promptVersion: projectKnowledgeExtractionPrompt.version,
+      requestedMode: selection.requestedMode,
+      mode: selection.mode,
+      fallbackReason: selection.fallbackReason,
       sourceWorkItemCount: workItems.length,
-      counts: getKnowledgeCounts(result.validatedOutput),
+      promptedSourceWorkItemCount: selection.workItems.length,
+      changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
+      retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
+      counts: getKnowledgeCounts(knowledgeBase),
     },
   });
 
@@ -156,20 +269,34 @@ export function getSavedProjectKnowledgeBase(input: { scope: ProjectScope }) {
   return getProjectKnowledgeBaseSnapshot(input)?.knowledgeBase ?? null;
 }
 
-export function buildProjectKnowledgeManualDraft(input: { scope: ProjectScope }) {
+export function buildProjectKnowledgeManualDraft(input: {
+  scope: ProjectScope;
+  mode?: ProjectKnowledgeCompileMode;
+}) {
   const scope = assertProjectScope(input.scope);
   const workItems = loadProjectKnowledgeWorkItems(scope);
   if (!workItems.length) {
     throw new Error("Fetch and index project context before extracting the knowledge base.");
   }
+  const selection = selectProjectKnowledgeWorkItemsForCompilation({
+    scope,
+    workItems,
+    mode: input.mode ?? "full",
+  });
 
-  const batches = buildWorkItemBatches(workItems);
+  const batches = selection.workItems.length ? buildWorkItemBatches(selection.workItems) : [];
 
   return {
     schemaName: "ProjectKnowledgeBase",
     promptName: projectKnowledgeExtractionPrompt.name,
     promptVersion: projectKnowledgeExtractionPrompt.version,
-    sourceWorkItemCount: workItems.length,
+    requestedMode: selection.requestedMode,
+    mode: selection.mode,
+    fallbackReason: selection.fallbackReason,
+    sourceWorkItemCount: selection.workItems.length,
+    totalSourceWorkItemCount: workItems.length,
+    changedSourceWorkItemCount: selection.changedSourceWorkItemIds.length,
+    retiredSourceWorkItemCount: selection.retiredSourceWorkItemIds.length,
     batchCount: batches.length,
     batches: batches.map((batch, index) => {
       const batchIndex = index + 1;
@@ -177,6 +304,7 @@ export function buildProjectKnowledgeManualDraft(input: { scope: ProjectScope })
       const userPrompt = buildProjectKnowledgeExtractionUserPrompt({
         scope,
         workItems: batch,
+        mode: selection.mode,
         ...batchMetadata,
       });
 
@@ -187,9 +315,7 @@ export function buildProjectKnowledgeManualDraft(input: { scope: ProjectScope })
         systemPrompt: projectKnowledgeExtractionPrompt.system,
         userPrompt,
         prompt: buildManualPromptMarkdown({
-          title: batches.length > 1
-            ? `iTestFlow Knowledge Base Extraction - Batch ${batchIndex} of ${batches.length}`
-            : "iTestFlow Knowledge Base Extraction",
+          title: buildManualKnowledgePromptTitle(selection.mode, batchIndex, batches.length),
           system: projectKnowledgeExtractionPrompt.system,
           user: userPrompt,
         }),
@@ -233,6 +359,7 @@ export function validateProjectKnowledgeExternalOutput(rawOutput: string) {
 export function saveManualProjectKnowledgeBaseSnapshot(input: {
   scope: ProjectScope;
   rawOutput: string;
+  mode?: ProjectKnowledgeCompileMode;
 }) {
   const scope = assertProjectScope(input.scope);
   const workItems = loadProjectKnowledgeWorkItems(scope);
@@ -241,13 +368,23 @@ export function saveManualProjectKnowledgeBaseSnapshot(input: {
   }
 
   const knowledgeBase = validateProjectKnowledgeExternalOutput(input.rawOutput);
+  const saveResult = prepareProjectKnowledgeManualSave({
+    scope,
+    sourceWorkItems: workItems,
+    partialKnowledgeBases: [knowledgeBase],
+    rawOutput: input.rawOutput,
+    mode: input.mode ?? "full",
+  });
   const snapshot = saveProjectKnowledgeBaseSnapshot({
     scope,
     provider: "external",
     model: "manual-external",
-    rawOutput: input.rawOutput,
-    knowledgeBase,
+    rawOutput: saveResult.rawOutput,
+    knowledgeBase: saveResult.knowledgeBase,
     sourceWorkItemCount: workItems.length,
+    sourceWorkItems: workItems,
+    mode: saveResult.mode,
+    sourceChangeSummary: saveResult.sourceChangeSummary,
   });
 
   writeAuditLog({
@@ -262,8 +399,13 @@ export function saveManualProjectKnowledgeBaseSnapshot(input: {
       provider: "external",
       model: "manual-external",
       promptVersion: projectKnowledgeExtractionPrompt.version,
+      requestedMode: input.mode ?? "full",
+      mode: saveResult.mode,
+      promptedSourceWorkItemCount: saveResult.promptedSourceWorkItemCount,
+      changedSourceWorkItemIds: saveResult.changedSourceWorkItemIds,
+      retiredSourceWorkItemIds: saveResult.retiredSourceWorkItemIds,
       sourceWorkItemCount: workItems.length,
-      counts: getKnowledgeCounts(knowledgeBase),
+      counts: getKnowledgeCounts(saveResult.knowledgeBase),
     },
   });
 
@@ -273,29 +415,41 @@ export function saveManualProjectKnowledgeBaseSnapshot(input: {
 export function saveManualProjectKnowledgeBaseFromBatches(input: {
   scope: ProjectScope;
   partialKnowledgeBases: ProjectKnowledgeBase[];
+  mode?: ProjectKnowledgeCompileMode;
 }) {
   const scope = assertProjectScope(input.scope);
   const workItems = loadProjectKnowledgeWorkItems(scope);
   if (!workItems.length) {
     throw new Error("Fetch and index project context before saving the knowledge base.");
   }
-  if (!input.partialKnowledgeBases.length) {
+  if (!input.partialKnowledgeBases.length && (input.mode ?? "full") !== "incremental") {
     throw new Error("Validate at least one batch response before saving the knowledge base.");
   }
 
-  const knowledgeBase = consolidateProjectKnowledgeBases(input.partialKnowledgeBases);
+  const saveResult = prepareProjectKnowledgeManualSave({
+    scope,
+    sourceWorkItems: workItems,
+    partialKnowledgeBases: input.partialKnowledgeBases,
+    mode: input.mode ?? "full",
+  });
   const rawOutput = JSON.stringify({
     consolidationMode: "local-deterministic",
+    mode: saveResult.mode,
+    changedSourceWorkItemIds: saveResult.changedSourceWorkItemIds,
+    retiredSourceWorkItemIds: saveResult.retiredSourceWorkItemIds,
     partialKnowledgeBases: input.partialKnowledgeBases,
-    consolidatedKnowledgeBase: knowledgeBase,
+    consolidatedKnowledgeBase: saveResult.knowledgeBase,
   });
   const snapshot = saveProjectKnowledgeBaseSnapshot({
     scope,
     provider: "external",
     model: "manual-external",
     rawOutput,
-    knowledgeBase,
+    knowledgeBase: saveResult.knowledgeBase,
     sourceWorkItemCount: workItems.length,
+    sourceWorkItems: workItems,
+    mode: saveResult.mode,
+    sourceChangeSummary: saveResult.sourceChangeSummary,
   });
 
   writeAuditLog({
@@ -310,13 +464,309 @@ export function saveManualProjectKnowledgeBaseFromBatches(input: {
       provider: "external",
       model: "manual-external",
       promptVersion: projectKnowledgeExtractionPrompt.version,
+      requestedMode: input.mode ?? "full",
+      mode: saveResult.mode,
       sourceWorkItemCount: workItems.length,
+      promptedSourceWorkItemCount: saveResult.promptedSourceWorkItemCount,
+      changedSourceWorkItemIds: saveResult.changedSourceWorkItemIds,
+      retiredSourceWorkItemIds: saveResult.retiredSourceWorkItemIds,
       batchCount: input.partialKnowledgeBases.length,
-      counts: getKnowledgeCounts(knowledgeBase),
+      counts: getKnowledgeCounts(saveResult.knowledgeBase),
     },
   });
 
   return snapshot;
+}
+
+type ProjectKnowledgeWorkItemSelection = {
+  requestedMode: ProjectKnowledgeCompileMode;
+  mode: ProjectKnowledgeCompileMode;
+  fallbackReason?: string;
+  workItems: ProjectKnowledgeWorkItem[];
+  changedSourceWorkItemIds: string[];
+  retiredSourceWorkItemIds: string[];
+  affectedSourceWorkItemIds: string[];
+};
+
+function selectProjectKnowledgeWorkItemsForCompilation(input: {
+  scope: ProjectScope;
+  workItems: ProjectKnowledgeWorkItem[];
+  mode: ProjectKnowledgeCompileMode;
+}): ProjectKnowledgeWorkItemSelection {
+  if (input.mode === "full") {
+    return {
+      requestedMode: input.mode,
+      mode: "full",
+      workItems: input.workItems,
+      changedSourceWorkItemIds: input.workItems.map((item) => item.id),
+      retiredSourceWorkItemIds: [],
+      affectedSourceWorkItemIds: input.workItems.map((item) => item.id),
+    };
+  }
+
+  const existingSnapshot = getProjectKnowledgeBaseSnapshot({ scope: input.scope });
+  if (!existingSnapshot) {
+    return {
+      requestedMode: input.mode,
+      mode: "full",
+      fallbackReason: "No saved knowledge base exists yet, so the first compile must include every active work item.",
+      workItems: input.workItems,
+      changedSourceWorkItemIds: input.workItems.map((item) => item.id),
+      retiredSourceWorkItemIds: [],
+      affectedSourceWorkItemIds: input.workItems.map((item) => item.id),
+    };
+  }
+
+  const previousSourceHashes = loadLatestProjectKnowledgeSourceHashes(input.scope);
+  if (!previousSourceHashes) {
+    return selectProjectKnowledgeWorkItemsFromSnapshotTimestamp({
+      requestedMode: input.mode,
+      existingSnapshot,
+      workItems: input.workItems,
+    });
+  }
+
+  const currentSourceHashes = buildSourceWorkItemHashMap(input.workItems);
+  const changedSourceWorkItemIds = input.workItems
+    .filter((item) => previousSourceHashes[item.id] !== currentSourceHashes[item.id])
+    .map((item) => item.id);
+  const currentSourceIds = new Set(input.workItems.map((item) => item.id));
+  const retiredSourceWorkItemIds = Object.keys(previousSourceHashes).filter((sourceId) => !currentSourceIds.has(sourceId));
+  const affectedSourceWorkItemIds = Array.from(new Set([...changedSourceWorkItemIds, ...retiredSourceWorkItemIds]));
+
+  return {
+    requestedMode: input.mode,
+    mode: "incremental",
+    workItems: input.workItems.filter((item) => changedSourceWorkItemIds.includes(item.id)),
+    changedSourceWorkItemIds,
+    retiredSourceWorkItemIds,
+    affectedSourceWorkItemIds,
+  };
+}
+
+function selectProjectKnowledgeWorkItemsFromSnapshotTimestamp(input: {
+  requestedMode: ProjectKnowledgeCompileMode;
+  existingSnapshot: ProjectKnowledgeSnapshot;
+  workItems: ProjectKnowledgeWorkItem[];
+}): ProjectKnowledgeWorkItemSelection {
+  const extractedAtMs = Date.parse(input.existingSnapshot.extractedAt);
+  const changedSourceWorkItemIds = Number.isFinite(extractedAtMs)
+    ? input.workItems
+        .filter((item) => {
+          const updatedAtMs = Date.parse(item.updatedDate ?? "");
+          return Number.isFinite(updatedAtMs) && updatedAtMs > extractedAtMs;
+        })
+        .map((item) => item.id)
+    : [];
+  const activeSourceIds = new Set(input.workItems.map((item) => item.id));
+  const retiredSourceWorkItemIds = getKnowledgeSourceWorkItemIds(input.existingSnapshot.knowledgeBase)
+    .filter((sourceId) => !activeSourceIds.has(sourceId));
+  const affectedSourceWorkItemIds = Array.from(new Set([...changedSourceWorkItemIds, ...retiredSourceWorkItemIds]));
+
+  return {
+    requestedMode: input.requestedMode,
+    mode: "incremental",
+    fallbackReason: "The saved knowledge revision does not include source hashes yet, so Compile Prompt used the saved extraction time as its baseline. Save the no-prompt baseline once to enable exact hash-based incremental prompts.",
+    workItems: input.workItems.filter((item) => changedSourceWorkItemIds.includes(item.id)),
+    changedSourceWorkItemIds,
+    retiredSourceWorkItemIds,
+    affectedSourceWorkItemIds,
+  };
+}
+
+function prepareProjectKnowledgeManualSave(input: {
+  scope: ProjectScope;
+  sourceWorkItems: ProjectKnowledgeWorkItem[];
+  partialKnowledgeBases: ProjectKnowledgeBase[];
+  rawOutput?: string;
+  mode: ProjectKnowledgeCompileMode;
+}) {
+  const selection = selectProjectKnowledgeWorkItemsForCompilation({
+    scope: input.scope,
+    workItems: input.sourceWorkItems,
+    mode: input.mode,
+  });
+  const mode: ProjectKnowledgeCompileMode = input.mode === "incremental" && selection.mode === "incremental" ? "incremental" : "full";
+  if (!input.partialKnowledgeBases.length && mode !== "incremental") {
+    throw new Error("Validate at least one batch response before saving the knowledge base.");
+  }
+
+  const knowledgeBase = mode === "incremental"
+    ? mergeIncrementalProjectKnowledgeBase({
+        existingKnowledgeBase: getRequiredExistingProjectKnowledgeBase(input.scope),
+        partialKnowledgeBases: input.partialKnowledgeBases,
+        affectedSourceWorkItemIds: selection.affectedSourceWorkItemIds,
+        activeSourceWorkItemIds: input.sourceWorkItems.map((item) => item.id),
+      })
+    : consolidateProjectKnowledgeBases(input.partialKnowledgeBases);
+  const sourceChangeSummary = buildCompilationSourceChangeSummary({
+    knowledgeBase,
+    sourceWorkItems: input.sourceWorkItems,
+    selection: {
+      ...selection,
+      mode,
+    },
+  });
+
+  return {
+    mode,
+    knowledgeBase,
+    rawOutput: mode === "incremental"
+      ? JSON.stringify({
+          mode,
+          changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
+          retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
+          externalOutput: input.rawOutput,
+          partialKnowledgeBases: input.partialKnowledgeBases,
+          consolidatedKnowledgeBase: knowledgeBase,
+        })
+      : input.rawOutput ?? JSON.stringify({
+          mode,
+          partialKnowledgeBases: input.partialKnowledgeBases,
+          consolidatedKnowledgeBase: knowledgeBase,
+        }),
+    sourceChangeSummary,
+    promptedSourceWorkItemCount: mode === "incremental" ? selection.workItems.length : input.sourceWorkItems.length,
+    changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
+    retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
+  };
+}
+
+function mergeIncrementalProjectKnowledgeBase(input: {
+  existingKnowledgeBase: ProjectKnowledgeBase;
+  partialKnowledgeBases: ProjectKnowledgeBase[];
+  affectedSourceWorkItemIds: string[];
+  activeSourceWorkItemIds: string[];
+}) {
+  const affectedSourceIds = new Set(input.affectedSourceWorkItemIds);
+  const activeSourceIds = new Set(input.activeSourceWorkItemIds);
+  const retainedKnowledgeBase = pruneKnowledgeBaseBySource(input.existingKnowledgeBase, affectedSourceIds, activeSourceIds);
+  return consolidateProjectKnowledgeBases([retainedKnowledgeBase, ...input.partialKnowledgeBases]);
+}
+
+function pruneKnowledgeBaseBySource(
+  knowledgeBase: ProjectKnowledgeBase,
+  affectedSourceIds: Set<string>,
+  activeSourceIds: Set<string>,
+): ProjectKnowledgeBase {
+  return ProjectKnowledgeBaseSchema.parse({
+    modules: pruneSourceBackedItems(knowledgeBase.modules, affectedSourceIds, activeSourceIds),
+    businessRules: pruneSourceBackedItems(knowledgeBase.businessRules, affectedSourceIds, activeSourceIds),
+    stateTransitions: pruneSourceBackedItems(knowledgeBase.stateTransitions, affectedSourceIds, activeSourceIds),
+    glossary: pruneSourceBackedItems(knowledgeBase.glossary, affectedSourceIds, activeSourceIds),
+    crossDependencies: pruneSourceBackedItems(knowledgeBase.crossDependencies, affectedSourceIds, activeSourceIds),
+  });
+}
+
+function pruneSourceBackedItems<TItem extends { sourceWorkItemIds: string[] }>(
+  items: TItem[],
+  affectedSourceIds: Set<string>,
+  activeSourceIds: Set<string>,
+) {
+  return items
+    .map((item) => {
+      const sourceWorkItemIds = item.sourceWorkItemIds.filter((sourceId) => activeSourceIds.has(sourceId) && !affectedSourceIds.has(sourceId));
+      if (sourceWorkItemIds.length === item.sourceWorkItemIds.length) return item;
+      if (!sourceWorkItemIds.length) return null;
+      return { ...item, sourceWorkItemIds };
+    })
+    .filter((item): item is TItem => Boolean(item));
+}
+
+function getRequiredExistingProjectKnowledgeBase(scope: ProjectScope) {
+  const existingSnapshot = getProjectKnowledgeBaseSnapshot({ scope });
+  if (!existingSnapshot) throw new Error("Run a full knowledge recompile before incremental compilation.");
+  return existingSnapshot.knowledgeBase;
+}
+
+function buildCompilationSourceChangeSummary(input: {
+  knowledgeBase: ProjectKnowledgeBase;
+  sourceWorkItems: ProjectKnowledgeWorkItem[];
+  selection?: Partial<ProjectKnowledgeWorkItemSelection>;
+}) {
+  const knowledgeCounts = getKnowledgeCounts(input.knowledgeBase);
+  return {
+    ...knowledgeCounts,
+    knowledgeCounts,
+    sourceWorkItemIds: input.sourceWorkItems.map((item) => item.id),
+    sourceWorkItemHashes: buildSourceWorkItemHashMap(input.sourceWorkItems),
+    totalSourceWorkItemCount: input.sourceWorkItems.length,
+    requestedMode: input.selection?.requestedMode,
+    mode: input.selection?.mode,
+    fallbackReason: input.selection?.fallbackReason,
+    promptedSourceWorkItemCount: input.selection?.workItems?.length ?? input.sourceWorkItems.length,
+    changedSourceWorkItemIds: input.selection?.changedSourceWorkItemIds ?? [],
+    retiredSourceWorkItemIds: input.selection?.retiredSourceWorkItemIds ?? [],
+  };
+}
+
+function buildSourceWorkItemHashMap(workItems: ProjectKnowledgeWorkItem[]): ProjectKnowledgeSourceHashMap {
+  return Object.fromEntries(workItems.map((item) => [item.id, item.contentHash ?? null]));
+}
+
+function getKnowledgeSourceWorkItemIds(knowledgeBase: ProjectKnowledgeBase) {
+  return Array.from(new Set([
+    ...knowledgeBase.modules.flatMap((item) => item.sourceWorkItemIds),
+    ...knowledgeBase.businessRules.flatMap((item) => item.sourceWorkItemIds),
+    ...knowledgeBase.stateTransitions.flatMap((item) => item.sourceWorkItemIds),
+    ...knowledgeBase.glossary.flatMap((item) => item.sourceWorkItemIds),
+    ...knowledgeBase.crossDependencies.flatMap((item) => item.sourceWorkItemIds),
+  ].map((sourceId) => sourceId.trim()).filter(Boolean)));
+}
+
+function loadLatestProjectKnowledgeSourceHashes(scope: ProjectScope): ProjectKnowledgeSourceHashMap | null {
+  const row = getDatabase()
+    .prepare(
+      `
+      SELECT source_change_summary_json
+      FROM project_knowledge_revisions
+      WHERE project_id = @projectId
+        AND azure_project_id = @azureProjectId
+      ORDER BY revision_number DESC
+      LIMIT 1
+    `,
+    )
+    .get({
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+    }) as { source_change_summary_json: string | null } | undefined;
+
+  if (!row?.source_change_summary_json) return null;
+  try {
+    const parsed = JSON.parse(row.source_change_summary_json) as { sourceWorkItemHashes?: unknown };
+    if (!parsed.sourceWorkItemHashes || Array.isArray(parsed.sourceWorkItemHashes) || typeof parsed.sourceWorkItemHashes !== "object") {
+      return null;
+    }
+    const hashes: ProjectKnowledgeSourceHashMap = {};
+    Object.entries(parsed.sourceWorkItemHashes as Record<string, unknown>).forEach(([sourceId, hash]) => {
+      if (typeof hash === "string" || hash === null) hashes[sourceId] = hash;
+    });
+    return Object.keys(hashes).length ? hashes : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildManualKnowledgePromptTitle(mode: ProjectKnowledgeCompileMode, batchIndex: number, batchCount: number) {
+  const title = mode === "incremental"
+    ? "iTestFlow Knowledge Base Compile"
+    : "iTestFlow Knowledge Base Full Recompile";
+  return batchCount > 1 ? `${title} - Batch ${batchIndex} of ${batchCount}` : title;
+}
+
+function toPromptWorkItem(item: ProjectKnowledgeWorkItem) {
+  return {
+    id: item.id,
+    workItemType: item.workItemType,
+    title: item.title,
+    state: item.state,
+    description: item.description,
+    acceptanceCriteria: item.acceptanceCriteria,
+    tags: item.tags,
+    areaPath: item.areaPath,
+    iterationPath: item.iterationPath,
+    updatedDate: item.updatedDate,
+  };
 }
 
 function consolidateProjectKnowledgeBases(partialKnowledgeBases: ProjectKnowledgeBase[]) {
@@ -452,6 +902,7 @@ async function extractProjectKnowledgeBase(input: {
   scope: ProjectScope;
   provider: LLMProvider;
   workItems: ProjectKnowledgeWorkItem[];
+  mode: ProjectKnowledgeCompileMode;
 }): Promise<LLMResult<ProjectKnowledgeBase>> {
   const batches = buildWorkItemBatches(input.workItems);
   if (batches.length === 1) {
@@ -459,6 +910,7 @@ async function extractProjectKnowledgeBase(input: {
       scope: input.scope,
       provider: input.provider,
       workItems: batches[0],
+      mode: input.mode,
     });
   }
 
@@ -468,6 +920,7 @@ async function extractProjectKnowledgeBase(input: {
       scope: input.scope,
       provider: input.provider,
       workItems: batches[index],
+      mode: input.mode,
       batchIndex: index + 1,
       batchCount: batches.length,
     });
@@ -507,6 +960,7 @@ async function extractProjectKnowledgeBatch(input: {
   scope: ProjectScope;
   provider: LLMProvider;
   workItems: ProjectKnowledgeWorkItem[];
+  mode: ProjectKnowledgeCompileMode;
   batchIndex?: number;
   batchCount?: number;
 }) {
@@ -517,6 +971,7 @@ async function extractProjectKnowledgeBatch(input: {
     user: buildProjectKnowledgeExtractionUserPrompt({
       scope: input.scope,
       workItems: input.workItems,
+      mode: input.mode,
       batchIndex: input.batchIndex,
       batchCount: input.batchCount,
     }),
@@ -536,15 +991,20 @@ async function extractProjectKnowledgeBatch(input: {
 function buildProjectKnowledgeExtractionUserPrompt(input: {
   scope: ProjectScope;
   workItems: ProjectKnowledgeWorkItem[];
+  mode: ProjectKnowledgeCompileMode;
   batchIndex?: number;
   batchCount?: number;
 }) {
   return JSON.stringify({
     requiredOutputShape: PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE,
-    extractionMode: input.batchCount ? "batch" : "full",
+    extractionMode: input.batchCount ? "batch" : input.mode,
+    knowledgeCompileMode: input.mode,
+    incrementalInstruction: input.mode === "incremental"
+      ? "Extract knowledge only from the provided changed workItems. The application will merge this partial output with the saved project knowledge locally."
+      : undefined,
     batchIndex: input.batchIndex,
     batchCount: input.batchCount,
-    workItems: input.workItems,
+    workItems: input.workItems.map(toPromptWorkItem),
     projectScope: {
       azureProjectId: input.scope.azureProjectId,
       azureProjectName: input.scope.azureProjectName,
@@ -567,15 +1027,18 @@ function buildProjectKnowledgeConsolidationUserPrompt(input: {
 }
 
 function loadProjectKnowledgeWorkItems(scope: ProjectScope): ProjectKnowledgeWorkItem[] {
+  ensureProjectContextSyncSchema();
   const db = getDatabase();
   const rows = db
     .prepare(
       `
       SELECT azure_work_item_id, work_item_type, title, description,
-             acceptance_criteria, state, tags, area_path, iteration_path, updated_date
+             acceptance_criteria, state, tags, area_path, iteration_path, updated_date,
+             content_hash
       FROM azure_devops_work_items
       WHERE project_id = @projectId
         AND azure_project_id = @azureProjectId
+        AND COALESCE(sync_status, 'active') = 'active'
       ORDER BY work_item_type ASC, azure_work_item_id ASC
     `,
     )
@@ -595,6 +1058,7 @@ function loadProjectKnowledgeWorkItems(scope: ProjectScope): ProjectKnowledgeWor
     areaPath: row.area_path ?? undefined,
     iterationPath: row.iteration_path ?? undefined,
     updatedDate: row.updated_date ?? undefined,
+    contentHash: row.content_hash,
   }));
 }
 
@@ -605,6 +1069,9 @@ function saveProjectKnowledgeBaseSnapshot(input: {
   rawOutput: string;
   knowledgeBase: ProjectKnowledgeBase;
   sourceWorkItemCount: number;
+  sourceWorkItems: ProjectKnowledgeWorkItem[];
+  mode: ProjectKnowledgeCompilationMode;
+  sourceChangeSummary?: Record<string, unknown>;
 }) {
   const db = getDatabase();
   const now = nowIso();
@@ -660,10 +1127,30 @@ function saveProjectKnowledgeBaseSnapshot(input: {
       knowledgeBaseId: id,
       knowledgeBase: input.knowledgeBase,
     });
+    recordProjectKnowledgeRevision({
+      scope: input.scope,
+      knowledgeBaseId: id,
+      knowledgeBase: input.knowledgeBase,
+      provider: input.provider,
+      model: input.model,
+      rawOutput: input.rawOutput,
+      sourceWorkItemCount: input.sourceWorkItemCount,
+      mode: input.mode,
+      sourceChangeSummary: input.sourceChangeSummary ?? buildCompilationSourceChangeSummary({
+        knowledgeBase: input.knowledgeBase,
+        sourceWorkItems: input.sourceWorkItems,
+      }),
+    });
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
+  }
+
+  try {
+    runProjectKnowledgeLint({ scope: input.scope });
+  } catch (error) {
+    console.error("Project knowledge lint failed after snapshot save", error);
   }
 
   return {

@@ -7,6 +7,7 @@ export const runtime = "nodejs";
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
+  mode: z.enum(["incremental", "full"]).optional().default("full"),
 });
 
 export async function POST(request: Request) {
@@ -16,7 +17,10 @@ export async function POST(request: Request) {
   }
 
   try {
-    return NextResponse.json(buildProjectKnowledgeManualDraft({ scope: parsed.data.scope }));
+    return NextResponse.json(buildProjectKnowledgeManualDraft({
+      scope: parsed.data.scope,
+      mode: parsed.data.mode,
+    }));
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "External LLM knowledge prompt preparation failed." },
