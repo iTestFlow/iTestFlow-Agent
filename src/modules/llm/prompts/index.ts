@@ -19,4 +19,5 @@ export {
   withStructuredOutputInstruction,
 } from "./structured-output.prompt";
 export { buildTestCaseGenerationSystemPrompt, testCaseGenerationPrompt } from "./test-case-generation.prompt";
+export { testExecutionEffortPrompt } from "./test-execution-effort.prompt";
 export { getLlmPrompt, llmPromptRegistry, type LlmPromptKey } from "./registry";

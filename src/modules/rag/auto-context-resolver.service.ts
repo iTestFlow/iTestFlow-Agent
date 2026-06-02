@@ -45,7 +45,7 @@ export async function resolveWorkflowContext(input: {
   targetRequirement: Requirement;
   selectedContextIds?: string[];
   retrievalTopK: number;
-  workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review";
+  workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review" | "test_execution_effort";
 }): Promise<AutoContextResolution> {
   return resolveWorkflowContextCore(input);
 }
@@ -70,7 +70,7 @@ async function resolveWorkflowContextCore(input: {
   targetRequirement: Requirement;
   selectedContextIds?: string[];
   retrievalTopK: number;
-  workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review";
+  workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review" | "test_execution_effort";
 }): Promise<AutoContextResolution> {
   const scope = assertProjectScope(input.scope);
   const retrievalTopK = clampTopK(input.retrievalTopK);
@@ -211,7 +211,7 @@ async function selectContextWithLLM(input: {
   targetRequirement: Requirement;
   candidates: LlmContextSource[];
   maxContextItems: number;
-  workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review";
+  workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review" | "test_execution_effort";
 }) {
   if (!input.provider) return [];
 

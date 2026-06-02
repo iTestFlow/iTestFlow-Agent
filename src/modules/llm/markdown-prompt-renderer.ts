@@ -118,6 +118,47 @@ export function buildExistingTestCaseReviewMarkdownPrompt(input: MarkdownPromptI
   };
 }
 
+export function buildTestExecutionEffortMarkdownPrompt(
+  input: MarkdownPromptInput & {
+    linkedTestCases?: unknown[];
+    options?: Record<string, unknown>;
+  },
+) {
+  const relevantKnowledge = selectRelevantProjectKnowledge({
+    projectKnowledgeBase: input.projectKnowledgeBase,
+    queryText: [
+      stringifyForPromptSearch(input.targetRequirement),
+      stringifyForPromptSearch(input.linkedTestCases ?? []),
+      stringifyForPromptSearch(input.relatedWorkItems ?? []),
+      stringifyForPromptSearch(input.selectedContext ?? []),
+      stringifyForPromptSearch(input.options ?? {}),
+    ].join("\n"),
+    prioritySourceIds: [
+      extractWorkItemId(input.targetRequirement),
+      ...extractWorkItemIds(input.relatedWorkItems ?? []),
+      ...extractWorkItemIds(input.selectedContext ?? []),
+    ].filter(Boolean) as string[],
+  });
+
+  return {
+    prompt: [
+      renderCurrentProject(input.currentProject),
+      renderTargetWorkItem("User Story Under Execution Effort Estimation", input.targetRequirement),
+      renderLinkedTestCaseCollection("Linked Azure DevOps Test Cases To Execute", input.linkedTestCases ?? []),
+      renderRequiredTestCaseEstimateCoverage(input.linkedTestCases ?? []),
+      renderWorkItemCollection("Project Context", input.selectedContext ?? []),
+      renderTestExecutionEffortOptions(input.options ?? {}),
+      renderTestExecutionEffortInstructions(),
+      renderProjectKnowledge(relevantKnowledge),
+      renderExtraInstructionsSection(input.extraInstructions),
+      renderOutputContract(input.outputContract),
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+    relevantProjectKnowledgeBase: relevantKnowledge,
+  };
+}
+
 export function extractWorkItemId(value: unknown) {
   if (!value || typeof value !== "object") return undefined;
   const item = value as {
@@ -262,6 +303,110 @@ function renderExistingCoverageReviewInstructions() {
     "- Do not count a title-only, vague, or setup-only test case as covered.",
     "- Recommend more than one test case when a point has multiple flows, roles, validations, integrations, or negative paths.",
     "- Suggested additions should cover only uncovered or partially covered matrix rows.",
+  ].join("\n");
+}
+
+function renderTestExecutionEffortOptions(options: Record<string, unknown>) {
+  const includedFactors = [
+    ["Test data preparation", options.includeDataPreparation],
+    ["Environment/setup time", options.includeEnvironmentSetup],
+    ["Evidence capture and defect logging buffer", options.includeEvidenceAndDefectLogging],
+    ["Retesting buffer", options.includeRetestingBuffer],
+  ].map(([label, enabled]) => `- ${label}: ${enabled === false ? "No" : "Yes"}`);
+
+  return [
+    "# Execution Effort Options",
+    `- Tester Seniority: ${formatScalar(options.testerSeniority ?? "mid")}`,
+    `- Execution Type: ${formatScalar(options.executionType ?? "first_execution")}`,
+    "- Included Factors:",
+    ...includedFactors,
+    "",
+    "Only include factor-specific time for factors marked Yes. If a factor is marked No, do not add separate minutes/hours for that factor, but you may mention related risk in assumptions if it affects confidence.",
+  ].join("\n");
+}
+
+function renderRequiredTestCaseEstimateCoverage(items: unknown[]) {
+  const testCases = items.map(toPromptTestCase);
+  const ids = testCases.map((testCase) => testCase.id).filter(Boolean);
+
+  if (!ids.length) {
+    return [
+      "# Required Test Case Estimate Coverage",
+      "No linked test case IDs were supplied. Return an empty testCaseEstimates array.",
+    ].join("\n");
+  }
+
+  return [
+    "# Required Test Case Estimate Coverage",
+    `- The testCaseEstimates array must contain exactly ${ids.length} item(s), one for every linked test case listed below.`,
+    `- Required testCaseId values: ${ids.join(", ")}`,
+    "- Do not summarize, group, sample, skip, or collapse linked test cases in testCaseEstimates.",
+    "- Keep breakdown as area-level totals, but testCaseEstimates must remain one row per linked test case.",
+  ].join("\n");
+}
+
+function renderTestExecutionEffortInstructions() {
+  return [
+    "# Test Execution Effort Estimation Instructions",
+    "Estimate realistic manual QA execution effort in hours for a human tester executing the linked test cases in a real QA environment.",
+    "",
+    "Grounding Rules:",
+    "- Use only the provided story, linked test cases, manual steps, expected results, selected project context, and saved project knowledge.",
+    "- Do not invent missing test cases.",
+    "- Do not invent undocumented systems, integrations, dependencies, screens, APIs, fields, roles, business rules, or test data.",
+    "- If an integration or dependency is inferred from wording, list it as an assumption or risk.",
+    "- If project context is missing, estimate based on the story and linked test cases only.",
+    "- If test steps are missing or unclear, lower confidence.",
+    "- Estimate manual test execution effort only. Do not estimate automation implementation effort.",
+    "",
+    "Consider these factors when supported by the provided data and selected options:",
+    "- Tester seniority",
+    "- Number of linked test cases",
+    "- Number of manual steps and average steps per test case",
+    "- Step complexity, preconditions, expected results, and missing or unclear steps",
+    "- Data preparation needs",
+    "- Environment/setup needs",
+    "- Evidence capture and defect logging",
+    "- Retesting buffer",
+    "- Dependency, integration, API/backend, and third-party system complexity",
+    "- UI navigation complexity, waiting time, timers, expiry rules, async operations, retry/cooldown behavior",
+    "- Data validation complexity",
+    "- Cross-browser/device validation when documented",
+    "- Language, localization, RTL/LTR validation when documented",
+    "- First execution vs regression re-execution vs UAT support",
+    "- Completeness and clarity of story and test case details",
+    "",
+    "Realistic Calibration Rules:",
+    "- Do not mechanically multiply setup, environment readiness, or test data preparation by the number of test cases when the same setup/data can be reused across cases.",
+    "- Count shared setup and reusable test data once, then add only small incremental time for case-specific variants.",
+    "- Use practical manual execution timing: simple UI/action/assertion steps are usually about 0.5-1 minute each, normal steps about 1-2 minutes each, and complex integration or data-heavy steps about 2-5 minutes each.",
+    "- Do not assign more than 15 minutes to a single test case unless the supplied steps clearly include long waiting, integration validation, difficult data setup, multiple systems, or complex investigation.",
+    "- Evidence capture should usually be a small incremental cost, such as 1-3 minutes per case or less when evidence is only needed for key cases.",
+    "- Defect logging time should be a buffer based on realistic defect likelihood, not full defect-writing time for every test case.",
+    "- Retesting buffer should usually be 5-15% of the execution effort when selected, unless the supplied context proves unusually high instability.",
+    "- Waiting time, timers, expiry rules, cooldowns, and async delays must be counted only when documented in the story, steps, expected results, or project context.",
+    "- The recommended planning estimate must be credible for sprint planning, not padded. Explain any unusually high area estimate with concrete evidence.",
+    "",
+    "Seniority Rules:",
+    "- Junior QA usually needs more time for understanding, dependencies, data preparation, unexpected behavior investigation, evidence capture, defect reporting, and support.",
+    "- Mid-level QA is the baseline estimate.",
+    "- Senior QA may execute faster, but must not be blindly reduced in every case. For complex integration-heavy stories, senior effort may include deeper risk validation with higher confidence.",
+    "",
+    "Execution Type Rules:",
+    "- first_execution usually includes more understanding, setup, unclear behavior investigation, defect likelihood, evidence, and defect logging effort.",
+    "- regression_reexecution may be faster when flows/data are already known, but still requires environment and integration validation.",
+    "- uat_support may include evidence preparation, stakeholder clarification, communication overhead, business validation, and repeated walkthroughs.",
+    "",
+    "Output Rules:",
+    "- Return one valid JSON object only.",
+    "- Do not include markdown.",
+    "- All hour and minute values must be numbers, not strings.",
+    "- Per-test-case estimates use minutes; total estimate uses hours.",
+    "- recommendedPlanningHours should usually be equal to or slightly higher than mostLikelyHours.",
+    "- maximumHours must be greater than or equal to mostLikelyHours.",
+    "- mostLikelyHours must be greater than or equal to minimumHours.",
+    "- Do not return a single unexplained number.",
+    "- The testCaseEstimates array must include every linked test case. Partial per test case estimates are invalid.",
   ].join("\n");
 }
 
