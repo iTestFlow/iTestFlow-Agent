@@ -8,6 +8,7 @@ export const runtime = "nodejs";
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
+  mode: z.enum(["incremental", "full"]).optional(),
 });
 
 const InvalidKnowledgeBaseOutputMessage =
@@ -33,6 +34,7 @@ export async function POST(request: Request) {
     const snapshot = await extractAndSaveProjectKnowledgeBase({
       scope: parsed.data.scope,
       provider,
+      mode: parsed.data.mode ?? "incremental",
     });
 
     return NextResponse.json(snapshot);

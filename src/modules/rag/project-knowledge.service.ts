@@ -16,6 +16,12 @@ import {
   type ProjectKnowledgeBase,
 } from "./project-knowledge.schema";
 import { refreshProjectKnowledgeSearchIndex } from "./context-chatbot-retrieval.service";
+import {
+  recordProjectKnowledgeRevision,
+  runProjectKnowledgeLint,
+  type ProjectKnowledgeCompilationMode,
+} from "./project-knowledge-compiled.service";
+import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 
 const MAX_CONTEXT_INPUT_CHARS = 30000;
 const GLOSSARY_TYPE_PRIORITY: Record<ProjectKnowledgeBase["glossary"][number]["type"], number> = {
@@ -88,6 +94,7 @@ export type ProjectKnowledgeSnapshot = {
 export async function extractAndSaveProjectKnowledgeBase(input: {
   scope: ProjectScope;
   provider: LLMProvider;
+  mode?: Extract<ProjectKnowledgeCompilationMode, "incremental" | "full">;
 }) {
   const scope = assertProjectScope(input.scope);
   const workItems = loadProjectKnowledgeWorkItems(scope);
@@ -107,6 +114,7 @@ export async function extractAndSaveProjectKnowledgeBase(input: {
     rawOutput: result.rawOutput,
     knowledgeBase: result.validatedOutput,
     sourceWorkItemCount: workItems.length,
+    mode: input.mode ?? "incremental",
   });
 
   writeAuditLog({
@@ -248,6 +256,7 @@ export function saveManualProjectKnowledgeBaseSnapshot(input: {
     rawOutput: input.rawOutput,
     knowledgeBase,
     sourceWorkItemCount: workItems.length,
+    mode: "manual",
   });
 
   writeAuditLog({
@@ -296,6 +305,7 @@ export function saveManualProjectKnowledgeBaseFromBatches(input: {
     rawOutput,
     knowledgeBase,
     sourceWorkItemCount: workItems.length,
+    mode: "manual",
   });
 
   writeAuditLog({
@@ -567,6 +577,7 @@ function buildProjectKnowledgeConsolidationUserPrompt(input: {
 }
 
 function loadProjectKnowledgeWorkItems(scope: ProjectScope): ProjectKnowledgeWorkItem[] {
+  ensureProjectContextSyncSchema();
   const db = getDatabase();
   const rows = db
     .prepare(
@@ -576,6 +587,7 @@ function loadProjectKnowledgeWorkItems(scope: ProjectScope): ProjectKnowledgeWor
       FROM azure_devops_work_items
       WHERE project_id = @projectId
         AND azure_project_id = @azureProjectId
+        AND COALESCE(sync_status, 'active') = 'active'
       ORDER BY work_item_type ASC, azure_work_item_id ASC
     `,
     )
@@ -605,6 +617,7 @@ function saveProjectKnowledgeBaseSnapshot(input: {
   rawOutput: string;
   knowledgeBase: ProjectKnowledgeBase;
   sourceWorkItemCount: number;
+  mode: ProjectKnowledgeCompilationMode;
 }) {
   const db = getDatabase();
   const now = nowIso();
@@ -660,10 +673,27 @@ function saveProjectKnowledgeBaseSnapshot(input: {
       knowledgeBaseId: id,
       knowledgeBase: input.knowledgeBase,
     });
+    recordProjectKnowledgeRevision({
+      scope: input.scope,
+      knowledgeBaseId: id,
+      knowledgeBase: input.knowledgeBase,
+      provider: input.provider,
+      model: input.model,
+      rawOutput: input.rawOutput,
+      sourceWorkItemCount: input.sourceWorkItemCount,
+      mode: input.mode,
+      sourceChangeSummary: getKnowledgeCounts(input.knowledgeBase),
+    });
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
+  }
+
+  try {
+    runProjectKnowledgeLint({ scope: input.scope });
+  } catch (error) {
+    console.error("Project knowledge lint failed after snapshot save", error);
   }
 
   return {

@@ -3,6 +3,7 @@ import "server-only";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { createId, getDatabase, nowIso } from "@/modules/shared/infrastructure/database/db";
 import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeBase } from "./project-knowledge.schema";
+import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 
 export type ContextChatbotContextEvidence = {
   sourceType: "project_context";
@@ -72,17 +73,23 @@ type KnowledgeEntry = {
 
 export function refreshProjectContextSearchIndex(input: { scope: ProjectScope }) {
   const scope = assertProjectScope(input.scope);
+  ensureProjectContextSyncSchema();
   const db = getDatabase();
   const now = nowIso();
   const rows = db
     .prepare(
       `
-      SELECT id, azure_work_item_id, work_item_type, document_name, content, metadata_json
-      FROM document_chunks
-      WHERE project_id = @projectId
-        AND azure_project_id = @azureProjectId
-        AND source_type = 'azure_work_item'
-      ORDER BY azure_work_item_id, chunk_index
+      SELECT dc.id, dc.azure_work_item_id, dc.work_item_type, dc.document_name, dc.content, dc.metadata_json
+      FROM document_chunks dc
+      JOIN azure_devops_work_items wi
+        ON wi.project_id = dc.project_id
+       AND wi.azure_project_id = dc.azure_project_id
+       AND wi.azure_work_item_id = dc.azure_work_item_id
+      WHERE dc.project_id = @projectId
+        AND dc.azure_project_id = @azureProjectId
+        AND dc.source_type = 'azure_work_item'
+        AND COALESCE(wi.sync_status, 'active') = 'active'
+      ORDER BY dc.azure_work_item_id, dc.chunk_index
     `,
     )
     .all({
@@ -230,14 +237,20 @@ export function refreshProjectKnowledgeSearchIndex(input: {
 
 export function ensureContextChatbotSearchIndexes(input: { scope: ProjectScope }) {
   const scope = assertProjectScope(input.scope);
+  ensureProjectContextSyncSchema();
   const db = getDatabase();
   const chunkCount = countRows(
     `
     SELECT COUNT(*) AS count
-    FROM document_chunks
-    WHERE project_id = @projectId
-      AND azure_project_id = @azureProjectId
-      AND source_type = 'azure_work_item'
+    FROM document_chunks dc
+    JOIN azure_devops_work_items wi
+      ON wi.project_id = dc.project_id
+     AND wi.azure_project_id = dc.azure_project_id
+     AND wi.azure_work_item_id = dc.azure_work_item_id
+    WHERE dc.project_id = @projectId
+      AND dc.azure_project_id = @azureProjectId
+      AND dc.source_type = 'azure_work_item'
+      AND COALESCE(wi.sync_status, 'active') = 'active'
   `,
     scope,
   );

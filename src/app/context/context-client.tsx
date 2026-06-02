@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { AlertTriangle, ArrowUpDown, BookOpen, Copy, Database, RefreshCw } from "lucide-react"
+import { AlertTriangle, ArrowUpDown, BookOpen, Copy, Database, Download, History, RefreshCw, ShieldCheck } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -27,10 +27,15 @@ import {
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project"
 
 type IndexResult = {
+  mode: "incremental" | "rebuild"
   fetchedCount: number
   storedWorkItemCount: number
   indexedWorkItemCount: number
   indexedChunkCount: number
+  createdCount: number
+  updatedCount: number
+  unchangedCount: number
+  inactiveCount: number
   skippedEmptyCount: number
   workItemTypes: string[]
   states: string[]
@@ -41,6 +46,7 @@ type RecentContextItem = {
   workItemType: string
   title: string
   state?: string | null
+  syncStatus?: string | null
   updatedDate?: string | null
   lastIndexedAt?: string | null
   chunkCount: number
@@ -124,6 +130,49 @@ type KnowledgeStatusResult = {
   snapshot: ProjectKnowledgeSnapshot | null
 }
 
+type KnowledgeLintIssue = {
+  id: string
+  issueType: string
+  severity: "info" | "warning" | "error"
+  title: string
+  message: string
+  category?: string | null
+  entryKey?: string | null
+  sourceWorkItemIds: string[]
+  status: string
+  createdAt: string
+  updatedAt: string
+}
+
+type KnowledgeLintResult = {
+  issues: KnowledgeLintIssue[]
+  summary: {
+    total: number
+    errors: number
+    warnings: number
+    info: number
+  }
+}
+
+type KnowledgeLogItem = {
+  id: string
+  eventType: string
+  severity: "info" | "warning" | "error"
+  title: string
+  message: string
+  sourceIds: string[]
+  createdAt: string
+}
+
+type KnowledgeLogResult = {
+  items: KnowledgeLogItem[]
+}
+
+type KnowledgeExportResult = {
+  exportRoot: string
+  fileCount: number
+}
+
 type KnowledgeManualBatchPrompt = {
   batchIndex: number
   batchCount: number
@@ -179,6 +228,13 @@ export function ProjectContextClient() {
   const [knowledgeStatusLoading, setKnowledgeStatusLoading] = useState(false)
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null)
   const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<ProjectKnowledgeSnapshot | null>(null)
+  const [knowledgeLint, setKnowledgeLint] = useState<KnowledgeLintResult | null>(null)
+  const [knowledgeLog, setKnowledgeLog] = useState<KnowledgeLogItem[]>([])
+  const [knowledgeLogVisible, setKnowledgeLogVisible] = useState(false)
+  const [knowledgeExport, setKnowledgeExport] = useState<KnowledgeExportResult | null>(null)
+  const [knowledgeHealthLoading, setKnowledgeHealthLoading] = useState(false)
+  const [knowledgeLogLoading, setKnowledgeLogLoading] = useState(false)
+  const [knowledgeExportLoading, setKnowledgeExportLoading] = useState(false)
   const [knowledgeMode, setKnowledgeMode] = useState<"auto" | "manual">("auto")
   const [manualKnowledgeDraftLoading, setManualKnowledgeDraftLoading] = useState(false)
   const [manualKnowledgeDraft, setManualKnowledgeDraft] = useState<KnowledgeManualDraft | null>(null)
@@ -193,6 +249,19 @@ export function ProjectContextClient() {
   const [totalPages, setTotalPages] = useState(1)
   const [sortBy, setSortBy] = useState<ContextSortBy>("lastIndexedAt")
   const [sortDirection, setSortDirection] = useState<ContextSortDirection>("desc")
+
+  const refreshKnowledgeLog = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
+    if (!activeScope) return
+    setKnowledgeLogLoading(true)
+    try {
+      const data = await postJson<KnowledgeLogResult>("/api/context/knowledge/log", { scope: activeScope, limit: 20 })
+      setKnowledgeLog(data.items)
+    } catch {
+      setKnowledgeLog([])
+    } finally {
+      setKnowledgeLogLoading(false)
+    }
+  }, [scope])
 
   useEffect(() => {
     setScope(readActiveProject())
@@ -245,6 +314,10 @@ export function ProjectContextClient() {
     setResult(null)
     setError(null)
     setKnowledgeError(null)
+    setKnowledgeLint(null)
+    setKnowledgeLog([])
+    setKnowledgeLogVisible(false)
+    setKnowledgeExport(null)
     setManualKnowledgeError(null)
     setManualKnowledgeDraft(null)
     setManualKnowledgeCurrentBatch(1)
@@ -293,12 +366,14 @@ export function ProjectContextClient() {
         if (!cancelled) setKnowledgeStatusLoading(false)
       })
 
+    void refreshKnowledgeLog(scope)
+
     return () => {
       cancelled = true
     }
-  }, [pageSize, scope])
+  }, [pageSize, refreshKnowledgeLog, scope])
 
-  async function indexContext() {
+  async function indexContext(mode: "incremental" | "rebuild" = "incremental") {
     if (!scope) return
     setLoading(true)
     setError(null)
@@ -308,6 +383,7 @@ export function ProjectContextClient() {
         scope,
         workItemTypes,
         states,
+        mode,
       })
       setResult(data)
       setPage(1)
@@ -319,15 +395,17 @@ export function ProjectContextClient() {
     }
   }
 
-  async function extractKnowledgeBase() {
+  async function extractKnowledgeBase(mode: "incremental" | "full" = "incremental") {
     if (!scope) return
     setKnowledgeLoading(true)
     setKnowledgeError(null)
     try {
       const data = await postJson<ProjectKnowledgeSnapshot>("/api/context/knowledge/extract", {
         scope,
+        mode,
       })
       setKnowledgeSnapshot(data)
+      await refreshKnowledgeLog(scope)
     } catch (extractError) {
       setKnowledgeError(extractError instanceof Error ? extractError.message : "Project knowledge extraction failed.")
     } finally {
@@ -372,6 +450,7 @@ export function ProjectContextClient() {
 
       if (shouldSave && data.snapshot) {
         setKnowledgeSnapshot(data.snapshot)
+        await refreshKnowledgeLog(scope)
         return
       }
 
@@ -404,11 +483,52 @@ export function ProjectContextClient() {
         partialKnowledgeBases,
       })
       if (data.snapshot) setKnowledgeSnapshot(data.snapshot)
+      await refreshKnowledgeLog(scope)
     } catch (saveError) {
       setManualKnowledgeError(saveError instanceof Error ? saveError.message : "External LLM knowledge base save failed.")
     } finally {
       setManualKnowledgeSaveLoading(false)
     }
+  }
+
+  async function runKnowledgeHealthCheck() {
+    if (!scope) return
+    setKnowledgeHealthLoading(true)
+    setKnowledgeError(null)
+    try {
+      const data = await postJson<KnowledgeLintResult>("/api/context/knowledge/lint", { scope })
+      setKnowledgeLint(data)
+      await refreshKnowledgeLog(scope)
+    } catch (healthError) {
+      setKnowledgeError(healthError instanceof Error ? healthError.message : "Project knowledge health check failed.")
+    } finally {
+      setKnowledgeHealthLoading(false)
+    }
+  }
+
+  async function exportKnowledgeWiki() {
+    if (!scope) return
+    setKnowledgeExportLoading(true)
+    setKnowledgeError(null)
+    try {
+      const data = await postJson<KnowledgeExportResult>("/api/context/knowledge/export", { scope })
+      setKnowledgeExport(data)
+      await refreshKnowledgeLog(scope)
+    } catch (exportError) {
+      setKnowledgeError(exportError instanceof Error ? exportError.message : "Project knowledge wiki export failed.")
+    } finally {
+      setKnowledgeExportLoading(false)
+    }
+  }
+
+  async function toggleKnowledgeLog() {
+    if (knowledgeLogVisible) {
+      setKnowledgeLogVisible(false)
+      return
+    }
+
+    setKnowledgeLogVisible(true)
+    await refreshKnowledgeLog(scope)
   }
 
   function changeSort(nextSortBy: ContextSortBy) {
@@ -500,10 +620,16 @@ export function ProjectContextClient() {
                 <p className="text-sm text-[#626F86]">
                   Indexed context is stored locally and reused by requirement analysis and test design.
                 </p>
-                <Button onClick={indexContext} disabled={!canIndex}>
-                  {loading ? <RefreshCw className="size-4 animate-spin" /> : <Database className="size-4" />}
-                  {loading ? "Indexing context..." : "Fetch and Index Context"}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={() => indexContext("incremental")} disabled={!canIndex}>
+                    {loading ? <RefreshCw className="size-4 animate-spin" /> : <Database className="size-4" />}
+                    {loading ? "Syncing..." : "Incremental Sync"}
+                  </Button>
+                  <Button variant="outline" onClick={() => indexContext("rebuild")} disabled={!canIndex}>
+                    <RefreshCw className="size-4" />
+                    Rebuild
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -538,6 +664,7 @@ export function ProjectContextClient() {
                           </TableHead>
                           <TableHead className="min-w-[320px]">Title</TableHead>
                           <TableHead>Chunks</TableHead>
+                          <TableHead>Status</TableHead>
                           <TableHead>
                             <SortHeader
                               label="Last Indexed"
@@ -555,6 +682,7 @@ export function ProjectContextClient() {
                             <TableCell><Badge variant="secondary">{item.workItemType}</Badge></TableCell>
                             <TableCell className="font-medium text-[#172B4D]">{item.title}</TableCell>
                             <TableCell>{item.chunkCount}</TableCell>
+                            <TableCell><Badge variant="outline">{item.syncStatus ?? "active"}</Badge></TableCell>
                             <TableCell>{formatDate(item.lastIndexedAt)}</TableCell>
                           </TableRow>
                         ))}
@@ -602,10 +730,16 @@ export function ProjectContextClient() {
                     <p className="text-sm text-[#626F86]">
                       Extract modules, business rules, workflows, glossary terms, and dependencies from the indexed context.
                     </p>
-                    <Button onClick={extractKnowledgeBase} disabled={!canExtractKnowledge}>
-                      {knowledgeLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-                      {knowledgeLoading ? "Extracting..." : "Extract Knowledge Base"}
-                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                      <Button onClick={() => extractKnowledgeBase("incremental")} disabled={!canExtractKnowledge}>
+                        {knowledgeLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
+                        {knowledgeLoading ? "Compiling..." : "Compile Knowledge"}
+                      </Button>
+                      <Button variant="outline" onClick={() => extractKnowledgeBase("full")} disabled={!canExtractKnowledge}>
+                        <RefreshCw className="size-4" />
+                        Full Recompile
+                      </Button>
+                    </div>
                   </div>
 
                   {knowledgeError ? (
@@ -698,7 +832,21 @@ export function ProjectContextClient() {
               {knowledgeStatusLoading ? (
                 <div className="text-sm text-[#626F86]">Loading saved knowledge base...</div>
               ) : knowledgeSnapshot ? (
-                <KnowledgeBaseSummary snapshot={knowledgeSnapshot} />
+                <div className="space-y-4">
+                  <KnowledgeOpsPanel
+                    lint={knowledgeLint}
+                    logItems={knowledgeLog}
+                    logVisible={knowledgeLogVisible}
+                    exportResult={knowledgeExport}
+                    healthLoading={knowledgeHealthLoading}
+                    logLoading={knowledgeLogLoading}
+                    exportLoading={knowledgeExportLoading}
+                    onRunHealthCheck={runKnowledgeHealthCheck}
+                    onToggleLog={toggleKnowledgeLog}
+                    onExport={exportKnowledgeWiki}
+                  />
+                  <KnowledgeBaseSummary snapshot={knowledgeSnapshot} />
+                </div>
               ) : (
                 <div className="rounded-md border border-[#DCDFE4] bg-white p-6 text-sm text-[#626F86]">
                   No knowledge base has been extracted yet. Run Step 2 after indexing context to save categorized project knowledge for analysis and test design.
@@ -735,8 +883,11 @@ function SortHeader({
 function IndexSummary({ result }: { result: IndexResult }) {
   const metrics = [
     ["Fetched", result.fetchedCount],
-    ["Stored", result.storedWorkItemCount],
-    ["Work items indexed", result.indexedWorkItemCount],
+    ["New", result.createdCount],
+    ["Updated", result.updatedCount],
+    ["Unchanged", result.unchangedCount],
+    ["Inactive", result.inactiveCount],
+    ["Reindexed", result.indexedWorkItemCount],
     ["Chunks indexed", result.indexedChunkCount],
     ["Skipped empty", result.skippedEmptyCount],
   ] as const
@@ -747,7 +898,7 @@ function IndexSummary({ result }: { result: IndexResult }) {
         <CardTitle className="text-base">Latest Indexing Summary</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {metrics.map(([label, value]) => (
             <div key={label} className="rounded-md border border-[#DCDFE4] bg-white p-3">
               <div className="text-xs text-[#626F86]">{label}</div>
@@ -756,6 +907,7 @@ function IndexSummary({ result }: { result: IndexResult }) {
           ))}
         </div>
         <div className="grid gap-3 text-sm text-[#44546F] lg:grid-cols-2">
+          <div><span className="font-semibold">Mode:</span> {result.mode}</div>
           <div><span className="font-semibold">Types:</span> {result.workItemTypes.join(", ")}</div>
           <div><span className="font-semibold">States:</span> {result.states.join(", ")}</div>
         </div>
@@ -792,6 +944,120 @@ type AnyKnowledgeItem = KnowledgeSource & {
   sourceModule?: string
   targetModule?: string
   dependencyType?: string
+}
+
+function KnowledgeOpsPanel({
+  lint,
+  logItems,
+  logVisible,
+  exportResult,
+  healthLoading,
+  logLoading,
+  exportLoading,
+  onRunHealthCheck,
+  onToggleLog,
+  onExport,
+}: {
+  lint: KnowledgeLintResult | null
+  logItems: KnowledgeLogItem[]
+  logVisible: boolean
+  exportResult: KnowledgeExportResult | null
+  healthLoading: boolean
+  logLoading: boolean
+  exportLoading: boolean
+  onRunHealthCheck: () => void
+  onToggleLog: () => void
+  onExport: () => void
+}) {
+  return (
+    <div className="space-y-3 rounded-md border border-[#DCDFE4] bg-white p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div className="text-sm font-semibold text-[#172B4D]">Compiled Knowledge Operations</div>
+          <div className="text-xs text-[#626F86]">Health checks, event history, and Markdown export for the source-backed knowledge layer.</div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={onRunHealthCheck} disabled={healthLoading}>
+            {healthLoading ? <RefreshCw className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
+            Health
+          </Button>
+          <Button variant={logVisible ? "secondary" : "outline"} size="sm" onClick={onToggleLog} disabled={logLoading}>
+            {logLoading ? <RefreshCw className="size-4 animate-spin" /> : <History className="size-4" />}
+            {logVisible ? "Hide Log" : "Log"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={onExport} disabled={exportLoading}>
+            {exportLoading ? <RefreshCw className="size-4 animate-spin" /> : <Download className="size-4" />}
+            Export
+          </Button>
+        </div>
+      </div>
+
+      {lint ? (
+        <div className="grid gap-3 sm:grid-cols-4">
+          <KnowledgeMetric label="Issues" value={lint.summary.total} />
+          <KnowledgeMetric label="Errors" value={lint.summary.errors} tone="error" />
+          <KnowledgeMetric label="Warnings" value={lint.summary.warnings} tone="warning" />
+          <KnowledgeMetric label="Info" value={lint.summary.info} />
+        </div>
+      ) : null}
+
+      {lint?.issues.length ? (
+        <div className="space-y-2">
+          {lint.issues.slice(0, 5).map((issue) => (
+            <div key={issue.id} className="rounded-md border border-[#EBECF0] bg-[#F7F8F9] p-3 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={issue.severity === "error" ? "destructive" : "secondary"}>{issue.severity}</Badge>
+                <span className="font-semibold text-[#172B4D]">{issue.title}</span>
+              </div>
+              <div className="mt-1 text-[#44546F]">{issue.message}</div>
+            </div>
+          ))}
+        </div>
+      ) : lint ? (
+        <div className="rounded-md border border-[#BAF3DB] bg-[#E3FCEF] p-3 text-sm text-[#216E4E]">
+          Knowledge health check passed without open issues.
+        </div>
+      ) : null}
+
+      {exportResult ? (
+        <div className="rounded-md border border-[#B3D4FF] bg-[#E9F2FF] p-3 text-sm text-[#0C66E4]">
+          Exported {exportResult.fileCount} Markdown files to <span className="font-mono">{exportResult.exportRoot}</span>.
+        </div>
+      ) : null}
+
+      {logVisible ? (
+        <div className="space-y-2">
+          <div className="text-xs font-semibold uppercase text-[#626F86]">Recent Knowledge Log</div>
+          {logItems.length ? (
+            logItems.slice(0, 8).map((item) => (
+              <div key={item.id} className="rounded-md border border-[#EBECF0] p-3 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">{item.eventType}</Badge>
+                  <span className="font-semibold text-[#172B4D]">{item.title}</span>
+                  <span className="text-xs text-[#626F86]">{formatDate(item.createdAt)}</span>
+                </div>
+                <div className="mt-1 text-[#44546F]">{item.message}</div>
+              </div>
+            ))
+          ) : (
+            <div className="rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-3 text-sm text-[#626F86]">
+              No knowledge log events have been recorded for this project yet.
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function KnowledgeMetric({ label, value, tone }: { label: string; value: number; tone?: "error" | "warning" }) {
+  const valueClass = tone === "error" ? "text-red-700" : tone === "warning" ? "text-[#7F5F01]" : "text-[#172B4D]"
+  return (
+    <div className="rounded-md border border-[#DCDFE4] bg-white p-3">
+      <div className="text-xs text-[#626F86]">{label}</div>
+      <div className={`mt-1 text-lg font-semibold ${valueClass}`}>{value}</div>
+    </div>
+  )
 }
 
 function KnowledgeBaseSummary({ snapshot }: { snapshot: ProjectKnowledgeSnapshot }) {
