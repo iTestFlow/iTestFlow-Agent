@@ -11,6 +11,7 @@ const RequestSchema = z.object({
   pageSize: z.number().int().min(1).max(100).default(25),
   sortBy: z.enum(["lastIndexedAt", "type", "state"]).default("lastIndexedAt"),
   sortDirection: z.enum(["asc", "desc"]).default("desc"),
+  query: z.string().optional().default(""),
 });
 
 export async function POST(request: Request) {
@@ -27,6 +28,7 @@ export async function POST(request: Request) {
         pageSize: parsed.data.pageSize,
         sortBy: parsed.data.sortBy,
         sortDirection: parsed.data.sortDirection,
+        query: parsed.data.query,
       }),
     );
   } catch (error) {
