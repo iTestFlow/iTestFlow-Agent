@@ -11,6 +11,7 @@ export const runtime = "nodejs";
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   rawOutput: z.string().min(1),
+  mode: z.enum(["incremental", "full"]).optional().default("full"),
   save: z.boolean().optional().default(false),
 });
 
@@ -25,6 +26,7 @@ export async function POST(request: Request) {
       const snapshot = saveManualProjectKnowledgeBaseSnapshot({
         scope: parsed.data.scope,
         rawOutput: parsed.data.rawOutput,
+        mode: parsed.data.mode,
       });
       return NextResponse.json({ knowledgeBase: snapshot.knowledgeBase, snapshot });
     }

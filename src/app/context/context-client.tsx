@@ -65,6 +65,8 @@ type ContextStatusResult = {
   sortDirection: ContextSortDirection
 }
 
+type KnowledgeCompileMode = "incremental" | "full"
+
 type KnowledgeSource = {
   sourceWorkItemIds: string[]
   evidence: string
@@ -182,7 +184,13 @@ type KnowledgeManualBatchPrompt = {
 
 type KnowledgeManualDraft = {
   promptVersion: string
+  requestedMode: KnowledgeCompileMode
+  mode: KnowledgeCompileMode
+  fallbackReason?: string
   sourceWorkItemCount: number
+  totalSourceWorkItemCount: number
+  changedSourceWorkItemCount: number
+  retiredSourceWorkItemCount: number
   batchCount: number
   batches: KnowledgeManualBatchPrompt[]
 }
@@ -236,7 +244,7 @@ export function ProjectContextClient() {
   const [knowledgeLogLoading, setKnowledgeLogLoading] = useState(false)
   const [knowledgeExportLoading, setKnowledgeExportLoading] = useState(false)
   const [knowledgeMode, setKnowledgeMode] = useState<"auto" | "manual">("auto")
-  const [manualKnowledgeDraftLoading, setManualKnowledgeDraftLoading] = useState(false)
+  const [manualKnowledgeDraftLoadingMode, setManualKnowledgeDraftLoadingMode] = useState<KnowledgeCompileMode | null>(null)
   const [manualKnowledgeDraft, setManualKnowledgeDraft] = useState<KnowledgeManualDraft | null>(null)
   const [manualKnowledgeCurrentBatch, setManualKnowledgeCurrentBatch] = useState(1)
   const [manualKnowledgeBatchResponses, setManualKnowledgeBatchResponses] = useState<Record<number, string>>({})
@@ -413,21 +421,21 @@ export function ProjectContextClient() {
     }
   }
 
-  async function prepareManualKnowledgeDraft() {
+  async function prepareManualKnowledgeDraft(mode: KnowledgeCompileMode) {
     if (!scope) return
-    setManualKnowledgeDraftLoading(true)
+    setManualKnowledgeDraftLoadingMode(mode)
     setManualKnowledgeError(null)
     setManualKnowledgeDraft(null)
     setManualKnowledgeCurrentBatch(1)
     setManualKnowledgeBatchResponses({})
     setManualKnowledgeValidatedBatches({})
     try {
-      const data = await postJson<KnowledgeManualDraft>("/api/context/knowledge/manual/draft", { scope })
+      const data = await postJson<KnowledgeManualDraft>("/api/context/knowledge/manual/draft", { scope, mode })
       setManualKnowledgeDraft(data)
     } catch (draftError) {
       setManualKnowledgeError(draftError instanceof Error ? draftError.message : "External LLM knowledge prompt preparation failed.")
     } finally {
-      setManualKnowledgeDraftLoading(false)
+      setManualKnowledgeDraftLoadingMode(null)
     }
   }
 
@@ -445,6 +453,7 @@ export function ProjectContextClient() {
       const data = await postJson<KnowledgeManualValidationResult>("/api/context/knowledge/manual/validate", {
         scope,
         rawOutput,
+        mode: manualKnowledgeDraft.mode,
         save: shouldSave,
       })
 
@@ -473,13 +482,15 @@ export function ProjectContextClient() {
     const partialKnowledgeBases = manualKnowledgeDraft.batches
       .map((batch) => manualKnowledgeValidatedBatches[batch.batchIndex])
       .filter(Boolean)
-    if (partialKnowledgeBases.length !== manualKnowledgeDraft.batchCount) return
+    if (manualKnowledgeDraft.batchCount > 0 && partialKnowledgeBases.length !== manualKnowledgeDraft.batchCount) return
+    if (manualKnowledgeDraft.batchCount === 0 && manualKnowledgeDraft.mode !== "incremental") return
 
     setManualKnowledgeSaveLoading(true)
     setManualKnowledgeError(null)
     try {
       const data = await postJson<KnowledgeManualValidationResult>("/api/context/knowledge/manual/finalize", {
         scope,
+        mode: manualKnowledgeDraft.mode,
         partialKnowledgeBases,
       })
       if (data.snapshot) setKnowledgeSnapshot(data.snapshot)
@@ -752,17 +763,47 @@ export function ProjectContextClient() {
                 <TabsContent value="manual" className="space-y-4">
                   <div className="flex flex-col gap-3 border-b border-[#EBECF0] pb-4 sm:flex-row sm:items-center sm:justify-between">
                     <p className="text-sm text-[#626F86]">
-                      Copy each generated prompt to an external LLM, paste the JSON response, then validate it here.
+                      Copy generated prompts to an external LLM, paste the JSON response, then validate it here.
                     </p>
-                    <Button onClick={prepareManualKnowledgeDraft} disabled={!canExtractKnowledge || manualKnowledgeDraftLoading}>
-                      {manualKnowledgeDraftLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-                      {manualKnowledgeDraftLoading ? "Preparing..." : "Prepare External LLM Prompt"}
-                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                      <Button onClick={() => prepareManualKnowledgeDraft("incremental")} disabled={!canExtractKnowledge || Boolean(manualKnowledgeDraftLoadingMode)}>
+                        {manualKnowledgeDraftLoadingMode === "incremental" ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
+                        {manualKnowledgeDraftLoadingMode === "incremental" ? "Preparing..." : "Prepare Compile Prompt"}
+                      </Button>
+                      <Button variant="outline" onClick={() => prepareManualKnowledgeDraft("full")} disabled={!canExtractKnowledge || Boolean(manualKnowledgeDraftLoadingMode)}>
+                        {manualKnowledgeDraftLoadingMode === "full" ? <RefreshCw className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                        {manualKnowledgeDraftLoadingMode === "full" ? "Preparing..." : "Prepare Full Recompile Prompt"}
+                      </Button>
+                    </div>
                   </div>
 
                   {manualKnowledgeError ? (
                     <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
                       {manualKnowledgeError}
+                    </div>
+                  ) : null}
+
+                  {manualKnowledgeDraft ? (
+                    <div className="rounded-md border border-[#DCDFE4] bg-white p-4 text-sm text-[#44546F]">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <div className="font-semibold text-[#172B4D]">
+                            {manualKnowledgeDraft.mode === "incremental" ? "Compile Knowledge Prompt" : "Full Recompile Prompt"}
+                          </div>
+                          <div className="text-xs text-[#626F86]">
+                            {manualKnowledgeDraft.sourceWorkItemCount} of {manualKnowledgeDraft.totalSourceWorkItemCount} active work items in prompt input.
+                            {manualKnowledgeDraft.mode === "incremental"
+                              ? ` ${manualKnowledgeDraft.changedSourceWorkItemCount} changed, ${manualKnowledgeDraft.retiredSourceWorkItemCount} retired.`
+                              : null}
+                          </div>
+                        </div>
+                        <Badge variant="outline">{manualKnowledgeDraft.batchCount} {manualKnowledgeDraft.batchCount === 1 ? "batch" : "batches"}</Badge>
+                      </div>
+                      {manualKnowledgeDraft.fallbackReason ? (
+                        <div className="mt-3 rounded-md border border-[#F5CD47]/60 bg-[#FFF7D6] p-3 text-xs text-[#7F5F01]">
+                          {manualKnowledgeDraft.fallbackReason}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -806,6 +847,29 @@ export function ProjectContextClient() {
                           {manualKnowledgeDraft.batchCount === 1 ? "Validate and Save" : "Validate Batch"}
                         </Button>
                       </div>
+                    </div>
+                  ) : null}
+
+                  {manualKnowledgeDraft && manualKnowledgeDraft.batchCount === 0 ? (
+                    <div className="space-y-3 rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-4">
+                      <div>
+                        <div className="text-sm font-semibold text-[#172B4D]">No External Prompt Needed</div>
+                        <div className="text-xs text-[#626F86]">
+                          The current incremental baseline has no changed work items.
+                        </div>
+                      </div>
+                      {manualKnowledgeDraft.retiredSourceWorkItemCount > 0 || manualKnowledgeDraft.fallbackReason ? (
+                        <div className="flex justify-end">
+                          <Button onClick={saveManualKnowledgeBatches} disabled={manualKnowledgeSaveLoading}>
+                            {manualKnowledgeSaveLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
+                            {manualKnowledgeSaveLoading
+                              ? "Saving..."
+                              : manualKnowledgeDraft.fallbackReason
+                                ? "Save Incremental Baseline"
+                                : "Save Knowledge Base"}
+                          </Button>
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
 

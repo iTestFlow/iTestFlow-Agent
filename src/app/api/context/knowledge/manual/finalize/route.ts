@@ -8,7 +8,10 @@ export const runtime = "nodejs";
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
-  partialKnowledgeBases: z.array(ProjectKnowledgeBaseSchema).min(1),
+  mode: z.enum(["incremental", "full"]).optional().default("full"),
+  partialKnowledgeBases: z.array(ProjectKnowledgeBaseSchema).default([]),
+}).refine((data) => data.mode === "incremental" || data.partialKnowledgeBases.length > 0, {
+  message: "Validate all batch responses before saving the knowledge base.",
 });
 
 export async function POST(request: Request) {
@@ -21,6 +24,7 @@ export async function POST(request: Request) {
     const snapshot = saveManualProjectKnowledgeBaseFromBatches({
       scope: parsed.data.scope,
       partialKnowledgeBases: parsed.data.partialKnowledgeBases,
+      mode: parsed.data.mode,
     });
     return NextResponse.json({ knowledgeBase: snapshot.knowledgeBase, snapshot });
   } catch (error) {
