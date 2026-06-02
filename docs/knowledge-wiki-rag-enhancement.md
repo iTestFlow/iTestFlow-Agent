@@ -17,6 +17,15 @@ iTestFlow keeps Azure DevOps work items as source truth and compiles them into a
 - Retired, superseded, confirmed, and candidate knowledge versions are retained for audit/history.
 - Markdown export is a personal/project knowledge-base surface, not the runtime source of truth.
 
+## Scheduled Auto-Update
+
+- The cron scheduler is in-process, so the app server must be running at the scheduled minute.
+- Cron expressions are evaluated in the app/server machine's local timezone, recorded as `server local time`.
+- Each due run explicitly performs Incremental Sync first and records created, updated, unchanged, inactive, and skipped-empty counts.
+- Compile Knowledge runs only when context changed or when no saved knowledge base exists.
+- When context is unchanged and a saved knowledge base exists, the scheduler reuses the existing knowledge base, records a skipped compile status, and writes a knowledge log entry without creating a new revision.
+- Manual `/context` actions keep their existing behavior: Incremental Sync, Rebuild, Compile Knowledge, and Full Recompile remain user-triggered controls.
+
 ## Health Rules
 
 The deterministic lint pass checks for:

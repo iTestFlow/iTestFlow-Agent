@@ -6,15 +6,26 @@ import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider"
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION, isCronExpressionDue, minuteKeyForDate } from "@/modules/settings/cron-expression";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
-import { extractAndSaveProjectKnowledgeBase, type ProjectKnowledgeSnapshot } from "./project-knowledge.service";
+import {
+  extractAndSaveProjectKnowledgeBase,
+  getProjectKnowledgeBaseSnapshot,
+  type ProjectKnowledgeSnapshot,
+} from "./project-knowledge.service";
 import { indexAzureWorkItemsAsProjectContext } from "./project-context-store.service";
+import { recordProjectKnowledgeLog } from "./project-knowledge-compiled.service";
 import {
   completeContextAutoUpdateRun,
   startContextAutoUpdateRun,
+  type ContextAutoUpdateKnowledgeCompileStatus,
   type ContextAutoUpdateRunStatus,
 } from "./context-auto-update-run-history.service";
 
 const CHECK_INTERVAL_MS = 60_000;
+const SCHEDULED_CONTEXT_SYNC_MODE = "incremental";
+const SCHEDULED_KNOWLEDGE_COMPILE_MODE = "incremental";
+const CRON_TIMEZONE_LABEL = "server local time";
+const KNOWLEDGE_COMPILE_UNCHANGED_SKIP_REASON =
+  "Context unchanged and a saved knowledge base already exists.";
 
 type SchedulerState = {
   started: boolean;
@@ -106,9 +117,14 @@ export async function runScheduledContextAutoUpdate(input: {
     cronExpression: input.cronExpression,
     workItemTypes: input.workItemTypes,
     states: input.states,
+    contextSyncMode: SCHEDULED_CONTEXT_SYNC_MODE,
+    knowledgeCompileMode: SCHEDULED_KNOWLEDGE_COMPILE_MODE,
+    cronTimezone: CRON_TIMEZONE_LABEL,
   });
   let contextResult: ContextIndexResult | null = null;
   let knowledgeSnapshot: ProjectKnowledgeSnapshot | null = null;
+  let knowledgeCompileStatus: ContextAutoUpdateKnowledgeCompileStatus = "pending";
+  let knowledgeCompileSkippedReason: string | null = null;
 
   writeAuditLog({
     projectId: scope.projectId,
@@ -121,6 +137,9 @@ export async function runScheduledContextAutoUpdate(input: {
     message: "Started scheduled project context and knowledge base update.",
     details: {
       cronExpression: input.cronExpression,
+      cronTimezone: CRON_TIMEZONE_LABEL,
+      contextSyncMode: SCHEDULED_CONTEXT_SYNC_MODE,
+      knowledgeCompileMode: SCHEDULED_KNOWLEDGE_COMPILE_MODE,
       workItemTypes: input.workItemTypes,
       states: input.states,
     },
@@ -133,21 +152,49 @@ export async function runScheduledContextAutoUpdate(input: {
       adapter,
       workItemTypes: input.workItemTypes,
       states: input.states,
+      mode: SCHEDULED_CONTEXT_SYNC_MODE,
     });
 
-    const provider = getConfiguredProviderFromEnv();
-    if (!provider) throw new Error("No LLM provider configured for scheduled knowledge base extraction.");
+    const existingKnowledgeSnapshot = getProjectKnowledgeBaseSnapshot({ scope });
+    if (!hasContextChanges(contextResult) && existingKnowledgeSnapshot) {
+      knowledgeSnapshot = existingKnowledgeSnapshot;
+      knowledgeCompileStatus = "skipped";
+      knowledgeCompileSkippedReason = KNOWLEDGE_COMPILE_UNCHANGED_SKIP_REASON;
+      recordProjectKnowledgeLog({
+        scope,
+        eventType: "knowledge.compile_skipped",
+        severity: "info",
+        title: "Knowledge compile skipped",
+        message: "Scheduled knowledge compile skipped because incremental context sync found no changes.",
+        metadata: {
+          cronExpression: input.cronExpression,
+          cronTimezone: CRON_TIMEZONE_LABEL,
+          contextSyncMode: SCHEDULED_CONTEXT_SYNC_MODE,
+          knowledgeCompileMode: SCHEDULED_KNOWLEDGE_COMPILE_MODE,
+          knowledgeBaseId: existingKnowledgeSnapshot.id,
+          reason: knowledgeCompileSkippedReason,
+          context: contextResult,
+        },
+      });
+    } else {
+      const provider = getConfiguredProviderFromEnv();
+      if (!provider) throw new Error("No LLM provider configured for scheduled knowledge base extraction.");
 
-    knowledgeSnapshot = await extractAndSaveProjectKnowledgeBase({
-      scope,
-      provider,
-    });
+      knowledgeSnapshot = await extractAndSaveProjectKnowledgeBase({
+        scope,
+        provider,
+        mode: SCHEDULED_KNOWLEDGE_COMPILE_MODE,
+      });
+      knowledgeCompileStatus = "compiled";
+    }
 
     completeRun({
       runId,
       status: "Success",
       contextResult,
       knowledgeSnapshot,
+      knowledgeCompileStatus,
+      knowledgeCompileSkippedReason,
     });
 
     writeAuditLog({
@@ -161,6 +208,11 @@ export async function runScheduledContextAutoUpdate(input: {
       message: "Completed scheduled project context and knowledge base update.",
       details: {
         cronExpression: input.cronExpression,
+        cronTimezone: CRON_TIMEZONE_LABEL,
+        contextSyncMode: SCHEDULED_CONTEXT_SYNC_MODE,
+        knowledgeCompileMode: SCHEDULED_KNOWLEDGE_COMPILE_MODE,
+        knowledgeCompileStatus,
+        knowledgeCompileSkippedReason,
         workItemTypes: input.workItemTypes,
         states: input.states,
         context: contextResult,
@@ -177,6 +229,8 @@ export async function runScheduledContextAutoUpdate(input: {
       status,
       contextResult,
       knowledgeSnapshot,
+      knowledgeCompileStatus: "failed",
+      knowledgeCompileSkippedReason,
       errorDetails: message,
     });
 
@@ -191,6 +245,11 @@ export async function runScheduledContextAutoUpdate(input: {
       message,
       details: {
         cronExpression: input.cronExpression,
+        cronTimezone: CRON_TIMEZONE_LABEL,
+        contextSyncMode: SCHEDULED_CONTEXT_SYNC_MODE,
+        knowledgeCompileMode: SCHEDULED_KNOWLEDGE_COMPILE_MODE,
+        knowledgeCompileStatus: "failed",
+        knowledgeCompileSkippedReason,
         workItemTypes: input.workItemTypes,
         states: input.states,
         context: contextResult,
@@ -204,18 +263,34 @@ function completeRun(input: {
   status: Exclude<ContextAutoUpdateRunStatus, "Running">;
   contextResult: ContextIndexResult | null;
   knowledgeSnapshot: ProjectKnowledgeSnapshot | null;
+  knowledgeCompileStatus: ContextAutoUpdateKnowledgeCompileStatus;
+  knowledgeCompileSkippedReason?: string | null;
   errorDetails?: string;
 }) {
   completeContextAutoUpdateRun({
     id: input.runId,
     status: input.status,
+    cronTimezone: CRON_TIMEZONE_LABEL,
+    contextSyncMode: input.contextResult?.mode ?? SCHEDULED_CONTEXT_SYNC_MODE,
     contextFetchedCount: input.contextResult?.fetchedCount ?? 0,
     contextIndexedWorkItemCount: input.contextResult?.indexedWorkItemCount ?? 0,
     contextIndexedChunkCount: input.contextResult?.indexedChunkCount ?? 0,
+    contextCreatedCount: input.contextResult?.createdCount ?? 0,
+    contextUpdatedCount: input.contextResult?.updatedCount ?? 0,
+    contextUnchangedCount: input.contextResult?.unchangedCount ?? 0,
+    contextInactiveCount: input.contextResult?.inactiveCount ?? 0,
+    contextSkippedEmptyCount: input.contextResult?.skippedEmptyCount ?? 0,
     knowledgeBaseId: input.knowledgeSnapshot?.id ?? null,
     knowledgeSourceWorkItemCount: input.knowledgeSnapshot?.sourceWorkItemCount ?? 0,
+    knowledgeCompileMode: SCHEDULED_KNOWLEDGE_COMPILE_MODE,
+    knowledgeCompileStatus: input.knowledgeCompileStatus,
+    knowledgeCompileSkippedReason: input.knowledgeCompileSkippedReason ?? null,
     errorDetails: input.errorDetails ?? null,
   });
+}
+
+function hasContextChanges(result: ContextIndexResult) {
+  return result.createdCount + result.updatedCount + result.inactiveCount > 0;
 }
 
 function getSchedulerState() {
