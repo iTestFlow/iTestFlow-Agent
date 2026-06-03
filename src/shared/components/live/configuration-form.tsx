@@ -399,6 +399,18 @@ export function ConfigurationForm({
                   <SecretInput show={showSecrets} value={form.apiKey} onChange={(value) => update("apiKey", value)} placeholder="Enter LLM API token" />
                 </Field>
 
+                <Field
+                  label="Provider Base URL"
+                  description="Optional. Use this when routing provider requests through a proxy or custom-compatible endpoint."
+                >
+                  <TextInput
+                    className="border-slate-300 bg-white text-slate-950"
+                    value={form.baseUrl}
+                    onChange={(event) => update("baseUrl", event.target.value)}
+                    placeholder={defaultBaseUrlPlaceholder(form.provider)}
+                  />
+                </Field>
+
                 <Field label="Select LLM Model">
                   <div className="relative">
                     <button
@@ -676,6 +688,17 @@ function providerLabel(provider: Provider) {
       return "Gemini";
     case "anthropic":
       return "Claude / Anthropic";
+  }
+}
+
+function defaultBaseUrlPlaceholder(provider: Provider) {
+  switch (provider) {
+    case "openai":
+      return "https://api.openai.com/v1";
+    case "gemini":
+      return "https://generativelanguage.googleapis.com/v1beta";
+    case "anthropic":
+      return "https://api.anthropic.com";
   }
 }
 

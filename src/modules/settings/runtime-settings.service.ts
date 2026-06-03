@@ -141,7 +141,12 @@ function getSettingsFromEnv(): RuntimeSettings | null {
       provider,
       model,
       apiKey,
-      baseUrl: undefined,
+      baseUrl:
+        provider === "openai"
+          ? optionalEnv(process.env.OPENAI_BASE_URL)
+          : provider === "gemini"
+            ? optionalEnv(process.env.GEMINI_BASE_URL)
+            : optionalEnv(process.env.ANTHROPIC_BASE_URL),
       temperature: Number(process.env.LLM_TEMPERATURE ?? "0.2"),
       maxTokens: Number(process.env.LLM_MAX_TOKENS ?? "4000"),
       retryAttempts: Number(process.env.LLM_RETRY_ATTEMPTS ?? "1"),
@@ -163,6 +168,11 @@ function getSettingsFromEnv(): RuntimeSettings | null {
     ...parsed.data,
     savedAt: "env",
   };
+}
+
+function optionalEnv(value: string | undefined) {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
 }
 
 function getOrCreateKey() {

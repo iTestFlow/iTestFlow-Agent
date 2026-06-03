@@ -2,13 +2,16 @@ import "server-only";
 
 import { z } from "zod";
 import { withStructuredOutputInstruction } from "../prompts";
+import { normalizeProviderBaseUrl } from "../provider-base-url";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import type { GenerateStructuredOutputInput, GenerateTextInput } from "../llm-types";
+
+const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
 
 export class AnthropicProvider extends BaseJsonProvider {
   async testConnection(): Promise<boolean> {
     if (!this.config.apiKey || !this.config.model) return false;
-    const response = await fetch(`${this.config.baseUrl ?? "https://api.anthropic.com/v1"}/messages`, {
+    const response = await fetch(`${this.baseUrl()}/messages`, {
       method: "POST",
       headers: {
         ...this.headers(),
@@ -33,7 +36,7 @@ export class AnthropicProvider extends BaseJsonProvider {
       system: input.system,
       messages: [{ role: "user", content: input.user }],
     };
-    const response = await fetch(`${this.config.baseUrl ?? "https://api.anthropic.com/v1"}/messages`, {
+    const response = await fetch(`${this.baseUrl()}/messages`, {
       method: "POST",
       headers: {
         ...this.headers(),
@@ -70,7 +73,7 @@ export class AnthropicProvider extends BaseJsonProvider {
       system: withStructuredOutputInstruction(input.system, input.schemaName),
       messages: [{ role: "user", content: input.user }],
     };
-    const response = await fetch(`${this.config.baseUrl ?? "https://api.anthropic.com/v1"}/messages`, {
+    const response = await fetch(`${this.baseUrl()}/messages`, {
       method: "POST",
       headers: {
         ...this.headers(),
@@ -96,5 +99,9 @@ export class AnthropicProvider extends BaseJsonProvider {
       responseBody: json,
       finishReason: json.stop_reason,
     };
+  }
+
+  private baseUrl() {
+    return normalizeProviderBaseUrl(this.config.baseUrl, ANTHROPIC_DEFAULT_BASE_URL, { requiredPath: "/v1" });
   }
 }

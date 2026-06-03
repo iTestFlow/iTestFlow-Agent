@@ -2,6 +2,9 @@ import "server-only";
 
 import { z } from "zod";
 import { LLMProviderNameSchema } from "@/modules/settings/runtime-settings.schema";
+import { normalizeProviderBaseUrl } from "./provider-base-url";
+
+const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
 
 export const ListLLMModelsInputSchema = z.object({
   provider: LLMProviderNameSchema,
@@ -122,8 +125,7 @@ async function listAnthropicModels(input: z.infer<typeof ListLLMModelsInputSchem
 }
 
 function anthropicModelsBaseUrl(baseUrl?: string) {
-  const root = (baseUrl ?? "https://api.anthropic.com").replace(/\/$/, "");
-  return root.endsWith("/v1") ? root : `${root}/v1`;
+  return normalizeProviderBaseUrl(baseUrl, ANTHROPIC_DEFAULT_BASE_URL, { requiredPath: "/v1" });
 }
 
 function uniqueModels(models: LLMModelOption[]) {
