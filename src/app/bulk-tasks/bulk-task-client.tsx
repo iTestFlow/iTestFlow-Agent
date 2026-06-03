@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, ClipboardList, Loader2, RefreshCw, Send, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, CheckCircle2, ClipboardList, Loader2, RefreshCw, Send, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -23,6 +23,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
 type TargetMode = "iteration" | "manual";
+type StorySortKey = "state" | "assignedTo";
+type SortDirection = "asc" | "desc";
 
 type AzureIteration = {
   id: string;
@@ -557,6 +559,30 @@ function StorySelectionTable({
   onToggleStory: (storyId: string, checked: boolean) => void;
   onToggleAll: (checked: boolean) => void;
 }) {
+  const [sortKey, setSortKey] = useState<StorySortKey | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+
+  const sortedStories = useMemo(() => {
+    if (!sortKey) return stories;
+    return stories
+      .map((story, index) => ({ story, index }))
+      .sort((left, right) => {
+        const compared = compareStoryValues(left.story[sortKey], right.story[sortKey]);
+        if (compared !== 0) return sortDirection === "asc" ? compared : -compared;
+        return left.index - right.index;
+      })
+      .map(({ story }) => story);
+  }, [sortDirection, sortKey, stories]);
+
+  function toggleSort(nextSortKey: StorySortKey) {
+    if (sortKey === nextSortKey) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortKey(nextSortKey);
+    setSortDirection("asc");
+  }
+
   if (loading) {
     return <div className="rounded-md border border-[#DCDFE4] bg-white p-5 text-sm text-[#626F86]">Loading user stories...</div>;
   }
@@ -574,13 +600,27 @@ function StorySelectionTable({
           </TableHead>
           <TableHead>ID</TableHead>
           <TableHead className="min-w-[320px]">Title</TableHead>
-          <TableHead>State</TableHead>
-          <TableHead>Assignee</TableHead>
+          <TableHead>
+            <StorySortHeader
+              label="State"
+              active={sortKey === "state"}
+              direction={sortDirection}
+              onClick={() => toggleSort("state")}
+            />
+          </TableHead>
+          <TableHead>
+            <StorySortHeader
+              label="Assignee"
+              active={sortKey === "assignedTo"}
+              direction={sortDirection}
+              onClick={() => toggleSort("assignedTo")}
+            />
+          </TableHead>
           <TableHead>Iteration</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
-        {stories.map((story) => {
+        {sortedStories.map((story) => {
           const selected = selectedStoryIds.includes(story.id);
           return (
             <TableRow key={story.id} className={selected ? "qa-table-row-selected" : "qa-table-row"}>
@@ -598,6 +638,46 @@ function StorySelectionTable({
       </TableBody>
     </Table>
   );
+}
+
+function StorySortHeader({
+  label,
+  active,
+  direction,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  direction: SortDirection;
+  onClick: () => void;
+}) {
+  const Icon = active ? (direction === "asc" ? ArrowUp : ArrowDown) : ArrowUpDown;
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="-ml-2 h-8 px-2 text-[#172B4D]"
+      onClick={onClick}
+      aria-label={`Sort by ${label} ${active && direction === "asc" ? "descending" : "ascending"}`}
+      aria-sort={active ? (direction === "asc" ? "ascending" : "descending") : "none"}
+    >
+      {label}
+      <Icon className="size-3.5" aria-hidden="true" />
+      {active ? <span className="text-xs text-[#626F86]">{direction === "asc" ? "Asc" : "Desc"}</span> : null}
+    </Button>
+  );
+}
+
+function compareStoryValues(left?: string, right?: string) {
+  const leftText = left?.trim();
+  const rightText = right?.trim();
+
+  if (!leftText && !rightText) return 0;
+  if (!leftText) return 1;
+  if (!rightText) return -1;
+
+  return leftText.localeCompare(rightText, undefined, { numeric: true, sensitivity: "base" });
 }
 
 function TargetOverrideTable({
