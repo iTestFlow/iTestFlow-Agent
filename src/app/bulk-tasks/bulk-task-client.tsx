@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, CheckCircle2, ClipboardList, Loader2, RefreshCw, Send, XCircle } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, CheckCircle2, ClipboardList, Loader2, RefreshCw, Send, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +20,8 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { Callout } from "@/components/qa/callout";
+import { StatCard } from "@/components/qa/stat-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
 type TargetMode = "iteration" | "manual";
@@ -344,18 +346,10 @@ export function BulkTaskClient() {
   return (
     <div className="space-y-4">
       {!scope ? (
-        <div className="flex items-center gap-2 rounded-md border border-[#F5CD47]/60 bg-[#FFF7D6] p-3 text-sm text-[#7F5F01]">
-          <AlertTriangle className="size-4" />
-          Select an Azure DevOps project before creating tasks.
-        </div>
+        <Callout tone="warning">Select an Azure DevOps project before creating tasks.</Callout>
       ) : null}
 
-      {error ? (
-        <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-700">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-          <span>{error}</span>
-        </div>
-      ) : null}
+      {error ? <Callout tone="error">{error}</Callout> : null}
 
       <Card className="qa-card">
         <CardHeader>
@@ -389,15 +383,15 @@ export function BulkTaskClient() {
                 placeholder="Hours"
               />
             </Field>
-            <Label className="flex items-start gap-3 rounded-md border border-[#DCDFE4] bg-white p-3 text-sm">
+            <Label className="flex items-start gap-3 rounded-md border border-border bg-card p-3 text-sm">
               <Checkbox
                 checked={copyEstimateToRemainingWork}
                 onCheckedChange={(checked) => setCopyEstimateToRemainingWork(checked === true)}
                 className="mt-0.5"
               />
               <span>
-                <span className="block font-semibold text-[#172B4D]">Set remaining work from estimate</span>
-                <span className="mt-0.5 block text-xs leading-5 text-[#626F86]">
+                <span className="block font-semibold text-foreground">Set remaining work from estimate</span>
+                <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
                   Uses the final row/default estimate when creating each task.
                 </span>
               </span>
@@ -415,16 +409,16 @@ export function BulkTaskClient() {
         </CardHeader>
         <CardContent className="space-y-4">
           <Tabs value={targetMode} onValueChange={(value) => { setTargetMode(value as TargetMode); setResult(null); }} className="flex-col gap-4">
-            <TabsList className="h-auto rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-1">
+            <TabsList className="h-auto rounded-md border border-border bg-muted p-1">
               <TabsTrigger
                 value="iteration"
-                className="h-10 px-4 text-[#44546F] data-active:bg-[#0C66E4] data-active:font-semibold data-active:text-white data-active:shadow-sm data-[state=active]:bg-[#0C66E4] data-[state=active]:font-semibold data-[state=active]:text-white data-[state=active]:shadow-sm"
+                className="h-10 px-4 text-muted-foreground data-[state=active]:bg-primary data-[state=active]:font-semibold data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
               >
                 Pick from list
               </TabsTrigger>
               <TabsTrigger
                 value="manual"
-                className="h-10 px-4 text-[#44546F] data-active:bg-[#0C66E4] data-active:font-semibold data-active:text-white data-active:shadow-sm data-[state=active]:bg-[#0C66E4] data-[state=active]:font-semibold data-[state=active]:text-white data-[state=active]:shadow-sm"
+                className="h-10 px-4 text-muted-foreground data-[state=active]:bg-primary data-[state=active]:font-semibold data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
               >
                 Enter IDs
               </TabsTrigger>
@@ -434,7 +428,7 @@ export function BulkTaskClient() {
               <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-end">
                 <Field label="Iteration">
                   <select
-                    className="focus-ring h-10 w-full rounded-md border border-input bg-white px-3 text-sm"
+                    className="focus-ring h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
                     value={selectedIterationPath}
                     onChange={(event) => setSelectedIterationPath(event.target.value)}
                     disabled={!scope || iterationsLoading}
@@ -458,7 +452,7 @@ export function BulkTaskClient() {
               </div>
 
               {selectedIteration ? (
-                <div className="flex flex-wrap gap-2 text-xs text-[#626F86]">
+                <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
                   <Badge variant="outline">{selectedIteration.name}</Badge>
                   {selectedIteration.startDate ? <Badge variant="secondary">Start {formatDate(selectedIteration.startDate)}</Badge> : null}
                   {selectedIteration.finishDate ? <Badge variant="secondary">Finish {formatDate(selectedIteration.finishDate)}</Badge> : null}
@@ -535,9 +529,9 @@ function Field({
 }) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-sm font-semibold text-[#172B4D]">
+      <Label className="text-sm font-semibold text-foreground">
         {label}
-        {required ? <span className="ml-1 text-red-600">*</span> : null}
+        {required ? <span className="ml-1 text-destructive">*</span> : null}
       </Label>
       {children}
     </div>
@@ -584,11 +578,11 @@ function StorySelectionTable({
   }
 
   if (loading) {
-    return <div className="rounded-md border border-[#DCDFE4] bg-white p-5 text-sm text-[#626F86]">Loading user stories...</div>;
+    return <div className="rounded-md border border-border bg-card p-5 text-sm text-muted-foreground">Loading user stories...</div>;
   }
 
   if (!stories.length) {
-    return <div className="rounded-md border border-[#DCDFE4] bg-white p-5 text-sm text-[#626F86]">No user stories loaded.</div>;
+    return <div className="rounded-md border border-border bg-card p-5 text-sm text-muted-foreground">No user stories loaded.</div>;
   }
 
   return (
@@ -627,8 +621,8 @@ function StorySelectionTable({
               <TableCell>
                 <Checkbox checked={selected} onCheckedChange={(checked) => onToggleStory(story.id, checked === true)} aria-label={`Select story ${story.id}`} />
               </TableCell>
-              <TableCell className="font-mono text-xs font-semibold text-[#0C66E4]">{story.id}</TableCell>
-              <TableCell className="min-w-[320px] whitespace-normal font-medium text-[#172B4D]">{story.title}</TableCell>
+              <TableCell className="font-mono text-xs font-semibold text-primary">{story.id}</TableCell>
+              <TableCell className="min-w-[320px] whitespace-normal font-medium text-foreground">{story.title}</TableCell>
               <TableCell>{story.state ?? "-"}</TableCell>
               <TableCell className="max-w-[220px] truncate">{story.assignedTo ?? "-"}</TableCell>
               <TableCell className="max-w-[280px] truncate">{story.iterationPath ?? "-"}</TableCell>
@@ -657,14 +651,14 @@ function StorySortHeader({
       type="button"
       variant="ghost"
       size="sm"
-      className="-ml-2 h-8 px-2 text-[#172B4D]"
+      className="-ml-2 h-8 px-2 text-foreground"
       onClick={onClick}
       aria-label={`Sort by ${label} ${active && direction === "asc" ? "descending" : "ascending"}`}
       aria-sort={active ? (direction === "asc" ? "ascending" : "descending") : "none"}
     >
       {label}
       <Icon className="size-3.5" aria-hidden="true" />
-      {active ? <span className="text-xs text-[#626F86]">{direction === "asc" ? "Asc" : "Desc"}</span> : null}
+      {active ? <span className="text-xs text-muted-foreground">{direction === "asc" ? "Asc" : "Desc"}</span> : null}
     </Button>
   );
 }
@@ -696,7 +690,7 @@ function TargetOverrideTable({
   onChange: (storyId: string, field: keyof OverrideValues, value: string) => void;
 }) {
   if (!rows.length) {
-    return <div className="rounded-md border border-[#DCDFE4] bg-white p-5 text-sm text-[#626F86]">No target stories selected.</div>;
+    return <div className="rounded-md border border-border bg-card p-5 text-sm text-muted-foreground">No target stories selected.</div>;
   }
 
   return (
@@ -716,10 +710,10 @@ function TargetOverrideTable({
           const rowResult = resultByStoryId.get(row.storyId);
           return (
             <TableRow key={row.key} className="qa-table-row">
-              <TableCell className="font-mono text-xs font-semibold text-[#0C66E4]">{row.storyId}</TableCell>
+              <TableCell className="font-mono text-xs font-semibold text-primary">{row.storyId}</TableCell>
               <TableCell className="min-w-[260px] whitespace-normal">
-                <div className="font-medium text-[#172B4D]">{row.title ?? "Manual target"}</div>
-                <div className="mt-1 flex flex-wrap gap-1 text-xs text-[#626F86]">
+                <div className="font-medium text-foreground">{row.title ?? "Manual target"}</div>
+                <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
                   {row.state ? <Badge variant="secondary">{row.state}</Badge> : null}
                   {row.assignedTo ? <span className="max-w-[180px] truncate">{row.assignedTo}</span> : null}
                 </div>
@@ -775,7 +769,7 @@ function AssigneeSelect({
   const userValues = new Set(users.map((user) => assigneeValue(user)));
   return (
     <select
-      className={`focus-ring h-10 w-full rounded-md border border-input bg-white px-3 text-sm ${className}`}
+      className={`focus-ring h-10 w-full rounded-md border border-input bg-card px-3 text-sm ${className}`}
       value={value}
       onChange={(event) => onChange(event.target.value)}
       disabled={loading}
@@ -793,8 +787,8 @@ function AssigneeSelect({
 
 function ResultBadge({ result }: { result?: BulkTaskResponse["results"][number] }) {
   if (!result) return <Badge variant="outline">Pending</Badge>;
-  if (result.status === "created") return <Badge className="bg-emerald-600 text-white">Created #{result.taskId}</Badge>;
-  if (result.status === "skipped") return <Badge className="bg-amber-500 text-white">Skipped</Badge>;
+  if (result.status === "created") return <Badge className="bg-success text-success-foreground">Created #{result.taskId}</Badge>;
+  if (result.status === "skipped") return <Badge className="bg-warning text-warning-foreground">Skipped</Badge>;
   return <Badge variant="destructive">Failed</Badge>;
 }
 
@@ -806,54 +800,44 @@ function ResultPanel({ result }: { result: BulkTaskResponse }) {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-3">
-          <Metric label="Requested" value={result.requestedCount} />
-          <Metric label="Created" value={result.created.length} tone="success" />
-          <Metric label="Failed or skipped" value={result.failed.length} tone={result.failed.length ? "warning" : "default"} />
+          <StatCard label="Requested" value={result.requestedCount} />
+          <StatCard label="Created" value={result.created.length} tone="success" />
+          <StatCard label="Failed or skipped" value={result.failed.length} tone={result.failed.length ? "warning" : "neutral"} />
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-md border border-[#DCDFE4] bg-white">
-            <div className="flex items-center gap-2 border-b border-[#EBECF0] px-3 py-2 text-sm font-semibold text-[#172B4D]">
-              <CheckCircle2 className="size-4 text-emerald-600" />
+          <div className="rounded-md border border-border bg-card">
+            <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-sm font-semibold text-foreground">
+              <CheckCircle2 className="size-4 text-success" />
               Created tasks
             </div>
-            <div className="divide-y divide-[#EBECF0]">
+            <div className="divide-y divide-border">
               {result.created.length ? result.created.map((item) => (
                 <div key={`${item.storyId}-${item.taskId}`} className="grid gap-1 px-3 py-2 text-sm sm:grid-cols-[110px_1fr]">
-                  <span className="font-mono text-xs font-semibold text-[#0C66E4]">Story {item.storyId}</span>
+                  <span className="font-mono text-xs font-semibold text-primary">Story {item.storyId}</span>
                   <span>Task {item.taskId}: {item.title}</span>
                 </div>
-              )) : <div className="px-3 py-4 text-sm text-[#626F86]">No tasks created.</div>}
+              )) : <div className="px-3 py-4 text-sm text-muted-foreground">No tasks created.</div>}
             </div>
           </div>
 
-          <div className="rounded-md border border-[#DCDFE4] bg-white">
-            <div className="flex items-center gap-2 border-b border-[#EBECF0] px-3 py-2 text-sm font-semibold text-[#172B4D]">
-              <XCircle className="size-4 text-red-600" />
+          <div className="rounded-md border border-border bg-card">
+            <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-sm font-semibold text-foreground">
+              <XCircle className="size-4 text-destructive" />
               Failed stories
             </div>
-            <div className="divide-y divide-[#EBECF0]">
+            <div className="divide-y divide-border">
               {result.failed.length ? result.failed.map((item) => (
                 <div key={`${item.storyId}-${item.status}-${item.error}`} className="grid gap-1 px-3 py-2 text-sm sm:grid-cols-[110px_1fr]">
-                  <span className="font-mono text-xs font-semibold text-[#0C66E4]">Story {item.storyId}</span>
+                  <span className="font-mono text-xs font-semibold text-primary">Story {item.storyId}</span>
                   <span>{item.error}</span>
                 </div>
-              )) : <div className="px-3 py-4 text-sm text-[#626F86]">No failures.</div>}
+              )) : <div className="px-3 py-4 text-sm text-muted-foreground">No failures.</div>}
             </div>
           </div>
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-function Metric({ label, value, tone = "default" }: { label: string; value: number; tone?: "default" | "success" | "warning" }) {
-  const valueClass = tone === "success" ? "text-emerald-700" : tone === "warning" ? "text-amber-700" : "text-[#172B4D]";
-  return (
-    <div className="rounded-md border border-[#DCDFE4] bg-white p-3">
-      <div className="text-xs text-[#626F86]">{label}</div>
-      <div className={`mt-1 text-xl font-semibold ${valueClass}`}>{value}</div>
-    </div>
   );
 }
 

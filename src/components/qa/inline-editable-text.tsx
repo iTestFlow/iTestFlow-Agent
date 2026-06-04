@@ -46,12 +46,12 @@ export function InlineEditableText({
     return (
       <button
         type="button"
-        className="group flex w-full items-start justify-between gap-2 rounded-md px-1 py-1 text-left text-sm leading-5 text-[#172B4D] hover:bg-[#F1F2F4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="group flex w-full items-start justify-between gap-2 rounded-md px-1 py-1 text-left text-sm leading-5 text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         onClick={() => setEditing(true)}
         aria-label={`Edit ${ariaLabel}`}
       >
         <span>{value}</span>
-        <Pencil className="mt-0.5 size-3.5 shrink-0 text-[#626F86] opacity-0 group-hover:opacity-100" aria-hidden="true" />
+        <Pencil className="mt-0.5 size-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100" aria-hidden="true" />
       </button>
     )
   }
@@ -78,7 +78,7 @@ export function InlineEditableText({
         <Button type="button" size="icon-xs" variant="ghost" onClick={cancel} aria-label="Cancel edit">
           <X className="size-3" />
         </Button>
-        {draft !== value ? <span className="text-xs text-[#626F86]">Unsaved</span> : null}
+        {draft !== value ? <span className="text-xs text-muted-foreground">Unsaved</span> : null}
       </div>
     </div>
   )

@@ -15,10 +15,10 @@ export function ErrorState({
   onRetry?: () => void
 }) {
   return (
-    <Alert className="border-[#E34935]/30 bg-[#FFECEB] text-[#172B4D]">
-      <AlertCircle className="size-4 text-[#E34935]" />
+    <Alert className="border-destructive/30 bg-destructive/10 text-foreground">
+      <AlertCircle className="size-4 text-destructive" />
       <AlertTitle>{title}</AlertTitle>
-      <AlertDescription className="space-y-3 text-[#44546F]">
+      <AlertDescription className="space-y-3 text-muted-foreground">
         <p>{message}</p>
         <div className="flex flex-wrap gap-2">
           {onRetry ? (
@@ -29,10 +29,10 @@ export function ErrorState({
           ) : null}
           {technicalDetails ? (
             <details className="w-full">
-              <summary className="cursor-pointer text-xs font-medium text-[#44546F]">
+              <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
                 Technical details
               </summary>
-              <div className="mt-3 rounded-lg border border-[#DCDFE4] bg-white p-3 font-mono text-xs text-[#44546F]">
+              <div className="mt-3 rounded-lg border border-border bg-card p-3 font-mono text-xs text-muted-foreground">
                 {technicalDetails}
               </div>
             </details>

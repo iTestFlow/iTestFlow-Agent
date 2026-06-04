@@ -9,6 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge, Button, Card, CardHeader, SelectInput, TextArea, TextInput } from "@/shared/components/ui";
+import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import {
   allRequirementAnalysisChecklistItemIds,
@@ -239,7 +240,7 @@ function useActiveProject() {
 function projectWarning(scope: ActiveProjectScope | null) {
   if (scope) return null;
   return (
-    <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+    <div className="mb-4 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/15 p-3 text-sm text-warning">
       <AlertTriangle className="h-4 w-4" />
       Please select an Azure DevOps project before running this action.
     </div>
@@ -470,24 +471,24 @@ export function LiveDashboard() {
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <Card className="p-4">
-        <div className="text-sm font-medium text-slate-500">Local Runtime</div>
-        <div className="mt-2 text-[22px] font-bold text-slate-950">{health}</div>
-        <p className="mt-1 text-xs text-slate-500">Next.js + local SQLite</p>
+        <div className="text-sm font-medium text-muted-foreground">Local Runtime</div>
+        <div className="mt-2 text-[22px] font-bold text-foreground">{health}</div>
+        <p className="mt-1 text-xs text-muted-foreground">Next.js + local SQLite</p>
       </Card>
       <Card className="p-4">
-        <div className="text-sm font-medium text-slate-500">Azure DevOps</div>
-        <div className="mt-2 text-[22px] font-bold text-slate-950">{projectsStatus}</div>
-        <p className="mt-1 text-xs text-slate-500">Live REST API integration</p>
+        <div className="text-sm font-medium text-muted-foreground">Azure DevOps</div>
+        <div className="mt-2 text-[22px] font-bold text-foreground">{projectsStatus}</div>
+        <p className="mt-1 text-xs text-muted-foreground">Live REST API integration</p>
       </Card>
       <Card className="p-4">
-        <div className="text-sm font-medium text-slate-500">Active Project</div>
-        <div className="mt-2 truncate text-[22px] font-bold text-slate-950">{scope?.azureProjectName ?? "Not selected"}</div>
-        <p className="mt-1 text-xs text-slate-500">Controls every workflow scope</p>
+        <div className="text-sm font-medium text-muted-foreground">Active Project</div>
+        <div className="mt-2 truncate text-[22px] font-bold text-foreground">{scope?.azureProjectName ?? "Not selected"}</div>
+        <p className="mt-1 text-xs text-muted-foreground">Controls every workflow scope</p>
       </Card>
       <Card className="p-4">
-        <div className="text-sm font-medium text-slate-500">LLM Provider</div>
-        <div className="mt-2 truncate text-[22px] font-bold text-slate-950">{process.env.NEXT_PUBLIC_LLM_PROVIDER_LABEL ?? "Server configured"}</div>
-        <p className="mt-1 text-xs text-slate-500">AI calls run server-side only</p>
+        <div className="text-sm font-medium text-muted-foreground">LLM Provider</div>
+        <div className="mt-2 truncate text-[22px] font-bold text-foreground">{process.env.NEXT_PUBLIC_LLM_PROVIDER_LABEL ?? "Server configured"}</div>
+        <p className="mt-1 text-xs text-muted-foreground">AI calls run server-side only</p>
       </Card>
     </div>
   );
@@ -757,7 +758,7 @@ export function RequirementAnalysisClient() {
         <CardHeader
           title="Target Requirement"
           description="Enter a real Azure DevOps work item ID. Project context is selected automatically for this run."
-          action={<WorkflowModeTabs mode={mode} onChange={setMode} />}
+          action={<GenerationModeToggle mode={mode} onChange={setMode} />}
         />
         <div className="space-y-4 p-4">
           <div className="grid gap-4 lg:grid-cols-[240px_auto]">
@@ -819,26 +820,26 @@ export function RequirementAnalysisClient() {
                   />
                   <div>
                     <Badge tone={severityTone(finding.severity)}>{formatEnumLabel(finding.severity)}</Badge>
-                    <div className="mt-2 text-xs font-medium text-slate-600">{checklistItemTitle(finding.checklistItemId)}</div>
-                    <div className="mt-1 text-xs text-slate-500">Issue Type: {formatEnumLabel(finding.issueType)}</div>
+                    <div className="mt-2 text-xs font-medium text-muted-foreground">{checklistItemTitle(finding.checklistItemId)}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">Issue Type: {formatEnumLabel(finding.issueType)}</div>
                   </div>
                   <div>
                     <div className="font-medium">{finding.title}</div>
                     <p className="mt-2 text-sm text-muted-foreground">{finding.description}</p>
                     <p className="mt-2 text-xs text-muted-foreground">Risk: {formatEnumLabel(finding.riskLevel)} - {finding.riskJustification}</p>
                   </div>
-                  <div className="rounded-md border border-blue-100 bg-blue-50 p-3">
-                    <div className="text-xs font-semibold text-blue-900">Suggested resolution</div>
-                    <p className="mt-2 text-sm leading-6 text-slate-700">{finding.suggestion}</p>
+                  <div className="rounded-md border border-border bg-accent p-3">
+                    <div className="text-xs font-semibold text-primary">Suggested resolution</div>
+                    <p className="mt-2 text-sm leading-6 text-foreground">{finding.suggestion}</p>
                   </div>
                 </div>
               ))}
             </div>
-            <div className="flex justify-end border-t border-[#d8e2ef] p-4">
+            <div className="flex justify-end border-t border-border p-4">
               <Button
                 onClick={openReview}
                 disabled={!selectedFindingList.length}
-                className={`active:translate-y-px active:scale-[0.98] ${reviewButtonAnimating ? "scale-[0.98] ring-2 ring-blue-200" : ""}`}
+                className={`active:translate-y-px active:scale-[0.98] ${reviewButtonAnimating ? "scale-[0.98] ring-2 ring-primary/30" : ""}`}
               >
                 <Send className="h-4 w-4" />
                 Review Comment
@@ -884,7 +885,7 @@ export function RequirementAnalysisClient() {
               className="min-h-[320px] font-mono"
               aria-label="Final Azure DevOps comment"
             />
-            <label className="flex items-start gap-3 rounded-md border border-[#c8d4e4] bg-white p-3 text-sm text-slate-700">
+            <label className="flex items-start gap-3 rounded-md border border-border bg-card p-3 text-sm text-foreground">
               <input
                 type="checkbox"
                 checked={reviewApproved}
@@ -894,11 +895,11 @@ export function RequirementAnalysisClient() {
               <span>I reviewed the final comment text and selected findings. Push this comment to the Azure DevOps user story.</span>
             </label>
             {pushState.data?.success ? (
-              <div className="flex items-start gap-3 rounded-md border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
-                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
+              <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success">
+                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
                 <div>
-                  <div className="font-semibold text-emerald-900">Comment pushed to Azure DevOps</div>
-                  <p className="mt-1 text-emerald-700">The approved review comment was added to the selected user story.</p>
+                  <div className="font-semibold text-foreground">Comment pushed to Azure DevOps</div>
+                  <p className="mt-1 text-success">The approved review comment was added to the selected user story.</p>
                 </div>
               </div>
             ) : null}
@@ -952,10 +953,10 @@ function RequirementMentionPicker({
   }
 
   return (
-    <div className="rounded-md border border-[#c8d4e4] bg-white p-3">
+    <div className="rounded-md border border-border bg-card p-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-slate-950">Mention members</div>
+          <div className="text-sm font-semibold text-foreground">Mention members</div>
           <div className="mt-2 flex min-h-8 flex-wrap items-center gap-2">
             {selectedUsers.length ? selectedUsers.map((user) => (
               <UiBadge key={user.id} variant="secondary" className="h-7 max-w-full gap-1 rounded-md pl-2 pr-1">
@@ -973,7 +974,7 @@ function RequirementMentionPicker({
               <span className="text-sm text-muted-foreground">No members selected</span>
             )}
           </div>
-          {error ? <div className="mt-2 text-xs text-red-700">{error}</div> : null}
+          {error ? <div className="mt-2 text-xs text-destructive">{error}</div> : null}
         </div>
 
         <Popover open={open} onOpenChange={setOpen}>
@@ -996,7 +997,7 @@ function RequirementMentionPicker({
                     Loading project users
                   </div>
                 ) : null}
-                {!loading && error ? <div className="px-3 py-4 text-sm text-red-700">{error}</div> : null}
+                {!loading && error ? <div className="px-3 py-4 text-sm text-destructive">{error}</div> : null}
                 {!loading && !error ? (
                   <>
                     <CommandEmpty>No project users found.</CommandEmpty>
@@ -1218,7 +1219,7 @@ export function TestCaseGenerationClient() {
         <CardHeader
           title="Generate Test Cases from Azure DevOps Requirement"
           description="Project context is selected automatically for this run."
-          action={<WorkflowModeTabs mode={mode} onChange={setMode} />}
+          action={<GenerationModeToggle mode={mode} onChange={setMode} />}
         />
         <div className="space-y-4 p-4">
           <div className="grid gap-4 lg:grid-cols-[240px_auto]">
@@ -1375,7 +1376,7 @@ export function ExistingTestCaseReviewClient() {
         <CardHeader
           title="Test Coverage Matrix"
           description="Enter a user story ID. Linked test cases and project context are selected automatically for this run."
-          action={<WorkflowModeTabs mode={mode} onChange={setMode} />}
+          action={<GenerationModeToggle mode={mode} onChange={setMode} />}
         />
         <div className="space-y-4 p-4">
           <div className="grid gap-4 lg:grid-cols-[240px_auto]">
@@ -1458,8 +1459,8 @@ function ExistingTraceabilitySummary({ result }: { result: ExistingReviewResult 
         ))}
       </div>
       <Card className="p-4">
-        <div className="text-sm font-semibold text-slate-950">Review Summary</div>
-        <p className="mt-2 text-sm leading-6 text-slate-600">{result.summary}</p>
+        <div className="text-sm font-semibold text-foreground">Review Summary</div>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">{result.summary}</p>
       </Card>
     </div>
   );
@@ -1475,15 +1476,15 @@ function CoverageMetric({
   tone: "emerald" | "amber" | "red" | "blue";
 }) {
   const toneStyles = {
-    emerald: "border-emerald-200 bg-emerald-50 text-emerald-700",
-    amber: "border-amber-200 bg-amber-50 text-amber-700",
-    red: "border-red-200 bg-red-50 text-red-700",
-    blue: "border-blue-200 bg-blue-50 text-blue-700",
+    emerald: "border-success/30 bg-success/10 text-success",
+    amber: "border-warning/40 bg-warning/15 text-warning-foreground",
+    red: "border-destructive/30 bg-destructive/10 text-destructive",
+    blue: "border-primary/30 bg-accent text-primary",
   }[tone];
 
   return (
     <div className={`rounded-md border p-4 ${toneStyles}`}>
-      <div className="text-base font-semibold text-slate-600">{label}</div>
+      <div className="text-base font-semibold text-muted-foreground">{label}</div>
       <div className="mt-1 text-2xl font-bold">{value}</div>
     </div>
   );
@@ -1496,7 +1497,7 @@ function ExistingTraceabilityMatrix({ rows }: { rows: ExistingTraceabilityRow[] 
       {rows.length ? (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1180px] border-collapse text-left text-sm">
-            <thead className="bg-[#f8fafc] text-xs uppercase tracking-normal text-slate-500">
+            <thead className="bg-muted text-xs uppercase tracking-normal text-muted-foreground">
               <tr>
                 <th className="px-4 py-3 font-semibold">Point</th>
                 <th className="px-4 py-3 font-semibold">Source</th>
@@ -1507,24 +1508,24 @@ function ExistingTraceabilityMatrix({ rows }: { rows: ExistingTraceabilityRow[] 
                 <th className="px-4 py-3 font-semibold">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#d8e2ef]">
+            <tbody className="divide-y divide-border">
               {rows.map((row) => (
                 <tr key={row.id} className="align-top">
                   <td className="px-4 py-4">
-                    <div className="font-mono text-xs font-semibold text-blue-600">{row.id}</div>
+                    <div className="font-mono text-xs font-semibold text-primary">{row.id}</div>
                     <Badge tone={severityTone(row.severity)} className="mt-2">{row.severity}</Badge>
                   </td>
                   <td className="px-4 py-4">
-                    <div className="font-medium text-slate-950">{coverageSourceLabel(row.sourceType)}</div>
-                    <div className="mt-1 text-xs text-slate-500">{row.sourceReference}</div>
+                    <div className="font-medium text-foreground">{coverageSourceLabel(row.sourceType)}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{row.sourceReference}</div>
                   </td>
-                  <td className="max-w-[320px] px-4 py-4 text-slate-700">
+                  <td className="max-w-[320px] px-4 py-4 text-foreground">
                     <p className="break-words leading-6">{row.requirementText}</p>
-                    {row.missingCoverage ? <p className="mt-2 text-xs leading-5 text-red-600">{row.missingCoverage}</p> : null}
+                    {row.missingCoverage ? <p className="mt-2 text-xs leading-5 text-destructive">{row.missingCoverage}</p> : null}
                   </td>
                   <td className="px-4 py-4">
                     <Badge tone={coverageTone(row.coverageStatus)}>{row.coverageStatus}</Badge>
-                    <div className="mt-2 text-xs text-slate-500">Min tests: {row.recommendedMinimumTestCount}</div>
+                    <div className="mt-2 text-xs text-muted-foreground">Min tests: {row.recommendedMinimumTestCount}</div>
                   </td>
                   <td className="px-4 py-4">
                     {row.linkedTestCaseIds.length ? (
@@ -1532,13 +1533,13 @@ function ExistingTraceabilityMatrix({ rows }: { rows: ExistingTraceabilityRow[] 
                         {row.linkedTestCaseIds.map((id) => <Badge key={id} tone="blue">{id}</Badge>)}
                       </div>
                     ) : (
-                      <span className="text-xs text-slate-500">No linked case</span>
+                      <span className="text-xs text-muted-foreground">No linked case</span>
                     )}
                   </td>
-                  <td className="max-w-[260px] px-4 py-4 text-slate-600">
+                  <td className="max-w-[260px] px-4 py-4 text-muted-foreground">
                     <p className="break-words leading-6">{row.evidenceSummary || "No evidence supplied."}</p>
                   </td>
-                  <td className="max-w-[260px] px-4 py-4 text-blue-600">
+                  <td className="max-w-[260px] px-4 py-4 text-primary">
                     <p className="break-words leading-6">{row.recommendedAction}</p>
                   </td>
                 </tr>
@@ -1559,15 +1560,15 @@ function ExistingReviewInsights({ insights, findings }: { insights: ExistingRevi
       <Card>
         <CardHeader title="Coverage Insights" />
         {insights.length ? (
-          <div className="divide-y divide-[#d8e2ef]">
+          <div className="divide-y divide-border">
             {insights.map((insight) => (
               <div key={insight.id} className="p-4">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone={severityTone(insight.severity)}>{insight.severity}</Badge>
-                  <span className="font-medium text-slate-950">{insight.title}</span>
+                  <span className="font-medium text-foreground">{insight.title}</span>
                 </div>
-                <p className="mt-2 text-sm leading-6 text-slate-600">{insight.explanation}</p>
-                <p className="mt-2 text-sm leading-6 text-blue-600">{insight.suggestedAction}</p>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">{insight.explanation}</p>
+                <p className="mt-2 text-sm leading-6 text-primary">{insight.suggestedAction}</p>
               </div>
             ))}
           </div>
@@ -1578,17 +1579,17 @@ function ExistingReviewInsights({ insights, findings }: { insights: ExistingRevi
       <Card>
         <CardHeader title="Review Findings" />
         {findings.length ? (
-          <div className="divide-y divide-[#d8e2ef]">
+          <div className="divide-y divide-border">
             {findings.map((finding) => (
               <div key={finding.id} className="grid gap-3 p-4 md:grid-cols-[120px_1fr]">
                 <Badge tone={severityTone(finding.severity)} className="self-start justify-self-start whitespace-nowrap">{finding.severity}</Badge>
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-slate-950">{finding.title}</span>
+                    <span className="font-medium text-foreground">{finding.title}</span>
                     <Badge tone="slate">{finding.category}</Badge>
                   </div>
-                  <p className="mt-2 text-sm leading-6 text-slate-600">{finding.explanation}</p>
-                  <p className="mt-2 text-sm leading-6 text-blue-600">{finding.suggestedAction}</p>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">{finding.explanation}</p>
+                  <p className="mt-2 text-sm leading-6 text-primary">{finding.suggestedAction}</p>
                 </div>
               </div>
             ))}
@@ -1622,15 +1623,15 @@ function ExistingLinkedTestCasesList({ linkedTestCases }: { linkedTestCases: Exi
         }
       />
       {open && linkedTestCases.length ? (
-        <div className="divide-y divide-[#d8e2ef]">
+        <div className="divide-y divide-border">
           {linkedTestCases.map((testCase) => (
             <div key={testCase.id} className="grid gap-3 p-4 md:grid-cols-[140px_1fr_120px]">
-              <span className="font-mono text-xs text-blue-600">{testCase.id}</span>
+              <span className="font-mono text-xs text-primary">{testCase.id}</span>
               <div>
-                <div className="font-medium text-slate-950">{testCase.title}</div>
-                <div className="mt-1 text-xs text-slate-500">{testCase.testType ?? "Test Case"}</div>
+                <div className="font-medium text-foreground">{testCase.title}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{testCase.testType ?? "Test Case"}</div>
               </div>
-              <span className="text-sm text-slate-600">{testCase.steps?.length ?? 0} steps</span>
+              <span className="text-sm text-muted-foreground">{testCase.steps?.length ?? 0} steps</span>
             </div>
           ))}
         </div>
@@ -1709,7 +1710,7 @@ function SuggestedAdditionsPublishPanel({
       <div className="space-y-4 p-4">
         {state.error ? <ErrorBlock message={state.error} /> : null}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-sm leading-6 text-slate-600">
+          <div className="text-sm leading-6 text-muted-foreground">
             {testCases.length} suggested test case{testCases.length === 1 ? "" : "s"} will be created and linked to user story {targetWorkItemId || "the selected story"}.
           </div>
           <ConfirmationDialog
@@ -1741,9 +1742,9 @@ function SuggestedAdditionsPublishPanel({
 function SuggestedAdditionsPublishResultSummary({ data }: { data: SuggestedAdditionsPublishResult }) {
   const successCount = data.results.filter((result) => result.success).length;
   return (
-    <div className="rounded-md border border-[#c8d4e4] bg-white">
+    <div className="rounded-md border border-border bg-card">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
-        <div className="text-sm font-semibold text-slate-950">
+        <div className="text-sm font-semibold text-foreground">
           Azure Add Results: {successCount} of {data.results.length} created and linked
         </div>
         <Badge tone={successCount === data.results.length ? "emerald" : "amber"}>
@@ -1753,7 +1754,7 @@ function SuggestedAdditionsPublishResultSummary({ data }: { data: SuggestedAddit
       <div className="divide-y">
         {data.results.map((result) => (
           <div key={result.localId} className="grid gap-3 p-3 text-sm lg:grid-cols-[140px_140px_140px_minmax(0,1fr)]">
-            <span className="font-mono text-xs text-blue-600">{result.localId}</span>
+            <span className="font-mono text-xs text-primary">{result.localId}</span>
             <span>{result.azureTestCaseId ? `Azure ${result.azureTestCaseId}` : "Not created"}</span>
             <StatusText label="Create" success={result.create?.success} error={result.create?.error ?? result.error} />
             <StatusText label="Link" success={result.link?.success} error={result.link?.error} />
@@ -1857,7 +1858,7 @@ function PublishGeneratedCasesPanel({
         description="Create Azure Test Case work items, link them to the user story, then add them to a suite or create a requirement-based suite."
       />
       <div className="space-y-4 p-4">
-        <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+        <label className="flex items-center gap-2 text-sm font-medium text-foreground">
           <input
             type="checkbox"
             checked={createRequirementSuite}
@@ -1952,9 +1953,9 @@ function PublishGeneratedCasesPanel({
 function PublishResultSummary({ data }: { data: PublishRunResult }) {
   const successCount = data.results.filter((result) => result.success).length;
   return (
-    <div className="rounded-md border border-[#c8d4e4] bg-white">
+    <div className="rounded-md border border-border bg-card">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
-        <div className="text-sm font-semibold text-slate-950">
+        <div className="text-sm font-semibold text-foreground">
           Publish Results: {successCount} of {data.results.length} completed
         </div>
         {data.requirementSuite ? (
@@ -1968,7 +1969,7 @@ function PublishResultSummary({ data }: { data: PublishRunResult }) {
       <div className="divide-y">
         {data.results.map((result) => (
           <div key={result.localId} className="grid gap-3 p-3 text-sm lg:grid-cols-[140px_120px_120px_120px_minmax(0,1fr)]">
-            <span className="font-mono text-xs text-blue-600">{result.localId}</span>
+            <span className="font-mono text-xs text-primary">{result.localId}</span>
             <span>{result.azureTestCaseId ? `Azure ${result.azureTestCaseId}` : "Not created"}</span>
             <StatusText label="Create" success={result.create?.success} error={result.create?.error ?? result.error} />
             <StatusText label="Link" success={result.link?.success} error={result.link?.error} />
@@ -1996,7 +1997,7 @@ function StatusText({
   error?: string;
   detail?: string;
 }) {
-  const tone = success ? "text-emerald-700" : "text-red-700";
+  const tone = success ? "text-success" : "text-destructive";
   return (
     <div className={tone}>
       <span className="font-medium">{label}: </span>
@@ -2065,11 +2066,11 @@ function TestDesignOptionsSelector({
   const noneSelected = settings.coverageFocusIds.length === 0;
 
   return (
-    <div className="rounded-md border border-[#c8d4e4] bg-[#f8fafc] p-4">
+    <div className="rounded-md border border-border bg-muted p-4">
       <div className="grid gap-4 lg:grid-cols-[minmax(240px,320px)_1fr]">
         <div className="space-y-3">
           <div>
-            <div className="text-sm font-semibold text-slate-950">Target Test Case Range</div>
+            <div className="text-sm font-semibold text-foreground">Target Test Case Range</div>
             <div className="mt-2">
               <SelectInput
                 value={settings.targetTestCaseRange}
@@ -2086,7 +2087,7 @@ function TestDesignOptionsSelector({
 
           {settings.targetTestCaseRange === "custom" ? (
             <div className="grid gap-3 sm:grid-cols-2">
-              <label className="text-xs font-semibold text-slate-600">
+              <label className="text-xs font-semibold text-muted-foreground">
                 Minimum
                 <TextInput
                   type="number"
@@ -2097,7 +2098,7 @@ function TestDesignOptionsSelector({
                   className="mt-1"
                 />
               </label>
-              <label className="text-xs font-semibold text-slate-600">
+              <label className="text-xs font-semibold text-muted-foreground">
                 Maximum
                 <TextInput
                   type="number"
@@ -2112,7 +2113,7 @@ function TestDesignOptionsSelector({
           ) : null}
 
           {!customRangeValid ? (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            <div className="rounded-md border border-warning/40 bg-warning/15 px-3 py-2 text-sm text-foreground">
               Custom range must be between 1 and {maxCustomTestCaseRange}, with minimum not greater than maximum.
             </div>
           ) : null}
@@ -2121,8 +2122,8 @@ function TestDesignOptionsSelector({
         <div>
           <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="text-sm font-semibold text-slate-950">Coverage Focus Rules</div>
-              <div className="text-xs text-slate-500">
+              <div className="text-sm font-semibold text-foreground">Coverage Focus Rules</div>
+              <div className="text-xs text-muted-foreground">
                 {settings.coverageFocusIds.length} of {allCoverageFocusIds.length} selected
               </div>
             </div>
@@ -2142,7 +2143,7 @@ function TestDesignOptionsSelector({
               return (
                 <label
                   key={focusItem.id}
-                  className="flex min-h-12 cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-blue-200 hover:bg-blue-50"
+                  className="flex min-h-12 cursor-pointer items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground transition hover:border-primary/30 hover:bg-accent"
                 >
                   <Checkbox checked={checked} onCheckedChange={(value) => onCoverageFocusToggle(focusItem.id, value === true)} aria-label={focusItem.title} />
                   <span className="leading-5">{focusItem.title}</span>
@@ -2152,7 +2153,7 @@ function TestDesignOptionsSelector({
           </div>
 
           {!coverageFocusSelectionValid ? (
-            <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            <div className="mt-3 rounded-md border border-warning/40 bg-warning/15 px-3 py-2 text-sm text-foreground">
               Select at least one Coverage Focus item to generate or prepare the external LLM prompt.
             </div>
           ) : null}
@@ -2178,11 +2179,11 @@ function RequirementChecklistSelector({
   const noneSelected = selectedIds.length === 0;
 
   return (
-    <div className="rounded-md border border-[#c8d4e4] bg-[#f8fafc] p-4">
+    <div className="rounded-md border border-border bg-muted p-4">
       <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="text-sm font-semibold text-slate-950">Requirement Analysis Checklist</div>
-          <div className="text-xs text-slate-500">
+          <div className="text-sm font-semibold text-foreground">Requirement Analysis Checklist</div>
+          <div className="text-xs text-muted-foreground">
             {selectedIds.length} of {allRequirementAnalysisChecklistItemIds.length} selected
           </div>
         </div>
@@ -2202,7 +2203,7 @@ function RequirementChecklistSelector({
           return (
             <label
               key={checklistItem.id}
-              className="flex min-h-12 cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-blue-200 hover:bg-blue-50"
+              className="flex min-h-12 cursor-pointer items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground transition hover:border-primary/30 hover:bg-accent"
             >
               <Checkbox checked={checked} onCheckedChange={(value) => onToggle(checklistItem.id, value === true)} aria-label={checklistItem.title} />
               <span className="leading-5">{checklistItem.title}</span>
@@ -2212,28 +2213,10 @@ function RequirementChecklistSelector({
       </div>
 
       {noneSelected ? (
-        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+        <div className="mt-3 rounded-md border border-warning/40 bg-warning/15 px-3 py-2 text-sm text-foreground">
           Select at least one checklist item to run analysis or prepare the external LLM prompt.
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function WorkflowModeTabs({ mode, onChange }: { mode: WorkflowMode; onChange: (mode: WorkflowMode) => void }) {
-  const itemClass = (value: WorkflowMode) =>
-    `h-8 rounded-[6px] px-3 text-sm font-medium transition ${
-      mode === value ? "bg-[#2f62e6] text-white" : "text-slate-600 hover:bg-blue-50 hover:text-blue-700"
-    }`;
-
-  return (
-    <div role="tablist" aria-label="LLM execution mode" className="inline-flex rounded-[8px] border border-[#c8d4e4] bg-white p-1">
-      <button type="button" role="tab" aria-selected={mode === "auto"} className={itemClass("auto")} onClick={() => onChange("auto")}>
-        Auto Generate
-      </button>
-      <button type="button" role="tab" aria-selected={mode === "manual"} className={itemClass("manual")} onClick={() => onChange("manual")}>
-        External LLM
-      </button>
     </div>
   );
 }
@@ -2247,12 +2230,12 @@ function ExtraInstructionsField({ value, onChange }: { value: string; onChange: 
     <div className="space-y-2">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <label htmlFor={id} className="block text-sm font-semibold text-slate-950">
+          <label htmlFor={id} className="block text-sm font-semibold text-foreground">
             Extra Instructions
           </label>
-          <p className="mt-1 text-xs leading-5 text-slate-500">{EXTRA_INSTRUCTIONS_HELPER_TEXT}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{EXTRA_INSTRUCTIONS_HELPER_TEXT}</p>
         </div>
-        <div className={`text-xs font-medium ${overLimit ? "text-red-700" : "text-slate-500"}`}>
+        <div className={`text-xs font-medium ${overLimit ? "text-destructive" : "text-muted-foreground"}`}>
           {value.length} / {EXTRA_INSTRUCTIONS_MAX_LENGTH}
         </div>
       </div>
@@ -2266,12 +2249,12 @@ function ExtraInstructionsField({ value, onChange }: { value: string; onChange: 
         placeholder="Add optional instructions for this run."
       />
       {overLimit ? (
-        <div className="text-xs font-medium text-red-700">
+        <div className="text-xs font-medium text-destructive">
           Extra Instructions must be {EXTRA_INSTRUCTIONS_MAX_LENGTH} characters or fewer.
         </div>
       ) : null}
       {showWarning ? (
-        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs leading-5 text-amber-800 dark:text-amber-200">
+        <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/15 p-3 text-xs leading-5 text-warning-foreground dark:text-warning">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <p>{EXTRA_INSTRUCTIONS_WARNING_TEXT}</p>
         </div>
@@ -2302,14 +2285,14 @@ function ManualLLMPanel({
   if (!draft && !error) return null;
 
   return (
-    <div className="space-y-4 rounded-md border border-[#c8d4e4] bg-[#f8fafc] p-4">
+    <div className="space-y-4 rounded-md border border-border bg-muted p-4">
       {error ? <ErrorBlock message={error} /> : null}
       {draft ? (
         <>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="text-sm font-semibold text-slate-950">External LLM Prompt</div>
-              <div className="text-xs text-slate-500">Prompt {draft.promptVersion}</div>
+              <div className="text-sm font-semibold text-foreground">External LLM Prompt</div>
+              <div className="text-xs text-muted-foreground">Prompt {draft.promptVersion}</div>
             </div>
             <Button
               variant="secondary"
@@ -2323,7 +2306,7 @@ function ManualLLMPanel({
           </div>
           <TextArea value={draft.prompt} readOnly className="min-h-[360px] font-mono text-xs" aria-label="External LLM prompt" />
           <div>
-            <div className="mb-2 text-sm font-semibold text-slate-950">External LLM Response</div>
+            <div className="mb-2 text-sm font-semibold text-foreground">External LLM Response</div>
             <TextArea
               value={response}
               onChange={(event) => onResponseChange(event.target.value)}
@@ -2418,7 +2401,7 @@ function EditableGeneratedCases({
         title={title}
         description="Edit titles and steps inline before publishing."
       />
-      <div className="grid gap-3 border-b border-[#d8e2ef] bg-[#f8fafc] p-4 lg:grid-cols-[180px_minmax(260px,1fr)_minmax(260px,1fr)]">
+      <div className="grid gap-3 border-b border-border bg-muted p-4 lg:grid-cols-[180px_minmax(260px,1fr)_minmax(260px,1fr)]">
         <GeneratedCaseTotalCard total={testCaseStats.total} />
         <GeneratedCaseSummaryCard title="Priority Breakdown" rows={priorityBreakdown} />
         <GeneratedCaseSummaryCard
@@ -2431,7 +2414,7 @@ function EditableGeneratedCases({
         {testCases.length ? testCases.map((testCase, index) => (
           <div key={testCase.id} className="space-y-3 p-4">
             <div className="grid gap-3 lg:grid-cols-[120px_1fr_160px_160px_42px]">
-              <span className="font-mono text-xs text-blue-600">{testCase.id}</span>
+              <span className="font-mono text-xs text-primary">{testCase.id}</span>
               <TextInput value={testCase.title} onChange={(event) => updateCase(index, { ...testCase, title: event.target.value })} />
               <SelectInput
                 value={testCase.priority}
@@ -2502,14 +2485,14 @@ function EditableGeneratedCases({
           </div>
         )) : (
           <div className="p-4">
-            <div className="rounded-md border border-dashed border-[#c8d4e4] bg-[#f8fafc] p-5 text-sm text-slate-500">
+            <div className="rounded-md border border-dashed border-border bg-muted p-5 text-sm text-muted-foreground">
               {allowAdd ? "No test cases in this list. Add a test case to continue." : "No test cases in this list."}
             </div>
           </div>
         )}
       </div>
       {allowAdd ? (
-        <div className="flex justify-end border-t border-[#d8e2ef] px-5 py-4">
+        <div className="flex justify-end border-t border-border px-5 py-4">
           <Button variant="secondary" onClick={addCase}>
             <Plus className="h-4 w-4" />
             Add Test Case
@@ -2528,9 +2511,9 @@ type GeneratedCaseSummaryRow = {
 
 function GeneratedCaseTotalCard({ total }: { total: number }) {
   return (
-    <div className="rounded-md border border-slate-200 bg-white p-4">
-      <div className="text-base font-semibold text-slate-600">Total</div>
-      <div className="mt-2 text-4xl font-bold text-slate-950">{total}</div>
+    <div className="rounded-md border border-border bg-card p-4">
+      <div className="text-base font-semibold text-muted-foreground">Total</div>
+      <div className="mt-2 text-4xl font-bold text-foreground">{total}</div>
     </div>
   );
 }
@@ -2549,8 +2532,8 @@ function GeneratedCaseSummaryCard({
   const hasValues = rows.some((row) => row.value > 0);
 
   return (
-    <div className="rounded-md border border-slate-200 bg-white p-4">
-      <div className="text-base font-semibold text-slate-600">{title}</div>
+    <div className="rounded-md border border-border bg-card p-4">
+      <div className="text-base font-semibold text-muted-foreground">{title}</div>
       {hasValues ? (
         <div className="mt-3 grid gap-2">
           {rows.map((row) => (
@@ -2558,7 +2541,7 @@ function GeneratedCaseSummaryCard({
           ))}
         </div>
       ) : (
-        <div className="mt-3 rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-400">
+        <div className="mt-3 rounded-md border border-dashed border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
           {emptyLabel}
         </div>
       )}
@@ -2569,18 +2552,18 @@ function GeneratedCaseSummaryCard({
 
 function GeneratedCaseSummaryRowItem({ row }: { row: GeneratedCaseSummaryRow }) {
   const toneStyles = {
-    red: "bg-red-50 text-red-700",
-    amber: "bg-amber-50 text-amber-700",
-    blue: "bg-blue-50 text-blue-700",
-    cyan: "bg-cyan-50 text-cyan-700",
-    slate: "bg-slate-100 text-slate-700",
+    red: "bg-destructive/10 text-destructive",
+    amber: "bg-warning/15 text-warning-foreground",
+    blue: "bg-accent text-primary",
+    cyan: "bg-info/10 text-info",
+    slate: "bg-muted text-foreground",
   }[row.tone];
   const empty = row.value === 0;
 
   return (
-    <div className={`flex items-center justify-between gap-3 rounded-md px-3 py-2 text-sm ${empty ? "bg-slate-50 text-slate-400" : toneStyles}`}>
-      <span className={empty ? "text-slate-400" : "font-medium"}>{row.label}</span>
-      <span className={empty ? "text-xs text-slate-400" : "text-base font-bold"}>{empty ? "None" : row.value}</span>
+    <div className={`flex items-center justify-between gap-3 rounded-md px-3 py-2 text-sm ${empty ? "bg-muted text-muted-foreground" : toneStyles}`}>
+      <span className={empty ? "text-muted-foreground" : "font-medium"}>{row.label}</span>
+      <span className={empty ? "text-xs text-muted-foreground" : "text-base font-bold"}>{empty ? "None" : row.value}</span>
     </div>
   );
 }
@@ -2590,14 +2573,14 @@ function Metric({ label, value }: { label: string; value: string | number }) {
   const displayValue = isNumeric ? formatPercentage(value) : formatEnumLabel(value);
   const tone = isNumeric ? scoreTone(value) : qualityTone(value);
   const toneStyles = {
-    emerald: "border-emerald-200 bg-emerald-50 text-emerald-700",
-    amber: "border-amber-200 bg-amber-50 text-amber-700",
-    red: "border-red-200 bg-red-50 text-red-700",
+    emerald: "border-success/30 bg-success/10 text-success",
+    amber: "border-warning/40 bg-warning/15 text-warning-foreground",
+    red: "border-destructive/30 bg-destructive/10 text-destructive",
   }[tone];
 
   return (
     <div className={`rounded-md border p-4 ${toneStyles}`}>
-      <div className="text-base font-semibold text-slate-600">{label}</div>
+      <div className="text-base font-semibold text-muted-foreground">{label}</div>
       <div className="mt-1 text-2xl font-bold">{displayValue}</div>
     </div>
   );
@@ -2605,21 +2588,21 @@ function Metric({ label, value }: { label: string; value: string | number }) {
 
 function ErrorBlock({ message }: { message: string }) {
   return (
-    <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-900">
-      <div className="flex items-center gap-2 font-semibold text-red-800">
+    <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+      <div className="flex items-center gap-2 font-semibold text-destructive">
         <AlertTriangle className="h-4 w-4 shrink-0" />
         Action failed
       </div>
-      <p className="mt-2 break-words text-red-800">{message}</p>
+      <p className="mt-2 break-words text-destructive">{message}</p>
     </div>
   );
 }
 
 function EmptyBlock({ message }: { message: string }) {
   return (
-    <div className="rounded-[10px] border border-[#c8d4e4] bg-white p-6 text-sm text-slate-500">
+    <div className="rounded-[10px] border border-border bg-card p-6 text-sm text-muted-foreground">
       <div className="flex items-center gap-2">
-        <CheckCircle2 className="h-4 w-4 text-blue-600" />
+        <CheckCircle2 className="h-4 w-4 text-primary" />
         {message}
       </div>
     </div>

@@ -27,7 +27,7 @@ export function AuditLogTable({ logs }: { logs: AuditLog[] }) {
 
   return (
     <>
-      <div className="overflow-hidden rounded-xl border border-[#DCDFE4] bg-white">
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
@@ -46,12 +46,12 @@ export function AuditLogTable({ logs }: { logs: AuditLog[] }) {
               {logs.map((log) => (
                 <TableRow key={log.id} className="qa-table-row">
                   <TableCell>{formatDateTime(log.timestamp)}</TableCell>
-                  <TableCell className="font-medium text-[#172B4D]">{log.action}</TableCell>
-                  <TableCell className="font-mono text-xs text-[#0C66E4]">{log.entity}</TableCell>
+                  <TableCell className="font-medium text-foreground">{log.action}</TableCell>
+                  <TableCell className="font-mono text-xs text-primary">{log.entity}</TableCell>
                   <TableCell>{log.projectId}</TableCell>
                   <TableCell><StatusChip tone={log.status === "Success" ? "success" : log.status === "Warning" ? "warning" : log.status === "Failed" ? "error" : "draft"}>{log.status}</StatusChip></TableCell>
                   <TableCell>{log.user}</TableCell>
-                  <TableCell className="max-w-sm truncate text-[#44546F]">{log.details}</TableCell>
+                  <TableCell className="max-w-sm truncate text-muted-foreground">{log.details}</TableCell>
                   <TableCell className="text-right">
                     <Button size="icon-sm" variant="ghost" onClick={() => setActive(log)} aria-label={`View ${log.id}`}>
                       <Eye className="size-4" />
@@ -62,7 +62,7 @@ export function AuditLogTable({ logs }: { logs: AuditLog[] }) {
             </TableBody>
           </Table>
         </div>
-        <div className="flex items-center justify-between border-t border-[#EBECF0] px-4 py-3 text-sm text-[#626F86]">
+        <div className="flex items-center justify-between border-t border-border px-4 py-3 text-sm text-muted-foreground">
           <span>Page 1 of 1</span>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" disabled>Previous</Button>
@@ -76,7 +76,7 @@ export function AuditLogTable({ logs }: { logs: AuditLog[] }) {
           <SheetHeader>
             <SheetTitle>{active?.action}</SheetTitle>
           </SheetHeader>
-          <div className="space-y-4 p-4 text-sm text-[#44546F]">
+          <div className="space-y-4 p-4 text-sm text-muted-foreground">
             <Info label="Run ID" value={active?.runId ?? ""} />
             <Info label="Details" value={active?.details ?? ""} />
             <Info label="Payload summary" value={active?.payloadSummary ?? ""} />
@@ -90,9 +90,9 @@ export function AuditLogTable({ logs }: { logs: AuditLog[] }) {
 
 function Info({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-[#EBECF0] bg-[#F7F8FA] p-3">
-      <div className="text-xs font-medium uppercase tracking-normal text-[#626F86]">{label}</div>
-      <div className="mt-1 leading-6 text-[#172B4D]">{value}</div>
+    <div className="rounded-lg border border-border bg-muted p-3">
+      <div className="text-xs font-medium uppercase tracking-normal text-muted-foreground">{label}</div>
+      <div className="mt-1 leading-6 text-foreground">{value}</div>
     </div>
   )
 }

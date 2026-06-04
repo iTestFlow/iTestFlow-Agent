@@ -166,7 +166,7 @@ td {
 
 @layer components {
   .qa-card {
-    @apply rounded-2xl border border-border bg-card text-card-foreground shadow-[0_10px_30px_rgba(15,23,42,0.06)] transition-colors dark:shadow-[0_18px_60px_rgba(0,0,0,0.28)];
+    @apply rounded-2xl border border-border bg-card text-card-foreground shadow-card transition-colors dark:shadow-card-dark;
   }
 
   .qa-table-row {
@@ -178,50 +178,6 @@ td {
   }
 
   .analytics-card {
-    @apply rounded-2xl border border-border bg-card text-card-foreground shadow-[0_10px_30px_rgba(15,23,42,0.06)] transition-colors dark:shadow-[0_18px_60px_rgba(0,0,0,0.28)];
-  }
-
-  .dark [class*="text-[#172B4D]"],
-  .dark [class*="text-slate-950"],
-  .dark [class*="text-slate-900"] {
-    color: hsl(var(--foreground)) !important;
-  }
-
-  .dark [class*="text-[#44546F]"],
-  .dark [class*="text-[#626F86]"],
-  .dark [class*="text-slate-700"],
-  .dark [class*="text-slate-600"],
-  .dark [class*="text-slate-500"] {
-    color: hsl(var(--muted-foreground)) !important;
-  }
-
-  .dark [class*="bg-white"],
-  .dark [class*="bg-[#f8fafc]"],
-  .dark [class*="bg-[#F7F8FA]"],
-  .dark [class*="bg-[#F7F8F9]"] {
-    background-color: hsl(var(--card)) !important;
-  }
-
-  .dark [class*="bg-[#edf2f7]"],
-  .dark [class*="bg-[#F1F2F4]"] {
-    background-color: hsl(var(--muted)) !important;
-  }
-
-  .dark [class*="border-[#c8d4e4]"],
-  .dark [class*="border-[#d8e2ef]"],
-  .dark [class*="border-[#DCDFE4]"],
-  .dark [class*="border-[#EBECF0]"] {
-    border-color: hsl(var(--border)) !important;
-  }
-
-  .dark [class*="bg-[#E9F2FF]"] {
-    background-color: hsl(var(--primary) / 0.13) !important;
-  }
-
-  .dark [class*="text-[#0C66E4]"],
-  .dark [class*="text-[#0052CC]"],
-  .dark [class*="text-blue-600"],
-  .dark [class*="text-blue-700"] {
-    color: hsl(var(--primary)) !important;
+    @apply rounded-2xl border border-border bg-card text-card-foreground shadow-card transition-colors dark:shadow-card-dark;
   }
 }

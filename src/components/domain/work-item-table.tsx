@@ -43,8 +43,8 @@ export function WorkItemTable({ items }: { items: WorkItem[] }) {
 
   return (
     <>
-      <div className="overflow-hidden rounded-xl border border-[#DCDFE4] bg-white">
-        <div className="flex items-center justify-between border-b border-[#EBECF0] px-4 py-3 text-sm text-[#626F86]">
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
+        <div className="flex items-center justify-between border-b border-border px-4 py-3 text-sm text-muted-foreground">
           <span>{selectedCount} selected</span>
           <Button size="sm" variant="outline">
             Open selected
@@ -89,9 +89,9 @@ export function WorkItemTable({ items }: { items: WorkItem[] }) {
                         aria-label={`Select ${item.id}`}
                       />
                     </TableCell>
-                    <TableCell className="font-mono text-xs font-semibold text-[#0C66E4]">{item.id}</TableCell>
+                    <TableCell className="font-mono text-xs font-semibold text-primary">{item.id}</TableCell>
                     <TableCell><Badge variant="secondary">{item.type}</Badge></TableCell>
-                    <TableCell className="font-medium text-[#172B4D]">{item.title}</TableCell>
+                    <TableCell className="font-medium text-foreground">{item.title}</TableCell>
                     <TableCell><StatusChip tone={item.state === "Closed" ? "success" : item.state === "Resolved" ? "info" : "neutral"}>{item.state}</StatusChip></TableCell>
                     <TableCell>{item.assignedTo}</TableCell>
                     <TableCell>

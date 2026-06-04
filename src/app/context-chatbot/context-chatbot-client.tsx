@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { AlertTriangle, BookOpen, Bot, Database, RefreshCw, Send, Trash2, UserRound } from "lucide-react";
+import { BookOpen, Bot, Database, RefreshCw, Send, Trash2, UserRound } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
+import { Callout } from "@/components/qa/callout";
 import { cn } from "@/lib/utils";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
@@ -247,10 +248,7 @@ export function ContextChatbotClient() {
       <ScrollArea className="min-h-0">
         <div className="space-y-4 p-4">
           {!scope ? (
-            <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
-              <AlertTriangle className="size-4 shrink-0" />
-              Select an Azure DevOps project before chatting.
-            </div>
+            <Callout tone="warning">Select an Azure DevOps project before chatting.</Callout>
           ) : null}
 
           {messages.map((message) => (
@@ -276,11 +274,7 @@ export function ContextChatbotClient() {
       </ScrollArea>
 
       <div className="border-t border-border p-3">
-        {error ? (
-          <div className="mb-3 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-200">
-            {error}
-          </div>
-        ) : null}
+        {error ? <Callout tone="error" className="mb-3">{error}</Callout> : null}
         <div className="flex items-end gap-2">
           <Textarea
             ref={textareaRef}
@@ -338,7 +332,7 @@ function ChatBubble({
           ) : (
             <MarkdownMessage content={message.content} />
           )}
-          <div className={cn("mt-2 text-[11px]", isUser ? "text-primary-foreground/75" : "text-muted-foreground")}>
+          <div className={cn("mt-2 text-xs", isUser ? "text-primary-foreground/75" : "text-muted-foreground")}>
             {formatTime(message.timestamp)}
           </div>
         </div>
@@ -404,7 +398,7 @@ function renderMarkdownBlocks(content: string) {
       if (index < lines.length) index += 1;
       blocks.push(
         <pre key={`code-${blocks.length}`} className="overflow-x-auto rounded-md bg-muted p-3 text-xs leading-5 text-muted-foreground">
-          {language ? <div className="mb-2 text-[11px] font-medium uppercase text-muted-foreground/70">{language}</div> : null}
+          {language ? <div className="mb-2 text-xs font-medium uppercase text-muted-foreground/70">{language}</div> : null}
           <code>{codeLines.join("\n")}</code>
         </pre>,
       );

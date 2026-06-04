@@ -9,6 +9,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { StatCard } from "@/components/qa/stat-card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
@@ -262,15 +263,15 @@ export function TestSuiteMigrationClient() {
   return (
     <div className="space-y-5">
       {!scope ? (
-        <Alert className="border-amber-500/40 bg-amber-500/10">
+        <Alert className="border-warning/40 bg-warning/15">
           <AlertTriangle className="size-4" />
           <AlertTitle>Select an Azure DevOps project</AlertTitle>
           <AlertDescription>The active project controls the source and target for this same-project migration.</AlertDescription>
         </Alert>
       ) : null}
 
-      <Alert className="border-blue-500/30 bg-blue-500/10">
-        <ShieldAlert className="size-4 text-blue-700" />
+      <Alert className="border-primary/30 bg-primary/10">
+        <ShieldAlert className="size-4 text-primary" />
         <AlertTitle className="justify-self-start text-left [justify-self:left]">Latest outcome migration</AlertTitle>
         <AlertDescription className="col-start-2 text-left">
           Azure DevOps native suite copy does not preserve execution outcomes. iTestFlow migrates the latest matching test point outcome and does not recreate historical runs.
@@ -278,8 +279,8 @@ export function TestSuiteMigrationClient() {
       </Alert>
 
       {operationMode === "move" ? (
-        <Alert className="border-red-500/30 bg-red-500/10">
-          <AlertTriangle className="size-4 text-red-700" />
+        <Alert className="border-destructive/30 bg-destructive/10">
+          <AlertTriangle className="size-4 text-destructive" />
           <AlertTitle>Move mode is destructive after validation</AlertTitle>
           <AlertDescription>Source root suites are removed only after target migration completes without critical failures.</AlertDescription>
         </Alert>
@@ -459,7 +460,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function SectionLabel({ icon: Icon, label }: { icon: typeof GitBranch; label: string }) {
   return (
     <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-      <Icon className="size-4 text-blue-700" />
+      <Icon className="size-4 text-primary" />
       {label}
     </div>
   );
@@ -601,7 +602,7 @@ function SuiteCheckboxTree({
               />
               <div className="min-w-0">
                 <div className="truncate text-sm font-medium">{node.name}</div>
-                <div className="mt-0.5 flex flex-wrap gap-1 text-[11px] text-muted-foreground">
+                <div className="mt-0.5 flex flex-wrap gap-1 text-xs text-muted-foreground">
                   <span>ID {node.id}</span>
                   {node.suiteType ? <span>{formatSuiteType(node.suiteType)}</span> : null}
                   {node.children.length ? <span>{node.children.length} child suites</span> : null}
@@ -793,12 +794,7 @@ function ReportPanel({ report }: { report: MigrationReport }) {
 }
 
 function Metric({ label, value, tone = "default" }: { label: string; value: number; tone?: "default" | "warning" }) {
-  return (
-    <div className="rounded-md border border-border bg-background p-3">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`mt-1 text-xl font-semibold ${tone === "warning" ? "text-amber-700" : "text-foreground"}`}>{value}</div>
-    </div>
-  );
+  return <StatCard label={label} value={value} tone={tone === "warning" ? "warning" : "neutral"} size="sm" />;
 }
 
 function OutcomeBreakdown({ breakdown }: { breakdown: Record<string, number> }) {
@@ -839,7 +835,7 @@ function IssueList({ title, items, emptyLabel, tone = "warning" }: { title: stri
         {items.length ? (
           <ul className="space-y-2">
             {items.map((item, index) => (
-              <li key={`${item}-${index}`} className={tone === "error" ? "text-red-700" : "text-amber-700"}>{item}</li>
+              <li key={`${item}-${index}`} className={tone === "error" ? "text-destructive" : "text-warning-foreground dark:text-warning"}>{item}</li>
             ))}
           </ul>
         ) : (
@@ -852,8 +848,8 @@ function IssueList({ title, items, emptyLabel, tone = "warning" }: { title: stri
 
 function ErrorBanner({ message }: { message: string }) {
   return (
-    <Alert className="border-red-500/30 bg-red-500/10">
-      <AlertTriangle className="size-4 text-red-700" />
+    <Alert className="border-destructive/30 bg-destructive/10">
+      <AlertTriangle className="size-4 text-destructive" />
       <AlertTitle>Request failed</AlertTitle>
       <AlertDescription>{message}</AlertDescription>
     </Alert>

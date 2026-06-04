@@ -66,9 +66,9 @@ export default function SettingsPage() {
       title="Settings"
       description="Configure local providers, active project, storage, prompts, scoring, and system behavior."
     >
-      <Alert className="border-[#0C66E4]/20 bg-[#E9F2FF]">
+      <Alert className="border-primary/20 bg-primary/10">
         <AlertTitle>Editable live runtime settings</AlertTitle>
-        <AlertDescription className="text-[#44546F]">
+        <AlertDescription className="text-muted-foreground">
           Values on this page load from `/api/settings/runtime` and save back through the same live runtime settings API. Re-enter secrets only when rotating credentials.
         </AlertDescription>
       </Alert>
@@ -78,7 +78,7 @@ export default function SettingsPage() {
           <CardHeader>
             <CardTitle className="text-base">Current runtime summary</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3 text-sm text-[#44546F]">
+          <CardContent className="space-y-3 text-sm text-muted-foreground">
             <p>Configured: {summary?.configured ? "Yes" : "No"}</p>
             <p>Saved at: {summary?.savedAt ?? "Not saved"}</p>
             <p>Azure DevOps org: {summary?.azureDevOps?.organizationUrl ?? "Not configured"}</p>
@@ -93,8 +93,8 @@ export default function SettingsPage() {
             <p>Auto update project: {summary?.context?.autoUpdate?.projectScope?.azureProjectName ?? "Not configured"}</p>
             <p>Auto update types: {formatList(summary?.context?.autoUpdate?.workItemTypes)}</p>
             <p>Auto update states: {formatList(summary?.context?.autoUpdate?.states)}</p>
-            <div className="border-t border-[#EBECF0] pt-3">
-              <p className="font-medium text-[#172B4D]">Latest auto update run</p>
+            <div className="border-t border-border pt-3">
+              <p className="font-medium text-foreground">Latest auto update run</p>
               <p>Status: {summary?.context?.autoUpdate?.latestRun?.status ?? "No runs yet"}</p>
               <p>Started: {formatDate(summary?.context?.autoUpdate?.latestRun?.startedAt)}</p>
               <p>Completed: {formatDate(summary?.context?.autoUpdate?.latestRun?.completedAt)}</p>
@@ -109,7 +109,7 @@ export default function SettingsPage() {
               <p>Run types: {formatList(summary?.context?.autoUpdate?.latestRun?.workItemTypes)}</p>
               <p>Run states: {formatList(summary?.context?.autoUpdate?.latestRun?.states)}</p>
               {summary?.context?.autoUpdate?.latestRun?.errorDetails ? (
-                <p className="text-red-700">Error: {summary.context.autoUpdate.latestRun.errorDetails}</p>
+                <p className="text-destructive">Error: {summary.context.autoUpdate.latestRun.errorDetails}</p>
               ) : null}
             </div>
           </CardContent>

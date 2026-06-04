@@ -74,6 +74,8 @@ const config: Config = {
       },
       boxShadow: {
         command: "none",
+        card: "0 10px 30px rgba(15,23,42,0.06)",
+        "card-dark": "0 18px 60px rgba(0,0,0,0.28)",
       },
     },
   },

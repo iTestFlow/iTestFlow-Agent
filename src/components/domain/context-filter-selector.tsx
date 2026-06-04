@@ -58,20 +58,20 @@ export function ContextFilterSelector({
   }
 
   return (
-    <div className="rounded-md border border-[#DCDFE4] bg-white p-3">
+    <div className="rounded-md border border-border bg-card p-3">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="text-sm font-semibold text-[#172B4D]">{title}</div>
-          <div className="mt-1 text-xs leading-5 text-[#626F86]">{description}</div>
+          <div className="text-sm font-semibold text-foreground">{title}</div>
+          <div className="mt-1 text-xs leading-5 text-muted-foreground">{description}</div>
         </div>
-        <div className="text-xs text-[#626F86]">{selectedValues.length} selected</div>
+        <div className="text-xs text-muted-foreground">{selectedValues.length} selected</div>
       </div>
 
       <div className={`mt-3 grid gap-2 ${optionGridClassName}`}>
         {options.map((option) => {
           const checked = hasFilterValue(selectedValues, option)
           return (
-            <Label key={option} className="flex min-h-9 items-center gap-3 rounded-md border border-[#DCDFE4] bg-white px-3 py-2 text-sm text-[#172B4D]">
+            <Label key={option} className="flex min-h-9 items-center gap-3 rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground">
               <Checkbox checked={checked} onCheckedChange={(next) => toggleValue(option, next === true)} />
               <span>{option}</span>
             </Label>
@@ -82,11 +82,11 @@ export function ContextFilterSelector({
       {selectedCustomValues.length ? (
         <div className="mt-3 flex flex-wrap gap-2">
           {selectedCustomValues.map((value) => (
-            <span key={value} className="inline-flex min-h-8 items-center gap-2 rounded-md border border-[#0C66E4]/25 bg-[#E9F2FF] px-2.5 py-1 text-xs font-medium text-[#0C66E4]">
+            <span key={value} className="inline-flex min-h-8 items-center gap-2 rounded-md border border-primary/25 bg-accent px-2.5 py-1 text-xs font-medium text-primary">
               {value}
               <button
                 type="button"
-                className="rounded-sm p-0.5 text-[#0C66E4] hover:bg-white/70"
+                className="rounded-sm p-0.5 text-primary hover:bg-card/70"
                 onClick={() => toggleValue(value, false)}
                 title={`Remove ${value}`}
               >
@@ -99,7 +99,7 @@ export function ContextFilterSelector({
 
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
         <Input
-          className="h-10 border-[#DCDFE4] bg-white text-[#172B4D]"
+          className="h-10 border-border bg-card text-foreground"
           value={customValue}
           onChange={(event) => {
             setCustomValue(event.target.value)
@@ -116,14 +116,14 @@ export function ContextFilterSelector({
         <Button
           type="button"
           variant="outline"
-          className="h-10 shrink-0 border-[#DCDFE4] bg-white px-3 text-[#172B4D] hover:bg-[#F7F8F9]"
+          className="h-10 shrink-0 border-border bg-card px-3 text-foreground hover:bg-muted"
           onClick={addCustomValue}
         >
           <Plus className="size-4" />
           Add
         </Button>
       </div>
-      {customError ? <div className="mt-2 text-xs text-red-700">{customError}</div> : null}
+      {customError ? <div className="mt-2 text-xs text-destructive">{customError}</div> : null}
     </div>
   )
 }

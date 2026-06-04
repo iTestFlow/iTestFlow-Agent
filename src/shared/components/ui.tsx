@@ -91,13 +91,13 @@ export function Badge({
   className?: string;
 }) {
   const tones = {
-    blue: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
-    cyan: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
-    emerald: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-    amber: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-    red: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
-    orange: "border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-300",
-    violet: "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+    blue: "border-primary/30 bg-primary/10 text-primary dark:text-primary",
+    cyan: "border-info/30 bg-info/10 text-info dark:text-info",
+    emerald: "border-success/30 bg-success/10 text-success dark:text-success",
+    amber: "border-warning/40 bg-warning/15 text-warning-foreground dark:text-warning",
+    red: "border-destructive/30 bg-destructive/10 text-destructive dark:text-destructive",
+    orange: "border-warning/40 bg-warning/15 text-warning-foreground dark:text-warning",
+    violet: "border-[hsl(var(--chart-3)/0.3)] bg-[hsl(var(--chart-3)/0.12)] text-[hsl(var(--chart-3))] dark:text-[hsl(var(--chart-3))]",
     slate: "border-border bg-secondary text-secondary-foreground",
   };
 
@@ -122,13 +122,13 @@ export function MetricCard({
   tone?: "blue" | "cyan" | "emerald" | "amber" | "red" | "orange" | "violet";
 }) {
   const color = {
-    blue: "text-blue-700 bg-blue-500/10 border-blue-500/30 dark:text-blue-300",
-    cyan: "text-cyan-700 bg-cyan-500/10 border-cyan-500/30 dark:text-cyan-300",
-    emerald: "text-emerald-700 bg-emerald-500/10 border-emerald-500/30 dark:text-emerald-300",
-    amber: "text-amber-700 bg-amber-500/10 border-amber-500/30 dark:text-amber-300",
-    red: "text-red-700 bg-red-500/10 border-red-500/30 dark:text-red-300",
-    orange: "text-orange-700 bg-orange-500/10 border-orange-500/30 dark:text-orange-300",
-    violet: "text-violet-700 bg-violet-500/10 border-violet-500/30 dark:text-violet-300",
+    blue: "text-primary bg-primary/10 border-primary/30 dark:text-primary",
+    cyan: "text-info bg-info/10 border-info/30 dark:text-info",
+    emerald: "text-success bg-success/10 border-success/30 dark:text-success",
+    amber: "text-warning-foreground bg-warning/15 border-warning/40 dark:text-warning",
+    red: "text-destructive bg-destructive/10 border-destructive/30 dark:text-destructive",
+    orange: "text-warning-foreground bg-warning/15 border-warning/40 dark:text-warning",
+    violet: "text-[hsl(var(--chart-3))] bg-[hsl(var(--chart-3)/0.12)] border-[hsl(var(--chart-3)/0.3)] dark:text-[hsl(var(--chart-3))]",
   }[tone];
 
   return (

@@ -12,6 +12,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
+import { Callout } from "@/components/qa/callout";
+import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
+import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
+import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
 type WorkflowMode = "auto" | "manual";
@@ -600,7 +604,7 @@ export function BugCreateClient() {
             <CardTitle className="text-base">Describe Bug</CardTitle>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">Capture the defect, parent story, Azure fields, assignee, and evidence.</p>
           </div>
-          <ModeTabs mode={mode} onChange={setMode} />
+          <GenerationModeToggle mode={mode} onChange={setMode} />
         </CardHeader>
         <CardContent className="space-y-5 pt-5">
           {metadata.error ? <ErrorBlock message={metadata.error} /> : null}
@@ -623,7 +627,15 @@ export function BugCreateClient() {
                 placeholder="e.g. 123456"
               />
             </Field>
-            <ParentStoryPanel story={parentStory} loading={parentState.loading} error={parentState.error} />
+            <WorkItemSummaryCard
+              story={parentStory}
+              loading={parentState.loading}
+              error={parentState.error}
+              valid={parentStory?.workItemType === "User Story"}
+              invalidNote="Parent link requires a User Story."
+              emptyText="No parent story loaded."
+              loadingText="Loading parent story..."
+            />
           </div>
 
           <RelatedTestCasePanel
@@ -731,14 +743,27 @@ export function BugCreateClient() {
       </Card>
 
       {mode === "manual" ? (
-        <ManualLLMPanel
-          draft={manualDraft.data}
-          response={manualResponse}
-          onResponseChange={setManualResponse}
-          onSubmit={submitManualResponse}
-          submitting={manualSubmitLoading}
-          error={manualDraft.error ?? manualSubmitError}
-        />
+        <div className="space-y-4">
+          {(manualDraft.error ?? manualSubmitError) ? (
+            <Callout tone="error">{manualDraft.error ?? manualSubmitError}</Callout>
+          ) : null}
+          {manualDraft.data ? (
+            <ManualLLMPanel
+              prompt={manualDraft.data.prompt}
+              promptVersion={manualDraft.data.promptVersion}
+              response={manualResponse}
+              onResponseChange={setManualResponse}
+              onSubmit={submitManualResponse}
+              submitting={manualSubmitLoading}
+              submitLabel="Validate and Continue"
+              submittingLabel="Validating..."
+              responseLabel="External LLM response"
+              responsePlaceholder="Paste the JSON response here."
+              promptMinHeightClass="min-h-[320px]"
+              responseMinHeightClass="min-h-[240px]"
+            />
+          ) : null}
+        </div>
       ) : null}
 
       {generateState.error ? <ErrorBlock message={generateState.error} /> : null}
@@ -825,24 +850,6 @@ export function BugCreateClient() {
       ) : (
         <EmptyBlock message="No bug report draft yet. Generate one from the description to review it here." />
       )}
-    </div>
-  );
-}
-
-function ModeTabs({ mode, onChange }: { mode: WorkflowMode; onChange: (mode: WorkflowMode) => void }) {
-  const itemClass = (value: WorkflowMode) =>
-    `h-8 rounded-md px-3 text-sm font-medium transition ${
-      mode === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"
-    }`;
-
-  return (
-    <div role="tablist" aria-label="LLM execution mode" className="inline-flex rounded-lg border border-input bg-background p-1">
-      <button type="button" role="tab" aria-selected={mode === "auto"} className={itemClass("auto")} onClick={() => onChange("auto")}>
-        Auto Generate
-      </button>
-      <button type="button" role="tab" aria-selected={mode === "manual"} className={itemClass("manual")} onClick={() => onChange("manual")}>
-        External LLM
-      </button>
     </div>
   );
 }
@@ -999,28 +1006,6 @@ function SuggestionSelect({
   );
 }
 
-function ParentStoryPanel({ story, loading, error }: { story: WorkItem | null; loading: boolean; error: string | null }) {
-  if (loading) return <InfoBlock message="Loading parent story..." />;
-  if (error) return <ErrorBlock message={error} />;
-  if (!story) return <InfoBlock message="No parent story loaded." />;
-
-  const valid = story.workItemType === "User Story";
-  return (
-    <div className={`rounded-md border p-3 text-sm ${valid ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-semibold">#{story.id}</span>
-        <Badge variant={valid ? "default" : "secondary"}>{story.workItemType}</Badge>
-        {!valid ? <span className="text-xs font-medium">Parent link requires a User Story.</span> : null}
-      </div>
-      <div className="mt-2 font-medium">{story.title}</div>
-      <div className="mt-2 grid gap-1 text-xs">
-        {story.areaPath ? <span>Area: {story.areaPath}</span> : null}
-        {story.iterationPath ? <span>Iteration: {story.iterationPath}</span> : null}
-      </div>
-    </div>
-  );
-}
-
 function RelatedTestCasePanel({
   parentStory,
   linkedTestCases,
@@ -1164,14 +1149,14 @@ function TestCasePicker({
 
 function SelectedTestCasePreview({ testCase }: { testCase: LinkedTestCase }) {
   return (
-    <div className="grid gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+    <div className="grid gap-2 rounded-md border border-success/30 bg-success/10 p-3 text-sm text-foreground">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-xs font-semibold">#{testCaseId(testCase)}</span>
         <Badge variant="secondary">{testCase.testType ?? "Test Case"}</Badge>
         {testCase.priority ? <Badge variant="outline">Priority {testCase.priority}</Badge> : null}
       </div>
       <div className="font-medium">{testCase.title}</div>
-      <div className="text-xs text-emerald-800">
+      <div className="text-xs text-success">
         This existing story test case is selected as the related reproduction case.
       </div>
     </div>
@@ -1200,21 +1185,21 @@ function SuggestedReproductionTestCasePanel({
   onPublish: () => void;
 }) {
   return (
-    <div className="overflow-hidden rounded-md border border-blue-100 bg-white shadow-sm">
-      <div className="flex flex-col gap-2 border-b border-blue-100 bg-white p-4 sm:flex-row sm:items-start sm:justify-between">
+    <div className="overflow-hidden rounded-md border border-border bg-card shadow-sm">
+      <div className="flex flex-col gap-2 border-b border-border bg-card p-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <div className="text-sm font-semibold text-slate-950">Suggested Reproduction Test Case</div>
+          <div className="text-sm font-semibold text-foreground">Suggested Reproduction Test Case</div>
           <div className="mt-1 text-xs leading-5 text-muted-foreground">Edit the generated regression case after reviewing the bug draft, then create and link it after the bug is posted.</div>
         </div>
       </div>
 
-      <div className="space-y-4 bg-white p-4">
+      <div className="space-y-4 bg-card p-4">
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_170px]">
-          <Input className="bg-white" value={testCase.title} onChange={(event) => onChange({ title: event.target.value })} aria-label="Suggested test case title" />
+          <Input className="bg-card" value={testCase.title} onChange={(event) => onChange({ title: event.target.value })} aria-label="Suggested test case title" />
           <select
             value={String(testCase.priority)}
             onChange={(event) => onChange({ priority: Number(event.target.value) as GeneratedTestCase["priority"] })}
-            className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm"
+            className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
             aria-label="Suggested test case priority"
           >
             <option value="1">1 - Highest</option>
@@ -1224,18 +1209,18 @@ function SuggestedReproductionTestCasePanel({
           </select>
         </div>
 
-        <div className="overflow-hidden rounded-md border border-blue-100 bg-white">
-          <div className="grid grid-cols-[48px_minmax(0,1fr)_minmax(0,1fr)_42px] gap-2 border-b border-blue-100 bg-blue-50/60 px-3 py-2 text-xs font-semibold text-slate-600">
+        <div className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="grid grid-cols-[48px_minmax(0,1fr)_minmax(0,1fr)_42px] gap-2 border-b border-border bg-muted px-3 py-2 text-xs font-semibold text-muted-foreground">
             <span>#</span>
             <span>Action</span>
             <span>Expected result</span>
             <span />
           </div>
           {testCase.steps.map((step, index) => (
-            <div key={index} className="grid gap-2 border-b border-blue-50 bg-white p-3 last:border-b-0 lg:grid-cols-[48px_minmax(0,1fr)_minmax(0,1fr)_42px]">
+            <div key={index} className="grid gap-2 border-b border-border bg-card p-3 last:border-b-0 lg:grid-cols-[48px_minmax(0,1fr)_minmax(0,1fr)_42px]">
               <span className="pt-2 font-mono text-xs text-muted-foreground">{index + 1}</span>
-              <Textarea className="bg-white" value={step.action} onChange={(event) => onStepChange(index, { action: event.target.value })} placeholder="Action" />
-              <Textarea className="bg-white" value={step.expectedResult} onChange={(event) => onStepChange(index, { expectedResult: event.target.value })} placeholder="Expected result" />
+              <Textarea className="bg-card" value={step.action} onChange={(event) => onStepChange(index, { action: event.target.value })} placeholder="Action" />
+              <Textarea className="bg-card" value={step.expectedResult} onChange={(event) => onStepChange(index, { expectedResult: event.target.value })} placeholder="Expected result" />
               <Button
                 type="button"
                 variant="ghost"
@@ -1261,7 +1246,7 @@ function SuggestedReproductionTestCasePanel({
           </Button>
         </div>
 
-        <div className="grid gap-3 rounded-md border border-blue-100 bg-blue-50/50 p-3">
+        <div className="grid gap-3 rounded-md border border-border bg-muted/40 p-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm leading-6 text-muted-foreground">
               {bugId
@@ -1283,7 +1268,7 @@ function SuggestedReproductionTestCasePanel({
 
 function ReproductionPublishSummary({ result }: { result: ReproductionPublishResult }) {
   return (
-    <div className={`rounded-md border p-3 text-sm ${result.success ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
+    <div className={`rounded-md border p-3 text-sm ${result.success ? "border-success/30 bg-success/10 text-foreground" : "border-warning/40 bg-warning/15 text-foreground"}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="font-semibold">
           {result.success ? "Reproduction test case linked" : "Reproduction test case partially linked"}
@@ -1440,91 +1425,21 @@ function CustomFieldValueInput({ row, field, onChange }: { row: CustomFieldRow; 
   );
 }
 
-function ManualLLMPanel({
-  draft,
-  response,
-  onResponseChange,
-  onSubmit,
-  submitting,
-  error,
-}: {
-  draft: ManualPromptDraft | null;
-  response: string;
-  onResponseChange: (value: string) => void;
-  onSubmit: () => void;
-  submitting: boolean;
-  error?: string | null;
-}) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timeoutId = window.setTimeout(() => setCopied(false), 3000);
-    return () => window.clearTimeout(timeoutId);
-  }, [copied]);
-
-  if (!draft && !error) return null;
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">External LLM Prompt</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4 pt-5">
-        {error ? <ErrorBlock message={error} /> : null}
-        {draft ? (
-          <>
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-sm font-semibold">Prompt {draft.promptVersion}</span>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={copied}
-                onClick={() => {
-                  void navigator.clipboard.writeText(draft.prompt);
-                  setCopied(true);
-                }}
-              >
-                <Copy className="size-4" />
-                {copied ? "Copied" : "Copy Prompt"}
-              </Button>
-            </div>
-            <Textarea value={draft.prompt} readOnly className="min-h-[320px] font-mono text-xs" aria-label="External LLM prompt" />
-            <Field label="External LLM response">
-              <Textarea
-                value={response}
-                onChange={(event) => onResponseChange(event.target.value)}
-                className="min-h-[240px] font-mono text-xs"
-                placeholder="Paste the JSON response here."
-              />
-            </Field>
-            <div className="flex justify-end">
-              <Button type="button" onClick={onSubmit} disabled={!response.trim() || submitting}>
-                {submitting ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                {submitting ? "Validating..." : "Validate and Continue"}
-              </Button>
-            </div>
-          </>
-        ) : null}
-      </CardContent>
-    </Card>
-  );
-}
-
 function PostSuccess({ result }: { result: PostBugResult }) {
   const failedAttachments = result.attachmentResults.filter((attachment) => !attachment.success);
   return (
     <div className="space-y-3">
-      <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+      <div className="rounded-md border border-success/30 bg-success/10 p-4 text-sm text-foreground">
         <div className="flex items-center gap-2 font-semibold">
           <CheckCircle2 className="size-4" />
           Bug {result.bugId} created
         </div>
-        <a href={result.webUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block font-medium text-emerald-800 underline">
+        <a href={result.webUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block font-medium text-success underline">
           View in Azure DevOps
         </a>
       </div>
       {failedAttachments.length ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+        <div className="rounded-md border border-warning/40 bg-warning/15 p-4 text-sm text-foreground">
           <div className="flex items-center gap-2 font-semibold">
             <AlertTriangle className="size-4" />
             Some attachments were not added
@@ -1542,25 +1457,14 @@ function PostSuccess({ result }: { result: PostBugResult }) {
 
 function ErrorBlock({ message }: { message: string }) {
   return (
-    <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-900">
-      <div className="flex items-center gap-2 font-semibold text-red-800">
-        <AlertTriangle className="size-4 shrink-0" />
-        Action failed
-      </div>
-      <p className="mt-2 break-words text-red-800">{message}</p>
-    </div>
+    <Callout tone="error" title="Action failed">
+      <span className="break-words">{message}</span>
+    </Callout>
   );
 }
 
 function WarningBlock({ message }: { message: string }) {
-  return (
-    <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-      <div className="flex items-center gap-2">
-        <AlertTriangle className="size-4" />
-        {message}
-      </div>
-    </div>
-  );
+  return <Callout tone="warning">{message}</Callout>;
 }
 
 function InfoBlock({ message }: { message: string }) {

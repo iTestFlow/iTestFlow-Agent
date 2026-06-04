@@ -51,20 +51,20 @@ export function ContextStorySelector({
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <Badge variant="outline">Selected story</Badge>
-          <h2 className="text-lg font-semibold text-[#172B4D]">Azure DevOps work item</h2>
-          <p className="leading-6 text-[#44546F]">
+          <h2 className="text-lg font-semibold text-foreground">Azure DevOps work item</h2>
+          <p className="leading-6 text-muted-foreground">
             Select a real Azure DevOps work item and context set before running analysis or generation.
           </p>
-          <div className="rounded-lg border border-[#EBECF0] bg-[#F7F8FA] p-3 text-xs text-[#626F86]">
+          <div className="rounded-lg border border-border bg-muted p-3 text-xs text-muted-foreground">
             TODO: Replace placeholder target story copy with selected Azure DevOps work item state.
           </div>
         </CardContent>
       </Card>
 
       <Card className="qa-card overflow-hidden">
-        <div className="flex flex-col gap-3 border-b border-[#EBECF0] p-4 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-3 border-b border-border p-4 md:flex-row md:items-center md:justify-between">
           <div className="relative md:w-80">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-[#626F86]" />
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search suggested stories" className="h-8 pl-8" />
           </div>
           <div className="flex flex-wrap gap-2">
@@ -104,12 +104,12 @@ export function ContextStorySelector({
                         aria-label={`Select ${suggestion.workItemId}`}
                       />
                     </TableCell>
-                    <TableCell className="font-mono text-xs font-semibold text-[#0C66E4]">{suggestion.workItemId}</TableCell>
-                    <TableCell className="font-medium text-[#172B4D]">{suggestion.title}</TableCell>
+                    <TableCell className="font-mono text-xs font-semibold text-primary">{suggestion.workItemId}</TableCell>
+                    <TableCell className="font-medium text-foreground">{suggestion.title}</TableCell>
                     <TableCell><Badge variant="secondary">{suggestion.type}</Badge></TableCell>
                     <TableCell><Badge variant="outline">{suggestion.relationship}</Badge></TableCell>
                     <TableCell>{suggestion.relevance}%</TableCell>
-                    <TableCell className="text-[#44546F]">{suggestion.reason}</TableCell>
+                    <TableCell className="text-muted-foreground">{suggestion.reason}</TableCell>
                     <TableCell className="text-right">
                       <Button size="icon-sm" variant="ghost" onClick={() => setPreview(suggestion)} aria-label={`Preview ${suggestion.workItemId}`}>
                         <Eye className="size-4" />
@@ -129,12 +129,12 @@ export function ContextStorySelector({
           <CardHeader>
             <CardTitle className="text-base">Context summary</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3 text-sm text-[#44546F]">
+          <CardContent className="space-y-3 text-sm text-muted-foreground">
             <p>{selected.length} stories selected for this run.</p>
             <ul className="space-y-2">
               {selected.map((item) => (
-                <li key={item.id} className="rounded-lg border border-[#EBECF0] p-2">
-                  <span className="font-mono text-xs text-[#0C66E4]">{item.workItemId}</span> {item.title}
+                <li key={item.id} className="rounded-lg border border-border p-2">
+                  <span className="font-mono text-xs text-primary">{item.workItemId}</span> {item.title}
                 </li>
               ))}
             </ul>
@@ -148,9 +148,9 @@ export function ContextStorySelector({
           <SheetHeader>
             <SheetTitle>{preview?.workItemId} - {preview?.title}</SheetTitle>
           </SheetHeader>
-          <div className="space-y-4 p-4 text-sm leading-6 text-[#44546F]">
+          <div className="space-y-4 p-4 text-sm leading-6 text-muted-foreground">
             <p>{preview?.reason}</p>
-            <div className="rounded-lg border border-[#EBECF0] bg-[#F7F8FA] p-3">
+            <div className="rounded-lg border border-border bg-muted p-3">
               TODO: Load full Azure DevOps story body, comments, and links for preview.
             </div>
           </div>

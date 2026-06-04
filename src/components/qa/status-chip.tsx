@@ -2,16 +2,17 @@ import { CheckCircle2, CircleDashed, Loader2, TriangleAlert } from "lucide-react
 
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
+import { toneClass, type Tone } from "@/components/qa/tone"
 
 type StatusTone = "success" | "warning" | "error" | "info" | "neutral" | "draft"
 
-const toneClasses: Record<StatusTone, string> = {
-  success: "border-[#22A06B]/30 bg-[#E9F8F1] text-[#216E4E]",
-  warning: "border-[#F5CD47]/60 bg-[#FFF7D6] text-[#7F5F01]",
-  error: "border-[#E34935]/30 bg-[#FFECEB] text-[#AE2E24]",
-  info: "border-[#0C66E4]/30 bg-[#E9F2FF] text-[#0052CC]",
-  neutral: "border-[#DCDFE4] bg-white text-[#44546F]",
-  draft: "border-[#6554C0]/30 bg-[#F3F0FF] text-[#6554C0]",
+const statusToneMap: Record<StatusTone, Tone> = {
+  success: "success",
+  warning: "warning",
+  error: "error",
+  info: "info",
+  neutral: "neutral",
+  draft: "draft",
 }
 
 const icons = {
@@ -37,7 +38,7 @@ export function StatusChip({
   return (
     <Badge
       variant="outline"
-      className={cn("gap-1.5 rounded-full border px-2.5", toneClasses[tone], className)}
+      className={cn("gap-1.5 rounded-full border px-2.5", toneClass[statusToneMap[tone]], className)}
     >
       {tone === "info" && children === "Syncing" ? (
         <Loader2 className="size-3 animate-spin" aria-hidden="true" />
@@ -48,4 +49,3 @@ export function StatusChip({
     </Badge>
   )
 }
-

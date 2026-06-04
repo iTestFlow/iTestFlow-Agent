@@ -836,23 +836,23 @@ export function ProjectContextClient() {
   return (
     <div className="space-y-4">
       {!scope ? (
-        <div className="flex items-center gap-2 rounded-md border border-[#F5CD47]/60 bg-[#FFF7D6] p-3 text-sm text-[#7F5F01]">
+        <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/15 p-3 text-sm text-warning-foreground dark:text-warning">
           <AlertTriangle className="size-4" />
           Select an Azure DevOps project before building project knowledge.
         </div>
       ) : null}
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TopTab)} className="flex-col gap-4">
-        <TabsList className="grid h-auto w-full grid-cols-2 rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-1 sm:inline-grid sm:w-fit sm:min-w-[460px]">
+        <TabsList className="grid h-auto w-full grid-cols-2 rounded-md border border-border bg-muted p-1 sm:inline-grid sm:w-fit sm:min-w-[460px]">
           <TabsTrigger
             value="hub"
-            className="h-10 px-3 py-2 transition-all duration-200 data-active:bg-[#0C66E4] data-active:text-white data-active:shadow-sm data-[state=active]:bg-[#0C66E4] data-[state=active]:text-white data-[state=active]:shadow-sm"
+            className="h-10 px-3 py-2 transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
           >
             Knowledge Hub
           </TabsTrigger>
           <TabsTrigger
             value="build"
-            className="h-10 px-3 py-2 transition-all duration-200 data-active:bg-[#0C66E4] data-active:text-white data-active:shadow-sm data-[state=active]:bg-[#0C66E4] data-[state=active]:text-white data-[state=active]:shadow-sm"
+            className="h-10 px-3 py-2 transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
           >
             Build Knowledge
           </TabsTrigger>
@@ -880,7 +880,7 @@ export function ProjectContextClient() {
           />
 
           {knowledgeError ? (
-            <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
               {knowledgeError}
             </div>
           ) : null}
@@ -891,11 +891,11 @@ export function ProjectContextClient() {
             </CardHeader>
             <CardContent>
               {knowledgeStatusLoading ? (
-                <div className="text-sm text-[#626F86]">Loading saved knowledge base...</div>
+                <div className="text-sm text-muted-foreground">Loading saved knowledge base...</div>
               ) : knowledgeSnapshot ? (
                 <KnowledgeExplorer knowledgeBase={knowledgeSnapshot.knowledgeBase} />
               ) : (
-                <div className="rounded-md border border-[#DCDFE4] bg-white p-6 text-sm text-[#626F86]">
+                <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
                   No knowledge base has been saved yet. Use Build Knowledge to compile source-backed project knowledge.
                 </div>
               )}
@@ -930,16 +930,16 @@ export function ProjectContextClient() {
             </CardHeader>
             <CardContent className="space-y-4">
               <Tabs value={buildMode} onValueChange={(value) => changeBuildMode(value as BuildMode)} className="flex-col gap-4">
-                <TabsList className="h-auto w-fit rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-1">
+                <TabsList className="h-auto w-fit rounded-md border border-border bg-muted p-1">
                   <TabsTrigger
                     value="auto"
-                    className="h-9 px-3 transition-all duration-200 data-active:bg-[#0C66E4] data-active:text-white data-active:shadow-sm data-[state=active]:bg-[#0C66E4] data-[state=active]:text-white data-[state=active]:shadow-sm"
+                    className="h-9 px-3 transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
                   >
                     Auto Generate
                   </TabsTrigger>
                   <TabsTrigger
                     value="manual"
-                    className="h-9 px-3 transition-all duration-200 data-active:bg-[#0C66E4] data-active:text-white data-active:shadow-sm data-[state=active]:bg-[#0C66E4] data-[state=active]:text-white data-[state=active]:shadow-sm"
+                    className="h-9 px-3 transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
                   >
                     External LLM
                   </TabsTrigger>
@@ -948,7 +948,7 @@ export function ProjectContextClient() {
                 <BuildStepper step={buildStep} />
 
                 {buildError ? (
-                  <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700">
+                  <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
                     {buildError}
                   </div>
                 ) : null}
@@ -1155,8 +1155,8 @@ function HubSummary({
           <MetricPanel label="Active source work items" value={activeSourceCount} />
           <MetricPanel label="Knowledge base items" value={loading ? "-" : totalKnowledgeItems} />
         </div>
-        <div className="text-sm text-[#44546F]">
-          <div><span className="font-semibold text-[#172B4D]">Last extracted:</span> {formatDate(snapshot?.extractedAt)}</div>
+        <div className="text-sm text-muted-foreground">
+          <div><span className="font-semibold text-foreground">Last extracted:</span> {formatDate(snapshot?.extractedAt)}</div>
         </div>
       </CardContent>
     </Card>
@@ -1165,9 +1165,9 @@ function HubSummary({
 
 function MetricPanel({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="rounded-md border border-[#DCDFE4] bg-white p-3">
-      <div className="text-xs text-[#626F86]">{label}</div>
-      <div className="mt-1 text-xl font-semibold text-[#172B4D]">{value}</div>
+    <div className="rounded-md border border-border bg-card p-3">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 text-xl font-semibold text-foreground">{value}</div>
     </div>
   )
 }
@@ -1181,7 +1181,7 @@ function BuildStepper({ step }: { step: BuildStep }) {
   const activeIndex = steps.findIndex((item) => item.key === step)
 
   return (
-    <div className="grid gap-2 rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-3 lg:grid-cols-3">
+    <div className="grid gap-2 rounded-md border border-border bg-muted p-3 lg:grid-cols-3">
       {steps.map((item, index) => {
         const done = index < activeIndex
         const active = item.key === step
@@ -1190,10 +1190,10 @@ function BuildStepper({ step }: { step: BuildStep }) {
             key={item.key}
             className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${
               active
-                ? "border-[#0C66E4] bg-[#E9F2FF] text-[#0C66E4]"
+                ? "border-primary bg-accent text-primary"
                 : done
-                  ? "border-[#BAF3DB] bg-[#E3FCEF] text-[#216E4E]"
-                  : "border-[#DCDFE4] bg-white text-[#44546F]"
+                  ? "border-success/30 bg-success/10 text-success"
+                  : "border-border bg-card text-muted-foreground"
             }`}
           >
             {done ? <CheckCircle2 className="size-4" /> : <span className="font-mono text-xs">{index + 1}</span>}
@@ -1223,7 +1223,7 @@ function IndexLoadPanel({
   onLoad: () => void
 }) {
   return (
-    <div className="space-y-4 rounded-md border border-[#DCDFE4] bg-white p-4">
+    <div className="space-y-4 rounded-md border border-border bg-card p-4">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 flex-1 space-y-4">
           <ContextFilterSelector
@@ -1247,8 +1247,8 @@ function IndexLoadPanel({
             onChange={onStatesChange}
           />
         </div>
-        <div className="rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-3 lg:w-[360px]">
-          <div className="mb-3 text-xs leading-5 text-[#626F86]">
+        <div className="rounded-md border border-border bg-muted p-3 lg:w-[360px]">
+          <div className="mb-3 text-xs leading-5 text-muted-foreground">
             This step syncs the selected source work items and refreshes the retrieval index used by knowledge preparation.
           </div>
           <Button className="h-11 w-full justify-center" onClick={onLoad} disabled={!canLoad}>
@@ -1277,17 +1277,17 @@ function KnowledgePreparePanel({
   actionLabel: string
 }) {
   return (
-    <div className="space-y-4 rounded-md border border-[#DCDFE4] bg-white p-4">
+    <div className="space-y-4 rounded-md border border-border bg-card p-4">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 flex-1">
-          <Label className="text-sm font-semibold text-[#172B4D]">Compile mode</Label>
-          <div className="mt-2 grid gap-2 rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-1 sm:grid-cols-2">
+          <Label className="text-sm font-semibold text-foreground">Compile mode</Label>
+          <div className="mt-2 grid gap-2 rounded-md border border-border bg-muted p-1 sm:grid-cols-2">
             <button
               type="button"
               className={`rounded-md border px-3 py-2 text-sm font-semibold transition-all duration-200 ${
                 compileMode === "incremental"
-                  ? "border-[#0C66E4] bg-[#E9F2FF] text-[#0C66E4] shadow-sm"
-                  : "border-transparent bg-white text-[#172B4D] hover:border-[#B3D4FF] hover:bg-[#F4F8FF]"
+                  ? "border-primary bg-accent text-primary shadow-sm"
+                  : "border-transparent bg-card text-foreground hover:border-primary/40 hover:bg-accent"
               }`}
               onClick={() => onCompileModeChange("incremental")}
             >
@@ -1297,20 +1297,20 @@ function KnowledgePreparePanel({
               type="button"
               className={`rounded-md border px-3 py-2 text-sm font-semibold transition-all duration-200 ${
                 compileMode === "full"
-                  ? "border-[#0C66E4] bg-[#E9F2FF] text-[#0C66E4] shadow-sm"
-                  : "border-transparent bg-white text-[#172B4D] hover:border-[#B3D4FF] hover:bg-[#F4F8FF]"
+                  ? "border-primary bg-accent text-primary shadow-sm"
+                  : "border-transparent bg-card text-foreground hover:border-primary/40 hover:bg-accent"
               }`}
               onClick={() => onCompileModeChange("full")}
             >
               Full recompile
             </button>
           </div>
-          <div className="mt-2 text-xs leading-5 text-[#626F86]">
+          <div className="mt-2 text-xs leading-5 text-muted-foreground">
             Prepare the knowledge preview from the project index loaded in step 1.
           </div>
         </div>
-        <div className="rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-3 lg:w-[360px]">
-          <div className="mb-3 text-xs leading-5 text-[#626F86]">
+        <div className="rounded-md border border-border bg-muted p-3 lg:w-[360px]">
+          <div className="mb-3 text-xs leading-5 text-muted-foreground">
             Review the compile mode, then prepare the next knowledge preview.
           </div>
           <Button className="h-11 w-full justify-center" onClick={onPrepare} disabled={!canPrepare}>
@@ -1336,7 +1336,7 @@ function GeneratedPreviewPanel({
 
   if (draft.alreadyCurrent) {
     return (
-      <div className="rounded-md border border-[#BAF3DB] bg-[#E3FCEF] p-4 text-sm text-[#216E4E]">
+      <div className="rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success">
         <div className="font-semibold">No Knowledge Changes Needed</div>
         <div className="mt-1">
           The current incremental baseline has no changed work items, so there is no generated preview to save.
@@ -1346,11 +1346,11 @@ function GeneratedPreviewPanel({
   }
 
   return (
-    <div className="space-y-4 rounded-md border border-[#DCDFE4] bg-white p-4">
+    <div className="space-y-4 rounded-md border border-border bg-card p-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <div className="text-sm font-semibold text-[#172B4D]">Generated Knowledge Preview</div>
-          <div className="text-xs text-[#626F86]">
+          <div className="text-sm font-semibold text-foreground">Generated Knowledge Preview</div>
+          <div className="text-xs text-muted-foreground">
             {totalItems} entries from {draft.sourceWorkItemCount} active source work items.
             {draft.mode === "incremental"
               ? ` ${draft.changedSourceWorkItemCount} changed, ${draft.retiredSourceWorkItemCount} retired.`
@@ -1360,12 +1360,12 @@ function GeneratedPreviewPanel({
         <Badge variant="outline">Prompt {draft.promptVersion}</Badge>
       </div>
       {draft.fallbackReason ? (
-        <div className="rounded-md border border-[#F5CD47]/60 bg-[#FFF7D6] p-3 text-xs text-[#7F5F01]">
+        <div className="rounded-md border border-warning/40 bg-warning/15 p-3 text-xs text-warning-foreground dark:text-warning">
           {draft.fallbackReason}
         </div>
       ) : null}
       <KnowledgeExplorer knowledgeBase={draft.knowledgeBase} compact />
-      <div className="flex justify-end gap-2 border-t border-[#EBECF0] pt-3">
+      <div className="flex justify-end gap-2 border-t border-border pt-3">
         <Button onClick={onSave} disabled={saving}>
           {saving ? <RefreshCw className="size-4 animate-spin" /> : <Save className="size-4" />}
           {saving ? "Saving..." : "Save Knowledge Base"}
@@ -1423,8 +1423,8 @@ function ExternalPromptPanel({
       <div
         className={`rounded-md border p-4 text-sm ${
           hasRetiredOnlyUpdate
-            ? "border-[#F5CD47]/60 bg-[#FFF7D6] text-[#7F5F01]"
-            : "border-[#BAF3DB] bg-[#E3FCEF] text-[#216E4E]"
+            ? "border-warning/40 bg-warning/15 text-warning-foreground dark:text-warning"
+            : "border-success/30 bg-success/10 text-success"
         }`}
       >
         <div className="font-semibold">
@@ -1445,13 +1445,13 @@ function ExternalPromptPanel({
   return (
     <div className="space-y-4">
       {showPrompt ? (
-      <div className="rounded-md border border-[#DCDFE4] bg-white p-4 text-sm text-[#44546F]">
+      <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <div className="font-semibold text-[#172B4D]">
+            <div className="font-semibold text-foreground">
               {draft.mode === "incremental" ? "Compile Knowledge Prompt" : "Full Recompile Prompt"}
             </div>
-            <div className="text-xs text-[#626F86]">
+            <div className="text-xs text-muted-foreground">
               {draft.sourceWorkItemCount} of {draft.totalSourceWorkItemCount} active work items in prompt input.
               {draft.mode === "incremental"
                 ? ` ${draft.changedSourceWorkItemCount} changed, ${draft.retiredSourceWorkItemCount} retired.`
@@ -1461,7 +1461,7 @@ function ExternalPromptPanel({
           <Badge variant="outline">{draft.batchCount} {draft.batchCount === 1 ? "batch" : "batches"}</Badge>
         </div>
         {draft.fallbackReason ? (
-          <div className="mt-3 rounded-md border border-[#F5CD47]/60 bg-[#FFF7D6] p-3 text-xs text-[#7F5F01]">
+          <div className="mt-3 rounded-md border border-warning/40 bg-warning/15 p-3 text-xs text-warning-foreground dark:text-warning">
             {draft.fallbackReason}
           </div>
         ) : null}
@@ -1469,13 +1469,13 @@ function ExternalPromptPanel({
       ) : null}
 
       {showPrompt && currentBatch ? (
-        <div ref={batchRef} className="space-y-4 rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-4">
+        <div ref={batchRef} className="space-y-4 rounded-md border border-border bg-muted p-4">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="text-sm font-semibold text-[#172B4D]">
+              <div className="text-sm font-semibold text-foreground">
                 Batch {currentBatch.batchIndex} of {draft.batchCount}
               </div>
-              <div className="text-xs text-[#626F86]">
+              <div className="text-xs text-muted-foreground">
                 {currentBatch.workItemCount} work items in this prompt. {validatedCount} validated.
               </div>
             </div>
@@ -1486,7 +1486,7 @@ function ExternalPromptPanel({
           </div>
           <Textarea value={currentBatch.prompt} readOnly className="min-h-[320px] font-mono text-xs" />
           <div className="space-y-2">
-            <Label className="text-sm font-semibold text-[#172B4D]">External LLM Response</Label>
+            <Label className="text-sm font-semibold text-foreground">External LLM Response</Label>
             <Textarea
               value={responses[currentBatch.batchIndex] ?? ""}
               onChange={(event) => onResponseChange(currentBatch.batchIndex, event.target.value)}
@@ -1507,18 +1507,18 @@ function ExternalPromptPanel({
       ) : null}
 
       {showPreview && allValidated && previewKnowledgeBase ? (
-        <div className="space-y-4 rounded-md border border-[#DCDFE4] bg-white p-4">
+        <div className="space-y-4 rounded-md border border-border bg-card p-4">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <div className="text-sm font-semibold text-[#172B4D]">Validated Knowledge Preview</div>
-              <div className="text-xs text-[#626F86]">
+              <div className="text-sm font-semibold text-foreground">Validated Knowledge Preview</div>
+              <div className="text-xs text-muted-foreground">
                 {validatedCount} batch {validatedCount === 1 ? "response" : "responses"} validated. Save to persist the final knowledge base.
               </div>
             </div>
             <Badge variant="outline">{countKnowledgeItems(previewKnowledgeBase)} entries</Badge>
           </div>
           <KnowledgeExplorer knowledgeBase={previewKnowledgeBase} compact />
-          <div className="flex justify-end gap-2 border-t border-[#EBECF0] pt-3">
+          <div className="flex justify-end gap-2 border-t border-border pt-3">
             <Button onClick={onSave} disabled={saveLoading}>
               {saveLoading ? <RefreshCw className="size-4 animate-spin" /> : <Save className="size-4" />}
               {saveLoading ? "Saving..." : "Save Knowledge Base"}
@@ -1542,10 +1542,10 @@ function SortHeader({
   onClick: () => void
 }) {
   return (
-    <Button variant="ghost" size="sm" className="-ml-3 h-8 px-2 text-[#172B4D]" onClick={onClick}>
+    <Button variant="ghost" size="sm" className="-ml-3 h-8 px-2 text-foreground" onClick={onClick}>
       {label}
       <ArrowUpDown className="size-3.5" />
-      {active ? <span className="text-xs text-[#626F86]">{direction === "asc" ? "Asc" : "Desc"}</span> : null}
+      {active ? <span className="text-xs text-muted-foreground">{direction === "asc" ? "Asc" : "Desc"}</span> : null}
     </Button>
   )
 }
@@ -1593,11 +1593,11 @@ function IndexedContextPanel({
       </CardHeader>
       <CardContent>
         <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="text-sm text-[#626F86]">
+          <div className="text-sm text-muted-foreground">
             Showing {rangeStart}-{rangeEnd} of {totalCount} active source work items available for retrieval.
           </div>
           <div className="relative w-full lg:w-[360px]">
-            <Search className="pointer-events-none absolute left-2.5 top-2 size-4 text-[#626F86]" />
+            <Search className="pointer-events-none absolute left-2.5 top-2 size-4 text-muted-foreground" />
             <Input
               value={search}
               onChange={(event) => onSearchChange(event.target.value)}
@@ -1608,7 +1608,7 @@ function IndexedContextPanel({
         </div>
 
         {!items.length && loading ? (
-          <div className="text-sm text-[#626F86]">Loading indexed context...</div>
+          <div className="text-sm text-muted-foreground">Loading indexed context...</div>
         ) : items.length ? (
           <div className="space-y-3">
             <div className="overflow-x-auto">
@@ -1635,9 +1635,9 @@ function IndexedContextPanel({
                 <TableBody>
                   {items.map((item) => (
                     <TableRow key={item.workItemId}>
-                      <TableCell className="font-mono text-xs font-semibold text-[#0C66E4]">{item.workItemId}</TableCell>
+                      <TableCell className="font-mono text-xs font-semibold text-primary">{item.workItemId}</TableCell>
                       <TableCell><Badge variant="secondary">{item.workItemType}</Badge></TableCell>
-                      <TableCell className="font-medium text-[#172B4D]">{item.title}</TableCell>
+                      <TableCell className="font-medium text-foreground">{item.title}</TableCell>
                       <TableCell>{item.chunkCount}</TableCell>
                       <TableCell><Badge variant="outline">{item.syncStatus ?? "active"}</Badge></TableCell>
                       <TableCell>{formatDate(item.lastIndexedAt)}</TableCell>
@@ -1646,7 +1646,7 @@ function IndexedContextPanel({
                 </TableBody>
               </Table>
             </div>
-            <div className="flex flex-col gap-3 border-t border-[#EBECF0] pt-3 text-sm text-[#626F86] sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-3 border-t border-border pt-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
               <span>
                 Page {safePage} of {safeTotalPages}
                 {loading ? " - Loading" : ""}
@@ -1676,7 +1676,7 @@ function IndexedContextPanel({
             </div>
           </div>
         ) : (
-          <div className="rounded-md border border-[#DCDFE4] bg-white p-6 text-sm text-[#626F86]">
+          <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
             {search.trim() ? "No indexed work items match the current search." : emptyMessage}
           </div>
         )}
@@ -1705,13 +1705,13 @@ function IndexSummary({ result }: { result: IndexResult }) {
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {metrics.map(([label, value]) => (
-            <div key={label} className="rounded-md border border-[#DCDFE4] bg-white p-3">
-              <div className="text-xs text-[#626F86]">{label}</div>
-              <div className="mt-1 text-lg font-semibold text-[#172B4D]">{value}</div>
+            <div key={label} className="rounded-md border border-border bg-card p-3">
+              <div className="text-xs text-muted-foreground">{label}</div>
+              <div className="mt-1 text-lg font-semibold text-foreground">{value}</div>
             </div>
           ))}
         </div>
-        <div className="grid gap-3 text-sm text-[#44546F] lg:grid-cols-2">
+        <div className="grid gap-3 text-sm text-muted-foreground lg:grid-cols-2">
           <div><span className="font-semibold">Mode:</span> {result.mode}</div>
           <div><span className="font-semibold">Types:</span> {result.workItemTypes.join(", ")}</div>
           <div><span className="font-semibold">States:</span> {result.states.join(", ")}</div>
@@ -1745,11 +1745,11 @@ function KnowledgeOpsPanel({
   onExport: () => void
 }) {
   return (
-    <div className="space-y-3 rounded-md border border-[#DCDFE4] bg-white p-4">
+    <div className="space-y-3 rounded-md border border-border bg-card p-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <div className="text-sm font-semibold text-[#172B4D]">Compiled Knowledge Operations</div>
-          <div className="text-xs text-[#626F86]">Health checks, event history, and Markdown export for the source-backed knowledge layer.</div>
+          <div className="text-sm font-semibold text-foreground">Compiled Knowledge Operations</div>
+          <div className="text-xs text-muted-foreground">Health checks, event history, and Markdown export for the source-backed knowledge layer.</div>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={onRunHealthCheck} disabled={healthLoading}>
@@ -1779,43 +1779,43 @@ function KnowledgeOpsPanel({
       {lint?.issues.length ? (
         <div className="space-y-2">
           {lint.issues.slice(0, 5).map((issue) => (
-            <div key={issue.id} className="rounded-md border border-[#EBECF0] bg-[#F7F8F9] p-3 text-sm">
+            <div key={issue.id} className="rounded-md border border-border bg-muted p-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant={issue.severity === "error" ? "destructive" : "secondary"}>{issue.severity}</Badge>
-                <span className="font-semibold text-[#172B4D]">{issue.title}</span>
+                <span className="font-semibold text-foreground">{issue.title}</span>
               </div>
-              <div className="mt-1 text-[#44546F]">{issue.message}</div>
+              <div className="mt-1 text-muted-foreground">{issue.message}</div>
             </div>
           ))}
         </div>
       ) : lint ? (
-        <div className="rounded-md border border-[#BAF3DB] bg-[#E3FCEF] p-3 text-sm text-[#216E4E]">
+        <div className="rounded-md border border-success/30 bg-success/10 p-3 text-sm text-success">
           Knowledge health check passed without open issues.
         </div>
       ) : null}
 
       {exportResult ? (
-        <div className="rounded-md border border-[#B3D4FF] bg-[#E9F2FF] p-3 text-sm text-[#0C66E4]">
+        <div className="rounded-md border border-primary/40 bg-accent p-3 text-sm text-primary">
           Exported {exportResult.fileCount} Markdown files to <span className="font-mono">{exportResult.exportRoot}</span>.
         </div>
       ) : null}
 
       {logVisible ? (
         <div className="space-y-2">
-          <div className="text-xs font-semibold uppercase text-[#626F86]">Recent Knowledge Log</div>
+          <div className="text-xs font-semibold uppercase text-muted-foreground">Recent Knowledge Log</div>
           {logItems.length ? (
             logItems.slice(0, 8).map((item) => (
-              <div key={item.id} className="rounded-md border border-[#EBECF0] p-3 text-sm">
+              <div key={item.id} className="rounded-md border border-border p-3 text-sm">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="outline">{item.eventType}</Badge>
-                  <span className="font-semibold text-[#172B4D]">{item.title}</span>
-                  <span className="text-xs text-[#626F86]">{formatDate(item.createdAt)}</span>
+                  <span className="font-semibold text-foreground">{item.title}</span>
+                  <span className="text-xs text-muted-foreground">{formatDate(item.createdAt)}</span>
                 </div>
-                <div className="mt-1 text-[#44546F]">{item.message}</div>
+                <div className="mt-1 text-muted-foreground">{item.message}</div>
               </div>
             ))
           ) : (
-            <div className="rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-3 text-sm text-[#626F86]">
+            <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
               No knowledge log events have been recorded for this project yet.
             </div>
           )}
@@ -1826,10 +1826,10 @@ function KnowledgeOpsPanel({
 }
 
 function KnowledgeMetric({ label, value, tone }: { label: string; value: number; tone?: "error" | "warning" }) {
-  const valueClass = tone === "error" ? "text-red-700" : tone === "warning" ? "text-[#7F5F01]" : "text-[#172B4D]"
+  const valueClass = tone === "error" ? "text-destructive" : tone === "warning" ? "text-warning-foreground dark:text-warning" : "text-foreground"
   return (
-    <div className="rounded-md border border-[#DCDFE4] bg-white p-3">
-      <div className="text-xs text-[#626F86]">{label}</div>
+    <div className="rounded-md border border-border bg-card p-3">
+      <div className="text-xs text-muted-foreground">{label}</div>
       <div className={`mt-1 text-lg font-semibold ${valueClass}`}>{value}</div>
     </div>
   )
@@ -1861,7 +1861,7 @@ function KnowledgeExplorer({ knowledgeBase, compact = false }: { knowledgeBase: 
   return (
     <div className="space-y-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="text-sm text-[#626F86]">
+        <div className="text-sm text-muted-foreground">
           {filteredEntries.length} entries match the current filters.
         </div>
         <div className="w-full lg:w-[420px]">
@@ -1890,12 +1890,12 @@ function KnowledgeExplorer({ knowledgeBase, compact = false }: { knowledgeBase: 
           {visibleEntries.length ? (
             visibleEntries.map((entry) => <KnowledgeExplorerEntryCard key={entry.key} entry={entry} compact={compact} />)
           ) : (
-            <div className="rounded-md border border-[#DCDFE4] bg-white p-5 text-sm text-[#626F86]">
+            <div className="rounded-md border border-border bg-card p-5 text-sm text-muted-foreground">
               No knowledge entries match the current filters.
             </div>
           )}
           {filteredEntries.length > pageSize ? (
-            <div className="flex items-center justify-between border-t border-[#EBECF0] pt-3 text-sm text-[#626F86]">
+            <div className="flex items-center justify-between border-t border-border pt-3 text-sm text-muted-foreground">
               <span>Showing {pageStart}-{pageEnd} of {filteredEntries.length}</span>
               <div className="flex gap-2">
                 <Button size="sm" variant="outline" disabled={safePage <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>
@@ -1929,25 +1929,25 @@ function KnowledgeCategoryButton({
       type="button"
       onClick={onClick}
       className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-medium ${
-        active ? "bg-[#F1F2F4] text-[#172B4D]" : "text-[#44546F] hover:bg-[#F7F8F9]"
+        active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted"
       }`}
     >
       <span>{label}</span>
-      <span className="rounded-sm border border-[#DCDFE4] bg-white px-1.5 py-0.5 text-xs text-[#44546F]">{count}</span>
+      <span className="rounded-sm border border-border bg-card px-1.5 py-0.5 text-xs text-muted-foreground">{count}</span>
     </button>
   )
 }
 
 function KnowledgeExplorerEntryCard({ entry, compact }: { entry: KnowledgeExplorerEntry; compact?: boolean }) {
   return (
-    <div className="rounded-md border border-[#DCDFE4] bg-[#F7F8F9] p-4">
+    <div className="rounded-md border border-border bg-muted p-4">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{entry.badge}</Badge>
-            <span className="font-semibold text-[#172B4D]">{entry.title}</span>
+            <span className="font-semibold text-foreground">{entry.title}</span>
           </div>
-          <div className={`mt-2 text-sm text-[#44546F] ${compact ? "line-clamp-2" : ""}`}>
+          <div className={`mt-2 text-sm text-muted-foreground ${compact ? "line-clamp-2" : ""}`}>
             {entry.description}
           </div>
         </div>
@@ -1961,12 +1961,12 @@ function KnowledgeExplorerEntryCard({ entry, compact }: { entry: KnowledgeExplor
         </div>
       </div>
       {entry.meta.length ? (
-        <div className="mt-3 flex flex-wrap gap-2 text-xs text-[#626F86]">
+        <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
           {entry.meta.map((meta) => <Badge key={meta} variant="secondary">{meta}</Badge>)}
         </div>
       ) : null}
-      <div className={`mt-3 rounded-md bg-white p-3 text-sm text-[#44546F] ${compact ? "line-clamp-2" : ""}`}>
-        <span className="font-semibold text-[#172B4D]">Evidence:</span> {entry.evidence}
+      <div className={`mt-3 rounded-md bg-card p-3 text-sm text-muted-foreground ${compact ? "line-clamp-2" : ""}`}>
+        <span className="font-semibold text-foreground">Evidence:</span> {entry.evidence}
       </div>
     </div>
   )

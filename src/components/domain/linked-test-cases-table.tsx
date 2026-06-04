@@ -31,8 +31,8 @@ export function LinkedTestCasesTable({ rows }: { rows: LinkedTestCase[] }) {
   return (
     <>
       <Card className="qa-card overflow-hidden">
-        <div className="border-b border-[#EBECF0] p-4">
-          <p className="text-sm text-[#626F86]">
+        <div className="border-b border-border p-4">
+          <p className="text-sm text-muted-foreground">
             Existing linked Azure DevOps test cases only. Paste, upload, and import are intentionally not supported.
           </p>
         </div>
@@ -54,14 +54,14 @@ export function LinkedTestCasesTable({ rows }: { rows: LinkedTestCase[] }) {
             <TableBody>
               {rows.map((row) => (
                 <TableRow key={row.id} className="qa-table-row">
-                  <TableCell className="font-mono text-xs font-semibold text-[#0C66E4]">{row.id}</TableCell>
-                  <TableCell className="font-medium text-[#172B4D]">{row.title}</TableCell>
+                  <TableCell className="font-mono text-xs font-semibold text-primary">{row.id}</TableCell>
+                  <TableCell className="font-medium text-foreground">{row.title}</TableCell>
                   <TableCell><StatusChip tone={row.state === "Ready" ? "success" : row.state === "Design" ? "draft" : "neutral"}>{row.state}</StatusChip></TableCell>
                   <TableCell><PriorityChip priority={row.priority} /></TableCell>
                   <TableCell><Badge variant="outline">{row.automationStatus}</Badge></TableCell>
                   <TableCell>{row.stepsCount}</TableCell>
                   <TableCell><CoverageStatusChip status={row.coverageStatus === "Partial" ? "Partial" : row.coverageStatus === "Gap" ? "Gap" : row.coverageStatus} /></TableCell>
-                  <TableCell className="text-xs text-[#626F86]">{row.linkRelation}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{row.linkRelation}</TableCell>
                   <TableCell className="text-right">
                     <Button size="icon-sm" variant="ghost" onClick={() => setActive(row)} aria-label={`Open ${row.id}`}>
                       <Eye className="size-4" />
@@ -79,11 +79,11 @@ export function LinkedTestCasesTable({ rows }: { rows: LinkedTestCase[] }) {
           <SheetHeader>
             <SheetTitle>{active?.id} - {active?.title}</SheetTitle>
           </SheetHeader>
-          <div className="space-y-4 p-4 text-sm text-[#44546F]">
+          <div className="space-y-4 p-4 text-sm text-muted-foreground">
             <p>State: {active?.state}</p>
             <p>Automation status: {active?.automationStatus}</p>
             <p>Coverage status: {active?.coverageStatus}</p>
-            <div className="rounded-lg border border-[#EBECF0] bg-[#F7F8FA] p-3">
+            <div className="rounded-lg border border-border bg-muted p-3">
               TODO: Fetch full linked Azure DevOps test case steps through the project-scoped adapter.
             </div>
           </div>

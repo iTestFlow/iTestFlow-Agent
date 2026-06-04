@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { AlertCircle, CheckCircle2, ClipboardCopy, FileText, Loader2, Play, Sparkles } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, Sparkles, SquareTerminal } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,8 +11,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { StatCard } from "@/components/qa/stat-card";
+import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
+import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
+import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
 type WorkflowMode = "auto" | "manual";
@@ -174,7 +177,6 @@ export function TestExecutionEffortClient() {
   const [externalResponse, setExternalResponse] = useState("");
   const [loadingAction, setLoadingAction] = useState<"generate" | "prompt" | "submit" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [promptCopied, setPromptCopied] = useState(false);
 
   const requestPayload = useMemo(() => ({
     scope,
@@ -187,7 +189,6 @@ export function TestExecutionEffortClient() {
     setEstimateResult(null);
     setExternalDraft(null);
     setExternalResponse("");
-    setPromptCopied(false);
     setError(null);
   }
 
@@ -249,7 +250,6 @@ export function TestExecutionEffortClient() {
       setEstimateResult(null);
       setExternalDraft(data);
       setExternalResponse("");
-      setPromptCopied(false);
     });
   }
 
@@ -304,13 +304,6 @@ export function TestExecutionEffortClient() {
     }
   }
 
-  async function copyPrompt() {
-    if (!externalDraft?.prompt) return;
-    await navigator.clipboard.writeText(externalDraft.prompt);
-    setPromptCopied(true);
-    window.setTimeout(() => setPromptCopied(false), 1600);
-  }
-
   const busy = Boolean(loadingAction);
   const actionDisabled = busy || !scope || !storyId.trim();
 
@@ -326,11 +319,11 @@ export function TestExecutionEffortClient() {
 
       <Card>
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
+          <div className="space-y-0.5">
             <CardTitle className="text-base">Estimate Inputs</CardTitle>
             <CardDescription>Load the story, linked Azure DevOps test cases, and project context before estimating manual execution effort.</CardDescription>
           </div>
-          <ModeTabs mode={mode} onChange={setMode} />
+          <GenerationModeToggle mode={mode} onChange={setMode} />
         </CardHeader>
         <CardContent className="space-y-5 pt-5">
           <div className="grid gap-4 lg:grid-cols-[minmax(260px,360px)_1fr]">
@@ -347,7 +340,15 @@ export function TestExecutionEffortClient() {
                 }}
               />
             </Field>
-            <StoryLookupPanel story={storyLookup.data} loading={storyLookup.loading} error={storyLookup.error} />
+            <WorkItemSummaryCard
+              story={storyLookup.data}
+              loading={storyLookup.loading}
+              error={storyLookup.error}
+              valid={storyLookup.data ? isRequirementLikeType(storyLookup.data.workItemType) : true}
+              invalidNote="This work item is not a typical story/requirement type."
+              emptyText="No user story loaded."
+              loadingText="Loading user story..."
+            />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
@@ -411,7 +412,7 @@ export function TestExecutionEffortClient() {
                 </Button>
               ) : (
                 <Button onClick={prepareExternalPrompt} disabled={actionDisabled}>
-                  {loadingAction === "prompt" ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />}
+                  {loadingAction === "prompt" ? <Loader2 className="size-4 animate-spin" /> : <SquareTerminal className="size-4" />}
                   {loadingAction === "prompt" ? "Preparing..." : "Prepare External LLM Prompt"}
                 </Button>
               )}
@@ -431,36 +432,18 @@ export function TestExecutionEffortClient() {
       {preview ? <StorySummaryPanel preview={preview} /> : null}
 
       {externalDraft ? (
-        <ExternalPromptPanel
-          draft={externalDraft}
+        <ManualLLMPanel
+          prompt={externalDraft.prompt}
+          promptVersion={externalDraft.promptVersion}
+          schemaName={externalDraft.schemaName}
           response={externalResponse}
-          copied={promptCopied}
-          submitting={loadingAction === "submit"}
-          onCopy={copyPrompt}
           onResponseChange={setExternalResponse}
           onSubmit={submitExternalResponse}
+          submitting={loadingAction === "submit"}
         />
       ) : null}
 
       {estimateResult ? <EstimateResultPanel result={estimateResult.estimate} /> : null}
-    </div>
-  );
-}
-
-function ModeTabs({ mode, onChange }: { mode: WorkflowMode; onChange: (mode: WorkflowMode) => void }) {
-  const itemClass = (value: WorkflowMode) =>
-    `h-8 rounded-md px-3 text-sm font-medium transition ${
-      mode === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"
-    }`;
-
-  return (
-    <div role="tablist" aria-label="LLM execution mode" className="inline-flex rounded-lg border border-input bg-background p-1">
-      <button type="button" role="tab" aria-selected={mode === "auto"} className={itemClass("auto")} onClick={() => onChange("auto")}>
-        Auto Generate
-      </button>
-      <button type="button" role="tab" aria-selected={mode === "manual"} className={itemClass("manual")} onClick={() => onChange("manual")}>
-        External LLM
-      </button>
     </div>
   );
 }
@@ -476,49 +459,6 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 function OptionDescription({ children }: { children: ReactNode }) {
   return <p className="text-xs leading-5 text-muted-foreground">{children}</p>;
-}
-
-function StoryLookupPanel({ story, loading, error }: { story: WorkItem | null; loading: boolean; error: string | null }) {
-  if (loading) {
-    return (
-      <div className="rounded-md border border-input bg-muted/20 p-3 text-sm text-muted-foreground">
-        <div className="flex items-center gap-2">
-          <Loader2 className="size-4 animate-spin" />
-          Loading user story...
-        </div>
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-        {error}
-      </div>
-    );
-  }
-  if (!story) {
-    return (
-      <div className="rounded-md border border-input bg-muted/10 p-3 text-sm text-muted-foreground">
-        No user story loaded.
-      </div>
-    );
-  }
-
-  const valid = isRequirementLikeType(story.workItemType);
-  return (
-    <div className={`rounded-md border p-3 text-sm ${valid ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-semibold">#{story.id}</span>
-        <Badge variant={valid ? "default" : "secondary"}>{story.workItemType}</Badge>
-        {!valid ? <span className="text-xs font-medium">This work item is not a typical story/requirement type.</span> : null}
-      </div>
-      <div className="mt-2 font-medium">{story.title}</div>
-      <div className="mt-2 grid gap-1 text-xs">
-        {story.areaPath ? <span>Area: {story.areaPath}</span> : null}
-        {story.iterationPath ? <span>Iteration: {story.iterationPath}</span> : null}
-      </div>
-    </div>
-  );
 }
 
 function OptionToggle({ checked, label, onChange }: { checked: boolean; label: string; onChange: (checked: boolean) => void }) {
@@ -558,77 +498,7 @@ function StorySummaryPanel({ preview }: { preview: EffortPreview }) {
           </Alert>
         ) : null}
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <SummaryTile label="Linked Test Cases" value={String(preview.summary.linkedTestCaseCount)} detail={linkedTestCaseDetail} />
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function SummaryTile({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return (
-    <div className="rounded-lg border bg-muted/25 p-3">
-      <div className="text-xs font-medium uppercase tracking-normal text-muted-foreground">{label}</div>
-      <div className="mt-1 truncate text-lg font-semibold text-foreground">{value}</div>
-      <div className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{detail}</div>
-    </div>
-  );
-}
-
-function ExternalPromptPanel({
-  draft,
-  response,
-  copied,
-  submitting,
-  onCopy,
-  onResponseChange,
-  onSubmit,
-}: {
-  draft: ExternalPromptDraft;
-  response: string;
-  copied: boolean;
-  submitting: boolean;
-  onCopy: () => void;
-  onResponseChange: (value: string) => void;
-  onSubmit: () => void;
-}) {
-  return (
-    <Card>
-      <CardHeader className="border-b">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <CardTitle>External LLM Prompt</CardTitle>
-            <CardDescription>
-              This prompt contains the selected story details, linked test cases, and relevant project context. Review it before sending it to an external LLM.
-            </CardDescription>
-          </div>
-          <Button variant="outline" onClick={onCopy} disabled={copied}>
-            {copied ? <CheckCircle2 className="size-4" /> : <ClipboardCopy className="size-4" />}
-            {copied ? "Copied" : "Copy Prompt"}
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline">Prompt {draft.promptVersion}</Badge>
-          <Badge variant="outline">{draft.schemaName}</Badge>
-        </div>
-        <Textarea value={draft.prompt} readOnly className="min-h-[360px] font-mono text-xs" aria-label="External LLM prompt" />
-        <div className="space-y-2">
-          <Label className="text-sm font-medium">External LLM response</Label>
-          <Textarea
-            value={response}
-            onChange={(event) => onResponseChange(event.target.value)}
-            className="min-h-[220px] font-mono text-xs"
-            placeholder="Paste the external LLM JSON response here."
-            aria-label="External LLM response"
-          />
-        </div>
-        <div className="flex justify-end">
-          <Button onClick={onSubmit} disabled={!response.trim() || submitting}>
-            {submitting ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-            {submitting ? "Validating..." : "Validate External Result"}
-          </Button>
+          <StatCard label="Linked Test Cases" value={String(preview.summary.linkedTestCaseCount)} detail={linkedTestCaseDetail} />
         </div>
       </CardContent>
     </Card>
@@ -645,11 +515,11 @@ function EstimateResultPanel({ result }: { result: EffortEstimate }) {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <EstimateTile title="Minimum" value={formatHours(result.estimate.minimumHours)} detail="Optimistic lower bound" />
-            <EstimateTile title="Most Likely" value={formatHours(result.estimate.mostLikelyHours)} detail="Expected execution effort" />
-            <EstimateTile title="Maximum" value={formatHours(result.estimate.maximumHours)} detail="Upper bound if risks appear" />
-            <EstimateTile title="Planning Estimate" value={formatHours(result.estimate.recommendedPlanningHours)} detail="Recommended sprint planning value" accent />
-            <EstimateTile title="Confidence" value={result.estimate.confidence} detail="Based on available test details" />
+            <StatCard label="Minimum" value={formatHours(result.estimate.minimumHours)} detail="Optimistic lower bound" />
+            <StatCard label="Most Likely" value={formatHours(result.estimate.mostLikelyHours)} detail="Expected execution effort" />
+            <StatCard label="Maximum" value={formatHours(result.estimate.maximumHours)} detail="Upper bound if risks appear" />
+            <StatCard label="Planning Estimate" value={formatHours(result.estimate.recommendedPlanningHours)} detail="Recommended sprint planning value" tone="primary" />
+            <StatCard label="Confidence" value={result.estimate.confidence} detail="Based on available test details" />
           </div>
         </CardContent>
       </Card>
@@ -662,16 +532,6 @@ function EstimateResultPanel({ result }: { result: EffortEstimate }) {
         risks={result.risksThatMayIncreaseTime}
         recommendations={result.recommendations}
       />
-    </div>
-  );
-}
-
-function EstimateTile({ title, value, detail, accent = false }: { title: string; value: string; detail?: string; accent?: boolean }) {
-  return (
-    <div className={cn("rounded-lg border p-4", accent ? "bg-primary/10 text-primary ring-1 ring-primary/20" : "bg-muted/25")}>
-      <div className="text-xs font-medium uppercase tracking-normal text-muted-foreground">{title}</div>
-      <div className="mt-2 text-2xl font-semibold">{value}</div>
-      {detail ? <div className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</div> : null}
     </div>
   );
 }
@@ -699,10 +559,7 @@ function StatisticsPanel({ statistics }: { statistics: EffortEstimate["statistic
       <CardContent>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {rows.map(([label, value]) => (
-            <div key={label} className="rounded-lg border bg-muted/20 p-3">
-              <div className="text-xs text-muted-foreground">{label}</div>
-              <div className="mt-1 text-base font-semibold text-foreground">{String(value)}</div>
-            </div>
+            <StatCard key={String(label)} label={label} value={String(value)} size="sm" />
           ))}
         </div>
       </CardContent>
@@ -812,13 +669,13 @@ function PlanningNotesPanel({
           <InsightColumn
             title="Assumptions"
             items={assumptions}
-            icon={<CheckCircle2 className="size-4 text-emerald-600" />}
+            icon={<CheckCircle2 className="size-4 text-success" />}
             tone="emerald"
           />
           <InsightColumn
             title="Risks That May Increase Time"
             items={risks}
-            icon={<AlertCircle className="size-4 text-amber-600" />}
+            icon={<AlertCircle className="size-4 text-warning" />}
             tone="amber"
           />
           <InsightColumn
@@ -845,8 +702,8 @@ function InsightColumn({
   tone: "emerald" | "amber" | "primary";
 }) {
   const toneClass = {
-    emerald: "border-emerald-200 bg-emerald-50/60",
-    amber: "border-amber-200 bg-amber-50/60",
+    emerald: "border-success/30 bg-success/10",
+    amber: "border-warning/40 bg-warning/15",
     primary: "border-primary/20 bg-primary/5",
   }[tone];
 

@@ -18,6 +18,7 @@ import {
   RecentActivityList,
 } from "@/components/dashboard/analytics-components";
 import { Button } from "@/components/ui/button";
+import { Callout } from "@/components/qa/callout";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import type { DashboardAnalytics } from "@/types/dashboard";
 
@@ -118,11 +119,7 @@ export function DashboardClient() {
         }
       />
 
-      {state.error ? (
-        <div className="rounded-2xl border border-red-500/25 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-200">
-          {state.error}
-        </div>
-      ) : null}
+      {state.error ? <Callout tone="error">{state.error}</Callout> : null}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <MetricCard title="Indexed Work Items" value={compactNumber(kpis?.indexedWorkItems ?? 0)} description="Azure DevOps items available to local context." icon={Database} tone="blue" />

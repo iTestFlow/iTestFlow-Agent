@@ -206,10 +206,10 @@ function ConnectivityChip({
   icon?: React.ReactNode
 }) {
   const styles = {
-    connected: "border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 before:bg-emerald-500",
-    checking: "border-slate-500/25 bg-slate-500/10 text-slate-600 dark:text-slate-300 before:bg-slate-400",
-    missing: "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300 before:bg-amber-500",
-    warning: "border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300 before:bg-red-500",
+    connected: "border-success/30 bg-success/10 text-success before:bg-success",
+    checking: "border-border bg-muted text-muted-foreground before:bg-muted-foreground",
+    missing: "border-warning/40 bg-warning/15 text-warning-foreground dark:text-warning before:bg-warning",
+    warning: "border-destructive/30 bg-destructive/10 text-destructive before:bg-destructive",
   }[tone]
 
   return (

@@ -4,7 +4,8 @@ import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, CheckCircle2, ChevronDown, Eye, EyeOff, Loader2, Search, ShieldCheck, XCircle } from "lucide-react";
-import { Button, Card, TextInput } from "@/shared/components/ui";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector";
 import { BRAND_LOGO_FULL_SRC } from "@/lib/constants";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -311,10 +312,10 @@ export function ConfigurationForm({
   }
 
   return (
-    <div className={embedded ? "text-slate-950" : "min-h-screen bg-background p-[30px] text-slate-950"}>
+    <div className={embedded ? "text-foreground" : "min-h-screen bg-background p-[30px] text-foreground"}>
       <div className={embedded ? "" : "grid min-h-[840px] gap-[120px] xl:grid-cols-[370px_minmax(0,1fr)]"}>
         {!embedded ? (
-        <aside className="flex flex-col rounded-[10px] border border-[#c8d4e4] bg-white p-10">
+        <aside className="flex flex-col rounded-[10px] border border-border bg-card p-10">
           <div>
             <Image
               src={BRAND_LOGO_FULL_SRC}
@@ -328,24 +329,24 @@ export function ConfigurationForm({
           <div className="mt-16 space-y-6">
             {["Connect Azure DevOps", "Configure LLM Provider", "Secure & Local First", "Start Intelligent Testing"].map((item) => (
               <div key={item} className="flex items-center gap-3 text-sm font-medium">
-                <span className="flex h-5 w-5 items-center justify-center rounded border border-blue-600 text-blue-600">
+                <span className="flex h-5 w-5 items-center justify-center rounded border border-primary text-primary">
                   <Check className="h-3.5 w-3.5" />
                 </span>
                 {item}
               </div>
             ))}
           </div>
-          <div className="mt-auto text-xs text-slate-500">(c) 2026 iTestFlow</div>
+          <div className="mt-auto text-xs text-muted-foreground">(c) 2026 iTestFlow</div>
         </aside>
         ) : null}
 
         <div className={embedded ? "" : "flex items-center justify-center"}>
-          <Card className={`${embedded ? "w-full max-w-3xl" : "w-full max-w-[600px]"} border-[#c8d4e4] bg-white text-slate-950 shadow-none`}>
+          <div className={`${embedded ? "w-full max-w-3xl" : "w-full max-w-[600px]"} rounded-2xl border border-border bg-card text-foreground`}>
             <div className={embedded ? "p-6" : "p-12"}>
               <h1 className={embedded ? "text-xl font-bold tracking-tight" : "text-3xl font-bold tracking-tight"}>
                 {embedded ? "Runtime Configuration" : "Initial Configuration"}
               </h1>
-              <p className="mt-2 text-sm text-slate-600">
+              <p className="mt-2 text-sm text-muted-foreground">
                 {embedded ? "View and update the live integration settings used by this local app." : "Set up your local connections to get started."}
               </p>
 
@@ -354,8 +355,8 @@ export function ConfigurationForm({
                   label="Azure DevOps Organization URL"
                   description="Required. The PAT authenticates the request; this URL tells iTestFlow which Azure DevOps organization endpoint to call."
                 >
-                  <TextInput
-                    className="border-slate-300 bg-white text-slate-950"
+                  <Input
+                    className="h-11 border-input bg-card text-foreground"
                     value={form.organizationUrl}
                     onChange={(event) => update("organizationUrl", event.target.value)}
                     placeholder="https://dev.azure.com/your-org"
@@ -373,7 +374,7 @@ export function ConfigurationForm({
 
                 <Field label="Select LLM Provider">
                   <select
-                    className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                    className="h-11 w-full rounded-md border border-input bg-card px-3 text-sm"
                     value={form.provider}
                     onChange={(event) => {
                       const provider = event.target.value as Provider;
@@ -403,8 +404,8 @@ export function ConfigurationForm({
                   label="Provider Base URL"
                   description="Optional. Use this when routing provider requests through a proxy or custom-compatible endpoint."
                 >
-                  <TextInput
-                    className="border-slate-300 bg-white text-slate-950"
+                  <Input
+                    className="h-11 border-input bg-card text-foreground"
                     value={form.baseUrl}
                     onChange={(event) => update("baseUrl", event.target.value)}
                     placeholder={defaultBaseUrlPlaceholder(form.provider)}
@@ -415,7 +416,7 @@ export function ConfigurationForm({
                   <div className="relative">
                     <button
                       type="button"
-                      className="flex h-11 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 text-left text-sm"
+                      className="flex h-11 w-full items-center justify-between rounded-md border border-input bg-card px-3 text-left text-sm"
                       onClick={toggleModelDropdown}
                       onKeyDown={(event) => {
                         if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
@@ -426,15 +427,15 @@ export function ConfigurationForm({
                       }}
                     >
                       <span className="truncate">{loadingModels ? "Loading models from provider..." : selectedModelLabel}</span>
-                      {loadingModels ? <Loader2 className="h-4 w-4 animate-spin text-blue-600" /> : <ChevronDown className="h-4 w-4 text-slate-500" />}
+                      {loadingModels ? <Loader2 className="h-4 w-4 animate-spin text-primary" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
                     </button>
                     {modelDropdownOpen ? (
-                      <div className="absolute bottom-full z-[100] mb-1 max-h-96 w-full overflow-hidden rounded-md border border-slate-300 bg-white text-sm shadow-lg">
-                        <div className="sticky top-0 border-b border-slate-200 bg-white p-2">
-                          <div className="flex h-9 items-center gap-2 rounded-md border border-slate-300 bg-white px-2">
-                            <Search className="h-4 w-4 shrink-0 text-slate-500" />
+                      <div className="absolute bottom-full z-[100] mb-1 max-h-96 w-full overflow-hidden rounded-md border border-input bg-card text-sm shadow-lg">
+                        <div className="sticky top-0 border-b border-border bg-card p-2">
+                          <div className="flex h-9 items-center gap-2 rounded-md border border-input bg-card px-2">
+                            <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
                             <input
-                              className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
+                              className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                               value={modelSearch}
                               onChange={(event) => setModelSearch(event.target.value)}
                               placeholder="Search models..."
@@ -444,16 +445,16 @@ export function ConfigurationForm({
                         </div>
                         <div className="max-h-80 overflow-auto py-1">
                         {loadingModels ? (
-                          <div className="flex items-center gap-2 px-3 py-3 text-slate-600">
-                            <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                          <div className="flex items-center gap-2 px-3 py-3 text-muted-foreground">
+                            <Loader2 className="h-4 w-4 animate-spin text-primary" />
                             Loading {providerLabel(form.provider)} models...
                           </div>
                         ) : modelError ? (
                           <div className="space-y-3 px-3 py-3">
-                            <div className="text-sm text-red-700">{modelError}</div>
+                            <div className="text-sm text-destructive">{modelError}</div>
                             <button
                               type="button"
-                              className="rounded-md border border-blue-600 px-3 py-2 text-xs font-medium text-blue-700"
+                              className="rounded-md border border-primary px-3 py-2 text-xs font-medium text-primary"
                               onClick={() => void loadModelsFromProvider()}
                             >
                               Retry Loading Models
@@ -465,18 +466,18 @@ export function ConfigurationForm({
                             <button
                               key={model.id}
                               type="button"
-                              className={`block w-full px-3 py-2 text-left hover:bg-blue-50 ${model.id === form.model ? "bg-blue-50 text-blue-700" : "text-slate-900"}`}
+                              className={`block w-full px-3 py-2 text-left hover:bg-accent ${model.id === form.model ? "bg-accent text-primary" : "text-foreground"}`}
                               onClick={() => {
                                 update("model", model.id);
                                 setModelDropdownOpen(false);
                               }}
                             >
                               <span className="block truncate">{model.displayName}</span>
-                              <span className="block truncate font-mono text-[11px] text-slate-500">{model.id}</span>
+                              <span className="block truncate font-mono text-[11px] text-muted-foreground">{model.id}</span>
                             </button>
                           ))
                         ) : !loadingModels && !modelError ? (
-                          <div className="px-3 py-3 text-slate-600">
+                          <div className="px-3 py-3 text-muted-foreground">
                             {modelSearch ? "No models match your search." : "Open the dropdown to load models from the selected provider API."}
                           </div>
                         ) : (
@@ -486,7 +487,7 @@ export function ConfigurationForm({
                       </div>
                     ) : null}
                   </div>
-                  <div className="mt-1 text-xs text-slate-500">
+                  <div className="mt-1 text-xs text-muted-foreground">
                     {form.apiKey || canUseSavedLlmKey
                       ? loadingModels
                         ? "Fetching all available models from the selected provider API..."
@@ -495,7 +496,7 @@ export function ConfigurationForm({
                           : "Open the dropdown to refresh models from the selected provider API."
                       : "Enter the provider API token, then open the dropdown to load models from the live provider API."}
                   </div>
-                  {modelError ? <div className="mt-1 text-xs text-red-700">{modelError}</div> : null}
+                  {modelError ? <div className="mt-1 text-xs text-destructive">{modelError}</div> : null}
                 </Field>
 
                 {showAdvancedSettings ? (
@@ -504,8 +505,8 @@ export function ConfigurationForm({
                       label="Retry attempts on transient LLM failure"
                       description="0 disables automatic retry. Default is 1 retry after the initial request."
                     >
-                      <TextInput
-                        className="border-slate-300 bg-white text-slate-950"
+                      <Input
+                        className="h-11 border-input bg-card text-foreground"
                         type="number"
                         min={0}
                         max={5}
@@ -519,8 +520,8 @@ export function ConfigurationForm({
                       label="Project context retrieval count"
                       description="Number of stored context items auto-selected for analysis and test design. Default is 8."
                     >
-                      <TextInput
-                        className="border-slate-300 bg-white text-slate-950"
+                      <Input
+                        className="h-11 border-input bg-card text-foreground"
                         type="number"
                         min={1}
                         max={25}
@@ -553,14 +554,14 @@ export function ConfigurationForm({
                             label="Cron expression"
                             description="Use 5 fields: minute hour day-of-month month day-of-week. Example: 0 2 * * * runs daily at 2:00 AM local server time."
                           >
-                            <TextInput
-                              className="border-slate-300 bg-white font-mono text-slate-950"
+                            <Input
+                              className="h-11 border-input bg-card font-mono text-foreground"
                               value={form.autoUpdateCronExpression}
                               onChange={(event) => update("autoUpdateCronExpression", event.target.value)}
                               placeholder={DEFAULT_AUTO_UPDATE_CRON_EXPRESSION}
                             />
                           </Field>
-                          <div className={`rounded-md border p-3 text-xs ${autoUpdateProject ? "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300" : "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"}`}>
+                          <div className={`rounded-md border p-3 text-xs ${autoUpdateProject ? "border-primary/30 bg-primary/10 text-primary dark:text-primary" : "border-warning/40 bg-warning/15 text-warning-foreground dark:text-warning"}`}>
                             Scheduled project: {autoUpdateProject ? autoUpdateProject.azureProjectName : "Select an Azure DevOps project in the header before saving."}
                           </div>
                           <ContextFilterSelector
@@ -589,7 +590,7 @@ export function ConfigurationForm({
 
                 <button
                   type="button"
-                  className="flex items-center gap-2 text-xs font-medium text-blue-700"
+                  className="flex items-center gap-2 text-xs font-medium text-primary"
                   onClick={() => setShowSecrets((current) => !current)}
                 >
                   {showSecrets ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -597,32 +598,32 @@ export function ConfigurationForm({
                 </button>
 
                 {message ? (
-                  <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+                  <div className="flex items-center gap-2 rounded-md border border-success/30 bg-success/10 p-3 text-sm text-success">
                     <CheckCircle2 className="h-4 w-4" />
                     {message}
                   </div>
                 ) : null}
                 {error ? (
-                  <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                  <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
                     <XCircle className="h-4 w-4" />
                     {error}
                   </div>
                 ) : null}
                 {testResult ? (
-                  <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm md:grid-cols-2">
+                  <div className="grid gap-3 rounded-md border border-border bg-muted p-3 text-sm md:grid-cols-2">
                     <Status label="Azure DevOps" ok={testResult.azureDevOps.success} error={testResult.azureDevOps.error} />
                     <Status label="LLM Provider" ok={testResult.llm.success} error={testResult.llm.error} />
                   </div>
                 ) : null}
 
                 <div className="grid gap-4 pt-2 md:grid-cols-2">
-                  <Button className="h-11 bg-blue-600 text-white hover:bg-blue-700" onClick={testConnections} disabled={testing || saving}>
+                  <Button className="h-11" onClick={testConnections} disabled={testing || saving}>
                     {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
                     Test Connections
                   </Button>
                   <Button
                     variant="secondary"
-                    className="h-11 border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                    className="h-11"
                     onClick={saveAndContinue}
                     disabled={testing || saving}
                   >
@@ -632,7 +633,7 @@ export function ConfigurationForm({
                 </div>
               </div>
             </div>
-          </Card>
+          </div>
         </div>
       </div>
     </div>
@@ -642,9 +643,9 @@ export function ConfigurationForm({
 function Field({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-2 block text-sm font-medium text-slate-900">{label}</span>
+      <span className="mb-2 block text-sm font-medium text-foreground">{label}</span>
       {children}
-      {description ? <span className="mt-2 block text-xs leading-5 text-slate-500">{description}</span> : null}
+      {description ? <span className="mt-2 block text-xs leading-5 text-muted-foreground">{description}</span> : null}
     </label>
   );
 }
@@ -661,8 +662,8 @@ function SecretInput({
   placeholder: string;
 }) {
   return (
-    <TextInput
-      className="border-slate-300 bg-white text-slate-950"
+    <Input
+      className="h-11 border-input bg-card text-foreground"
       type={show ? "text" : "password"}
       value={value}
       onChange={(event) => onChange(event.target.value)}
@@ -674,8 +675,8 @@ function SecretInput({
 function Status({ label, ok, error }: { label: string; ok: boolean; error?: string }) {
   return (
     <div>
-      <div className={`font-semibold ${ok ? "text-emerald-700" : "text-red-700"}`}>{label}: {ok ? "Connected" : "Failed"}</div>
-      {error ? <div className="mt-1 text-xs text-red-700">{error}</div> : null}
+      <div className={`font-semibold ${ok ? "text-success" : "text-destructive"}`}>{label}: {ok ? "Connected" : "Failed"}</div>
+      {error ? <div className="mt-1 text-xs text-destructive">{error}</div> : null}
     </div>
   );
 }

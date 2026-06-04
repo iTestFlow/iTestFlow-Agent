@@ -65,8 +65,8 @@ export function EditableTestCaseTable({ testCases }: { testCases: GeneratedTestC
   return (
     <>
       <Card className="qa-card overflow-hidden">
-        <div className="flex flex-col gap-3 border-b border-[#EBECF0] p-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="text-sm text-[#626F86]">{selectedCount} selected test cases</div>
+        <div className="flex flex-col gap-3 border-b border-border p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="text-sm text-muted-foreground">{selectedCount} selected test cases</div>
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="outline"><RefreshCw className="size-3.5" />Regenerate All</Button>
             <Button size="sm" variant="outline" onClick={addNew}><Plus className="size-3.5" />Add New Test Case</Button>
@@ -107,7 +107,7 @@ export function EditableTestCaseTable({ testCases }: { testCases: GeneratedTestC
                       aria-label={`Select ${row.id}`}
                     />
                   </TableCell>
-                  <TableCell className="font-mono text-xs font-semibold text-[#0C66E4]">{row.id}</TableCell>
+                  <TableCell className="font-mono text-xs font-semibold text-primary">{row.id}</TableCell>
                   <TableCell>
                     <InlineEditableText value={row.title} onChange={(value) => patchRow(row.id, { title: value })} ariaLabel={`${row.id} title`} />
                   </TableCell>
@@ -136,7 +136,7 @@ export function EditableTestCaseTable({ testCases }: { testCases: GeneratedTestC
                         <Copy className="size-4" />
                       </Button>
                       <Button size="icon-sm" variant="ghost" onClick={() => setRows((current) => current.filter((item) => item.id !== row.id))} aria-label={`Delete ${row.id}`}>
-                        <Trash2 className="size-4 text-[#AE2E24]" />
+                        <Trash2 className="size-4 text-destructive" />
                       </Button>
                     </div>
                   </TableCell>
