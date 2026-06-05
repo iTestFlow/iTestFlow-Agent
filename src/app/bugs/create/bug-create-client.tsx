@@ -633,7 +633,6 @@ export function BugCreateClient() {
               error={parentState.error}
               valid={parentStory?.workItemType === "User Story"}
               invalidNote="Parent link requires a User Story."
-              emptyText="No parent story loaded."
               loadingText="Loading parent story..."
             />
           </div>

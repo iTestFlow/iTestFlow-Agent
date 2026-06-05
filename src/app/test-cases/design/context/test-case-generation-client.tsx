@@ -6,10 +6,12 @@ import { Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Callout } from "@/components/qa/callout";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
+import { WorkItemPreview, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import {
   EditableGeneratedCases,
   EmptyBlock,
@@ -219,8 +221,21 @@ export function TestCaseGenerationClient() {
         action={<GenerationModeToggle mode={mode} onChange={setMode} />}
       >
         <div className="space-y-4 p-4">
-          <div className="grid gap-4 lg:grid-cols-[240px_auto]">
-            <Input value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="Work item ID" />
+          <div className="grid items-end gap-4 lg:grid-cols-[240px_auto]">
+            <div className="space-y-2">
+              <Label htmlFor="test-case-design-work-item-id" className="text-sm font-semibold text-foreground">
+                {WORK_ITEM_ID_TITLE}
+              </Label>
+              <Input
+                id="test-case-design-work-item-id"
+                value={targetWorkItemId}
+                inputMode="numeric"
+                onChange={(event) => changeTargetWorkItemId(event.target.value)}
+                placeholder={WORK_ITEM_ID_PLACEHOLDER}
+                title={WORK_ITEM_ID_TITLE}
+                aria-label={WORK_ITEM_ID_TITLE}
+              />
+            </div>
             {mode === "auto" ? (
               <Button onClick={generate} disabled={!scope || !targetWorkItemId || state.loading || !testDesignOptionsValid || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
@@ -233,6 +248,7 @@ export function TestCaseGenerationClient() {
               </Button>
             )}
           </div>
+          <WorkItemPreview scope={scope} workItemId={targetWorkItemId} />
           <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
           <TestDesignOptionsSelector
             settings={testDesignSettings}

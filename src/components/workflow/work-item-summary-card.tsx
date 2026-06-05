@@ -26,7 +26,7 @@ export function WorkItemSummaryCard({
   error = null,
   valid = true,
   invalidNote,
-  emptyText = "No work item loaded.",
+  emptyText = "Enter a work item ID to load its details here.",
   loadingText = "Loading work item...",
   className,
 }: {

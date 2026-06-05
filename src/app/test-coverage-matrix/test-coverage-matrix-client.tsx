@@ -5,12 +5,14 @@ import { ChevronDown, Loader2, Play, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Callout } from "@/components/qa/callout";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { toneClass, type Tone } from "@/components/qa/tone";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
+import { WorkItemPreview, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import {
   EditableGeneratedCases,
   EmptyBlock,
@@ -144,8 +146,21 @@ export function ExistingTestCaseReviewClient() {
         action={<GenerationModeToggle mode={mode} onChange={setMode} />}
       >
         <div className="space-y-4 p-4">
-          <div className="grid gap-4 lg:grid-cols-[240px_auto]">
-            <Input value={targetWorkItemId} onChange={(event) => changeTargetWorkItemId(event.target.value)} placeholder="User story ID" />
+          <div className="grid items-end gap-4 lg:grid-cols-[240px_auto]">
+            <div className="space-y-2">
+              <Label htmlFor="test-coverage-matrix-work-item-id" className="text-sm font-semibold text-foreground">
+                {WORK_ITEM_ID_TITLE}
+              </Label>
+              <Input
+                id="test-coverage-matrix-work-item-id"
+                value={targetWorkItemId}
+                inputMode="numeric"
+                onChange={(event) => changeTargetWorkItemId(event.target.value)}
+                placeholder={WORK_ITEM_ID_PLACEHOLDER}
+                title={WORK_ITEM_ID_TITLE}
+                aria-label={WORK_ITEM_ID_TITLE}
+              />
+            </div>
             {mode === "auto" ? (
               <Button onClick={review} disabled={!scope || !targetWorkItemId || state.loading || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
@@ -158,6 +173,7 @@ export function ExistingTestCaseReviewClient() {
               </Button>
             )}
           </div>
+          <WorkItemPreview scope={scope} workItemId={targetWorkItemId} />
           <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
         </div>
       </SectionCard>

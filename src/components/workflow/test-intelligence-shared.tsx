@@ -72,6 +72,10 @@ export function scrollToNextStep(ref: React.RefObject<HTMLElement | null>) {
   }, 120);
 }
 
+export function isRequirementLikeType(workItemType: string) {
+  return ["user story", "product backlog item", "requirement", "feature", "bug"].includes(workItemType.trim().toLowerCase());
+}
+
 export function extractAzureId(value: string, kind: "plan" | "suite") {
   const trimmed = value.trim();
   if (/^\d+$/.test(trimmed)) return trimmed;

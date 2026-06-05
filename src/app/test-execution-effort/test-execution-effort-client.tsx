@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { StatCard } from "@/components/qa/stat-card";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
+import { isRequirementLikeType } from "@/components/workflow/test-intelligence-shared";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
@@ -346,7 +347,6 @@ export function TestExecutionEffortClient() {
               error={storyLookup.error}
               valid={storyLookup.data ? isRequirementLikeType(storyLookup.data.workItemType) : true}
               invalidNote="This work item is not a typical story/requirement type."
-              emptyText="No user story loaded."
               loadingText="Loading user story..."
             />
           </div>
@@ -770,8 +770,4 @@ function formatMinutes(value: number) {
 
 function formatNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-}
-
-function isRequirementLikeType(workItemType: string) {
-  return ["user story", "product backlog item", "requirement", "feature", "bug"].includes(workItemType.trim().toLowerCase());
 }
