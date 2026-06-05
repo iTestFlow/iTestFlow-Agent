@@ -1,5 +1,5 @@
 import { ContentShell } from "@/components/layout/content-shell";
-import { ExistingTestCaseReviewClient } from "@/shared/components/live/live-workflows";
+import { ExistingTestCaseReviewClient } from "./test-coverage-matrix-client";
 
 export default function TestCoverageMatrixPage() {
   return (

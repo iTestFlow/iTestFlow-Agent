@@ -1,5 +1,5 @@
 import { ContentShell } from "@/components/layout/content-shell"
-import { TestCaseGenerationClient } from "@/shared/components/live/live-workflows"
+import { TestCaseGenerationClient } from "./test-case-generation-client"
 
 export default function TestCaseDesignContextPage() {
   return (

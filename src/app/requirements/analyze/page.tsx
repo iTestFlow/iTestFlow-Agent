@@ -1,5 +1,5 @@
 import { ContentShell } from "@/components/layout/content-shell"
-import { RequirementAnalysisClient } from "@/shared/components/live/live-workflows"
+import { RequirementAnalysisClient } from "./requirement-analysis-client"
 
 export default function RequirementAnalyzePage() {
   return (
