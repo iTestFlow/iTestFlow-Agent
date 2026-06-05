@@ -1,5 +1,27 @@
 import type { ZodError } from "zod";
 
+export type ApiErrorPayload = {
+  error?: string;
+  validationErrors?: Array<{
+    field: string;
+    label: string;
+    message: string;
+  }>;
+};
+
+/**
+ * Client-side counterpart to {@link zodErrorResponse}: turn a parsed JSON error body into a
+ * human-readable message, falling back to `fallback` when the payload has no usable detail.
+ */
+export function apiErrorMessage(payload: unknown, fallback: string): string {
+  const json = payload as ApiErrorPayload;
+  if (json?.error) return json.error;
+  if (json?.validationErrors?.length) {
+    return json.validationErrors.map((item) => `${item.label}: ${item.message}`).join(" ");
+  }
+  return fallback;
+}
+
 const fieldLabels: Record<string, string> = {
   "azureDevOps.organizationUrl": "Azure DevOps Organization URL",
   "azureDevOps.personalAccessToken": "Azure DevOps Personal Access Token",

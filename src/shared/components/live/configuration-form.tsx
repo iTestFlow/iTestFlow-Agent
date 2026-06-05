@@ -1,9 +1,9 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, CheckCircle2, ChevronDown, Eye, EyeOff, Loader2, Search, ShieldCheck, XCircle } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, Eye, EyeOff, Loader2, ShieldCheck, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector";
@@ -18,6 +18,9 @@ import {
 } from "@/lib/project-context-defaults";
 import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION } from "@/modules/settings/cron-expression";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import { dispatchRuntimeSettingsChanged } from "@/shared/lib/runtime-settings-events";
+import { ModelPicker, useProviderModels } from "@/shared/components/live/model-picker";
+import { apiErrorMessage } from "@/shared/validators/api-validation-errors";
 
 type Provider = "openai" | "gemini" | "anthropic";
 
@@ -45,21 +48,6 @@ type TestResult = {
   llm: { success: boolean; error?: string };
 };
 
-type ModelOption = {
-  id: string;
-  displayName: string;
-  source: Provider;
-};
-
-type ApiErrorPayload = {
-  error?: string;
-  validationErrors?: Array<{
-    field: string;
-    label: string;
-    message: string;
-  }>;
-};
-
 export function ConfigurationForm({
   mode = "setup",
   redirectTo = "/dashboard",
@@ -74,11 +62,8 @@ export function ConfigurationForm({
   const [showSecrets, setShowSecrets] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [loadingModels, setLoadingModels] = useState(false);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
-  const [modelSearch, setModelSearch] = useState("");
-  const [modelError, setModelError] = useState<string | null>(null);
-  const [models, setModels] = useState<ModelOption[]>([]);
+  const { models, loading: loadingModels, error: modelError, load, reset: resetModels } = useProviderModels();
   const [hasSavedLlmKey, setHasSavedLlmKey] = useState(false);
   const [savedLlmProvider, setSavedLlmProvider] = useState<Provider | null>(null);
   const [activeProject, setActiveProject] = useState<ActiveProjectScope | null>(null);
@@ -103,15 +88,7 @@ export function ConfigurationForm({
     autoUpdateStates: DEFAULT_CONTEXT_STATES,
   });
 
-  const selectedModels = useMemo(() => models, [models]);
-  const filteredModels = useMemo(() => {
-    const query = modelSearch.trim().toLowerCase();
-    if (!query) return selectedModels;
-    return selectedModels.filter((model) => {
-      return model.id.toLowerCase().includes(query) || model.displayName.toLowerCase().includes(query);
-    });
-  }, [modelSearch, selectedModels]);
-  const selectedModelLabel = selectedModels.find((model) => model.id === form.model)?.displayName ?? (form.model || "Select a model from live provider API");
+  const selectedModelLabel = models.find((model) => model.id === form.model)?.displayName ?? (form.model || "Select a model from live provider API");
   const canUseSavedLlmKey = hasSavedLlmKey && savedLlmProvider === form.provider;
   const showAdvancedSettings = mode === "settings";
   const autoUpdateProject = activeProject ?? form.autoUpdateProjectScope;
@@ -159,40 +136,20 @@ export function ConfigurationForm({
   }, []);
 
   useEffect(() => {
-    setModels([]);
-    setModelError(null);
-  }, [form.provider, form.apiKey, form.baseUrl]);
+    resetModels();
+  }, [form.provider, form.apiKey, form.baseUrl, resetModels]);
 
   async function loadModelsFromProvider() {
     if (loadingModels) return;
 
     const requestedProvider = form.provider;
-    const typedApiKey = form.apiKey.trim();
+    const fetched = await load({
+      provider: requestedProvider,
+      apiKey: form.apiKey.trim() || undefined,
+      baseUrl: form.baseUrl.trim() || undefined,
+    });
 
-    setLoadingModels(true);
-    setModelError(null);
-    try {
-      const response = await fetch("/api/settings/llm-models", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider: requestedProvider,
-          apiKey: typedApiKey || undefined,
-          baseUrl: form.baseUrl.trim() || undefined,
-        }),
-      });
-      const json = await response.json();
-      if (!response.ok) throw new Error(apiErrorMessage(json, "Could not fetch provider models."));
-
-      const fetched = (json.models ?? []) as ModelOption[];
-      if (!fetched.length) {
-        setModels([]);
-        setModelError("No models were returned from the selected provider API.");
-        return;
-      }
-
-      setModels(fetched);
-      setModelError(null);
+    if (fetched && fetched.length) {
       setForm((current) => {
         if (current.provider !== requestedProvider) return current;
         return {
@@ -200,21 +157,13 @@ export function ConfigurationForm({
           model: fetched.some((model) => model.id === current.model) ? current.model : fetched[0].id,
         };
       });
-    } catch (err) {
-      setModels([]);
-      setModelError(err instanceof Error ? err.message : "Could not fetch provider models.");
-    } finally {
-      setLoadingModels(false);
     }
   }
 
   function toggleModelDropdown() {
     setModelDropdownOpen((current) => {
       const next = !current;
-      if (next) {
-        setModelSearch("");
-        void loadModelsFromProvider();
-      }
+      if (next) void loadModelsFromProvider();
       return next;
     });
   }
@@ -301,6 +250,7 @@ export function ConfigurationForm({
       const json = await response.json();
       if (!response.ok) throw new Error(apiErrorMessage(json, "Could not save runtime settings."));
       setMessage("Configuration saved locally. Live integrations will use these values now.");
+      dispatchRuntimeSettingsChanged(json);
       onSaved?.();
       if (redirectTo) router.push(redirectTo);
       router.refresh();
@@ -379,9 +329,7 @@ export function ConfigurationForm({
                     onChange={(event) => {
                       const provider = event.target.value as Provider;
                       setModelDropdownOpen(false);
-                      setModelSearch("");
-                      setModelError(null);
-                      setModels([]);
+                      resetModels();
                       setForm((current) => ({
                         ...current,
                         provider,
@@ -430,60 +378,21 @@ export function ConfigurationForm({
                       {loadingModels ? <Loader2 className="h-4 w-4 animate-spin text-primary" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
                     </button>
                     {modelDropdownOpen ? (
-                      <div className="absolute bottom-full z-[100] mb-1 max-h-96 w-full overflow-hidden rounded-md border border-input bg-card text-sm shadow-lg">
-                        <div className="sticky top-0 border-b border-border bg-card p-2">
-                          <div className="flex h-9 items-center gap-2 rounded-md border border-input bg-card px-2">
-                            <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
-                            <input
-                              className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-                              value={modelSearch}
-                              onChange={(event) => setModelSearch(event.target.value)}
-                              placeholder="Search models..."
-                              autoFocus
-                            />
-                          </div>
-                        </div>
-                        <div className="max-h-80 overflow-auto py-1">
-                        {loadingModels ? (
-                          <div className="flex items-center gap-2 px-3 py-3 text-muted-foreground">
-                            <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                            Loading {providerLabel(form.provider)} models...
-                          </div>
-                        ) : modelError ? (
-                          <div className="space-y-3 px-3 py-3">
-                            <div className="text-sm text-destructive">{modelError}</div>
-                            <button
-                              type="button"
-                              className="rounded-md border border-primary px-3 py-2 text-xs font-medium text-primary"
-                              onClick={() => void loadModelsFromProvider()}
-                            >
-                              Retry Loading Models
-                            </button>
-                          </div>
-                        ) : null}
-                        {!loadingModels && filteredModels.length ? (
-                          filteredModels.map((model) => (
-                            <button
-                              key={model.id}
-                              type="button"
-                              className={`block w-full px-3 py-2 text-left hover:bg-accent ${model.id === form.model ? "bg-accent text-primary" : "text-foreground"}`}
-                              onClick={() => {
-                                update("model", model.id);
-                                setModelDropdownOpen(false);
-                              }}
-                            >
-                              <span className="block truncate">{model.displayName}</span>
-                              <span className="block truncate font-mono text-[11px] text-muted-foreground">{model.id}</span>
-                            </button>
-                          ))
-                        ) : !loadingModels && !modelError ? (
-                          <div className="px-3 py-3 text-muted-foreground">
-                            {modelSearch ? "No models match your search." : "Open the dropdown to load models from the selected provider API."}
-                          </div>
-                        ) : (
-                          null
-                        )}
-                        </div>
+                      <div className="absolute bottom-full z-[100] mb-1 w-full overflow-hidden rounded-md border border-input bg-popover shadow-lg">
+                        <ModelPicker
+                          models={models}
+                          loading={loadingModels}
+                          error={modelError}
+                          providerLabel={providerLabel(form.provider)}
+                          currentModel={form.model}
+                          autoFocus
+                          emptyHint="Open the dropdown to load models from the selected provider API."
+                          onRetry={() => void loadModelsFromProvider()}
+                          onSelect={(modelId) => {
+                            update("model", modelId);
+                            setModelDropdownOpen(false);
+                          }}
+                        />
                       </div>
                     ) : null}
                   </div>
@@ -701,13 +610,4 @@ function defaultBaseUrlPlaceholder(provider: Provider) {
     case "anthropic":
       return "https://api.anthropic.com";
   }
-}
-
-function apiErrorMessage(payload: unknown, fallback: string) {
-  const json = payload as ApiErrorPayload;
-  if (json?.error) return json.error;
-  if (json?.validationErrors?.length) {
-    return json.validationErrors.map((item) => `${item.label}: ${item.message}`).join(" ");
-  }
-  return fallback;
 }
