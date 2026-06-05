@@ -19,6 +19,8 @@ import {
   ErrorBlock,
   Metric,
   SectionCard,
+  SummaryCard,
+  SummaryTotalCard,
   ToneBadge,
   copyTextWithFeedback,
   formatEnumLabel,
@@ -27,6 +29,7 @@ import {
   projectWarning,
   scrollToNextStep,
   severityTone,
+  type SummaryRow,
   useActiveProject,
 } from "@/components/workflow/test-intelligence-shared";
 import type {
@@ -141,6 +144,31 @@ export function RequirementAnalysisClient() {
   const sortedFindingList = useMemo(
     () => [...(analysis.data?.findings ?? [])].sort((left, right) => severityRank(left.severity) - severityRank(right.severity)),
     [analysis.data],
+  );
+  const findingStats = useMemo(() => {
+    const findings = analysis.data?.findings ?? [];
+    const severityCounts = countFindingsBySeverity(findings);
+    const byType = findings.reduce<Record<string, number>>((counts, finding) => {
+      counts[finding.issueType] = (counts[finding.issueType] ?? 0) + 1;
+      return counts;
+    }, {});
+
+    return {
+      total: severityCounts.total,
+      bySeverity: severityCounts,
+      byType: Object.entries(byType).sort(([firstType], [secondType]) => firstType.localeCompare(secondType)),
+    };
+  }, [analysis.data]);
+  const severityBreakdown = useMemo<SummaryRow[]>(() => [
+    { label: "Critical", value: findingStats.bySeverity.critical, tone: "red" },
+    { label: "High", value: findingStats.bySeverity.high, tone: "red" },
+    { label: "Medium", value: findingStats.bySeverity.medium, tone: "amber" },
+    { label: "Low", value: findingStats.bySeverity.low, tone: "green" },
+    { label: "Info", value: findingStats.bySeverity.info, tone: "slate" },
+  ], [findingStats]);
+  const typeBreakdown = useMemo<SummaryRow[]>(
+    () => findingStats.byType.map(([type, count]) => ({ label: formatEnumLabel(type), value: count, tone: "cyan" as const })),
+    [findingStats],
   );
   const selectedFindingList = useMemo(
     () => sortedFindingList.filter((finding) => selectedFindings[finding.id]),
@@ -428,6 +456,11 @@ export function RequirementAnalysisClient() {
       {analysis.data ? (
         <div ref={findingsCardRef}>
           <SectionCard title="Requirement Analysis Findings">
+            <div className="grid gap-3 border-b border-border bg-muted p-4 lg:grid-cols-[180px_minmax(260px,1fr)_minmax(260px,1fr)]">
+              <SummaryTotalCard label="Total Findings" total={findingStats.total} />
+              <SummaryCard title="Severity Breakdown" rows={severityBreakdown} />
+              <SummaryCard title="Type" rows={typeBreakdown} emptyLabel="No finding types yet" />
+            </div>
             <div className="grid gap-3 border-b p-4 md:grid-cols-4">
               <Metric label="Quality" value={analysis.data.summary.overallQuality} />
               <Metric label="Clarity" value={analysis.data.summary.clarityScore} />

@@ -246,29 +246,31 @@ export function Metric({ label, value }: { label: string; value: string | number
   );
 }
 
-type GeneratedCaseSummaryRow = {
+export type SummaryTone = "red" | "amber" | "blue" | "green" | "cyan" | "slate";
+
+export type SummaryRow = {
   label: string;
   value: number;
-  tone: "red" | "amber" | "blue" | "cyan" | "slate";
+  tone: SummaryTone;
 };
 
-function GeneratedCaseTotalCard({ total }: { total: number }) {
+export function SummaryTotalCard({ label = "Total", total }: { label?: string; total: number }) {
   return (
     <div className="rounded-md border border-border bg-card p-4">
-      <div className="text-base font-semibold text-muted-foreground">Total</div>
+      <div className="text-base font-semibold text-muted-foreground">{label}</div>
       <div className="mt-2 text-4xl font-bold text-foreground">{total}</div>
     </div>
   );
 }
 
-function GeneratedCaseSummaryCard({
+export function SummaryCard({
   title,
   rows,
   emptyLabel = "No values yet",
   footer,
 }: {
   title: string;
-  rows: GeneratedCaseSummaryRow[];
+  rows: SummaryRow[];
   emptyLabel?: string;
   footer?: ReactNode;
 }) {
@@ -280,7 +282,7 @@ function GeneratedCaseSummaryCard({
       {hasValues ? (
         <div className="mt-3 grid gap-2">
           {rows.map((row) => (
-            <GeneratedCaseSummaryRowItem key={row.label} row={row} />
+            <SummaryRowItem key={row.label} row={row} />
           ))}
         </div>
       ) : (
@@ -293,11 +295,12 @@ function GeneratedCaseSummaryCard({
   );
 }
 
-function GeneratedCaseSummaryRowItem({ row }: { row: GeneratedCaseSummaryRow }) {
+function SummaryRowItem({ row }: { row: SummaryRow }) {
   const toneStyles = {
     red: "bg-destructive/10 text-destructive",
-    amber: "bg-warning/15 text-warning-foreground",
+    amber: "bg-warning/15 text-warning-foreground dark:text-warning",
     blue: "bg-accent text-primary",
+    green: "bg-success/10 text-success",
     cyan: "bg-info/10 text-info",
     slate: "bg-muted text-foreground",
   }[row.tone];
@@ -344,14 +347,14 @@ export function EditableGeneratedCases({
       byType: Object.entries(byType).sort(([firstType], [secondType]) => firstType.localeCompare(secondType)),
     };
   }, [testCases]);
-  const priorityBreakdown = useMemo<GeneratedCaseSummaryRow[]>(() =>
+  const priorityBreakdown = useMemo<SummaryRow[]>(() =>
     ([1, 2, 3, 4] as const).map((priority) => ({
       label: `Priority ${priority}`,
       value: testCaseStats.byPriority[priority],
       tone: priority === 1 ? "red" : priority === 2 ? "amber" : priority === 3 ? "blue" : "slate",
     })),
   [testCaseStats]);
-  const scopeBreakdown = useMemo<GeneratedCaseSummaryRow[]>(
+  const scopeBreakdown = useMemo<SummaryRow[]>(
     () => testCaseStats.byType.map(([type, count]) => ({ label: formatEnumLabel(type), value: count, tone: "cyan" as const })),
     [testCaseStats],
   );
@@ -377,9 +380,9 @@ export function EditableGeneratedCases({
   return (
     <SectionCard title={title} description="Edit titles and steps inline before publishing.">
       <div className="grid gap-3 border-b border-border bg-muted p-4 lg:grid-cols-[180px_minmax(260px,1fr)_minmax(260px,1fr)]">
-        <GeneratedCaseTotalCard total={testCaseStats.total} />
-        <GeneratedCaseSummaryCard title="Priority Breakdown" rows={priorityBreakdown} />
-        <GeneratedCaseSummaryCard title="Type" rows={scopeBreakdown} emptyLabel="No scope values yet" />
+        <SummaryTotalCard total={testCaseStats.total} />
+        <SummaryCard title="Priority Breakdown" rows={priorityBreakdown} />
+        <SummaryCard title="Type" rows={scopeBreakdown} emptyLabel="No scope values yet" />
       </div>
       <div className="divide-y divide-border">
         {testCases.length ? testCases.map((testCase, index) => (
