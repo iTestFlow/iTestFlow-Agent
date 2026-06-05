@@ -298,12 +298,22 @@ function isStringClosingQuote(
   if (stringRole === "object-key") return next === ":";
   if (next === undefined || next === "}" || next === "]") return true;
   if (next !== ",") return false;
-  if (container === "array" || stringRole === "array-value") return true;
 
   const afterComma = nextSignificantIndex(value, cursor + 1);
+  if (container === "array" || stringRole === "array-value") {
+    return afterComma === -1 || value[afterComma] === "]" || isLikelyJsonValueStart(value, afterComma);
+  }
+
   if (afterComma === -1) return true;
   if (value[afterComma] !== '"') return false;
   return quotedTokenIsFollowedByColon(value, afterComma);
+}
+
+function isLikelyJsonValueStart(value: string, index: number) {
+  const char = value[index];
+  if (char === '"' || char === "{" || char === "[") return true;
+  if (char === "-" || /\d/.test(char)) return true;
+  return value.startsWith("true", index) || value.startsWith("false", index) || value.startsWith("null", index);
 }
 
 function nextSignificantIndex(value: string, startIndex: number) {
