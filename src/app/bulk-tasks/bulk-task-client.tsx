@@ -21,8 +21,10 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Callout } from "@/components/qa/callout";
+import { ProjectUserPicker } from "@/components/domain/project-user-picker";
 import { StatCard } from "@/components/qa/stat-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import type { ProjectUser } from "@/types/azure-devops";
 
 type TargetMode = "iteration" | "manual";
 type StorySortKey = "state" | "assignedTo";
@@ -44,13 +46,6 @@ type UserStory = {
   assignedTo?: string;
   areaPath?: string;
   iterationPath?: string;
-};
-
-type ProjectUser = {
-  id: string;
-  displayName: string;
-  uniqueName?: string;
-  imageUrl?: string;
 };
 
 type TargetRow = {
@@ -366,12 +361,15 @@ export function BulkTaskClient() {
           </div>
           <div className="space-y-3">
             <Field label="Default assignee">
-              <AssigneeSelect
+              <ProjectUserPicker
+                mode="single"
                 value={defaultAssignedTo}
                 users={projectUsers}
                 loading={usersLoading}
-                onChange={setDefaultAssignedTo}
+                onValueChange={setDefaultAssignedTo}
                 placeholder="No default assignee"
+                emptyOptionLabel="No default assignee"
+                ariaLabel="Default assignee"
               />
             </Field>
             <Field label="Default original estimate">
@@ -719,12 +717,15 @@ function TargetOverrideTable({
                 </div>
               </TableCell>
               <TableCell>
-                <AssigneeSelect
+                <ProjectUserPicker
+                  mode="single"
                   value={rowOverride.assignedTo}
                   users={users}
                   loading={usersLoading}
-                  onChange={(value) => onChange(row.storyId, "assignedTo", value)}
+                  onValueChange={(value) => onChange(row.storyId, "assignedTo", value)}
                   placeholder="Template default"
+                  emptyOptionLabel="Template default"
+                  ariaLabel={`Assignee override for story ${row.storyId}`}
                   className="min-w-[220px]"
                 />
               </TableCell>
@@ -748,40 +749,6 @@ function TargetOverrideTable({
         })}
       </TableBody>
     </Table>
-  );
-}
-
-function AssigneeSelect({
-  value,
-  users,
-  loading,
-  onChange,
-  placeholder,
-  className = "",
-}: {
-  value: string;
-  users: ProjectUser[];
-  loading: boolean;
-  onChange: (value: string) => void;
-  placeholder: string;
-  className?: string;
-}) {
-  const userValues = new Set(users.map((user) => assigneeValue(user)));
-  return (
-    <select
-      className={`focus-ring h-10 w-full rounded-md border border-input bg-card px-3 text-sm ${className}`}
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      disabled={loading}
-    >
-      <option value="">{loading ? "Loading users..." : placeholder}</option>
-      {value && !userValues.has(value) ? <option value={value}>{value}</option> : null}
-      {users.map((user) => (
-        <option key={user.id} value={assigneeValue(user)}>
-          {user.displayName}{user.uniqueName ? ` (${user.uniqueName})` : ""}
-        </option>
-      ))}
-    </select>
   );
 }
 
@@ -909,10 +876,6 @@ function startOfLocalDay(value?: string) {
 function endOfLocalDay(value?: string) {
   const start = startOfLocalDay(value);
   return new Date(start.getFullYear(), start.getMonth(), start.getDate(), 23, 59, 59, 999);
-}
-
-function assigneeValue(user: ProjectUser) {
-  return user.uniqueName ?? user.displayName;
 }
 
 function formatDate(value: string) {

@@ -107,13 +107,6 @@ export type TestSuite = {
   planId: string;
 };
 
-export type ProjectUser = {
-  id: string;
-  displayName: string;
-  uniqueName?: string;
-  imageUrl?: string;
-};
-
 export type ExistingLinkedTestCase = {
   id: string;
   title: string;

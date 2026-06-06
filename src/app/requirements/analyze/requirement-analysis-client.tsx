@@ -1,17 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, Copy, Loader2, Play, Send, Users, X } from "lucide-react";
+import { CheckCircle2, Copy, Play, Send, X } from "lucide-react";
 
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
+import { ProjectUserPicker, projectUserLabel } from "@/components/domain/project-user-picker";
 import { Callout } from "@/components/qa/callout";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
@@ -39,7 +37,6 @@ import {
 import type {
   ApiState,
   ManualPromptDraft,
-  ProjectUser,
   RequirementAnalysisRunResult,
   RequirementFinding,
   RequirementSummary,
@@ -51,6 +48,7 @@ import {
   type RequirementAnalysisChecklistItemId,
 } from "@/modules/requirement-analysis/checklist-options";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
+import type { ProjectUser } from "@/types/azure-devops";
 
 function severityRank(value: RequirementFinding["severity"]) {
   const ranks: Record<RequirementFinding["severity"], number> = {
@@ -69,16 +67,6 @@ function severityMarker(value: RequirementFinding["severity"]) {
 
 function checklistItemTitle(checklistItemId: RequirementAnalysisChecklistItemId) {
   return requirementAnalysisChecklistOptions.find((checklistItem) => checklistItem.id === checklistItemId)?.title ?? formatEnumLabel(checklistItemId);
-}
-
-function initialsFromName(value?: string) {
-  if (!value) return "AD";
-  const words = value.trim().split(/\s+/).filter(Boolean);
-  return words.slice(0, 2).map((word) => word[0]?.toUpperCase()).join("") || "AD";
-}
-
-function projectUserLabel(user: ProjectUser) {
-  return user.uniqueName ? `${user.displayName} (${user.uniqueName})` : user.displayName;
 }
 
 function buildCommentBodyWithMentions(commentBody: string, mentionedUsers: ProjectUser[]) {
@@ -711,19 +699,11 @@ function RequirementMentionPicker({
   disabled: boolean;
   onSelectionChange: (userIds: string[]) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const selectedIdSet = useMemo(() => new Set(selectedUserIds), [selectedUserIds]);
-  const triggerLabel = loading ? "Loading members" : selectedUsers.length ? `${selectedUsers.length} selected` : "Mention members";
-
   function setUserSelected(userId: string, selected: boolean) {
     const nextIds = selected
       ? [...selectedUserIds, userId].filter((value, index, values) => values.indexOf(value) === index)
       : selectedUserIds.filter((value) => value !== userId);
     onSelectionChange(nextIds);
-  }
-
-  function toggleUser(userId: string) {
-    setUserSelected(userId, !selectedIdSet.has(userId));
   }
 
   return (
@@ -751,65 +731,21 @@ function RequirementMentionPicker({
           {error ? <div className="mt-2 text-xs text-destructive">{error}</div> : null}
         </div>
 
-        <Popover open={open} onOpenChange={setOpen}>
-          <PopoverTrigger asChild>
-            <Button type="button" variant="secondary" disabled={disabled} className="w-full justify-between lg:w-auto">
-              <span className="inline-flex items-center gap-2">
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Users className="h-4 w-4" />}
-                {triggerLabel}
-              </span>
-              <ChevronDown className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`} />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent align="end" className="w-[360px] max-w-[calc(100vw-2rem)] p-0">
-            <Command>
-              <CommandInput placeholder="Search project users" />
-              <CommandList>
-                {loading ? (
-                  <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Loading project users
-                  </div>
-                ) : null}
-                {!loading && error ? <div className="px-3 py-4 text-sm text-destructive">{error}</div> : null}
-                {!loading && !error ? (
-                  <>
-                    <CommandEmpty>No project users found.</CommandEmpty>
-                    <CommandGroup>
-                      {users.map((user) => {
-                        const selected = selectedIdSet.has(user.id);
-                        return (
-                          <CommandItem
-                            key={user.id}
-                            value={projectUserLabel(user)}
-                            onSelect={() => toggleUser(user.id)}
-                            className="items-start gap-3 py-2"
-                          >
-                            <Checkbox
-                              checked={selected}
-                              onClick={(event) => event.stopPropagation()}
-                              onCheckedChange={(checked) => setUserSelected(user.id, checked === true)}
-                              aria-label={`Mention ${user.displayName}`}
-                              className="mt-2"
-                            />
-                            <Avatar size="sm" className="mt-0.5">
-                              {user.imageUrl ? <AvatarImage src={user.imageUrl} alt="" /> : null}
-                              <AvatarFallback>{initialsFromName(user.displayName)}</AvatarFallback>
-                            </Avatar>
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-sm font-medium text-foreground">{user.displayName}</div>
-                              {user.uniqueName ? <div className="truncate text-xs text-muted-foreground">{user.uniqueName}</div> : null}
-                            </div>
-                          </CommandItem>
-                        );
-                      })}
-                    </CommandGroup>
-                  </>
-                ) : null}
-              </CommandList>
-            </Command>
-          </PopoverContent>
-        </Popover>
+        <ProjectUserPicker
+          mode="multiple"
+          value={selectedUserIds}
+          onValueChange={onSelectionChange}
+          users={users}
+          loading={loading}
+          error={error}
+          disabled={disabled}
+          placeholder="Mention members"
+          ariaLabel="Mention members"
+          triggerVariant="secondary"
+          triggerClassName="h-8 w-full lg:w-auto"
+          contentClassName="w-[360px]"
+          align="end"
+        />
       </div>
     </div>
   );

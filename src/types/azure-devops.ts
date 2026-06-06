@@ -19,6 +19,13 @@ export type WorkItemType = "User Story" | "Bug" | "Feature" | "Task" | "Test Cas
 export type WorkItemState = "New" | "Active" | "Resolved" | "Closed" | "Ready for QA"
 export type WorkItemPriority = "1 - Critical" | "2 - High" | "3 - Medium" | "4 - Low"
 
+export type ProjectUser = {
+  id: string
+  displayName: string
+  uniqueName?: string
+  imageUrl?: string
+}
+
 export type WorkItem = {
   id: string
   numericId: number

@@ -1,8 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, Copy, FileUp, Loader2, Play, Plus, Send, Trash2, User, X } from "lucide-react";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { AlertTriangle, CheckCircle2, ChevronDown, Copy, FileUp, Loader2, Play, Plus, Send, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,10 +12,12 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { Callout } from "@/components/qa/callout";
+import { ProjectUserPicker } from "@/components/domain/project-user-picker";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import type { ProjectUser } from "@/types/azure-devops";
 
 type WorkflowMode = "auto" | "manual";
 type FieldValue = string | number | boolean;
@@ -25,13 +26,6 @@ type ApiState<T> = {
   loading: boolean;
   error: string | null;
   data: T | null;
-};
-
-type ProjectUser = {
-  id: string;
-  displayName: string;
-  uniqueName?: string;
-  imageUrl?: string;
 };
 
 type AzureClassificationPath = {
@@ -648,12 +642,17 @@ export function BugCreateClient() {
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Field label="Assignee">
-              <AssigneePicker
+              <ProjectUserPicker
+                mode="single"
                 value={assignedTo}
                 users={users}
                 loading={metadata.loading}
                 disabled={!scope}
-                onChange={setAssignedTo}
+                onValueChange={setAssignedTo}
+                placeholder="Unassigned"
+                emptyOptionLabel="Unassigned"
+                clearable
+                ariaLabel="Assignee"
               />
             </Field>
             <Field label="Area path">
@@ -859,110 +858,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <Label>{label}</Label>
       {children}
     </div>
-  );
-}
-
-function AssigneePicker({
-  value,
-  users,
-  loading,
-  disabled,
-  onChange,
-}: {
-  value: string;
-  users: ProjectUser[];
-  loading: boolean;
-  disabled: boolean;
-  onChange: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const selectedUser = users.find((user) => assigneeValue(user) === value);
-  const selectedLabel = selectedUser ? projectUserLabel(selectedUser) : value;
-  const triggerLabel = loading ? "Loading users..." : selectedLabel || "Unassigned";
-
-  function selectUser(user: ProjectUser) {
-    onChange(assigneeValue(user));
-    setOpen(false);
-  }
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <div className="flex gap-2">
-        <PopoverTrigger asChild>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={disabled || loading}
-            className="h-10 min-w-0 flex-1 justify-between px-3"
-          >
-            <span className="inline-flex min-w-0 items-center gap-2">
-              {selectedUser ? (
-                <Avatar size="sm">
-                  {selectedUser.imageUrl ? <AvatarImage src={selectedUser.imageUrl} alt="" /> : null}
-                  <AvatarFallback>{initialsFromName(selectedUser.displayName)}</AvatarFallback>
-                </Avatar>
-              ) : loading ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <User className="size-4" />
-              )}
-              <span className="truncate">{triggerLabel}</span>
-            </span>
-            <ChevronDown className={`size-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
-          </Button>
-        </PopoverTrigger>
-        {value ? (
-          <Button type="button" variant="ghost" size="icon" onClick={() => onChange("")} aria-label="Clear assignee">
-            <X className="size-4" />
-          </Button>
-        ) : null}
-      </div>
-      <PopoverContent align="start" className="w-[380px] max-w-[calc(100vw-2rem)] p-0">
-        <Command>
-          <CommandInput placeholder="Search project users" />
-          <CommandList>
-            {loading ? (
-              <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" />
-                Loading project users
-              </div>
-            ) : null}
-            {!loading ? (
-              <>
-                <CommandEmpty>No project users found.</CommandEmpty>
-                <CommandGroup>
-                  <CommandItem value="Unassigned" data-checked={!value} onSelect={() => { onChange(""); setOpen(false); }}>
-                    <User className="size-4" />
-                    Unassigned
-                  </CommandItem>
-                  {users.map((user) => {
-                    const userValue = assigneeValue(user);
-                    return (
-                      <CommandItem
-                        key={user.id}
-                        value={projectUserLabel(user)}
-                        data-checked={value === userValue}
-                        onSelect={() => selectUser(user)}
-                        className="items-start gap-3 py-2"
-                      >
-                        <Avatar size="sm" className="mt-0.5">
-                          {user.imageUrl ? <AvatarImage src={user.imageUrl} alt="" /> : null}
-                          <AvatarFallback>{initialsFromName(user.displayName)}</AvatarFallback>
-                        </Avatar>
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-medium">{user.displayName}</div>
-                          {user.uniqueName ? <div className="truncate text-xs text-muted-foreground">{user.uniqueName}</div> : null}
-                        </div>
-                      </CommandItem>
-                    );
-                  })}
-                </CommandGroup>
-              </>
-            ) : null}
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
   );
 }
 
@@ -1645,20 +1540,6 @@ function coerceCustomFieldValue(value: string, field?: BugFieldMetadata): FieldV
 function findField(fields: BugFieldMetadata[], value: string) {
   const normalized = value.trim().toLowerCase();
   return fields.find((field) => field.referenceName.toLowerCase() === normalized || field.name.toLowerCase() === normalized);
-}
-
-function assigneeValue(user: ProjectUser) {
-  return user.uniqueName ?? user.displayName;
-}
-
-function projectUserLabel(user: ProjectUser) {
-  return user.uniqueName ? `${user.displayName} (${user.uniqueName})` : user.displayName;
-}
-
-function initialsFromName(value?: string) {
-  if (!value) return "AD";
-  const words = value.trim().split(/\s+/).filter(Boolean);
-  return words.slice(0, 2).map((word) => word[0]?.toUpperCase()).join("") || "AD";
 }
 
 function defaultFieldValue(field: BugFieldMetadata) {
