@@ -1,14 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, Copy, Loader2, Plus, Send, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { SearchableCombobox } from "@/components/ui/searchable-combobox";
 import { Callout } from "@/components/qa/callout";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
+import { RefreshButton } from "@/components/qa/refresh-button";
 import { toneClass, type Tone } from "@/components/qa/tone";
 import { cn } from "@/lib/utils";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
@@ -51,6 +54,7 @@ export async function postJson<T>(url: string, body: unknown, signal?: AbortSign
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal,
+    cache: "no-store",
   });
   const text = await response.text();
   const json = parseJsonResponse(text, response.ok);
@@ -587,22 +591,35 @@ export function PublishGeneratedCasesPanel({
   const [createRequirementSuite, setCreateRequirementSuite] = useState(false);
   const [testPlans, setTestPlans] = useState<TestPlan[]>([]);
   const [testSuites, setTestSuites] = useState<TestSuite[]>([]);
+  const [plansLoading, setPlansLoading] = useState(false);
+  const [suitesLoading, setSuitesLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
+  const [suiteError, setSuiteError] = useState<string | null>(null);
+  const [suiteNotice, setSuiteNotice] = useState<string | null>(null);
   const [state, setState] = useState<ApiState<PublishRunResult>>({ loading: false, error: null, data: null });
+  const suiteRequestRef = useRef(0);
+  const suiteAbortRef = useRef<AbortController | null>(null);
+  const parentSuiteInputRef = useRef("");
   const selectedTestPlanId = useMemo(() => extractAzureId(testPlanInput, "plan"), [testPlanInput]);
   const selectedSuiteId = useMemo(() => extractAzureId(parentSuiteInput, "suite"), [parentSuiteInput]);
   const selectedPlanLabel = testPlans.find((plan) => plan.id === selectedTestPlanId);
-  const selectedSuiteLabel = testSuites.find((suite) => suite.id === selectedSuiteId);
+  const staticTestSuites = useMemo(
+    () => testSuites.filter((suite) => suite.suiteType === "staticTestSuite"),
+    [testSuites],
+  );
+  const selectedSuiteLabel = staticTestSuites.find((suite) => suite.id === selectedSuiteId);
   const targetControlsDisabled = !createRequirementSuite;
 
   useEffect(() => {
     if (!scope || !createRequirementSuite) {
       setTestPlans([]);
+      setPlansLoading(false);
       setPlanError(null);
       return;
     }
 
     const controller = new AbortController();
+    setPlansLoading(true);
     setPlanError(null);
     postJson<{ testPlans: TestPlan[] }>("/api/azure-devops/test-plans", { scope }, controller.signal)
       .then((data) => setTestPlans(data.testPlans))
@@ -610,39 +627,93 @@ export function PublishGeneratedCasesPanel({
         if (!controller.signal.aborted) {
           setPlanError(error instanceof Error ? error.message : "Azure Test Plan fetch failed.");
         }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setPlansLoading(false);
       });
     return () => controller.abort();
   }, [scope, createRequirementSuite]);
 
+  const loadTestSuites = useCallback(async (
+    testPlanId: string,
+    mode: "plan-change" | "refresh",
+  ) => {
+    if (!scope || !testPlanId || !createRequirementSuite) return;
+
+    suiteAbortRef.current?.abort();
+    const controller = new AbortController();
+    suiteAbortRef.current = controller;
+    const requestId = ++suiteRequestRef.current;
+    if (mode === "plan-change") setTestSuites([]);
+    setSuitesLoading(true);
+    setSuiteError(null);
+    setSuiteNotice(null);
+
+    try {
+      const data = await postJson<{ testSuites: TestSuite[] }>(
+        "/api/azure-devops/test-suites",
+        { scope, testPlanId },
+        controller.signal,
+      );
+      if (suiteRequestRef.current !== requestId) return;
+
+      const nextSuites = data.testSuites ?? [];
+      const staticIds = new Set(
+        nextSuites
+          .filter((suite) => suite.suiteType === "staticTestSuite")
+          .map((suite) => suite.id),
+      );
+      setTestSuites(nextSuites);
+      const currentId = extractAzureId(parentSuiteInputRef.current, "suite");
+      if (currentId && !staticIds.has(currentId)) {
+        parentSuiteInputRef.current = "";
+        setParentSuiteInput("");
+        if (mode === "refresh") {
+          setSuiteNotice("The previously selected parent suite is no longer available as a static suite.");
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && suiteRequestRef.current === requestId) {
+        setSuiteError(error instanceof Error ? error.message : "Azure Test Suite fetch failed.");
+      }
+    } finally {
+      if (suiteRequestRef.current === requestId) setSuitesLoading(false);
+    }
+  }, [scope, createRequirementSuite]);
+
   useEffect(() => {
     if (!scope || !selectedTestPlanId || !createRequirementSuite) {
+      suiteAbortRef.current?.abort();
+      suiteRequestRef.current += 1;
       setTestSuites([]);
+      setSuitesLoading(false);
+      setSuiteError(null);
+      setSuiteNotice(null);
       return;
     }
+    void loadTestSuites(selectedTestPlanId, "plan-change");
+  }, [scope, selectedTestPlanId, createRequirementSuite, loadTestSuites]);
 
-    const controller = new AbortController();
-    setPlanError(null);
-    postJson<{ testSuites: TestSuite[] }>(
-      "/api/azure-devops/test-suites",
-      { scope, testPlanId: selectedTestPlanId },
-      controller.signal,
-    )
-      .then((data) => setTestSuites(data.testSuites))
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          setPlanError(error instanceof Error ? error.message : "Azure Test Suite fetch failed.");
-        }
-      });
-    return () => controller.abort();
-  }, [scope, selectedTestPlanId, createRequirementSuite]);
+  useEffect(() => () => {
+    suiteRequestRef.current += 1;
+    suiteAbortRef.current?.abort();
+  }, []);
 
   function selectPlan(value: string) {
+    suiteAbortRef.current?.abort();
+    suiteRequestRef.current += 1;
     setTestPlanInput(value);
+    parentSuiteInputRef.current = "";
     setParentSuiteInput("");
+    setTestSuites([]);
+    setSuitesLoading(false);
+    setSuiteError(null);
+    setSuiteNotice(null);
     setState({ loading: false, error: null, data: null });
   }
 
   function selectSuite(value: string) {
+    parentSuiteInputRef.current = value;
     setParentSuiteInput(value);
     setState({ loading: false, error: null, data: null });
   }
@@ -697,36 +768,40 @@ export function PublishGeneratedCasesPanel({
       description="Create Azure Test Case work items, link them to the user story, and optionally create a requirement-based suite."
     >
       <div className="space-y-4 p-4">
-        <label className="flex items-center gap-2 text-sm font-medium text-foreground">
-          <input
-            type="checkbox"
+        <label className="flex cursor-pointer items-start gap-2">
+          <Checkbox
             checked={createRequirementSuite}
-            onChange={(event) => {
-              setCreateRequirementSuite(event.target.checked);
+            onCheckedChange={(checked) => {
+              setCreateRequirementSuite(checked === true);
               setState({ loading: false, error: null, data: null });
             }}
-            className="h-4 w-4"
-            aria-label="Create requirement-based suite for this user story"
+            className="mt-0.5"
           />
-          Create requirement-based suite for this user story
+          <span className="text-sm font-medium text-foreground">
+            Create requirement-based suite for this user story
+          </span>
         </label>
 
         <div className={`space-y-4 transition ${targetControlsDisabled ? "opacity-50" : "opacity-100"}`}>
           <div className="grid gap-3 lg:grid-cols-2">
-            <select
-              className={generatedCaseSelectClass}
+            <SearchableCombobox
               value={selectedTestPlanId}
-              onChange={(event) => selectPlan(event.target.value)}
+              options={testPlans.map((plan) => ({
+                value: plan.id,
+                label: plan.name,
+                description: `Test Plan ID ${plan.id}`,
+              }))}
+              onValueChange={selectPlan}
+              loading={plansLoading}
               disabled={targetControlsDisabled}
+              placeholder="Select Azure Test Plan"
+              loadingText="Loading Azure Test Plans..."
+              searchPlaceholder="Search plans by name or ID"
+              emptyMessage="No Azure Test Plans found."
               aria-label="Select Azure Test Plan"
-            >
-              <option value="">Select Azure Test Plan</option>
-              {testPlans.map((plan) => (
-                <option key={plan.id} value={plan.id}>
-                  {plan.id} - {plan.name}
-                </option>
-              ))}
-            </select>
+              selectedLabel={selectedPlanLabel ? `${selectedPlanLabel.id} - ${selectedPlanLabel.name}` : undefined}
+              triggerClassName="h-9"
+            />
             <Input
               value={testPlanInput}
               onChange={(event) => selectPlan(event.target.value)}
@@ -736,20 +811,32 @@ export function PublishGeneratedCasesPanel({
           </div>
 
           <div className="grid gap-3 lg:grid-cols-2">
-            <select
-              className={generatedCaseSelectClass}
-              value={selectedSuiteId}
-              onChange={(event) => selectSuite(event.target.value)}
-              disabled={targetControlsDisabled || !selectedTestPlanId}
-              aria-label="Select Parent Suite"
-            >
-              <option value="">Select Parent Suite</option>
-              {testSuites.map((suite) => (
-                <option key={suite.id} value={suite.id}>
-                  {suite.id} - {suite.name}
-                </option>
-              ))}
-            </select>
+            <div className="flex min-w-0 items-center gap-2">
+              <SearchableCombobox
+                value={selectedSuiteId}
+                options={staticTestSuites.map((suite) => ({
+                  value: suite.id,
+                  label: suite.name,
+                  description: `${suite.id} - ${suite.path ?? suite.name}`,
+                  searchText: suite.path,
+                }))}
+                onValueChange={selectSuite}
+                loading={suitesLoading}
+                disabled={targetControlsDisabled || !selectedTestPlanId}
+                placeholder="Select Parent Suite"
+                loadingText="Loading parent suites..."
+                searchPlaceholder="Search static suites by name, ID, or path"
+                emptyMessage="No static parent suites found."
+                aria-label="Select Parent Suite"
+                selectedLabel={selectedSuiteLabel ? `${selectedSuiteLabel.id} - ${selectedSuiteLabel.name}` : undefined}
+                triggerClassName="h-9 min-w-0 flex-1"
+              />
+              <RefreshButton
+                disabled={targetControlsDisabled || !selectedTestPlanId || suitesLoading}
+                onClick={() => void loadTestSuites(selectedTestPlanId, "refresh")}
+                loading={suitesLoading}
+              />
+            </div>
             <Input
               value={parentSuiteInput}
               onChange={(event) => selectSuite(event.target.value)}
@@ -757,9 +844,18 @@ export function PublishGeneratedCasesPanel({
               disabled={targetControlsDisabled}
             />
           </div>
+          {createRequirementSuite ? (
+            <div className="text-xs leading-5 text-muted-foreground">
+              Only static suites can be selected as a parent. Requirement-based and query-based suites are hidden.
+            </div>
+          ) : null}
+          {createRequirementSuite && suiteNotice ? (
+            <div className="text-xs leading-5 text-warning-foreground dark:text-warning">{suiteNotice}</div>
+          ) : null}
         </div>
 
         {createRequirementSuite && planError ? <ErrorBlock message={planError} /> : null}
+        {createRequirementSuite && suiteError ? <ErrorBlock message={suiteError} /> : null}
         {state.error ? <ErrorBlock message={state.error} /> : null}
 
         <div className="flex justify-end">

@@ -105,6 +105,8 @@ export type TestSuite = {
   id: string;
   name: string;
   planId: string;
+  path?: string;
+  suiteType?: string;
 };
 
 export type ExistingLinkedTestCase = {

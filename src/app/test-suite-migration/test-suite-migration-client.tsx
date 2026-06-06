@@ -1,20 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowRight, Check, ChevronsUpDown, ClipboardList, GitBranch, Loader2, MoveRight, RefreshCw, Send, ShieldAlert } from "lucide-react";
+import { AlertTriangle, ArrowRight, ClipboardList, GitBranch, Loader2, MoveRight, Send, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
+import { RefreshButton } from "@/components/qa/refresh-button";
+import { SettingSwitch } from "@/components/qa/setting-switch";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatCard } from "@/components/qa/stat-card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { SearchableCombobox } from "@/components/ui/searchable-combobox";
 import {
   Table,
   TableBody,
@@ -44,11 +45,13 @@ type ApiState = {
   error: string | null;
 };
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
+async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
+    cache: "no-store",
   });
   const text = await response.text();
   const json = parseJsonResponse(text, response.ok);
@@ -68,6 +71,14 @@ function parseJsonResponse(text: string, ok: boolean) {
 export function TestSuiteMigrationClient() {
   const previewSectionRef = useRef<HTMLDivElement | null>(null);
   const reportSectionRef = useRef<HTMLDivElement | null>(null);
+  const sourceTreeRequestRef = useRef(0);
+  const targetTreeRequestRef = useRef(0);
+  const sourceTreeAbortRef = useRef<AbortController | null>(null);
+  const targetTreeAbortRef = useRef<AbortController | null>(null);
+  const selectedSuiteIdsRef = useRef<string[]>([]);
+  const targetParentSuiteIdRef = useRef("");
+  const sourcePlanIdRef = useRef("");
+  const targetPlanIdRef = useRef("");
   const [scope, setScope] = useState<ActiveProjectScope | null>(null);
   const [plans, setPlans] = useState<TestPlan[]>([]);
   const [sourcePlanId, setSourcePlanId] = useState("");
@@ -87,7 +98,49 @@ export function TestSuiteMigrationClient() {
   const [preview, setPreview] = useState<MigrationPreview | null>(null);
   const [report, setReport] = useState<MigrationReport | null>(null);
   const [sourceSuiteSearch, setSourceSuiteSearch] = useState("");
-  const [targetParentOpen, setTargetParentOpen] = useState(false);
+  const [sourceTreeNotice, setSourceTreeNotice] = useState<string | null>(null);
+  const [targetTreeNotice, setTargetTreeNotice] = useState<string | null>(null);
+
+  const updateSelectedSuiteIds = useCallback((suiteIds: string[]) => {
+    selectedSuiteIdsRef.current = suiteIds;
+    setSelectedSuiteIds(suiteIds);
+  }, []);
+
+  const updateTargetParentSuiteId = useCallback((suiteId: string) => {
+    targetParentSuiteIdRef.current = suiteId;
+    setTargetParentSuiteId(suiteId);
+  }, []);
+
+  const updateSourcePlanId = useCallback((testPlanId: string) => {
+    sourcePlanIdRef.current = testPlanId;
+    setSourcePlanId(testPlanId);
+  }, []);
+
+  const updateTargetPlanId = useCallback((testPlanId: string) => {
+    targetPlanIdRef.current = testPlanId;
+    setTargetPlanId(testPlanId);
+  }, []);
+
+  const resetForProjectChange = useCallback(() => {
+    sourceTreeAbortRef.current?.abort();
+    targetTreeAbortRef.current?.abort();
+    sourceTreeRequestRef.current += 1;
+    targetTreeRequestRef.current += 1;
+    setPlans([]);
+    updateSourcePlanId("");
+    updateTargetPlanId("");
+    setSourceTree([]);
+    setTargetTree([]);
+    updateSelectedSuiteIds([]);
+    updateTargetParentSuiteId("");
+    setSourceSuiteSearch("");
+    setSourceTreeNotice(null);
+    setTargetTreeNotice(null);
+    setSourceTreeState({ loading: false, error: null });
+    setTargetTreeState({ loading: false, error: null });
+    setPreview(null);
+    setReport(null);
+  }, [updateSelectedSuiteIds, updateSourcePlanId, updateTargetParentSuiteId, updateTargetPlanId]);
 
   useEffect(() => {
     setScope(readActiveProject());
@@ -98,7 +151,7 @@ export function TestSuiteMigrationClient() {
     };
     window.addEventListener("itestflow:active-project-changed", onChange);
     return () => window.removeEventListener("itestflow:active-project-changed", onChange);
-  }, []);
+  }, [resetForProjectChange]);
 
   useEffect(() => {
     if (!scope) return;
@@ -109,8 +162,16 @@ export function TestSuiteMigrationClient() {
         if (cancelled) return;
         const nextPlans = data.testPlans ?? [];
         setPlans(nextPlans);
-        setSourcePlanId((current) => current || nextPlans[0]?.id || "");
-        setTargetPlanId((current) => current || nextPlans[0]?.id || "");
+        setSourcePlanId((current) => {
+          const next = current || nextPlans[0]?.id || "";
+          sourcePlanIdRef.current = next;
+          return next;
+        });
+        setTargetPlanId((current) => {
+          const next = current || nextPlans[0]?.id || "";
+          targetPlanIdRef.current = next;
+          return next;
+        });
       })
       .catch((error: unknown) => {
         if (!cancelled) setPlansState({ loading: false, error: error instanceof Error ? error.message : "Azure Test Plan fetch failed." });
@@ -123,59 +184,239 @@ export function TestSuiteMigrationClient() {
     };
   }, [scope]);
 
-  const loadSuiteTree = useCallback(async (kind: "source" | "target", testPlanId: string) => {
-    if (!scope) return;
-    const setState = kind === "source" ? setSourceTreeState : setTargetTreeState;
-    const setTree = kind === "source" ? setSourceTree : setTargetTree;
-    setState({ loading: true, error: null });
-    if (kind === "source") {
-      setSelectedSuiteIds([]);
-      setPreview(null);
-      setReport(null);
-    }
-    try {
-      const data = await postJson<{ suiteTree: SuiteTreeNode[] }>("/api/test-suite-migration/tree", { scope, testPlanId });
-      setTree(data.suiteTree ?? []);
-      if (kind === "target") {
-        const firstSuiteId = flattenTree(data.suiteTree ?? [])[0]?.id ?? "";
-        setTargetParentSuiteId((current) => current || firstSuiteId);
+  const applySourceTree = useCallback((nextTree: SuiteTreeNode[], announceRemovedSelections: boolean) => {
+    const validIds = new Set(flattenTree(nextTree).map((suite) => suite.id));
+    const currentIds = selectedSuiteIdsRef.current;
+    const nextIds = currentIds.filter((suiteId) => validIds.has(suiteId));
+    setSourceTree(nextTree);
+    if (nextIds.length !== currentIds.length) {
+      updateSelectedSuiteIds(nextIds);
+      if (announceRemovedSelections) {
+        setSourceTreeNotice("Some selected source suites no longer exist and were removed from the selection.");
       }
-    } catch (error) {
-      setState({ loading: false, error: error instanceof Error ? error.message : "Azure Test Suite tree fetch failed." });
+    }
+  }, [updateSelectedSuiteIds]);
+
+  const applyTargetTree = useCallback((
+    nextTree: SuiteTreeNode[],
+    selectInitialParent: boolean,
+    announceRemovedSelection: boolean,
+  ) => {
+    const staticSuites = flattenTree(nextTree).filter(isStaticSuite);
+    const staticIds = new Set(staticSuites.map((suite) => suite.id));
+    const currentParentId = targetParentSuiteIdRef.current;
+    setTargetTree(nextTree);
+
+    if (selectInitialParent) {
+      updateTargetParentSuiteId(staticSuites[0]?.id ?? "");
       return;
     }
-    setState({ loading: false, error: null });
-  }, [scope]);
+    if (currentParentId && !staticIds.has(currentParentId)) {
+      updateTargetParentSuiteId("");
+      if (announceRemovedSelection) {
+        setTargetTreeNotice("The selected target parent is no longer available as a static suite.");
+      }
+    }
+  }, [updateTargetParentSuiteId]);
+
+  const loadSuiteTree = useCallback(async (
+    kind: "source" | "target",
+    testPlanId: string,
+    reason: "plan-change" | "refresh" | "post-migration",
+  ) => {
+    if (!scope) return;
+    const setState = kind === "source" ? setSourceTreeState : setTargetTreeState;
+    const requestRef = kind === "source" ? sourceTreeRequestRef : targetTreeRequestRef;
+    const abortRef = kind === "source" ? sourceTreeAbortRef : targetTreeAbortRef;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const requestId = ++requestRef.current;
+
+    if (reason === "plan-change") {
+      if (kind === "source") {
+        setSourceTree([]);
+        updateSelectedSuiteIds([]);
+        setSourceTreeNotice(null);
+      } else {
+        setTargetTree([]);
+        updateTargetParentSuiteId("");
+        setTargetTreeNotice(null);
+      }
+      setPreview(null);
+      setReport(null);
+    } else if (kind === "source") {
+      setSourceTreeNotice(null);
+    } else {
+      setTargetTreeNotice(null);
+    }
+
+    setState({ loading: true, error: null });
+    try {
+      const data = await postJson<{ suiteTree: SuiteTreeNode[] }>(
+        "/api/test-suite-migration/tree",
+        { scope, testPlanId },
+        controller.signal,
+      );
+      if (requestRef.current !== requestId) return;
+
+      const nextTree = data.suiteTree ?? [];
+      if (kind === "source") {
+        applySourceTree(nextTree, reason !== "plan-change");
+      } else {
+        applyTargetTree(nextTree, reason === "plan-change", reason !== "plan-change");
+      }
+      if (reason === "refresh") {
+        setPreview(null);
+        setReport(null);
+      }
+      setState({ loading: false, error: null });
+    } catch (error) {
+      if (!controller.signal.aborted && requestRef.current === requestId) {
+        setState({ loading: false, error: error instanceof Error ? error.message : "Azure Test Suite tree fetch failed." });
+      }
+    } finally {
+      if (requestRef.current === requestId) {
+        setState((current) => ({ ...current, loading: false }));
+      }
+    }
+  }, [scope, applySourceTree, applyTargetTree, updateSelectedSuiteIds, updateTargetParentSuiteId]);
+
+  const loadSharedSuiteTree = useCallback(async (testPlanId: string) => {
+    if (!scope) return;
+
+    sourceTreeAbortRef.current?.abort();
+    targetTreeAbortRef.current?.abort();
+    const controller = new AbortController();
+    sourceTreeAbortRef.current = controller;
+    targetTreeAbortRef.current = controller;
+    const sourceRequestId = ++sourceTreeRequestRef.current;
+    const targetRequestId = ++targetTreeRequestRef.current;
+    setSourceTreeState({ loading: true, error: null });
+    setTargetTreeState({ loading: true, error: null });
+    setSourceTreeNotice(null);
+    setTargetTreeNotice(null);
+
+    try {
+      const data = await postJson<{ suiteTree: SuiteTreeNode[] }>(
+        "/api/test-suite-migration/tree",
+        { scope, testPlanId },
+        controller.signal,
+      );
+      const nextTree = data.suiteTree ?? [];
+      if (sourceTreeRequestRef.current === sourceRequestId) {
+        applySourceTree(nextTree, true);
+        setSourceTreeState({ loading: false, error: null });
+      }
+      if (targetTreeRequestRef.current === targetRequestId) {
+        applyTargetTree(nextTree, false, true);
+        setTargetTreeState({ loading: false, error: null });
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      const message = error instanceof Error ? error.message : "Azure Test Suite tree fetch failed.";
+      if (sourceTreeRequestRef.current === sourceRequestId) {
+        setSourceTreeState({ loading: false, error: message });
+      }
+      if (targetTreeRequestRef.current === targetRequestId) {
+        setTargetTreeState({ loading: false, error: message });
+      }
+    } finally {
+      if (sourceTreeRequestRef.current === sourceRequestId) {
+        setSourceTreeState((current) => ({ ...current, loading: false }));
+      }
+      if (targetTreeRequestRef.current === targetRequestId) {
+        setTargetTreeState((current) => ({ ...current, loading: false }));
+      }
+    }
+  }, [scope, applySourceTree, applyTargetTree]);
+
+  useEffect(() => {
+    return () => {
+      sourceTreeRequestRef.current += 1;
+      targetTreeRequestRef.current += 1;
+      sourceTreeAbortRef.current?.abort();
+      targetTreeAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     if (!scope || !sourcePlanId) {
+      sourceTreeAbortRef.current?.abort();
+      sourceTreeRequestRef.current += 1;
       setSourceTree([]);
+      updateSelectedSuiteIds([]);
+      setSourceTreeState({ loading: false, error: null });
       return;
     }
-    void loadSuiteTree("source", sourcePlanId);
-  }, [loadSuiteTree, scope, sourcePlanId]);
+    void loadSuiteTree("source", sourcePlanId, "plan-change");
+  }, [loadSuiteTree, scope, sourcePlanId, updateSelectedSuiteIds]);
 
   useEffect(() => {
     if (!scope || !targetPlanId) {
+      targetTreeAbortRef.current?.abort();
+      targetTreeRequestRef.current += 1;
       setTargetTree([]);
+      updateTargetParentSuiteId("");
+      setTargetTreeState({ loading: false, error: null });
       return;
     }
-    void loadSuiteTree("target", targetPlanId);
-  }, [loadSuiteTree, scope, targetPlanId]);
+    void loadSuiteTree("target", targetPlanId, "plan-change");
+  }, [loadSuiteTree, scope, targetPlanId, updateTargetParentSuiteId]);
 
   const sourceFlatSuites = useMemo(() => flattenTree(sourceTree), [sourceTree]);
   const targetFlatSuites = useMemo(() => flattenTree(targetTree), [targetTree]);
+  const targetStaticSuites = useMemo(() => targetFlatSuites.filter(isStaticSuite), [targetFlatSuites]);
   const filteredSourceTree = useMemo(() => filterSuiteTree(sourceTree, sourceSuiteSearch), [sourceTree, sourceSuiteSearch]);
   const selectedTargetParentSuite = useMemo(
-    () => targetFlatSuites.find((suite) => suite.id === targetParentSuiteId),
-    [targetFlatSuites, targetParentSuiteId],
+    () => targetStaticSuites.find((suite) => suite.id === targetParentSuiteId),
+    [targetStaticSuites, targetParentSuiteId],
   );
   const selectedSuiteNames = useMemo(
     () => selectedSuiteIds.map((suiteId) => sourceFlatSuites.find((suite) => suite.id === suiteId)?.name ?? suiteId),
     [selectedSuiteIds, sourceFlatSuites],
   );
-  const canPreview = Boolean(scope && sourcePlanId && targetPlanId && targetParentSuiteId && selectedSuiteIds.length && !previewState.loading);
+  const canPreview = Boolean(
+    scope &&
+    sourcePlanId &&
+    targetPlanId &&
+    targetParentSuiteId &&
+    selectedSuiteIds.length &&
+    !sourceTreeState.loading &&
+    !targetTreeState.loading &&
+    !previewState.loading
+  );
   const canExecute = Boolean(preview && !preview.errors.length && !executeState.loading);
+
+  const refreshAfterMigration = useCallback(async (
+    migrationReport: MigrationReport,
+    request: TestSuiteMigrationRequest,
+  ) => {
+    const affectedPlanIds = new Set<string>();
+    if (migrationReport.summary.suitesCreated > 0) affectedPlanIds.add(request.targetTestPlanId);
+    if (migrationReport.summary.sourceSuitesDeleted > 0) affectedPlanIds.add(request.sourceTestPlanId);
+    if (!affectedPlanIds.size) return;
+
+    const currentSourcePlanId = sourcePlanIdRef.current;
+    const currentTargetPlanId = targetPlanIdRef.current;
+    const refreshSource = affectedPlanIds.has(currentSourcePlanId);
+    const refreshTarget = affectedPlanIds.has(currentTargetPlanId);
+    if (!refreshSource && !refreshTarget) return;
+
+    if (refreshSource && refreshTarget && currentSourcePlanId === currentTargetPlanId) {
+      await loadSharedSuiteTree(currentSourcePlanId);
+      return;
+    }
+
+    await Promise.all([
+      refreshSource
+        ? loadSuiteTree("source", currentSourcePlanId, "post-migration")
+        : Promise.resolve(),
+      refreshTarget
+        ? loadSuiteTree("target", currentTargetPlanId, "post-migration")
+        : Promise.resolve(),
+    ]);
+  }, [loadSharedSuiteTree, loadSuiteTree]);
 
   function buildRequest(): TestSuiteMigrationRequest | null {
     if (!scope) return null;
@@ -237,6 +478,7 @@ export function TestSuiteMigrationClient() {
         });
       });
       toast.success(`Migration ${formatStatus(data.report.status)}.`);
+      void refreshAfterMigration(data.report, request);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Suite migration failed.";
       setExecuteState({ loading: false, error: message });
@@ -244,20 +486,6 @@ export function TestSuiteMigrationClient() {
       return;
     }
     setExecuteState({ loading: false, error: null });
-  }
-
-  function resetForProjectChange() {
-    setPlans([]);
-    setSourcePlanId("");
-    setTargetPlanId("");
-    setSourceTree([]);
-    setTargetTree([]);
-    setSelectedSuiteIds([]);
-    setTargetParentSuiteId("");
-    setSourceSuiteSearch("");
-    setTargetParentOpen(false);
-    setPreview(null);
-    setReport(null);
   }
 
   return (
@@ -300,14 +528,41 @@ export function TestSuiteMigrationClient() {
           <section className="space-y-3">
             <SectionLabel icon={GitBranch} label="Source" />
             <Field label="Source test plan">
-              <PlanSelect value={sourcePlanId} plans={plans} loading={plansState.loading} onChange={setSourcePlanId} />
+              <SearchableCombobox
+                value={sourcePlanId}
+                options={plans.map((plan) => ({
+                  value: plan.id,
+                  label: plan.name,
+                  description: `Test Plan ID ${plan.id}`,
+                }))}
+                onValueChange={(value) => {
+                  updateSourcePlanId(value);
+                  updateSelectedSuiteIds([]);
+                  setPreview(null);
+                  setReport(null);
+                }}
+                loading={plansState.loading}
+                placeholder="Select source test plan"
+                loadingText="Loading test plans..."
+                searchPlaceholder="Search plans by name or ID"
+                emptyMessage="No test plans found."
+                aria-label="Select source test plan"
+                selectedLabel={formatSelectedPlan(plans, sourcePlanId)}
+              />
             </Field>
-            <div className="rounded-md border border-border bg-background">
-              <div className="flex items-center justify-between border-b px-3 py-2">
-                <span className="text-sm font-semibold">Source suites</span>
-                <Badge variant="secondary">{selectedSuiteIds.length} selected</Badge>
+            <div className="overflow-hidden rounded-md border border-border bg-card shadow-sm">
+              <div className="flex flex-col gap-2 border-b border-border bg-card px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                <span className="text-sm font-semibold text-foreground">Source suites</span>
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary">{selectedSuiteIds.length} selected</Badge>
+                  <RefreshButton
+                    onClick={() => sourcePlanId && void loadSuiteTree("source", sourcePlanId, "refresh")}
+                    disabled={!sourcePlanId || sourceTreeState.loading}
+                    loading={sourceTreeState.loading}
+                  />
+                </div>
               </div>
-              <div className="border-b p-3">
+              <div className="border-b border-border bg-card p-3">
                 <Input
                   value={sourceSuiteSearch}
                   onChange={(event) => setSourceSuiteSearch(event.target.value)}
@@ -320,11 +575,11 @@ export function TestSuiteMigrationClient() {
                   </div>
                 ) : null}
               </div>
-              <div className="max-h-[420px] overflow-auto p-3">
+              <div className="max-h-[420px] overflow-auto bg-card p-3">
                 {sourceTreeState.loading ? (
                   <LoadingInline label="Loading source suites..." />
                 ) : filteredSourceTree.length ? (
-                  <SuiteCheckboxTree nodes={filteredSourceTree} selectedIds={selectedSuiteIds} onChange={setSelectedSuiteIds} />
+                  <SuiteCheckboxTree nodes={filteredSourceTree} selectedIds={selectedSuiteIds} onChange={updateSelectedSuiteIds} />
                 ) : sourceTree.length ? (
                   <EmptyInline label="No source suites match the search." />
                 ) : (
@@ -332,28 +587,76 @@ export function TestSuiteMigrationClient() {
                 )}
               </div>
             </div>
+            {sourceTreeNotice ? (
+              <div className="text-xs leading-5 text-warning-foreground dark:text-warning">{sourceTreeNotice}</div>
+            ) : null}
           </section>
 
           <section className="space-y-3">
             <SectionLabel icon={MoveRight} label="Target" />
             <Field label="Target test plan">
-              <PlanSelect value={targetPlanId} plans={plans} loading={plansState.loading} onChange={(value) => { setTargetPlanId(value); setTargetParentSuiteId(""); }} />
-            </Field>
-            <Field label="Target parent suite">
-              <TargetParentSuitePicker
-                open={targetParentOpen}
-                onOpenChange={setTargetParentOpen}
-                suites={targetFlatSuites}
-                selectedSuite={selectedTargetParentSuite}
-                loading={targetTreeState.loading}
-                disabled={!targetPlanId || targetTreeState.loading}
-                onSelect={(suiteId) => {
-                  setTargetParentSuiteId(suiteId);
+              <SearchableCombobox
+                value={targetPlanId}
+                options={plans.map((plan) => ({
+                  value: plan.id,
+                  label: plan.name,
+                  description: `Test Plan ID ${plan.id}`,
+                }))}
+                onValueChange={(value) => {
+                  updateTargetPlanId(value);
+                  updateTargetParentSuiteId("");
                   setPreview(null);
                   setReport(null);
                 }}
+                loading={plansState.loading}
+                placeholder="Select target test plan"
+                loadingText="Loading test plans..."
+                searchPlaceholder="Search plans by name or ID"
+                emptyMessage="No test plans found."
+                aria-label="Select target test plan"
+                selectedLabel={formatSelectedPlan(plans, targetPlanId)}
               />
             </Field>
+            <Field label="Target parent suite">
+              <div className="flex min-w-0 items-center gap-2">
+                <SearchableCombobox
+                  value={targetParentSuiteId}
+                  options={targetStaticSuites.map((suite) => ({
+                    value: suite.id,
+                    label: suite.name,
+                    description: `${suite.id} - ${suite.path}`,
+                    searchText: suite.suiteType,
+                  }))}
+                  loading={targetTreeState.loading}
+                  disabled={!targetPlanId || targetTreeState.loading}
+                  placeholder="Select target parent suite"
+                  loadingText="Loading target suites..."
+                  searchPlaceholder="Search static suites by name, ID, or path"
+                  emptyMessage="No static target parent suites found."
+                  aria-label="Select target parent suite"
+                  selectedLabel={selectedTargetParentSuite
+                    ? `${selectedTargetParentSuite.id} - ${selectedTargetParentSuite.path}`
+                    : undefined}
+                  onValueChange={(suiteId) => {
+                    updateTargetParentSuiteId(suiteId);
+                    setPreview(null);
+                    setReport(null);
+                  }}
+                  triggerClassName="min-w-0 flex-1"
+                />
+                <RefreshButton
+                  disabled={!targetPlanId || targetTreeState.loading}
+                  onClick={() => void loadSuiteTree("target", targetPlanId, "refresh")}
+                  loading={targetTreeState.loading}
+                />
+              </div>
+            </Field>
+            <div className="text-xs leading-5 text-muted-foreground">
+              Only static suites can be selected as a parent. Requirement-based and query-based suites are hidden.
+            </div>
+            {targetTreeNotice ? (
+              <div className="text-xs leading-5 text-warning-foreground dark:text-warning">{targetTreeNotice}</div>
+            ) : null}
             <div className="rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
               Suite migration runs within the selected Azure DevOps project only.
             </div>
@@ -389,21 +692,16 @@ export function TestSuiteMigrationClient() {
                 <option value="latestOutcome">Migrate latest outcome</option>
               </select>
             </Field>
-            <Label className="flex items-start gap-3 rounded-md border border-border bg-background p-3 text-sm">
-              <Checkbox
-                checked={overwriteTargetOutcomes}
-                onCheckedChange={(checked) => {
-                  setOverwriteTargetOutcomes(checked === true);
-                  setPreview(null);
-                  setReport(null);
-                }}
-                className="mt-0.5"
-              />
-              <span>
-                <span className="block font-semibold">Overwrite target outcomes</span>
-                <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">Off by default. Existing target outcomes are skipped unless this is enabled.</span>
-              </span>
-            </Label>
+            <SettingSwitch
+              checked={overwriteTargetOutcomes}
+              onCheckedChange={(checked) => {
+                setOverwriteTargetOutcomes(checked);
+                setPreview(null);
+                setReport(null);
+              }}
+              label="Overwrite target outcomes"
+              description="Off by default. Existing target outcomes are skipped unless this is enabled."
+            />
           </section>
         </CardContent>
       </Card>
@@ -415,10 +713,6 @@ export function TestSuiteMigrationClient() {
             <div className="mt-1 truncate">{selectedSuiteNames.length ? selectedSuiteNames.join(", ") : "No source suites selected"}</div>
           </div>
           <div className="flex shrink-0 flex-col gap-2 sm:flex-row md:justify-self-end">
-            <Button className="whitespace-nowrap" variant="outline" onClick={() => sourcePlanId && void loadSuiteTree("source", sourcePlanId)} disabled={!sourcePlanId || sourceTreeState.loading}>
-              {sourceTreeState.loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-              Refresh Source
-            </Button>
             <Button className="whitespace-nowrap" onClick={previewMigration} disabled={!canPreview}>
               {previewState.loading ? <Loader2 className="size-4 animate-spin" /> : <ArrowRight className="size-4" />}
               Preview Migration
@@ -463,100 +757,6 @@ function SectionLabel({ icon: Icon, label }: { icon: typeof GitBranch; label: st
       <Icon className="size-4 text-primary" />
       {label}
     </div>
-  );
-}
-
-function PlanSelect({ value, plans, loading, onChange }: { value: string; plans: TestPlan[]; loading: boolean; onChange: (value: string) => void }) {
-  return (
-    <select
-      className="focus-ring h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      disabled={loading}
-    >
-      <option value="">{loading ? "Loading plans..." : "Select test plan"}</option>
-      {plans.map((plan) => (
-        <option key={plan.id} value={plan.id}>
-          {plan.id} - {plan.name}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function TargetParentSuitePicker({
-  open,
-  onOpenChange,
-  suites,
-  selectedSuite,
-  loading,
-  disabled,
-  onSelect,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  suites: SuiteTreeNode[];
-  selectedSuite?: SuiteTreeNode;
-  loading: boolean;
-  disabled: boolean;
-  onSelect: (suiteId: string) => void;
-}) {
-  return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          role="combobox"
-          aria-expanded={open}
-          disabled={disabled}
-          className="h-10 w-full justify-between px-3 text-left font-normal"
-        >
-          <span className="min-w-0 truncate">
-            {loading ? "Loading target suites..." : selectedSuite ? `${selectedSuite.id} - ${selectedSuite.path}` : "Select target parent suite"}
-          </span>
-          <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" aria-hidden="true" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-[min(520px,calc(100vw-3rem))] p-0">
-        <Command
-          filter={(value, search) => {
-            const query = normalizeSearch(search);
-            if (!query) return 1;
-            return normalizeSearch(value).includes(query) ? 1 : 0;
-          }}
-        >
-          <CommandInput placeholder="Search target suites by name, ID, or path" />
-          <CommandList className="max-h-80">
-            <CommandEmpty>No target suites found.</CommandEmpty>
-            <CommandGroup>
-              {suites.map((suite) => (
-                <CommandItem
-                  key={suite.id}
-                  value={`${suite.id} ${suite.name} ${suite.path} ${suite.suiteType ?? ""}`}
-                  onSelect={() => {
-                    onSelect(suite.id);
-                    onOpenChange(false);
-                  }}
-                  className="items-start"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate font-medium">{suite.name}</div>
-                    <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {suite.id} - {suite.path}
-                    </div>
-                  </div>
-                  <Check
-                    className={`ml-auto mt-1 size-4 shrink-0 ${selectedSuite?.id === suite.id ? "opacity-100" : "opacity-0"}`}
-                    aria-hidden="true"
-                  />
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
   );
 }
 
@@ -893,6 +1093,15 @@ function suiteMatches(node: SuiteTreeNode, normalizedQuery: string) {
 
 function normalizeSearch(value: string) {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+function isStaticSuite(suite: SuiteTreeNode) {
+  return suite.suiteType === "staticTestSuite";
+}
+
+function formatSelectedPlan(plans: TestPlan[], planId: string) {
+  const plan = plans.find((candidate) => candidate.id === planId);
+  return plan ? `${plan.id} - ${plan.name}` : undefined;
 }
 
 function flattenTree(nodes: SuiteTreeNode[]): SuiteTreeNode[] {

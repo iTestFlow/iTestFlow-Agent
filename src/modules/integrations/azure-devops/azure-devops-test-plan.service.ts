@@ -3,7 +3,7 @@ import "server-only";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
-import type { FinalApprovedTestCase } from "./azure-devops-types";
+import type { FinalApprovedTestCase, TestSuite } from "./azure-devops-types";
 
 type PublishSuiteMode = "existing" | "requirement" | "none";
 type PublishStepResult = { success: boolean; error?: string };
@@ -32,6 +32,22 @@ export async function publishApprovedTestCases(
 ) {
   const scope = assertProjectScope(scopeInput);
   const results: PublishCaseResult[] = [];
+
+  if (input.suiteMode === "requirement") {
+    const testPlanId = input.testPlanId ?? "";
+    const parentSuiteId = input.parentSuiteId ?? "";
+    const suiteTree = await adapter.fetchTestSuiteTree({
+      projectId: scope.azureProjectId,
+      testPlanId,
+    });
+    const parentSuite = findSuiteById(suiteTree, parentSuiteId);
+    if (!parentSuite) {
+      throw new Error(`Parent suite ${parentSuiteId} was not found in test plan ${testPlanId}.`);
+    }
+    if (parentSuite.suiteType !== "staticTestSuite") {
+      throw new Error("Only static suites can be selected as a parent for a requirement-based suite.");
+    }
+  }
 
   for (const testCase of input.testCases) {
     const created = await adapter.createTestCase({ projectId: scope.azureProjectId, testCase });
@@ -135,4 +151,13 @@ export async function publishApprovedTestCases(
   });
 
   return { results, requirementSuite };
+}
+
+function findSuiteById(suites: TestSuite[], suiteId: string): TestSuite | undefined {
+  for (const suite of suites) {
+    if (suite.id === suiteId) return suite;
+    const child = findSuiteById(suite.children ?? [], suiteId);
+    if (child) return child;
+  }
+  return undefined;
 }

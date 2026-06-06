@@ -17,7 +17,10 @@ export async function POST(request: Request) {
       projectId: parsed.data.scope.azureProjectId,
       testPlanId: parsed.data.testPlanId,
     });
-    return NextResponse.json({ suiteTree });
+    return NextResponse.json(
+      { suiteTree },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? sanitizeAzureError(error.message) : "Azure Test Suite tree fetch failed." },
