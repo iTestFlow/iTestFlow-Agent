@@ -504,6 +504,7 @@ function StatusText({
 
 function PublishResultSummary({ data }: { data: PublishRunResult }) {
   const successCount = data.results.filter((result) => result.success).length;
+  const showSuiteResult = data.suiteMode !== "none";
   return (
     <div className="rounded-md border border-border bg-card">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border p-3">
@@ -518,12 +519,27 @@ function PublishResultSummary({ data }: { data: PublishRunResult }) {
       </div>
       <div className="divide-y divide-border">
         {data.results.map((result) => (
-          <div key={result.localId} className="grid gap-3 p-3 text-sm lg:grid-cols-[140px_120px_120px_120px_minmax(0,1fr)]">
+          <div
+            key={result.localId}
+            className={cn(
+              "grid gap-3 p-3 text-sm",
+              showSuiteResult
+                ? "lg:grid-cols-[140px_120px_120px_120px_minmax(0,1fr)]"
+                : "lg:grid-cols-[140px_140px_140px_minmax(0,1fr)]",
+            )}
+          >
             <span className="font-mono text-xs text-primary">{result.localId}</span>
             <span>{result.azureTestCaseId ? `Azure ${result.azureTestCaseId}` : "Not created"}</span>
             <StatusText label="Create" success={result.create?.success} error={result.create?.error ?? result.error} />
             <StatusText label="Link" success={result.link?.success} error={result.link?.error} />
-            <StatusText label="Suite" success={result.suite?.success} error={result.suite?.error} detail={result.suite?.suiteName ?? result.suite?.suiteId} />
+            {showSuiteResult ? (
+              <StatusText
+                label="Suite"
+                success={result.suite?.success}
+                error={result.suite?.error}
+                detail={result.suite?.suiteName ?? result.suite?.suiteId}
+              />
+            ) : null}
           </div>
         ))}
       </div>
@@ -580,22 +596,44 @@ export function PublishGeneratedCasesPanel({
   const targetControlsDisabled = !createRequirementSuite;
 
   useEffect(() => {
-    if (!scope) return;
+    if (!scope || !createRequirementSuite) {
+      setTestPlans([]);
+      setPlanError(null);
+      return;
+    }
+
+    const controller = new AbortController();
     setPlanError(null);
-    postJson<{ testPlans: TestPlan[] }>("/api/azure-devops/test-plans", { scope })
+    postJson<{ testPlans: TestPlan[] }>("/api/azure-devops/test-plans", { scope }, controller.signal)
       .then((data) => setTestPlans(data.testPlans))
-      .catch((error: unknown) => setPlanError(error instanceof Error ? error.message : "Azure Test Plan fetch failed."));
-  }, [scope]);
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setPlanError(error instanceof Error ? error.message : "Azure Test Plan fetch failed.");
+        }
+      });
+    return () => controller.abort();
+  }, [scope, createRequirementSuite]);
 
   useEffect(() => {
     if (!scope || !selectedTestPlanId || !createRequirementSuite) {
       setTestSuites([]);
       return;
     }
+
+    const controller = new AbortController();
     setPlanError(null);
-    postJson<{ testSuites: TestSuite[] }>("/api/azure-devops/test-suites", { scope, testPlanId: selectedTestPlanId })
+    postJson<{ testSuites: TestSuite[] }>(
+      "/api/azure-devops/test-suites",
+      { scope, testPlanId: selectedTestPlanId },
+      controller.signal,
+    )
       .then((data) => setTestSuites(data.testSuites))
-      .catch((error: unknown) => setPlanError(error instanceof Error ? error.message : "Azure Test Suite fetch failed."));
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setPlanError(error instanceof Error ? error.message : "Azure Test Suite fetch failed.");
+        }
+      });
+    return () => controller.abort();
   }, [scope, selectedTestPlanId, createRequirementSuite]);
 
   function selectPlan(value: string) {
@@ -610,15 +648,27 @@ export function PublishGeneratedCasesPanel({
   }
 
   async function publish() {
-    if (!scope || !targetWorkItemId || !createRequirementSuite || !selectedTestPlanId || !selectedSuiteId || !testCases.length) return;
+    if (
+      !scope ||
+      !targetWorkItemId ||
+      !testCases.length ||
+      (createRequirementSuite && (!selectedTestPlanId || !selectedSuiteId))
+    ) {
+      return;
+    }
+
     setState({ loading: true, error: null, data: null });
     try {
       const data = await postJson<PublishRunResult>("/api/publish/test-cases", {
         scope,
         targetWorkItemId,
-        testPlanId: testPlanInput,
-        suiteMode: "requirement",
-        parentSuiteId: parentSuiteInput,
+        suiteMode: createRequirementSuite ? "requirement" : "none",
+        ...(createRequirementSuite
+          ? {
+              testPlanId: testPlanInput,
+              parentSuiteId: parentSuiteInput,
+            }
+          : {}),
         testCases: testCases.map((testCase) => ({
           ...testCase,
           localId: testCase.id,
@@ -637,16 +687,14 @@ export function PublishGeneratedCasesPanel({
   const disabled =
     !scope ||
     !targetWorkItemId ||
-    !createRequirementSuite ||
-    !selectedTestPlanId ||
-    !selectedSuiteId ||
     !testCases.length ||
+    (createRequirementSuite && (!selectedTestPlanId || !selectedSuiteId)) ||
     state.loading;
 
   return (
     <SectionCard
       title="Publish Generated Test Cases"
-      description="Create Azure Test Case work items, link them to the user story, then add them to a suite or create a requirement-based suite."
+      description="Create Azure Test Case work items, link them to the user story, and optionally create a requirement-based suite."
     >
       <div className="space-y-4 p-4">
         <label className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -711,7 +759,7 @@ export function PublishGeneratedCasesPanel({
           </div>
         </div>
 
-        {planError ? <ErrorBlock message={planError} /> : null}
+        {createRequirementSuite && planError ? <ErrorBlock message={planError} /> : null}
         {state.error ? <ErrorBlock message={state.error} /> : null}
 
         <div className="flex justify-end">
@@ -728,8 +776,14 @@ export function PublishGeneratedCasesPanel({
                 <p>Project: {scope?.azureProjectName ?? "Selected Azure DevOps project"}</p>
                 <p>User story: {targetWorkItemId}</p>
                 <p>Test cases: {testCases.length}</p>
-                <p>Test plan: {selectedPlanLabel ? `${selectedPlanLabel.id} - ${selectedPlanLabel.name}` : selectedTestPlanId}</p>
-                <p>Parent suite: {selectedSuiteLabel ? `${selectedSuiteLabel.id} - ${selectedSuiteLabel.name}` : selectedSuiteId}</p>
+                {createRequirementSuite ? (
+                  <>
+                    <p>Test plan: {selectedPlanLabel ? `${selectedPlanLabel.id} - ${selectedPlanLabel.name}` : selectedTestPlanId}</p>
+                    <p>Parent suite: {selectedSuiteLabel ? `${selectedSuiteLabel.id} - ${selectedSuiteLabel.name}` : selectedSuiteId}</p>
+                  </>
+                ) : (
+                  <p>Each created test case will be linked to this user story without creating a test suite.</p>
+                )}
               </div>
             }
             confirmLabel="Publish cases"

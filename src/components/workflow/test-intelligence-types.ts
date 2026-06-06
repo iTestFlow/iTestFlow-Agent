@@ -162,6 +162,7 @@ export type ExistingReviewResult = {
 };
 
 export type PublishRunResult = {
+  suiteMode: "existing" | "requirement" | "none";
   results: Array<{
     localId: string;
     azureTestCaseId?: string;
