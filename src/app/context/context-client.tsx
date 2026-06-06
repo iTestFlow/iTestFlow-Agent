@@ -22,6 +22,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector"
+import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -923,28 +924,20 @@ export function ProjectContextClient() {
         <TabsContent value="build" className="space-y-4">
           <Card className="qa-card">
             <CardHeader>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <CardTitle className="text-base">Build Knowledge</CardTitle>
-                {knowledgeSnapshot ? <Badge variant="outline">Prompt {knowledgeSnapshot.promptVersion}</Badge> : null}
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-base">Build Knowledge</CardTitle>
+                  {knowledgeSnapshot ? <Badge variant="outline">Prompt {knowledgeSnapshot.promptVersion}</Badge> : null}
+                </div>
+                <GenerationModeToggle
+                  mode={buildMode}
+                  onChange={changeBuildMode}
+                  ariaLabel="Knowledge build mode"
+                />
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <Tabs value={buildMode} onValueChange={(value) => changeBuildMode(value as BuildMode)} className="flex-col gap-4">
-                <TabsList variant="primary" className="h-auto w-fit">
-                  <TabsTrigger
-                    value="auto"
-                    className="h-9 px-3 duration-200"
-                  >
-                    Auto Generate
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="manual"
-                    className="h-9 px-3 duration-200"
-                  >
-                    External LLM
-                  </TabsTrigger>
-                </TabsList>
-
+              <Tabs value={buildMode} className="flex-col gap-4">
                 <BuildStepper step={buildStep} />
 
                 {buildError ? (
