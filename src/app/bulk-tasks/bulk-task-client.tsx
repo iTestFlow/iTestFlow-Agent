@@ -409,16 +409,16 @@ export function BulkTaskClient() {
         </CardHeader>
         <CardContent className="space-y-4">
           <Tabs value={targetMode} onValueChange={(value) => { setTargetMode(value as TargetMode); setResult(null); }} className="flex-col gap-4">
-            <TabsList className="h-auto rounded-md border border-border bg-muted p-1">
+            <TabsList variant="primary" className="h-auto">
               <TabsTrigger
                 value="iteration"
-                className="h-10 px-4 text-muted-foreground data-[state=active]:bg-primary data-[state=active]:font-semibold data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
+                className="h-10 px-4"
               >
                 Pick from list
               </TabsTrigger>
               <TabsTrigger
                 value="manual"
-                className="h-10 px-4 text-muted-foreground data-[state=active]:bg-primary data-[state=active]:font-semibold data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
+                className="h-10 px-4"
               >
                 Enter IDs
               </TabsTrigger>

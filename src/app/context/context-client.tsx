@@ -843,16 +843,16 @@ export function ProjectContextClient() {
       ) : null}
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TopTab)} className="flex-col gap-4">
-        <TabsList className="grid h-auto w-full grid-cols-2 rounded-md border border-border bg-muted p-1 sm:inline-grid sm:w-fit sm:min-w-[460px]">
+        <TabsList variant="primary" className="grid h-auto w-full grid-cols-2 sm:inline-grid sm:w-fit sm:min-w-[460px]">
           <TabsTrigger
             value="hub"
-            className="h-10 px-3 py-2 transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
+            className="h-10 px-3 py-2 duration-200"
           >
             Knowledge Hub
           </TabsTrigger>
           <TabsTrigger
             value="build"
-            className="h-10 px-3 py-2 transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
+            className="h-10 px-3 py-2 duration-200"
           >
             Build Knowledge
           </TabsTrigger>
@@ -930,16 +930,16 @@ export function ProjectContextClient() {
             </CardHeader>
             <CardContent className="space-y-4">
               <Tabs value={buildMode} onValueChange={(value) => changeBuildMode(value as BuildMode)} className="flex-col gap-4">
-                <TabsList className="h-auto w-fit rounded-md border border-border bg-muted p-1">
+                <TabsList variant="primary" className="h-auto w-fit">
                   <TabsTrigger
                     value="auto"
-                    className="h-9 px-3 transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
+                    className="h-9 px-3 duration-200"
                   >
                     Auto Generate
                   </TabsTrigger>
                   <TabsTrigger
                     value="manual"
-                    className="h-9 px-3 transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
+                    className="h-9 px-3 duration-200"
                   >
                     External LLM
                   </TabsTrigger>
