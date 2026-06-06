@@ -188,7 +188,7 @@ const existingTestCaseReviewOutputContract = {
       title: "Validate missing behavior",
       description: "Brief description of what the test validates",
       priority: "number only: 1|2|3|4, where 1 is highest and 4 is lowest",
-      type: "functional|smoke|sanity|regression|e2e|integration|unit|api|ui|security|performance|accessibility",
+      type: "execution type only: functional|smoke|sanity|regression|e2e|integration|unit|api|ui|security|performance|accessibility; never use a Coverage Focus value such as data-validation",
       category: "happy_path|negative|edge|boundary|integration|workflow|security|accessibility",
       tags: ["traceability", "TM-001"],
       relatedAcceptanceCriteria: ["TM-001 or AC reference"],

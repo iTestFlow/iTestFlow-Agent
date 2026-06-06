@@ -227,7 +227,7 @@ function generatedTestCaseShape() {
     title: "string",
     description: "string",
     priority: "number only: 1 | 2 | 3 | 4, where 1 is highest and 4 is lowest",
-    type: "functional | smoke | sanity | regression | e2e | integration | unit | api | ui | security | performance | accessibility",
+    type: "execution type only: functional | smoke | sanity | regression | e2e | integration | unit | api | ui | security | performance | accessibility; never use a Coverage Focus value such as data-validation",
     category: "string",
     tags: ["string"],
     relatedAcceptanceCriteria: ["string"],

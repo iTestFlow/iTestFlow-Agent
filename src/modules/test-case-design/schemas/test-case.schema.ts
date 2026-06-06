@@ -1,8 +1,14 @@
 import { z } from "zod";
 import { ContextUsedSchema } from "@/modules/llm/context-used";
 
-export const TestCasePrioritySchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]);
-export const TestCaseTypeSchema = z.enum([
+export const TestCasePrioritySchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string" || !/^[1-4]$/.test(value.trim())) return value;
+    return Number(value.trim());
+  },
+  z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+);
+const testCaseTypeValues = [
   "functional",
   "smoke",
   "sanity",
@@ -15,7 +21,32 @@ export const TestCaseTypeSchema = z.enum([
   "security",
   "performance",
   "accessibility",
-]);
+] as const;
+
+const testCaseTypeAliases: Record<string, (typeof testCaseTypeValues)[number]> = {
+  regression_impact: "regression",
+  integration_api: "integration",
+  security_permissions: "security",
+  data_validation: "functional",
+  edge_negative: "functional",
+  edge_cases_negative_scenarios: "functional",
+  ui_interaction: "ui",
+  ui_interaction_behavior: "ui",
+  responsive_layout: "ui",
+  localization_language_rtl_ltr: "ui",
+  localization_language_and_rtl_ltr: "ui",
+  end_to_end: "e2e",
+};
+
+export const TestCaseTypeSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    if (testCaseTypeValues.includes(normalized as (typeof testCaseTypeValues)[number])) return normalized;
+    return testCaseTypeAliases[normalized] ?? value;
+  },
+  z.enum(testCaseTypeValues),
+);
 
 export const TestCaseStepSchema = z.object({
   stepNumber: z.number().int().positive(),
