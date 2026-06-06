@@ -23,6 +23,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector"
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle"
+import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress"
+import { useAiGeneration } from "@/components/workflow/use-ai-generation"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -288,11 +290,12 @@ type KnowledgeExplorerEntry = {
   searchText: string
 }
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
+async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   })
   const text = await response.text()
   const json = parseJsonResponse(text, response.ok)
@@ -346,6 +349,7 @@ export function ProjectContextClient() {
   const [page, setPage] = useState(1)
   const [pageSize] = useState(25)
   const [totalPages, setTotalPages] = useState(1)
+  const gen = useAiGeneration()
   const [sortBy, setSortBy] = useState<ContextSortBy>("lastIndexedAt")
   const [sortDirection, setSortDirection] = useState<ContextSortDirection>("desc")
   const autoIndexStepRef = useRef<HTMLDivElement | null>(null)
@@ -615,25 +619,19 @@ export function ProjectContextClient() {
       scrollBuildSection(activeIndexStepRef())
       return
     }
+    if (gen.isRunning) return
 
-    setBuildLoading(true)
     setBuildError(null)
     setGeneratedDraft(null)
     setManualKnowledgeDraft(null)
     setManualKnowledgeValidatedBatches({})
-    try {
-      const draft = await postJson<KnowledgeGeneratedDraft>("/api/context/knowledge/preview", {
-        scope,
-        mode: compileMode,
-      })
-      setGeneratedDraft(draft)
-      setBuildStep(draft.alreadyCurrent ? "prepare" : "preview")
-      scrollBuildSection(draft.alreadyCurrent ? autoPrepareStepRef : autoPreviewStepRef)
-    } catch (prepareError) {
-      setBuildError(prepareError instanceof Error ? prepareError.message : "Knowledge preparation failed.")
-    } finally {
-      setBuildLoading(false)
-    }
+    const draft = await gen.start((signal) =>
+      postJson<KnowledgeGeneratedDraft>("/api/context/knowledge/preview", { scope, mode: compileMode }, signal),
+    )
+    if (!draft) return // cancelled or failed: the progress panel owns the message
+    setGeneratedDraft(draft)
+    setBuildStep(draft.alreadyCurrent ? "prepare" : "preview")
+    scrollBuildSection(draft.alreadyCurrent ? autoPrepareStepRef : autoPreviewStepRef)
   }
 
   async function prepareExternalKnowledge() {
@@ -985,12 +983,28 @@ export function ProjectContextClient() {
                     <div ref={autoPrepareStepRef} className="scroll-mt-4 space-y-4">
                       <KnowledgePreparePanel
                         compileMode={compileMode}
-                        canPrepare={canPrepareKnowledge}
-                        loading={buildLoading}
+                        canPrepare={canPrepareKnowledge && !gen.isRunning}
+                        loading={buildLoading || gen.isRunning}
                         onCompileModeChange={changeCompileMode}
                         onPrepare={prepareAutoKnowledge}
-                        actionLabel={buildLoading ? "Preparing..." : "Prepare Knowledge Preview"}
+                        actionLabel={buildLoading || gen.isRunning ? "Preparing..." : "Prepare Knowledge Preview"}
                       />
+
+                      {gen.status !== "idle" && gen.status !== "completed" ? (
+                        <AiGenerationProgress
+                          variant="generic"
+                          title="Building project knowledge"
+                          status={gen.status}
+                          elapsedSeconds={gen.elapsedSeconds}
+                          errorMessage={gen.errorMessage}
+                          canCancel
+                          onCancel={gen.cancel}
+                          onRetry={() => {
+                            gen.retry()
+                            void prepareAutoKnowledge()
+                          }}
+                        />
+                      ) : null}
 
                       {generatedDraft?.alreadyCurrent ? (
                         <GeneratedPreviewPanel

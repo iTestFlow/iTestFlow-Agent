@@ -15,6 +15,8 @@ import { cn } from "@/lib/utils";
 import { StatCard } from "@/components/qa/stat-card";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
+import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
+import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { isRequirementLikeType } from "@/components/workflow/test-intelligence-shared";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
@@ -178,6 +180,8 @@ export function TestExecutionEffortClient() {
   const [externalResponse, setExternalResponse] = useState("");
   const [loadingAction, setLoadingAction] = useState<"generate" | "prompt" | "submit" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const gen = useAiGeneration();
+  const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
 
   const requestPayload = useMemo(() => ({
     scope,
@@ -236,22 +240,32 @@ export function TestExecutionEffortClient() {
 
   async function generateEstimate() {
     if (!canSubmit()) return;
-    await runRequest("generate", "/api/test-execution-effort/generate", (data: GenerateResponse) => {
+    if (gen.isRunning) return;
+    setError(null);
+    const data = await gen.start((signal) =>
+      postJson<GenerateResponse>("/api/test-execution-effort/generate", requestPayload, signal),
+    );
+    if (data) {
       setPreview(data);
       setEstimateResult(data);
       setExternalDraft(null);
       setExternalResponse("");
-    });
+    }
   }
 
   async function prepareExternalPrompt() {
     if (!canSubmit()) return;
-    await runRequest("prompt", "/api/test-execution-effort/external-prompt", (data: ExternalPromptDraft) => {
+    if (prep.isRunning) return;
+    setError(null);
+    const data = await prep.start((signal) =>
+      postJson<ExternalPromptDraft>("/api/test-execution-effort/external-prompt", requestPayload, signal),
+    );
+    if (data) {
       setPreview(data);
       setEstimateResult(null);
       setExternalDraft(data);
       setExternalResponse("");
-    });
+    }
   }
 
   async function submitExternalResponse() {
@@ -290,19 +304,6 @@ export function TestExecutionEffortClient() {
     }
     setError(null);
     return true;
-  }
-
-  async function runRequest<TData>(action: "generate" | "prompt", url: string, onSuccess: (data: TData) => void) {
-    setLoadingAction(action);
-    setError(null);
-    try {
-      const data = await postJson<TData>(url, requestPayload);
-      onSuccess(data);
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Test Execution Effort request failed.");
-    } finally {
-      setLoadingAction(null);
-    }
   }
 
   const busy = Boolean(loadingAction);
@@ -406,14 +407,14 @@ export function TestExecutionEffortClient() {
           <div className="flex justify-end">
             <div className="flex flex-col gap-2 sm:flex-row">
               {mode === "auto" ? (
-                <Button onClick={generateEstimate} disabled={actionDisabled}>
-                  {loadingAction === "generate" ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-                  {loadingAction === "generate" ? "Generating..." : "Generate Estimate"}
+                <Button onClick={generateEstimate} disabled={actionDisabled || gen.isRunning}>
+                  {gen.isRunning ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+                  {gen.isRunning ? "Generating..." : "Generate Estimate"}
                 </Button>
               ) : (
-                <Button onClick={prepareExternalPrompt} disabled={actionDisabled}>
-                  {loadingAction === "prompt" ? <Loader2 className="size-4 animate-spin" /> : <SquareTerminal className="size-4" />}
-                  {loadingAction === "prompt" ? "Preparing..." : "Prepare External LLM Prompt"}
+                <Button onClick={prepareExternalPrompt} disabled={actionDisabled || prep.isRunning}>
+                  {prep.isRunning ? <Loader2 className="size-4 animate-spin" /> : <SquareTerminal className="size-4" />}
+                  {prep.isRunning ? "Preparing..." : "Prepare External LLM Prompt"}
                 </Button>
               )}
             </div>
@@ -431,6 +432,22 @@ export function TestExecutionEffortClient() {
 
       {preview ? <StorySummaryPanel preview={preview} /> : null}
 
+      {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
+        <AiGenerationProgress
+          mode="prep"
+          variant="advice"
+          status={prep.status}
+          elapsedSeconds={prep.elapsedSeconds}
+          errorMessage={prep.errorMessage}
+          canCancel
+          onCancel={prep.cancel}
+          onRetry={() => {
+            prep.retry();
+            void prepareExternalPrompt();
+          }}
+        />
+      ) : null}
+
       {externalDraft ? (
         <ManualLLMPanel
           prompt={externalDraft.prompt}
@@ -443,6 +460,20 @@ export function TestExecutionEffortClient() {
         />
       ) : null}
 
+      {gen.status !== "idle" && gen.status !== "completed" ? (
+        <AiGenerationProgress
+          variant="advice"
+          status={gen.status}
+          elapsedSeconds={gen.elapsedSeconds}
+          errorMessage={gen.errorMessage}
+          canCancel
+          onCancel={gen.cancel}
+          onRetry={() => {
+            gen.retry();
+            void generateEstimate();
+          }}
+        />
+      ) : null}
       {estimateResult ? <EstimateResultPanel result={estimateResult.estimate} /> : null}
     </div>
   );
@@ -747,11 +778,12 @@ function useActiveProject() {
   return scope;
 }
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
+async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   const data = await response.json();
   if (!response.ok) {

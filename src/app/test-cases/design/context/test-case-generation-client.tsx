@@ -10,12 +10,13 @@ import { Label } from "@/components/ui/label";
 import { Callout } from "@/components/qa/callout";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
+import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
+import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
 import { WorkItemPreview, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import {
   EditableGeneratedCases,
   EmptyBlock,
-  ErrorBlock,
   PublishGeneratedCasesPanel,
   SectionCard,
   postJson,
@@ -49,6 +50,8 @@ export function TestCaseGenerationClient() {
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const [extraInstructions, setExtraInstructions] = useState("");
   const [state, setState] = useState<ApiState<TestCaseGenerationRunResult>>({ loading: false, error: null, data: null });
+  const gen = useAiGeneration();
+  const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
   const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
@@ -157,36 +160,50 @@ export function TestCaseGenerationClient() {
 
   async function generate() {
     if (!scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
+    if (gen.isRunning) return;
     setState({ loading: true, error: null, data: null });
-    try {
-      const data = await postJson<TestCaseGenerationRunResult>("/api/test-cases/generate", {
-        scope,
-        targetWorkItemId,
-        options: buildTestDesignOptionsRequest(),
-        extraInstructions: normalizeExtraInstructions(extraInstructions),
-      });
+    const data = await gen.start((signal) =>
+      postJson<TestCaseGenerationRunResult>(
+        "/api/test-cases/generate",
+        {
+          scope,
+          targetWorkItemId,
+          options: buildTestDesignOptionsRequest(),
+          extraInstructions: normalizeExtraInstructions(extraInstructions),
+        },
+        signal,
+      ),
+    );
+    if (data) {
       applyGeneratedCases(data);
       scrollToNextStep(generatedCasesRef);
-    } catch (error) {
-      setState({ loading: false, error: error instanceof Error ? error.message : "Test case generation failed.", data: null });
+    } else {
+      setState({ loading: false, error: null, data: null });
     }
   }
 
   async function prepareManualPrompt() {
     if (!scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
+    if (prep.isRunning) return;
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
-    try {
-      const data = await postJson<ManualPromptDraft>("/api/test-cases/manual/draft", {
-        scope,
-        targetWorkItemId,
-        options: buildTestDesignOptionsRequest(),
-        extraInstructions: normalizeExtraInstructions(extraInstructions),
-      });
+    const data = await prep.start((signal) =>
+      postJson<ManualPromptDraft>(
+        "/api/test-cases/manual/draft",
+        {
+          scope,
+          targetWorkItemId,
+          options: buildTestDesignOptionsRequest(),
+          extraInstructions: normalizeExtraInstructions(extraInstructions),
+        },
+        signal,
+      ),
+    );
+    if (data) {
       setManualDraft({ loading: false, error: null, data });
-    } catch (error) {
-      setManualDraft({ loading: false, error: error instanceof Error ? error.message : "External LLM prompt preparation failed.", data: null });
+    } else {
+      setManualDraft({ loading: false, error: null, data: null });
     }
   }
 
@@ -237,14 +254,14 @@ export function TestCaseGenerationClient() {
               />
             </div>
             {mode === "auto" ? (
-              <Button onClick={generate} disabled={!scope || !targetWorkItemId || state.loading || !testDesignOptionsValid || !extraInstructionsValid}>
+              <Button onClick={generate} disabled={!scope || !targetWorkItemId || gen.isRunning || !testDesignOptionsValid || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
-                {state.loading ? "Generating..." : "Generate"}
+                {gen.isRunning ? "Generating..." : "Generate"}
               </Button>
             ) : (
-              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading || !testDesignOptionsValid || !extraInstructionsValid}>
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !testDesignOptionsValid || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
-                {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
+                {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
               </Button>
             )}
           </div>
@@ -263,9 +280,25 @@ export function TestCaseGenerationClient() {
         </div>
       </SectionCard>
 
-      {mode === "manual" && (manualDraft.data || manualDraft.error || manualSubmitError) ? (
+      {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
+        <AiGenerationProgress
+          mode="prep"
+          variant="test-design"
+          status={prep.status}
+          elapsedSeconds={prep.elapsedSeconds}
+          errorMessage={prep.errorMessage}
+          canCancel
+          onCancel={prep.cancel}
+          onRetry={() => {
+            prep.retry();
+            void prepareManualPrompt();
+          }}
+        />
+      ) : null}
+
+      {mode === "manual" && (manualDraft.data || manualSubmitError) ? (
         <div className="space-y-4">
-          {(manualDraft.error ?? manualSubmitError) ? <Callout tone="error">{manualDraft.error ?? manualSubmitError}</Callout> : null}
+          {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
           {manualDraft.data ? (
             <ManualLLMPanel
               prompt={manualDraft.data.prompt}
@@ -284,16 +317,29 @@ export function TestCaseGenerationClient() {
         </div>
       ) : null}
 
-      {state.error ? <ErrorBlock message={state.error} /> : null}
       <div ref={generatedCasesRef} className="space-y-6">
+        {gen.status !== "idle" && gen.status !== "completed" ? (
+          <AiGenerationProgress
+            variant="test-design"
+            status={gen.status}
+            elapsedSeconds={gen.elapsedSeconds}
+            errorMessage={gen.errorMessage}
+            canCancel
+            onCancel={gen.cancel}
+            onRetry={() => {
+              gen.retry();
+              void generate();
+            }}
+          />
+        ) : null}
         {state.data || testCases.length ? (
           <>
             <EditableGeneratedCases testCases={testCases} setTestCases={setTestCases} />
             <PublishGeneratedCasesPanel scope={scope} targetWorkItemId={targetWorkItemId} testCases={testCases} />
           </>
-        ) : (
+        ) : gen.status === "idle" ? (
           <EmptyBlock message="No generated test cases yet. Run generation against a real Azure DevOps work item." />
-        )}
+        ) : null}
       </div>
     </div>
   );

@@ -11,6 +11,8 @@ import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { toneClass, type Tone } from "@/components/qa/tone";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
+import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
+import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
 import { WorkItemPreview, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import {
@@ -51,6 +53,8 @@ export function ExistingTestCaseReviewClient() {
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const [extraInstructions, setExtraInstructions] = useState("");
   const [state, setState] = useState<ApiState<ExistingReviewResult>>({ loading: false, error: null, data: null });
+  const gen = useAiGeneration();
+  const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
   const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
@@ -84,34 +88,40 @@ export function ExistingTestCaseReviewClient() {
 
   async function review() {
     if (!scope || !targetWorkItemId || !extraInstructionsValid) return;
+    if (gen.isRunning) return;
     setState({ loading: true, error: null, data: null });
-    try {
-      const data = await postJson<ExistingReviewResult>("/api/existing-test-case-review/run", {
-        scope,
-        targetWorkItemId,
-        extraInstructions: normalizeExtraInstructions(extraInstructions),
-      });
+    const data = await gen.start((signal) =>
+      postJson<ExistingReviewResult>(
+        "/api/existing-test-case-review/run",
+        { scope, targetWorkItemId, extraInstructions: normalizeExtraInstructions(extraInstructions) },
+        signal,
+      ),
+    );
+    if (data) {
       applyReviewResult(data);
       scrollToNextStep(resultsRef);
-    } catch (error) {
-      setState({ loading: false, error: error instanceof Error ? error.message : "Test Coverage Matrix generation failed.", data: null });
+    } else {
+      setState({ loading: false, error: null, data: null });
     }
   }
 
   async function prepareManualPrompt() {
     if (!scope || !targetWorkItemId || !extraInstructionsValid) return;
+    if (prep.isRunning) return;
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
-    try {
-      const data = await postJson<ManualPromptDraft>("/api/existing-test-case-review/manual/draft", {
-        scope,
-        targetWorkItemId,
-        extraInstructions: normalizeExtraInstructions(extraInstructions),
-      });
+    const data = await prep.start((signal) =>
+      postJson<ManualPromptDraft>(
+        "/api/existing-test-case-review/manual/draft",
+        { scope, targetWorkItemId, extraInstructions: normalizeExtraInstructions(extraInstructions) },
+        signal,
+      ),
+    );
+    if (data) {
       setManualDraft({ loading: false, error: null, data });
-    } catch (error) {
-      setManualDraft({ loading: false, error: error instanceof Error ? error.message : "External LLM prompt preparation failed.", data: null });
+    } else {
+      setManualDraft({ loading: false, error: null, data: null });
     }
   }
 
@@ -162,14 +172,14 @@ export function ExistingTestCaseReviewClient() {
               />
             </div>
             {mode === "auto" ? (
-              <Button onClick={review} disabled={!scope || !targetWorkItemId || state.loading || !extraInstructionsValid}>
+              <Button onClick={review} disabled={!scope || !targetWorkItemId || gen.isRunning || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
-                {state.loading ? "Reviewing..." : "Auto Generate"}
+                {gen.isRunning ? "Reviewing..." : "Auto Generate"}
               </Button>
             ) : (
-              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || manualDraft.loading || !extraInstructionsValid}>
+              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !extraInstructionsValid}>
                 <Play className="h-4 w-4" />
-                {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
+                {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
               </Button>
             )}
           </div>
@@ -178,9 +188,25 @@ export function ExistingTestCaseReviewClient() {
         </div>
       </SectionCard>
 
-      {mode === "manual" && (manualDraft.data || manualDraft.error || manualSubmitError) ? (
+      {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
+        <AiGenerationProgress
+          mode="prep"
+          variant="coverage"
+          status={prep.status}
+          elapsedSeconds={prep.elapsedSeconds}
+          errorMessage={prep.errorMessage}
+          canCancel
+          onCancel={prep.cancel}
+          onRetry={() => {
+            prep.retry();
+            void prepareManualPrompt();
+          }}
+        />
+      ) : null}
+
+      {mode === "manual" && (manualDraft.data || manualSubmitError) ? (
         <div className="space-y-4">
-          {(manualDraft.error ?? manualSubmitError) ? <Callout tone="error">{manualDraft.error ?? manualSubmitError}</Callout> : null}
+          {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
           {manualDraft.data ? (
             <ManualLLMPanel
               prompt={manualDraft.data.prompt}
@@ -199,8 +225,21 @@ export function ExistingTestCaseReviewClient() {
         </div>
       ) : null}
 
-      {state.error ? <ErrorBlock message={state.error} /> : null}
       <div ref={resultsRef} className="space-y-6">
+        {gen.status !== "idle" && gen.status !== "completed" ? (
+          <AiGenerationProgress
+            variant="coverage"
+            status={gen.status}
+            elapsedSeconds={gen.elapsedSeconds}
+            errorMessage={gen.errorMessage}
+            canCancel
+            onCancel={gen.cancel}
+            onRetry={() => {
+              gen.retry();
+              void review();
+            }}
+          />
+        ) : null}
         {state.data ? (
           <>
             <ExistingTraceabilitySummary result={state.data} />

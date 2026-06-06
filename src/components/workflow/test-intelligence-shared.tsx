@@ -45,11 +45,12 @@ export function useActiveProject() {
   return scope;
 }
 
-export async function postJson<T>(url: string, body: unknown): Promise<T> {
+export async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   const text = await response.text();
   const json = parseJsonResponse(text, response.ok);

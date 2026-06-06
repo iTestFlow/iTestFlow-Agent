@@ -28,6 +28,17 @@ textarea {
   font: inherit;
 }
 
+/* Indeterminate progress bar used by the AI generation progress panel. LLM
+   progress cannot be predicted, so the bar sweeps continuously while busy. */
+@keyframes itf-indeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(420%);
+  }
+}
+
 table {
   border-collapse: collapse;
 }
