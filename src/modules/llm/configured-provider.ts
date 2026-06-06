@@ -1,6 +1,13 @@
 import "server-only";
 
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
+import {
+  DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
+  DEFAULT_RETRY_ATTEMPTS,
+  normalizeLLMControlSettings,
+} from "./llm-defaults";
 import { createLLMProvider } from "./llm-provider.factory";
 import type { LLMProvider, LLMProviderName } from "./llm-types";
 
@@ -14,7 +21,9 @@ export function getConfiguredProviderFromEnv(): LLMProvider | null {
       baseUrl: runtimeSettings.llm.baseUrl,
       temperature: runtimeSettings.llm.temperature,
       maxTokens: runtimeSettings.llm.maxTokens,
+      maxOutputTokenCap: runtimeSettings.llm.maxOutputTokenCap,
       retryAttempts: runtimeSettings.llm.retryAttempts,
+      maxTruncationAttempts: runtimeSettings.llm.maxTruncationAttempts,
     });
   }
 
@@ -35,16 +44,32 @@ export function getConfiguredProviderFromEnv(): LLMProvider | null {
       ? process.env.OPENAI_MODEL
       : provider === "gemini"
         ? process.env.GEMINI_MODEL
-      : process.env.ANTHROPIC_MODEL;
+        : provider === "anthropic"
+          ? process.env.ANTHROPIC_MODEL
+          : process.env.OLLAMA_MODEL;
 
   if (!model) return null;
+
+  const llmControls = normalizeLLMControlSettings({
+    maxTokens: process.env.LLM_MAX_TOKENS ?? DEFAULT_MAX_TOKENS,
+    maxOutputTokenCap: process.env.LLM_MAX_OUTPUT_TOKEN_CAP ?? DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+    retryAttempts: process.env.LLM_RETRY_ATTEMPTS ?? DEFAULT_RETRY_ATTEMPTS,
+    maxTruncationAttempts: process.env.LLM_MAX_TRUNCATION_ATTEMPTS ?? DEFAULT_MAX_TRUNCATION_ATTEMPTS,
+  });
 
   return createLLMProvider({
     provider,
     apiKey,
     model,
+    baseUrl:
+      provider === "openai"
+        ? process.env.OPENAI_BASE_URL
+        : provider === "gemini"
+          ? process.env.GEMINI_BASE_URL
+          : provider === "anthropic"
+            ? process.env.ANTHROPIC_BASE_URL
+            : process.env.OLLAMA_BASE_URL,
     temperature: Number(process.env.LLM_TEMPERATURE ?? "0.2"),
-    maxTokens: Number(process.env.LLM_MAX_TOKENS ?? "4000"),
-    retryAttempts: Number(process.env.LLM_RETRY_ATTEMPTS ?? "1"),
+    ...llmControls,
   });
 }

@@ -10,7 +10,9 @@ export type LLMProviderConfig = {
   baseUrl?: string;
   temperature?: number;
   maxTokens?: number;
+  maxOutputTokenCap?: number;
   retryAttempts?: number;
+  maxTruncationAttempts?: number;
 };
 
 export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTypeAny> = {

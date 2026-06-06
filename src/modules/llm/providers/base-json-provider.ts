@@ -1,6 +1,12 @@
 import "server-only";
 
 import { z } from "zod";
+import { parseJsonWithRepair } from "../json-extraction";
+import {
+  DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
+} from "../llm-defaults";
 import { writeLLMRequestLog } from "../llm-request-log.service";
 import type {
   GenerateStructuredOutputInput,
@@ -61,11 +67,45 @@ export abstract class BaseJsonProvider implements LLMProvider {
   ): Promise<LLMResult<z.infer<TSchema>>> {
     const startedAt = Date.now();
     let callResult: LLMProviderCallResult | null = null;
+    const cap = positiveIntegerOrDefault(this.config.maxOutputTokenCap, DEFAULT_MAX_OUTPUT_TOKEN_CAP);
+    const startingBudget = Math.min(
+      positiveIntegerOrDefault(input.maxTokens ?? this.config.maxTokens, DEFAULT_MAX_TOKENS),
+      cap,
+    );
+    const maxTruncationAttempts = positiveIntegerOrDefault(
+      this.config.maxTruncationAttempts,
+      DEFAULT_MAX_TRUNCATION_ATTEMPTS,
+    );
+    let budget = startingBudget;
 
     try {
-      callResult = await this.callModel(input);
-      if (callResult.errorMessage) throw new Error(callResult.errorMessage);
+      for (let attempt = 0; attempt < maxTruncationAttempts; attempt += 1) {
+        const attemptInput = { ...input, maxTokens: budget };
+        let attemptResult: LLMProviderCallResult;
 
+        try {
+          attemptResult = await this.callModel(attemptInput);
+        } catch (callError) {
+          if (callResult && isTokenLimitFinishReason(callResult.finishReason)) break;
+          throw callError;
+        }
+
+        if (attemptResult.errorMessage) {
+          if (callResult && isTokenLimitFinishReason(callResult.finishReason)) break;
+          callResult = attemptResult;
+          throw new Error(attemptResult.errorMessage);
+        }
+
+        callResult = attemptResult;
+        if (!isTokenLimitFinishReason(callResult.finishReason)) break;
+        if (budget >= cap || attempt === maxTruncationAttempts - 1) break;
+
+        const nextBudget = Math.min(budget * 2, cap);
+        if (nextBudget <= budget) break;
+        budget = nextBudget;
+      }
+
+      if (!callResult) throw new Error("LLM provider returned no result.");
       const validatedOutput = this.parseAndValidate(input, callResult.rawOutput, callResult.finishReason);
       this.logRequest(input, callResult, "Success", Date.now() - startedAt, undefined, validatedOutput);
 
@@ -112,9 +152,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
   }
 
   protected parseJson(rawOutput: string) {
-    const trimmed = rawOutput.trim();
-    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
-    return JSON.parse(fenced ?? trimmed);
+    return parseJsonWithRepair(rawOutput);
   }
 
   protected headers() {
@@ -184,4 +222,8 @@ export abstract class BaseJsonProvider implements LLMProvider {
 function isTokenLimitFinishReason(finishReason?: string) {
   const normalized = finishReason?.toLowerCase();
   return normalized === "length" || normalized === "max_tokens";
+}
+
+function positiveIntegerOrDefault(value: number | undefined, fallback: number) {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : fallback;
 }

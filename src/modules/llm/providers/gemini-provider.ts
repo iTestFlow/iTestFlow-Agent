@@ -1,8 +1,10 @@
 import "server-only";
 
 import { z } from "zod";
+import { DEFAULT_MAX_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defaults";
 import { withStructuredOutputInstruction } from "../prompts";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
+import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
 import type { GenerateStructuredOutputInput, GenerateTextInput } from "../llm-types";
 
 export class GeminiProvider extends BaseJsonProvider {
@@ -19,7 +21,7 @@ export class GeminiProvider extends BaseJsonProvider {
     const requestBody = {
       generationConfig: {
         temperature: input.temperature ?? this.config.temperature ?? 0.2,
-        maxOutputTokens: input.maxTokens ?? this.config.maxTokens ?? 4000,
+        maxOutputTokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
         ...geminiStructuredOutputOptions(this.model),
       },
       systemInstruction: {
@@ -40,7 +42,7 @@ export class GeminiProvider extends BaseJsonProvider {
     const response = await fetchWithTransientRetry(
       `${baseUrl}/models/${this.model}:generateContent?key=${this.config.apiKey}`,
       request,
-      this.config.retryAttempts ?? 1,
+      this.config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS,
     );
 
     if (!response.ok) {
@@ -67,7 +69,7 @@ export class GeminiProvider extends BaseJsonProvider {
     const requestBody = {
       generationConfig: {
         temperature: input.temperature ?? this.config.temperature ?? 0.2,
-        maxOutputTokens: input.maxTokens ?? this.config.maxTokens ?? 4000,
+        maxOutputTokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
         responseMimeType: "application/json",
         ...geminiStructuredOutputOptions(this.model),
       },
@@ -89,7 +91,7 @@ export class GeminiProvider extends BaseJsonProvider {
     const response = await fetchWithTransientRetry(
       `${baseUrl}/models/${this.model}:generateContent?key=${this.config.apiKey}`,
       request,
-      this.config.retryAttempts ?? 1,
+      this.config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS,
     );
 
     if (!response.ok) {
@@ -122,17 +124,4 @@ function geminiStructuredOutputOptions(model: string) {
   }
 
   return {};
-}
-
-async function fetchWithTransientRetry(url: string, init: RequestInit, retryAttempts: number) {
-  let response = await fetch(url, init);
-  for (let attempt = 0; attempt < retryAttempts && isTransientGeminiFailure(response); attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 750 * (attempt + 1)));
-    response = await fetch(url, init);
-  }
-  return response;
-}
-
-function isTransientGeminiFailure(response: Response) {
-  return response.status === 429 || response.status === 503;
 }

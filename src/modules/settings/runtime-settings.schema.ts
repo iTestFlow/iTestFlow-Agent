@@ -1,8 +1,18 @@
 import { z } from "zod";
 import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
+import {
+  DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
+  DEFAULT_RETRY_ATTEMPTS,
+  MAX_OUTPUT_TOKEN_CAP_OPTIONS,
+  MAX_TOKEN_OPTIONS,
+  MAX_TRUNCATION_ATTEMPT_OPTIONS,
+  RETRY_ATTEMPT_OPTIONS,
+} from "@/modules/llm/llm-defaults";
 import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION, validateCronExpression } from "./cron-expression";
 
-export const LLMProviderNameSchema = z.enum(["openai", "gemini", "anthropic"]);
+export const LLMProviderNameSchema = z.enum(["openai", "gemini", "anthropic", "ollama"]);
 
 const ProjectScopeSettingsSchema = z.object({
   projectId: z.string().min(1),
@@ -48,6 +58,41 @@ const AutoUpdateSettingsSchema = z.object({
   }
 });
 
+const LLMSettingsSchema = z.object({
+  provider: LLMProviderNameSchema,
+  model: z.string({
+    required_error: "Select an LLM model.",
+    invalid_type_error: "Select an LLM model.",
+  }).trim().min(1, "Select an LLM model."),
+  apiKey: z.string().optional(),
+  baseUrl: z.string().optional(),
+  temperature: z.number().min(0, "Temperature must be 0 or higher.").max(2, "Temperature must be 2 or lower.").default(0.2),
+  maxTokens: allowedNumber(
+    MAX_TOKEN_OPTIONS,
+    "Select a supported default output token budget.",
+  ).default(DEFAULT_MAX_TOKENS),
+  maxOutputTokenCap: allowedNumber(
+    MAX_OUTPUT_TOKEN_CAP_OPTIONS,
+    "Select a supported maximum output token cap.",
+  ).default(DEFAULT_MAX_OUTPUT_TOKEN_CAP),
+  retryAttempts: allowedNumber(
+    RETRY_ATTEMPT_OPTIONS,
+    "Select a supported transient retry count.",
+  ).default(DEFAULT_RETRY_ATTEMPTS),
+  maxTruncationAttempts: allowedNumber(
+    MAX_TRUNCATION_ATTEMPT_OPTIONS,
+    "Select a supported structured-output attempt count.",
+  ).default(DEFAULT_MAX_TRUNCATION_ATTEMPTS),
+}).superRefine((value, ctx) => {
+  if (value.maxOutputTokenCap < value.maxTokens) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["maxOutputTokenCap"],
+      message: "Maximum output token cap must be at least the default output token budget.",
+    });
+  }
+});
+
 export const RuntimeSettingsInputSchema = z.object({
   azureDevOps: z.object({
     organizationUrl: z.string({
@@ -59,18 +104,7 @@ export const RuntimeSettingsInputSchema = z.object({
       invalid_type_error: "Enter your Azure DevOps Personal Access Token.",
     }).min(1, "Enter your Azure DevOps Personal Access Token."),
   }),
-  llm: z.object({
-    provider: LLMProviderNameSchema,
-    model: z.string({
-      required_error: "Select an LLM model.",
-      invalid_type_error: "Select an LLM model.",
-    }).trim().min(1, "Select an LLM model."),
-    apiKey: z.string().optional(),
-    baseUrl: z.string().optional(),
-    temperature: z.number().min(0, "Temperature must be 0 or higher.").max(2, "Temperature must be 2 or lower.").default(0.2),
-    maxTokens: z.number().int("Max tokens must be a whole number.").positive("Max tokens must be greater than 0.").default(4000),
-    retryAttempts: z.number().int("Retry attempts must be a whole number.").min(0, "Retry attempts cannot be negative.").max(5, "Retry attempts must be 5 or lower.").default(1),
-  }),
+  llm: LLMSettingsSchema,
   context: z.object({
     retrievalTopK: z.number().int("Context retrieval count must be a whole number.").min(1, "Context retrieval count must be at least 1.").max(25, "Context retrieval count must be 25 or lower.").default(8),
     autoUpdate: AutoUpdateSettingsSchema.default({
@@ -103,7 +137,9 @@ export type RuntimeSettingsSummary = {
     hasApiKey: boolean;
     temperature: number;
     maxTokens: number;
+    maxOutputTokenCap: number;
     retryAttempts: number;
+    maxTruncationAttempts: number;
   };
   context?: {
     retrievalTopK: number;
@@ -152,4 +188,8 @@ function normalizeFilterValues(values: string[]) {
   }
 
   return normalized;
+}
+
+function allowedNumber(options: readonly number[], message: string) {
+  return z.number().int().refine((value) => options.includes(value), { message });
 }

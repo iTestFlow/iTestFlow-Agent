@@ -14,7 +14,7 @@ For the living source map and module boundaries, see [PROJECT_ARCHITECTURE.md](P
 - npm
 - Azure DevOps organization URL, for example `https://dev.azure.com/YOUR_ORG`
 - Azure DevOps PAT with permissions for work items, comments, Test Plans, Test Suites, Test Case creation, and work item links
-- One LLM provider: OpenAI, Gemini, or Anthropic/Claude
+- One LLM provider: OpenAI, Gemini, Anthropic, or Ollama
 
 The Azure DevOps PAT authenticates requests. The organization URL is still required because it tells the app which Azure DevOps organization endpoint to call before project selection scopes actions.
 

@@ -1,8 +1,10 @@
 import "server-only";
 
 import { z } from "zod";
+import { DEFAULT_MAX_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defaults";
 import { withStructuredOutputInstruction } from "../prompts";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
+import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
 import type { GenerateStructuredOutputInput, GenerateTextInput } from "../llm-types";
 
 export class OpenAIProvider extends BaseJsonProvider {
@@ -21,20 +23,20 @@ export class OpenAIProvider extends BaseJsonProvider {
     const requestBody = {
       model: this.model,
       temperature: input.temperature ?? this.config.temperature ?? 0.2,
-      max_tokens: input.maxTokens ?? this.config.maxTokens ?? 4000,
+      max_tokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
       messages: [
         { role: "system", content: input.system },
         { role: "user", content: input.user },
       ],
     };
-    const response = await fetch(`${this.config.baseUrl ?? "https://api.openai.com/v1"}/chat/completions`, {
+    const response = await fetchWithTransientRetry(`${this.config.baseUrl ?? "https://api.openai.com/v1"}/chat/completions`, {
       method: "POST",
       headers: {
         ...this.headers(),
         Authorization: `Bearer ${this.config.apiKey}`,
       },
       body: JSON.stringify(requestBody),
-    });
+    }, this.config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -59,21 +61,21 @@ export class OpenAIProvider extends BaseJsonProvider {
     const requestBody = {
       model: this.model,
       temperature: input.temperature ?? this.config.temperature ?? 0.2,
-      max_tokens: input.maxTokens ?? this.config.maxTokens ?? 4000,
+      max_tokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: withStructuredOutputInstruction(input.system, input.schemaName) },
         { role: "user", content: input.user },
       ],
     };
-    const response = await fetch(`${this.config.baseUrl ?? "https://api.openai.com/v1"}/chat/completions`, {
+    const response = await fetchWithTransientRetry(`${this.config.baseUrl ?? "https://api.openai.com/v1"}/chat/completions`, {
       method: "POST",
       headers: {
         ...this.headers(),
         Authorization: `Bearer ${this.config.apiKey}`,
       },
       body: JSON.stringify(requestBody),
-    });
+    }, this.config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS);
 
     if (!response.ok) {
       const errorText = await response.text();

@@ -2,6 +2,13 @@ import "server-only";
 
 import { z } from "zod";
 import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
+import {
+  DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
+  DEFAULT_RETRY_ATTEMPTS,
+  normalizeLLMControlSettings,
+} from "@/modules/llm/llm-defaults";
 import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION } from "./cron-expression";
 import { RuntimeSettingsInputSchema, type RuntimeSettings, type RuntimeSettingsInput, type RuntimeSettingsSummary } from "./runtime-settings.schema";
 
@@ -57,7 +64,7 @@ export function getRuntimeSettings(): RuntimeSettings | null {
   try {
     const persisted = JSON.parse(fs.readFileSync(path, "utf8")) as PersistedSettings;
     const decrypted = decrypt(persisted.encryptedPayload);
-    return RuntimeSettingsSchema.parse(JSON.parse(decrypted));
+    return RuntimeSettingsSchema.parse(normalizeRuntimeSettingsCandidate(JSON.parse(decrypted)));
   } catch {
     return null;
   }
@@ -90,7 +97,9 @@ function summarizeRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsSum
       hasApiKey: Boolean(settings.llm.apiKey),
       temperature: settings.llm.temperature,
       maxTokens: settings.llm.maxTokens,
+      maxOutputTokenCap: settings.llm.maxOutputTokenCap,
       retryAttempts: settings.llm.retryAttempts,
+      maxTruncationAttempts: settings.llm.maxTruncationAttempts,
     },
     context: {
       retrievalTopK: settings.context.retrievalTopK,
@@ -114,23 +123,34 @@ function summarizeEnvSettings(): RuntimeSettingsSummary {
 function getSettingsFromEnv(): RuntimeSettings | null {
   const provider = process.env.DEFAULT_LLM_PROVIDER;
   if (!process.env.AZURE_DEVOPS_ORG_URL || !process.env.AZURE_DEVOPS_PAT || !provider) return null;
-  if (!["openai", "gemini", "anthropic"].includes(provider)) return null;
+  if (!["openai", "gemini", "anthropic", "ollama"].includes(provider)) return null;
 
   const apiKey =
     provider === "openai"
       ? process.env.OPENAI_API_KEY
       : provider === "gemini"
         ? process.env.GEMINI_API_KEY
-      : process.env.ANTHROPIC_API_KEY;
+        : provider === "anthropic"
+          ? process.env.ANTHROPIC_API_KEY
+          : undefined;
 
   const model =
     provider === "openai"
       ? process.env.OPENAI_MODEL
       : provider === "gemini"
         ? process.env.GEMINI_MODEL
-      : process.env.ANTHROPIC_MODEL;
+        : provider === "anthropic"
+          ? process.env.ANTHROPIC_MODEL
+          : process.env.OLLAMA_MODEL;
 
   if (!model) return null;
+
+  const llmControls = normalizeLLMControlSettings({
+    maxTokens: process.env.LLM_MAX_TOKENS ?? DEFAULT_MAX_TOKENS,
+    maxOutputTokenCap: process.env.LLM_MAX_OUTPUT_TOKEN_CAP ?? DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+    retryAttempts: process.env.LLM_RETRY_ATTEMPTS ?? DEFAULT_RETRY_ATTEMPTS,
+    maxTruncationAttempts: process.env.LLM_MAX_TRUNCATION_ATTEMPTS ?? DEFAULT_MAX_TRUNCATION_ATTEMPTS,
+  });
 
   const parsed = RuntimeSettingsInputSchema.safeParse({
     azureDevOps: {
@@ -146,10 +166,11 @@ function getSettingsFromEnv(): RuntimeSettings | null {
           ? optionalEnv(process.env.OPENAI_BASE_URL)
           : provider === "gemini"
             ? optionalEnv(process.env.GEMINI_BASE_URL)
-            : optionalEnv(process.env.ANTHROPIC_BASE_URL),
+            : provider === "anthropic"
+              ? optionalEnv(process.env.ANTHROPIC_BASE_URL)
+              : optionalEnv(process.env.OLLAMA_BASE_URL),
       temperature: Number(process.env.LLM_TEMPERATURE ?? "0.2"),
-      maxTokens: Number(process.env.LLM_MAX_TOKENS ?? "4000"),
-      retryAttempts: Number(process.env.LLM_RETRY_ATTEMPTS ?? "1"),
+      ...llmControls,
     },
     context: {
       retrievalTopK: Number(process.env.PROJECT_CONTEXT_TOP_K ?? "8"),
@@ -173,6 +194,22 @@ function getSettingsFromEnv(): RuntimeSettings | null {
 function optionalEnv(value: string | undefined) {
   const trimmed = value?.trim();
   return trimmed || undefined;
+}
+
+function normalizeRuntimeSettingsCandidate(value: unknown) {
+  if (!isRecord(value) || !isRecord(value.llm)) return value;
+
+  return {
+    ...value,
+    llm: {
+      ...value.llm,
+      ...normalizeLLMControlSettings(value.llm),
+    },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function getOrCreateKey() {

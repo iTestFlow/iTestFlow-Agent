@@ -16,13 +16,23 @@ import {
   DEFAULT_CONTEXT_STATES,
   DEFAULT_CONTEXT_WORK_ITEM_TYPES,
 } from "@/lib/project-context-defaults";
+import {
+  DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
+  DEFAULT_RETRY_ATTEMPTS,
+  MAX_OUTPUT_TOKEN_CAP_OPTIONS,
+  MAX_TOKEN_OPTIONS,
+  MAX_TRUNCATION_ATTEMPT_OPTIONS,
+  RETRY_ATTEMPT_OPTIONS,
+} from "@/modules/llm/llm-defaults";
 import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION } from "@/modules/settings/cron-expression";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import { dispatchRuntimeSettingsChanged } from "@/shared/lib/runtime-settings-events";
 import { ModelPicker, useProviderModels } from "@/shared/components/live/model-picker";
 import { apiErrorMessage } from "@/shared/validators/api-validation-errors";
 
-type Provider = "openai" | "gemini" | "anthropic";
+type Provider = "openai" | "gemini" | "anthropic" | "ollama";
 
 type FormState = {
   organizationUrl: string;
@@ -33,7 +43,9 @@ type FormState = {
   baseUrl: string;
   temperature: number;
   maxTokens: number;
+  maxOutputTokenCap: number;
   retryAttempts: number;
+  maxTruncationAttempts: number;
   retrievalTopK: number;
   autoUpdateEnabled: boolean;
   autoUpdateCronExpression: string;
@@ -78,8 +90,10 @@ export function ConfigurationForm({
     apiKey: "",
     baseUrl: "",
     temperature: 0.2,
-    maxTokens: 4000,
-    retryAttempts: 1,
+    maxTokens: DEFAULT_MAX_TOKENS,
+    maxOutputTokenCap: DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+    retryAttempts: DEFAULT_RETRY_ATTEMPTS,
+    maxTruncationAttempts: DEFAULT_MAX_TRUNCATION_ATTEMPTS,
     retrievalTopK: 8,
     autoUpdateEnabled: false,
     autoUpdateCronExpression: DEFAULT_AUTO_UPDATE_CRON_EXPRESSION,
@@ -106,7 +120,9 @@ export function ConfigurationForm({
           baseUrl: summary.llm?.baseUrl ?? "",
           temperature: summary.llm?.temperature ?? current.temperature,
           maxTokens: summary.llm?.maxTokens ?? current.maxTokens,
+          maxOutputTokenCap: summary.llm?.maxOutputTokenCap ?? current.maxOutputTokenCap,
           retryAttempts: summary.llm?.retryAttempts ?? current.retryAttempts,
+          maxTruncationAttempts: summary.llm?.maxTruncationAttempts ?? current.maxTruncationAttempts,
           retrievalTopK: summary.context?.retrievalTopK ?? current.retrievalTopK,
           autoUpdateEnabled: summary.context?.autoUpdate?.enabled ?? current.autoUpdateEnabled,
           autoUpdateCronExpression: summary.context?.autoUpdate?.cronExpression ?? current.autoUpdateCronExpression,
@@ -175,6 +191,20 @@ export function ConfigurationForm({
     setTestResult(null);
   }
 
+  function updateMaxTokens(maxTokens: number) {
+    setForm((current) => ({
+      ...current,
+      maxTokens,
+      maxOutputTokenCap:
+        MAX_OUTPUT_TOKEN_CAP_OPTIONS.find(
+          (option) => option >= maxTokens && option >= current.maxOutputTokenCap,
+        ) ?? MAX_OUTPUT_TOKEN_CAP_OPTIONS[MAX_OUTPUT_TOKEN_CAP_OPTIONS.length - 1],
+    }));
+    setError(null);
+    setMessage(null);
+    setTestResult(null);
+  }
+
   function payload() {
     return {
       azureDevOps: {
@@ -188,7 +218,9 @@ export function ConfigurationForm({
         baseUrl: form.baseUrl.trim() || undefined,
         temperature: form.temperature,
         maxTokens: form.maxTokens,
+        maxOutputTokenCap: form.maxOutputTokenCap,
         retryAttempts: form.retryAttempts,
+        maxTruncationAttempts: form.maxTruncationAttempts,
       },
       context: {
         retrievalTopK: form.retrievalTopK,
@@ -340,11 +372,15 @@ export function ConfigurationForm({
                   >
                     <option value="openai">OpenAI</option>
                     <option value="gemini">Gemini</option>
-                    <option value="anthropic">Claude / Anthropic</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="ollama">Ollama</option>
                   </select>
                 </Field>
 
-                <Field label="LLM API Token">
+                <Field
+                  label={form.provider === "ollama" ? "LLM API Token (optional)" : "LLM API Token"}
+                  description={form.provider === "ollama" ? "Only needed when your Ollama endpoint requires authentication." : undefined}
+                >
                   <SecretInput show={showSecrets} value={form.apiKey} onChange={(value) => update("apiKey", value)} placeholder="Enter LLM API token" />
                 </Field>
 
@@ -397,7 +433,7 @@ export function ConfigurationForm({
                     ) : null}
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    {form.apiKey || canUseSavedLlmKey
+                    {form.provider === "ollama" || form.apiKey || canUseSavedLlmKey
                       ? loadingModels
                         ? "Fetching all available models from the selected provider API..."
                         : modelError
@@ -410,20 +446,72 @@ export function ConfigurationForm({
 
                 {showAdvancedSettings ? (
                   <>
-                    <Field
-                      label="Retry attempts on transient LLM failure"
-                      description="0 disables automatic retry. Default is 1 retry after the initial request."
-                    >
-                      <Input
-                        className="h-11 border-input bg-card text-foreground"
-                        type="number"
-                        min={0}
-                        max={5}
-                        step={1}
-                        value={form.retryAttempts}
-                        onChange={(event) => update("retryAttempts", Number(event.target.value || "0"))}
-                      />
-                    </Field>
+                    <section className="rounded-xl border border-border bg-muted/30 p-4 md:p-5">
+                      <div>
+                        <h2 className="text-base font-semibold text-foreground">LLM Output and Retry Controls</h2>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          Bound output size, transient retries, and structured-response recovery.
+                        </p>
+                      </div>
+
+                      <div className="mt-5 grid gap-5 md:grid-cols-2">
+                        <Field
+                          label="Default output token budget"
+                          description="Fallback output budget when a workflow does not specify its own value."
+                        >
+                          <NumberSelect
+                            value={form.maxTokens}
+                            options={MAX_TOKEN_OPTIONS}
+                            formatOption={(value) => `${value.toLocaleString()} tokens`}
+                            onChange={updateMaxTokens}
+                          />
+                        </Field>
+
+                        <Field
+                          label="Maximum output token cap"
+                          description="Absolute ceiling for every structured-output request, including workflow overrides."
+                        >
+                          <NumberSelect
+                            value={form.maxOutputTokenCap}
+                            options={MAX_OUTPUT_TOKEN_CAP_OPTIONS.filter((option) => option >= form.maxTokens)}
+                            formatOption={(value) => `${value.toLocaleString()} tokens`}
+                            onChange={(value) => update("maxOutputTokenCap", value)}
+                          />
+                        </Field>
+
+                        <Field
+                          label="Transient failure retries"
+                          description="Extra attempts after network failures or retryable provider responses."
+                        >
+                          <NumberSelect
+                            value={form.retryAttempts}
+                            options={RETRY_ATTEMPT_OPTIONS}
+                            formatOption={(value) => value === 0 ? "0 (disabled)" : `${value} ${value === 1 ? "retry" : "retries"}`}
+                            onChange={(value) => update("retryAttempts", value)}
+                          />
+                        </Field>
+
+                        <Field
+                          label="Structured-output attempts"
+                          description="Total calls including the initial call; later calls double the budget after truncation."
+                        >
+                          <NumberSelect
+                            value={form.maxTruncationAttempts}
+                            options={MAX_TRUNCATION_ATTEMPT_OPTIONS}
+                            formatOption={(value) => value === 1 ? "1 attempt (no truncation retry)" : `${value} attempts`}
+                            onChange={(value) => update("maxTruncationAttempts", value)}
+                          />
+                        </Field>
+                      </div>
+
+                      <div className="mt-5 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning-foreground dark:text-warning">
+                        Higher values can increase latency and provider cost. Worst case:{" "}
+                        <span className="font-semibold">
+                          {form.maxTruncationAttempts * (form.retryAttempts + 1)} provider calls
+                        </span>{" "}
+                        for one structured request.
+                      </div>
+                    </section>
 
                     <Field
                       label="Project context retrieval count"
@@ -559,6 +647,32 @@ function Field({ label, description, children }: { label: string; description?: 
   );
 }
 
+function NumberSelect({
+  value,
+  options,
+  formatOption,
+  onChange,
+}: {
+  value: number;
+  options: readonly number[];
+  formatOption: (value: number) => string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <select
+      className="h-11 w-full rounded-md border border-input bg-card px-3 text-sm text-foreground"
+      value={value}
+      onChange={(event) => onChange(Number(event.target.value))}
+    >
+      {options.map((option) => (
+        <option key={option} value={option}>
+          {formatOption(option)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function SecretInput({
   show,
   value,
@@ -597,7 +711,9 @@ function providerLabel(provider: Provider) {
     case "gemini":
       return "Gemini";
     case "anthropic":
-      return "Claude / Anthropic";
+      return "Anthropic";
+    case "ollama":
+      return "Ollama";
   }
 }
 
@@ -609,5 +725,7 @@ function defaultBaseUrlPlaceholder(provider: Provider) {
       return "https://generativelanguage.googleapis.com/v1beta";
     case "anthropic":
       return "https://api.anthropic.com";
+    case "ollama":
+      return "http://localhost:11434";
   }
 }

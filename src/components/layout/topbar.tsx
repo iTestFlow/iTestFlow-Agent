@@ -55,7 +55,7 @@ function providerLabel(value?: string) {
     case "gemini":
       return "Gemini"
     case "anthropic":
-      return "Claude"
+      return "Anthropic"
     case "ollama":
       return "Ollama"
     default:

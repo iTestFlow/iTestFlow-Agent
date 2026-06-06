@@ -5,6 +5,12 @@ import { useEffect, useState } from "react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ContentShell } from "@/components/layout/content-shell"
+import {
+  DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
+  DEFAULT_RETRY_ATTEMPTS,
+} from "@/modules/llm/llm-defaults"
 import { ConfigurationForm } from "@/shared/components/live/configuration-form"
 
 type LatestAutoUpdateRunSummary = {
@@ -33,7 +39,16 @@ type RuntimeSummary = {
   configured: boolean
   savedAt?: string
   azureDevOps?: { organizationUrl: string; hasPersonalAccessToken: boolean }
-  llm?: { provider: string; model: string; hasApiKey: boolean; temperature: number; maxTokens: number; retryAttempts: number }
+  llm?: {
+    provider: string
+    model: string
+    hasApiKey: boolean
+    temperature: number
+    maxTokens: number
+    maxOutputTokenCap: number
+    retryAttempts: number
+    maxTruncationAttempts: number
+  }
   context?: {
     retrievalTopK: number
     autoUpdate?: {
@@ -86,7 +101,10 @@ export default function SettingsPage() {
             <p>LLM provider: {summary?.llm?.provider ?? "Not configured"}</p>
             <p>LLM model: {summary?.llm?.model ?? "Not configured"}</p>
             <p>LLM key saved: {summary?.llm?.hasApiKey ? "Yes" : "No"}</p>
-            <p>LLM retry attempts: {summary?.llm?.retryAttempts ?? 1}</p>
+            <p>LLM max tokens: {summary?.llm?.maxTokens ?? DEFAULT_MAX_TOKENS}</p>
+            <p>LLM max output token cap: {summary?.llm?.maxOutputTokenCap ?? DEFAULT_MAX_OUTPUT_TOKEN_CAP}</p>
+            <p>LLM retry attempts: {summary?.llm?.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS}</p>
+            <p>LLM structured-output attempts: {summary?.llm?.maxTruncationAttempts ?? DEFAULT_MAX_TRUNCATION_ATTEMPTS}</p>
             <p>Context retrieval count: {summary?.context?.retrievalTopK ?? 8}</p>
             <p>Auto update: {summary?.context?.autoUpdate?.enabled ? "Enabled" : "Disabled"}</p>
             <p>Auto update cron: {summary?.context?.autoUpdate?.cronExpression ?? "Not configured"}</p>
