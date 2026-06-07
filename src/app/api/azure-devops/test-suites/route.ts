@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import type { TestSuite } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 
@@ -18,7 +18,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const suiteTree = await adapter.fetchTestSuiteTree({
       projectId: parsed.data.scope.azureProjectId,
       testPlanId: parsed.data.testPlanId,

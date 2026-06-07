@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { findCurrentIterationPath } from "@/modules/bug-reporting/bug-posting.service";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 
 export const runtime = "nodejs";
@@ -17,7 +17,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const [fields, users, iterations, areas] = await Promise.all([
       adapter.fetchWorkItemTypeFields({ projectId: parsed.data.scope.azureProjectId, workItemType: "Bug" }),
       adapter.fetchProjectUsers({ projectId: parsed.data.scope.azureProjectId }),

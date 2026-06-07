@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
 import { generateTestCases } from "@/modules/test-case-design/application/test-case-generation.service";
 import { defaultTestDesignOptions } from "@/modules/test-case-design/test-design-options";
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
 
   try {
     const options = parsed.data.options ?? defaultTestDesignOptions;
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const provider = getConfiguredProviderFromEnv();
     if (!provider) {
       return NextResponse.json(

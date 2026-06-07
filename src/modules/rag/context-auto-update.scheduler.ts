@@ -1,7 +1,7 @@
 import "server-only";
 
 import { writeAuditLog } from "@/modules/audit/audit.service";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION, isCronExpressionDue, minuteKeyForDate } from "@/modules/settings/cron-expression";
@@ -146,7 +146,7 @@ export async function runScheduledContextAutoUpdate(input: {
   });
 
   try {
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(scope);
     contextResult = await indexAzureWorkItemsAsProjectContext({
       scope,
       adapter,

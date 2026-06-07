@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { writeAuditLog } from "@/modules/audit/audit.service";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import type { FinalApprovedTestCase } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 
@@ -66,7 +66,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const create: PublishStepResult & { azureTestCaseId?: string } = parsed.data.suggestedTestCase
       ? await adapter.createTestCase({
           projectId: parsed.data.scope.azureProjectId,

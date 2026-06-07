@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { BugAttachmentDescriptorSchema, BugCustomFieldValueSchema, BugRelatedTestCaseContextSchema } from "@/modules/bug-reporting/schemas/bug-report.schema";
 import { generateBugReport } from "@/modules/bug-reporting/bug-reporting.service";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const parentStory = parsed.data.parentStoryId
       ? await adapter.fetchWorkItemById({
           projectId: parsed.data.scope.azureProjectId,

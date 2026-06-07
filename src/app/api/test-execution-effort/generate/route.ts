@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const options = TestExecutionEffortOptionsSchema.parse(parsed.data);
     const data = await loadTestExecutionEffortData({
       scope: parsed.data.scope,

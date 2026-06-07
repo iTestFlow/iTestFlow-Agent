@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { postBugReportToAzureDevOps } from "@/modules/bug-reporting/bug-posting.service";
 import { FinalBugReportSchema } from "@/modules/bug-reporting/schemas/bug-report.schema";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 
 export const runtime = "nodejs";
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
         })),
     );
 
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const result = await postBugReportToAzureDevOps({
       adapter,
       scope: parsed.data.scope,

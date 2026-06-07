@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import {
   buildTestExecutionEffortPreview,
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const targetRequirement = await adapter.fetchWorkItemById({
       projectId: parsed.data.scope.azureProjectId,
       workItemId: parsed.data.storyId,

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { publishApprovedTestCases } from "@/modules/integrations/azure-devops/azure-devops-test-plan.service";
 
 export const runtime = "nodejs";
@@ -78,7 +78,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const result = await publishApprovedTestCases(adapter, parsed.data.scope, {
       targetUserStoryId: parsed.data.targetWorkItemId,
       testPlanId: parsed.data.testPlanId,

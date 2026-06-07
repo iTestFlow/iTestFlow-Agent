@@ -73,6 +73,13 @@ export type AzureWorkItemTypeField = {
 export type Requirement = {
   id: string;
   azureProjectId: string;
+  /**
+   * The work item's true owning project NAME, read from System.TeamProject.
+   * Azure DevOps ignores the project segment in by-ID URLs, so this is the
+   * only reliable signal of which project a fetched work item actually belongs
+   * to. Used to enforce project isolation; may be undefined for older payloads.
+   */
+  teamProject?: string;
   workItemType: string;
   title: string;
   description?: string;

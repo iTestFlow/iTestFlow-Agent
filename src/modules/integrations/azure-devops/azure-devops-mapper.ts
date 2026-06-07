@@ -34,6 +34,7 @@ export function mapAzureWorkItem(item: AzureWorkItem, azureProjectId: string): R
   return {
     id: String(item.id),
     azureProjectId,
+    teamProject: text(fields["System.TeamProject"]),
     workItemType: text(fields["System.WorkItemType"]) ?? "Unknown",
     title: text(fields["System.Title"]) ?? `Work Item ${item.id}`,
     description: text(fields["System.Description"]),

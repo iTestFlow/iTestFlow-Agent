@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { indexAzureWorkItemsAsProjectContext } from "@/modules/rag/project-context-store.service";
 
 export const runtime = "nodejs";
@@ -23,7 +23,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const result = await indexAzureWorkItemsAsProjectContext({
       scope: parsed.data.scope,
       adapter,

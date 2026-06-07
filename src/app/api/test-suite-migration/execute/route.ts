@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { SuiteMigrationRequestSchema } from "@/modules/test-suite-migration/test-suite-migration.schema";
 import { executeSuiteMigration } from "@/modules/test-suite-migration/test-suite-migration.service";
 
@@ -12,7 +12,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const result = await executeSuiteMigration(adapter, parsed.data);
     return NextResponse.json(result);
   } catch (error) {
