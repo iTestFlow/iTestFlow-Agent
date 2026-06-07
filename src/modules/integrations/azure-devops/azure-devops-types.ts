@@ -34,6 +34,11 @@ export type AzureProjectUser = {
   imageUrl?: string;
 };
 
+export type AzureProjectWorkItemMetadata = {
+  workItemTypes: string[];
+  states: string[];
+};
+
 export type AzureWorkItemFieldValue = string | number | boolean;
 
 export type AzureWorkItemFieldType =

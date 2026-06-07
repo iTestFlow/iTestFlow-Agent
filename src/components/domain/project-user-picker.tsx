@@ -5,9 +5,9 @@ import { ChevronDown, Loader2, User, Users, X } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
 import { cn } from "@/lib/utils";
 import type { ProjectUser } from "@/types/azure-devops";
 
@@ -44,53 +44,77 @@ type MultipleProjectUserPickerProps = CommonProjectUserPickerProps & {
 export type ProjectUserPickerProps = SingleProjectUserPickerProps | MultipleProjectUserPickerProps;
 
 export function ProjectUserPicker(props: ProjectUserPickerProps) {
+  if (props.mode === "multiple") {
+    return <MultipleProjectUserPicker {...props} />;
+  }
+  return <SingleProjectUserPicker {...props} />;
+}
+
+function MultipleProjectUserPicker(props: MultipleProjectUserPickerProps) {
+  return (
+    <SearchableMultiSelect
+      options={props.users}
+      value={props.value}
+      onValueChange={props.onValueChange}
+      getOptionValue={(user) => user.id}
+      getOptionLabel={projectUserLabel}
+      getOptionSearchText={projectUserLabel}
+      renderOption={(user) => (
+        <div className="flex min-w-0 items-start gap-3">
+          <ProjectUserAvatar user={user} className="mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium text-foreground">{user.displayName}</div>
+            {user.uniqueName ? <div className="truncate text-xs text-muted-foreground">{user.uniqueName}</div> : null}
+          </div>
+        </div>
+      )}
+      loading={props.loading}
+      error={props.error}
+      disabled={props.disabled}
+      placeholder={props.placeholder ?? "Select members"}
+      loadingText="Loading members"
+      searchPlaceholder={props.searchPlaceholder ?? "Search project users"}
+      emptyMessage={props.emptyMessage ?? "No project users found."}
+      ariaLabel={props.ariaLabel ?? "Select project members"}
+      className={props.className}
+      triggerClassName={props.triggerClassName}
+      contentClassName={props.contentClassName}
+      align={props.align}
+      triggerVariant={props.triggerVariant}
+      triggerIcon={<Users className="size-4" />}
+    />
+  );
+}
+
+function SingleProjectUserPicker(singleProps: SingleProjectUserPickerProps) {
   const {
     users,
     loading = false,
     error = null,
     disabled = false,
-    placeholder = props.mode === "single" ? "Unassigned" : "Select members",
+    placeholder = "Unassigned",
     searchPlaceholder = "Search project users",
     emptyMessage = "No project users found.",
-    ariaLabel = props.mode === "single" ? "Select assignee" : "Select project members",
+    ariaLabel = "Select assignee",
     className,
     triggerClassName,
     contentClassName,
     align = "start",
     triggerVariant = "outline",
-  } = props;
+  } = singleProps;
   const [open, setOpen] = React.useState(false);
-  const selectedValueSet = React.useMemo(
-    () => new Set(props.mode === "multiple" ? props.value : []),
-    [props.mode, props.value],
-  );
-  const selectedUser = props.mode === "single"
-    ? users.find((user) => projectUserValue(user) === props.value)
-    : undefined;
+  const selectedUser = users.find((user) => projectUserValue(user) === singleProps.value);
   const selectedLabel = selectedUser
     ? projectUserLabel(selectedUser)
-    : props.mode === "single"
-      ? props.value
-      : "";
+    : singleProps.value;
   const triggerLabel = loading
-    ? props.mode === "single" ? "Loading users..." : "Loading members"
-    : props.mode === "multiple" && props.value.length
-      ? `${props.value.length} selected`
-      : selectedLabel || placeholder;
+    ? "Loading users..."
+    : selectedLabel || placeholder;
   const triggerDisabled = disabled || loading;
 
   function selectSingleValue(value: string) {
-    if (props.mode !== "single") return;
-    props.onValueChange(value);
+    singleProps.onValueChange(value);
     setOpen(false);
-  }
-
-  function setMultipleValue(userId: string, selected: boolean) {
-    if (props.mode !== "multiple") return;
-    const nextValue = selected
-      ? [...props.value, userId].filter((value, index, values) => values.indexOf(value) === index)
-      : props.value.filter((value) => value !== userId);
-    props.onValueChange(nextValue);
   }
 
   return (
@@ -111,8 +135,6 @@ export function ProjectUserPicker(props: ProjectUserPickerProps) {
                 <ProjectUserAvatar user={selectedUser} />
               ) : loading ? (
                 <Loader2 className="size-4 animate-spin" />
-              ) : props.mode === "multiple" ? (
-                <Users className="size-4" />
               ) : (
                 <User className="size-4" />
               )}
@@ -121,13 +143,13 @@ export function ProjectUserPicker(props: ProjectUserPickerProps) {
             <ChevronDown className={cn("size-4 shrink-0 transition-transform", open && "rotate-180")} />
           </Button>
         </PopoverTrigger>
-        {props.mode === "single" && props.clearable && props.value ? (
+        {singleProps.clearable && singleProps.value ? (
           <Button
             type="button"
             variant="ghost"
             size="icon"
             disabled={disabled}
-            onClick={() => props.onValueChange("")}
+            onClick={() => singleProps.onValueChange("")}
             aria-label="Clear assignee"
           >
             <X className="size-4" />
@@ -152,44 +174,25 @@ export function ProjectUserPicker(props: ProjectUserPickerProps) {
               <>
                 <CommandEmpty>{emptyMessage}</CommandEmpty>
                 <CommandGroup>
-                  {props.mode === "single" ? (
-                    <CommandItem
-                      value={props.emptyOptionLabel ?? placeholder}
-                      data-checked={!props.value}
-                      onSelect={() => selectSingleValue("")}
-                    >
-                      <User className="size-4" />
-                      {props.emptyOptionLabel ?? placeholder}
-                    </CommandItem>
-                  ) : null}
+                  <CommandItem
+                    value={singleProps.emptyOptionLabel ?? placeholder}
+                    data-checked={!singleProps.value}
+                    onSelect={() => selectSingleValue("")}
+                  >
+                    <User className="size-4" />
+                    {singleProps.emptyOptionLabel ?? placeholder}
+                  </CommandItem>
                   {users.map((user) => {
                     const userValue = projectUserValue(user);
-                    const selected = props.mode === "single"
-                      ? props.value === userValue
-                      : selectedValueSet.has(user.id);
+                    const selected = singleProps.value === userValue;
                     return (
                       <CommandItem
                         key={user.id}
                         value={projectUserLabel(user)}
-                        data-checked={props.mode === "single" ? selected : undefined}
-                        onSelect={() => {
-                          if (props.mode === "single") {
-                            selectSingleValue(userValue);
-                          } else {
-                            setMultipleValue(user.id, !selected);
-                          }
-                        }}
+                        data-checked={selected}
+                        onSelect={() => selectSingleValue(userValue)}
                         className="items-start gap-3 py-2"
                       >
-                        {props.mode === "multiple" ? (
-                          <Checkbox
-                            checked={selected}
-                            onClick={(event) => event.stopPropagation()}
-                            onCheckedChange={(checked) => setMultipleValue(user.id, checked === true)}
-                            aria-label={`Select ${user.displayName}`}
-                            className="mt-2"
-                          />
-                        ) : null}
                         <ProjectUserAvatar user={user} className="mt-0.5" />
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-medium text-foreground">{user.displayName}</div>

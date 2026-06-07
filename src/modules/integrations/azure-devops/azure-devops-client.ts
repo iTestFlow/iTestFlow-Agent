@@ -13,6 +13,7 @@ import type {
   AzureIteration,
   AzureProject,
   AzureProjectUser,
+  AzureProjectWorkItemMetadata,
   AzureTestPoint,
   AzureWorkItemFieldValue,
   AzureWorkItemTypeField,
@@ -150,6 +151,28 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     }
 
     return [...users.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }
+
+  async fetchProjectWorkItemMetadata(input: { projectId: string }): Promise<AzureProjectWorkItemMetadata> {
+    const projectId = encodeURIComponent(input.projectId);
+    const typesResponse = await this.requestJson<{ value?: Array<{ name?: string }> }>(
+      `${projectId}/_apis/wit/workitemtypes?api-version=7.1`,
+    );
+    const workItemTypes = uniqueSortedValues(
+      (typesResponse.value ?? []).map((type) => type.name ?? ""),
+    );
+    const stateResponses = await Promise.all(
+      workItemTypes.map((workItemType) =>
+        this.requestJson<{ value?: Array<{ name?: string }> }>(
+          `${projectId}/_apis/wit/workitemtypes/${encodeURIComponent(workItemType)}/states?api-version=7.1`,
+        ),
+      ),
+    );
+    const states = uniqueSortedValues(
+      stateResponses.flatMap((response) => (response.value ?? []).map((state) => state.name ?? "")),
+    );
+
+    return { workItemTypes, states };
   }
 
   async fetchWorkItemTypeFields(input: { projectId: string; workItemType: string }): Promise<AzureWorkItemTypeField[]> {
@@ -1013,6 +1036,16 @@ function escapeJsonPointerSegment(value: string) {
 
 function escapeWiqlValue(value: string) {
   return value.replace(/'/g, "''");
+}
+
+function uniqueSortedValues(values: string[]) {
+  const unique = new Map<string, string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    const key = trimmed.toLocaleLowerCase();
+    if (trimmed && !unique.has(key)) unique.set(key, trimmed);
+  }
+  return [...unique.values()].sort((first, second) => first.localeCompare(second));
 }
 
 function flattenIterations(node: AzureClassificationNode): AzureIteration[] {

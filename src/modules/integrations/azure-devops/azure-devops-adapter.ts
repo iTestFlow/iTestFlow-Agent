@@ -7,6 +7,7 @@ import type {
   AzureIteration,
   AzureProject,
   AzureProjectUser,
+  AzureProjectWorkItemMetadata,
   AzureTestPoint,
   AzureWorkItemTypeField,
   CreateTestSuiteInput,
@@ -36,6 +37,10 @@ export interface AzureDevOpsAdapter {
   fetchProjectUsers(input: {
     projectId: string;
   }): Promise<AzureProjectUser[]>;
+
+  fetchProjectWorkItemMetadata(input: {
+    projectId: string;
+  }): Promise<AzureProjectWorkItemMetadata>;
 
   fetchWorkItemTypeFields(input: {
     projectId: string;

@@ -6,13 +6,6 @@ export const DEFAULT_CONTEXT_WORK_ITEM_TYPES = [
   "Requirement",
 ]
 
-export const CONTEXT_WORK_ITEM_TYPE_OPTIONS = [
-  ...DEFAULT_CONTEXT_WORK_ITEM_TYPES,
-  "Bug",
-  "Issue",
-  "Task",
-]
-
 export const DEFAULT_CONTEXT_STATES = [
   "New",
   "Active",
@@ -23,9 +16,4 @@ export const DEFAULT_CONTEXT_STATES = [
   "Resolved",
   "Done",
   "Closed",
-]
-
-export const CONTEXT_STATE_OPTIONS = [
-  ...DEFAULT_CONTEXT_STATES,
-  "Removed",
 ]

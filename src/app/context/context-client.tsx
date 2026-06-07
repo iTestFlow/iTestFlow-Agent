@@ -38,12 +38,15 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import {
-  CONTEXT_STATE_OPTIONS,
-  CONTEXT_WORK_ITEM_TYPE_OPTIONS,
   DEFAULT_CONTEXT_STATES,
   DEFAULT_CONTEXT_WORK_ITEM_TYPES,
 } from "@/lib/project-context-defaults"
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project"
+import {
+  projectScopeKey,
+  selectAvailableDefaults,
+  useProjectWorkItemMetadata,
+} from "@/shared/lib/use-project-work-item-metadata"
 
 const COPY_FEEDBACK_MS = 3000
 
@@ -359,6 +362,14 @@ export function ProjectContextClient() {
   const manualPrepareStepRef = useRef<HTMLDivElement | null>(null)
   const manualPreviewStepRef = useRef<HTMLDivElement | null>(null)
   const manualBatchRef = useRef<HTMLDivElement | null>(null)
+  const initializedFilterProjectRef = useRef<string | null>(null)
+  const filterProjectKey = projectScopeKey(scope)
+  const {
+    metadata: workItemMetadata,
+    loading: workItemMetadataLoading,
+    error: workItemMetadataError,
+    retry: retryWorkItemMetadata,
+  } = useProjectWorkItemMetadata(scope)
 
   const refreshKnowledgeLog = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
     if (!activeScope) return
@@ -435,6 +446,18 @@ export function ProjectContextClient() {
     window.addEventListener("itestflow:active-project-changed", onChange)
     return () => window.removeEventListener("itestflow:active-project-changed", onChange)
   }, [])
+
+  useEffect(() => {
+    if (!filterProjectKey) {
+      initializedFilterProjectRef.current = null
+      return
+    }
+    if (!workItemMetadata || initializedFilterProjectRef.current === filterProjectKey) return
+
+    initializedFilterProjectRef.current = filterProjectKey
+    setWorkItemTypes(selectAvailableDefaults(DEFAULT_CONTEXT_WORK_ITEM_TYPES, workItemMetadata.workItemTypes))
+    setStates(selectAvailableDefaults(DEFAULT_CONTEXT_STATES, workItemMetadata.states))
+  }, [filterProjectKey, workItemMetadata])
 
   useEffect(() => {
     if (!scope) return
@@ -829,7 +852,13 @@ export function ProjectContextClient() {
   const rangeStart = totalCount === 0 ? 0 : (page - 1) * pageSize + 1
   const rangeEnd = Math.min(totalCount, rangeStart + recentItems.length - 1)
   const totalKnowledgeItems = knowledgeSnapshot ? countKnowledgeItems(knowledgeSnapshot.knowledgeBase) : 0
-  const canLoadIndex = Boolean(scope) && workItemTypes.length > 0 && states.length > 0 && !buildLoading
+  const canLoadIndex = Boolean(scope)
+    && Boolean(workItemMetadata)
+    && !workItemMetadataLoading
+    && !workItemMetadataError
+    && workItemTypes.length > 0
+    && states.length > 0
+    && !buildLoading
   const canPrepareKnowledge = Boolean(scope) && Boolean(result) && !buildLoading
 
   return (
@@ -949,10 +978,15 @@ export function ProjectContextClient() {
                     <IndexLoadPanel
                       workItemTypes={workItemTypes}
                       states={states}
+                      workItemTypeOptions={workItemMetadata?.workItemTypes ?? []}
+                      stateOptions={workItemMetadata?.states ?? []}
+                      metadataLoading={workItemMetadataLoading}
+                      metadataError={workItemMetadataError}
                       canLoad={canLoadIndex}
                       loading={buildLoading}
                       onWorkItemTypesChange={changeWorkItemTypes}
                       onStatesChange={changeStates}
+                      onRetryMetadata={retryWorkItemMetadata}
                       onLoad={loadProjectIndexForBuild}
                     />
 
@@ -1032,10 +1066,15 @@ export function ProjectContextClient() {
                     <IndexLoadPanel
                       workItemTypes={workItemTypes}
                       states={states}
+                      workItemTypeOptions={workItemMetadata?.workItemTypes ?? []}
+                      stateOptions={workItemMetadata?.states ?? []}
+                      metadataLoading={workItemMetadataLoading}
+                      metadataError={workItemMetadataError}
                       canLoad={canLoadIndex}
                       loading={buildLoading}
                       onWorkItemTypesChange={changeWorkItemTypes}
                       onStatesChange={changeStates}
+                      onRetryMetadata={retryWorkItemMetadata}
                       onLoad={loadProjectIndexForBuild}
                     />
 
@@ -1215,18 +1254,28 @@ function BuildStepper({ step }: { step: BuildStep }) {
 function IndexLoadPanel({
   workItemTypes,
   states,
+  workItemTypeOptions,
+  stateOptions,
+  metadataLoading,
+  metadataError,
   canLoad,
   loading,
   onWorkItemTypesChange,
   onStatesChange,
+  onRetryMetadata,
   onLoad,
 }: {
   workItemTypes: string[]
   states: string[]
+  workItemTypeOptions: string[]
+  stateOptions: string[]
+  metadataLoading: boolean
+  metadataError: string | null
   canLoad: boolean
   loading: boolean
   onWorkItemTypesChange: (values: string[]) => void
   onStatesChange: (values: string[]) => void
+  onRetryMetadata: () => void
   onLoad: () => void
 }) {
   return (
@@ -1236,21 +1285,25 @@ function IndexLoadPanel({
           <ContextFilterSelector
             title="Work item types"
             description="Load matching Azure DevOps work items into the indexed project context before building knowledge."
-            options={CONTEXT_WORK_ITEM_TYPE_OPTIONS}
+            options={workItemTypeOptions}
             selectedValues={workItemTypes}
-            customPlaceholder="Add work item type"
-            duplicateMessage="This work item type is already selected."
-            optionGridClassName="sm:grid-cols-2 lg:grid-cols-3"
+            loading={metadataLoading}
+            error={metadataError}
+            searchPlaceholder="Search work item types"
+            emptyMessage="No work item types were returned for this project."
+            onRetry={onRetryMetadata}
             onChange={onWorkItemTypesChange}
           />
           <ContextFilterSelector
             title="States"
             description="Only active source work items in these states are used for knowledge building."
-            options={CONTEXT_STATE_OPTIONS}
+            options={stateOptions}
             selectedValues={states}
-            customPlaceholder="Add state"
-            duplicateMessage="This state is already selected."
-            optionGridClassName="sm:grid-cols-2 lg:grid-cols-3"
+            loading={metadataLoading}
+            error={metadataError}
+            searchPlaceholder="Search states"
+            emptyMessage="No work item states were returned for this project."
+            onRetry={onRetryMetadata}
             onChange={onStatesChange}
           />
         </div>

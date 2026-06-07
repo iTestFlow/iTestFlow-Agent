@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, CheckCircle2, ChevronDown, Eye, EyeOff, Loader2, ShieldCheck, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -11,8 +11,6 @@ import { BRAND_LOGO_FULL_SRC } from "@/lib/constants";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
-  CONTEXT_STATE_OPTIONS,
-  CONTEXT_WORK_ITEM_TYPE_OPTIONS,
   DEFAULT_CONTEXT_STATES,
   DEFAULT_CONTEXT_WORK_ITEM_TYPES,
 } from "@/lib/project-context-defaults";
@@ -29,6 +27,12 @@ import {
 import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION } from "@/modules/settings/cron-expression";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import { dispatchRuntimeSettingsChanged } from "@/shared/lib/runtime-settings-events";
+import {
+  projectScopeKey,
+  retainAvailableSelections,
+  selectAvailableDefaults,
+  useProjectWorkItemMetadata,
+} from "@/shared/lib/use-project-work-item-metadata";
 import { ModelPicker, useProviderModels } from "@/shared/components/live/model-picker";
 import { apiErrorMessage } from "@/shared/validators/api-validation-errors";
 
@@ -79,6 +83,7 @@ export function ConfigurationForm({
   const [hasSavedLlmKey, setHasSavedLlmKey] = useState(false);
   const [savedLlmProvider, setSavedLlmProvider] = useState<Provider | null>(null);
   const [activeProject, setActiveProject] = useState<ActiveProjectScope | null>(null);
+  const [runtimeSettingsLoaded, setRuntimeSettingsLoaded] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
@@ -101,17 +106,30 @@ export function ConfigurationForm({
     autoUpdateWorkItemTypes: DEFAULT_CONTEXT_WORK_ITEM_TYPES,
     autoUpdateStates: DEFAULT_CONTEXT_STATES,
   });
+  const filterProjectKeyRef = useRef<string | null>(null);
 
   const selectedModelLabel = models.find((model) => model.id === form.model)?.displayName ?? (form.model || "Select a model from live provider API");
   const canUseSavedLlmKey = hasSavedLlmKey && savedLlmProvider === form.provider;
   const showAdvancedSettings = mode === "settings";
   const autoUpdateProject = activeProject ?? form.autoUpdateProjectScope;
+  const autoUpdateProjectKey = projectScopeKey(autoUpdateProject);
+  const {
+    metadata: workItemMetadata,
+    loading: workItemMetadataLoading,
+    error: workItemMetadataError,
+    retry: retryWorkItemMetadata,
+  } = useProjectWorkItemMetadata(autoUpdateProject);
 
   useEffect(() => {
     fetch("/api/settings/runtime", { cache: "no-store" })
       .then((response) => response.json())
       .then((summary) => {
-        if (!summary.configured) return;
+        if (!summary.configured) {
+          setRuntimeSettingsLoaded(true);
+          return;
+        }
+        const savedProjectScope = summary.context?.autoUpdate?.projectScope ?? null;
+        filterProjectKeyRef.current = projectScopeKey(savedProjectScope);
         setForm((current) => ({
           ...current,
           organizationUrl: summary.azureDevOps?.organizationUrl ?? "",
@@ -126,7 +144,7 @@ export function ConfigurationForm({
           retrievalTopK: summary.context?.retrievalTopK ?? current.retrievalTopK,
           autoUpdateEnabled: summary.context?.autoUpdate?.enabled ?? current.autoUpdateEnabled,
           autoUpdateCronExpression: summary.context?.autoUpdate?.cronExpression ?? current.autoUpdateCronExpression,
-          autoUpdateProjectScope: summary.context?.autoUpdate?.projectScope ?? current.autoUpdateProjectScope,
+          autoUpdateProjectScope: savedProjectScope ?? current.autoUpdateProjectScope,
           autoUpdateWorkItemTypes: summary.context?.autoUpdate?.workItemTypes ?? current.autoUpdateWorkItemTypes,
           autoUpdateStates: summary.context?.autoUpdate?.states ?? current.autoUpdateStates,
         }));
@@ -137,8 +155,9 @@ export function ConfigurationForm({
             ? "Loaded bootstrap settings from .env.local. Save here to move configuration into encrypted local runtime settings."
             : "Loaded saved local runtime settings. Re-enter secrets only when rotating credentials.",
         );
+        setRuntimeSettingsLoaded(true);
       })
-      .catch(() => undefined);
+      .catch(() => setRuntimeSettingsLoaded(true));
   }, []);
 
   useEffect(() => {
@@ -154,6 +173,22 @@ export function ConfigurationForm({
   useEffect(() => {
     resetModels();
   }, [form.provider, form.apiKey, form.baseUrl, resetModels]);
+
+  useEffect(() => {
+    if (!runtimeSettingsLoaded || !autoUpdateProjectKey || !workItemMetadata) return;
+
+    const preserveCurrentSelections = filterProjectKeyRef.current === autoUpdateProjectKey;
+    filterProjectKeyRef.current = autoUpdateProjectKey;
+    setForm((current) => ({
+      ...current,
+      autoUpdateWorkItemTypes: preserveCurrentSelections
+        ? retainAvailableSelections(current.autoUpdateWorkItemTypes, workItemMetadata.workItemTypes)
+        : selectAvailableDefaults(DEFAULT_CONTEXT_WORK_ITEM_TYPES, workItemMetadata.workItemTypes),
+      autoUpdateStates: preserveCurrentSelections
+        ? retainAvailableSelections(current.autoUpdateStates, workItemMetadata.states)
+        : selectAvailableDefaults(DEFAULT_CONTEXT_STATES, workItemMetadata.states),
+    }));
+  }, [autoUpdateProjectKey, runtimeSettingsLoaded, workItemMetadata]);
 
   async function loadModelsFromProvider() {
     if (loadingModels) return;
@@ -563,20 +598,28 @@ export function ConfigurationForm({
                           </div>
                           <ContextFilterSelector
                             title="Work item types"
-                            description="Custom values must match Azure DevOps work item type names exactly."
-                            options={CONTEXT_WORK_ITEM_TYPE_OPTIONS}
+                            description="Select from every work item type available in the scheduled Azure DevOps project."
+                            options={workItemMetadata?.workItemTypes ?? []}
                             selectedValues={form.autoUpdateWorkItemTypes}
-                            customPlaceholder="Add work item type"
-                            duplicateMessage="This work item type is already selected."
+                            loading={workItemMetadataLoading}
+                            error={workItemMetadataError}
+                            disabled={!autoUpdateProject}
+                            searchPlaceholder="Search work item types"
+                            emptyMessage="No work item types were returned for this project."
+                            onRetry={retryWorkItemMetadata}
                             onChange={(next) => update("autoUpdateWorkItemTypes", next)}
                           />
                           <ContextFilterSelector
                             title="States"
-                            description="Custom values must match Azure DevOps state names exactly."
-                            options={CONTEXT_STATE_OPTIONS}
+                            description="Select from the combined states available across this project's work item types."
+                            options={workItemMetadata?.states ?? []}
                             selectedValues={form.autoUpdateStates}
-                            customPlaceholder="Add state"
-                            duplicateMessage="This state is already selected."
+                            loading={workItemMetadataLoading}
+                            error={workItemMetadataError}
+                            disabled={!autoUpdateProject}
+                            searchPlaceholder="Search states"
+                            emptyMessage="No work item states were returned for this project."
+                            onRetry={retryWorkItemMetadata}
                             onChange={(next) => update("autoUpdateStates", next)}
                           />
                         </div>
