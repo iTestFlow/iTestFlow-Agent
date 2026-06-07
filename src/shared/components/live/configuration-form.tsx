@@ -45,7 +45,6 @@ type FormState = {
   model: string;
   apiKey: string;
   baseUrl: string;
-  temperature: number;
   maxTokens: number;
   maxOutputTokenCap: number;
   retryAttempts: number;
@@ -94,7 +93,6 @@ export function ConfigurationForm({
     model: "",
     apiKey: "",
     baseUrl: "",
-    temperature: 0.2,
     maxTokens: DEFAULT_MAX_TOKENS,
     maxOutputTokenCap: DEFAULT_MAX_OUTPUT_TOKEN_CAP,
     retryAttempts: DEFAULT_RETRY_ATTEMPTS,
@@ -136,7 +134,6 @@ export function ConfigurationForm({
           provider: summary.llm?.provider ?? current.provider,
           model: summary.llm?.model ?? current.model,
           baseUrl: summary.llm?.baseUrl ?? "",
-          temperature: summary.llm?.temperature ?? current.temperature,
           maxTokens: summary.llm?.maxTokens ?? current.maxTokens,
           maxOutputTokenCap: summary.llm?.maxOutputTokenCap ?? current.maxOutputTokenCap,
           retryAttempts: summary.llm?.retryAttempts ?? current.retryAttempts,
@@ -251,7 +248,6 @@ export function ConfigurationForm({
         model: form.model.trim(),
         apiKey: form.apiKey,
         baseUrl: form.baseUrl.trim() || undefined,
-        temperature: form.temperature,
         maxTokens: form.maxTokens,
         maxOutputTokenCap: form.maxOutputTokenCap,
         retryAttempts: form.retryAttempts,
@@ -528,7 +524,7 @@ export function ConfigurationForm({
 
                         <Field
                           label="Structured-output attempts"
-                          description="Total calls including the initial call; later calls double the budget after truncation."
+                          description="Safety bound on retry attempts if the model truncates output before completing JSON. The first attempt already requests the full output-token cap."
                         >
                           <NumberSelect
                             value={form.maxTruncationAttempts}

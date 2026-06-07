@@ -66,7 +66,6 @@ const LLMSettingsSchema = z.object({
   }).trim().min(1, "Select an LLM model."),
   apiKey: z.string().optional(),
   baseUrl: z.string().optional(),
-  temperature: z.number().min(0, "Temperature must be 0 or higher.").max(2, "Temperature must be 2 or lower.").default(0.2),
   maxTokens: allowedNumber(
     MAX_TOKEN_OPTIONS,
     "Select a supported default output token budget.",
@@ -135,7 +134,6 @@ export type RuntimeSettingsSummary = {
     model: string;
     baseUrl?: string;
     hasApiKey: boolean;
-    temperature: number;
     maxTokens: number;
     maxOutputTokenCap: number;
     retryAttempts: number;

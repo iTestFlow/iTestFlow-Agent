@@ -43,7 +43,6 @@ type RuntimeSummary = {
     provider: string
     model: string
     hasApiKey: boolean
-    temperature: number
     maxTokens: number
     maxOutputTokenCap: number
     retryAttempts: number

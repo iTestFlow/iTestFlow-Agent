@@ -35,7 +35,6 @@ export async function generateTestCases(input: {
     schema: TestCaseGenerationOutputSchema,
     system: promptDraft.systemPrompt,
     user: promptDraft.userPrompt,
-    maxTokens: 16000,
     metadata: {
       action: "test_case_generation.run",
       promptName: testCaseGenerationPrompt.name,

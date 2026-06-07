@@ -95,7 +95,6 @@ function summarizeRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsSum
       model: settings.llm.model,
       baseUrl: settings.llm.baseUrl,
       hasApiKey: Boolean(settings.llm.apiKey),
-      temperature: settings.llm.temperature,
       maxTokens: settings.llm.maxTokens,
       maxOutputTokenCap: settings.llm.maxOutputTokenCap,
       retryAttempts: settings.llm.retryAttempts,
@@ -169,7 +168,6 @@ function getSettingsFromEnv(): RuntimeSettings | null {
             : provider === "anthropic"
               ? optionalEnv(process.env.ANTHROPIC_BASE_URL)
               : optionalEnv(process.env.OLLAMA_BASE_URL),
-      temperature: Number(process.env.LLM_TEMPERATURE ?? "0.2"),
       ...llmControls,
     },
     context: {

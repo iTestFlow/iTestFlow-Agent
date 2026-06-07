@@ -39,7 +39,6 @@ export async function runRequirementAnalysis(input: {
     schema: RequirementAnalysisOutputSchema,
     system: promptDraft.systemPrompt,
     user: promptDraft.userPrompt,
-    maxTokens: 12000,
     metadata: {
       action: "requirement_analysis.run",
       promptName: requirementAnalysisPrompt.name,

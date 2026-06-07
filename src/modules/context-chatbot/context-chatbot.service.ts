@@ -66,7 +66,6 @@ export async function answerContextChatbot(input: {
       context: evidence.context,
       knowledge: evidence.knowledge,
     }),
-    temperature: 0.1,
     maxTokens: 2500,
     metadata: {
       action: "context_chatbot.answer",

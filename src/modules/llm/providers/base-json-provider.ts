@@ -4,7 +4,6 @@ import { z } from "zod";
 import { parseJsonWithRepair } from "../json-extraction";
 import {
   DEFAULT_MAX_OUTPUT_TOKEN_CAP,
-  DEFAULT_MAX_TOKENS,
   DEFAULT_MAX_TRUNCATION_ATTEMPTS,
 } from "../llm-defaults";
 import { writeLLMRequestLog } from "../llm-request-log.service";
@@ -67,11 +66,14 @@ export abstract class BaseJsonProvider implements LLMProvider {
   ): Promise<LLMResult<z.infer<TSchema>>> {
     const startedAt = Date.now();
     let callResult: LLMProviderCallResult | null = null;
+    // max_tokens is a CEILING, not a reservation: providers spend latency and cost only on
+    // tokens actually generated. Starting low and doubling on truncation regenerates the whole
+    // response from scratch each time, so we request the full cap on the first attempt — the
+    // common case then completes in a single pass. An explicit input.maxTokens is still honored
+    // as an OPTIONAL lower ceiling for callers that deliberately want to bound output length.
     const cap = positiveIntegerOrDefault(this.config.maxOutputTokenCap, DEFAULT_MAX_OUTPUT_TOKEN_CAP);
-    const startingBudget = Math.min(
-      positiveIntegerOrDefault(input.maxTokens ?? this.config.maxTokens, DEFAULT_MAX_TOKENS),
-      cap,
-    );
+    const requestedCeiling = positiveIntegerOrDefault(input.maxTokens, cap);
+    const startingBudget = Math.min(requestedCeiling, cap);
     const maxTruncationAttempts = positiveIntegerOrDefault(
       this.config.maxTruncationAttempts,
       DEFAULT_MAX_TRUNCATION_ATTEMPTS,
@@ -143,7 +145,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
       throw new Error(`LLM output for ${input.schemaName} was not valid JSON:${truncated} ${message}`);
     }
 
-    const result = input.schema.safeParse(parsedJson);
+    const result = input.schema.safeParse(stripNullProperties(parsedJson));
     if (!result.success) {
       throw new Error(`LLM output failed schema validation for ${input.schemaName}: ${result.error.message}`);
     }
@@ -226,4 +228,20 @@ function isTokenLimitFinishReason(finishReason?: string) {
 
 function positiveIntegerOrDefault(value: number | undefined, fallback: number) {
   return Number.isInteger(value) && Number(value) > 0 ? Number(value) : fallback;
+}
+
+// Models routinely emit `null` for optional fields (e.g. an initial state's `fromState`).
+// Zod's `.optional()` accepts `undefined`/missing but rejects `null`, so drop null-valued object
+// properties before validation: an optional field becomes "absent" (accepted), while a required
+// field becomes "missing" (still fails, as it should). No LLM-output schema relies on null.
+function stripNullProperties(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripNullProperties);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, entry]) => entry !== null)
+        .map(([key, entry]) => [key, stripNullProperties(entry)]),
+    );
+  }
+  return value;
 }

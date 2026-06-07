@@ -17,9 +17,6 @@ export class OllamaProvider extends BaseJsonProvider {
       model: this.model,
       stream: false,
       prompt: [input.system, input.user].join("\n\n"),
-      options: {
-        temperature: input.temperature ?? this.config.temperature ?? 0.2,
-      },
     };
     const response = await fetch(`${this.config.baseUrl ?? "http://localhost:11434"}/api/generate`, {
       method: "POST",
@@ -51,7 +48,6 @@ export class OllamaProvider extends BaseJsonProvider {
       format: "json",
       prompt: buildStructuredOutputUserPrompt(input),
       options: {
-        temperature: input.temperature ?? this.config.temperature ?? 0.2,
         num_predict: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
       },
     };

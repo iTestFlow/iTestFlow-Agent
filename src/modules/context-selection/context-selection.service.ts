@@ -28,7 +28,6 @@ export async function suggestContextStories(input: {
         azureProjectName: scope.azureProjectName,
       },
     }),
-    maxTokens: 8192,
     metadata: {
       action: input.action ?? "context_selection.suggest",
       promptName: contextSelectionPrompt.name,

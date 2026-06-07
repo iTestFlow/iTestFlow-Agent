@@ -8,7 +8,6 @@ export type LLMProviderConfig = {
   apiKey?: string;
   model: string;
   baseUrl?: string;
-  temperature?: number;
   maxTokens?: number;
   maxOutputTokenCap?: number;
   retryAttempts?: number;
@@ -20,7 +19,6 @@ export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTy
   user: string;
   schema: TSchema;
   schemaName: string;
-  temperature?: number;
   maxTokens?: number;
   metadata?: LLMRequestLogMetadata;
 };
@@ -28,7 +26,6 @@ export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTy
 export type GenerateTextInput = {
   system: string;
   user: string;
-  temperature?: number;
   maxTokens?: number;
   metadata?: LLMRequestLogMetadata;
 };

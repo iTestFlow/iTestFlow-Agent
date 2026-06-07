@@ -63,7 +63,6 @@ export async function generateTestExecutionEffort(input: {
     schema: TestExecutionEffortOutputSchema,
     system: promptDraft.systemPrompt,
     user: promptDraft.userPrompt,
-    maxTokens: 16000,
     metadata: {
       action: "test_execution_effort.run",
       promptName: testExecutionEffortPrompt.name,

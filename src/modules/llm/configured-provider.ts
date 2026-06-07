@@ -19,7 +19,6 @@ export function getConfiguredProviderFromEnv(): LLMProvider | null {
       apiKey: runtimeSettings.llm.apiKey,
       model: runtimeSettings.llm.model,
       baseUrl: runtimeSettings.llm.baseUrl,
-      temperature: runtimeSettings.llm.temperature,
       maxTokens: runtimeSettings.llm.maxTokens,
       maxOutputTokenCap: runtimeSettings.llm.maxOutputTokenCap,
       retryAttempts: runtimeSettings.llm.retryAttempts,
@@ -69,7 +68,6 @@ export function getConfiguredProviderFromEnv(): LLMProvider | null {
           : provider === "anthropic"
             ? process.env.ANTHROPIC_BASE_URL
             : process.env.OLLAMA_BASE_URL,
-    temperature: Number(process.env.LLM_TEMPERATURE ?? "0.2"),
     ...llmControls,
   });
 }

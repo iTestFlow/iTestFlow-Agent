@@ -34,7 +34,6 @@ export class AnthropicProvider extends BaseJsonProvider {
     const requestBody = {
       model: this.model,
       max_tokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
-      temperature: input.temperature ?? this.config.temperature ?? 0.2,
       system: input.system,
       messages: [{ role: "user", content: input.user }],
     };
@@ -71,7 +70,6 @@ export class AnthropicProvider extends BaseJsonProvider {
     const requestBody = {
       model: this.model,
       max_tokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
-      temperature: input.temperature ?? this.config.temperature ?? 0.2,
       system: withStructuredOutputInstruction(input.system, input.schemaName),
       messages: [{ role: "user", content: input.user }],
     };

@@ -29,7 +29,6 @@ const fieldLabels: Record<string, string> = {
   "llm.model": "LLM Model",
   "llm.apiKey": "LLM API Token",
   "llm.baseUrl": "LLM Base URL",
-  "llm.temperature": "LLM Temperature",
   "llm.maxTokens": "LLM Max Tokens",
   "llm.maxOutputTokenCap": "LLM Max Output Token Cap",
   "llm.retryAttempts": "LLM Retry Attempts",

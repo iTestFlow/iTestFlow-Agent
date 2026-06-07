@@ -34,7 +34,6 @@ export async function reviewExistingLinkedTestCases(input: {
     schema: ExistingTestCaseReviewOutputSchema,
     system: promptDraft.systemPrompt,
     user: promptDraft.userPrompt,
-    maxTokens: 12000,
     metadata: {
       action: "existing_test_case_review.run",
       promptName: existingTestCaseReviewPrompt.name,

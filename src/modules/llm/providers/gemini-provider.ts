@@ -20,7 +20,6 @@ export class GeminiProvider extends BaseJsonProvider {
     const baseUrl = this.config.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
     const requestBody = {
       generationConfig: {
-        temperature: input.temperature ?? this.config.temperature ?? 0.2,
         maxOutputTokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
         ...geminiStructuredOutputOptions(this.model),
       },
@@ -68,7 +67,6 @@ export class GeminiProvider extends BaseJsonProvider {
     const baseUrl = this.config.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
     const requestBody = {
       generationConfig: {
-        temperature: input.temperature ?? this.config.temperature ?? 0.2,
         maxOutputTokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
         responseMimeType: "application/json",
         ...geminiStructuredOutputOptions(this.model),
