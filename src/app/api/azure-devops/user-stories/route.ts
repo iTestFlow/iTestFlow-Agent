@@ -7,13 +7,13 @@ export const runtime = "nodejs";
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
-  iterationPath: z.string().trim().min(1, "Select an iteration before loading user stories."),
+  iterationPath: z.string().trim().min(1, "Select an iteration before loading user stories.").optional(),
 });
 
 export async function POST(request: Request) {
   const parsed = RequestSchema.safeParse(await request.json());
   if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Selected project and iteration are required." }, { status: 400 });
+    return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "A selected project is required." }, { status: 400 });
   }
 
   try {

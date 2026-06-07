@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown, CheckCircle2, ClipboardList, Loader2, RefreshCw, Send, XCircle } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, CheckCircle2, ClipboardList, Loader2, RefreshCw, Search, Send, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
 import {
   Table,
   TableBody,
@@ -106,7 +107,11 @@ export function BulkTaskClient() {
   const [storiesLoading, setStoriesLoading] = useState(false);
   const [stories, setStories] = useState<UserStory[]>([]);
   const [selectedStoryIds, setSelectedStoryIds] = useState<string[]>([]);
-  const [manualIds, setManualIds] = useState("");
+  const [searchableStories, setSearchableStories] = useState<UserStory[]>([]);
+  const [searchableStoriesLoading, setSearchableStoriesLoading] = useState(false);
+  const [searchableStoriesLoaded, setSearchableStoriesLoaded] = useState(false);
+  const [searchableStoriesError, setSearchableStoriesError] = useState<string | null>(null);
+  const [selectedSearchableStoryIds, setSelectedSearchableStoryIds] = useState<string[]>([]);
   const [overrides, setOverrides] = useState<Record<string, OverrideValues>>({});
   const [submitLoading, setSubmitLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,8 +123,12 @@ export function BulkTaskClient() {
       const custom = event as CustomEvent<ActiveProjectScope>;
       setScope(custom.detail ?? readActiveProject());
       setStories([]);
+      setSearchableStories([]);
       setProjectUsers([]);
       setSelectedStoryIds([]);
+      setSelectedSearchableStoryIds([]);
+      setSearchableStoriesLoaded(false);
+      setSearchableStoriesError(null);
       setSelectedIterationPath("");
       setDefaultAssignedTo("");
       setOverrides({});
@@ -171,10 +180,50 @@ export function BulkTaskClient() {
     };
   }, [scope]);
 
-  const manualParse = useMemo(() => parseManualIds(manualIds), [manualIds]);
+  useEffect(() => {
+    if (!scope || targetMode !== "manual" || searchableStoriesLoaded) return;
+
+    let cancelled = false;
+    setSearchableStoriesLoading(true);
+    setSearchableStoriesError(null);
+
+    void postJson<{ stories: UserStory[] }>("/api/azure-devops/user-stories", { scope })
+      .then((data) => {
+        if (cancelled) return;
+        setSearchableStories(data.stories ?? []);
+      })
+      .catch((loadError: unknown) => {
+        if (cancelled) return;
+        setSearchableStoriesError(
+          loadError instanceof Error ? loadError.message : "Azure DevOps user story fetch failed.",
+        );
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setSearchableStoriesLoading(false);
+        setSearchableStoriesLoaded(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [scope, searchableStoriesLoaded, targetMode]);
+
   const targetRows = useMemo<TargetRow[]>(() => {
     if (targetMode === "manual") {
-      return manualParse.ids.map((storyId, index) => ({ key: `manual-${storyId}-${index}`, storyId }));
+      const storyById = new Map(searchableStories.map((story) => [story.id, story]));
+      return selectedSearchableStoryIds.flatMap((storyId) => {
+        const story = storyById.get(storyId);
+        if (!story) return [];
+        return [{
+          key: `search-${story.id}`,
+          storyId: story.id,
+          title: story.title,
+          state: story.state,
+          assignedTo: story.assignedTo,
+          iterationPath: story.iterationPath,
+        }];
+      });
     }
 
     const selected = new Set(selectedStoryIds);
@@ -188,7 +237,7 @@ export function BulkTaskClient() {
         assignedTo: story.assignedTo,
         iterationPath: story.iterationPath,
       }));
-  }, [manualParse.ids, selectedStoryIds, stories, targetMode]);
+  }, [searchableStories, selectedSearchableStoryIds, selectedStoryIds, stories, targetMode]);
 
   const resultByStoryId = useMemo(() => {
     const map = new Map<string, BulkTaskResponse["results"][number]>();
@@ -270,6 +319,11 @@ export function BulkTaskClient() {
     setResult(null);
   }
 
+  function retrySearchableStories() {
+    setSearchableStoriesError(null);
+    setSearchableStoriesLoaded(false);
+  }
+
   async function submit() {
     const validationError = validateSubmit();
     if (validationError) {
@@ -319,10 +373,6 @@ export function BulkTaskClient() {
     if (!title.trim()) return "Task title is required.";
     const defaultEstimateError = validateEstimate(defaultEstimate, "Default original estimate");
     if (defaultEstimateError) return defaultEstimateError;
-    if (targetMode === "manual") {
-      if (manualParse.invalid.length) return `Invalid IDs: ${manualParse.invalid.join(", ")}.`;
-      if (manualParse.duplicates.length) return `Duplicate IDs: ${manualParse.duplicates.join(", ")}.`;
-    }
     if (!targetRows.length) return "Select at least one target story.";
 
     const seen = new Set<string>();
@@ -412,13 +462,13 @@ export function BulkTaskClient() {
                 value="iteration"
                 className="h-10 px-4"
               >
-                Pick from list
+                Select by Sprint
               </TabsTrigger>
               <TabsTrigger
                 value="manual"
                 className="h-10 px-4"
               >
-                Enter IDs
+                Search stories
               </TabsTrigger>
             </TabsList>
 
@@ -468,21 +518,46 @@ export function BulkTaskClient() {
             </TabsContent>
 
             <TabsContent value="manual" className="space-y-3">
-              <Field label="Story IDs">
-                <Textarea
-                  value={manualIds}
-                  onChange={(event) => {
-                    setManualIds(event.target.value);
+              <Field label="Stories">
+                <SearchableMultiSelect
+                  options={searchableStories}
+                  value={selectedSearchableStoryIds}
+                  onValueChange={(value) => {
+                    setSelectedSearchableStoryIds(value);
                     setResult(null);
                   }}
-                  className="min-h-32 font-mono text-sm"
-                  placeholder="1234, 1235; 1236 1237"
+                  getOptionValue={(story) => story.id}
+                  getOptionLabel={(story) => `${story.id} - ${story.title}`}
+                  getOptionSearchText={(story) => `${story.id} ${story.title}`}
+                  renderOption={(story) => (
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="shrink-0 font-mono text-xs font-semibold text-primary">{story.id}</span>
+                        <span className="truncate text-sm font-medium text-foreground">{story.title}</span>
+                      </div>
+                      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        {story.state ? <Badge variant="secondary">{story.state}</Badge> : null}
+                        {story.assignedTo ? <span className="max-w-[180px] truncate">{story.assignedTo}</span> : null}
+                        {story.iterationPath ? <span className="max-w-[240px] truncate">{story.iterationPath}</span> : null}
+                      </div>
+                    </div>
+                  )}
+                  loading={searchableStoriesLoading}
+                  error={searchableStoriesError}
+                  disabled={!scope}
+                  placeholder="Select user stories"
+                  loadingText="Loading user stories..."
+                  searchPlaceholder="Search by story name or ID"
+                  emptyMessage="No user stories match your search."
+                  ariaLabel="Select target user stories"
+                  triggerIcon={<Search className="size-4" />}
+                  contentClassName="w-[min(680px,calc(100vw-2rem))]"
+                  onRetry={retrySearchableStories}
                 />
               </Field>
-              <div className="flex flex-wrap gap-2 text-sm">
-                <Badge variant="secondary">{manualParse.ids.length} IDs</Badge>
-                {manualParse.invalid.length ? <Badge variant="destructive">Invalid: {manualParse.invalid.join(", ")}</Badge> : null}
-                {manualParse.duplicates.length ? <Badge variant="destructive">Duplicates: {manualParse.duplicates.join(", ")}</Badge> : null}
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
+                <span>Search the 200 most recently changed user stories in this project.</span>
+                <Badge variant="secondary">{selectedSearchableStoryIds.length} selected</Badge>
               </div>
             </TabsContent>
           </Tabs>
@@ -710,10 +785,11 @@ function TargetOverrideTable({
             <TableRow key={row.key} className="qa-table-row">
               <TableCell className="font-mono text-xs font-semibold text-primary">{row.storyId}</TableCell>
               <TableCell className="min-w-[260px] whitespace-normal">
-                <div className="font-medium text-foreground">{row.title ?? "Manual target"}</div>
+                <div className="font-medium text-foreground">{row.title ?? "Target story"}</div>
                 <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
                   {row.state ? <Badge variant="secondary">{row.state}</Badge> : null}
                   {row.assignedTo ? <span className="max-w-[180px] truncate">{row.assignedTo}</span> : null}
+                  {row.iterationPath ? <span className="max-w-[240px] truncate">{row.iterationPath}</span> : null}
                 </div>
               </TableCell>
               <TableCell>
@@ -806,19 +882,6 @@ function ResultPanel({ result }: { result: BulkTaskResponse }) {
       </CardContent>
     </Card>
   );
-}
-
-function parseManualIds(value: string) {
-  const tokens = value.split(/[,\s;]+/).map((token) => token.trim()).filter(Boolean);
-  const invalid = tokens.filter((token) => !/^\d+$/.test(token));
-  const ids = tokens.filter((token) => /^\d+$/.test(token));
-  const seen = new Set<string>();
-  const duplicates = new Set<string>();
-  ids.forEach((id) => {
-    if (seen.has(id)) duplicates.add(id);
-    seen.add(id);
-  });
-  return { ids, invalid, duplicates: [...duplicates] };
 }
 
 function optionalText(value?: string) {
