@@ -140,7 +140,6 @@ function toFinalApprovedTestCase(
     priority: testCase.priority,
     testType: testCase.type,
     automationSuitability: undefined,
-    tags: ["bug-reproduction", "regression"],
     preconditions: testCase.preconditions,
     testData: testCase.testData,
     expectedResult: testCase.expectedResult,

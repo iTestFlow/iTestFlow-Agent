@@ -639,7 +639,7 @@ function TestCaseDetails({ testCase }: { testCase: GeneratedTestCase }) {
 
       {(testCase.tags?.length ?? 0) > 0 ? (
         <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tags</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tags (iTestFlow only)</div>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {testCase.tags?.map((tag) => <Badge key={tag} variant="secondary">{tag}</Badge>)}
           </div>
@@ -715,7 +715,7 @@ function TestCaseEditForm({
         <EditorField label="Category">
           <Input value={draft.category} onChange={(event) => patch({ category: event.target.value })} />
         </EditorField>
-        <EditorField label="Tags">
+        <EditorField label="Tags (iTestFlow only)">
           <Input
             value={(draft.tags ?? []).join(", ")}
             onChange={(event) => patch({ tags: parseTags(event.target.value) })}

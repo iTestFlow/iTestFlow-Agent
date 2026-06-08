@@ -3,6 +3,7 @@ import "server-only";
 import { ProjectIsolationError, workItemNotInProjectMessage } from "@/modules/projects/project-isolation.guard";
 import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
 import { mapAzureTestCase, mapAzureWorkItem } from "./azure-devops-mapper";
+import { buildAzureTestCasePatch } from "./azure-devops-test-case-payload";
 import type {
   AddSuiteTestCaseInput,
   AzureAuthenticatedUser,
@@ -574,13 +575,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     testCase: FinalApprovedTestCase;
   }): Promise<{ success: boolean; azureTestCaseId?: string; error?: string }> {
     try {
-      const patch = [
-        { op: "add", path: "/fields/System.Title", value: input.testCase.title },
-        { op: "add", path: "/fields/System.Description", value: input.testCase.description ?? "" },
-        { op: "add", path: "/fields/Microsoft.VSTS.Common.Priority", value: input.testCase.priority },
-        { op: "add", path: "/fields/Microsoft.VSTS.TCM.Steps", value: toAzureStepsXml(input.testCase.steps) },
-        ...(input.testCase.tags?.length ? [{ op: "add", path: "/fields/System.Tags", value: input.testCase.tags.join("; ") }] : []),
-      ];
+      const patch = buildAzureTestCasePatch(input.testCase);
       const json = await this.requestJson<JsonValue>(
         `${encodeURIComponent(input.projectId)}/_apis/wit/workitems/$Test%20Case?api-version=7.1`,
         {
@@ -1108,29 +1103,6 @@ function booleanValue(value: unknown) {
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
-}
-
-function toAzureStepsXml(steps: FinalApprovedTestCase["steps"]) {
-  const stepXml = steps
-    .map(
-      (step, index) =>
-        `<step id="${index + 1}" type="ActionStep"><parameterizedString isformatted="true">${escapeXml(
-          step.action,
-        )}</parameterizedString><parameterizedString isformatted="true">${escapeXml(
-          step.expectedResult,
-        )}</parameterizedString><description/></step>`,
-    )
-    .join("");
-  return `<steps id="0" last="${steps.length}">${stepXml}</steps>`;
-}
-
-function escapeXml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 function escapeJsonPointerSegment(value: string) {
