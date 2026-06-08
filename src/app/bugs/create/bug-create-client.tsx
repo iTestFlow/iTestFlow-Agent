@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, Copy, FileUp, Loader2, Play, Plus, Send, Trash2, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, FileUp, Loader2, Play, Plus, Send, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,8 +14,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Callout } from "@/components/qa/callout";
 import { ProjectUserPicker } from "@/components/domain/project-user-picker";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
+import {
+  GeneratedTestCaseReviewCard,
+  validateGeneratedTestCase,
+} from "@/components/workflow/generated-test-cases-review";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
+import type { GeneratedTestCase } from "@/components/workflow/test-intelligence-types";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import type { ProjectUser } from "@/types/azure-devops";
 
@@ -108,12 +113,6 @@ type PostBugResult = {
   attachmentResults: Array<{ fileName: string; success: boolean; attachmentUrl?: string; error?: string }>;
 };
 
-type TestCaseStep = {
-  stepNumber?: number;
-  action: string;
-  expectedResult: string;
-};
-
 type LinkedTestCase = {
   id: string;
   title: string;
@@ -126,18 +125,6 @@ type LinkedTestCase = {
   testType?: string;
   automationSuitability?: string;
   azureTestCaseId?: string;
-};
-
-type GeneratedTestCase = {
-  id: string;
-  title: string;
-  description: string;
-  priority: 1 | 2 | 3 | 4;
-  type: string;
-  category: string;
-  preconditions: string;
-  testData?: string;
-  steps: TestCaseStep[];
 };
 
 type ReproductionPublishResult = {
@@ -494,42 +481,6 @@ export function BugCreateClient() {
     setTestCasePublishState({ loading: false, error: null, data: null });
   }
 
-  function updateSuggestedStep(index: number, patch: Partial<TestCaseStep>) {
-    setSuggestedTestCase((current) => {
-      if (!current) return current;
-      const steps = current.steps.map((step, stepIndex) => (stepIndex === index ? { ...step, ...patch } : step));
-      return { ...current, steps };
-    });
-    setTestCasePublishState({ loading: false, error: null, data: null });
-  }
-
-  function addSuggestedStep() {
-    setSuggestedTestCase((current) => {
-      if (!current) return current;
-      return {
-        ...current,
-        steps: [
-          ...current.steps,
-          { stepNumber: current.steps.length + 1, action: "", expectedResult: "" },
-        ],
-      };
-    });
-    setTestCasePublishState({ loading: false, error: null, data: null });
-  }
-
-  function removeSuggestedStep(index: number) {
-    setSuggestedTestCase((current) => {
-      if (!current || current.steps.length <= 1) return current;
-      return {
-        ...current,
-        steps: current.steps
-          .filter((_, stepIndex) => stepIndex !== index)
-          .map((step, stepIndex) => ({ ...step, stepNumber: stepIndex + 1 })),
-      };
-    });
-    setTestCasePublishState({ loading: false, error: null, data: null });
-  }
-
   async function publishReproductionTestCase() {
     if (!scope || !parentStoryValid || !parentStory?.id || !postState.data || testCasePublishState.loading) return;
     if (selectedTestCaseId || !suggestedTestCase) return;
@@ -587,7 +538,8 @@ export function BugCreateClient() {
     !parentStoryValid ||
     !postState.data ||
     testCasePublishState.loading ||
-    !isGeneratedTestCaseReady(suggestedTestCase);
+    !suggestedTestCase ||
+    !validateGeneratedTestCase(suggestedTestCase).valid;
 
   return (
     <div className="space-y-5">
@@ -837,9 +789,6 @@ export function BugCreateClient() {
                 bugId={postState.data?.bugId}
                 publishDisabled={publishTestCaseDisabled}
                 onChange={updateSuggestedTestCase}
-                onStepChange={updateSuggestedStep}
-                onAddStep={addSuggestedStep}
-                onRemoveStep={removeSuggestedStep}
                 onPublish={publishReproductionTestCase}
               />
             ) : null}
@@ -1063,9 +1012,6 @@ function SuggestedReproductionTestCasePanel({
   bugId,
   publishDisabled,
   onChange,
-  onStepChange,
-  onAddStep,
-  onRemoveStep,
   onPublish,
 }: {
   testCase: GeneratedTestCase;
@@ -1073,74 +1019,17 @@ function SuggestedReproductionTestCasePanel({
   bugId?: string;
   publishDisabled: boolean;
   onChange: (patch: Partial<GeneratedTestCase>) => void;
-  onStepChange: (index: number, patch: Partial<TestCaseStep>) => void;
-  onAddStep: () => void;
-  onRemoveStep: (index: number) => void;
   onPublish: () => void;
 }) {
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-card shadow-sm">
-      <div className="flex flex-col gap-2 border-b border-border bg-card p-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <div className="text-sm font-semibold text-foreground">Suggested Reproduction Test Case</div>
-          <div className="mt-1 text-xs leading-5 text-muted-foreground">Edit the generated regression case after reviewing the bug draft, then create and link it after the bug is posted.</div>
-        </div>
-      </div>
-
-      <div className="space-y-4 bg-card p-4">
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_170px]">
-          <Input className="bg-card" value={testCase.title} onChange={(event) => onChange({ title: event.target.value })} aria-label="Suggested test case title" />
-          <select
-            value={String(testCase.priority)}
-            onChange={(event) => onChange({ priority: Number(event.target.value) as GeneratedTestCase["priority"] })}
-            className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
-            aria-label="Suggested test case priority"
-          >
-            <option value="1">1 - Highest</option>
-            <option value="2">2</option>
-            <option value="3">3</option>
-            <option value="4">4 - Lowest</option>
-          </select>
-        </div>
-
-        <div className="overflow-hidden rounded-md border border-border bg-card">
-          <div className="grid grid-cols-[48px_minmax(0,1fr)_minmax(0,1fr)_42px] gap-2 border-b border-border bg-muted px-3 py-2 text-xs font-semibold text-muted-foreground">
-            <span>#</span>
-            <span>Action</span>
-            <span>Expected result</span>
-            <span />
-          </div>
-          {testCase.steps.map((step, index) => (
-            <div key={index} className="grid gap-2 border-b border-border bg-card p-3 last:border-b-0 lg:grid-cols-[48px_minmax(0,1fr)_minmax(0,1fr)_42px]">
-              <span className="pt-2 font-mono text-xs text-muted-foreground">{index + 1}</span>
-              <Textarea className="bg-card" value={step.action} onChange={(event) => onStepChange(index, { action: event.target.value })} placeholder="Action" />
-              <Textarea className="bg-card" value={step.expectedResult} onChange={(event) => onStepChange(index, { expectedResult: event.target.value })} placeholder="Expected result" />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => onRemoveStep(index)}
-                disabled={testCase.steps.length <= 1}
-                aria-label={`Remove step ${index + 1}`}
-              >
-                <Trash2 className="size-4" />
-              </Button>
-            </div>
-          ))}
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" onClick={onAddStep}>
-            <Plus className="size-4" />
-            Add Step
-          </Button>
-          <Button type="button" variant="outline" onClick={() => navigator.clipboard.writeText(JSON.stringify(testCase, null, 2))}>
-            <Copy className="size-4" />
-            Copy JSON
-          </Button>
-        </div>
-
-        <div className="grid gap-3 rounded-md border border-border bg-muted/40 p-3">
+    <GeneratedTestCaseReviewCard
+      testCase={testCase}
+      onChange={(next) => onChange(next)}
+      heading="Suggested Reproduction Test Case"
+      helperText="Generated after reviewing the bug draft. Review and edit it before creating and linking it to the posted bug."
+      editLabel="Review & Edit"
+      footer={
+        <div className="grid gap-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm leading-6 text-muted-foreground">
               {bugId
@@ -1155,8 +1044,8 @@ function SuggestedReproductionTestCasePanel({
           {publishState.error ? <ErrorBlock message={publishState.error} /> : null}
           {publishState.data ? <ReproductionPublishSummary result={publishState.data} /> : null}
         </div>
-      </div>
-    </div>
+      }
+    />
   );
 }
 
@@ -1379,7 +1268,7 @@ function EmptyBlock({ message }: { message: string }) {
 function buildSuggestedTestCaseFromBugReport(report: BugReport, sourceBugDescription: string): GeneratedTestCase {
   const parsedSteps = parseBugSteps(report.stepsToReproduce);
   const reproductionSteps = parsedSteps.length ? parsedSteps : [report.stepsToReproduce || sourceBugDescription || report.title];
-  const steps: TestCaseStep[] = [
+  const steps: GeneratedTestCase["steps"] = [
     {
       stepNumber: 1,
       action: `Preconditions:\n${report.precondition || "No specific preconditions were generated."}`,
@@ -1461,11 +1350,6 @@ function parseBugSteps(value: string) {
 
 function testCaseId(testCase: LinkedTestCase) {
   return testCase.azureTestCaseId ?? testCase.id;
-}
-
-function isGeneratedTestCaseReady(testCase: GeneratedTestCase | null) {
-  if (!testCase?.title.trim()) return false;
-  return testCase.steps.length > 0 && testCase.steps.every((step) => step.action.trim() && step.expectedResult.trim());
 }
 
 function buildRequiredFieldRows(fields: BugFieldMetadata[]): CustomFieldRow[] {

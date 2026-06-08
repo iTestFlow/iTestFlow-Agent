@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { CheckCircle2, Copy, Loader2, Plus, Send, Trash2 } from "lucide-react";
+import { CheckCircle2, Loader2, Send } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -140,42 +140,6 @@ export function scoreTone(value: number): Tone {
   if (value >= 80) return "success";
   if (value >= 60) return "warning";
   return "error";
-}
-
-function buildManualGeneratedTestCase(existingCases: GeneratedTestCase[]): GeneratedTestCase {
-  const manualNumbers = existingCases
-    .map((testCase) => testCase.id.match(/^TC-MANUAL-(\d+)$/i)?.[1])
-    .filter((value): value is string => Boolean(value))
-    .map((value) => Number(value));
-  let nextNumber = Math.max(0, ...manualNumbers) + 1;
-  let id = `TC-MANUAL-${String(nextNumber).padStart(3, "0")}`;
-  const existingIds = new Set(existingCases.map((testCase) => testCase.id));
-  while (existingIds.has(id)) {
-    nextNumber += 1;
-    id = `TC-MANUAL-${String(nextNumber).padStart(3, "0")}`;
-  }
-
-  return {
-    id,
-    title: "New manual test case",
-    description: "Manual test case draft.",
-    priority: 2,
-    type: "regression",
-    category: "manual",
-    tags: [],
-    relatedAcceptanceCriteria: [],
-    relatedBusinessRules: [],
-    relatedModules: [],
-    preconditions: "Required setup is available.",
-    testData: "",
-    steps: [
-      {
-        stepNumber: 1,
-        action: "Preconditions:\n1. Required setup is available",
-        expectedResult: "Preconditions are met",
-      },
-    ],
-  };
 }
 
 /* ----- Shared presentational primitives ----- */
@@ -323,169 +287,6 @@ function SummaryRowItem({ row }: { row: SummaryRow }) {
   );
 }
 
-const generatedCaseSelectClass =
-  "h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring";
-
-export function EditableGeneratedCases({
-  testCases,
-  setTestCases,
-  title = "Generated Test Cases",
-  caseActions = true,
-  allowDelete = caseActions,
-  allowAdd = caseActions,
-}: {
-  testCases: GeneratedTestCase[];
-  setTestCases: (testCases: GeneratedTestCase[]) => void;
-  title?: string;
-  caseActions?: boolean;
-  allowDelete?: boolean;
-  allowAdd?: boolean;
-}) {
-  const testCaseStats = useMemo(() => {
-    const byPriority: Record<GeneratedTestCase["priority"], number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
-    const byType: Record<string, number> = {};
-
-    for (const testCase of testCases) {
-      byPriority[testCase.priority] += 1;
-      byType[testCase.type] = (byType[testCase.type] ?? 0) + 1;
-    }
-
-    return {
-      total: testCases.length,
-      byPriority,
-      byType: Object.entries(byType).sort(([firstType], [secondType]) => firstType.localeCompare(secondType)),
-    };
-  }, [testCases]);
-  const priorityBreakdown = useMemo<SummaryRow[]>(() =>
-    ([1, 2, 3, 4] as const).map((priority) => ({
-      label: `Priority ${priority}`,
-      value: testCaseStats.byPriority[priority],
-      tone: priority === 1 ? "red" : priority === 2 ? "amber" : priority === 3 ? "blue" : "slate",
-    })),
-  [testCaseStats]);
-  const scopeBreakdown = useMemo<SummaryRow[]>(
-    () => testCaseStats.byType.map(([type, count]) => ({ label: formatEnumLabel(type), value: count, tone: "cyan" as const })),
-    [testCaseStats],
-  );
-
-  function persistCases(updated: GeneratedTestCase[]) {
-    setTestCases(updated);
-  }
-
-  function updateCase(index: number, next: GeneratedTestCase) {
-    const updated = [...testCases];
-    updated[index] = next;
-    persistCases(updated);
-  }
-
-  function addCase() {
-    persistCases([...testCases, buildManualGeneratedTestCase(testCases)]);
-  }
-
-  function deleteCase(index: number) {
-    persistCases(testCases.filter((_, current) => current !== index));
-  }
-
-  return (
-    <SectionCard title={title} description="Edit titles and steps inline before publishing.">
-      <div className="grid gap-3 border-b border-border bg-muted p-4 lg:grid-cols-[180px_minmax(260px,1fr)_minmax(260px,1fr)]">
-        <SummaryTotalCard total={testCaseStats.total} />
-        <SummaryCard title="Priority Breakdown" rows={priorityBreakdown} />
-        <SummaryCard title="Type" rows={scopeBreakdown} emptyLabel="No scope values yet" />
-      </div>
-      <div className="divide-y divide-border">
-        {testCases.length ? testCases.map((testCase, index) => (
-          <div key={testCase.id} className="space-y-3 p-4">
-            <div className="grid gap-3 lg:grid-cols-[120px_1fr_160px_160px_42px]">
-              <span className="font-mono text-xs text-primary">{testCase.id}</span>
-              <Input value={testCase.title} onChange={(event) => updateCase(index, { ...testCase, title: event.target.value })} />
-              <select
-                className={generatedCaseSelectClass}
-                value={testCase.priority}
-                onChange={(event) => updateCase(index, { ...testCase, priority: Number(event.target.value) as GeneratedTestCase["priority"] })}
-                aria-label={`Priority for ${testCase.id}`}
-              >
-                <option value={1}>1 - Highest</option>
-                <option value={2}>2</option>
-                <option value={3}>3</option>
-                <option value={4}>4 - Lowest</option>
-              </select>
-              <ToneBadge tone="info">{testCase.type}</ToneBadge>
-              {allowDelete ? (
-                <Button variant="ghost" size="icon" onClick={() => deleteCase(index)} aria-label={`Delete ${testCase.id}`}>
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              ) : null}
-            </div>
-            <div className="rounded-md border border-border">
-              {testCase.steps.map((step, stepIndex) => (
-                <div key={`${testCase.id}-${stepIndex}`} className="grid gap-2 border-b border-border p-3 last:border-b-0 lg:grid-cols-[40px_1fr_1fr_42px]">
-                  <span className="pt-2 font-mono text-xs text-muted-foreground">{stepIndex + 1}</span>
-                  <Input
-                    value={step.action}
-                    onChange={(event) => {
-                      const steps = [...testCase.steps];
-                      steps[stepIndex] = { ...step, action: event.target.value };
-                      updateCase(index, { ...testCase, steps });
-                    }}
-                  />
-                  <Input
-                    value={step.expectedResult}
-                    onChange={(event) => {
-                      const steps = [...testCase.steps];
-                      steps[stepIndex] = { ...step, expectedResult: event.target.value };
-                      updateCase(index, { ...testCase, steps });
-                    }}
-                  />
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => updateCase(index, { ...testCase, steps: testCase.steps.filter((_, current) => current !== stepIndex) })}
-                    aria-label={`Delete step ${stepIndex + 1} from ${testCase.id}`}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <Button
-                variant="secondary"
-                onClick={() =>
-                  updateCase(index, {
-                    ...testCase,
-                    steps: [...testCase.steps, { stepNumber: testCase.steps.length + 1, action: "", expectedResult: "" }],
-                  })
-                }
-              >
-                Add Step
-              </Button>
-              <Button variant="secondary" onClick={() => navigator.clipboard.writeText(JSON.stringify(testCase, null, 2))}>
-                <Copy className="h-4 w-4" />
-                Copy JSON
-              </Button>
-            </div>
-          </div>
-        )) : (
-          <div className="p-4">
-            <div className="rounded-md border border-dashed border-border bg-muted p-5 text-sm text-muted-foreground">
-              {allowAdd ? "No test cases in this list. Add a test case to continue." : "No test cases in this list."}
-            </div>
-          </div>
-        )}
-      </div>
-      {allowAdd ? (
-        <div className="flex justify-end border-t border-border px-5 py-4">
-          <Button variant="secondary" onClick={addCase}>
-            <Plus className="h-4 w-4" />
-            Add Test Case
-          </Button>
-        </div>
-      ) : null}
-    </SectionCard>
-  );
-}
-
 function StatusText({
   label,
   success,
@@ -581,10 +382,12 @@ export function PublishGeneratedCasesPanel({
   scope,
   targetWorkItemId,
   testCases,
+  invalidCaseCount = 0,
 }: {
   scope: ActiveProjectScope | null;
   targetWorkItemId: string;
   testCases: GeneratedTestCase[];
+  invalidCaseCount?: number;
 }) {
   const [testPlanInput, setTestPlanInput] = useState("");
   const [parentSuiteInput, setParentSuiteInput] = useState("");
@@ -759,6 +562,7 @@ export function PublishGeneratedCasesPanel({
     !scope ||
     !targetWorkItemId ||
     !testCases.length ||
+    invalidCaseCount > 0 ||
     (createRequirementSuite && (!selectedTestPlanId || !selectedSuiteId)) ||
     state.loading;
 
@@ -857,6 +661,11 @@ export function PublishGeneratedCasesPanel({
         {createRequirementSuite && planError ? <ErrorBlock message={planError} /> : null}
         {createRequirementSuite && suiteError ? <ErrorBlock message={suiteError} /> : null}
         {state.error ? <ErrorBlock message={state.error} /> : null}
+        {invalidCaseCount > 0 ? (
+          <Callout tone="warning">
+            Resolve validation issues in the {invalidCaseCount} selected test case{invalidCaseCount === 1 ? "" : "s"} before publishing.
+          </Callout>
+        ) : null}
 
         <div className="flex justify-end">
           <ConfirmationDialog

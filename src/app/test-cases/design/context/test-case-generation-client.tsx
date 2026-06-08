@@ -13,9 +13,12 @@ import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
+import {
+  GeneratedTestCasesReview,
+  validateGeneratedTestCase,
+} from "@/components/workflow/generated-test-cases-review";
 import { WorkItemPreview, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import {
-  EditableGeneratedCases,
   EmptyBlock,
   PublishGeneratedCasesPanel,
   SectionCard,
@@ -57,6 +60,7 @@ export function TestCaseGenerationClient() {
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
   const [testCases, setTestCases] = useState<GeneratedTestCase[]>([]);
+  const [selectedTestCaseIds, setSelectedTestCaseIds] = useState<string[]>([]);
   const [testDesignSettings, setTestDesignSettings] = useState<TestDesignOptions>(() => ({
     ...defaultTestDesignOptions,
     coverageFocusIds: [...defaultTestDesignOptions.coverageFocusIds],
@@ -77,6 +81,14 @@ export function TestCaseGenerationClient() {
       (testDesignSettings.customMinCases ?? 0) <= (testDesignSettings.customMaxCases ?? 0));
   const testDesignOptionsValid = coverageFocusSelectionValid && customRangeValid;
   const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
+  const selectedTestCases = useMemo(() => {
+    const selectedIds = new Set(selectedTestCaseIds);
+    return testCases.filter((testCase) => selectedIds.has(testCase.id));
+  }, [selectedTestCaseIds, testCases]);
+  const invalidSelectedCaseCount = useMemo(
+    () => selectedTestCases.filter((testCase) => !validateGeneratedTestCase(testCase).valid).length,
+    [selectedTestCases],
+  );
 
   function changeTargetWorkItemId(value: string) {
     setTargetWorkItemId(value);
@@ -156,6 +168,7 @@ export function TestCaseGenerationClient() {
   function applyGeneratedCases(data: TestCaseGenerationRunResult) {
     setState({ loading: false, error: null, data });
     setTestCases(data.testCases);
+    setSelectedTestCaseIds(data.testCases.map((testCase) => testCase.id));
   }
 
   async function generate() {
@@ -334,8 +347,18 @@ export function TestCaseGenerationClient() {
         ) : null}
         {state.data || testCases.length ? (
           <>
-            <EditableGeneratedCases testCases={testCases} setTestCases={setTestCases} />
-            <PublishGeneratedCasesPanel scope={scope} targetWorkItemId={targetWorkItemId} testCases={testCases} />
+            <GeneratedTestCasesReview
+              testCases={testCases}
+              onChange={setTestCases}
+              selectedIds={selectedTestCaseIds}
+              onSelectedIdsChange={setSelectedTestCaseIds}
+            />
+            <PublishGeneratedCasesPanel
+              scope={scope}
+              targetWorkItemId={targetWorkItemId}
+              testCases={selectedTestCases}
+              invalidCaseCount={invalidSelectedCaseCount}
+            />
           </>
         ) : gen.status === "idle" ? (
           <EmptyBlock message="No generated test cases yet. Run generation against a real Azure DevOps work item." />

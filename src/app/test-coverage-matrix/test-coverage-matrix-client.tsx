@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { ChevronDown, Loader2, Play, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -14,9 +14,12 @@ import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
+import {
+  GeneratedTestCasesReview,
+  validateGeneratedTestCase,
+} from "@/components/workflow/generated-test-cases-review";
 import { WorkItemPreview, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import {
-  EditableGeneratedCases,
   EmptyBlock,
   ErrorBlock,
   SectionCard,
@@ -59,7 +62,17 @@ export function ExistingTestCaseReviewClient() {
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
+  const [selectedSuggestedIds, setSelectedSuggestedIds] = useState<string[]>([]);
   const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
+  const suggestedAdditions = useMemo(() => state.data?.suggestedAdditions ?? [], [state.data?.suggestedAdditions]);
+  const selectedSuggestedAdditions = useMemo(() => {
+    const selectedIds = new Set(selectedSuggestedIds);
+    return suggestedAdditions.filter((testCase) => selectedIds.has(testCase.id));
+  }, [selectedSuggestedIds, suggestedAdditions]);
+  const invalidSelectedSuggestedCount = useMemo(
+    () => selectedSuggestedAdditions.filter((testCase) => !validateGeneratedTestCase(testCase).valid).length,
+    [selectedSuggestedAdditions],
+  );
 
   function changeTargetWorkItemId(value: string) {
     setTargetWorkItemId(value);
@@ -77,6 +90,7 @@ export function ExistingTestCaseReviewClient() {
 
   function applyReviewResult(data: ExistingReviewResult) {
     setState({ loading: false, error: null, data });
+    setSelectedSuggestedIds(data.suggestedAdditions.map((testCase) => testCase.id));
   }
 
   function updateSuggestedAdditions(testCases: GeneratedTestCase[]) {
@@ -248,17 +262,21 @@ export function ExistingTestCaseReviewClient() {
             <ExistingLinkedTestCasesList linkedTestCases={state.data.linkedTestCases} />
             {state.data.suggestedAdditions.length ? (
               <>
-                <EditableGeneratedCases
+                <GeneratedTestCasesReview
                   testCases={state.data.suggestedAdditions}
-                  setTestCases={updateSuggestedAdditions}
+                  onChange={updateSuggestedAdditions}
+                  selectedIds={selectedSuggestedIds}
+                  onSelectedIdsChange={setSelectedSuggestedIds}
                   title="Suggested Additions"
-                  caseActions={false}
+                  description="Review missing-coverage recommendations and create only the selected, approved additions."
+                  allowAdd={false}
                   allowDelete
                 />
                 <SuggestedAdditionsPublishPanel
                   scope={scope}
                   targetWorkItemId={targetWorkItemId}
-                  testCases={state.data.suggestedAdditions}
+                  testCases={selectedSuggestedAdditions}
+                  invalidCaseCount={invalidSelectedSuggestedCount}
                 />
               </>
             ) : (
@@ -462,10 +480,12 @@ function SuggestedAdditionsPublishPanel({
   scope,
   targetWorkItemId,
   testCases,
+  invalidCaseCount,
 }: {
   scope: ActiveProjectScope | null;
   targetWorkItemId: string;
   testCases: GeneratedTestCase[];
+  invalidCaseCount: number;
 }) {
   const [state, setState] = useState<ApiState<SuggestedAdditionsPublishResult>>({ loading: false, error: null, data: null });
 
@@ -491,7 +511,7 @@ function SuggestedAdditionsPublishPanel({
     }
   }
 
-  const disabled = !scope || !targetWorkItemId || !testCases.length || state.loading;
+  const disabled = !scope || !targetWorkItemId || !testCases.length || invalidCaseCount > 0 || state.loading;
 
   return (
     <SectionCard
@@ -500,6 +520,11 @@ function SuggestedAdditionsPublishPanel({
     >
       <div className="space-y-4 p-4">
         {state.error ? <ErrorBlock message={state.error} /> : null}
+        {invalidCaseCount > 0 ? (
+          <Callout tone="warning">
+            Resolve validation issues in the {invalidCaseCount} selected suggested test case{invalidCaseCount === 1 ? "" : "s"} before creating them.
+          </Callout>
+        ) : null}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm leading-6 text-muted-foreground">
             {testCases.length} suggested test case{testCases.length === 1 ? "" : "s"} will be created and linked to user story {targetWorkItemId || "the selected story"}.
