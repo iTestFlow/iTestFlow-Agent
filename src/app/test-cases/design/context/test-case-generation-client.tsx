@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Play } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Callout } from "@/components/qa/callout";
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
@@ -65,6 +66,14 @@ export function TestCaseGenerationClient() {
     ...defaultTestDesignOptions,
     coverageFocusIds: [...defaultTestDesignOptions.coverageFocusIds],
   }));
+  const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
+  useUnsavedChangesGuard({
+    dirty: hasUnfinishedWork,
+    busy: state.loading || manualDraft.loading || manualSubmitLoading || gen.isRunning || prep.isRunning,
+  });
+  useEffect(() => {
+    setHasUnfinishedWork(false);
+  }, [scope?.azureProjectId]);
   const selectedTargetRangeOption = useMemo(
     () =>
       targetTestCaseRangeOptions.find((option) => option.id === testDesignSettings.targetTestCaseRange) ??
@@ -91,6 +100,7 @@ export function TestCaseGenerationClient() {
   );
 
   function changeTargetWorkItemId(value: string) {
+    setHasUnfinishedWork(true);
     setTargetWorkItemId(value);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
@@ -98,6 +108,7 @@ export function TestCaseGenerationClient() {
   }
 
   function changeExtraInstructions(value: string) {
+    setHasUnfinishedWork(true);
     setExtraInstructions(value);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
@@ -111,6 +122,7 @@ export function TestCaseGenerationClient() {
   }
 
   function changeTargetTestCaseRange(targetTestCaseRange: TargetTestCaseRangeId) {
+    setHasUnfinishedWork(true);
     const nextRangeOption = targetTestCaseRangeOptions.find((option) => option.id === targetTestCaseRange) ?? selectedTargetRangeOption;
     setTestDesignSettings((current) => ({
       ...current,
@@ -122,6 +134,7 @@ export function TestCaseGenerationClient() {
   }
 
   function changeCustomRange(field: "customMinCases" | "customMaxCases", value: string) {
+    setHasUnfinishedWork(true);
     const parsed = value ? Number(value) : undefined;
     setTestDesignSettings((current) => ({
       ...current,
@@ -131,6 +144,7 @@ export function TestCaseGenerationClient() {
   }
 
   function changeCoverageFocusSelection(focusId: CoverageFocusId, checked: boolean) {
+    setHasUnfinishedWork(true);
     setTestDesignSettings((current) => {
       const nextIds = new Set(current.coverageFocusIds);
       if (checked) {
@@ -147,11 +161,13 @@ export function TestCaseGenerationClient() {
   }
 
   function selectAllCoverageFocusItems() {
+    setHasUnfinishedWork(true);
     setTestDesignSettings((current) => ({ ...current, coverageFocusIds: [...allCoverageFocusIds] }));
     resetManualDraftForTestDesignOptionsChange();
   }
 
   function clearAllCoverageFocusItems() {
+    setHasUnfinishedWork(true);
     setTestDesignSettings((current) => ({ ...current, coverageFocusIds: [] }));
     resetManualDraftForTestDesignOptionsChange();
   }
@@ -166,6 +182,7 @@ export function TestCaseGenerationClient() {
   }
 
   function applyGeneratedCases(data: TestCaseGenerationRunResult) {
+    setHasUnfinishedWork(data.testCases.length > 0);
     setState({ loading: false, error: null, data });
     setTestCases(data.testCases);
     setSelectedTestCaseIds(data.testCases.map((testCase) => testCase.id));
@@ -248,7 +265,15 @@ export function TestCaseGenerationClient() {
       <SectionCard
         title="Generate Test Cases from Azure DevOps Requirement"
         description="Project context is selected automatically for this run."
-        action={<GenerationModeToggle mode={mode} onChange={setMode} />}
+        action={
+          <GenerationModeToggle
+            mode={mode}
+            onChange={(nextMode) => {
+              setHasUnfinishedWork(true);
+              setMode(nextMode);
+            }}
+          />
+        }
       >
         <div className="space-y-4 p-4">
           <div className="grid items-end gap-4 lg:grid-cols-[240px_auto]">
@@ -317,7 +342,10 @@ export function TestCaseGenerationClient() {
               prompt={manualDraft.data.prompt}
               promptVersion={manualDraft.data.promptVersion}
               response={manualResponse}
-              onResponseChange={setManualResponse}
+              onResponseChange={(value) => {
+                setHasUnfinishedWork(true);
+                setManualResponse(value);
+              }}
               onSubmit={submitManualResponse}
               submitting={manualSubmitLoading}
               submitLabel="Validate and Continue"
@@ -349,15 +377,23 @@ export function TestCaseGenerationClient() {
           <>
             <GeneratedTestCasesReview
               testCases={testCases}
-              onChange={setTestCases}
+              onChange={(nextCases) => {
+                setHasUnfinishedWork(true);
+                setTestCases(nextCases);
+              }}
               selectedIds={selectedTestCaseIds}
-              onSelectedIdsChange={setSelectedTestCaseIds}
+              onSelectedIdsChange={(ids) => {
+                setHasUnfinishedWork(true);
+                setSelectedTestCaseIds(ids);
+              }}
             />
             <PublishGeneratedCasesPanel
               scope={scope}
               targetWorkItemId={targetWorkItemId}
               testCases={selectedTestCases}
               invalidCaseCount={invalidSelectedCaseCount}
+              onDirty={() => setHasUnfinishedWork(true)}
+              onPublished={() => setHasUnfinishedWork(false)}
             />
           </>
         ) : gen.status === "idle" ? (

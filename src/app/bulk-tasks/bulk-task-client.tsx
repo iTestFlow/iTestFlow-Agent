@@ -22,6 +22,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Callout } from "@/components/qa/callout";
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { ProjectUserPicker } from "@/components/domain/project-user-picker";
 import { StatCard } from "@/components/qa/stat-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
@@ -116,6 +117,8 @@ export function BulkTaskClient() {
   const [submitLoading, setSubmitLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BulkTaskResponse | null>(null);
+  const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
+  useUnsavedChangesGuard({ dirty: hasUnfinishedWork, busy: submitLoading });
 
   useEffect(() => {
     setScope(readActiveProject());
@@ -134,6 +137,7 @@ export function BulkTaskClient() {
       setOverrides({});
       setResult(null);
       setError(null);
+      setHasUnfinishedWork(false);
     };
     window.addEventListener("itestflow:active-project-changed", onChange);
     return () => window.removeEventListener("itestflow:active-project-changed", onChange);
@@ -287,11 +291,13 @@ export function BulkTaskClient() {
   }
 
   function toggleStory(storyId: string, checked: boolean) {
+    setHasUnfinishedWork(true);
     setResult(null);
     setSelectedStoryIds((current) => checked ? [...new Set([...current, storyId])] : current.filter((id) => id !== storyId));
   }
 
   function toggleAllStories(checked: boolean) {
+    setHasUnfinishedWork(true);
     setResult(null);
     if (checked) {
       setSelectedStoryIds((current) => [...new Set([...current, ...stories.map((story) => story.id)])]);
@@ -302,6 +308,7 @@ export function BulkTaskClient() {
   }
 
   function updateOverride(storyId: string, field: keyof OverrideValues, value: string) {
+    setHasUnfinishedWork(true);
     setResult(null);
     setOverrides((current) => ({
       ...current,
@@ -315,6 +322,7 @@ export function BulkTaskClient() {
 
   function updateDefaultEstimate(value: string) {
     if (!isAllowedEstimateInput(value)) return;
+    setHasUnfinishedWork(true);
     setDefaultEstimate(value);
     setResult(null);
   }
@@ -358,6 +366,7 @@ export function BulkTaskClient() {
         tasks,
       });
       setResult(data);
+      if (data.failed.length === 0) setHasUnfinishedWork(false);
       toast.success(`Created ${data.created.length} of ${data.requestedCount} tasks.`);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : "Azure DevOps bulk task creation failed.";
@@ -403,10 +412,26 @@ export function BulkTaskClient() {
         <CardContent className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
           <div className="space-y-3">
             <Field label="Title" required>
-              <Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" aria-invalid={!title.trim()} />
+              <Input
+                value={title}
+                onChange={(event) => {
+                  setHasUnfinishedWork(true);
+                  setTitle(event.target.value);
+                }}
+                placeholder="Task title"
+                aria-invalid={!title.trim()}
+              />
             </Field>
             <Field label="Description">
-              <Textarea value={description} onChange={(event) => setDescription(event.target.value)} className="min-h-28" placeholder="Optional description" />
+              <Textarea
+                value={description}
+                onChange={(event) => {
+                  setHasUnfinishedWork(true);
+                  setDescription(event.target.value);
+                }}
+                className="min-h-28"
+                placeholder="Optional description"
+              />
             </Field>
           </div>
           <div className="space-y-3">
@@ -416,7 +441,10 @@ export function BulkTaskClient() {
                 value={defaultAssignedTo}
                 users={projectUsers}
                 loading={usersLoading}
-                onValueChange={setDefaultAssignedTo}
+                onValueChange={(value) => {
+                  setHasUnfinishedWork(true);
+                  setDefaultAssignedTo(value);
+                }}
                 placeholder="No default assignee"
                 emptyOptionLabel="No default assignee"
                 ariaLabel="Default assignee"
@@ -434,7 +462,10 @@ export function BulkTaskClient() {
             <Label className="flex items-start gap-3 rounded-md border border-border bg-card p-3 text-sm">
               <Checkbox
                 checked={copyEstimateToRemainingWork}
-                onCheckedChange={(checked) => setCopyEstimateToRemainingWork(checked === true)}
+                onCheckedChange={(checked) => {
+                  setHasUnfinishedWork(true);
+                  setCopyEstimateToRemainingWork(checked === true);
+                }}
                 className="mt-0.5"
               />
               <span>
@@ -456,7 +487,15 @@ export function BulkTaskClient() {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Tabs value={targetMode} onValueChange={(value) => { setTargetMode(value as TargetMode); setResult(null); }} className="flex-col gap-4">
+          <Tabs
+            value={targetMode}
+            onValueChange={(value) => {
+              setHasUnfinishedWork(true);
+              setTargetMode(value as TargetMode);
+              setResult(null);
+            }}
+            className="flex-col gap-4"
+          >
             <TabsList variant="primary" className="h-auto">
               <TabsTrigger
                 value="iteration"
@@ -478,7 +517,10 @@ export function BulkTaskClient() {
                   <select
                     className="focus-ring h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
                     value={selectedIterationPath}
-                    onChange={(event) => setSelectedIterationPath(event.target.value)}
+                    onChange={(event) => {
+                      setHasUnfinishedWork(true);
+                      setSelectedIterationPath(event.target.value);
+                    }}
                     disabled={!scope || iterationsLoading}
                   >
                     <option value="">{iterationsLoading ? "Loading iterations..." : "Select iteration"}</option>
@@ -523,6 +565,7 @@ export function BulkTaskClient() {
                   options={searchableStories}
                   value={selectedSearchableStoryIds}
                   onValueChange={(value) => {
+                    setHasUnfinishedWork(true);
                     setSelectedSearchableStoryIds(value);
                     setResult(null);
                   }}

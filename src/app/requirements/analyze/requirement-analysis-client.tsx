@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ProjectUserPicker, projectUserLabel } from "@/components/domain/project-user-picker";
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { Callout } from "@/components/qa/callout";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
@@ -135,6 +136,20 @@ export function RequirementAnalysisClient() {
   const [pushState, setPushState] = useState<ApiState<{ success: boolean }>>({ loading: false, error: null, data: null });
   const [projectUsersState, setProjectUsersState] = useState<ApiState<ProjectUser[]>>({ loading: false, error: null, data: [] });
   const [selectedMentionUserIds, setSelectedMentionUserIds] = useState<string[]>([]);
+  const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
+  useUnsavedChangesGuard({
+    dirty: hasUnfinishedWork,
+    busy:
+      analysis.loading ||
+      manualDraft.loading ||
+      manualSubmitLoading ||
+      pushState.loading ||
+      gen.isRunning ||
+      prep.isRunning,
+  });
+  useEffect(() => {
+    setHasUnfinishedWork(false);
+  }, [scope?.azureProjectId]);
   const sortedFindingList = useMemo(
     () => [...(analysis.data?.findings ?? [])].sort((left, right) => severityRank(left.severity) - severityRank(right.severity)),
     [analysis.data],
@@ -202,6 +217,7 @@ export function RequirementAnalysisClient() {
   }, [scope]);
 
   function changeTargetWorkItemId(value: string) {
+    setHasUnfinishedWork(true);
     setTargetWorkItemId(value);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
@@ -210,6 +226,7 @@ export function RequirementAnalysisClient() {
   }
 
   function changeExtraInstructions(value: string) {
+    setHasUnfinishedWork(true);
     setExtraInstructions(value);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
@@ -223,6 +240,7 @@ export function RequirementAnalysisClient() {
   }
 
   function changeChecklistSelection(checklistItemId: RequirementAnalysisChecklistItemId, checked: boolean) {
+    setHasUnfinishedWork(true);
     setEnabledChecklistItemIds((current) => {
       const nextIds = new Set(current);
       if (checked) {
@@ -236,16 +254,19 @@ export function RequirementAnalysisClient() {
   }
 
   function selectAllChecklistItems() {
+    setHasUnfinishedWork(true);
     setEnabledChecklistItemIds([...allRequirementAnalysisChecklistItemIds]);
     resetManualDraftForChecklistChange();
   }
 
   function clearAllChecklistItems() {
+    setHasUnfinishedWork(true);
     setEnabledChecklistItemIds([]);
     resetManualDraftForChecklistChange();
   }
 
   function applyAnalysisResult(data: RequirementAnalysisRunResult) {
+    setHasUnfinishedWork(data.findings.length > 0);
     setAnalysis({ loading: false, error: null, data });
     setSelectedFindings(Object.fromEntries(data.findings.map((finding) => [finding.id, true])));
     setReviewOpen(false);
@@ -351,12 +372,14 @@ export function RequirementAnalysisClient() {
   }
 
   function changeFindingSelection(findingId: string, checked: boolean) {
+    setHasUnfinishedWork(true);
     setSelectedFindings((current) => ({ ...current, [findingId]: checked }));
     setReviewApproved(false);
     setPushState({ loading: false, error: null, data: null });
   }
 
   function changeFinalComment(value: string) {
+    setHasUnfinishedWork(true);
     setFinalComment(value);
     setFinalCommentCopied(false);
     setReviewApproved(false);
@@ -364,6 +387,7 @@ export function RequirementAnalysisClient() {
   }
 
   function changeMentionUsers(userIds: string[]) {
+    setHasUnfinishedWork(true);
     setSelectedMentionUserIds(userIds);
     setReviewApproved(false);
     setPushState({ loading: false, error: null, data: null });
@@ -393,6 +417,7 @@ export function RequirementAnalysisClient() {
         })),
       });
       setPushState({ loading: false, error: null, data: { success: true } });
+      setHasUnfinishedWork(false);
     } catch (error) {
       setPushState({ loading: false, error: error instanceof Error ? error.message : "Azure DevOps comment push failed.", data: null });
     }
@@ -404,7 +429,15 @@ export function RequirementAnalysisClient() {
       <SectionCard
         title="Target Requirement"
         description="Enter a real Azure DevOps work item ID. Project context is selected automatically for this run."
-        action={<GenerationModeToggle mode={mode} onChange={setMode} />}
+        action={
+          <GenerationModeToggle
+            mode={mode}
+            onChange={(nextMode) => {
+              setHasUnfinishedWork(true);
+              setMode(nextMode);
+            }}
+          />
+        }
       >
         <div className="space-y-4 p-4">
           <div className="grid items-end gap-4 lg:grid-cols-[240px_auto]">
@@ -469,7 +502,10 @@ export function RequirementAnalysisClient() {
               prompt={manualDraft.data.prompt}
               promptVersion={manualDraft.data.promptVersion}
               response={manualResponse}
-              onResponseChange={setManualResponse}
+              onResponseChange={(value) => {
+                setHasUnfinishedWork(true);
+                setManualResponse(value);
+              }}
               onSubmit={submitManualResponse}
               submitting={manualSubmitLoading}
               submitLabel="Validate and Continue"
@@ -593,7 +629,10 @@ export function RequirementAnalysisClient() {
               <input
                 type="checkbox"
                 checked={reviewApproved}
-                onChange={(event) => setReviewApproved(event.target.checked)}
+                onChange={(event) => {
+                  setHasUnfinishedWork(true);
+                  setReviewApproved(event.target.checked);
+                }}
                 className="mt-1 h-4 w-4"
               />
               <span>I reviewed the final comment text and selected findings. Push this comment to the Azure DevOps user story.</span>

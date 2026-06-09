@@ -25,6 +25,7 @@ import { ContextFilterSelector } from "@/components/domain/context-filter-select
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle"
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress"
 import { useAiGeneration } from "@/components/workflow/use-ai-generation"
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -355,6 +356,16 @@ export function ProjectContextClient() {
   const gen = useAiGeneration()
   const [sortBy, setSortBy] = useState<ContextSortBy>("lastIndexedAt")
   const [sortDirection, setSortDirection] = useState<ContextSortDirection>("desc")
+  const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false)
+  useUnsavedChangesGuard({
+    dirty: hasUnfinishedWork,
+    busy:
+      buildLoading ||
+      gen.isRunning ||
+      generatedSaveLoading ||
+      manualKnowledgeValidationLoading ||
+      manualKnowledgeSaveLoading,
+  })
   const autoIndexStepRef = useRef<HTMLDivElement | null>(null)
   const autoPrepareStepRef = useRef<HTMLDivElement | null>(null)
   const autoPreviewStepRef = useRef<HTMLDivElement | null>(null)
@@ -442,6 +453,7 @@ export function ProjectContextClient() {
     const onChange = (event: Event) => {
       const custom = event as CustomEvent<ActiveProjectScope>
       setScope(custom.detail ?? readActiveProject())
+      setHasUnfinishedWork(false)
     }
     window.addEventListener("itestflow:active-project-changed", onChange)
     return () => window.removeEventListener("itestflow:active-project-changed", onChange)
@@ -587,16 +599,19 @@ export function ProjectContextClient() {
   }
 
   function changeWorkItemTypes(values: string[]) {
+    setHasUnfinishedWork(true)
     setWorkItemTypes(values)
     invalidateBuildIndex()
   }
 
   function changeStates(values: string[]) {
+    setHasUnfinishedWork(true)
     setStates(values)
     invalidateBuildIndex()
   }
 
   function changeCompileMode(nextMode: KnowledgeCompileMode) {
+    setHasUnfinishedWork(true)
     setCompileMode(nextMode)
     setBuildError(null)
     clearPreparedKnowledge()
@@ -619,6 +634,7 @@ export function ProjectContextClient() {
 
   async function loadProjectIndexForBuild() {
     if (!scope) return
+    setHasUnfinishedWork(true)
     setBuildLoading(true)
     setBuildError(null)
     clearPreparedKnowledge()
@@ -644,6 +660,7 @@ export function ProjectContextClient() {
     }
     if (gen.isRunning) return
 
+    setHasUnfinishedWork(true)
     setBuildError(null)
     setGeneratedDraft(null)
     setManualKnowledgeDraft(null)
@@ -653,6 +670,7 @@ export function ProjectContextClient() {
     )
     if (!draft) return // cancelled or failed: the progress panel owns the message
     setGeneratedDraft(draft)
+    if (draft.alreadyCurrent) setHasUnfinishedWork(false)
     setBuildStep(draft.alreadyCurrent ? "prepare" : "preview")
     scrollBuildSection(draft.alreadyCurrent ? autoPrepareStepRef : autoPreviewStepRef)
   }
@@ -666,6 +684,7 @@ export function ProjectContextClient() {
       return
     }
 
+    setHasUnfinishedWork(true)
     setBuildLoading(true)
     setBuildError(null)
     setGeneratedDraft(null)
@@ -738,6 +757,7 @@ export function ProjectContextClient() {
         knowledgeBase: generatedDraft.knowledgeBase,
       })
       setKnowledgeSnapshot(snapshot)
+      setHasUnfinishedWork(false)
       resetBuildState()
       setActiveTab("hub")
       await Promise.all([
@@ -769,6 +789,7 @@ export function ProjectContextClient() {
         partialKnowledgeBases,
       })
       if (data.snapshot) setKnowledgeSnapshot(data.snapshot)
+      setHasUnfinishedWork(false)
       resetBuildState()
       setActiveTab("hub")
       await Promise.all([
@@ -838,6 +859,7 @@ export function ProjectContextClient() {
   }
 
   function changeBuildMode(nextMode: BuildMode) {
+    setHasUnfinishedWork(true)
     setBuildMode(nextMode)
     resetBuildState()
   }
@@ -1126,12 +1148,13 @@ export function ProjectContextClient() {
                           batchRef={manualBatchRef}
                           showPrompt
                           showPreview={false}
-                          onResponseChange={(batchIndex, value) =>
+                          onResponseChange={(batchIndex, value) => {
+                            setHasUnfinishedWork(true)
                             setManualKnowledgeBatchResponses((current) => ({
                               ...current,
                               [batchIndex]: value,
                             }))
-                          }
+                          }}
                           onCopy={(prompt) => {
                             void navigator.clipboard.writeText(prompt)
                             setPromptCopied(true)
@@ -1158,12 +1181,13 @@ export function ProjectContextClient() {
                         batchRef={manualBatchRef}
                         showPrompt={false}
                         showPreview
-                        onResponseChange={(batchIndex, value) =>
+                        onResponseChange={(batchIndex, value) => {
+                          setHasUnfinishedWork(true)
                           setManualKnowledgeBatchResponses((current) => ({
                             ...current,
                             [batchIndex]: value,
                           }))
-                        }
+                        }}
                         onCopy={(prompt) => {
                           void navigator.clipboard.writeText(prompt)
                           setPromptCopied(true)

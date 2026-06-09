@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { Callout } from "@/components/qa/callout";
 import { cn } from "@/lib/utils";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
@@ -76,6 +77,8 @@ export function ContextChatbotClient() {
   const [promotingMessageId, setPromotingMessageId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
+  useUnsavedChangesGuard({ dirty: hasUnfinishedWork, busy: loading || Boolean(promotingMessageId) });
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -87,6 +90,7 @@ export function ContextChatbotClient() {
       setScope(custom.detail ?? readActiveProject());
       setMessages([welcomeMessage()]);
       setError(null);
+      setHasUnfinishedWork(false);
     };
     window.addEventListener("itestflow:active-project-changed", onChange);
     return () => window.removeEventListener("itestflow:active-project-changed", onChange);
@@ -146,6 +150,7 @@ export function ContextChatbotClient() {
     };
 
     setMessages((current) => [...current, userMessage]);
+    setHasUnfinishedWork(true);
     setInput("");
     setLoading(true);
     setError(null);
@@ -170,6 +175,7 @@ export function ContextChatbotClient() {
         },
       };
       setMessages((current) => [...current, assistantMessage]);
+      setHasUnfinishedWork(false);
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : "Context chatbot failed.");
       setMessages((current) => [
@@ -190,6 +196,7 @@ export function ContextChatbotClient() {
     setMessages([welcomeMessage()]);
     setError(null);
     setInput("");
+    setHasUnfinishedWork(false);
   }
 
   async function promoteAnswer(message: ChatMessage) {
@@ -279,7 +286,10 @@ export function ContextChatbotClient() {
           <Textarea
             ref={textareaRef}
             value={input}
-            onChange={(event) => setInput(event.target.value)}
+            onChange={(event) => {
+              setHasUnfinishedWork(true);
+              setInput(event.target.value);
+            }}
             onKeyDown={handleKeyDown}
             rows={1}
             disabled={loading || !scope}

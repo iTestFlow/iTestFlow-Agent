@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { Callout } from "@/components/qa/callout";
 import { ProjectUserPicker } from "@/components/domain/project-user-picker";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
@@ -185,6 +186,16 @@ export function BugCreateClient() {
   const [suggestTestCaseChecked, setSuggestTestCaseChecked] = useState(false);
   const [suggestedTestCase, setSuggestedTestCase] = useState<GeneratedTestCase | null>(null);
   const [testCasePublishState, setTestCasePublishState] = useState<ApiState<ReproductionPublishResult>>({ loading: false, error: null, data: null });
+  const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
+  useUnsavedChangesGuard({
+    dirty: hasUnfinishedWork,
+    busy:
+      generateState.loading ||
+      manualDraft.loading ||
+      manualSubmitLoading ||
+      postState.loading ||
+      testCasePublishState.loading,
+  });
 
   const fields = useMemo(() => metadata.data?.fields ?? [], [metadata.data?.fields]);
   const users = useMemo(() => metadata.data?.users ?? [], [metadata.data?.users]);
@@ -210,6 +221,7 @@ export function BugCreateClient() {
       setReport(null);
       setPostState({ loading: false, error: null, data: null });
       resetTestCaseWorkflow();
+      setHasUnfinishedWork(false);
     };
     window.addEventListener("itestflow:active-project-changed", onChange);
     return () => window.removeEventListener("itestflow:active-project-changed", onChange);
@@ -239,6 +251,7 @@ export function BugCreateClient() {
   }, [scope]);
 
   function changeParentStoryId(value: string) {
+    setHasUnfinishedWork(true);
     setParentStoryId(value.replace(/\D/g, "").slice(0, 10));
     setParentStory(null);
     setParentState({ loading: false, error: null, data: null });
@@ -248,6 +261,7 @@ export function BugCreateClient() {
   }
 
   function changeBugDescription(value: string) {
+    setHasUnfinishedWork(true);
     setBugDescription(value);
     resetManual();
     setSuggestedTestCase(null);
@@ -421,6 +435,7 @@ export function BugCreateClient() {
   }
 
   function applyGeneratedReport(data: BugReport) {
+    setHasUnfinishedWork(true);
     const mergedCustomFields = mergeCustomFields(customFields, data.customFields ?? []);
     const nextReport = { ...data, customFields: mergedCustomFields };
     shouldScrollToReviewRef.current = true;
@@ -431,11 +446,13 @@ export function BugCreateClient() {
   }
 
   function updateReport<K extends keyof BugReport>(key: K, value: BugReport[K]) {
+    setHasUnfinishedWork(true);
     setReport((current) => (current ? { ...current, [key]: value } : current));
     setPostState({ loading: false, error: null, data: null });
   }
 
   function updateCustomFieldRow(rowId: string, patch: Partial<CustomFieldRow>) {
+    setHasUnfinishedWork(true);
     setCustomFieldRows((current) =>
       current.map((row) => {
         if (row.id !== rowId) return row;
@@ -454,14 +471,17 @@ export function BugCreateClient() {
   }
 
   function addCustomFieldRow() {
+    setHasUnfinishedWork(true);
     setCustomFieldRows((current) => [...current, { id: createLocalId("field"), referenceName: "", value: "" }]);
   }
 
   function removeCustomFieldRow(rowId: string) {
+    setHasUnfinishedWork(true);
     setCustomFieldRows((current) => current.filter((row) => row.id !== rowId));
   }
 
   function selectRelatedTestCase(testCaseId: string) {
+    setHasUnfinishedWork(true);
     setSelectedTestCaseId(testCaseId);
     if (testCaseId) {
       setSuggestTestCaseChecked(false);
@@ -471,12 +491,14 @@ export function BugCreateClient() {
   }
 
   function changeSuggestTestCaseChecked(checked: boolean) {
+    setHasUnfinishedWork(true);
     setSuggestTestCaseChecked(checked);
     setTestCasePublishState({ loading: false, error: null, data: null });
     setSuggestedTestCase(checked && report ? buildSuggestedTestCaseFromBugReport(report, bugDescription) : null);
   }
 
   function updateSuggestedTestCase(patch: Partial<GeneratedTestCase>) {
+    setHasUnfinishedWork(true);
     setSuggestedTestCase((current) => (current ? { ...current, ...patch } : current));
     setTestCasePublishState({ loading: false, error: null, data: null });
   }
@@ -494,6 +516,8 @@ export function BugCreateClient() {
         suggestedTestCase,
       });
       setTestCasePublishState({ loading: false, error: null, data });
+      const attachmentsComplete = postState.data?.attachmentResults.every((attachment) => attachment.success) ?? false;
+      if (data.success && attachmentsComplete) setHasUnfinishedWork(false);
     } catch (error) {
       setTestCasePublishState({
         loading: false,
@@ -525,7 +549,11 @@ export function BugCreateClient() {
       const text = await response.text();
       const json = parseJsonResponse(text, response.ok);
       if (!response.ok) throw new Error(json.error ?? `Request failed: ${response.status}`);
-      setPostState({ loading: false, error: null, data: json as PostBugResult });
+      const result = json as PostBugResult;
+      setPostState({ loading: false, error: null, data: result });
+      const attachmentsComplete = result.attachmentResults.every((attachment) => attachment.success);
+      const reproductionPublishPending = suggestTestCaseChecked && Boolean(suggestedTestCase);
+      if (attachmentsComplete && !reproductionPublishPending) setHasUnfinishedWork(false);
     } catch (error) {
       setPostState({ loading: false, error: error instanceof Error ? error.message : "Azure DevOps bug creation failed.", data: null });
     }
@@ -550,7 +578,13 @@ export function BugCreateClient() {
             <CardTitle className="text-base">Describe Bug</CardTitle>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">Capture the defect, parent story, Azure fields, assignee, and evidence.</p>
           </div>
-          <GenerationModeToggle mode={mode} onChange={setMode} />
+          <GenerationModeToggle
+            mode={mode}
+            onChange={(nextMode) => {
+              setHasUnfinishedWork(true);
+              setMode(nextMode);
+            }}
+          />
         </CardHeader>
         <CardContent className="space-y-5 pt-5">
           {metadata.error ? <ErrorBlock message={metadata.error} /> : null}
@@ -600,7 +634,10 @@ export function BugCreateClient() {
                 users={users}
                 loading={metadata.loading}
                 disabled={!scope}
-                onValueChange={setAssignedTo}
+                onValueChange={(value) => {
+                  setHasUnfinishedWork(true);
+                  setAssignedTo(value);
+                }}
                 placeholder="Unassigned"
                 emptyOptionLabel="Unassigned"
                 clearable
@@ -610,7 +647,10 @@ export function BugCreateClient() {
             <Field label="Area path">
               <select
                 value={selectedAreaPath}
-                onChange={(event) => setSelectedAreaPath(event.target.value)}
+                onChange={(event) => {
+                  setHasUnfinishedWork(true);
+                  setSelectedAreaPath(event.target.value);
+                }}
                 className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 disabled={metadata.loading}
               >
@@ -625,7 +665,10 @@ export function BugCreateClient() {
             <Field label="Iteration path">
               <select
                 value={selectedIterationPath}
-                onChange={(event) => setSelectedIterationPath(event.target.value)}
+                onChange={(event) => {
+                  setHasUnfinishedWork(true);
+                  setSelectedIterationPath(event.target.value);
+                }}
                 className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 disabled={metadata.loading}
               >
@@ -649,7 +692,10 @@ export function BugCreateClient() {
                   multiple
                   accept="image/*,video/*,.gif"
                   className="sr-only"
-                  onChange={(event) => setAttachments(Array.from(event.target.files ?? []))}
+                  onChange={(event) => {
+                    setHasUnfinishedWork(true);
+                    setAttachments(Array.from(event.target.files ?? []));
+                  }}
                 />
               </label>
               {attachments.length ? (
@@ -702,7 +748,10 @@ export function BugCreateClient() {
               prompt={manualDraft.data.prompt}
               promptVersion={manualDraft.data.promptVersion}
               response={manualResponse}
-              onResponseChange={setManualResponse}
+              onResponseChange={(value) => {
+                setHasUnfinishedWork(true);
+                setManualResponse(value);
+              }}
               onSubmit={submitManualResponse}
               submitting={manualSubmitLoading}
               submitLabel="Validate and Continue"

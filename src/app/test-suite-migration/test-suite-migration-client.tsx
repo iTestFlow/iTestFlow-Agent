@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowRight, ClipboardList, GitBranch, Loader2, MoveRight
 import { toast } from "sonner";
 
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { RefreshButton } from "@/components/qa/refresh-button";
 import { SettingSwitch } from "@/components/qa/setting-switch";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -100,6 +101,11 @@ export function TestSuiteMigrationClient() {
   const [sourceSuiteSearch, setSourceSuiteSearch] = useState("");
   const [sourceTreeNotice, setSourceTreeNotice] = useState<string | null>(null);
   const [targetTreeNotice, setTargetTreeNotice] = useState<string | null>(null);
+  const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
+  useUnsavedChangesGuard({
+    dirty: hasUnfinishedWork,
+    busy: previewState.loading || executeState.loading,
+  });
 
   const updateSelectedSuiteIds = useCallback((suiteIds: string[]) => {
     selectedSuiteIdsRef.current = suiteIds;
@@ -148,6 +154,7 @@ export function TestSuiteMigrationClient() {
       const custom = event as CustomEvent<ActiveProjectScope>;
       setScope(custom.detail ?? readActiveProject());
       resetForProjectChange();
+      setHasUnfinishedWork(false);
     };
     window.addEventListener("itestflow:active-project-changed", onChange);
     return () => window.removeEventListener("itestflow:active-project-changed", onChange);
@@ -478,6 +485,7 @@ export function TestSuiteMigrationClient() {
         });
       });
       toast.success(`Migration ${formatStatus(data.report.status)}.`);
+      if (data.report.status === "completed") setHasUnfinishedWork(false);
       void refreshAfterMigration(data.report, request);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Suite migration failed.";
@@ -536,6 +544,7 @@ export function TestSuiteMigrationClient() {
                   description: `Test Plan ID ${plan.id}`,
                 }))}
                 onValueChange={(value) => {
+                  setHasUnfinishedWork(true);
                   updateSourcePlanId(value);
                   updateSelectedSuiteIds([]);
                   setPreview(null);
@@ -579,7 +588,14 @@ export function TestSuiteMigrationClient() {
                 {sourceTreeState.loading ? (
                   <LoadingInline label="Loading source suites..." />
                 ) : filteredSourceTree.length ? (
-                  <SuiteCheckboxTree nodes={filteredSourceTree} selectedIds={selectedSuiteIds} onChange={updateSelectedSuiteIds} />
+                  <SuiteCheckboxTree
+                    nodes={filteredSourceTree}
+                    selectedIds={selectedSuiteIds}
+                    onChange={(ids) => {
+                      setHasUnfinishedWork(true);
+                      updateSelectedSuiteIds(ids);
+                    }}
+                  />
                 ) : sourceTree.length ? (
                   <EmptyInline label="No source suites match the search." />
                 ) : (
@@ -603,6 +619,7 @@ export function TestSuiteMigrationClient() {
                   description: `Test Plan ID ${plan.id}`,
                 }))}
                 onValueChange={(value) => {
+                  setHasUnfinishedWork(true);
                   updateTargetPlanId(value);
                   updateTargetParentSuiteId("");
                   setPreview(null);
@@ -638,6 +655,7 @@ export function TestSuiteMigrationClient() {
                     ? `${selectedTargetParentSuite.id} - ${selectedTargetParentSuite.path}`
                     : undefined}
                   onValueChange={(suiteId) => {
+                    setHasUnfinishedWork(true);
                     updateTargetParentSuiteId(suiteId);
                     setPreview(null);
                     setReport(null);
@@ -669,6 +687,7 @@ export function TestSuiteMigrationClient() {
                 className="focus-ring h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 value={operationMode}
                 onChange={(event) => {
+                  setHasUnfinishedWork(true);
                   setOperationMode(event.target.value as SuiteMigrationOperationMode);
                   setPreview(null);
                   setReport(null);
@@ -683,6 +702,7 @@ export function TestSuiteMigrationClient() {
                 className="focus-ring h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 value={outcomeMode}
                 onChange={(event) => {
+                  setHasUnfinishedWork(true);
                   setOutcomeMode(event.target.value as OutcomeMigrationMode);
                   setPreview(null);
                   setReport(null);
@@ -695,6 +715,7 @@ export function TestSuiteMigrationClient() {
             <SettingSwitch
               checked={overwriteTargetOutcomes}
               onCheckedChange={(checked) => {
+                setHasUnfinishedWork(true);
                 setOverwriteTargetOutcomes(checked);
                 setPreview(null);
                 setReport(null);

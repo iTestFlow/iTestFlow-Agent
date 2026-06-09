@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { readActiveProject, writeActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
 type AzureProject = {
@@ -17,6 +18,7 @@ function organizationLabel(value?: string) {
 }
 
 export function HeaderProjectSelector() {
+  const { confirmAction } = useUnsavedChangesGuard({ dirty: false });
   const [projects, setProjects] = useState<AzureProject[]>([]);
   const [activeProject, setActiveProject] = useState<ActiveProjectScope | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,14 +77,16 @@ export function HeaderProjectSelector() {
         onChange={(event) => {
           const project = projects.find((item) => item.id === event.target.value);
           if (!project) return;
-          const scope = {
-            projectId: project.id,
-            azureProjectId: project.id,
-            azureProjectName: project.name,
-            azureOrganizationUrl: project.azureOrganizationUrl,
-          };
-          writeActiveProject(scope);
-          setActiveProject(scope);
+          confirmAction(() => {
+            const scope = {
+              projectId: project.id,
+              azureProjectId: project.id,
+              azureProjectName: project.name,
+              azureOrganizationUrl: project.azureOrganizationUrl,
+            };
+            writeActiveProject(scope);
+            setActiveProject(scope);
+          });
         }}
       >
         {projects.length === 0 ? <option value="">Project: No projects loaded</option> : null}

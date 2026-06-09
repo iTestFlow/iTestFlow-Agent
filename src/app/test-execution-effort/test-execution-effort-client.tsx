@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { StatCard } from "@/components/qa/stat-card";
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
@@ -182,6 +183,15 @@ export function TestExecutionEffortClient() {
   const [error, setError] = useState<string | null>(null);
   const gen = useAiGeneration();
   const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
+  const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
+  useUnsavedChangesGuard({
+    dirty: hasUnfinishedWork,
+    busy: Boolean(loadingAction) || gen.isRunning || prep.isRunning,
+  });
+
+  useEffect(() => {
+    setHasUnfinishedWork(false);
+  }, [scope?.azureProjectId]);
 
   const requestPayload = useMemo(() => ({
     scope,
@@ -234,6 +244,7 @@ export function TestExecutionEffortClient() {
   }, [loadStory, scope, storyId]);
 
   function updateOption<TKey extends keyof EffortOptions>(key: TKey, value: EffortOptions[TKey]) {
+    setHasUnfinishedWork(true);
     setOptions((current) => ({ ...current, [key]: value }));
     clearOutputs();
   }
@@ -250,6 +261,7 @@ export function TestExecutionEffortClient() {
       setEstimateResult(data);
       setExternalDraft(null);
       setExternalResponse("");
+      setHasUnfinishedWork(false);
     }
   }
 
@@ -282,6 +294,7 @@ export function TestExecutionEffortClient() {
       });
       setPreview(data);
       setEstimateResult(data);
+      setHasUnfinishedWork(false);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "External LLM response validation failed.");
     } finally {
@@ -325,7 +338,13 @@ export function TestExecutionEffortClient() {
             <CardTitle className="text-base">Estimate Inputs</CardTitle>
             <CardDescription>Load the story, linked Azure DevOps test cases, and project context before estimating manual execution effort.</CardDescription>
           </div>
-          <GenerationModeToggle mode={mode} onChange={setMode} />
+          <GenerationModeToggle
+            mode={mode}
+            onChange={(nextMode) => {
+              setHasUnfinishedWork(true);
+              setMode(nextMode);
+            }}
+          />
         </CardHeader>
         <CardContent className="space-y-5 pt-5">
           <div className="grid gap-4 lg:grid-cols-[minmax(260px,360px)_1fr]">
@@ -336,6 +355,7 @@ export function TestExecutionEffortClient() {
                 maxLength={10}
                 placeholder="e.g. 123456"
                 onChange={(event) => {
+                  setHasUnfinishedWork(true);
                   setStoryId(event.target.value);
                   setStoryLookup({ loading: false, error: null, data: null });
                   clearOutputs();
@@ -454,7 +474,10 @@ export function TestExecutionEffortClient() {
           promptVersion={externalDraft.promptVersion}
           schemaName={externalDraft.schemaName}
           response={externalResponse}
-          onResponseChange={setExternalResponse}
+          onResponseChange={(value) => {
+            setHasUnfinishedWork(true);
+            setExternalResponse(value);
+          }}
           onSubmit={submitExternalResponse}
           submitting={loadingAction === "submit"}
         />

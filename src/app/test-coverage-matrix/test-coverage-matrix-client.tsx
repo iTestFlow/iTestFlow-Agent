@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Loader2, Play, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Callout } from "@/components/qa/callout";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { toneClass, type Tone } from "@/components/qa/tone";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
@@ -63,6 +64,14 @@ export function ExistingTestCaseReviewClient() {
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
   const [selectedSuggestedIds, setSelectedSuggestedIds] = useState<string[]>([]);
+  const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
+  useUnsavedChangesGuard({
+    dirty: hasUnfinishedWork,
+    busy: state.loading || manualDraft.loading || manualSubmitLoading || gen.isRunning || prep.isRunning,
+  });
+  useEffect(() => {
+    setHasUnfinishedWork(false);
+  }, [scope?.azureProjectId]);
   const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
   const suggestedAdditions = useMemo(() => state.data?.suggestedAdditions ?? [], [state.data?.suggestedAdditions]);
   const selectedSuggestedAdditions = useMemo(() => {
@@ -75,6 +84,7 @@ export function ExistingTestCaseReviewClient() {
   );
 
   function changeTargetWorkItemId(value: string) {
+    setHasUnfinishedWork(true);
     setTargetWorkItemId(value);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
@@ -82,6 +92,7 @@ export function ExistingTestCaseReviewClient() {
   }
 
   function changeExtraInstructions(value: string) {
+    setHasUnfinishedWork(true);
     setExtraInstructions(value);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
@@ -89,11 +100,13 @@ export function ExistingTestCaseReviewClient() {
   }
 
   function applyReviewResult(data: ExistingReviewResult) {
+    setHasUnfinishedWork(data.suggestedAdditions.length > 0);
     setState({ loading: false, error: null, data });
     setSelectedSuggestedIds(data.suggestedAdditions.map((testCase) => testCase.id));
   }
 
   function updateSuggestedAdditions(testCases: GeneratedTestCase[]) {
+    setHasUnfinishedWork(true);
     setState((current) => ({
       ...current,
       data: current.data ? { ...current.data, suggestedAdditions: testCases } : current.data,
@@ -167,7 +180,15 @@ export function ExistingTestCaseReviewClient() {
       <SectionCard
         title="Test Coverage Matrix"
         description="Enter a user story ID. Linked test cases and project context are selected automatically for this run."
-        action={<GenerationModeToggle mode={mode} onChange={setMode} />}
+        action={
+          <GenerationModeToggle
+            mode={mode}
+            onChange={(nextMode) => {
+              setHasUnfinishedWork(true);
+              setMode(nextMode);
+            }}
+          />
+        }
       >
         <div className="space-y-4 p-4">
           <div className="grid items-end gap-4 lg:grid-cols-[240px_auto]">
@@ -226,7 +247,10 @@ export function ExistingTestCaseReviewClient() {
               prompt={manualDraft.data.prompt}
               promptVersion={manualDraft.data.promptVersion}
               response={manualResponse}
-              onResponseChange={setManualResponse}
+              onResponseChange={(value) => {
+                setHasUnfinishedWork(true);
+                setManualResponse(value);
+              }}
               onSubmit={submitManualResponse}
               submitting={manualSubmitLoading}
               submitLabel="Validate and Continue"
@@ -266,7 +290,10 @@ export function ExistingTestCaseReviewClient() {
                   testCases={state.data.suggestedAdditions}
                   onChange={updateSuggestedAdditions}
                   selectedIds={selectedSuggestedIds}
-                  onSelectedIdsChange={setSelectedSuggestedIds}
+                  onSelectedIdsChange={(ids) => {
+                    setHasUnfinishedWork(true);
+                    setSelectedSuggestedIds(ids);
+                  }}
                   title="Suggested Additions"
                   description="Review missing-coverage recommendations and create only the selected, approved additions."
                   allowAdd={false}
@@ -277,6 +304,7 @@ export function ExistingTestCaseReviewClient() {
                   targetWorkItemId={targetWorkItemId}
                   testCases={selectedSuggestedAdditions}
                   invalidCaseCount={invalidSelectedSuggestedCount}
+                  onPublished={() => setHasUnfinishedWork(false)}
                 />
               </>
             ) : (
@@ -481,13 +509,16 @@ function SuggestedAdditionsPublishPanel({
   targetWorkItemId,
   testCases,
   invalidCaseCount,
+  onPublished,
 }: {
   scope: ActiveProjectScope | null;
   targetWorkItemId: string;
   testCases: GeneratedTestCase[];
   invalidCaseCount: number;
+  onPublished: () => void;
 }) {
   const [state, setState] = useState<ApiState<SuggestedAdditionsPublishResult>>({ loading: false, error: null, data: null });
+  useUnsavedChangesGuard({ dirty: false, busy: state.loading });
 
   async function publish() {
     if (!scope || !targetWorkItemId || !testCases.length || state.loading) return;
@@ -506,6 +537,9 @@ function SuggestedAdditionsPublishPanel({
         })),
       });
       setState({ loading: false, error: null, data });
+      if (data.results.length > 0 && data.results.every((result) => result.success)) {
+        onPublished();
+      }
     } catch (error) {
       setState({ loading: false, error: error instanceof Error ? error.message : "Suggested additions publish failed.", data: null });
     }

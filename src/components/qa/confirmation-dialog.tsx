@@ -19,18 +19,25 @@ export function ConfirmationDialog({
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   onConfirm,
+  open,
+  onOpenChange,
 }: {
-  trigger: React.ReactNode
+  trigger?: React.ReactNode
   title: string
   description: React.ReactNode
   confirmLabel?: string
   cancelLabel?: string
   onConfirm: () => void
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }) {
   return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger>
-      <AlertDialogContent className="border border-border bg-card text-foreground shadow-xl">
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      {trigger ? <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger> : null}
+      <AlertDialogContent
+        className="border border-border bg-card text-foreground shadow-xl"
+        overlayClassName="bg-black/50 supports-backdrop-filter:backdrop-blur-sm"
+      >
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription asChild>

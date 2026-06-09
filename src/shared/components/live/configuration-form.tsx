@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { Check, CheckCircle2, ChevronDown, Eye, EyeOff, Loader2, ShieldCheck, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -86,6 +87,8 @@ export function ConfigurationForm({
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
+  const { navigate } = useUnsavedChangesGuard({ dirty: hasUnfinishedWork, busy: saving || testing });
   const [form, setForm] = useState<FormState>({
     organizationUrl: "",
     personalAccessToken: "",
@@ -162,6 +165,7 @@ export function ConfigurationForm({
     const onChange = (event: Event) => {
       const custom = event as CustomEvent<ActiveProjectScope>;
       setActiveProject(custom.detail ?? readActiveProject());
+      setHasUnfinishedWork(false);
     };
     window.addEventListener("itestflow:active-project-changed", onChange);
     return () => window.removeEventListener("itestflow:active-project-changed", onChange);
@@ -198,6 +202,8 @@ export function ConfigurationForm({
     });
 
     if (fetched && fetched.length) {
+      const nextModel = fetched.some((model) => model.id === form.model) ? form.model : fetched[0].id;
+      if (nextModel !== form.model) setHasUnfinishedWork(true);
       setForm((current) => {
         if (current.provider !== requestedProvider) return current;
         return {
@@ -217,6 +223,7 @@ export function ConfigurationForm({
   }
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
+    setHasUnfinishedWork(true);
     setForm((current) => ({ ...current, [key]: value }));
     setError(null);
     setMessage(null);
@@ -224,6 +231,7 @@ export function ConfigurationForm({
   }
 
   function updateMaxTokens(maxTokens: number) {
+    setHasUnfinishedWork(true);
     setForm((current) => ({
       ...current,
       maxTokens,
@@ -267,6 +275,7 @@ export function ConfigurationForm({
   }
 
   function toggleAutoUpdate(enabled: boolean) {
+    setHasUnfinishedWork(true);
     const selectedProject = readActiveProject();
     if (selectedProject) setActiveProject(selectedProject);
     setForm((current) => ({
@@ -315,7 +324,10 @@ export function ConfigurationForm({
       setMessage("Configuration saved locally. Live integrations will use these values now.");
       dispatchRuntimeSettingsChanged(json);
       onSaved?.();
-      if (redirectTo) router.push(redirectTo);
+      setHasUnfinishedWork(false);
+      if (redirectTo) {
+        window.setTimeout(() => navigate(redirectTo), 0);
+      }
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save runtime settings.");
@@ -390,6 +402,7 @@ export function ConfigurationForm({
                     className="h-11 w-full rounded-md border border-input bg-card px-3 text-sm"
                     value={form.provider}
                     onChange={(event) => {
+                      setHasUnfinishedWork(true);
                       const provider = event.target.value as Provider;
                       setModelDropdownOpen(false);
                       resetModels();

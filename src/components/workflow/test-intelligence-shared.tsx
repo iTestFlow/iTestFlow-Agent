@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { SearchableCombobox } from "@/components/ui/searchable-combobox";
 import { Callout } from "@/components/qa/callout";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { RefreshButton } from "@/components/qa/refresh-button";
 import { toneClass, type Tone } from "@/components/qa/tone";
 import { cn } from "@/lib/utils";
@@ -383,11 +384,15 @@ export function PublishGeneratedCasesPanel({
   targetWorkItemId,
   testCases,
   invalidCaseCount = 0,
+  onDirty,
+  onPublished,
 }: {
   scope: ActiveProjectScope | null;
   targetWorkItemId: string;
   testCases: GeneratedTestCase[];
   invalidCaseCount?: number;
+  onDirty?: () => void;
+  onPublished?: () => void;
 }) {
   const [testPlanInput, setTestPlanInput] = useState("");
   const [parentSuiteInput, setParentSuiteInput] = useState("");
@@ -400,6 +405,7 @@ export function PublishGeneratedCasesPanel({
   const [suiteError, setSuiteError] = useState<string | null>(null);
   const [suiteNotice, setSuiteNotice] = useState<string | null>(null);
   const [state, setState] = useState<ApiState<PublishRunResult>>({ loading: false, error: null, data: null });
+  useUnsavedChangesGuard({ dirty: false, busy: state.loading });
   const suiteRequestRef = useRef(0);
   const suiteAbortRef = useRef<AbortController | null>(null);
   const parentSuiteInputRef = useRef("");
@@ -503,6 +509,7 @@ export function PublishGeneratedCasesPanel({
   }, []);
 
   function selectPlan(value: string) {
+    onDirty?.();
     suiteAbortRef.current?.abort();
     suiteRequestRef.current += 1;
     setTestPlanInput(value);
@@ -516,6 +523,7 @@ export function PublishGeneratedCasesPanel({
   }
 
   function selectSuite(value: string) {
+    onDirty?.();
     parentSuiteInputRef.current = value;
     setParentSuiteInput(value);
     setState({ loading: false, error: null, data: null });
@@ -553,6 +561,9 @@ export function PublishGeneratedCasesPanel({
         })),
       });
       setState({ loading: false, error: null, data });
+      const casesPublished = data.results.length > 0 && data.results.every((result) => result.success);
+      const suitePublished = !createRequirementSuite || data.requirementSuite?.success === true;
+      if (casesPublished && suitePublished) onPublished?.();
     } catch (error) {
       setState({ loading: false, error: error instanceof Error ? error.message : "Publish failed.", data: null });
     }
@@ -576,6 +587,7 @@ export function PublishGeneratedCasesPanel({
           <Checkbox
             checked={createRequirementSuite}
             onCheckedChange={(checked) => {
+              onDirty?.();
               setCreateRequirementSuite(checked === true);
               setState({ loading: false, error: null, data: null });
             }}
