@@ -1,4 +1,9 @@
 import type { RequirementAnalysisChecklistItemId } from "@/modules/requirement-analysis/checklist-options";
+import type {
+  RequirementFindingSeverity,
+  RequirementIssueType,
+  RequirementRiskLevel,
+} from "@/modules/requirement-analysis/finding-options";
 import type { TokenUsage } from "@/modules/llm/llm-types";
 import type { TestDesignOptions } from "@/modules/test-case-design/test-design-options";
 
@@ -21,12 +26,12 @@ export type WorkflowMode = "auto" | "manual";
 export type RequirementFinding = {
   id: string;
   checklistItemId: RequirementAnalysisChecklistItemId;
-  issueType: string;
-  severity: "critical" | "high" | "medium" | "low" | "info";
+  issueType: RequirementIssueType;
+  severity: RequirementFindingSeverity;
   title: string;
   description: string;
   suggestion: string;
-  riskLevel: "high" | "medium" | "low";
+  riskLevel: RequirementRiskLevel;
   riskJustification: string;
   affectedAreas: string[];
   references: Array<{ module?: string; section?: string; sourceId?: string; description?: string }>;

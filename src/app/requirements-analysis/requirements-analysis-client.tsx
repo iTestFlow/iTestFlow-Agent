@@ -1,39 +1,36 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, Copy, Play, Send, X } from "lucide-react";
+import { CheckCircle2, Loader2, Play, Send, X } from "lucide-react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { ProjectUserPicker, projectUserLabel } from "@/components/domain/project-user-picker";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { Callout } from "@/components/qa/callout";
+import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
+import {
+  RequirementFindingsReview,
+  validateRequirementFinding,
+} from "@/components/workflow/requirement-findings-review";
 import { WorkItemPreview, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import {
   ErrorBlock,
-  Metric,
   SectionCard,
-  SummaryCard,
-  SummaryTotalCard,
-  ToneBadge,
-  copyTextWithFeedback,
   formatEnumLabel,
   formatPercentage,
   postJson,
   projectWarning,
   scrollToNextStep,
-  severityTone,
-  type SummaryRow,
   useActiveProject,
 } from "@/components/workflow/test-intelligence-shared";
 import type {
@@ -112,7 +109,6 @@ function buildCommentSummary(summary: RequirementSummary, findings: RequirementF
 export function RequirementsAnalysisClient() {
   const scope = useActiveProject();
   const findingsCardRef = useRef<HTMLDivElement | null>(null);
-  const finalReviewCardRef = useRef<HTMLDivElement | null>(null);
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const [extraInstructions, setExtraInstructions] = useState("");
@@ -128,12 +124,9 @@ export function RequirementsAnalysisClient() {
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
-  const [selectedFindings, setSelectedFindings] = useState<Record<string, boolean>>({});
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [reviewButtonAnimating, setReviewButtonAnimating] = useState(false);
-  const [finalComment, setFinalComment] = useState("");
-  const [finalCommentCopied, setFinalCommentCopied] = useState(false);
-  const [reviewApproved, setReviewApproved] = useState(false);
+  const [findings, setFindings] = useState<RequirementFinding[]>([]);
+  const [selectedFindingIds, setSelectedFindingIds] = useState<string[]>([]);
+  const [findingsReviewVersion, setFindingsReviewVersion] = useState(0);
   const [pushState, setPushState] = useState<ApiState<{ success: boolean }>>({ loading: false, error: null, data: null });
   const [projectUsersState, setProjectUsersState] = useState<ApiState<ProjectUser[]>>({ loading: false, error: null, data: [] });
   const [selectedMentionUserIds, setSelectedMentionUserIds] = useState<string[]>([]);
@@ -152,37 +145,19 @@ export function RequirementsAnalysisClient() {
     setHasUnfinishedWork(false);
   }, [scope?.azureProjectId]);
   const sortedFindingList = useMemo(
-    () => [...(analysis.data?.findings ?? [])].sort((left, right) => severityRank(left.severity) - severityRank(right.severity)),
-    [analysis.data],
-  );
-  const findingStats = useMemo(() => {
-    const findings = analysis.data?.findings ?? [];
-    const severityCounts = countFindingsBySeverity(findings);
-    const byType = findings.reduce<Record<string, number>>((counts, finding) => {
-      counts[finding.issueType] = (counts[finding.issueType] ?? 0) + 1;
-      return counts;
-    }, {});
-
-    return {
-      total: severityCounts.total,
-      bySeverity: severityCounts,
-      byType: Object.entries(byType).sort(([firstType], [secondType]) => firstType.localeCompare(secondType)),
-    };
-  }, [analysis.data]);
-  const severityBreakdown = useMemo<SummaryRow[]>(() => [
-    { label: "Critical", value: findingStats.bySeverity.critical, tone: "red" },
-    { label: "High", value: findingStats.bySeverity.high, tone: "red" },
-    { label: "Medium", value: findingStats.bySeverity.medium, tone: "amber" },
-    { label: "Low", value: findingStats.bySeverity.low, tone: "green" },
-    { label: "Info", value: findingStats.bySeverity.info, tone: "slate" },
-  ], [findingStats]);
-  const typeBreakdown = useMemo<SummaryRow[]>(
-    () => findingStats.byType.map(([type, count]) => ({ label: formatEnumLabel(type), value: count, tone: "cyan" as const })),
-    [findingStats],
+    () => [...findings].sort((left, right) => severityRank(left.severity) - severityRank(right.severity)),
+    [findings],
   );
   const selectedFindingList = useMemo(
-    () => sortedFindingList.filter((finding) => selectedFindings[finding.id]),
-    [selectedFindings, sortedFindingList],
+    () => {
+      const selectedIds = new Set(selectedFindingIds);
+      return sortedFindingList.filter((finding) => selectedIds.has(finding.id));
+    },
+    [selectedFindingIds, sortedFindingList],
+  );
+  const invalidSelectedFindingCount = useMemo(
+    () => selectedFindingList.filter((finding) => !validateRequirementFinding(finding).valid).length,
+    [selectedFindingList],
   );
   const projectUsers = useMemo(() => projectUsersState.data ?? [], [projectUsersState.data]);
   const selectedMentionUsers = useMemo(() => {
@@ -220,6 +195,11 @@ export function RequirementsAnalysisClient() {
   function changeTargetWorkItemId(value: string) {
     setHasUnfinishedWork(true);
     setTargetWorkItemId(value);
+    setAnalysis({ loading: false, error: null, data: null });
+    setFindings([]);
+    setSelectedFindingIds([]);
+    setFindingsReviewVersion((current) => current + 1);
+    setPushState({ loading: false, error: null, data: null });
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
@@ -269,11 +249,9 @@ export function RequirementsAnalysisClient() {
   function applyAnalysisResult(data: RequirementAnalysisRunResult) {
     setHasUnfinishedWork(data.findings.length > 0);
     setAnalysis({ loading: false, error: null, data });
-    setSelectedFindings(Object.fromEntries(data.findings.map((finding) => [finding.id, true])));
-    setReviewOpen(false);
-    setFinalComment("");
-    setFinalCommentCopied(false);
-    setReviewApproved(false);
+    setFindings(data.findings);
+    setSelectedFindingIds(data.findings.map((finding) => finding.id));
+    setFindingsReviewVersion((current) => current + 1);
     setPushState({ loading: false, error: null, data: null });
     setSelectedMentionUserIds([]);
   }
@@ -359,49 +337,33 @@ export function RequirementsAnalysisClient() {
     ].join("\n\n");
   }
 
-  function openReview() {
-    const commentBody = buildCommentBody();
-    if (!commentBody) return;
-    setReviewButtonAnimating(true);
-    window.setTimeout(() => setReviewButtonAnimating(false), 220);
-    setFinalComment(commentBody);
-    setFinalCommentCopied(false);
-    setReviewApproved(false);
-    setPushState({ loading: false, error: null, data: null });
-    setReviewOpen(true);
-    scrollToNextStep(finalReviewCardRef);
-  }
-
-  function changeFindingSelection(findingId: string, checked: boolean) {
+  function changeFindings(nextFindings: RequirementFinding[]) {
     setHasUnfinishedWork(true);
-    setSelectedFindings((current) => ({ ...current, [findingId]: checked }));
-    setReviewApproved(false);
+    setFindings(nextFindings);
     setPushState({ loading: false, error: null, data: null });
   }
 
-  function changeFinalComment(value: string) {
+  function changeSelectedFindingIds(ids: string[]) {
     setHasUnfinishedWork(true);
-    setFinalComment(value);
-    setFinalCommentCopied(false);
-    setReviewApproved(false);
+    setSelectedFindingIds(ids);
     setPushState({ loading: false, error: null, data: null });
   }
 
   function changeMentionUsers(userIds: string[]) {
     setHasUnfinishedWork(true);
     setSelectedMentionUserIds(userIds);
-    setReviewApproved(false);
     setPushState({ loading: false, error: null, data: null });
   }
 
   async function pushComment() {
+    const commentBody = buildCommentBody();
     if (
       !scope ||
       !targetWorkItemId ||
       !analysis.data ||
       !selectedFindingList.length ||
-      !reviewApproved ||
-      !finalComment.trim() ||
+      invalidSelectedFindingCount > 0 ||
+      !commentBody ||
       pushState.data?.success
     ) return;
     setPushState({ loading: true, error: null, data: null });
@@ -410,7 +372,7 @@ export function RequirementsAnalysisClient() {
         scope,
         targetWorkItemId,
         selectedFindingIds: selectedFindingList.map((finding) => finding.id),
-        commentBody: buildCommentBodyWithMentions(finalComment, selectedMentionUsers),
+        commentBody: buildCommentBodyWithMentions(commentBody, selectedMentionUsers),
         mentionedUsers: selectedMentionUsers.map((user) => ({
           id: user.id,
           displayName: user.displayName,
@@ -519,7 +481,6 @@ export function RequirementsAnalysisClient() {
         </div>
       ) : null}
 
-      {pushState.error ? <ErrorBlock message={pushState.error} /> : null}
       {gen.status !== "idle" && gen.status !== "completed" ? (
         <div ref={findingsCardRef}>
           <AiGenerationProgress
@@ -541,126 +502,76 @@ export function RequirementsAnalysisClient() {
           {mode === "auto" && gen.status === "completed" ? (
             <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
           ) : null}
-          <SectionCard title="Requirements Analysis Findings">
-            <div className="grid gap-3 border-b border-border bg-muted p-4 lg:grid-cols-[180px_minmax(260px,1fr)_minmax(260px,1fr)]">
-              <SummaryTotalCard label="Total Findings" total={findingStats.total} />
-              <SummaryCard title="Severity Breakdown" rows={severityBreakdown} />
-              <SummaryCard title="Type" rows={typeBreakdown} emptyLabel="No finding types yet" />
-            </div>
-            <div className="grid gap-3 border-b p-4 md:grid-cols-4">
-              <Metric label="Quality" value={analysis.data.summary.overallQuality} />
-              <Metric label="Clarity" value={analysis.data.summary.clarityScore} />
-              <Metric label="Completeness" value={analysis.data.summary.completenessScore} />
-              <Metric label="Testability" value={analysis.data.summary.testabilityScore} />
-            </div>
-            <div className="divide-y">
-              {sortedFindingList.map((finding) => (
-                <div key={finding.id} className="grid gap-4 p-4 xl:grid-cols-[32px_240px_minmax(0,1fr)_minmax(260px,0.85fr)]">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(selectedFindings[finding.id])}
-                    onChange={(event) => changeFindingSelection(finding.id, event.target.checked)}
-                    className="mt-2 h-4 w-4"
-                    aria-label={`Select ${finding.id}`}
+          <RequirementFindingsReview
+            key={findingsReviewVersion}
+            findings={findings}
+            summary={analysis.data.summary}
+            selectedIds={selectedFindingIds}
+            onChange={changeFindings}
+            onSelectedIdsChange={changeSelectedFindingIds}
+            footer={
+              <div className="space-y-4">
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+                  <RequirementMentionPicker
+                    users={projectUsers}
+                    selectedUserIds={selectedMentionUserIds}
+                    selectedUsers={selectedMentionUsers}
+                    loading={projectUsersState.loading}
+                    error={projectUsersState.error}
+                    disabled={!scope}
+                    onSelectionChange={changeMentionUsers}
                   />
-                  <div>
-                    <ToneBadge tone={severityTone(finding.severity)}>{formatEnumLabel(finding.severity)}</ToneBadge>
-                    <div className="mt-2 text-xs font-medium text-muted-foreground">{checklistItemTitle(finding.checklistItemId)}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">Issue Type: {formatEnumLabel(finding.issueType)}</div>
-                  </div>
-                  <div>
-                    <div className="font-medium">{finding.title}</div>
-                    <p className="mt-2 text-sm text-muted-foreground">{finding.description}</p>
-                    <p className="mt-2 text-xs text-muted-foreground">Risk: {formatEnumLabel(finding.riskLevel)} - {finding.riskJustification}</p>
-                  </div>
-                  <div className="rounded-md border border-border bg-accent p-3">
-                    <div className="text-xs font-semibold text-primary">Suggested resolution</div>
-                    <p className="mt-2 text-sm leading-6 text-foreground">{finding.suggestion}</p>
-                  </div>
+                  <ConfirmationDialog
+                    trigger={
+                      <Button
+                        disabled={
+                          !scope ||
+                          !targetWorkItemId ||
+                          !selectedFindingList.length ||
+                          invalidSelectedFindingCount > 0 ||
+                          pushState.loading ||
+                          Boolean(pushState.data?.success)
+                        }
+                        className="w-full xl:w-auto"
+                      >
+                        {pushState.loading ? <Loader2 className="animate-spin" /> : <Send />}
+                        {pushState.data?.success ? "Comment Pushed" : pushState.loading ? "Pushing..." : "Push Comment"}
+                      </Button>
+                    }
+                    title="Push requirements analysis comment?"
+                    description={
+                      <div className="space-y-1">
+                        <p>Project: {scope?.azureProjectName ?? "Selected Azure DevOps project"}</p>
+                        <p>Target work item: {targetWorkItemId}</p>
+                        <p>Selected findings: {selectedFindingList.length}</p>
+                        <p>Mentioned members: {selectedMentionUsers.length}</p>
+                        <p className="pt-1">Only the current selected and valid findings will be included.</p>
+                      </div>
+                    }
+                    confirmLabel="Push comment"
+                    onConfirm={pushComment}
+                  />
                 </div>
-              ))}
-            </div>
-            <div className="flex justify-end border-t border-border p-4">
-              <Button
-                onClick={openReview}
-                disabled={!selectedFindingList.length}
-                className={`active:translate-y-px active:scale-[0.98] ${reviewButtonAnimating ? "scale-[0.98] ring-2 ring-primary/30" : ""}`}
-              >
-                <Send className="h-4 w-4" />
-                Review Comment
-              </Button>
-            </div>
-          </SectionCard>
-        </div>
-      ) : null}
 
-      {reviewOpen ? (
-        <div ref={finalReviewCardRef}>
-        <SectionCard
-          title="Final Comment Review"
-          description="Edit and approve the exact comment before it is pushed to Azure DevOps."
-          action={
-            <Button
-              variant="secondary"
-              disabled={finalCommentCopied || !finalComment.trim()}
-              onClick={() => {
-                void copyTextWithFeedback(finalComment, setFinalCommentCopied);
-              }}
-              className="active:translate-y-px active:scale-[0.98]"
-            >
-              <Copy className="h-4 w-4" />
-              {finalCommentCopied ? "Copied" : "Copy"}
-            </Button>
-          }
-        >
-          <div className="space-y-4 p-4">
-            <RequirementMentionPicker
-              users={projectUsers}
-              selectedUserIds={selectedMentionUserIds}
-              selectedUsers={selectedMentionUsers}
-              loading={projectUsersState.loading}
-              error={projectUsersState.error}
-              disabled={!scope}
-              onSelectionChange={changeMentionUsers}
-            />
-            <Textarea
-              value={finalComment}
-              onChange={(event) => changeFinalComment(event.target.value)}
-              className="min-h-[320px] font-mono"
-              aria-label="Final Azure DevOps comment"
-            />
-            <label className="flex items-start gap-3 rounded-md border border-border bg-card p-3 text-sm text-foreground">
-              <input
-                type="checkbox"
-                checked={reviewApproved}
-                onChange={(event) => {
-                  setHasUnfinishedWork(true);
-                  setReviewApproved(event.target.checked);
-                }}
-                className="mt-1 h-4 w-4"
-              />
-              <span>I reviewed the final comment text and selected findings. Push this comment to the Azure DevOps user story.</span>
-            </label>
-            {pushState.data?.success ? (
-              <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success">
-                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
-                <div>
-                  <div className="font-semibold text-foreground">Comment pushed to Azure DevOps</div>
-                  <p className="mt-1 text-success">The approved review comment was added to the selected user story.</p>
-                </div>
+                {invalidSelectedFindingCount > 0 ? (
+                  <Callout tone="warning">
+                    Resolve validation issues in the {invalidSelectedFindingCount} selected finding
+                    {invalidSelectedFindingCount === 1 ? "" : "s"} before pushing the comment.
+                  </Callout>
+                ) : null}
+                {pushState.error ? <ErrorBlock message={pushState.error} /> : null}
+                {pushState.data?.success ? (
+                  <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success">
+                    <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
+                    <div>
+                      <div className="font-semibold text-foreground">Comment pushed to Azure DevOps</div>
+                      <p className="mt-1 text-success">The selected requirements findings were added to the target work item.</p>
+                    </div>
+                  </div>
+                ) : null}
               </div>
-            ) : null}
-            <div className="flex justify-end">
-              <Button
-                onClick={pushComment}
-                disabled={!selectedFindingList.length || !reviewApproved || !finalComment.trim() || pushState.loading || Boolean(pushState.data?.success)}
-              >
-                <Send className="h-4 w-4" />
-                {pushState.data?.success ? "Comment Pushed" : pushState.loading ? "Pushing..." : "Push Approved Comment"}
-              </Button>
-            </div>
-          </div>
-        </SectionCard>
+            }
+          />
         </div>
       ) : null}
     </div>
@@ -750,7 +661,7 @@ function RequirementMentionPicker({
   }
 
   return (
-    <div className="rounded-md border border-border bg-card p-3">
+    <div className="w-full rounded-md border border-border bg-card p-3 xl:max-w-3xl xl:flex-1">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold text-foreground">Mention members</div>
