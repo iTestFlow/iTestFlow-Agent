@@ -167,6 +167,7 @@ type KnowledgeGeneratedDraft = {
   sourceWorkItemCount: number
   promptedSourceWorkItemCount: number
   changedSourceWorkItemCount: number
+  changedSourceWorkItemIds: string[]
   retiredSourceWorkItemCount: number
   rawOutput: string
   knowledgeBase: ProjectKnowledgeBase
@@ -1416,7 +1417,16 @@ function GeneratedPreviewPanel({
   saving: boolean
   onSave: () => void
 }) {
+  const isIncremental = draft.mode === "incremental"
+  const displayBase = useMemo(
+    () =>
+      isIncremental
+        ? filterKnowledgeBaseBySource(draft.knowledgeBase, new Set(draft.changedSourceWorkItemIds))
+        : draft.knowledgeBase,
+    [isIncremental, draft.knowledgeBase, draft.changedSourceWorkItemIds],
+  )
   const totalItems = countKnowledgeItems(draft.knowledgeBase)
+  const displayCount = countKnowledgeItems(displayBase)
 
   if (draft.alreadyCurrent) {
     return (
@@ -1429,16 +1439,21 @@ function GeneratedPreviewPanel({
     )
   }
 
+  const showRetiredOnlyNote = isIncremental && displayCount === 0
+
   return (
     <div className="space-y-4 rounded-md border border-border bg-card p-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="text-sm font-semibold text-foreground">Generated Knowledge Preview</div>
           <div className="text-xs text-muted-foreground">
-            {totalItems} entries from {draft.sourceWorkItemCount} active source work items.
-            {draft.mode === "incremental"
-              ? ` ${draft.changedSourceWorkItemCount} changed, ${draft.retiredSourceWorkItemCount} retired.`
-              : null}
+            {isIncremental ? (
+              <>
+                {displayCount} new/updated {displayCount === 1 ? "entry" : "entries"} from {draft.changedSourceWorkItemCount} changed source work {draft.changedSourceWorkItemCount === 1 ? "item" : "items"}. {draft.retiredSourceWorkItemCount} retired. Saving updates the full knowledge base ({totalItems} entries total).
+              </>
+            ) : (
+              <>{totalItems} entries from {draft.sourceWorkItemCount} active source work items.</>
+            )}
           </div>
         </div>
         <Badge variant="outline">Prompt {draft.promptVersion}</Badge>
@@ -1448,7 +1463,18 @@ function GeneratedPreviewPanel({
           {draft.fallbackReason}
         </div>
       ) : null}
-      <KnowledgeExplorer knowledgeBase={draft.knowledgeBase} compact />
+      {showRetiredOnlyNote ? (
+        <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
+          No new or updated knowledge entries were generated.
+          {draft.retiredSourceWorkItemCount > 0
+            ? ` ${draft.retiredSourceWorkItemCount} retired source work item${
+                draft.retiredSourceWorkItemCount === 1 ? "" : "s"
+              } will be pruned from the saved knowledge base on save.`
+            : ""}
+        </div>
+      ) : (
+        <KnowledgeExplorer knowledgeBase={displayBase} compact />
+      )}
       <div className="flex justify-end gap-2 border-t border-border pt-3">
         <Button onClick={onSave} disabled={saving}>
           {saving ? <RefreshCw className="size-4 animate-spin" /> : <Save className="size-4" />}
@@ -2140,6 +2166,18 @@ function combineKnowledgeBasesForPreview(knowledgeBases: ProjectKnowledgeBase[])
     stateTransitions: knowledgeBases.flatMap((base) => base.stateTransitions),
     glossary: knowledgeBases.flatMap((base) => base.glossary),
     crossDependencies: knowledgeBases.flatMap((base) => base.crossDependencies),
+  }
+}
+
+function filterKnowledgeBaseBySource(knowledgeBase: ProjectKnowledgeBase, sourceIds: Set<string>): ProjectKnowledgeBase {
+  const keep = <TItem extends KnowledgeSource>(items: TItem[]) =>
+    items.filter((item) => item.sourceWorkItemIds.some((id) => sourceIds.has(id.trim())))
+  return {
+    modules: keep(knowledgeBase.modules),
+    businessRules: keep(knowledgeBase.businessRules),
+    stateTransitions: keep(knowledgeBase.stateTransitions),
+    glossary: keep(knowledgeBase.glossary),
+    crossDependencies: keep(knowledgeBase.crossDependencies),
   }
 }
 

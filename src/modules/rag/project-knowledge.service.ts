@@ -113,6 +113,7 @@ export type ProjectKnowledgeGeneratedDraft = {
   sourceWorkItemCount: number;
   promptedSourceWorkItemCount: number;
   changedSourceWorkItemCount: number;
+  changedSourceWorkItemIds: string[];
   retiredSourceWorkItemCount: number;
   rawOutput: string;
   knowledgeBase: ProjectKnowledgeBase;
@@ -305,6 +306,7 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
       sourceWorkItemCount: workItems.length,
       promptedSourceWorkItemCount: selection.workItems.length,
       changedSourceWorkItemCount: selection.changedSourceWorkItemIds.length,
+      changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
       retiredSourceWorkItemCount: selection.retiredSourceWorkItemIds.length,
       rawOutput: JSON.stringify({
         mode: "incremental",
@@ -342,6 +344,7 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
     sourceWorkItemCount: workItems.length,
     promptedSourceWorkItemCount: selection.workItems.length,
     changedSourceWorkItemCount: selection.changedSourceWorkItemIds.length,
+    changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
     retiredSourceWorkItemCount: selection.retiredSourceWorkItemIds.length,
     rawOutput: selection.mode === "incremental"
       ? JSON.stringify({
