@@ -336,6 +336,12 @@ async function buildMigrationPlan(adapter: AzureDevOpsAdapter, request: TestSuit
       suiteId: request.targetParentSuiteId,
       message: `Target parent suite ${request.targetParentSuiteId} was not found in the target test plan.`,
     });
+  } else if (targetParent.suiteType !== "staticTestSuite") {
+    errors.push({
+      code: "target-parent-not-static",
+      suiteId: request.targetParentSuiteId,
+      message: "Only static suites can be selected as a target parent.",
+    });
   }
 
   const includedSuites = collectIncludedSuites(sourceTree, normalized.roots);

@@ -1,12 +1,13 @@
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
+import { toneClass, type Tone } from "@/components/qa/tone"
 import type { TestPriority } from "@/types/test-cases"
 
-const priorityClasses: Record<TestPriority, string> = {
-  P0: "border-[#E34935]/30 bg-[#FFECEB] text-[#AE2E24]",
-  P1: "border-[#F5CD47]/60 bg-[#FFF7D6] text-[#7F5F01]",
-  P2: "border-[#0C66E4]/30 bg-[#E9F2FF] text-[#0052CC]",
-  P3: "border-[#DCDFE4] bg-white text-[#44546F]",
+const priorityToneMap: Record<TestPriority, Tone> = {
+  P0: "error",
+  P1: "warning",
+  P2: "info",
+  P3: "neutral",
 }
 
 export function PriorityChip({
@@ -19,10 +20,9 @@ export function PriorityChip({
   return (
     <Badge
       variant="outline"
-      className={cn("rounded-full border px-2.5", priorityClasses[priority], className)}
+      className={cn("rounded-full border px-2.5", toneClass[priorityToneMap[priority]], className)}
     >
       {priority}
     </Badge>
   )
 }
-

@@ -1,0 +1,13 @@
+import { ContentShell } from "@/components/layout/content-shell"
+import { RequirementsAnalysisClient } from "./requirements-analysis-client"
+
+export default function RequirementsAnalysisPage() {
+  return (
+    <ContentShell
+      title="Requirements Analysis"
+      description="Run requirements analysis for a real Azure DevOps work item with automatic project context selection."
+    >
+      <RequirementsAnalysisClient />
+    </ContentShell>
+  )
+}

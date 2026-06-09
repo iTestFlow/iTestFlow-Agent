@@ -3,9 +3,9 @@ import "server-only";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
-import type { FinalApprovedTestCase } from "./azure-devops-types";
+import type { FinalApprovedTestCase, TestSuite } from "./azure-devops-types";
 
-type PublishSuiteMode = "existing" | "requirement";
+type PublishSuiteMode = "existing" | "requirement" | "none";
 type PublishStepResult = { success: boolean; error?: string };
 type PublishSuiteResult = PublishStepResult & { suiteId?: string; suiteName?: string };
 type PublishCaseResult = {
@@ -14,7 +14,7 @@ type PublishCaseResult = {
   success: boolean;
   create: PublishStepResult;
   link: PublishStepResult;
-  suite: PublishSuiteResult;
+  suite?: PublishSuiteResult;
   error?: string;
 };
 
@@ -23,7 +23,7 @@ export async function publishApprovedTestCases(
   scopeInput: ProjectScope,
   input: {
     targetUserStoryId: string;
-    testPlanId: string;
+    testPlanId?: string;
     suiteMode: PublishSuiteMode;
     testSuiteId?: string;
     parentSuiteId?: string;
@@ -32,6 +32,22 @@ export async function publishApprovedTestCases(
 ) {
   const scope = assertProjectScope(scopeInput);
   const results: PublishCaseResult[] = [];
+
+  if (input.suiteMode === "requirement") {
+    const testPlanId = input.testPlanId ?? "";
+    const parentSuiteId = input.parentSuiteId ?? "";
+    const suiteTree = await adapter.fetchTestSuiteTree({
+      projectId: scope.azureProjectId,
+      testPlanId,
+    });
+    const parentSuite = findSuiteById(suiteTree, parentSuiteId);
+    if (!parentSuite) {
+      throw new Error(`Parent suite ${parentSuiteId} was not found in test plan ${testPlanId}.`);
+    }
+    if (parentSuite.suiteType !== "staticTestSuite") {
+      throw new Error("Only static suites can be selected as a parent for a requirement-based suite.");
+    }
+  }
 
   for (const testCase of input.testCases) {
     const created = await adapter.createTestCase({ projectId: scope.azureProjectId, testCase });
@@ -42,7 +58,9 @@ export async function publishApprovedTestCases(
         success: false,
         create: created,
         link: { success: false, error: "Skipped because test case creation failed." },
-        suite: { success: false, error: "Skipped because test case creation failed." },
+        ...(input.suiteMode === "none"
+          ? {}
+          : { suite: { success: false, error: "Skipped because test case creation failed." } }),
         error: created.error,
       });
       continue;
@@ -53,13 +71,13 @@ export async function publishApprovedTestCases(
       userStoryId: input.targetUserStoryId,
       azureTestCaseId: created.azureTestCaseId,
     });
-    let suite: PublishSuiteResult = { success: false, error: "Suite action pending." };
+    let suite: PublishSuiteResult | undefined;
 
     if (input.suiteMode === "existing") {
       suite = link.success
         ? await adapter.addTestCaseToSuite({
             projectId: scope.azureProjectId,
-            testPlanId: input.testPlanId,
+            testPlanId: input.testPlanId ?? "",
             testSuiteId: input.testSuiteId ?? "",
             azureTestCaseId: created.azureTestCaseId,
           })
@@ -69,10 +87,10 @@ export async function publishApprovedTestCases(
     results.push({
       localId: testCase.localId,
       azureTestCaseId: created.azureTestCaseId,
-      success: input.suiteMode === "existing" ? created.success && link.success && suite.success : created.success && link.success,
+      success: input.suiteMode === "existing" ? created.success && link.success && Boolean(suite?.success) : created.success && link.success,
       create: created,
       link,
-      suite,
+      ...(suite ? { suite } : {}),
     });
   }
 
@@ -83,7 +101,7 @@ export async function publishApprovedTestCases(
     if (linkedCount > 0) {
       const createdSuite = await adapter.createRequirementBasedSuite({
         projectId: scope.azureProjectId,
-        testPlanId: input.testPlanId,
+        testPlanId: input.testPlanId ?? "",
         parentSuiteId: input.parentSuiteId ?? "",
         requirementId: input.targetUserStoryId,
         name: `US ${input.targetUserStoryId} - Generated Test Cases`,
@@ -118,7 +136,10 @@ export async function publishApprovedTestCases(
     entityId: input.targetUserStoryId,
     action: "azure_devops.publish_test_cases",
     status: results.every((result) => result.success) ? "Success" : "Partial failure",
-    message: `Published ${results.filter((result) => result.success).length} of ${input.testCases.length} selected test cases.`,
+    message:
+      input.suiteMode === "none"
+        ? `Created and linked ${results.filter((result) => result.success).length} of ${input.testCases.length} selected test cases.`
+        : `Published ${results.filter((result) => result.success).length} of ${input.testCases.length} selected test cases.`,
     details: {
       testPlanId: input.testPlanId,
       testSuiteId: input.testSuiteId,
@@ -130,4 +151,13 @@ export async function publishApprovedTestCases(
   });
 
   return { results, requirementSuite };
+}
+
+function findSuiteById(suites: TestSuite[], suiteId: string): TestSuite | undefined {
+  for (const suite of suites) {
+    if (suite.id === suiteId) return suite;
+    const child = findSuiteById(suite.children ?? [], suiteId);
+    if (child) return child;
+  }
+  return undefined;
 }

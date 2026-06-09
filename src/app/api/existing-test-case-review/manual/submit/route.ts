@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { completeManualExistingTestCaseReview } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
       rawOutput: parsed.data.rawOutput,
       targetWorkItemId: parsed.data.targetWorkItemId,
     });
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const linkedTestCases = await adapter.fetchLinkedTestCases({
       projectId: parsed.data.scope.azureProjectId,
       userStoryId: parsed.data.targetWorkItemId,

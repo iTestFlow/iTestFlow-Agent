@@ -80,21 +80,21 @@ export function FinalCommentPreview({
               ["selectedOnly", "Deselected findings are excluded"],
               ["reviewed", "I reviewed and approved the final text"],
             ].map(([key, label]) => (
-              <label key={key} className="flex items-start gap-3 rounded-lg border border-[#EBECF0] p-3 text-sm">
+              <label key={key} className="flex items-start gap-3 rounded-lg border border-border p-3 text-sm">
                 <Checkbox
                   checked={checks[key as keyof typeof checks]}
                   onCheckedChange={(checked) => setChecks((current) => ({ ...current, [key]: Boolean(checked) }))}
                   aria-label={label}
                 />
-                <span className="text-[#44546F]">{label}</span>
+                <span className="text-muted-foreground">{label}</span>
               </label>
             ))}
           </CardContent>
         </Card>
 
-        <Alert className="border-[#0C66E4]/20 bg-[#E9F2FF]">
+        <Alert className="border-primary/20 bg-accent">
           <AlertTitle>Push requires confirmation</AlertTitle>
-          <AlertDescription className="text-[#44546F]">
+          <AlertDescription className="text-muted-foreground">
             Requirement comments are never pushed until selected findings have been reviewed.
           </AlertDescription>
         </Alert>
@@ -137,8 +137,8 @@ export function FinalCommentPreview({
 function Info({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-xs font-medium uppercase tracking-normal text-[#626F86]">{label}</div>
-      <div className="mt-1 font-semibold text-[#172B4D]">{value}</div>
+      <div className="text-xs font-medium uppercase tracking-normal text-muted-foreground">{label}</div>
+      <div className="mt-1 font-semibold text-foreground">{value}</div>
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
+import { DEFAULT_MAX_TOKENS } from "../llm-defaults";
 import { buildStructuredOutputUserPrompt } from "../prompts";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import type { GenerateStructuredOutputInput, GenerateTextInput } from "../llm-types";
@@ -16,9 +17,6 @@ export class OllamaProvider extends BaseJsonProvider {
       model: this.model,
       stream: false,
       prompt: [input.system, input.user].join("\n\n"),
-      options: {
-        temperature: input.temperature ?? this.config.temperature ?? 0.2,
-      },
     };
     const response = await fetch(`${this.config.baseUrl ?? "http://localhost:11434"}/api/generate`, {
       method: "POST",
@@ -40,6 +38,7 @@ export class OllamaProvider extends BaseJsonProvider {
       rawOutput: json.response ?? "",
       requestBody,
       responseBody: json,
+      tokenUsage: ollamaTokenUsage(json),
     };
   }
 
@@ -50,7 +49,7 @@ export class OllamaProvider extends BaseJsonProvider {
       format: "json",
       prompt: buildStructuredOutputUserPrompt(input),
       options: {
-        temperature: input.temperature ?? this.config.temperature ?? 0.2,
+        num_predict: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
       },
     };
     const response = await fetch(`${this.config.baseUrl ?? "http://localhost:11434"}/api/generate`, {
@@ -73,6 +72,24 @@ export class OllamaProvider extends BaseJsonProvider {
       rawOutput: json.response ?? "{}",
       requestBody,
       responseBody: json,
+      finishReason: json.done_reason,
+      tokenUsage: ollamaTokenUsage(json),
     };
   }
+}
+
+function ollamaTokenUsage(response: unknown) {
+  if (!response || typeof response !== "object") return undefined;
+  const value = response as Record<string, unknown>;
+  const input = optionalCount(value.prompt_eval_count);
+  const output = optionalCount(value.eval_count);
+  return {
+    input,
+    output,
+    total: input !== undefined && output !== undefined ? input + output : undefined,
+  };
+}
+
+function optionalCount(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

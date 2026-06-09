@@ -20,11 +20,11 @@ export function EmptyState({
   return (
     <Card className="qa-card">
       <CardContent className="flex flex-col items-center justify-center px-6 py-10 text-center">
-        <div className="rounded-lg border border-[#DCDFE4] bg-white p-3 text-[#626F86]">
+        <div className="rounded-lg border border-border bg-card p-3 text-muted-foreground">
           <Icon className="size-5" aria-hidden="true" />
         </div>
-        <h3 className="mt-4 text-base font-semibold text-[#172B4D]">{title}</h3>
-        <p className="mt-2 max-w-md text-sm leading-6 text-[#626F86]">{description}</p>
+        <h3 className="mt-4 text-base font-semibold text-foreground">{title}</h3>
+        <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">{description}</p>
         {actionLabel ? (
           <Button className="mt-4" size="sm" onClick={onAction}>
             {actionLabel}

@@ -31,11 +31,15 @@ export async function POST(request: Request) {
       );
     }
 
-    return NextResponse.json(await previewGeneratedProjectKnowledgeBase({
+    const draft = await previewGeneratedProjectKnowledgeBase({
       scope: parsed.data.scope,
       provider,
       mode: parsed.data.mode ?? "incremental",
-    }));
+    });
+    return NextResponse.json({
+      ...draft,
+      tokenUsage: provider.getTokenUsage() ?? (draft.provider === "local" ? { input: 0, output: 0, total: 0 } : undefined),
+    });
   } catch (error) {
     if (isTruncatedKnowledgeBaseOutputError(error)) {
       return NextResponse.json({ error: TruncatedKnowledgeBaseOutputMessage }, { status: 422 });

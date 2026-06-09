@@ -1,13 +1,19 @@
 "use client"
 
-import { CalendarClock, Menu, RefreshCw } from "lucide-react"
+import { CalendarClock, ChevronDown, Loader2, Menu, RefreshCw, Settings2 } from "lucide-react"
+import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { toast } from "sonner"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ThemeToggle } from "@/components/theme/theme-toggle"
 import { HeaderProjectSelector } from "@/shared/components/live/project-status"
+import { ModelPicker, useProviderModels } from "@/shared/components/live/model-picker"
+import { dispatchRuntimeSettingsChanged, subscribeRuntimeSettingsChanged } from "@/shared/lib/runtime-settings-events"
+import { apiErrorMessage } from "@/shared/validators/api-validation-errors"
 import { cn } from "@/lib/utils"
 import { isCronExpressionDue } from "@/modules/settings/cron-expression"
 
@@ -23,6 +29,7 @@ type RuntimeSettingsSummary = {
     provider?: string
     model?: string
     hasApiKey?: boolean
+    baseUrl?: string
   }
   context?: {
     autoUpdate?: {
@@ -48,7 +55,7 @@ function providerLabel(value?: string) {
     case "gemini":
       return "Gemini"
     case "anthropic":
-      return "Claude"
+      return "Anthropic"
     case "ollama":
       return "Ollama"
     default:
@@ -100,6 +107,19 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
     void loadProfile()
     void loadSettingsSummary()
   }, [loadProfile, loadSettingsSummary])
+
+  useEffect(() => {
+    return subscribeRuntimeSettingsChanged<RuntimeSettingsSummary>((detail) => {
+      if (detail) {
+        setSettingsSummary(detail)
+        setSettingsError(false)
+        setSettingsLoading(false)
+        return
+      }
+
+      void loadSettingsSummary()
+    })
+  }, [loadSettingsSummary])
 
   const azureConfiguredError = profileError?.toLowerCase().includes("not configured")
   const azureStatus = profile
@@ -153,7 +173,16 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
 
       <div className="hidden min-w-0 items-center gap-2 xl:flex">
         <ConnectivityChip {...azureStatus} />
-        <ConnectivityChip {...llmStatus} className="max-w-[260px]" />
+        <LLMModelSwitcher
+          status={llmStatus}
+          settingsSummary={settingsSummary}
+          settingsError={settingsError}
+          onSettingsSummaryChange={(summary) => {
+            setSettingsSummary(summary)
+            setSettingsError(false)
+            dispatchRuntimeSettingsChanged(summary)
+          }}
+        />
         <ConnectivityChip {...cronStatus} className="max-w-[150px]" icon={<CalendarClock className="size-3.5 shrink-0" />} />
         <Button
           type="button"
@@ -192,6 +221,145 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   )
 }
 
+function LLMModelSwitcher({
+  status,
+  settingsSummary,
+  settingsError,
+  onSettingsSummaryChange,
+}: {
+  status: {
+    text: string
+    title: string
+    tone: "connected" | "checking" | "missing" | "warning"
+  }
+  settingsSummary: RuntimeSettingsSummary | null
+  settingsError: boolean
+  onSettingsSummaryChange: (summary: RuntimeSettingsSummary) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [savingModelId, setSavingModelId] = useState<string | null>(null)
+  const { models, loading: modelsLoading, error: modelError, load, reset } = useProviderModels()
+
+  const llm = settingsSummary?.llm
+  const settingsChecking = !settingsSummary && !settingsError
+  const hasConfiguredProvider = Boolean(settingsSummary?.configured && llm?.provider && llm.model)
+  const canSwitchModel = Boolean(hasConfiguredProvider && llm?.hasApiKey && !settingsError)
+  const currentProviderLabel = providerLabel(llm?.provider)
+  const currentModel = llm?.model ?? ""
+
+  const loadModels = useCallback(() => {
+    if (!llm?.provider) return
+    void load({ provider: llm.provider })
+  }, [llm?.provider, load])
+
+  useEffect(() => {
+    if (open && canSwitchModel) loadModels()
+  }, [canSwitchModel, loadModels, open])
+
+  useEffect(() => {
+    reset()
+    setSavingModelId(null)
+  }, [llm?.provider, reset])
+
+  async function selectModel(modelId: string) {
+    if (modelId === currentModel) {
+      setOpen(false)
+      return
+    }
+
+    setSavingModelId(modelId)
+    try {
+      const response = await fetch("/api/settings/runtime", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ llm: { model: modelId } }),
+      })
+      const json = await response.json()
+      if (!response.ok) throw new Error(apiErrorMessage(json, "Could not update LLM model."))
+
+      onSettingsSummaryChange(json as RuntimeSettingsSummary)
+      toast.success(`LLM model changed to ${modelId}.`)
+      setOpen(false)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update LLM model.")
+    } finally {
+      setSavingModelId(null)
+    }
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(connectivityChipClass(status.tone, "max-w-[260px] cursor-pointer pr-2 hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"))}
+          aria-label={canSwitchModel ? `${status.title}. Change LLM model.` : status.title}
+          title={canSwitchModel ? `${status.title}. Change LLM model.` : status.title}
+        >
+          <span className="truncate">{status.text}</span>
+          {canSwitchModel ? <ChevronDown className="size-3.5 shrink-0" /> : null}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" sideOffset={8} className="w-[380px] max-w-[calc(100vw-2rem)] gap-0 p-0">
+        <div className="border-b border-border p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-foreground">LLM model</div>
+              <div className="mt-1 truncate text-xs text-muted-foreground">
+                {hasConfiguredProvider
+                  ? `${currentProviderLabel} / ${currentModel}`
+                  : settingsChecking
+                    ? "Checking runtime configuration..."
+                    : "No LLM runtime configuration found."}
+              </div>
+            </div>
+            <Button variant="ghost" size="icon-sm" asChild aria-label="Open Settings">
+              <Link href="/settings">
+                <Settings2 className="size-3.5" />
+              </Link>
+            </Button>
+          </div>
+        </div>
+
+        {!canSwitchModel ? (
+          <div className="space-y-3 p-3 text-sm text-muted-foreground">
+            {settingsChecking ? (
+              <div className="flex items-center gap-2">
+                <Loader2 className="size-4 animate-spin text-primary" />
+                Checking runtime settings...
+              </div>
+            ) : (
+              <>
+                <p>
+                  {settingsError
+                    ? "Runtime settings could not be loaded."
+                    : hasConfiguredProvider
+                      ? "Save the selected provider API token in Settings before loading live models."
+                      : "Configure an LLM provider, model, and API token in Settings."}
+                </p>
+                <Button size="sm" asChild>
+                  <Link href="/settings">Open Settings</Link>
+                </Button>
+              </>
+            )}
+          </div>
+        ) : (
+          <ModelPicker
+            models={models}
+            loading={modelsLoading}
+            error={modelError}
+            providerLabel={currentProviderLabel}
+            currentModel={currentModel}
+            savingModelId={savingModelId}
+            onRetry={loadModels}
+            onSelect={(modelId) => void selectModel(modelId)}
+          />
+        )}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function ConnectivityChip({
   text,
   title,
@@ -205,18 +373,11 @@ function ConnectivityChip({
   className?: string
   icon?: React.ReactNode
 }) {
-  const styles = {
-    connected: "border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 before:bg-emerald-500",
-    checking: "border-slate-500/25 bg-slate-500/10 text-slate-600 dark:text-slate-300 before:bg-slate-400",
-    missing: "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300 before:bg-amber-500",
-    warning: "border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300 before:bg-red-500",
-  }[tone]
-
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span
-          className={`inline-flex h-8 min-w-0 items-center gap-1.5 rounded-[6px] border px-2.5 text-xs font-medium ${styles} before:size-1.5 before:shrink-0 before:rounded-full ${className}`}
+          className={connectivityChipClass(tone, className)}
           aria-label={title}
         >
           {icon}
@@ -227,6 +388,24 @@ function ConnectivityChip({
         {title}
       </TooltipContent>
     </Tooltip>
+  )
+}
+
+function connectivityChipClass(
+  tone: "connected" | "checking" | "missing" | "warning",
+  className = "",
+) {
+  const styles = {
+    connected: "border-success/30 bg-success/10 text-success before:bg-success",
+    checking: "border-border bg-muted text-muted-foreground before:bg-muted-foreground",
+    missing: "border-warning/40 bg-warning/15 text-warning-foreground dark:text-warning before:bg-warning",
+    warning: "border-destructive/30 bg-destructive/10 text-destructive before:bg-destructive",
+  }[tone]
+
+  return cn(
+    "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-[6px] border px-2.5 text-xs font-medium before:size-1.5 before:shrink-0 before:rounded-full",
+    styles,
+    className,
   )
 }
 

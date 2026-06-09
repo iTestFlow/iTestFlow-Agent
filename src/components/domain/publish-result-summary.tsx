@@ -35,24 +35,24 @@ export function PublishResultSummary({
       <div className="grid gap-4 md:grid-cols-3">
         <Card className="qa-card">
           <CardHeader><CardTitle className="text-base">Success count</CardTitle></CardHeader>
-          <CardContent className="text-3xl font-bold text-[#216E4E]">{successes}</CardContent>
+          <CardContent className="text-3xl font-bold text-success">{successes}</CardContent>
         </Card>
         <Card className="qa-card">
           <CardHeader><CardTitle className="text-base">Failed count</CardTitle></CardHeader>
-          <CardContent className="text-3xl font-bold text-[#AE2E24]">{failed}</CardContent>
+          <CardContent className="text-3xl font-bold text-destructive">{failed}</CardContent>
         </Card>
         <Card className="qa-card">
           <CardHeader><CardTitle className="text-base">Publish progress</CardTitle></CardHeader>
           <CardContent className="space-y-2">
             <Progress value={(successes / Math.max(results.length, 1)) * 100} />
-            <p className="text-xs text-[#626F86]">{successes} of {results.length} completed</p>
+            <p className="text-xs text-muted-foreground">{successes} of {results.length} completed</p>
           </CardContent>
         </Card>
       </div>
 
-      <Alert className={failed ? "border-[#F5CD47]/60 bg-[#FFF7D6]" : "border-[#22A06B]/30 bg-[#E9F8F1]"}>
+      <Alert className={failed ? "border-warning/40 bg-warning/15" : "border-success/30 bg-success/10"}>
         <AlertTitle>{failed ? "Publish completed with failures" : "Publish completed successfully"}</AlertTitle>
-        <AlertDescription className="text-[#44546F]">
+        <AlertDescription className="text-muted-foreground">
           Project: {projectName}. Target story: {targetStoryLabel}. Test Plan: {testPlanName}. Test Suite: {testSuiteName}.
         </AlertDescription>
       </Alert>
@@ -72,11 +72,11 @@ export function PublishResultSummary({
             <TableBody>
               {results.map((result) => (
                 <TableRow key={result.id} className="qa-table-row">
-                  <TableCell className="font-medium text-[#172B4D]">{result.title}</TableCell>
+                  <TableCell className="font-medium text-foreground">{result.title}</TableCell>
                   <TableCell><StatusChip tone={result.status === "Published" ? "success" : "error"}>{result.status}</StatusChip></TableCell>
                   <TableCell>{result.azureDevOpsId ? <Badge variant="outline">{result.azureDevOpsId}</Badge> : "-"}</TableCell>
                   <TableCell><StatusChip tone={result.linkStatus === "Linked" ? "success" : result.linkStatus === "Pending" ? "warning" : "error"}>{result.linkStatus}</StatusChip></TableCell>
-                  <TableCell className="text-[#44546F]">{result.message}</TableCell>
+                  <TableCell className="text-muted-foreground">{result.message}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

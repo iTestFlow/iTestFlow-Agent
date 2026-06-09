@@ -4,6 +4,7 @@ import { assertProjectScope, type ProjectScope } from "@/modules/projects/projec
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import { parseExternalStructuredOutput } from "@/modules/llm/external-structured-output";
 import type { LLMProvider, LLMResult } from "@/modules/llm/llm-types";
+import { addTokenUsage, hasTokenUsage } from "@/modules/llm/token-usage";
 import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
 import {
   projectKnowledgeConsolidationPrompt,
@@ -24,7 +25,13 @@ import {
 } from "./project-knowledge-compiled.service";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 
-const MAX_CONTEXT_INPUT_CHARS = 30000;
+// Keep each extraction batch's INPUT small enough that its structured OUTPUT comfortably
+// fits under the output-token cap. Smaller batches are cheap now that consolidation is a
+// local deterministic merge (no per-build LLM call), so we favour staying well under the cap.
+const MAX_CONTEXT_INPUT_CHARS = 18000;
+// How many extraction batches to run at once. Bounded so large projects don't burst the
+// provider's rate limit; deterministic consolidation merges the results regardless of order.
+const KNOWLEDGE_BATCH_CONCURRENCY = 3;
 type ProjectKnowledgeCompileMode = Extract<ProjectKnowledgeCompilationMode, "incremental" | "full">;
 type ProjectKnowledgeSourceHashMap = Record<string, string | null>;
 
@@ -107,6 +114,7 @@ export type ProjectKnowledgeGeneratedDraft = {
   sourceWorkItemCount: number;
   promptedSourceWorkItemCount: number;
   changedSourceWorkItemCount: number;
+  changedSourceWorkItemIds: string[];
   retiredSourceWorkItemCount: number;
   rawOutput: string;
   knowledgeBase: ProjectKnowledgeBase;
@@ -299,6 +307,7 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
       sourceWorkItemCount: workItems.length,
       promptedSourceWorkItemCount: selection.workItems.length,
       changedSourceWorkItemCount: selection.changedSourceWorkItemIds.length,
+      changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
       retiredSourceWorkItemCount: selection.retiredSourceWorkItemIds.length,
       rawOutput: JSON.stringify({
         mode: "incremental",
@@ -336,6 +345,7 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
     sourceWorkItemCount: workItems.length,
     promptedSourceWorkItemCount: selection.workItems.length,
     changedSourceWorkItemCount: selection.changedSourceWorkItemIds.length,
+    changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
     retiredSourceWorkItemCount: selection.retiredSourceWorkItemIds.length,
     rawOutput: selection.mode === "incremental"
       ? JSON.stringify({
@@ -1084,44 +1094,47 @@ async function extractProjectKnowledgeBase(input: {
     });
   }
 
-  const partialResults = [];
-  for (let index = 0; index < batches.length; index += 1) {
-    const batchResult = await extractProjectKnowledgeBatch({
-      scope: input.scope,
-      provider: input.provider,
-      workItems: batches[index],
-      mode: input.mode,
-      batchIndex: index + 1,
-      batchCount: batches.length,
-    });
-    partialResults.push(batchResult);
+  // Extract batches with bounded concurrency, preserving batch order in partialResults.
+  const partialResults: Awaited<ReturnType<typeof extractProjectKnowledgeBatch>>[] = [];
+  for (let start = 0; start < batches.length; start += KNOWLEDGE_BATCH_CONCURRENCY) {
+    const chunk = batches.slice(start, start + KNOWLEDGE_BATCH_CONCURRENCY);
+    const chunkResults = await Promise.all(
+      chunk.map((workItems, offset) =>
+        extractProjectKnowledgeBatch({
+          scope: input.scope,
+          provider: input.provider,
+          workItems,
+          mode: input.mode,
+          batchIndex: start + offset + 1,
+          batchCount: batches.length,
+        }),
+      ),
+    );
+    partialResults.push(...chunkResults);
   }
 
-  const consolidated = await input.provider.generateStructuredOutput({
-    schemaName: "ProjectKnowledgeBase",
-    schema: ProjectKnowledgeBaseSchema,
-    system: projectKnowledgeConsolidationPrompt.system,
-    user: buildProjectKnowledgeConsolidationUserPrompt({
-      scope: input.scope,
-      partialKnowledgeBases: partialResults.map((result) => result.validatedOutput),
-    }),
-    maxTokens: 20000,
-    metadata: {
-      action: "project_knowledge.consolidate",
-      promptName: projectKnowledgeConsolidationPrompt.name,
-      promptVersion: projectKnowledgeConsolidationPrompt.version,
-      projectId: input.scope.projectId,
-      azureProjectId: input.scope.azureProjectId,
-      azureProjectName: input.scope.azureProjectName,
-      azureOrganizationUrl: input.scope.azureOrganizationUrl,
-    },
-  });
+  // Deterministic, Zod-validated merge — mirrors the manual/external save path
+  // (prepareProjectKnowledgeManualSave). This avoids an unbounded LLM "re-emit the whole
+  // knowledge base" call, whose output overflows the token cap and hard-fails the build.
+  const validatedOutput = consolidateProjectKnowledgeBases(
+    partialResults.map((result) => result.validatedOutput),
+  );
 
   return {
-    ...consolidated,
+    provider: partialResults[0].provider,
+    model: partialResults[0].model,
+    validatedOutput,
+    tokenUsage: partialResults.every((result) => hasTokenUsage(result.tokenUsage))
+      ? partialResults.reduce(
+          (total, result) => addTokenUsage(total, result.tokenUsage),
+          undefined as LLMResult["tokenUsage"],
+        )
+      : undefined,
     rawOutput: JSON.stringify({
+      mode: input.mode,
+      consolidation: "local-deterministic",
       batches: partialResults.map((result) => result.rawOutput),
-      consolidation: consolidated.rawOutput,
+      consolidatedKnowledgeBase: validatedOutput,
     }),
   };
 }
@@ -1145,7 +1158,6 @@ async function extractProjectKnowledgeBatch(input: {
       batchIndex: input.batchIndex,
       batchCount: input.batchCount,
     }),
-    maxTokens: 20000,
     metadata: {
       action: "project_knowledge.extract",
       promptName: projectKnowledgeExtractionPrompt.name,

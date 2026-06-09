@@ -8,9 +8,10 @@ export type LLMProviderConfig = {
   apiKey?: string;
   model: string;
   baseUrl?: string;
-  temperature?: number;
   maxTokens?: number;
+  maxOutputTokenCap?: number;
   retryAttempts?: number;
+  maxTruncationAttempts?: number;
 };
 
 export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTypeAny> = {
@@ -18,7 +19,6 @@ export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTy
   user: string;
   schema: TSchema;
   schemaName: string;
-  temperature?: number;
   maxTokens?: number;
   metadata?: LLMRequestLogMetadata;
 };
@@ -26,9 +26,14 @@ export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTy
 export type GenerateTextInput = {
   system: string;
   user: string;
-  temperature?: number;
   maxTokens?: number;
   metadata?: LLMRequestLogMetadata;
+};
+
+export type TokenUsage = {
+  input?: number;
+  output?: number;
+  total?: number;
 };
 
 export type LLMResult<T = unknown> = {
@@ -36,11 +41,7 @@ export type LLMResult<T = unknown> = {
   model: string;
   rawOutput: string;
   validatedOutput: T;
-  tokenUsage?: {
-    input?: number;
-    output?: number;
-    total?: number;
-  };
+  tokenUsage?: TokenUsage;
   costEstimate?: number;
 };
 
@@ -49,11 +50,7 @@ export type LLMTextResult = {
   model: string;
   rawOutput: string;
   text: string;
-  tokenUsage?: {
-    input?: number;
-    output?: number;
-    total?: number;
-  };
+  tokenUsage?: TokenUsage;
   costEstimate?: number;
 };
 
@@ -61,6 +58,7 @@ export interface LLMProvider {
   readonly name: LLMProviderName;
   readonly model: string;
   testConnection(): Promise<boolean>;
+  getTokenUsage(): TokenUsage | undefined;
   generateText(input: GenerateTextInput): Promise<LLMTextResult>;
   generateStructuredOutput<TSchema extends z.ZodTypeAny>(
     input: GenerateStructuredOutputInput<TSchema>,

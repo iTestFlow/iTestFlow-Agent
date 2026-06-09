@@ -1,23 +1,15 @@
 import { z } from "zod";
 import { ContextUsedSchema } from "@/modules/llm/context-used";
 import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
+import {
+  requirementFindingSeverityValues,
+  requirementIssueTypeValues,
+  requirementRiskLevelValues,
+} from "@/modules/requirement-analysis/finding-options";
 
-export const RequirementIssueTypeSchema = z.enum([
-  "ambiguity",
-  "conflict",
-  "missing_requirement",
-  "incomplete_criteria",
-  "inconsistency",
-  "non_testable_requirement",
-  "unsupported_assumption",
-  "unhandled_edge_case",
-  "ownership_gap",
-  "traceability_gap",
-  "risk_gap",
-]);
-
-export const RequirementFindingSeveritySchema = z.enum(["critical", "high", "medium", "low", "info"]);
-export const RequirementRiskLevelSchema = z.enum(["high", "medium", "low"]);
+export const RequirementIssueTypeSchema = z.enum(requirementIssueTypeValues);
+export const RequirementFindingSeveritySchema = z.enum(requirementFindingSeverityValues);
+export const RequirementRiskLevelSchema = z.enum(requirementRiskLevelValues);
 
 export const RequirementFindingReferenceSchema = z.object({
   module: z.string().optional(),

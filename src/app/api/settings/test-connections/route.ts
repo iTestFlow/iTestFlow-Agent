@@ -24,14 +24,17 @@ export async function POST(request: Request) {
     apiKey: parsed.data.llm.apiKey,
     model: parsed.data.llm.model,
     baseUrl: parsed.data.llm.baseUrl,
-    temperature: parsed.data.llm.temperature,
     maxTokens: parsed.data.llm.maxTokens,
+    maxOutputTokenCap: parsed.data.llm.maxOutputTokenCap,
     retryAttempts: parsed.data.llm.retryAttempts,
+    maxTruncationAttempts: parsed.data.llm.maxTruncationAttempts,
   });
 
   const [azureResult, llmResult] = await Promise.allSettled([
     azureAdapter.testConnection(),
-    parsed.data.llm.apiKey ? llmProvider.testConnection() : Promise.resolve(false),
+    parsed.data.llm.provider === "ollama" || parsed.data.llm.apiKey
+      ? llmProvider.testConnection()
+      : Promise.resolve(false),
   ]);
 
   const azureDevOps =

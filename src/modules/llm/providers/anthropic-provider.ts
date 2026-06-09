@@ -1,9 +1,11 @@
 import "server-only";
 
 import { z } from "zod";
+import { DEFAULT_MAX_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defaults";
 import { withStructuredOutputInstruction } from "../prompts";
 import { normalizeProviderBaseUrl } from "../provider-base-url";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
+import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
 import type { GenerateStructuredOutputInput, GenerateTextInput } from "../llm-types";
 
 const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
@@ -31,12 +33,11 @@ export class AnthropicProvider extends BaseJsonProvider {
     if (!this.config.apiKey) throw new Error("Anthropic API key is not configured.");
     const requestBody = {
       model: this.model,
-      max_tokens: input.maxTokens ?? this.config.maxTokens ?? 4000,
-      temperature: input.temperature ?? this.config.temperature ?? 0.2,
+      max_tokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
       system: input.system,
       messages: [{ role: "user", content: input.user }],
     };
-    const response = await fetch(`${this.baseUrl()}/messages`, {
+    const response = await fetchWithTransientRetry(`${this.baseUrl()}/messages`, {
       method: "POST",
       headers: {
         ...this.headers(),
@@ -44,7 +45,7 @@ export class AnthropicProvider extends BaseJsonProvider {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(requestBody),
-    });
+    }, this.config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -61,6 +62,7 @@ export class AnthropicProvider extends BaseJsonProvider {
       requestBody,
       responseBody: json,
       finishReason: json.stop_reason,
+      tokenUsage: anthropicTokenUsage(json.usage),
     };
   }
 
@@ -68,12 +70,11 @@ export class AnthropicProvider extends BaseJsonProvider {
     if (!this.config.apiKey) throw new Error("Anthropic API key is not configured.");
     const requestBody = {
       model: this.model,
-      max_tokens: input.maxTokens ?? this.config.maxTokens ?? 4000,
-      temperature: input.temperature ?? this.config.temperature ?? 0.2,
+      max_tokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
       system: withStructuredOutputInstruction(input.system, input.schemaName),
       messages: [{ role: "user", content: input.user }],
     };
-    const response = await fetch(`${this.baseUrl()}/messages`, {
+    const response = await fetchWithTransientRetry(`${this.baseUrl()}/messages`, {
       method: "POST",
       headers: {
         ...this.headers(),
@@ -81,7 +82,7 @@ export class AnthropicProvider extends BaseJsonProvider {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(requestBody),
-    });
+    }, this.config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -98,10 +99,34 @@ export class AnthropicProvider extends BaseJsonProvider {
       requestBody,
       responseBody: json,
       finishReason: json.stop_reason,
+      tokenUsage: anthropicTokenUsage(json.usage),
     };
   }
 
   private baseUrl() {
     return normalizeProviderBaseUrl(this.config.baseUrl, ANTHROPIC_DEFAULT_BASE_URL, { requiredPath: "/v1" });
   }
+}
+
+function anthropicTokenUsage(usage: unknown) {
+  if (!usage || typeof usage !== "object") return undefined;
+  const value = usage as Record<string, unknown>;
+  const inputParts = [
+    optionalCount(value.input_tokens),
+    optionalCount(value.cache_creation_input_tokens),
+    optionalCount(value.cache_read_input_tokens),
+  ];
+  const input = inputParts.some((count) => count !== undefined)
+    ? inputParts.reduce<number>((total, count) => total + (count ?? 0), 0)
+    : undefined;
+  const output = optionalCount(value.output_tokens);
+  return {
+    input,
+    output,
+    total: input !== undefined && output !== undefined ? input + output : undefined,
+  };
+}
+
+function optionalCount(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

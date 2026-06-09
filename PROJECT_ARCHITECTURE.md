@@ -165,6 +165,7 @@ Azure DevOps:
 - REST implementation: `src/modules/integrations/azure-devops/azure-devops-client.ts`.
 - Mapping: `src/modules/integrations/azure-devops/azure-devops-mapper.ts`.
 - Workflow-specific services handle comments, linked test cases, test plan publishing, and test suite migration.
+- Project isolation: Azure DevOps resolves work items by global ID and ignores the project segment in by-ID URLs, so the URL provides no isolation. Project-scoped work must construct the adapter with `getProjectScopedAzureDevOpsAdapter(scope)` (`configured-azure-devops.ts`), which binds the active project; the client then validates every by-ID read/write/batch and test-plan/suite operation against the work item's real `System.TeamProject` and rejects cross-project access as not-found-in-project. Use the unbound `getConfiguredAzureDevOpsAdapter()` only for org-level calls (project list, profile, connection test).
 
 LLM providers:
 
@@ -183,6 +184,7 @@ Database:
 
 - Azure DevOps is an integration, not a standalone bulk work item browser.
 - Workflows operate on a selected project and usually one target work item ID.
+- All Azure DevOps work item access is strictly project-scoped. Because Azure ignores the project segment for by-ID operations, isolation is enforced in the adapter (bound via `getProjectScopedAzureDevOpsAdapter`) by validating each item's real `System.TeamProject`, not by the URL. Local SQLite reads/writes filter on `project_id` + `azure_project_id`.
 - Project Context is the only place that intentionally fetches multiple work items, and it does so with filters.
 - Server route handlers should stay thin and delegate validation, integration calls, and business rules to modules.
 - UI components should not call Azure DevOps directly except through local API routes.

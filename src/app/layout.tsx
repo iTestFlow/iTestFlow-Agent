@@ -6,6 +6,7 @@ import { ThemeProvider } from "@/components/theme/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Inter } from "next/font/google";
 import { cn } from "@/lib/utils";
+import { UnsavedChangesProvider } from "@/components/navigation/unsaved-changes-provider";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
@@ -27,8 +28,10 @@ export default function RootLayout({
       <body className="font-sans antialiased">
         <ThemeProvider>
           <TooltipProvider>
-            <AppShell>{children}</AppShell>
-            <Toaster richColors closeButton />
+            <UnsavedChangesProvider>
+              <AppShell>{children}</AppShell>
+              <Toaster richColors closeButton />
+            </UnsavedChangesProvider>
           </TooltipProvider>
         </ThemeProvider>
       </body>

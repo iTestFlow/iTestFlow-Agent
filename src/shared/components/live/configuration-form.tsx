@@ -1,24 +1,43 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, CheckCircle2, ChevronDown, Eye, EyeOff, Loader2, Search, ShieldCheck, XCircle } from "lucide-react";
-import { Button, Card, TextInput } from "@/shared/components/ui";
+import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
+import { Check, CheckCircle2, ChevronDown, Eye, EyeOff, Loader2, ShieldCheck, XCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector";
 import { BRAND_LOGO_FULL_SRC } from "@/lib/constants";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
-  CONTEXT_STATE_OPTIONS,
-  CONTEXT_WORK_ITEM_TYPE_OPTIONS,
   DEFAULT_CONTEXT_STATES,
   DEFAULT_CONTEXT_WORK_ITEM_TYPES,
 } from "@/lib/project-context-defaults";
+import {
+  DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
+  DEFAULT_RETRY_ATTEMPTS,
+  MAX_OUTPUT_TOKEN_CAP_OPTIONS,
+  MAX_TOKEN_OPTIONS,
+  MAX_TRUNCATION_ATTEMPT_OPTIONS,
+  RETRY_ATTEMPT_OPTIONS,
+} from "@/modules/llm/llm-defaults";
 import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION } from "@/modules/settings/cron-expression";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import { dispatchRuntimeSettingsChanged } from "@/shared/lib/runtime-settings-events";
+import {
+  projectScopeKey,
+  retainAvailableSelections,
+  selectAvailableDefaults,
+  useProjectWorkItemMetadata,
+} from "@/shared/lib/use-project-work-item-metadata";
+import { ModelPicker, useProviderModels } from "@/shared/components/live/model-picker";
+import { apiErrorMessage } from "@/shared/validators/api-validation-errors";
 
-type Provider = "openai" | "gemini" | "anthropic";
+type Provider = "openai" | "gemini" | "anthropic" | "ollama";
 
 type FormState = {
   organizationUrl: string;
@@ -27,9 +46,10 @@ type FormState = {
   model: string;
   apiKey: string;
   baseUrl: string;
-  temperature: number;
   maxTokens: number;
+  maxOutputTokenCap: number;
   retryAttempts: number;
+  maxTruncationAttempts: number;
   retrievalTopK: number;
   autoUpdateEnabled: boolean;
   autoUpdateCronExpression: string;
@@ -44,24 +64,9 @@ type TestResult = {
   llm: { success: boolean; error?: string };
 };
 
-type ModelOption = {
-  id: string;
-  displayName: string;
-  source: Provider;
-};
-
-type ApiErrorPayload = {
-  error?: string;
-  validationErrors?: Array<{
-    field: string;
-    label: string;
-    message: string;
-  }>;
-};
-
 export function ConfigurationForm({
   mode = "setup",
-  redirectTo = "/dashboard",
+  redirectTo = "/dashboards",
   onSaved,
 }: {
   mode?: "setup" | "settings";
@@ -73,17 +78,17 @@ export function ConfigurationForm({
   const [showSecrets, setShowSecrets] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [loadingModels, setLoadingModels] = useState(false);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
-  const [modelSearch, setModelSearch] = useState("");
-  const [modelError, setModelError] = useState<string | null>(null);
-  const [models, setModels] = useState<ModelOption[]>([]);
+  const { models, loading: loadingModels, error: modelError, load, reset: resetModels } = useProviderModels();
   const [hasSavedLlmKey, setHasSavedLlmKey] = useState(false);
   const [savedLlmProvider, setSavedLlmProvider] = useState<Provider | null>(null);
   const [activeProject, setActiveProject] = useState<ActiveProjectScope | null>(null);
+  const [runtimeSettingsLoaded, setRuntimeSettingsLoaded] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
+  useUnsavedChangesGuard({ dirty: hasUnfinishedWork, busy: saving || testing });
   const [form, setForm] = useState<FormState>({
     organizationUrl: "",
     personalAccessToken: "",
@@ -91,9 +96,10 @@ export function ConfigurationForm({
     model: "",
     apiKey: "",
     baseUrl: "",
-    temperature: 0.2,
-    maxTokens: 4000,
-    retryAttempts: 1,
+    maxTokens: DEFAULT_MAX_TOKENS,
+    maxOutputTokenCap: DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+    retryAttempts: DEFAULT_RETRY_ATTEMPTS,
+    maxTruncationAttempts: DEFAULT_MAX_TRUNCATION_ATTEMPTS,
     retrievalTopK: 8,
     autoUpdateEnabled: false,
     autoUpdateCronExpression: DEFAULT_AUTO_UPDATE_CRON_EXPRESSION,
@@ -101,38 +107,44 @@ export function ConfigurationForm({
     autoUpdateWorkItemTypes: DEFAULT_CONTEXT_WORK_ITEM_TYPES,
     autoUpdateStates: DEFAULT_CONTEXT_STATES,
   });
+  const filterProjectKeyRef = useRef<string | null>(null);
 
-  const selectedModels = useMemo(() => models, [models]);
-  const filteredModels = useMemo(() => {
-    const query = modelSearch.trim().toLowerCase();
-    if (!query) return selectedModels;
-    return selectedModels.filter((model) => {
-      return model.id.toLowerCase().includes(query) || model.displayName.toLowerCase().includes(query);
-    });
-  }, [modelSearch, selectedModels]);
-  const selectedModelLabel = selectedModels.find((model) => model.id === form.model)?.displayName ?? (form.model || "Select a model from live provider API");
+  const selectedModelLabel = models.find((model) => model.id === form.model)?.displayName ?? (form.model || "Select a model from live provider API");
   const canUseSavedLlmKey = hasSavedLlmKey && savedLlmProvider === form.provider;
   const showAdvancedSettings = mode === "settings";
   const autoUpdateProject = activeProject ?? form.autoUpdateProjectScope;
+  const autoUpdateProjectKey = projectScopeKey(autoUpdateProject);
+  const {
+    metadata: workItemMetadata,
+    loading: workItemMetadataLoading,
+    error: workItemMetadataError,
+    retry: retryWorkItemMetadata,
+  } = useProjectWorkItemMetadata(autoUpdateProject);
 
   useEffect(() => {
     fetch("/api/settings/runtime", { cache: "no-store" })
       .then((response) => response.json())
       .then((summary) => {
-        if (!summary.configured) return;
+        if (!summary.configured) {
+          setRuntimeSettingsLoaded(true);
+          return;
+        }
+        const savedProjectScope = summary.context?.autoUpdate?.projectScope ?? null;
+        filterProjectKeyRef.current = projectScopeKey(savedProjectScope);
         setForm((current) => ({
           ...current,
           organizationUrl: summary.azureDevOps?.organizationUrl ?? "",
           provider: summary.llm?.provider ?? current.provider,
           model: summary.llm?.model ?? current.model,
           baseUrl: summary.llm?.baseUrl ?? "",
-          temperature: summary.llm?.temperature ?? current.temperature,
           maxTokens: summary.llm?.maxTokens ?? current.maxTokens,
+          maxOutputTokenCap: summary.llm?.maxOutputTokenCap ?? current.maxOutputTokenCap,
           retryAttempts: summary.llm?.retryAttempts ?? current.retryAttempts,
+          maxTruncationAttempts: summary.llm?.maxTruncationAttempts ?? current.maxTruncationAttempts,
           retrievalTopK: summary.context?.retrievalTopK ?? current.retrievalTopK,
           autoUpdateEnabled: summary.context?.autoUpdate?.enabled ?? current.autoUpdateEnabled,
           autoUpdateCronExpression: summary.context?.autoUpdate?.cronExpression ?? current.autoUpdateCronExpression,
-          autoUpdateProjectScope: summary.context?.autoUpdate?.projectScope ?? current.autoUpdateProjectScope,
+          autoUpdateProjectScope: savedProjectScope ?? current.autoUpdateProjectScope,
           autoUpdateWorkItemTypes: summary.context?.autoUpdate?.workItemTypes ?? current.autoUpdateWorkItemTypes,
           autoUpdateStates: summary.context?.autoUpdate?.states ?? current.autoUpdateStates,
         }));
@@ -143,8 +155,9 @@ export function ConfigurationForm({
             ? "Loaded bootstrap settings from .env.local. Save here to move configuration into encrypted local runtime settings."
             : "Loaded saved local runtime settings. Re-enter secrets only when rotating credentials.",
         );
+        setRuntimeSettingsLoaded(true);
       })
-      .catch(() => undefined);
+      .catch(() => setRuntimeSettingsLoaded(true));
   }, []);
 
   useEffect(() => {
@@ -152,46 +165,45 @@ export function ConfigurationForm({
     const onChange = (event: Event) => {
       const custom = event as CustomEvent<ActiveProjectScope>;
       setActiveProject(custom.detail ?? readActiveProject());
+      setHasUnfinishedWork(false);
     };
     window.addEventListener("itestflow:active-project-changed", onChange);
     return () => window.removeEventListener("itestflow:active-project-changed", onChange);
   }, []);
 
   useEffect(() => {
-    setModels([]);
-    setModelError(null);
-  }, [form.provider, form.apiKey, form.baseUrl]);
+    resetModels();
+  }, [form.provider, form.apiKey, form.baseUrl, resetModels]);
+
+  useEffect(() => {
+    if (!runtimeSettingsLoaded || !autoUpdateProjectKey || !workItemMetadata) return;
+
+    const preserveCurrentSelections = filterProjectKeyRef.current === autoUpdateProjectKey;
+    filterProjectKeyRef.current = autoUpdateProjectKey;
+    setForm((current) => ({
+      ...current,
+      autoUpdateWorkItemTypes: preserveCurrentSelections
+        ? retainAvailableSelections(current.autoUpdateWorkItemTypes, workItemMetadata.workItemTypes)
+        : selectAvailableDefaults(DEFAULT_CONTEXT_WORK_ITEM_TYPES, workItemMetadata.workItemTypes),
+      autoUpdateStates: preserveCurrentSelections
+        ? retainAvailableSelections(current.autoUpdateStates, workItemMetadata.states)
+        : selectAvailableDefaults(DEFAULT_CONTEXT_STATES, workItemMetadata.states),
+    }));
+  }, [autoUpdateProjectKey, runtimeSettingsLoaded, workItemMetadata]);
 
   async function loadModelsFromProvider() {
     if (loadingModels) return;
 
     const requestedProvider = form.provider;
-    const typedApiKey = form.apiKey.trim();
+    const fetched = await load({
+      provider: requestedProvider,
+      apiKey: form.apiKey.trim() || undefined,
+      baseUrl: form.baseUrl.trim() || undefined,
+    });
 
-    setLoadingModels(true);
-    setModelError(null);
-    try {
-      const response = await fetch("/api/settings/llm-models", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider: requestedProvider,
-          apiKey: typedApiKey || undefined,
-          baseUrl: form.baseUrl.trim() || undefined,
-        }),
-      });
-      const json = await response.json();
-      if (!response.ok) throw new Error(apiErrorMessage(json, "Could not fetch provider models."));
-
-      const fetched = (json.models ?? []) as ModelOption[];
-      if (!fetched.length) {
-        setModels([]);
-        setModelError("No models were returned from the selected provider API.");
-        return;
-      }
-
-      setModels(fetched);
-      setModelError(null);
+    if (fetched && fetched.length) {
+      const nextModel = fetched.some((model) => model.id === form.model) ? form.model : fetched[0].id;
+      if (nextModel !== form.model) setHasUnfinishedWork(true);
       setForm((current) => {
         if (current.provider !== requestedProvider) return current;
         return {
@@ -199,27 +211,35 @@ export function ConfigurationForm({
           model: fetched.some((model) => model.id === current.model) ? current.model : fetched[0].id,
         };
       });
-    } catch (err) {
-      setModels([]);
-      setModelError(err instanceof Error ? err.message : "Could not fetch provider models.");
-    } finally {
-      setLoadingModels(false);
     }
   }
 
   function toggleModelDropdown() {
     setModelDropdownOpen((current) => {
       const next = !current;
-      if (next) {
-        setModelSearch("");
-        void loadModelsFromProvider();
-      }
+      if (next) void loadModelsFromProvider();
       return next;
     });
   }
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
+    setHasUnfinishedWork(true);
     setForm((current) => ({ ...current, [key]: value }));
+    setError(null);
+    setMessage(null);
+    setTestResult(null);
+  }
+
+  function updateMaxTokens(maxTokens: number) {
+    setHasUnfinishedWork(true);
+    setForm((current) => ({
+      ...current,
+      maxTokens,
+      maxOutputTokenCap:
+        MAX_OUTPUT_TOKEN_CAP_OPTIONS.find(
+          (option) => option >= maxTokens && option >= current.maxOutputTokenCap,
+        ) ?? MAX_OUTPUT_TOKEN_CAP_OPTIONS[MAX_OUTPUT_TOKEN_CAP_OPTIONS.length - 1],
+    }));
     setError(null);
     setMessage(null);
     setTestResult(null);
@@ -236,9 +256,10 @@ export function ConfigurationForm({
         model: form.model.trim(),
         apiKey: form.apiKey,
         baseUrl: form.baseUrl.trim() || undefined,
-        temperature: form.temperature,
         maxTokens: form.maxTokens,
+        maxOutputTokenCap: form.maxOutputTokenCap,
         retryAttempts: form.retryAttempts,
+        maxTruncationAttempts: form.maxTruncationAttempts,
       },
       context: {
         retrievalTopK: form.retrievalTopK,
@@ -254,6 +275,7 @@ export function ConfigurationForm({
   }
 
   function toggleAutoUpdate(enabled: boolean) {
+    setHasUnfinishedWork(true);
     const selectedProject = readActiveProject();
     if (selectedProject) setActiveProject(selectedProject);
     setForm((current) => ({
@@ -300,8 +322,12 @@ export function ConfigurationForm({
       const json = await response.json();
       if (!response.ok) throw new Error(apiErrorMessage(json, "Could not save runtime settings."));
       setMessage("Configuration saved locally. Live integrations will use these values now.");
+      dispatchRuntimeSettingsChanged(json);
       onSaved?.();
-      if (redirectTo) router.push(redirectTo);
+      setHasUnfinishedWork(false);
+      if (redirectTo) {
+        router.push(redirectTo);
+      }
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save runtime settings.");
@@ -311,10 +337,10 @@ export function ConfigurationForm({
   }
 
   return (
-    <div className={embedded ? "text-slate-950" : "min-h-screen bg-background p-[30px] text-slate-950"}>
+    <div className={embedded ? "text-foreground" : "min-h-screen bg-background p-[30px] text-foreground"}>
       <div className={embedded ? "" : "grid min-h-[840px] gap-[120px] xl:grid-cols-[370px_minmax(0,1fr)]"}>
         {!embedded ? (
-        <aside className="flex flex-col rounded-[10px] border border-[#c8d4e4] bg-white p-10">
+        <aside className="flex flex-col rounded-[10px] border border-border bg-card p-10">
           <div>
             <Image
               src={BRAND_LOGO_FULL_SRC}
@@ -328,24 +354,24 @@ export function ConfigurationForm({
           <div className="mt-16 space-y-6">
             {["Connect Azure DevOps", "Configure LLM Provider", "Secure & Local First", "Start Intelligent Testing"].map((item) => (
               <div key={item} className="flex items-center gap-3 text-sm font-medium">
-                <span className="flex h-5 w-5 items-center justify-center rounded border border-blue-600 text-blue-600">
+                <span className="flex h-5 w-5 items-center justify-center rounded border border-primary text-primary">
                   <Check className="h-3.5 w-3.5" />
                 </span>
                 {item}
               </div>
             ))}
           </div>
-          <div className="mt-auto text-xs text-slate-500">(c) 2026 iTestFlow</div>
+          <div className="mt-auto text-xs text-muted-foreground">(c) 2026 iTestFlow</div>
         </aside>
         ) : null}
 
         <div className={embedded ? "" : "flex items-center justify-center"}>
-          <Card className={`${embedded ? "w-full max-w-3xl" : "w-full max-w-[600px]"} border-[#c8d4e4] bg-white text-slate-950 shadow-none`}>
+          <div className={`${embedded ? "w-full max-w-3xl" : "w-full max-w-[600px]"} rounded-2xl border border-border bg-card text-foreground`}>
             <div className={embedded ? "p-6" : "p-12"}>
               <h1 className={embedded ? "text-xl font-bold tracking-tight" : "text-3xl font-bold tracking-tight"}>
                 {embedded ? "Runtime Configuration" : "Initial Configuration"}
               </h1>
-              <p className="mt-2 text-sm text-slate-600">
+              <p className="mt-2 text-sm text-muted-foreground">
                 {embedded ? "View and update the live integration settings used by this local app." : "Set up your local connections to get started."}
               </p>
 
@@ -354,8 +380,8 @@ export function ConfigurationForm({
                   label="Azure DevOps Organization URL"
                   description="Required. The PAT authenticates the request; this URL tells iTestFlow which Azure DevOps organization endpoint to call."
                 >
-                  <TextInput
-                    className="border-slate-300 bg-white text-slate-950"
+                  <Input
+                    className="h-11 border-input bg-card text-foreground"
                     value={form.organizationUrl}
                     onChange={(event) => update("organizationUrl", event.target.value)}
                     placeholder="https://dev.azure.com/your-org"
@@ -373,14 +399,13 @@ export function ConfigurationForm({
 
                 <Field label="Select LLM Provider">
                   <select
-                    className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                    className="h-11 w-full rounded-md border border-input bg-card px-3 text-sm"
                     value={form.provider}
                     onChange={(event) => {
+                      setHasUnfinishedWork(true);
                       const provider = event.target.value as Provider;
                       setModelDropdownOpen(false);
-                      setModelSearch("");
-                      setModelError(null);
-                      setModels([]);
+                      resetModels();
                       setForm((current) => ({
                         ...current,
                         provider,
@@ -391,11 +416,15 @@ export function ConfigurationForm({
                   >
                     <option value="openai">OpenAI</option>
                     <option value="gemini">Gemini</option>
-                    <option value="anthropic">Claude / Anthropic</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="ollama">Ollama</option>
                   </select>
                 </Field>
 
-                <Field label="LLM API Token">
+                <Field
+                  label={form.provider === "ollama" ? "LLM API Token (optional)" : "LLM API Token"}
+                  description={form.provider === "ollama" ? "Only needed when your Ollama endpoint requires authentication." : undefined}
+                >
                   <SecretInput show={showSecrets} value={form.apiKey} onChange={(value) => update("apiKey", value)} placeholder="Enter LLM API token" />
                 </Field>
 
@@ -403,8 +432,8 @@ export function ConfigurationForm({
                   label="Provider Base URL"
                   description="Optional. Use this when routing provider requests through a proxy or custom-compatible endpoint."
                 >
-                  <TextInput
-                    className="border-slate-300 bg-white text-slate-950"
+                  <Input
+                    className="h-11 border-input bg-card text-foreground"
                     value={form.baseUrl}
                     onChange={(event) => update("baseUrl", event.target.value)}
                     placeholder={defaultBaseUrlPlaceholder(form.provider)}
@@ -415,7 +444,7 @@ export function ConfigurationForm({
                   <div className="relative">
                     <button
                       type="button"
-                      className="flex h-11 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 text-left text-sm"
+                      className="flex h-11 w-full items-center justify-between rounded-md border border-input bg-card px-3 text-left text-sm"
                       onClick={toggleModelDropdown}
                       onKeyDown={(event) => {
                         if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
@@ -426,68 +455,29 @@ export function ConfigurationForm({
                       }}
                     >
                       <span className="truncate">{loadingModels ? "Loading models from provider..." : selectedModelLabel}</span>
-                      {loadingModels ? <Loader2 className="h-4 w-4 animate-spin text-blue-600" /> : <ChevronDown className="h-4 w-4 text-slate-500" />}
+                      {loadingModels ? <Loader2 className="h-4 w-4 animate-spin text-primary" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
                     </button>
                     {modelDropdownOpen ? (
-                      <div className="absolute bottom-full z-[100] mb-1 max-h-96 w-full overflow-hidden rounded-md border border-slate-300 bg-white text-sm shadow-lg">
-                        <div className="sticky top-0 border-b border-slate-200 bg-white p-2">
-                          <div className="flex h-9 items-center gap-2 rounded-md border border-slate-300 bg-white px-2">
-                            <Search className="h-4 w-4 shrink-0 text-slate-500" />
-                            <input
-                              className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
-                              value={modelSearch}
-                              onChange={(event) => setModelSearch(event.target.value)}
-                              placeholder="Search models..."
-                              autoFocus
-                            />
-                          </div>
-                        </div>
-                        <div className="max-h-80 overflow-auto py-1">
-                        {loadingModels ? (
-                          <div className="flex items-center gap-2 px-3 py-3 text-slate-600">
-                            <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
-                            Loading {providerLabel(form.provider)} models...
-                          </div>
-                        ) : modelError ? (
-                          <div className="space-y-3 px-3 py-3">
-                            <div className="text-sm text-red-700">{modelError}</div>
-                            <button
-                              type="button"
-                              className="rounded-md border border-blue-600 px-3 py-2 text-xs font-medium text-blue-700"
-                              onClick={() => void loadModelsFromProvider()}
-                            >
-                              Retry Loading Models
-                            </button>
-                          </div>
-                        ) : null}
-                        {!loadingModels && filteredModels.length ? (
-                          filteredModels.map((model) => (
-                            <button
-                              key={model.id}
-                              type="button"
-                              className={`block w-full px-3 py-2 text-left hover:bg-blue-50 ${model.id === form.model ? "bg-blue-50 text-blue-700" : "text-slate-900"}`}
-                              onClick={() => {
-                                update("model", model.id);
-                                setModelDropdownOpen(false);
-                              }}
-                            >
-                              <span className="block truncate">{model.displayName}</span>
-                              <span className="block truncate font-mono text-[11px] text-slate-500">{model.id}</span>
-                            </button>
-                          ))
-                        ) : !loadingModels && !modelError ? (
-                          <div className="px-3 py-3 text-slate-600">
-                            {modelSearch ? "No models match your search." : "Open the dropdown to load models from the selected provider API."}
-                          </div>
-                        ) : (
-                          null
-                        )}
-                        </div>
+                      <div className="absolute bottom-full z-[100] mb-1 w-full overflow-hidden rounded-md border border-input bg-popover shadow-lg">
+                        <ModelPicker
+                          models={models}
+                          loading={loadingModels}
+                          error={modelError}
+                          providerLabel={providerLabel(form.provider)}
+                          currentModel={form.model}
+                          autoFocus
+                          emptyHint="Open the dropdown to load models from the selected provider API."
+                          onRetry={() => void loadModelsFromProvider()}
+                          onSelect={(modelId) => {
+                            update("model", modelId);
+                            setModelDropdownOpen(false);
+                          }}
+                        />
                       </div>
                     ) : null}
                   </div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    {form.apiKey || canUseSavedLlmKey
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {form.provider === "ollama" || form.apiKey || canUseSavedLlmKey
                       ? loadingModels
                         ? "Fetching all available models from the selected provider API..."
                         : modelError
@@ -495,32 +485,84 @@ export function ConfigurationForm({
                           : "Open the dropdown to refresh models from the selected provider API."
                       : "Enter the provider API token, then open the dropdown to load models from the live provider API."}
                   </div>
-                  {modelError ? <div className="mt-1 text-xs text-red-700">{modelError}</div> : null}
+                  {modelError ? <div className="mt-1 text-xs text-destructive">{modelError}</div> : null}
                 </Field>
 
                 {showAdvancedSettings ? (
                   <>
-                    <Field
-                      label="Retry attempts on transient LLM failure"
-                      description="0 disables automatic retry. Default is 1 retry after the initial request."
-                    >
-                      <TextInput
-                        className="border-slate-300 bg-white text-slate-950"
-                        type="number"
-                        min={0}
-                        max={5}
-                        step={1}
-                        value={form.retryAttempts}
-                        onChange={(event) => update("retryAttempts", Number(event.target.value || "0"))}
-                      />
-                    </Field>
+                    <section className="rounded-xl border border-border bg-muted/30 p-4 md:p-5">
+                      <div>
+                        <h2 className="text-base font-semibold text-foreground">LLM Output and Retry Controls</h2>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          Bound output size, transient retries, and structured-response recovery.
+                        </p>
+                      </div>
+
+                      <div className="mt-5 grid gap-5 md:grid-cols-2">
+                        <Field
+                          label="Default output token budget"
+                          description="Fallback output budget when a workflow does not specify its own value."
+                        >
+                          <NumberSelect
+                            value={form.maxTokens}
+                            options={MAX_TOKEN_OPTIONS}
+                            formatOption={(value) => `${value.toLocaleString()} tokens`}
+                            onChange={updateMaxTokens}
+                          />
+                        </Field>
+
+                        <Field
+                          label="Maximum output token cap"
+                          description="Absolute ceiling for every structured-output request, including workflow overrides."
+                        >
+                          <NumberSelect
+                            value={form.maxOutputTokenCap}
+                            options={MAX_OUTPUT_TOKEN_CAP_OPTIONS.filter((option) => option >= form.maxTokens)}
+                            formatOption={(value) => `${value.toLocaleString()} tokens`}
+                            onChange={(value) => update("maxOutputTokenCap", value)}
+                          />
+                        </Field>
+
+                        <Field
+                          label="Transient failure retries"
+                          description="Extra attempts after network failures or retryable provider responses."
+                        >
+                          <NumberSelect
+                            value={form.retryAttempts}
+                            options={RETRY_ATTEMPT_OPTIONS}
+                            formatOption={(value) => value === 0 ? "0 (disabled)" : `${value} ${value === 1 ? "retry" : "retries"}`}
+                            onChange={(value) => update("retryAttempts", value)}
+                          />
+                        </Field>
+
+                        <Field
+                          label="Structured-output attempts"
+                          description="Safety bound on retry attempts if the model truncates output before completing JSON. The first attempt already requests the full output-token cap."
+                        >
+                          <NumberSelect
+                            value={form.maxTruncationAttempts}
+                            options={MAX_TRUNCATION_ATTEMPT_OPTIONS}
+                            formatOption={(value) => value === 1 ? "1 attempt (no truncation retry)" : `${value} attempts`}
+                            onChange={(value) => update("maxTruncationAttempts", value)}
+                          />
+                        </Field>
+                      </div>
+
+                      <div className="mt-5 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning-foreground dark:text-warning">
+                        Higher values can increase latency and provider cost. Worst case:{" "}
+                        <span className="font-semibold">
+                          {form.maxTruncationAttempts * (form.retryAttempts + 1)} provider calls
+                        </span>{" "}
+                        for one structured request.
+                      </div>
+                    </section>
 
                     <Field
                       label="Project context retrieval count"
                       description="Number of stored context items auto-selected for analysis and test design. Default is 8."
                     >
-                      <TextInput
-                        className="border-slate-300 bg-white text-slate-950"
+                      <Input
+                        className="h-11 border-input bg-card text-foreground"
                         type="number"
                         min={1}
                         max={25}
@@ -553,32 +595,40 @@ export function ConfigurationForm({
                             label="Cron expression"
                             description="Use 5 fields: minute hour day-of-month month day-of-week. Example: 0 2 * * * runs daily at 2:00 AM local server time."
                           >
-                            <TextInput
-                              className="border-slate-300 bg-white font-mono text-slate-950"
+                            <Input
+                              className="h-11 border-input bg-card font-mono text-foreground"
                               value={form.autoUpdateCronExpression}
                               onChange={(event) => update("autoUpdateCronExpression", event.target.value)}
                               placeholder={DEFAULT_AUTO_UPDATE_CRON_EXPRESSION}
                             />
                           </Field>
-                          <div className={`rounded-md border p-3 text-xs ${autoUpdateProject ? "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300" : "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"}`}>
+                          <div className={`rounded-md border p-3 text-xs ${autoUpdateProject ? "border-primary/30 bg-primary/10 text-primary dark:text-primary" : "border-warning/40 bg-warning/15 text-warning-foreground dark:text-warning"}`}>
                             Scheduled project: {autoUpdateProject ? autoUpdateProject.azureProjectName : "Select an Azure DevOps project in the header before saving."}
                           </div>
                           <ContextFilterSelector
                             title="Work item types"
-                            description="Custom values must match Azure DevOps work item type names exactly."
-                            options={CONTEXT_WORK_ITEM_TYPE_OPTIONS}
+                            description="Select from every work item type available in the scheduled Azure DevOps project."
+                            options={workItemMetadata?.workItemTypes ?? []}
                             selectedValues={form.autoUpdateWorkItemTypes}
-                            customPlaceholder="Add work item type"
-                            duplicateMessage="This work item type is already selected."
+                            loading={workItemMetadataLoading}
+                            error={workItemMetadataError}
+                            disabled={!autoUpdateProject}
+                            searchPlaceholder="Search work item types"
+                            emptyMessage="No work item types were returned for this project."
+                            onRetry={retryWorkItemMetadata}
                             onChange={(next) => update("autoUpdateWorkItemTypes", next)}
                           />
                           <ContextFilterSelector
                             title="States"
-                            description="Custom values must match Azure DevOps state names exactly."
-                            options={CONTEXT_STATE_OPTIONS}
+                            description="Select from the combined states available across this project's work item types."
+                            options={workItemMetadata?.states ?? []}
                             selectedValues={form.autoUpdateStates}
-                            customPlaceholder="Add state"
-                            duplicateMessage="This state is already selected."
+                            loading={workItemMetadataLoading}
+                            error={workItemMetadataError}
+                            disabled={!autoUpdateProject}
+                            searchPlaceholder="Search states"
+                            emptyMessage="No work item states were returned for this project."
+                            onRetry={retryWorkItemMetadata}
                             onChange={(next) => update("autoUpdateStates", next)}
                           />
                         </div>
@@ -589,7 +639,7 @@ export function ConfigurationForm({
 
                 <button
                   type="button"
-                  className="flex items-center gap-2 text-xs font-medium text-blue-700"
+                  className="flex items-center gap-2 text-xs font-medium text-primary"
                   onClick={() => setShowSecrets((current) => !current)}
                 >
                   {showSecrets ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -597,32 +647,32 @@ export function ConfigurationForm({
                 </button>
 
                 {message ? (
-                  <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+                  <div className="flex items-center gap-2 rounded-md border border-success/30 bg-success/10 p-3 text-sm text-success">
                     <CheckCircle2 className="h-4 w-4" />
                     {message}
                   </div>
                 ) : null}
                 {error ? (
-                  <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                  <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
                     <XCircle className="h-4 w-4" />
                     {error}
                   </div>
                 ) : null}
                 {testResult ? (
-                  <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm md:grid-cols-2">
+                  <div className="grid gap-3 rounded-md border border-border bg-muted p-3 text-sm md:grid-cols-2">
                     <Status label="Azure DevOps" ok={testResult.azureDevOps.success} error={testResult.azureDevOps.error} />
                     <Status label="LLM Provider" ok={testResult.llm.success} error={testResult.llm.error} />
                   </div>
                 ) : null}
 
                 <div className="grid gap-4 pt-2 md:grid-cols-2">
-                  <Button className="h-11 bg-blue-600 text-white hover:bg-blue-700" onClick={testConnections} disabled={testing || saving}>
+                  <Button className="h-11" onClick={testConnections} disabled={testing || saving}>
                     {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
                     Test Connections
                   </Button>
                   <Button
                     variant="secondary"
-                    className="h-11 border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                    className="h-11"
                     onClick={saveAndContinue}
                     disabled={testing || saving}
                   >
@@ -632,7 +682,7 @@ export function ConfigurationForm({
                 </div>
               </div>
             </div>
-          </Card>
+          </div>
         </div>
       </div>
     </div>
@@ -642,10 +692,36 @@ export function ConfigurationForm({
 function Field({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-2 block text-sm font-medium text-slate-900">{label}</span>
+      <span className="mb-2 block text-sm font-medium text-foreground">{label}</span>
       {children}
-      {description ? <span className="mt-2 block text-xs leading-5 text-slate-500">{description}</span> : null}
+      {description ? <span className="mt-2 block text-xs leading-5 text-muted-foreground">{description}</span> : null}
     </label>
+  );
+}
+
+function NumberSelect({
+  value,
+  options,
+  formatOption,
+  onChange,
+}: {
+  value: number;
+  options: readonly number[];
+  formatOption: (value: number) => string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <select
+      className="h-11 w-full rounded-md border border-input bg-card px-3 text-sm text-foreground"
+      value={value}
+      onChange={(event) => onChange(Number(event.target.value))}
+    >
+      {options.map((option) => (
+        <option key={option} value={option}>
+          {formatOption(option)}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -661,8 +737,8 @@ function SecretInput({
   placeholder: string;
 }) {
   return (
-    <TextInput
-      className="border-slate-300 bg-white text-slate-950"
+    <Input
+      className="h-11 border-input bg-card text-foreground"
       type={show ? "text" : "password"}
       value={value}
       onChange={(event) => onChange(event.target.value)}
@@ -674,8 +750,8 @@ function SecretInput({
 function Status({ label, ok, error }: { label: string; ok: boolean; error?: string }) {
   return (
     <div>
-      <div className={`font-semibold ${ok ? "text-emerald-700" : "text-red-700"}`}>{label}: {ok ? "Connected" : "Failed"}</div>
-      {error ? <div className="mt-1 text-xs text-red-700">{error}</div> : null}
+      <div className={`font-semibold ${ok ? "text-success" : "text-destructive"}`}>{label}: {ok ? "Connected" : "Failed"}</div>
+      {error ? <div className="mt-1 text-xs text-destructive">{error}</div> : null}
     </div>
   );
 }
@@ -687,7 +763,9 @@ function providerLabel(provider: Provider) {
     case "gemini":
       return "Gemini";
     case "anthropic":
-      return "Claude / Anthropic";
+      return "Anthropic";
+    case "ollama":
+      return "Ollama";
   }
 }
 
@@ -699,14 +777,7 @@ function defaultBaseUrlPlaceholder(provider: Provider) {
       return "https://generativelanguage.googleapis.com/v1beta";
     case "anthropic":
       return "https://api.anthropic.com";
+    case "ollama":
+      return "http://localhost:11434";
   }
-}
-
-function apiErrorMessage(payload: unknown, fallback: string) {
-  const json = payload as ApiErrorPayload;
-  if (json?.error) return json.error;
-  if (json?.validationErrors?.length) {
-    return json.validationErrors.map((item) => `${item.label}: ${item.message}`).join(" ");
-  }
-  return fallback;
 }

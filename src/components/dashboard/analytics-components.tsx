@@ -19,6 +19,7 @@ import type {
   DashboardRecentActivity,
 } from "@/types/dashboard";
 import { Button } from "@/components/ui/button";
+import { toneClass } from "@/components/qa/tone";
 import { cn } from "@/lib/utils";
 
 const palette = [
@@ -33,12 +34,12 @@ const palette = [
 type Tone = "blue" | "green" | "purple" | "cyan" | "yellow" | "red";
 
 const iconToneClasses: Record<Tone, string> = {
-  blue: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
-  green: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  purple: "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300",
-  cyan: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
-  yellow: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-  red: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
+  blue: toneClass.primary,
+  green: toneClass.success,
+  purple: toneClass.draft,
+  cyan: toneClass.info,
+  yellow: toneClass.warning,
+  red: toneClass.error,
 };
 
 function hasValues(data: Array<{ value?: number }>) {
@@ -332,7 +333,7 @@ export function RecentActivityList({
               <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time>
             </div>
             {expanded ? (
-              <pre className="mt-3 max-h-96 overflow-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-[11px] leading-5 text-muted-foreground">
+              <pre className="mt-3 max-h-96 overflow-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-xs leading-5 text-muted-foreground">
                 {JSON.stringify(item.audit, null, 2)}
               </pre>
             ) : null}

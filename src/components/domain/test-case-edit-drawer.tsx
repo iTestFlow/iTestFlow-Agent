@@ -60,7 +60,7 @@ export function TestCaseEditDrawer({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full p-0 sm:max-w-3xl">
-        <SheetHeader className="border-b border-[#EBECF0] p-5">
+        <SheetHeader className="border-b border-border p-5">
           <div className="flex items-center gap-2">
             {draft ? <Badge variant="outline">{draft.id}</Badge> : null}
             {draft ? <Badge variant="secondary">{draft.type}</Badge> : null}
@@ -124,7 +124,7 @@ export function TestCaseEditDrawer({
                 </Field>
               </div>
             </ScrollArea>
-            <SheetFooter className="border-t border-[#EBECF0]">
+            <SheetFooter className="border-t border-border">
               <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
               <Button onClick={() => { onSave(draft); onOpenChange(false) }}>Save changes</Button>
             </SheetFooter>

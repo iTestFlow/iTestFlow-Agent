@@ -1,7 +1,9 @@
 import "server-only";
 
+import { ProjectIsolationError, workItemNotInProjectMessage } from "@/modules/projects/project-isolation.guard";
 import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
 import { mapAzureTestCase, mapAzureWorkItem } from "./azure-devops-mapper";
+import { buildAzureTestCasePatch } from "./azure-devops-test-case-payload";
 import type {
   AddSuiteTestCaseInput,
   AzureAuthenticatedUser,
@@ -13,6 +15,7 @@ import type {
   AzureIteration,
   AzureProject,
   AzureProjectUser,
+  AzureProjectWorkItemMetadata,
   AzureTestPoint,
   AzureWorkItemFieldValue,
   AzureWorkItemTypeField,
@@ -54,13 +57,83 @@ type AzureTeamMember = {
   };
 };
 
+/**
+ * Identity of the active Azure DevOps project. When an adapter is constructed
+ * with a bound scope, every by-ID work item read/write and test-plan/suite
+ * operation is validated against this project, because Azure DevOps ignores the
+ * project segment in by-ID URLs and would otherwise return/modify work items
+ * from any project in the organization.
+ */
+export type AzureDevOpsProjectScope = {
+  azureProjectId: string;
+  azureProjectName: string;
+};
+
 export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   private readonly organizationUrl: string;
   private readonly pat: string;
+  private readonly projectScope?: AzureDevOpsProjectScope;
 
-  constructor(settings: AzureDevOpsSettings) {
+  constructor(settings: AzureDevOpsSettings, projectScope?: AzureDevOpsProjectScope) {
     this.organizationUrl = settings.organizationUrl.replace(/\/$/, "");
     this.pat = settings.personalAccessToken;
+    this.projectScope = projectScope;
+  }
+
+  /**
+   * Whether a work item's fields belong to the bound project. Compares the
+   * work item's real System.TeamProject (a project NAME) against the bound
+   * project name, case-insensitively. Always true when no scope is bound.
+   */
+  private isFieldsInScope(fields: Record<string, unknown> | undefined): boolean {
+    if (!this.projectScope) return true;
+    const teamProject = typeof fields?.["System.TeamProject"] === "string" ? (fields["System.TeamProject"] as string) : undefined;
+    return normalizeProjectName(teamProject) === normalizeProjectName(this.projectScope.azureProjectName);
+  }
+
+  /**
+   * Throws ProjectIsolationError if the work item does not belong to the bound
+   * project. A cross-project work item is treated as not-found-in-project so it
+   * is indistinguishable from a missing item.
+   */
+  private assertFieldsInScope(fields: Record<string, unknown> | undefined, workItemId: string | number): void {
+    if (this.isFieldsInScope(fields)) return;
+    throw new ProjectIsolationError(workItemNotInProjectMessage(workItemId));
+  }
+
+  /**
+   * Fetches a work item by ID and asserts it belongs to the bound project.
+   * Used as an ownership pre-check before by-ID write operations. No-op (no
+   * fetch) when no scope is bound.
+   */
+  private async assertWorkItemInScopeById(workItemId: string | number): Promise<void> {
+    if (!this.projectScope) return;
+    const item = await this.requestJson<{ fields?: Record<string, unknown> }>(
+      `${encodeURIComponent(this.projectScope.azureProjectId)}/_apis/wit/workitems/${workItemId}?fields=System.TeamProject&api-version=7.1`,
+    );
+    this.assertFieldsInScope(item.fields, workItemId);
+  }
+
+  /**
+   * Asserts a test plan belongs to the bound project before suite/test-point
+   * writes. Azure DevOps does not enforce the URL project for by-ID test-plan
+   * operations, so the plan's own project is checked. No-op when unbound.
+   */
+  private async assertTestPlanInScope(testPlanId: string): Promise<void> {
+    if (!this.projectScope) return;
+    const plan = await this.requestJson<{ project?: { id?: string; name?: string } }>(
+      `${encodeURIComponent(this.projectScope.azureProjectId)}/_apis/testplan/plans/${encodeURIComponent(testPlanId)}?api-version=7.1`,
+    );
+    const projectId = plan.project?.id;
+    const projectName = plan.project?.name;
+    const matches =
+      (projectId !== undefined && String(projectId) === this.projectScope.azureProjectId) ||
+      normalizeProjectName(projectName) === normalizeProjectName(this.projectScope.azureProjectName);
+    if (!matches) {
+      throw new ProjectIsolationError(
+        `Test plan ${testPlanId} is not in the selected Azure DevOps project.`,
+      );
+    }
   }
 
   buildWorkItemWebUrl(input: { projectId: string; projectName?: string; workItemId: string }): string {
@@ -152,6 +225,28 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     return [...users.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
   }
 
+  async fetchProjectWorkItemMetadata(input: { projectId: string }): Promise<AzureProjectWorkItemMetadata> {
+    const projectId = encodeURIComponent(input.projectId);
+    const typesResponse = await this.requestJson<{ value?: Array<{ name?: string }> }>(
+      `${projectId}/_apis/wit/workitemtypes?api-version=7.1`,
+    );
+    const workItemTypes = uniqueSortedValues(
+      (typesResponse.value ?? []).map((type) => type.name ?? ""),
+    );
+    const stateResponses = await Promise.all(
+      workItemTypes.map((workItemType) =>
+        this.requestJson<{ value?: Array<{ name?: string }> }>(
+          `${projectId}/_apis/wit/workitemtypes/${encodeURIComponent(workItemType)}/states?api-version=7.1`,
+        ),
+      ),
+    );
+    const states = uniqueSortedValues(
+      stateResponses.flatMap((response) => (response.value ?? []).map((state) => state.name ?? "")),
+    );
+
+    return { workItemTypes, states };
+  }
+
   async fetchWorkItemTypeFields(input: { projectId: string; workItemType: string }): Promise<AzureWorkItemTypeField[]> {
     const json = await this.requestJson<{ value?: Array<JsonValue> }>(
       `${encodeURIComponent(input.projectId)}/_apis/wit/workitemtypes/${encodeURIComponent(input.workItemType)}/fields?$expand=All&api-version=7.1`,
@@ -197,6 +292,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     const item = await this.requestJson<JsonValue>(
       `${encodeURIComponent(input.projectId)}/_apis/wit/workitems/${input.workItemId}?$expand=Relations&api-version=7.1`,
     );
+    this.assertFieldsInScope((item as { fields?: Record<string, unknown> }).fields, input.workItemId);
     return mapAzureWorkItem(item as never, input.projectId);
   }
 
@@ -267,7 +363,9 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
         body: JSON.stringify({ ids: ids.map(Number), $expand: "Relations" }),
       },
     );
-    return (workItems.value ?? []).map((workItem) => mapAzureTestCase(workItem as never, input.projectId));
+    return (workItems.value ?? [])
+      .filter((workItem) => this.isFieldsInScope((workItem as { fields?: Record<string, unknown> }).fields))
+      .map((workItem) => mapAzureTestCase(workItem as never, input.projectId));
   }
 
   async addWorkItemComment(input: {
@@ -276,6 +374,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     commentBody: string;
   }): Promise<{ success: boolean; commentId?: string; error?: string }> {
     try {
+      await this.assertWorkItemInScopeById(input.workItemId);
       const json = await this.requestJson<JsonValue>(
         `${encodeURIComponent(input.projectId)}/_apis/wit/workItems/${input.workItemId}/comments?format=markdown&api-version=7.1-preview.4`,
         { method: "POST", body: JSON.stringify({ text: input.commentBody }) },
@@ -333,6 +432,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
 
   async createTestSuite(input: CreateTestSuiteInput): Promise<{ success: boolean; suite?: TestSuite; error?: string }> {
     try {
+      await this.assertTestPlanInScope(input.testPlanId);
       const body: JsonValue = {
         suiteType: input.suiteType ?? "staticTestSuite",
         name: input.name,
@@ -362,6 +462,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
 
   async deleteTestSuite(input: { projectId: string; testPlanId: string; testSuiteId: string }): Promise<{ success: boolean; error?: string }> {
     try {
+      await this.assertTestPlanInScope(input.testPlanId);
       await this.requestNoJson(
         `${encodeURIComponent(input.projectId)}/_apis/testplan/Plans/${input.testPlanId}/suites/${input.testSuiteId}?api-version=7.1`,
         { method: "DELETE" },
@@ -405,6 +506,19 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     let addedCount = 0;
     const errors: Array<{ testCaseId: string; error: string }> = [];
 
+    try {
+      await this.assertTestPlanInScope(input.testPlanId);
+    } catch (error) {
+      return {
+        success: false,
+        addedCount: 0,
+        errors: input.testCases.map((testCase) => ({
+          testCaseId: testCase.testCaseId,
+          error: error instanceof Error ? error.message : "Test plan is not in the selected Azure DevOps project.",
+        })),
+      };
+    }
+
     for (const testCase of input.testCases) {
       try {
         const configurationIds = [...new Set(testCase.configurationIds ?? [])].filter(Boolean);
@@ -442,6 +556,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   async updateTestPoints(input: UpdateTestPointInput): Promise<{ success: boolean; updatedPoints?: AzureTestPoint[]; error?: string }> {
     if (!input.pointIds.length) return { success: true, updatedPoints: [] };
     try {
+      await this.assertTestPlanInScope(input.testPlanId);
       const body: JsonValue = {};
       if (input.outcome) body.outcome = input.outcome;
       if (input.tester) body.tester = toAzureIdentityBody(input.tester);
@@ -460,13 +575,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     testCase: FinalApprovedTestCase;
   }): Promise<{ success: boolean; azureTestCaseId?: string; error?: string }> {
     try {
-      const patch = [
-        { op: "add", path: "/fields/System.Title", value: input.testCase.title },
-        { op: "add", path: "/fields/System.Description", value: input.testCase.description ?? "" },
-        { op: "add", path: "/fields/Microsoft.VSTS.Common.Priority", value: input.testCase.priority },
-        { op: "add", path: "/fields/Microsoft.VSTS.TCM.Steps", value: toAzureStepsXml(input.testCase.steps) },
-        ...(input.testCase.tags?.length ? [{ op: "add", path: "/fields/System.Tags", value: input.testCase.tags.join("; ") }] : []),
-      ];
+      const patch = buildAzureTestCasePatch(input.testCase);
       const json = await this.requestJson<JsonValue>(
         `${encodeURIComponent(input.projectId)}/_apis/wit/workitems/$Test%20Case?api-version=7.1`,
         {
@@ -486,6 +595,9 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     bug: AzureBugWorkItemInput;
   }): Promise<{ success: boolean; azureBugId?: string; error?: string }> {
     try {
+      if (input.bug.parentStoryId) {
+        await this.assertWorkItemInScopeById(input.bug.parentStoryId);
+      }
       const parentUrl = input.bug.parentStoryId
         ? `${this.organizationUrl}/${encodeURIComponent(input.projectId)}/_apis/wit/workItems/${input.bug.parentStoryId}`
         : undefined;
@@ -575,6 +687,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     comment?: string;
   }): Promise<{ success: boolean; error?: string }> {
     try {
+      await this.assertWorkItemInScopeById(input.workItemId);
       await this.requestJson<JsonValue>(
         `${encodeURIComponent(input.projectId)}/_apis/wit/workitems/${input.workItemId}?api-version=7.1`,
         {
@@ -613,6 +726,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     iterationPath?: string;
   }): Promise<{ success: boolean; azureTaskId?: string; error?: string }> {
     try {
+      await this.assertWorkItemInScopeById(input.parentStoryId);
       const parentUrl = `${this.organizationUrl}/${encodeURIComponent(input.projectId)}/_apis/wit/workItems/${input.parentStoryId}`;
       const patch: Array<{ op: "add"; path: string; value: unknown }> = [
         { op: "add", path: "/fields/System.Title", value: input.title },
@@ -656,6 +770,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     azureTestCaseId: string;
   }): Promise<{ success: boolean; error?: string }> {
     try {
+      await this.assertTestPlanInScope(input.testPlanId);
       await this.requestJson<JsonValue>(
         `${encodeURIComponent(input.projectId)}/_apis/test/Plans/${input.testPlanId}/suites/${input.testSuiteId}/testcases/${input.azureTestCaseId}?api-version=7.1`,
         { method: "POST" },
@@ -674,6 +789,8 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     name: string;
   }): Promise<{ success: boolean; suite?: TestSuite; error?: string }> {
     try {
+      await this.assertTestPlanInScope(input.testPlanId);
+      await this.assertWorkItemInScopeById(input.requirementId);
       const json = await this.requestJson<JsonValue>(
         `${encodeURIComponent(input.projectId)}/_apis/testplan/Plans/${input.testPlanId}/suites?api-version=7.1`,
         {
@@ -720,6 +837,8 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     azureTestCaseId: string;
   }): Promise<{ success: boolean; error?: string }> {
     try {
+      await this.assertWorkItemInScopeById(input.workItemId);
+      await this.assertWorkItemInScopeById(input.azureTestCaseId);
       const testCaseUrl = `${this.organizationUrl}/${encodeURIComponent(input.projectId)}/_apis/wit/workItems/${input.azureTestCaseId}`;
       await this.requestJson<JsonValue>(
         `${encodeURIComponent(input.projectId)}/_apis/wit/workitems/${input.workItemId}?api-version=7.1`,
@@ -740,7 +859,9 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       `${encodeURIComponent(projectId)}/_apis/wit/workitemsbatch?api-version=7.1`,
       { method: "POST", body: JSON.stringify({ ids, $expand: "Relations" }) },
     );
-    return (json.value ?? []).map((workItem) => mapAzureWorkItem(workItem as never, projectId));
+    return (json.value ?? [])
+      .filter((workItem) => this.isFieldsInScope((workItem as { fields?: Record<string, unknown> }).fields))
+      .map((workItem) => mapAzureWorkItem(workItem as never, projectId));
   }
 
   private async queryLinkedWorkItemIds(projectId: string, query: string, side: "source" | "target") {
@@ -984,35 +1105,26 @@ function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
 }
 
-function toAzureStepsXml(steps: FinalApprovedTestCase["steps"]) {
-  const stepXml = steps
-    .map(
-      (step, index) =>
-        `<step id="${index + 1}" type="ActionStep"><parameterizedString isformatted="true">${escapeXml(
-          step.action,
-        )}</parameterizedString><parameterizedString isformatted="true">${escapeXml(
-          step.expectedResult,
-        )}</parameterizedString><description/></step>`,
-    )
-    .join("");
-  return `<steps id="0" last="${steps.length}">${stepXml}</steps>`;
-}
-
-function escapeXml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 function escapeJsonPointerSegment(value: string) {
   return value.replace(/~/g, "~0").replace(/\//g, "~1");
 }
 
 function escapeWiqlValue(value: string) {
   return value.replace(/'/g, "''");
+}
+
+function normalizeProjectName(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLocaleLowerCase() : "";
+}
+
+function uniqueSortedValues(values: string[]) {
+  const unique = new Map<string, string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    const key = trimmed.toLocaleLowerCase();
+    if (trimmed && !unique.has(key)) unique.set(key, trimmed);
+  }
+  return [...unique.values()].sort((first, second) => first.localeCompare(second));
 }
 
 function flattenIterations(node: AzureClassificationNode): AzureIteration[] {

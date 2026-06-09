@@ -1,8 +1,14 @@
 import { z } from "zod";
 import { ContextUsedSchema } from "@/modules/llm/context-used";
 
-export const TestCasePrioritySchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]);
-export const TestCaseTypeSchema = z.enum([
+export const TestCasePrioritySchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string" || !/^[1-4]$/.test(value.trim())) return value;
+    return Number(value.trim());
+  },
+  z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+);
+const testCaseTypeValues = [
   "functional",
   "smoke",
   "sanity",
@@ -15,7 +21,32 @@ export const TestCaseTypeSchema = z.enum([
   "security",
   "performance",
   "accessibility",
-]);
+] as const;
+
+const testCaseTypeAliases: Record<string, (typeof testCaseTypeValues)[number]> = {
+  regression_impact: "regression",
+  integration_api: "integration",
+  security_permissions: "security",
+  data_validation: "functional",
+  edge_negative: "functional",
+  edge_cases_negative_scenarios: "functional",
+  ui_interaction: "ui",
+  ui_interaction_behavior: "ui",
+  responsive_layout: "ui",
+  localization_language_rtl_ltr: "ui",
+  localization_language_and_rtl_ltr: "ui",
+  end_to_end: "e2e",
+};
+
+export const TestCaseTypeSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    if (testCaseTypeValues.includes(normalized as (typeof testCaseTypeValues)[number])) return normalized;
+    return testCaseTypeAliases[normalized] ?? value;
+  },
+  z.enum(testCaseTypeValues),
+);
 
 export const TestCaseStepSchema = z.object({
   stepNumber: z.number().int().positive(),
@@ -23,7 +54,40 @@ export const TestCaseStepSchema = z.object({
   expectedResult: z.string().min(1),
 });
 
-export const GeneratedTestCaseSchema = z.object({
+export const CANONICAL_FIRST_STEP_EXPECTED = "Preconditions are met";
+
+// Step 1 of every generated test case is, by contract, the preconditions setup row.
+// The normalizer and the superRefine below share this predicate so they cannot drift.
+export function isPreconditionsAction(action: unknown): action is string {
+  return typeof action === "string" && action.trim().toLowerCase().startsWith("preconditions");
+}
+
+// Step 1 of every generated test case is, by contract, the preconditions setup row, and its
+// expectedResult has exactly one valid value. When the first step is a preconditions step we
+// coerce its expectedResult to the canonical string the Azure DevOps grid expects, so a model
+// that phrases it differently (a trailing period, extra words, a stray assertion, or an empty
+// value) does not abort the entire run. A first step that is NOT a preconditions step is left
+// untouched so the superRefine below still surfaces that genuinely malformed output.
+// Tail steps are intentionally shared by reference; nothing downstream mutates them.
+function normalizeFirstStepExpectedResult(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const testCase = value as { steps?: unknown };
+  if (!Array.isArray(testCase.steps) || testCase.steps.length === 0) return value;
+  const firstStep = testCase.steps[0];
+  if (!firstStep || typeof firstStep !== "object") return value;
+  const step = firstStep as { action?: unknown; expectedResult?: unknown };
+  if (!isPreconditionsAction(step.action)) return value;
+  if (step.expectedResult === CANONICAL_FIRST_STEP_EXPECTED) return value;
+  return {
+    ...(value as Record<string, unknown>),
+    steps: [
+      { ...(firstStep as Record<string, unknown>), expectedResult: CANONICAL_FIRST_STEP_EXPECTED },
+      ...testCase.steps.slice(1),
+    ],
+  };
+}
+
+const generatedTestCaseBaseSchema = z.object({
   id: z.string(),
   title: z.string().min(1),
   description: z.string().min(1),
@@ -46,14 +110,14 @@ export const GeneratedTestCaseSchema = z.object({
       message: "The first step must have stepNumber 1.",
     });
   }
-  if (!firstStep?.action.trim().toLowerCase().startsWith("preconditions")) {
+  if (!isPreconditionsAction(firstStep?.action)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["steps", 0, "action"],
       message: "The first step action must start with Preconditions.",
     });
   }
-  if (firstStep?.expectedResult !== "Preconditions are met") {
+  if (firstStep?.expectedResult !== CANONICAL_FIRST_STEP_EXPECTED) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["steps", 0, "expectedResult"],
@@ -61,6 +125,11 @@ export const GeneratedTestCaseSchema = z.object({
     });
   }
 });
+
+export const GeneratedTestCaseSchema = z.preprocess(
+  normalizeFirstStepExpectedResult,
+  generatedTestCaseBaseSchema,
+);
 
 export const TestCaseGenerationSummarySchema = z.object({
   totalCases: z.number().int().min(0),

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getConfiguredAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { publishApprovedTestCases } from "@/modules/integrations/azure-devops/azure-devops-test-plan.service";
 
 export const runtime = "nodejs";
@@ -29,12 +29,20 @@ const FinalApprovedTestCaseSchema = z.object({
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   targetWorkItemId: z.string().min(1),
-  testPlanId: azureIdSchema("plan"),
+  testPlanId: azureIdSchema("plan").optional(),
   testSuiteId: azureIdSchema("suite").optional(),
   parentSuiteId: azureIdSchema("suite").optional(),
-  suiteMode: z.enum(["existing", "requirement"]).default("existing"),
+  suiteMode: z.enum(["existing", "requirement", "none"]).default("existing"),
   testCases: z.array(FinalApprovedTestCaseSchema).min(1),
 }).superRefine((value, ctx) => {
+  if (value.suiteMode !== "none" && !value.testPlanId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["testPlanId"],
+      message: "Select or enter an Azure Test Plan ID before publishing to a suite.",
+    });
+  }
+
   if (value.suiteMode === "existing" && !value.testSuiteId) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -63,11 +71,14 @@ const RequestSchema = z.object({
 export async function POST(request: Request) {
   const parsed = RequestSchema.safeParse(await request.json());
   if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Selected project, target story, test plan, test suite, and selected test cases are required." }, { status: 400 });
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? "Selected project, target story, and selected test cases are required." },
+      { status: 400 },
+    );
   }
 
   try {
-    const adapter = getConfiguredAzureDevOpsAdapter();
+    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const result = await publishApprovedTestCases(adapter, parsed.data.scope, {
       targetUserStoryId: parsed.data.targetWorkItemId,
       testPlanId: parsed.data.testPlanId,

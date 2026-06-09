@@ -435,7 +435,7 @@ export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
       const missingEndpoints = [
         isKnownDependencyEndpoint(dependency.sourceModule, dependencyEndpoints, dependency, dependency.targetModule) ? "" : dependency.sourceModule,
         isKnownDependencyEndpoint(dependency.targetModule, dependencyEndpoints, dependency, dependency.sourceModule) ||
-        isExternalDependencyEndpoint(dependency.targetModule, dependency.dependencyType)
+        isExternalOrReferenceDependencyEndpoint(dependency.targetModule, dependency.dependencyType)
           ? ""
           : dependency.targetModule,
       ].filter(Boolean);
@@ -444,7 +444,7 @@ export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
         issueType: "unknown_dependency_endpoint",
         severity: "warning",
         title: `Unknown dependency endpoint for ${dependency.id}`,
-        message: `Dependency references endpoints not present as compiled modules, glossary terms, or workflow names: ${missingEndpoints.join(", ")}.`,
+        message: `Dependency references endpoints not present as compiled modules, glossary terms, workflow names, or recognized external/reference-data targets: ${missingEndpoints.join(", ")}.`,
         category: "dependency",
         entryKey: dependency.id,
         sourceWorkItemIds: dependency.sourceWorkItemIds,
@@ -1078,9 +1078,9 @@ function slugKey(value: string) {
   return normalizeKey(value).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-function isExternalDependencyEndpoint(endpoint: string, dependencyType: string) {
+function isExternalOrReferenceDependencyEndpoint(endpoint: string, dependencyType: string) {
   const value = `${endpoint} ${dependencyType}`.toLowerCase();
-  return /\b(external|link|links|url|urls|website|web|app|download|social|blog|support|api|integration|provider|service|services)\b/.test(value);
+  return /\b(external|link|links|url|urls|website|web|app|download|social|blog|support|api|integration|provider|service|services|lookup)\b/.test(value);
 }
 
 function knowledgeVersionKey(category: string, entryKey: string) {

@@ -18,6 +18,18 @@ export class ProjectIsolationError extends Error {
   }
 }
 
+/**
+ * Single canonical message for a work item ID that cannot be used in the active
+ * project — whether because it belongs to another project, does not exist, or
+ * the account lacks permission. These cases are intentionally indistinguishable
+ * so the wording is consistent and we never confirm that an ID exists in some
+ * other project. Used by the Azure DevOps client (cross-project rejection) and
+ * by routes mapping Azure 404 / permission errors.
+ */
+export function workItemNotInProjectMessage(workItemId: string | number) {
+  return `Work item ${workItemId} was not found in the selected project, or you do not have permission to access it. Check the Work Item ID, selected project, and access permissions.`;
+}
+
 export function assertProjectScope(input: unknown): ProjectScope {
   const result = ProjectScopeSchema.safeParse(input);
   if (!result.success) {

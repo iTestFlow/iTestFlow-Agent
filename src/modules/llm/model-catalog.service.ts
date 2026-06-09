@@ -8,14 +8,22 @@ const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
 
 export const ListLLMModelsInputSchema = z.object({
   provider: LLMProviderNameSchema,
-  apiKey: z.string().min(1),
+  apiKey: z.string().min(1).optional(),
   baseUrl: z.string().optional(),
+}).superRefine((value, ctx) => {
+  if (value.provider !== "ollama" && !value.apiKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["apiKey"],
+      message: "Enter the selected provider API token to load models.",
+    });
+  }
 });
 
 export type LLMModelOption = {
   id: string;
   displayName: string;
-  source: "openai" | "gemini" | "anthropic";
+  source: "openai" | "gemini" | "anthropic" | "ollama";
 };
 
 export async function listLLMModels(input: z.infer<typeof ListLLMModelsInputSchema>): Promise<LLMModelOption[]> {
@@ -26,13 +34,16 @@ export async function listLLMModels(input: z.infer<typeof ListLLMModelsInputSche
       return listGeminiModels(input);
     case "anthropic":
       return listAnthropicModels(input);
+    case "ollama":
+      return listOllamaModels(input);
   }
 }
 
 async function listOpenAIModels(input: z.infer<typeof ListLLMModelsInputSchema>): Promise<LLMModelOption[]> {
+  const apiKey = requiredApiKey(input);
   const response = await fetch(`${input.baseUrl ?? "https://api.openai.com/v1"}/models`, {
     headers: {
-      Authorization: `Bearer ${input.apiKey}`,
+      Authorization: `Bearer ${apiKey}`,
     },
   });
   if (!response.ok) throw new Error(`OpenAI model fetch failed: ${await response.text()}`);
@@ -46,6 +57,7 @@ async function listOpenAIModels(input: z.infer<typeof ListLLMModelsInputSchema>)
 }
 
 async function listGeminiModels(input: z.infer<typeof ListLLMModelsInputSchema>): Promise<LLMModelOption[]> {
+  const apiKey = requiredApiKey(input);
   const baseUrl = input.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
   const models: LLMModelOption[] = [];
   let pageToken: string | undefined;
@@ -53,7 +65,7 @@ async function listGeminiModels(input: z.infer<typeof ListLLMModelsInputSchema>)
   do {
     const params = new URLSearchParams({
       pageSize: "1000",
-      key: input.apiKey,
+      key: apiKey,
     });
     if (pageToken) params.set("pageToken", pageToken);
 
@@ -87,6 +99,7 @@ async function listGeminiModels(input: z.infer<typeof ListLLMModelsInputSchema>)
 }
 
 async function listAnthropicModels(input: z.infer<typeof ListLLMModelsInputSchema>): Promise<LLMModelOption[]> {
+  const apiKey = requiredApiKey(input);
   const models: LLMModelOption[] = [];
   let afterId: string | undefined;
 
@@ -96,7 +109,7 @@ async function listAnthropicModels(input: z.infer<typeof ListLLMModelsInputSchem
 
     const response = await fetch(`${anthropicModelsBaseUrl(input.baseUrl)}/models?${params.toString()}`, {
       headers: {
-        "x-api-key": input.apiKey,
+        "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
       },
     });
@@ -124,8 +137,32 @@ async function listAnthropicModels(input: z.infer<typeof ListLLMModelsInputSchem
   return uniqueModels(models);
 }
 
+async function listOllamaModels(input: z.infer<typeof ListLLMModelsInputSchema>): Promise<LLMModelOption[]> {
+  const baseUrl = (input.baseUrl ?? "http://localhost:11434").replace(/\/+$/, "");
+  const response = await fetch(`${baseUrl}/api/tags`, {
+    headers: input.apiKey ? { Authorization: `Bearer ${input.apiKey}` } : undefined,
+  });
+  if (!response.ok) throw new Error(`Ollama model fetch failed: ${await response.text()}`);
+
+  const json = (await response.json()) as {
+    models?: Array<{ name?: string; model?: string }>;
+  };
+
+  return uniqueModels(
+    (json.models ?? []).flatMap((model): LLMModelOption[] => {
+      const id = model.model ?? model.name;
+      return id ? [{ id, displayName: id, source: "ollama" }] : [];
+    }),
+  ).sort((a, b) => sortModelIds(a.id, b.id));
+}
+
 function anthropicModelsBaseUrl(baseUrl?: string) {
   return normalizeProviderBaseUrl(baseUrl, ANTHROPIC_DEFAULT_BASE_URL, { requiredPath: "/v1" });
+}
+
+function requiredApiKey(input: z.infer<typeof ListLLMModelsInputSchema>) {
+  if (!input.apiKey) throw new Error(`API token is required for ${input.provider}.`);
+  return input.apiKey;
 }
 
 function uniqueModels(models: LLMModelOption[]) {

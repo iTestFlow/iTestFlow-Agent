@@ -33,7 +33,6 @@ export async function generateBugReport(input: {
     schema: GeneratedBugReportSchema,
     system: promptDraft.systemPrompt,
     user: promptDraft.userPrompt,
-    maxTokens: 5000,
     metadata: {
       action: "bug_report.generate",
       promptName: bugReportPrompt.name,

@@ -36,8 +36,8 @@ export function RequirementFindingsTable({ findings }: { findings: RequirementFi
 
   return (
     <Card className="qa-card overflow-hidden">
-      <div className="flex flex-col gap-3 border-b border-[#EBECF0] p-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="text-sm text-[#626F86]">{selectedCount} findings selected for comment preview</div>
+      <div className="flex flex-col gap-3 border-b border-border p-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="text-sm text-muted-foreground">{selectedCount} findings selected for comment preview</div>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="outline" onClick={() => setRows((current) => current.map((row) => ({ ...row, selected: true })))}>Select All</Button>
           <Button size="sm" variant="outline" onClick={() => setRows((current) => current.map((row) => ({ ...row, selected: false })))}>Deselect All</Button>
@@ -71,7 +71,7 @@ export function RequirementFindingsTable({ findings }: { findings: RequirementFi
                 </TableCell>
                 <TableCell><SeverityChip severity={finding.severity} /></TableCell>
                 <TableCell><Badge variant="outline">{finding.category}</Badge></TableCell>
-                <TableCell className="text-sm leading-6 text-[#172B4D]">{finding.finding}</TableCell>
+                <TableCell className="text-sm leading-6 text-foreground">{finding.finding}</TableCell>
                 <TableCell>
                   <InlineEditableText
                     value={finding.suggestion}
@@ -80,8 +80,8 @@ export function RequirementFindingsTable({ findings }: { findings: RequirementFi
                     ariaLabel={`${finding.id} suggestion`}
                   />
                 </TableCell>
-                <TableCell className="font-semibold text-[#172B4D]">{finding.impactScore}</TableCell>
-                <TableCell className="text-xs leading-5 text-[#626F86]">{finding.sourceReference}</TableCell>
+                <TableCell className="font-semibold text-foreground">{finding.impactScore}</TableCell>
+                <TableCell className="text-xs leading-5 text-muted-foreground">{finding.sourceReference}</TableCell>
               </TableRow>
             ))}
           </TableBody>
