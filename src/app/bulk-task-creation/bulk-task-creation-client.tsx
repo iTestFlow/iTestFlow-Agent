@@ -92,7 +92,7 @@ function parseJsonResponse(text: string, ok: boolean) {
   }
 }
 
-export function BulkTaskClient() {
+export function BulkTaskCreationClient() {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null);
   const [targetMode, setTargetMode] = useState<TargetMode>("iteration");
   const [title, setTitle] = useState("");

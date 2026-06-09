@@ -1,13 +1,13 @@
 import { ContentShell } from "@/components/layout/content-shell";
-import { TestSuiteMigrationClient } from "./test-suite-migration-client";
+import { SuiteMigrationClient } from "./suite-migration-client";
 
-export default function TestSuiteMigrationPage() {
+export default function SuiteMigrationPage() {
   return (
     <ContentShell
-      title="Migrate Test Suites"
+      title="Suite Migration"
       description="Copy or move Azure DevOps Test Suites while preserving latest test point outcomes."
     >
-      <TestSuiteMigrationClient />
+      <SuiteMigrationClient />
     </ContentShell>
   );
 }

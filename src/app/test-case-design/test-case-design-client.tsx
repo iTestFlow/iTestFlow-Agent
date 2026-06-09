@@ -48,7 +48,7 @@ import {
 } from "@/modules/test-case-design/test-design-options";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 
-export function TestCaseGenerationClient() {
+export function TestCaseDesignClient() {
   const scope = useActiveProject();
   const generatedCasesRef = useRef<HTMLDivElement | null>(null);
   const [targetWorkItemId, setTargetWorkItemId] = useState("");

@@ -51,7 +51,7 @@ import type {
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 import type { ActiveProjectScope } from "@/shared/lib/active-project";
 
-export function ExistingTestCaseReviewClient() {
+export function TestGapAnalysisClient() {
   const scope = useActiveProject();
   const resultsRef = useRef<HTMLDivElement | null>(null);
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
@@ -179,7 +179,7 @@ export function ExistingTestCaseReviewClient() {
     <div className="space-y-6">
       {projectWarning(scope)}
       <SectionCard
-        title="Test Coverage Matrix"
+        title="Test Gap Analysis"
         description="Enter a user story ID. Linked test cases and project context are selected automatically for this run."
         action={
           <GenerationModeToggle
@@ -362,7 +362,7 @@ function CoverageMetric({ label, value, tone }: { label: string; value: string; 
 function ExistingTraceabilityMatrix({ rows }: { rows: ExistingTraceabilityRow[] }) {
   return (
     <SectionCard
-      title="Test Coverage Matrix"
+      title="Traceability Matrix"
       description="Every row is one atomic coverage point mapped to linked Azure DevOps test cases."
     >
       {rows.length ? (

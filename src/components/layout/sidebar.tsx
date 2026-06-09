@@ -4,37 +4,88 @@ import Image from "next/image"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
-  ClipboardCheck,
+  ArrowRightLeft,
+  Bot,
   Bug,
-  FileText,
-  HelpCircle,
-  Home,
+  ClipboardList,
+  History,
+  LayoutDashboard,
+  Library,
   ListPlus,
-  MessageSquareText,
-  Replace,
+  Radar,
   Settings,
   ShieldCheck,
-  TimerReset,
-  TestTube2,
+  Timer,
+  type LucideIcon,
 } from "lucide-react"
 
-import { Separator } from "@/components/ui/separator"
 import { BRAND_ICON_SRC, PRODUCT_NAME } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 
-const navigation = [
-  { href: "/dashboard", label: "Home", icon: Home },
-  { href: "/context", label: "Project Context", icon: FileText },
-  { href: "/context-chatbot", label: "Context Chatbot", icon: MessageSquareText },
-  { href: "/requirements/analyze", label: "Requirement Analysis", icon: ShieldCheck, section: "/requirements" },
-  { href: "/test-cases/design/context", label: "Test Case Design", icon: TestTube2, section: "/test-cases/design" },
-  { href: "/bugs/create", label: "Create Bug", icon: Bug, section: "/bugs" },
-  { href: "/test-coverage-matrix", label: "Test Coverage Matrix", icon: ClipboardCheck },
-  { href: "/test-execution-effort", label: "Test Execution Effort", icon: TimerReset },
-  { href: "/test-suite-migration", label: "Suite Migration", icon: Replace },
-  { href: "/bulk-tasks", label: "Bulk Task Creation", icon: ListPlus },
-  { href: "/settings", label: "Settings", icon: Settings },
+type NavLeaf = { label: string; href: string; icon: LucideIcon }
+type NavNode =
+  | { type: "item"; item: NavLeaf }
+  | { type: "group"; label: string; items: NavLeaf[] }
+
+const navigation: NavNode[] = [
+  { type: "item", item: { label: "Dashboards", href: "/dashboards", icon: LayoutDashboard } },
+  {
+    type: "group",
+    label: "Knowledge & Context",
+    items: [
+      { label: "Knowledge Hub", href: "/knowledge-hub", icon: Library },
+      { label: "Business Owner Assistant", href: "/business-owner-assistant", icon: Bot },
+    ],
+  },
+  {
+    type: "group",
+    label: "Testing Lifecycle",
+    items: [
+      { label: "Requirements Analysis", href: "/requirements-analysis", icon: ShieldCheck },
+      { label: "Test Case Design", href: "/test-case-design", icon: ClipboardList },
+      { label: "Test Gap Analysis", href: "/test-gap-analysis", icon: Radar },
+      { label: "Report Bug", href: "/report-bug", icon: Bug },
+      { label: "Test Execution Effort", href: "/test-execution-effort", icon: Timer },
+    ],
+  },
+  {
+    type: "group",
+    label: "Utilities",
+    items: [
+      { label: "Suite Migration", href: "/suite-migration", icon: ArrowRightLeft },
+      { label: "Bulk Task Creation", href: "/bulk-task-creation", icon: ListPlus },
+    ],
+  },
+  {
+    type: "group",
+    label: "Administration",
+    items: [
+      { label: "Settings", href: "/settings", icon: Settings },
+      { label: "Activity Log", href: "/activity-log", icon: History },
+    ],
+  },
 ]
+
+function isActive(pathname: string, href: string) {
+  return pathname === href || pathname.startsWith(`${href}/`)
+}
+
+function NavLink({ item, onNavigate, active }: { item: NavLeaf; onNavigate?: () => void; active: boolean }) {
+  const Icon = item.icon
+  return (
+    <Link
+      href={item.href}
+      onClick={onNavigate}
+      className={cn(
+        "flex min-h-9 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        active && "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm ring-1 ring-sidebar-ring/20 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+      )}
+    >
+      <Icon className="size-4 shrink-0" aria-hidden="true" />
+      <span className="truncate">{item.label}</span>
+    </Link>
+  )
+}
 
 export function Sidebar({ className, onNavigate }: { className?: string; onNavigate?: () => void }) {
   const pathname = usePathname()
@@ -42,7 +93,7 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
   return (
     <aside className={cn("flex h-full flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground", className)}>
       <div className="px-4 py-5">
-        <Link href="/dashboard" onClick={onNavigate} className="flex items-center gap-3">
+        <Link href="/dashboards" onClick={onNavigate} className="flex items-center gap-3">
           <div className="flex h-10 w-12 shrink-0 items-center justify-center rounded-lg bg-white p-1.5 shadow-sm ring-1 ring-sidebar-border">
             <Image
               src={BRAND_ICON_SRC}
@@ -60,42 +111,36 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
         </Link>
       </div>
 
-      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3">
-        {navigation.map((item) => {
-          const Icon = item.icon
-          const active =
-            pathname === item.href ||
-            pathname.startsWith(`${item.href}/`) ||
-            Boolean(item.section && pathname.startsWith(item.section))
+      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 pb-2">
+        {navigation.map((node, index) => {
+          if (node.type === "item") {
+            return (
+              <NavLink
+                key={node.item.href}
+                item={node.item}
+                onNavigate={onNavigate}
+                active={isActive(pathname, node.item.href)}
+              />
+            )
+          }
 
           return (
-            <Link
-              key={item.href}
-              href={item.href}
-              onClick={onNavigate}
-              className={cn(
-                "flex min-h-9 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                active && "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm ring-1 ring-sidebar-ring/20 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              )}
-            >
-              <Icon className="size-4 shrink-0" aria-hidden="true" />
-              <span className="truncate">{item.label}</span>
-            </Link>
+            <div key={node.label} className={cn("space-y-1", index > 0 && "pt-4")}>
+              <p className="px-3 pb-1 text-xs font-medium tracking-normal text-sidebar-foreground/50">
+                {node.label}
+              </p>
+              {node.items.map((item) => (
+                <NavLink
+                  key={item.href}
+                  item={item}
+                  onNavigate={onNavigate}
+                  active={isActive(pathname, item.href)}
+                />
+              ))}
+            </div>
           )
         })}
       </nav>
-
-      <div className="px-3 pb-4">
-        <Separator className="mb-3 bg-sidebar-border" />
-        <Link
-          href="/settings"
-          onClick={onNavigate}
-          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-        >
-          <HelpCircle className="size-4" aria-hidden="true" />
-          Help & Support
-        </Link>
-      </div>
     </aside>
   )
 }

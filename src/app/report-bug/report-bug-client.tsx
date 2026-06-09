@@ -159,7 +159,7 @@ function parseJsonResponse(text: string, ok: boolean) {
   }
 }
 
-export function BugCreateClient() {
+export function ReportBugClient() {
   const reviewSectionRef = useRef<HTMLDivElement | null>(null);
   const shouldScrollToReviewRef = useRef(false);
   const [scope, setScope] = useState<ActiveProjectScope | null>(null);

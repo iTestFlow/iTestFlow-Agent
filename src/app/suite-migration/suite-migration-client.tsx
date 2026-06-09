@@ -69,7 +69,7 @@ function parseJsonResponse(text: string, ok: boolean) {
   }
 }
 
-export function TestSuiteMigrationClient() {
+export function SuiteMigrationClient() {
   const previewSectionRef = useRef<HTMLDivElement | null>(null);
   const reportSectionRef = useRef<HTMLDivElement | null>(null);
   const sourceTreeRequestRef = useRef(0);

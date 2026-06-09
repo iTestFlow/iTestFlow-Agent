@@ -1,13 +1,13 @@
 import { ContentShell } from "@/components/layout/content-shell";
-import { BugCreateClient } from "./bug-create-client";
+import { ReportBugClient } from "./report-bug-client";
 
-export default function CreateBugPage() {
+export default function ReportBugPage() {
   return (
     <ContentShell
-      title="Create Bug"
+      title="Report Bug"
       description="Generate, review, and post Azure DevOps Bug work items from QA defect notes."
     >
-      <BugCreateClient />
+      <ReportBugClient />
     </ContentShell>
   );
 }

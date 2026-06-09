@@ -1,13 +1,13 @@
 import { ContentShell } from "@/components/layout/content-shell";
-import { ContextChatbotClient } from "./context-chatbot-client";
+import { BusinessOwnerAssistantClient } from "./business-owner-assistant-client";
 
-export default function ContextChatbotPage() {
+export default function BusinessOwnerAssistantPage() {
   return (
     <ContentShell
-      title="Context Chatbot"
+      title="Business Owner Assistant"
       description="Ask questions grounded in the selected project's indexed context and saved knowledge hub."
     >
-      <ContextChatbotClient />
+      <BusinessOwnerAssistantClient />
     </ContentShell>
   );
 }

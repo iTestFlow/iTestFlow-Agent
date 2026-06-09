@@ -109,7 +109,7 @@ function buildCommentSummary(summary: RequirementSummary, findings: RequirementF
   ].join("\n");
 }
 
-export function RequirementAnalysisClient() {
+export function RequirementsAnalysisClient() {
   const scope = useActiveProject();
   const findingsCardRef = useRef<HTMLDivElement | null>(null);
   const finalReviewCardRef = useRef<HTMLDivElement | null>(null);
@@ -541,7 +541,7 @@ export function RequirementAnalysisClient() {
           {mode === "auto" && gen.status === "completed" ? (
             <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
           ) : null}
-          <SectionCard title="Requirement Analysis Findings">
+          <SectionCard title="Requirements Analysis Findings">
             <div className="grid gap-3 border-b border-border bg-muted p-4 lg:grid-cols-[180px_minmax(260px,1fr)_minmax(260px,1fr)]">
               <SummaryTotalCard label="Total Findings" total={findingStats.total} />
               <SummaryCard title="Severity Breakdown" rows={severityBreakdown} />
@@ -686,7 +686,7 @@ function RequirementChecklistSelector({
     <div className="rounded-md border border-border bg-muted p-4">
       <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="text-sm font-semibold text-foreground">Requirement Analysis Checklist</div>
+          <div className="text-sm font-semibold text-foreground">Requirements Analysis Checklist</div>
           <div className="text-xs text-muted-foreground">
             {selectedIds.length} of {allRequirementAnalysisChecklistItemIds.length} selected
           </div>

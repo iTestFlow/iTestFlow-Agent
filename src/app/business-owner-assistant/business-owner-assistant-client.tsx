@@ -69,7 +69,7 @@ function parseJsonResponse(text: string, ok: boolean) {
   }
 }
 
-export function ContextChatbotClient() {
+export function BusinessOwnerAssistantClient() {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -177,7 +177,7 @@ export function ContextChatbotClient() {
       setMessages((current) => [...current, assistantMessage]);
       setHasUnfinishedWork(false);
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : "Context chatbot failed.");
+      setError(sendError instanceof Error ? sendError.message : "Business Owner Assistant failed.");
       setMessages((current) => [
         ...current,
         {

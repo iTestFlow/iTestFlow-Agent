@@ -320,7 +320,7 @@ function parseJsonResponse(text: string, ok: boolean) {
   }
 }
 
-export function ProjectContextClient() {
+export function KnowledgeHubClient() {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null)
   const [activeTab, setActiveTab] = useState<TopTab>("hub")
   const [buildMode, setBuildMode] = useState<BuildMode>("auto")

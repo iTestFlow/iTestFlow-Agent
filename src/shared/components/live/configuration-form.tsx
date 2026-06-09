@@ -66,7 +66,7 @@ type TestResult = {
 
 export function ConfigurationForm({
   mode = "setup",
-  redirectTo = "/dashboard",
+  redirectTo = "/dashboards",
   onSaved,
 }: {
   mode?: "setup" | "settings";
