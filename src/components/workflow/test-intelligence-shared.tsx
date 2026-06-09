@@ -15,6 +15,7 @@ import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-
 import { RefreshButton } from "@/components/qa/refresh-button";
 import { toneClass, type Tone } from "@/components/qa/tone";
 import { cn } from "@/lib/utils";
+import { formatEnumLabel, formatPercentage } from "@/shared/lib/format";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import type {
   ApiState,
@@ -108,22 +109,9 @@ export async function copyTextWithFeedback(text: string, setCopied: (copied: boo
   }
 }
 
-export function formatEnumLabel(value: string) {
-  const acronyms = new Set(["api", "llm", "ui", "ux"]);
-  return value
-    .split(/[\s_-]+/)
-    .filter(Boolean)
-    .map((part) => {
-      const normalized = part.toLowerCase();
-      if (acronyms.has(normalized)) return normalized.toUpperCase();
-      return normalized.charAt(0).toUpperCase() + normalized.slice(1);
-    })
-    .join(" ");
-}
-
-export function formatPercentage(value: number) {
-  return `${Math.round(value)}%`;
-}
+// Pure formatting helpers live in `@/shared/lib/format` so non-React modules can
+// use them too; re-exported here to preserve existing import paths.
+export { formatEnumLabel, formatPercentage };
 
 export function severityTone(value: string): Tone {
   if (value === "critical" || value === "high" || value === "High") return "error";

@@ -26,8 +26,6 @@ import { WorkItemPreview, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@
 import {
   ErrorBlock,
   SectionCard,
-  formatEnumLabel,
-  formatPercentage,
   postJson,
   projectWarning,
   scrollToNextStep,
@@ -38,7 +36,6 @@ import type {
   ManualPromptDraft,
   RequirementAnalysisRunResult,
   RequirementFinding,
-  RequirementSummary,
   WorkflowMode,
 } from "@/components/workflow/test-intelligence-types";
 import {
@@ -46,6 +43,7 @@ import {
   requirementAnalysisChecklistOptions,
   type RequirementAnalysisChecklistItemId,
 } from "@/modules/requirement-analysis/checklist-options";
+import { buildRequirementAnalysisComment } from "@/modules/requirement-analysis/comment/requirement-analysis-comment";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 import type { ProjectUser } from "@/types/azure-devops";
 
@@ -60,50 +58,10 @@ function severityRank(value: RequirementFinding["severity"]) {
   return ranks[value] ?? 5;
 }
 
-function severityMarker(value: RequirementFinding["severity"]) {
-  return `[${formatEnumLabel(value)}]`;
-}
-
-function checklistItemTitle(checklistItemId: RequirementAnalysisChecklistItemId) {
-  return requirementAnalysisChecklistOptions.find((checklistItem) => checklistItem.id === checklistItemId)?.title ?? formatEnumLabel(checklistItemId);
-}
-
 function buildCommentBodyWithMentions(commentBody: string, mentionedUsers: ProjectUser[]) {
   if (!mentionedUsers.length) return commentBody;
   const mentionLine = mentionedUsers.map((user) => `@<${user.id}>`).join(" ");
   return `${mentionLine}\n\n${commentBody.trim()}`;
-}
-
-function countFindingsBySeverity(findings: RequirementFinding[]) {
-  return findings.reduce(
-    (counts, finding) => {
-      counts.total += 1;
-      counts[finding.severity] += 1;
-      return counts;
-    },
-    { total: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 },
-  );
-}
-
-function buildCommentSummary(summary: RequirementSummary, findings: RequirementFinding[]) {
-  const counts = countFindingsBySeverity(findings);
-  const severityLines = [
-    counts.critical > 0 ? `- **Critical findings:** ${counts.critical}` : null,
-    `- **High findings:** ${counts.high}`,
-    `- **Medium findings:** ${counts.medium}`,
-    `- **Low findings:** ${counts.low}`,
-    counts.info > 0 ? `- **Info findings:** ${counts.info}` : null,
-  ].filter(Boolean);
-
-  return [
-    "## Summary",
-    `- **Quality:** ${formatEnumLabel(summary.overallQuality)}`,
-    `- **Clarity:** ${formatPercentage(summary.clarityScore)}`,
-    `- **Completeness:** ${formatPercentage(summary.completenessScore)}`,
-    `- **Testability:** ${formatPercentage(summary.testabilityScore)}`,
-    `- **Total findings:** ${counts.total}`,
-    ...severityLines,
-  ].join("\n");
 }
 
 export function RequirementsAnalysisClient() {
@@ -320,21 +278,11 @@ export function RequirementsAnalysisClient() {
 
   function buildCommentBody() {
     if (!scope || !targetWorkItemId || !analysis.data) return;
-    return [
-      `# iTestFlow Requirement Analysis for ${targetWorkItemId}`,
-      buildCommentSummary(analysis.data.summary, selectedFindingList),
-      "---",
-      analysis.data.summary.summaryText,
-      "## Findings", "---",
-      ...selectedFindingList.map((finding) => [
-        `### ${severityMarker(finding.severity)} ${finding.title}`,
-        finding.description,
-        `**Checklist:** ${checklistItemTitle(finding.checklistItemId)}`,
-        `**Issue Type:** ${formatEnumLabel(finding.issueType)}`,
-        `**Risk:** ${formatEnumLabel(finding.riskLevel)} - ${finding.riskJustification}`,
-        `**Suggested resolution:** ${finding.suggestion}`, "---",
-      ].join("\n\n")),
-    ].join("\n\n");
+    return buildRequirementAnalysisComment({
+      workItemId: targetWorkItemId,
+      summary: analysis.data.summary,
+      findings: selectedFindingList,
+    });
   }
 
   function changeFindings(nextFindings: RequirementFinding[]) {
