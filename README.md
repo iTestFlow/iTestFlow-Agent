@@ -1,5 +1,9 @@
 # iTestFlow
 
+<p align="center">
+  <img src="public/brand/itestflow-logo-full.png" alt="iTestFlow - AI-Powered Software Testing Lifecycle" width="760" />
+</p>
+
 Local-first test intelligence command center for Azure DevOps requirement analysis, RAG-assisted context selection, test case design, Test Coverage Matrix review, coverage validation, and reviewed publishing back to Azure Test Plans.
 
 The MVP runs locally with real Azure DevOps and LLM provider APIs. Runtime configuration is initiated from the UI, can be edited later from Settings, and `.env.local` is optional as a bootstrap fallback.
@@ -7,6 +11,12 @@ The MVP runs locally with real Azure DevOps and LLM provider APIs. Runtime confi
 The UI foundation uses Next.js App Router, React, TypeScript, Tailwind CSS, shadcn/ui, Radix-powered shadcn components, and lucide-react icons.
 
 For the living source map and module boundaries, see [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md).
+
+## Architecture at a Glance
+
+<p align="center">
+  <img src="public/brand/itestflow-architecture.png" alt="iTestFlow architecture and AI-powered software testing lifecycle" width="1200" />
+</p>
 
 ## Prerequisites
 
