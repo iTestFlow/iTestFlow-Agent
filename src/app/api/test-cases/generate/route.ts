@@ -75,6 +75,7 @@ export async function POST(request: Request) {
       model: result.model,
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
+      tokenUsage: provider.getTokenUsage(),
     });
   } catch (error) {
     return NextResponse.json(

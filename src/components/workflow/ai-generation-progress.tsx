@@ -10,6 +10,7 @@ import { Callout } from "@/components/qa/callout";
 import { ErrorState } from "@/components/qa/error-state";
 import { cn } from "@/lib/utils";
 import type { AiGenerationStatus } from "@/components/workflow/use-ai-generation";
+import { AiGenerationMetrics } from "@/components/workflow/ai-generation-metrics";
 
 /* --------------------------------------------------------------------------
  * Reusable AI generation progress panel. Renders in the same slot where the
@@ -323,7 +324,12 @@ export function AiGenerationProgress({
           </div>
         </div>
         {typeof elapsedSeconds === "number" ? (
-          <div className="shrink-0 text-xs tabular-nums text-muted-foreground">Elapsed: {elapsedSeconds}s</div>
+          <AiGenerationMetrics
+            elapsedSeconds={elapsedSeconds}
+            calculatingTokens={mode === "full"}
+            showTokens={mode === "full"}
+            className="sm:text-right"
+          />
         ) : null}
       </div>
 

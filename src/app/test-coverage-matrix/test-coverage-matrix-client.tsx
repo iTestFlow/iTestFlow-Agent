@@ -13,6 +13,7 @@ import { toneClass, type Tone } from "@/components/qa/tone";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
+import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
 import {
@@ -280,7 +281,12 @@ export function ExistingTestCaseReviewClient() {
         ) : null}
         {state.data ? (
           <>
-            <ExistingTraceabilitySummary result={state.data} />
+            <div className="space-y-2">
+              {mode === "auto" && gen.status === "completed" ? (
+                <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
+              ) : null}
+              <ExistingTraceabilitySummary result={state.data} />
+            </div>
             <ExistingTraceabilityMatrix rows={state.data.traceabilityMatrix} />
             <ExistingReviewInsights insights={state.data.insights} findings={state.data.findings} />
             <ExistingLinkedTestCasesList linkedTestCases={state.data.linkedTestCases} />

@@ -76,6 +76,7 @@ export async function POST(request: Request) {
       provider: result.provider,
       model: result.model,
       rawOutput: result.rawOutput,
+      tokenUsage: provider.getTokenUsage(),
       estimate: result.validatedOutput,
     });
   } catch (error) {

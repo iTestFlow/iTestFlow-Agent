@@ -62,6 +62,7 @@ export class AnthropicProvider extends BaseJsonProvider {
       requestBody,
       responseBody: json,
       finishReason: json.stop_reason,
+      tokenUsage: anthropicTokenUsage(json.usage),
     };
   }
 
@@ -98,10 +99,34 @@ export class AnthropicProvider extends BaseJsonProvider {
       requestBody,
       responseBody: json,
       finishReason: json.stop_reason,
+      tokenUsage: anthropicTokenUsage(json.usage),
     };
   }
 
   private baseUrl() {
     return normalizeProviderBaseUrl(this.config.baseUrl, ANTHROPIC_DEFAULT_BASE_URL, { requiredPath: "/v1" });
   }
+}
+
+function anthropicTokenUsage(usage: unknown) {
+  if (!usage || typeof usage !== "object") return undefined;
+  const value = usage as Record<string, unknown>;
+  const inputParts = [
+    optionalCount(value.input_tokens),
+    optionalCount(value.cache_creation_input_tokens),
+    optionalCount(value.cache_read_input_tokens),
+  ];
+  const input = inputParts.some((count) => count !== undefined)
+    ? inputParts.reduce<number>((total, count) => total + (count ?? 0), 0)
+    : undefined;
+  const output = optionalCount(value.output_tokens);
+  return {
+    input,
+    output,
+    total: input !== undefined && output !== undefined ? input + output : undefined,
+  };
+}
+
+function optionalCount(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

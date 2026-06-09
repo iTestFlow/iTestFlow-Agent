@@ -51,6 +51,7 @@ export class OpenAIProvider extends BaseJsonProvider {
       requestBody,
       responseBody: json,
       finishReason: json.choices?.[0]?.finish_reason,
+      tokenUsage: openAITokenUsage(json.usage),
     };
   }
 
@@ -82,6 +83,7 @@ export class OpenAIProvider extends BaseJsonProvider {
       requestBody,
       responseBody: json,
       finishReason: json.choices?.[0]?.finish_reason,
+      tokenUsage: openAITokenUsage(json.usage),
     };
   }
 
@@ -122,4 +124,18 @@ export class OpenAIProvider extends BaseJsonProvider {
 
     return response;
   }
+}
+
+function openAITokenUsage(usage: unknown) {
+  if (!usage || typeof usage !== "object") return undefined;
+  const value = usage as Record<string, unknown>;
+  return {
+    input: optionalCount(value.prompt_tokens),
+    output: optionalCount(value.completion_tokens),
+    total: optionalCount(value.total_tokens),
+  };
+}
+
+function optionalCount(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

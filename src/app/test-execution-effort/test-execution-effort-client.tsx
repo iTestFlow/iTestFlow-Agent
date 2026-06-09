@@ -17,10 +17,12 @@ import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
+import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { isRequirementLikeType } from "@/components/workflow/test-intelligence-shared";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import type { TokenUsage } from "@/modules/llm/llm-types";
 
 type WorkflowMode = "auto" | "manual";
 type TesterSeniority = "junior" | "mid" | "senior";
@@ -138,6 +140,7 @@ type GenerateResponse = EffortPreview & {
   provider: string;
   model: string;
   rawOutput: string;
+  tokenUsage?: TokenUsage;
   estimate: EffortEstimate;
 };
 
@@ -497,7 +500,14 @@ export function TestExecutionEffortClient() {
           }}
         />
       ) : null}
-      {estimateResult ? <EstimateResultPanel result={estimateResult.estimate} /> : null}
+      {estimateResult ? (
+        <div className="space-y-2">
+          {mode === "auto" && gen.status === "completed" ? (
+            <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
+          ) : null}
+          <EstimateResultPanel result={estimateResult.estimate} />
+        </div>
+      ) : null}
     </div>
   );
 }

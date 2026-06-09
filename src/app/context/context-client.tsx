@@ -24,6 +24,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector"
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle"
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress"
+import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics"
 import { useAiGeneration } from "@/components/workflow/use-ai-generation"
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
 import { Input } from "@/components/ui/input"
@@ -43,6 +44,7 @@ import {
   DEFAULT_CONTEXT_WORK_ITEM_TYPES,
 } from "@/lib/project-context-defaults"
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project"
+import type { TokenUsage } from "@/modules/llm/llm-types"
 import {
   projectScopeKey,
   selectAvailableDefaults,
@@ -173,6 +175,7 @@ type KnowledgeGeneratedDraft = {
   knowledgeBase: ProjectKnowledgeBase
   generatedAt: string
   alreadyCurrent?: boolean
+  tokenUsage?: TokenUsage
 }
 
 type KnowledgeStatusResult = {
@@ -1064,17 +1067,25 @@ export function ProjectContextClient() {
                       ) : null}
 
                       {generatedDraft?.alreadyCurrent ? (
-                        <GeneratedPreviewPanel
-                          draft={generatedDraft}
-                          saving={generatedSaveLoading}
-                          onSave={saveGeneratedKnowledge}
-                        />
+                        <div className="space-y-2">
+                          {gen.status === "completed" ? (
+                            <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
+                          ) : null}
+                          <GeneratedPreviewPanel
+                            draft={generatedDraft}
+                            saving={generatedSaveLoading}
+                            onSave={saveGeneratedKnowledge}
+                          />
+                        </div>
                       ) : null}
                     </div>
                   ) : null}
 
                   {generatedDraft && !generatedDraft.alreadyCurrent ? (
-                    <div ref={autoPreviewStepRef} className="scroll-mt-4">
+                    <div ref={autoPreviewStepRef} className="scroll-mt-4 space-y-2">
+                      {gen.status === "completed" ? (
+                        <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
+                      ) : null}
                       <GeneratedPreviewPanel
                         draft={generatedDraft}
                         saving={generatedSaveLoading}

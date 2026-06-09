@@ -12,6 +12,7 @@ import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
+import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
 import {
@@ -375,18 +376,23 @@ export function TestCaseGenerationClient() {
         ) : null}
         {state.data || testCases.length ? (
           <>
-            <GeneratedTestCasesReview
-              testCases={testCases}
-              onChange={(nextCases) => {
-                setHasUnfinishedWork(true);
-                setTestCases(nextCases);
-              }}
-              selectedIds={selectedTestCaseIds}
-              onSelectedIdsChange={(ids) => {
-                setHasUnfinishedWork(true);
-                setSelectedTestCaseIds(ids);
-              }}
-            />
+            <div className="space-y-2">
+              {mode === "auto" && gen.status === "completed" ? (
+                <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
+              ) : null}
+              <GeneratedTestCasesReview
+                testCases={testCases}
+                onChange={(nextCases) => {
+                  setHasUnfinishedWork(true);
+                  setTestCases(nextCases);
+                }}
+                selectedIds={selectedTestCaseIds}
+                onSelectedIdsChange={(ids) => {
+                  setHasUnfinishedWork(true);
+                  setSelectedTestCaseIds(ids);
+                }}
+              />
+            </div>
             <PublishGeneratedCasesPanel
               scope={scope}
               targetWorkItemId={targetWorkItemId}

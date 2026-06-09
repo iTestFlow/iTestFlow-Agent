@@ -2,6 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 import { parseJsonWithRepair } from "../json-extraction";
+import { addTokenUsage, hasTokenUsage } from "../token-usage";
 import {
   DEFAULT_MAX_OUTPUT_TOKEN_CAP,
   DEFAULT_MAX_TRUNCATION_ATTEMPTS,
@@ -15,6 +16,7 @@ import type {
   LLMProviderName,
   LLMResult,
   LLMTextResult,
+  TokenUsage,
 } from "../llm-types";
 
 export type LLMProviderCallResult = {
@@ -23,12 +25,15 @@ export type LLMProviderCallResult = {
   responseBody?: unknown;
   errorMessage?: string;
   finishReason?: string;
+  tokenUsage?: TokenUsage;
 };
 
 export abstract class BaseJsonProvider implements LLMProvider {
   readonly name: LLMProviderName;
   readonly model: string;
   protected readonly config: LLMProviderConfig;
+  private cumulativeTokenUsage: TokenUsage | undefined;
+  private cumulativeTokenUsageComplete = true;
 
   constructor(config: LLMProviderConfig) {
     this.name = config.provider;
@@ -38,12 +43,19 @@ export abstract class BaseJsonProvider implements LLMProvider {
 
   abstract testConnection(): Promise<boolean>;
 
+  getTokenUsage(): TokenUsage | undefined {
+    return this.cumulativeTokenUsageComplete && this.cumulativeTokenUsage
+      ? { ...this.cumulativeTokenUsage }
+      : undefined;
+  }
+
   async generateText(input: GenerateTextInput): Promise<LLMTextResult> {
     const startedAt = Date.now();
     let callResult: LLMProviderCallResult | null = null;
 
     try {
       callResult = await this.callTextModel(input);
+      this.recordTokenUsage(callResult.tokenUsage);
       if (callResult.errorMessage) throw new Error(callResult.errorMessage);
 
       this.logTextRequest(input, callResult, "Success", Date.now() - startedAt);
@@ -53,6 +65,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
         model: this.model,
         rawOutput: callResult.rawOutput,
         text: callResult.rawOutput.trim(),
+        tokenUsage: hasTokenUsage(callResult.tokenUsage) ? callResult.tokenUsage : undefined,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown LLM text request error.";
@@ -79,6 +92,8 @@ export abstract class BaseJsonProvider implements LLMProvider {
       DEFAULT_MAX_TRUNCATION_ATTEMPTS,
     );
     let budget = startingBudget;
+    let operationTokenUsage: TokenUsage | undefined;
+    let operationTokenUsageComplete = true;
 
     try {
       for (let attempt = 0; attempt < maxTruncationAttempts; attempt += 1) {
@@ -87,6 +102,9 @@ export abstract class BaseJsonProvider implements LLMProvider {
 
         try {
           attemptResult = await this.callModel(attemptInput);
+          if (!hasTokenUsage(attemptResult.tokenUsage)) operationTokenUsageComplete = false;
+          operationTokenUsage = addTokenUsage(operationTokenUsage, attemptResult.tokenUsage);
+          this.recordTokenUsage(attemptResult.tokenUsage);
         } catch (callError) {
           if (callResult && isTokenLimitFinishReason(callResult.finishReason)) break;
           throw callError;
@@ -116,6 +134,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
         model: this.model,
         rawOutput: callResult.rawOutput,
         validatedOutput,
+        tokenUsage: operationTokenUsageComplete ? operationTokenUsage : undefined,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown LLM request error.";
@@ -161,6 +180,14 @@ export abstract class BaseJsonProvider implements LLMProvider {
     return {
       "Content-Type": "application/json",
     };
+  }
+
+  private recordTokenUsage(tokenUsage?: TokenUsage) {
+    if (!hasTokenUsage(tokenUsage)) {
+      this.cumulativeTokenUsageComplete = false;
+      return;
+    }
+    this.cumulativeTokenUsage = addTokenUsage(this.cumulativeTokenUsage, tokenUsage);
   }
 
   private logRequest<TSchema extends z.ZodTypeAny>(

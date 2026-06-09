@@ -15,6 +15,7 @@ import { Callout } from "@/components/qa/callout";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
+import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
 import { WorkItemPreview, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
@@ -536,7 +537,10 @@ export function RequirementAnalysisClient() {
         </div>
       ) : null}
       {analysis.data ? (
-        <div ref={findingsCardRef}>
+        <div ref={findingsCardRef} className="space-y-2">
+          {mode === "auto" && gen.status === "completed" ? (
+            <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
+          ) : null}
           <SectionCard title="Requirement Analysis Findings">
             <div className="grid gap-3 border-b border-border bg-muted p-4 lg:grid-cols-[180px_minmax(260px,1fr)_minmax(260px,1fr)]">
               <SummaryTotalCard label="Total Findings" total={findingStats.total} />

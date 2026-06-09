@@ -4,6 +4,7 @@ import { assertProjectScope, type ProjectScope } from "@/modules/projects/projec
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import { parseExternalStructuredOutput } from "@/modules/llm/external-structured-output";
 import type { LLMProvider, LLMResult } from "@/modules/llm/llm-types";
+import { addTokenUsage, hasTokenUsage } from "@/modules/llm/token-usage";
 import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
 import {
   projectKnowledgeConsolidationPrompt,
@@ -1123,6 +1124,12 @@ async function extractProjectKnowledgeBase(input: {
     provider: partialResults[0].provider,
     model: partialResults[0].model,
     validatedOutput,
+    tokenUsage: partialResults.every((result) => hasTokenUsage(result.tokenUsage))
+      ? partialResults.reduce(
+          (total, result) => addTokenUsage(total, result.tokenUsage),
+          undefined as LLMResult["tokenUsage"],
+        )
+      : undefined,
     rawOutput: JSON.stringify({
       mode: input.mode,
       consolidation: "local-deterministic",

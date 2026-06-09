@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { TokenUsage } from "@/modules/llm/llm-types";
 
 /* --------------------------------------------------------------------------
  * Driver hook for the AI generation progress experience.
@@ -43,6 +44,7 @@ export type UseAiGenerationOptions = {
 export type AiGenerationController = {
   status: AiGenerationStatus;
   elapsedSeconds: number;
+  tokenUsage?: TokenUsage;
   /** true while a request is in flight (not idle/completed/failed/cancelled). */
   isRunning: boolean;
   errorMessage: string | null;
@@ -101,6 +103,7 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
   const config = { ...DEFAULTS, ...options };
   const [status, setStatus] = useState<AiGenerationStatus>("idle");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [tokenUsage, setTokenUsage] = useState<TokenUsage | undefined>(undefined);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -127,6 +130,7 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
     stopTimer();
     setStatus("idle");
     setElapsedSeconds(0);
+    setTokenUsage(undefined);
     setErrorMessage(null);
   }, [clearStageTimeouts, stopTimer]);
 
@@ -143,6 +147,7 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
 
       setErrorMessage(null);
       setElapsedSeconds(0);
+      setTokenUsage(undefined);
       startedAtRef.current = Date.now();
       timerRef.current = window.setInterval(() => {
         setElapsedSeconds(Math.floor((Date.now() - startedAtRef.current) / 1000));
@@ -175,11 +180,14 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
         }
         setStatus("validating_response");
         await delay(config.validateMinMs, signal);
+        const finalElapsedSeconds = Math.floor((Date.now() - startedAtRef.current) / 1000);
         stopTimer();
         if (signal.aborted) {
           setStatus("cancelled");
           return undefined;
         }
+        setElapsedSeconds(finalElapsedSeconds);
+        setTokenUsage(extractTokenUsage(data));
         setStatus("completed");
         return data;
       } catch (error) {
@@ -219,6 +227,7 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
   return {
     status,
     elapsedSeconds,
+    tokenUsage,
     isRunning: !TERMINAL.has(status),
     errorMessage,
     start,
@@ -226,4 +235,20 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
     retry,
     reset,
   };
+}
+
+function extractTokenUsage(value: unknown): TokenUsage | undefined {
+  if (!value || typeof value !== "object" || !("tokenUsage" in value)) return undefined;
+  const usage = (value as { tokenUsage?: unknown }).tokenUsage;
+  if (!usage || typeof usage !== "object") return undefined;
+  const record = usage as Record<string, unknown>;
+  const input = validCount(record.input);
+  const output = validCount(record.output);
+  const total = validCount(record.total);
+  if (input === undefined && output === undefined && total === undefined) return undefined;
+  return { input, output, total };
+}
+
+function validCount(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }

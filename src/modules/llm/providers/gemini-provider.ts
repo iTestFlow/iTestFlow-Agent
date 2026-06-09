@@ -59,6 +59,7 @@ export class GeminiProvider extends BaseJsonProvider {
       requestBody,
       responseBody: json,
       finishReason: json.candidates?.[0]?.finishReason,
+      tokenUsage: geminiTokenUsage(json.usageMetadata),
     };
   }
 
@@ -107,6 +108,7 @@ export class GeminiProvider extends BaseJsonProvider {
       requestBody,
       responseBody: json,
       finishReason: json.candidates?.[0]?.finishReason,
+      tokenUsage: geminiTokenUsage(json.usageMetadata),
     };
   }
 }
@@ -122,4 +124,21 @@ function geminiStructuredOutputOptions(model: string) {
   }
 
   return {};
+}
+
+function geminiTokenUsage(usage: unknown) {
+  if (!usage || typeof usage !== "object") return undefined;
+  const value = usage as Record<string, unknown>;
+  const input = optionalCount(value.promptTokenCount);
+  const total = optionalCount(value.totalTokenCount);
+  const candidateOutput = optionalCount(value.candidatesTokenCount);
+  const output = total !== undefined && input !== undefined
+    ? Math.max(0, total - input)
+    : candidateOutput;
+
+  return { input, output, total };
+}
+
+function optionalCount(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

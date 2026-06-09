@@ -1,4 +1,5 @@
 import type { RequirementAnalysisChecklistItemId } from "@/modules/requirement-analysis/checklist-options";
+import type { TokenUsage } from "@/modules/llm/llm-types";
 import type { TestDesignOptions } from "@/modules/test-case-design/test-design-options";
 
 /**
@@ -53,6 +54,7 @@ export type RequirementAnalysisRunResult = {
   contextUsed: string[];
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   resolvedContextUsed?: unknown[];
+  tokenUsage?: TokenUsage;
 };
 
 export type GeneratedTestCase = {
@@ -84,6 +86,7 @@ export type TestCaseGenerationRunResult = {
   contextUsed: string[];
   resolvedContextUsed?: unknown[];
   options?: TestDesignOptions;
+  tokenUsage?: TokenUsage;
 };
 
 export type ManualPromptDraft = {
@@ -161,6 +164,7 @@ export type ExistingReviewResult = {
   findings: ExistingReviewFinding[];
   suggestedAdditions: GeneratedTestCase[];
   contextUsed: string[];
+  tokenUsage?: TokenUsage;
 };
 
 export type PublishRunResult = {

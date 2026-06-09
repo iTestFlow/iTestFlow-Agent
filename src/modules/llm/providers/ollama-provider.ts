@@ -38,6 +38,7 @@ export class OllamaProvider extends BaseJsonProvider {
       rawOutput: json.response ?? "",
       requestBody,
       responseBody: json,
+      tokenUsage: ollamaTokenUsage(json),
     };
   }
 
@@ -72,6 +73,23 @@ export class OllamaProvider extends BaseJsonProvider {
       requestBody,
       responseBody: json,
       finishReason: json.done_reason,
+      tokenUsage: ollamaTokenUsage(json),
     };
   }
+}
+
+function ollamaTokenUsage(response: unknown) {
+  if (!response || typeof response !== "object") return undefined;
+  const value = response as Record<string, unknown>;
+  const input = optionalCount(value.prompt_eval_count);
+  const output = optionalCount(value.eval_count);
+  return {
+    input,
+    output,
+    total: input !== undefined && output !== undefined ? input + output : undefined,
+  };
+}
+
+function optionalCount(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
