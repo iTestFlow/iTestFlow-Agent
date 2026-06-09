@@ -88,7 +88,7 @@ export function ConfigurationForm({
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
-  const { navigate } = useUnsavedChangesGuard({ dirty: hasUnfinishedWork, busy: saving || testing });
+  useUnsavedChangesGuard({ dirty: hasUnfinishedWork, busy: saving || testing });
   const [form, setForm] = useState<FormState>({
     organizationUrl: "",
     personalAccessToken: "",
@@ -326,7 +326,7 @@ export function ConfigurationForm({
       onSaved?.();
       setHasUnfinishedWork(false);
       if (redirectTo) {
-        window.setTimeout(() => navigate(redirectTo), 0);
+        router.push(redirectTo);
       }
       router.refresh();
     } catch (err) {
