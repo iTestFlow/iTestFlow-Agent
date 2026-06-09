@@ -4,73 +4,118 @@
   <img src="public/brand/itestflow-logo-full.png" alt="iTestFlow - AI-Powered Software Testing Lifecycle" width="760" />
 </p>
 
-Local-first test intelligence command center for Azure DevOps requirement analysis, RAG-assisted context selection, test case design, Test Coverage Matrix review, coverage validation, and reviewed publishing back to Azure Test Plans.
+<p align="center">
+  Local-first test intelligence for Azure DevOps, grounded in project knowledge and controlled by human review.
+</p>
 
-The MVP runs locally with real Azure DevOps and LLM provider APIs. Runtime configuration is initiated from the UI, can be edited later from Settings, and `.env.local` is optional as a bootstrap fallback.
+iTestFlow brings requirement analysis, test design, coverage review, execution planning, defect reporting, and test-suite operations into one project-scoped QA workspace. It connects to real Azure DevOps and LLM provider APIs while keeping runtime settings, indexed context, audit history, and workflow records on the local machine.
 
-The UI foundation uses Next.js App Router, React, TypeScript, Tailwind CSS, shadcn/ui, Radix-powered shadcn components, and lucide-react icons.
+## Contents
 
-For the living source map and module boundaries, see [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md).
+- [Architecture](#architecture)
+- [Capabilities](#capabilities)
+- [Quick Start](#quick-start)
+- [App Links](#app-links)
+- [Configuration](#configuration)
+- [First-Run Workflow](#first-run-workflow)
+- [Local Data and Security](#local-data-and-security)
+- [Development](#development)
+- [Project Documentation](#project-documentation)
 
-## Architecture at a Glance
+## Architecture
 
 <p align="center">
   <img src="public/brand/itestflow-architecture.png" alt="iTestFlow architecture and AI-powered software testing lifecycle" width="1200" />
 </p>
 
-## Prerequisites
+The browser communicates only with local Next.js API routes. Server-side domain modules own workflow logic, local SQLite access, Azure DevOps calls, and LLM provider calls.
+
+For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md).
+
+## Capabilities
+
+### Knowledge and Context
+
+- **Knowledge Hub** indexes filtered Azure DevOps work items, builds compiled project knowledge, monitors knowledge health, and exports a Markdown wiki.
+- **Business Owner Assistant** answers questions using retrieved project context and saved knowledge, with source citations.
+- **Automatic context selection** grounds supported AI workflows in relevant project information.
+- **Scheduled context updates** can refresh a configured project scope using a cron expression.
+
+### Testing Lifecycle
+
+- **Requirements Analysis** finds ambiguities, risks, omissions, and testability concerns, then publishes reviewed comments to Azure DevOps.
+- **Test Case Design** generates editable positive, negative, boundary, and edge-case scenarios and publishes approved cases to Azure Test Plans.
+- **Test Gap Analysis** maps requirement details and acceptance criteria to linked test cases, identifies missing coverage, and creates selected additions.
+- **Test Execution Effort** estimates manual execution time, assumptions, complexity, risks, and recommendations for linked test cases.
+- **Report Bug** converts QA notes into reviewed Azure DevOps Bug work items with fields, relationships, and attachments.
+
+### Utilities and Governance
+
+- **Suite Migration** previews and runs same-project Test Suite copy or move operations while preserving the latest matching test-point outcomes.
+- **Bulk Task Creation** creates one Azure DevOps Task under each selected User Story.
+- **Dashboards** summarize project-scoped workflow activity, coverage, publishing, context, and LLM usage.
+- **Activity Log** provides a traceable history of generated outputs, publishing operations, and user actions.
+- **Human review gates** keep AI-generated analysis and artifacts editable before any Azure DevOps write.
+- **Project isolation** validates Azure DevOps resources against the active project before project-scoped reads or writes.
+
+## Quick Start
+
+### Prerequisites
 
 - Node.js 24 or newer
 - npm
-- Azure DevOps organization URL, for example `https://dev.azure.com/YOUR_ORG`
-- Azure DevOps PAT with permissions for work items, comments, Test Plans, Test Suites, Test Case creation, and work item links
+- An Azure DevOps organization URL, such as `https://dev.azure.com/YOUR_ORG`
+- An Azure DevOps Personal Access Token with the permissions needed for work items, comments, Test Plans, Test Suites, test cases, and links
 - One LLM provider: OpenAI, Gemini, Anthropic, or Ollama
 
-The Azure DevOps PAT authenticates requests. The organization URL is still required because it tells the app which Azure DevOps organization endpoint to call before project selection scopes actions.
-
-## 1. Install Dependencies
+### Install and Run
 
 ```bash
 npm install
-```
-
-## 2. Run in Development
-
-```bash
 npm run dev -- --hostname 127.0.0.1 --port 3000
 ```
 
-Open the app:
+Open [Initial Configuration](http://127.0.0.1:3000/setup), test both connections, and save the settings. iTestFlow then opens the [Dashboards](http://127.0.0.1:3000/dashboards) workspace.
 
-[http://127.0.0.1:3000/setup](http://127.0.0.1:3000/setup)
+## App Links
 
-## 3. Configure from the UI
+These links work while the local development or production server is running on port `3000`.
 
-On the Initial Configuration screen, enter:
+| Area | Page | Description |
+| --- | --- | --- |
+| Overview | [Dashboards](http://127.0.0.1:3000/dashboards) | Project-scoped QA and DevOps analytics |
+| Knowledge | [Knowledge Hub](http://127.0.0.1:3000/knowledge-hub) | Index context, compile knowledge, and review health |
+| Knowledge | [Business Owner Assistant](http://127.0.0.1:3000/business-owner-assistant) | Ask grounded questions about the active project |
+| Testing | [Requirements Analysis](http://127.0.0.1:3000/requirements-analysis) | Analyze a real Azure DevOps requirement |
+| Testing | [Test Case Design](http://127.0.0.1:3000/test-case-design) | Generate, review, and publish test cases |
+| Testing | [Test Gap Analysis](http://127.0.0.1:3000/test-gap-analysis) | Review traceability and missing coverage |
+| Testing | [Test Execution Effort](http://127.0.0.1:3000/test-execution-effort) | Estimate manual QA execution effort |
+| Testing | [Report Bug](http://127.0.0.1:3000/report-bug) | Generate and post Azure DevOps bugs |
+| Utilities | [Suite Migration](http://127.0.0.1:3000/suite-migration) | Preview and execute Test Suite copy or move |
+| Utilities | [Bulk Task Creation](http://127.0.0.1:3000/bulk-task-creation) | Create tasks for selected User Stories |
+| Administration | [Settings](http://127.0.0.1:3000/settings) | Manage integrations, models, context, and behavior |
+| Administration | [Activity Log](http://127.0.0.1:3000/activity-log) | Review system and user activity |
 
-- Azure DevOps organization URL, for example `https://dev.azure.com/YOUR_ORG`
-- Azure DevOps PAT
-- LLM provider
-- LLM model, loaded from the selected provider's real model-list API
-- LLM API token
-- LLM retry attempts for transient provider failures
+## Configuration
 
-Then:
+### UI Configuration
 
-1. Click `Test Connections`.
-2. Confirm Azure DevOps and LLM both validate.
-3. Click `Continue`.
-4. The app saves settings locally and redirects to the dashboard.
+The recommended setup path is [http://127.0.0.1:3000/setup](http://127.0.0.1:3000/setup). Configure:
 
-Saved UI configuration is stored locally under `data/runtime-settings.json` using AES-256-GCM encryption. The local encryption key is stored under `data/.runtime-settings-key`. Both files are ignored by git.
+- Azure DevOps organization URL and Personal Access Token
+- LLM provider and model
+- Provider API key or Ollama base URL
+- Output token budget, retry count, and structured-output attempts
+- Project-context retrieval count
+- Optional automatic context-update schedule and filters
 
-You can view and edit saved configuration anytime from:
+Models are loaded from the selected provider's model-list API where supported. The top bar also displays the authenticated Azure DevOps profile and lets you choose the active project.
 
-[http://127.0.0.1:3000/settings](http://127.0.0.1:3000/settings)
+### Optional `.env.local` Bootstrap
 
-## 4. Optional `.env.local` Bootstrap
+UI-saved settings take priority. Environment variables are used as bootstrap values only when saved runtime settings do not exist.
 
-You can still preseed configuration with `.env.local`. The UI-saved runtime settings take priority. Environment variables are used only when no UI-saved settings exist.
+Start from [.env.example](.env.example):
 
 ```bash
 AZURE_DEVOPS_ORG_URL=https://dev.azure.com/YOUR_ORG
@@ -79,62 +124,80 @@ AZURE_DEVOPS_PAT=YOUR_AZURE_DEVOPS_PAT
 DEFAULT_LLM_PROVIDER=openai
 NEXT_PUBLIC_LLM_PROVIDER_LABEL=OpenAI
 OPENAI_API_KEY=YOUR_OPENAI_KEY
-OPENAI_MODEL=MODEL_ID_RETURNED_BY_OPENAI_MODELS_API
+OPENAI_MODEL=YOUR_MODEL_ID
+
+LLM_MAX_TOKENS=8000
+LLM_MAX_OUTPUT_TOKEN_CAP=32000
 LLM_RETRY_ATTEMPTS=1
+LLM_MAX_TRUNCATION_ATTEMPTS=3
+PROJECT_CONTEXT_TOP_K=8
 ```
 
-Other supported providers:
+Provider-specific alternatives:
 
 ```bash
+# Gemini
 DEFAULT_LLM_PROVIDER=gemini
 GEMINI_API_KEY=YOUR_GEMINI_KEY
-GEMINI_MODEL=MODEL_ID_RETURNED_BY_GEMINI_MODELS_API
-```
+GEMINI_MODEL=YOUR_MODEL_ID
 
-```bash
+# Anthropic
 DEFAULT_LLM_PROVIDER=anthropic
 ANTHROPIC_API_KEY=YOUR_ANTHROPIC_KEY
-ANTHROPIC_MODEL=MODEL_ID_RETURNED_BY_ANTHROPIC_MODELS_API
+ANTHROPIC_MODEL=YOUR_MODEL_ID
+
+# Local Ollama
+DEFAULT_LLM_PROVIDER=ollama
+OLLAMA_MODEL=YOUR_LOCAL_MODEL
+OLLAMA_BASE_URL=http://localhost:11434
 ```
 
-## 5. Build for Production
+## First-Run Workflow
 
-```bash
-npm run build
-```
+1. Configure and test Azure DevOps and LLM connections from `/setup`.
+2. Select the active Azure DevOps project in the top bar.
+3. Open `/knowledge-hub`, choose work-item filters, and index project context.
+4. Build the compiled knowledge base if you want richer grounding and assistant answers.
+5. Enter a real Azure DevOps work-item ID in Requirements Analysis, Test Case Design, Test Gap Analysis, or Test Execution Effort.
+6. Review and edit every AI-generated result.
+7. Publish only approved comments, test cases, suggested additions, bugs, or tasks.
+8. Use Dashboards and Activity Log to review outcomes and trace recent actions.
 
-## 6. Start the Built App
+## Local Data and Security
 
-```bash
-npm start -- --hostname 127.0.0.1 --port 3000
-```
+- Runtime settings are encrypted with AES-256-GCM in `data/runtime-settings.json`.
+- The local encryption key is stored in `data/.runtime-settings-key`.
+- Indexed context, knowledge, audit records, and workflow data are stored in `data/itestflow.sqlite`.
+- Runtime data and secrets under `data/` are ignored by git.
+- Azure DevOps and LLM requests are made server-side; credentials are not sent directly from browser components to external providers.
+- Project-scoped Azure DevOps operations verify the real `System.TeamProject` value before reading or writing resources.
 
-Open after starting the built app:
+Treat the `data/` directory as sensitive local application state and do not share it.
 
-[http://127.0.0.1:3000/setup](http://127.0.0.1:3000/setup)
+## Development
 
-After configuration, open:
+The UI uses Next.js App Router, React, TypeScript, Tailwind CSS, shadcn/Radix primitives, Lucide icons, and Recharts.
 
-[http://127.0.0.1:3000/dashboard](http://127.0.0.1:3000/dashboard)
-
-## 7. First-Run Workflow
-
-1. Configure and test connections from `/setup`.
-2. Select an Azure DevOps project in the header selector.
-3. Fetch and index filtered project context from `/context` when you want RAG-assisted suggestions.
-4. Enter a real Azure DevOps work item ID in Requirement Analysis or Test Case Design.
-5. Run context suggestion, analysis, generation, or Test Coverage Matrix review.
-6. Review and edit AI output before pushing comments or publishing test cases.
-7. Publish selected test cases to a fetched Azure Test Plan and Test Suite.
-8. Check Audit Logs for local execution history.
-
-The header displays the authenticated Azure DevOps user from the configured PAT through the live Azure DevOps profile endpoint. It does not use a mocked local user profile.
-
-## Verification
+### Verification
 
 ```bash
 npm run typecheck
 npm run build
 ```
 
+### Production Build
+
+```bash
+npm run build
+npm start -- --hostname 127.0.0.1 --port 3000
+```
+
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000). The root route redirects to `/dashboards`.
+
 Docker is not required.
+
+## Project Documentation
+
+- [Project Architecture](PROJECT_ARCHITECTURE.md) - routes, modules, integrations, storage, and architecture decisions
+- [Knowledge Wiki and RAG Enhancement](docs/knowledge-wiki-rag-enhancement.md) - compiled knowledge and wiki design
+- [Environment Variable Template](.env.example) - supported bootstrap configuration
