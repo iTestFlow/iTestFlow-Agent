@@ -1,6 +1,7 @@
 import "server-only";
 
 import { writeAuditLog } from "@/modules/audit/audit.service";
+import { truncationAuditDetails } from "@/modules/llm/llm-warnings";
 import { parseExternalStructuredOutput } from "@/modules/llm/external-structured-output";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
@@ -54,6 +55,7 @@ export async function generateBugReport(input: {
     status: "Success",
     message: "Generated a validated Azure DevOps bug report draft.",
     details: {
+      ...truncationAuditDetails(result.warnings),
       provider: result.provider,
       model: result.model,
       promptVersion: bugReportPrompt.version,

@@ -5,7 +5,7 @@ import { parseJsonWithRepair } from "../json-extraction";
 import { addTokenUsage, hasTokenUsage } from "../token-usage";
 import {
   DEFAULT_MAX_OUTPUT_TOKEN_CAP,
-  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
+  DEFAULT_TEXT_OUTPUT_TOKENS,
 } from "../llm-defaults";
 import { writeLLMRequestLog } from "../llm-request-log.service";
 import type {
@@ -66,6 +66,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
         rawOutput: callResult.rawOutput,
         text: callResult.rawOutput.trim(),
         tokenUsage: hasTokenUsage(callResult.tokenUsage) ? callResult.tokenUsage : undefined,
+        warnings: buildTruncationWarnings(callResult.finishReason, input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown LLM text request error.";
@@ -79,54 +80,22 @@ export abstract class BaseJsonProvider implements LLMProvider {
   ): Promise<LLMResult<z.infer<TSchema>>> {
     const startedAt = Date.now();
     let callResult: LLMProviderCallResult | null = null;
-    // max_tokens is a CEILING, not a reservation: providers spend latency and cost only on
-    // tokens actually generated. Starting low and doubling on truncation regenerates the whole
-    // response from scratch each time, so we request the full cap on the first attempt — the
-    // common case then completes in a single pass. An explicit input.maxTokens is still honored
-    // as an OPTIONAL lower ceiling for callers that deliberately want to bound output length.
+    // max_tokens is a CEILING, not a reservation: the provider spends latency and cost only on
+    // tokens it actually generates, so we request the full output-token cap in a single call.
+    // An explicit input.maxTokens is honored as an OPTIONAL lower ceiling for callers that
+    // deliberately want to bound output length.
     const cap = positiveIntegerOrDefault(this.config.maxOutputTokenCap, DEFAULT_MAX_OUTPUT_TOKEN_CAP);
-    const requestedCeiling = positiveIntegerOrDefault(input.maxTokens, cap);
-    const startingBudget = Math.min(requestedCeiling, cap);
-    const maxTruncationAttempts = positiveIntegerOrDefault(
-      this.config.maxTruncationAttempts,
-      DEFAULT_MAX_TRUNCATION_ATTEMPTS,
-    );
-    let budget = startingBudget;
-    let operationTokenUsage: TokenUsage | undefined;
-    let operationTokenUsageComplete = true;
+    const budget = Math.min(positiveIntegerOrDefault(input.maxTokens, cap), cap);
 
     try {
-      for (let attempt = 0; attempt < maxTruncationAttempts; attempt += 1) {
-        const attemptInput = { ...input, maxTokens: budget };
-        let attemptResult: LLMProviderCallResult;
+      callResult = await this.callModel({ ...input, maxTokens: budget });
+      this.recordTokenUsage(callResult.tokenUsage);
+      if (callResult.errorMessage) throw new Error(callResult.errorMessage);
 
-        try {
-          attemptResult = await this.callModel(attemptInput);
-          if (!hasTokenUsage(attemptResult.tokenUsage)) operationTokenUsageComplete = false;
-          operationTokenUsage = addTokenUsage(operationTokenUsage, attemptResult.tokenUsage);
-          this.recordTokenUsage(attemptResult.tokenUsage);
-        } catch (callError) {
-          if (callResult && isTokenLimitFinishReason(callResult.finishReason)) break;
-          throw callError;
-        }
-
-        if (attemptResult.errorMessage) {
-          if (callResult && isTokenLimitFinishReason(callResult.finishReason)) break;
-          callResult = attemptResult;
-          throw new Error(attemptResult.errorMessage);
-        }
-
-        callResult = attemptResult;
-        if (!isTokenLimitFinishReason(callResult.finishReason)) break;
-        if (budget >= cap || attempt === maxTruncationAttempts - 1) break;
-
-        const nextBudget = Math.min(budget * 2, cap);
-        if (nextBudget <= budget) break;
-        budget = nextBudget;
-      }
-
-      if (!callResult) throw new Error("LLM provider returned no result.");
       const validatedOutput = this.parseAndValidate(input, callResult.rawOutput, callResult.finishReason);
+      // Parse succeeded but the model still stopped on a token limit: the JSON is valid yet may be
+      // semantically cut short (e.g. fewer test cases than intended). Surface a non-blocking warning.
+      const warnings = buildTruncationWarnings(callResult.finishReason, budget);
       this.logRequest(input, callResult, "Success", Date.now() - startedAt, undefined, validatedOutput);
 
       return {
@@ -134,7 +103,8 @@ export abstract class BaseJsonProvider implements LLMProvider {
         model: this.model,
         rawOutput: callResult.rawOutput,
         validatedOutput,
-        tokenUsage: operationTokenUsageComplete ? operationTokenUsage : undefined,
+        tokenUsage: hasTokenUsage(callResult.tokenUsage) ? callResult.tokenUsage : undefined,
+        warnings,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown LLM request error.";
@@ -159,7 +129,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown JSON parse error.";
       const truncated = isTokenLimitFinishReason(finishReason)
-        ? " The provider stopped because it exhausted the max output token budget before completing the JSON."
+        ? ' The provider stopped because it hit the output-token limit before completing the JSON. Increase the "Maximum output token cap" in Settings and retry.'
         : "";
       throw new Error(`LLM output for ${input.schemaName} was not valid JSON:${truncated} ${message}`);
     }
@@ -251,6 +221,16 @@ export abstract class BaseJsonProvider implements LLMProvider {
 function isTokenLimitFinishReason(finishReason?: string) {
   const normalized = finishReason?.toLowerCase();
   return normalized === "length" || normalized === "max_tokens";
+}
+
+// When the model stopped because it hit the output-token limit, return a user-facing warning so
+// the caller can surface "raise the cap" guidance. Returns undefined when the response finished
+// cleanly, so callers can leave `warnings` unset in the common case.
+function buildTruncationWarnings(finishReason: string | undefined, limit: number): string[] | undefined {
+  if (!isTokenLimitFinishReason(finishReason)) return undefined;
+  return [
+    `Output was truncated at the ${limit.toLocaleString()}-token output limit, so the result may be incomplete. Increase the "Maximum output token cap" in Settings and re-run if the output looks cut off.`,
+  ];
 }
 
 function positiveIntegerOrDefault(value: number | undefined, fallback: number) {

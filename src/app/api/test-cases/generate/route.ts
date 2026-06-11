@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { generateTestCases } from "@/modules/test-case-design/application/test-case-generation.service";
 import { defaultTestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import { TestDesignOptionsRequestSchema } from "@/modules/test-case-design/test-design-options.schema";
@@ -76,8 +77,10 @@ export async function POST(request: Request) {
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
       tokenUsage: provider.getTokenUsage(),
+      warnings: result.warnings,
     });
   } catch (error) {
+    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "test_case_generation.run", label: "Test case generation failed.", error });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Test case generation failed." },
       { status: 503 },

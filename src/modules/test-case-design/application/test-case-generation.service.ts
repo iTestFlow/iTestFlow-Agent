@@ -1,6 +1,7 @@
 import "server-only";
 
 import { writeAuditLog } from "@/modules/audit/audit.service";
+import { truncationAuditDetails } from "@/modules/llm/llm-warnings";
 import { parseExternalStructuredOutput } from "@/modules/llm/external-structured-output";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
@@ -56,6 +57,7 @@ export async function generateTestCases(input: {
     status: "Success",
     message: `Generated ${result.validatedOutput.testCases.length} validated test cases.`,
     details: {
+      ...truncationAuditDetails(result.warnings),
       provider: result.provider,
       model: result.model,
       promptVersion: testCaseGenerationPrompt.version,

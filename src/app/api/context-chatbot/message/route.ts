@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { answerContextChatbot } from "@/modules/context-chatbot/context-chatbot.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 
@@ -44,6 +45,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json(result);
   } catch (error) {
+    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "context_chatbot.answer", label: "Context chatbot failed.", error });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Context chatbot failed." },
       { status: 503 },

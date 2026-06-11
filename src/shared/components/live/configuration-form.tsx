@@ -17,12 +17,8 @@ import {
 } from "@/lib/project-context-defaults";
 import {
   DEFAULT_MAX_OUTPUT_TOKEN_CAP,
-  DEFAULT_MAX_TOKENS,
-  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
   DEFAULT_RETRY_ATTEMPTS,
   MAX_OUTPUT_TOKEN_CAP_OPTIONS,
-  MAX_TOKEN_OPTIONS,
-  MAX_TRUNCATION_ATTEMPT_OPTIONS,
   RETRY_ATTEMPT_OPTIONS,
 } from "@/modules/llm/llm-defaults";
 import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION } from "@/modules/settings/cron-expression";
@@ -46,10 +42,8 @@ type FormState = {
   model: string;
   apiKey: string;
   baseUrl: string;
-  maxTokens: number;
   maxOutputTokenCap: number;
   retryAttempts: number;
-  maxTruncationAttempts: number;
   retrievalTopK: number;
   autoUpdateEnabled: boolean;
   autoUpdateCronExpression: string;
@@ -96,10 +90,8 @@ export function ConfigurationForm({
     model: "",
     apiKey: "",
     baseUrl: "",
-    maxTokens: DEFAULT_MAX_TOKENS,
     maxOutputTokenCap: DEFAULT_MAX_OUTPUT_TOKEN_CAP,
     retryAttempts: DEFAULT_RETRY_ATTEMPTS,
-    maxTruncationAttempts: DEFAULT_MAX_TRUNCATION_ATTEMPTS,
     retrievalTopK: 8,
     autoUpdateEnabled: false,
     autoUpdateCronExpression: DEFAULT_AUTO_UPDATE_CRON_EXPRESSION,
@@ -137,10 +129,8 @@ export function ConfigurationForm({
           provider: summary.llm?.provider ?? current.provider,
           model: summary.llm?.model ?? current.model,
           baseUrl: summary.llm?.baseUrl ?? "",
-          maxTokens: summary.llm?.maxTokens ?? current.maxTokens,
           maxOutputTokenCap: summary.llm?.maxOutputTokenCap ?? current.maxOutputTokenCap,
           retryAttempts: summary.llm?.retryAttempts ?? current.retryAttempts,
-          maxTruncationAttempts: summary.llm?.maxTruncationAttempts ?? current.maxTruncationAttempts,
           retrievalTopK: summary.context?.retrievalTopK ?? current.retrievalTopK,
           autoUpdateEnabled: summary.context?.autoUpdate?.enabled ?? current.autoUpdateEnabled,
           autoUpdateCronExpression: summary.context?.autoUpdate?.cronExpression ?? current.autoUpdateCronExpression,
@@ -230,21 +220,6 @@ export function ConfigurationForm({
     setTestResult(null);
   }
 
-  function updateMaxTokens(maxTokens: number) {
-    setHasUnfinishedWork(true);
-    setForm((current) => ({
-      ...current,
-      maxTokens,
-      maxOutputTokenCap:
-        MAX_OUTPUT_TOKEN_CAP_OPTIONS.find(
-          (option) => option >= maxTokens && option >= current.maxOutputTokenCap,
-        ) ?? MAX_OUTPUT_TOKEN_CAP_OPTIONS[MAX_OUTPUT_TOKEN_CAP_OPTIONS.length - 1],
-    }));
-    setError(null);
-    setMessage(null);
-    setTestResult(null);
-  }
-
   function payload() {
     return {
       azureDevOps: {
@@ -256,10 +231,8 @@ export function ConfigurationForm({
         model: form.model.trim(),
         apiKey: form.apiKey,
         baseUrl: form.baseUrl.trim() || undefined,
-        maxTokens: form.maxTokens,
         maxOutputTokenCap: form.maxOutputTokenCap,
         retryAttempts: form.retryAttempts,
-        maxTruncationAttempts: form.maxTruncationAttempts,
       },
       context: {
         retrievalTopK: form.retrievalTopK,
@@ -500,24 +473,12 @@ export function ConfigurationForm({
 
                       <div className="mt-5 grid gap-5 md:grid-cols-2">
                         <Field
-                          label="Default output token budget"
-                          description="Fallback output budget when a workflow does not specify its own value."
-                        >
-                          <NumberSelect
-                            value={form.maxTokens}
-                            options={MAX_TOKEN_OPTIONS}
-                            formatOption={(value) => `${value.toLocaleString()} tokens`}
-                            onChange={updateMaxTokens}
-                          />
-                        </Field>
-
-                        <Field
                           label="Maximum output token cap"
-                          description="Absolute ceiling for every structured-output request, including workflow overrides."
+                          description="Absolute ceiling for every structured-output request. The first attempt already requests this full cap."
                         >
                           <NumberSelect
                             value={form.maxOutputTokenCap}
-                            options={MAX_OUTPUT_TOKEN_CAP_OPTIONS.filter((option) => option >= form.maxTokens)}
+                            options={MAX_OUTPUT_TOKEN_CAP_OPTIONS}
                             formatOption={(value) => `${value.toLocaleString()} tokens`}
                             onChange={(value) => update("maxOutputTokenCap", value)}
                           />
@@ -534,26 +495,6 @@ export function ConfigurationForm({
                             onChange={(value) => update("retryAttempts", value)}
                           />
                         </Field>
-
-                        <Field
-                          label="Structured-output attempts"
-                          description="Safety bound on retry attempts if the model truncates output before completing JSON. The first attempt already requests the full output-token cap."
-                        >
-                          <NumberSelect
-                            value={form.maxTruncationAttempts}
-                            options={MAX_TRUNCATION_ATTEMPT_OPTIONS}
-                            formatOption={(value) => value === 1 ? "1 attempt (no truncation retry)" : `${value} attempts`}
-                            onChange={(value) => update("maxTruncationAttempts", value)}
-                          />
-                        </Field>
-                      </div>
-
-                      <div className="mt-5 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning-foreground dark:text-warning">
-                        Higher values can increase latency and provider cost. Worst case:{" "}
-                        <span className="font-semibold">
-                          {form.maxTruncationAttempts * (form.retryAttempts + 1)} provider calls
-                        </span>{" "}
-                        for one structured request.
                       </div>
                     </section>
 

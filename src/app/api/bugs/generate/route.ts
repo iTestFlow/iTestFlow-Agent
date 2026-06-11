@@ -4,6 +4,7 @@ import { BugAttachmentDescriptorSchema, BugCustomFieldValueSchema, BugRelatedTes
 import { generateBugReport } from "@/modules/bug-reporting/bug-reporting.service";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 
@@ -64,6 +65,7 @@ export async function POST(request: Request) {
       ...result.validatedOutput,
     });
   } catch (error) {
+    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "bug_report.generate", label: "Bug report generation failed.", error });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Bug report generation failed." },
       { status: 503 },

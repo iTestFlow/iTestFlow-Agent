@@ -2,12 +2,8 @@ import { z } from "zod";
 import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
 import {
   DEFAULT_MAX_OUTPUT_TOKEN_CAP,
-  DEFAULT_MAX_TOKENS,
-  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
   DEFAULT_RETRY_ATTEMPTS,
   MAX_OUTPUT_TOKEN_CAP_OPTIONS,
-  MAX_TOKEN_OPTIONS,
-  MAX_TRUNCATION_ATTEMPT_OPTIONS,
   RETRY_ATTEMPT_OPTIONS,
 } from "@/modules/llm/llm-defaults";
 import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION, validateCronExpression } from "./cron-expression";
@@ -66,10 +62,6 @@ const LLMSettingsSchema = z.object({
   }).trim().min(1, "Select an LLM model."),
   apiKey: z.string().optional(),
   baseUrl: z.string().optional(),
-  maxTokens: allowedNumber(
-    MAX_TOKEN_OPTIONS,
-    "Select a supported default output token budget.",
-  ).default(DEFAULT_MAX_TOKENS),
   maxOutputTokenCap: allowedNumber(
     MAX_OUTPUT_TOKEN_CAP_OPTIONS,
     "Select a supported maximum output token cap.",
@@ -78,18 +70,6 @@ const LLMSettingsSchema = z.object({
     RETRY_ATTEMPT_OPTIONS,
     "Select a supported transient retry count.",
   ).default(DEFAULT_RETRY_ATTEMPTS),
-  maxTruncationAttempts: allowedNumber(
-    MAX_TRUNCATION_ATTEMPT_OPTIONS,
-    "Select a supported structured-output attempt count.",
-  ).default(DEFAULT_MAX_TRUNCATION_ATTEMPTS),
-}).superRefine((value, ctx) => {
-  if (value.maxOutputTokenCap < value.maxTokens) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["maxOutputTokenCap"],
-      message: "Maximum output token cap must be at least the default output token budget.",
-    });
-  }
 });
 
 export const RuntimeSettingsInputSchema = z.object({
@@ -134,10 +114,8 @@ export type RuntimeSettingsSummary = {
     model: string;
     baseUrl?: string;
     hasApiKey: boolean;
-    maxTokens: number;
     maxOutputTokenCap: number;
     retryAttempts: number;
-    maxTruncationAttempts: number;
   };
   context?: {
     retrievalTopK: number;

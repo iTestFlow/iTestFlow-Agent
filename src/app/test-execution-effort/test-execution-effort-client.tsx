@@ -503,7 +503,7 @@ export function TestExecutionEffortClient() {
       {estimateResult ? (
         <div className="space-y-2">
           {mode === "auto" && gen.status === "completed" ? (
-            <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
+            <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
           ) : null}
           <EstimateResultPanel result={estimateResult.estimate} />
         </div>

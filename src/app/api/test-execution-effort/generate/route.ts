@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import { loadTestExecutionEffortData } from "@/modules/test-execution-effort/test-execution-effort.data-loader";
@@ -78,9 +79,11 @@ export async function POST(request: Request) {
       rawOutput: result.rawOutput,
       tokenUsage: provider.getTokenUsage(),
       estimate: result.validatedOutput,
+      warnings: result.warnings,
     });
   } catch (error) {
     const safeError = toSafeTestExecutionEffortError(error, "Test Execution Effort generation failed.", parsed.data.storyId);
+    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "test_execution_effort.run", label: "Test Execution Effort generation failed.", error });
     return NextResponse.json({ error: safeError.message }, { status: safeError.status });
   }
 }

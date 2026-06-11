@@ -4,8 +4,6 @@ import { z } from "zod";
 import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
 import {
   DEFAULT_MAX_OUTPUT_TOKEN_CAP,
-  DEFAULT_MAX_TOKENS,
-  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
   DEFAULT_RETRY_ATTEMPTS,
   normalizeLLMControlSettings,
 } from "@/modules/llm/llm-defaults";
@@ -95,10 +93,8 @@ function summarizeRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsSum
       model: settings.llm.model,
       baseUrl: settings.llm.baseUrl,
       hasApiKey: Boolean(settings.llm.apiKey),
-      maxTokens: settings.llm.maxTokens,
       maxOutputTokenCap: settings.llm.maxOutputTokenCap,
       retryAttempts: settings.llm.retryAttempts,
-      maxTruncationAttempts: settings.llm.maxTruncationAttempts,
     },
     context: {
       retrievalTopK: settings.context.retrievalTopK,
@@ -145,10 +141,8 @@ function getSettingsFromEnv(): RuntimeSettings | null {
   if (!model) return null;
 
   const llmControls = normalizeLLMControlSettings({
-    maxTokens: process.env.LLM_MAX_TOKENS ?? DEFAULT_MAX_TOKENS,
     maxOutputTokenCap: process.env.LLM_MAX_OUTPUT_TOKEN_CAP ?? DEFAULT_MAX_OUTPUT_TOKEN_CAP,
     retryAttempts: process.env.LLM_RETRY_ATTEMPTS ?? DEFAULT_RETRY_ATTEMPTS,
-    maxTruncationAttempts: process.env.LLM_MAX_TRUNCATION_ATTEMPTS ?? DEFAULT_MAX_TRUNCATION_ATTEMPTS,
   });
 
   const parsed = RuntimeSettingsInputSchema.safeParse({

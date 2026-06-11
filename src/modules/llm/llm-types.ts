@@ -8,10 +8,8 @@ export type LLMProviderConfig = {
   apiKey?: string;
   model: string;
   baseUrl?: string;
-  maxTokens?: number;
   maxOutputTokenCap?: number;
   retryAttempts?: number;
-  maxTruncationAttempts?: number;
 };
 
 export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTypeAny> = {
@@ -43,6 +41,7 @@ export type LLMResult<T = unknown> = {
   validatedOutput: T;
   tokenUsage?: TokenUsage;
   costEstimate?: number;
+  warnings?: string[];
 };
 
 export type LLMTextResult = {
@@ -52,6 +51,7 @@ export type LLMTextResult = {
   text: string;
   tokenUsage?: TokenUsage;
   costEstimate?: number;
+  warnings?: string[];
 };
 
 export interface LLMProvider {

@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { runRequirementAnalysis } from "@/modules/requirement-analysis/application/requirement-analysis.service";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
@@ -24,6 +25,7 @@ const RequestSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  let scope: ProjectScope | undefined;
   try {
     const parsed = RequestSchema.safeParse(await request.json());
     if (!parsed.success) {
@@ -34,6 +36,7 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    scope = parsed.data.scope;
 
     const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const provider = getConfiguredProviderFromEnv();
@@ -79,9 +82,11 @@ export async function POST(request: Request) {
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
       tokenUsage: provider.getTokenUsage(),
+      warnings: result.warnings,
     });
   } catch (error) {
     console.error("Requirement analysis failed", error);
+    if (scope) writeGenerationFailureAudit({ scope, action: "requirement_analysis.run", label: "Requirement analysis failed.", error });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Requirement analysis failed." },
       { status: 503 },

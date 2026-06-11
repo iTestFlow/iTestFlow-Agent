@@ -1,7 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
-import { DEFAULT_MAX_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defaults";
+import { DEFAULT_TEXT_OUTPUT_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defaults";
 import { withStructuredOutputInstruction } from "../prompts";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
@@ -20,7 +20,7 @@ export class GeminiProvider extends BaseJsonProvider {
     const baseUrl = this.config.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
     const requestBody = {
       generationConfig: {
-        maxOutputTokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
+        maxOutputTokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
         ...geminiStructuredOutputOptions(this.model),
       },
       systemInstruction: {
@@ -68,7 +68,7 @@ export class GeminiProvider extends BaseJsonProvider {
     const baseUrl = this.config.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
     const requestBody = {
       generationConfig: {
-        maxOutputTokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
+        maxOutputTokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
         responseMimeType: "application/json",
         ...geminiStructuredOutputOptions(this.model),
       },

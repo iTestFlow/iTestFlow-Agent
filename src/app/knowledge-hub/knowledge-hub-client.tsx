@@ -1069,7 +1069,7 @@ export function KnowledgeHubClient() {
                       {generatedDraft?.alreadyCurrent ? (
                         <div className="space-y-2">
                           {gen.status === "completed" ? (
-                            <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
+                            <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
                           ) : null}
                           <GeneratedPreviewPanel
                             draft={generatedDraft}
@@ -1084,7 +1084,7 @@ export function KnowledgeHubClient() {
                   {generatedDraft && !generatedDraft.alreadyCurrent ? (
                     <div ref={autoPreviewStepRef} className="scroll-mt-4 space-y-2">
                       {gen.status === "completed" ? (
-                        <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
+                        <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
                       ) : null}
                       <GeneratedPreviewPanel
                         draft={generatedDraft}

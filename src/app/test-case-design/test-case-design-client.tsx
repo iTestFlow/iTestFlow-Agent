@@ -378,7 +378,7 @@ export function TestCaseDesignClient() {
           <>
             <div className="space-y-2">
               {mode === "auto" && gen.status === "completed" ? (
-                <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
+                <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
               ) : null}
               <GeneratedTestCasesReview
                 testCases={testCases}

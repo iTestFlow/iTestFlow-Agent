@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { suggestContextStories } from "@/modules/context-selection/context-selection.service";
 import { requirementToRetrievalQuery, retrieveStoredProjectContext, type LlmContextSource } from "@/modules/rag/project-context-store.service";
 
@@ -65,6 +66,7 @@ export async function POST(request: Request) {
       model: result.model,
     });
   } catch (error) {
+    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "context_selection.suggest", label: "Context suggestion failed.", error });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Context suggestion failed." },
       { status: 503 },

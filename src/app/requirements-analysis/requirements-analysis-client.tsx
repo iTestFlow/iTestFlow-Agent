@@ -448,7 +448,7 @@ export function RequirementsAnalysisClient() {
       {analysis.data ? (
         <div ref={findingsCardRef} className="space-y-2">
           {mode === "auto" && gen.status === "completed" ? (
-            <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
+            <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
           ) : null}
           <RequirementFindingsReview
             key={findingsReviewVersion}

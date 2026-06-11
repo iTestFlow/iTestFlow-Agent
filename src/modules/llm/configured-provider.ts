@@ -3,8 +3,6 @@ import "server-only";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import {
   DEFAULT_MAX_OUTPUT_TOKEN_CAP,
-  DEFAULT_MAX_TOKENS,
-  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
   DEFAULT_RETRY_ATTEMPTS,
   normalizeLLMControlSettings,
 } from "./llm-defaults";
@@ -19,10 +17,8 @@ export function getConfiguredProviderFromEnv(): LLMProvider | null {
       apiKey: runtimeSettings.llm.apiKey,
       model: runtimeSettings.llm.model,
       baseUrl: runtimeSettings.llm.baseUrl,
-      maxTokens: runtimeSettings.llm.maxTokens,
       maxOutputTokenCap: runtimeSettings.llm.maxOutputTokenCap,
       retryAttempts: runtimeSettings.llm.retryAttempts,
-      maxTruncationAttempts: runtimeSettings.llm.maxTruncationAttempts,
     });
   }
 
@@ -50,10 +46,8 @@ export function getConfiguredProviderFromEnv(): LLMProvider | null {
   if (!model) return null;
 
   const llmControls = normalizeLLMControlSettings({
-    maxTokens: process.env.LLM_MAX_TOKENS ?? DEFAULT_MAX_TOKENS,
     maxOutputTokenCap: process.env.LLM_MAX_OUTPUT_TOKEN_CAP ?? DEFAULT_MAX_OUTPUT_TOKEN_CAP,
     retryAttempts: process.env.LLM_RETRY_ATTEMPTS ?? DEFAULT_RETRY_ATTEMPTS,
-    maxTruncationAttempts: process.env.LLM_MAX_TRUNCATION_ATTEMPTS ?? DEFAULT_MAX_TRUNCATION_ATTEMPTS,
   });
 
   return createLLMProvider({

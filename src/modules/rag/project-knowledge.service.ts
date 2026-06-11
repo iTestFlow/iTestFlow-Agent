@@ -2,6 +2,7 @@ import "server-only";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { writeAuditLog } from "@/modules/audit/audit.service";
+import { truncationAuditDetails } from "@/modules/llm/llm-warnings";
 import { parseExternalStructuredOutput } from "@/modules/llm/external-structured-output";
 import type { LLMProvider, LLMResult } from "@/modules/llm/llm-types";
 import { addTokenUsage, hasTokenUsage } from "@/modules/llm/token-usage";
@@ -120,6 +121,7 @@ export type ProjectKnowledgeGeneratedDraft = {
   knowledgeBase: ProjectKnowledgeBase;
   generatedAt: string;
   alreadyCurrent?: boolean;
+  warnings?: string[];
 };
 
 export async function extractAndSaveProjectKnowledgeBase(input: {
@@ -250,6 +252,7 @@ export async function extractAndSaveProjectKnowledgeBase(input: {
     status: "Success",
     message: "Extracted and saved project knowledge base from indexed context.",
     details: {
+      ...truncationAuditDetails(result.warnings),
       provider: result.provider,
       model: result.model,
       promptVersion: projectKnowledgeExtractionPrompt.version,
@@ -357,6 +360,7 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
       : result.rawOutput,
     knowledgeBase,
     generatedAt: nowIso(),
+    warnings: result.warnings,
   };
 }
 
@@ -1120,6 +1124,9 @@ async function extractProjectKnowledgeBase(input: {
     partialResults.map((result) => result.validatedOutput),
   );
 
+  // A truncation warning from any batch applies to the whole extraction; dedupe identical messages.
+  const aggregatedWarnings = [...new Set(partialResults.flatMap((result) => result.warnings ?? []))];
+
   return {
     provider: partialResults[0].provider,
     model: partialResults[0].model,
@@ -1130,6 +1137,7 @@ async function extractProjectKnowledgeBase(input: {
           undefined as LLMResult["tokenUsage"],
         )
       : undefined,
+    warnings: aggregatedWarnings.length ? aggregatedWarnings : undefined,
     rawOutput: JSON.stringify({
       mode: input.mode,
       consolidation: "local-deterministic",

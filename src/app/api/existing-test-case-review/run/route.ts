@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { reviewExistingLinkedTestCases } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
@@ -76,8 +77,10 @@ export async function POST(request: Request) {
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
       tokenUsage: provider.getTokenUsage(),
+      warnings: result.warnings,
     });
   } catch (error) {
+    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "existing_test_case_review.run", label: "Test Coverage Matrix generation failed.", error });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Test Coverage Matrix generation failed." },
       { status: 503 },

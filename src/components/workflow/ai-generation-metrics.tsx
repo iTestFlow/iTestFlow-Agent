@@ -1,4 +1,5 @@
 import type { TokenUsage } from "@/modules/llm/llm-types";
+import { TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatElapsedTime } from "@/components/workflow/ai-generation-time";
 
@@ -38,13 +39,25 @@ export function AiGenerationMetrics({
 export function AiGenerationCompletedMetrics({
   elapsedSeconds,
   tokenUsage,
+  warnings,
 }: {
   elapsedSeconds: number;
   tokenUsage?: TokenUsage;
+  warnings?: string[];
 }) {
+  const messages = warnings?.filter((entry) => entry.trim().length > 0) ?? [];
   return (
-    <div className="flex justify-end">
+    <div className="flex flex-col items-end gap-1.5">
       <AiGenerationMetrics elapsedSeconds={elapsedSeconds} tokenUsage={tokenUsage} />
+      {messages.length ? (
+        <div
+          role="status"
+          className="flex max-w-prose items-start gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-1.5 text-xs leading-5 text-warning-foreground dark:text-warning"
+        >
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          <span>{messages.join(" ")}</span>
+        </div>
+      ) : null}
     </div>
   );
 }
