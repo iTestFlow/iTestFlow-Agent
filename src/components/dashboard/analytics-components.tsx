@@ -273,11 +273,13 @@ export function RecentActivityList({
   hasMore = false,
   loadingMore = false,
   onLoadMore,
+  emptyLabel = "No recent local activity yet",
 }: {
   items: DashboardRecentActivity[];
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => void;
+  emptyLabel?: string;
 }) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
 
@@ -294,7 +296,7 @@ export function RecentActivityList({
   }
 
   if (!items.length) {
-    return <EmptyChart label="No recent local activity yet" />;
+    return <EmptyChart label={emptyLabel} />;
   }
 
   return (

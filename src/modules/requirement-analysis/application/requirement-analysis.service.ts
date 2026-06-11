@@ -2,6 +2,7 @@ import "server-only";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { writeAuditLog } from "@/modules/audit/audit.service";
+import { truncationAuditDetails } from "@/modules/llm/llm-warnings";
 import { parseExternalStructuredOutput } from "@/modules/llm/external-structured-output";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
@@ -61,6 +62,7 @@ export async function runRequirementAnalysis(input: {
     status: "Success",
     message: "Requirement analysis completed with validated structured output.",
     details: {
+      ...truncationAuditDetails(result.warnings),
       provider: result.provider,
       model: result.model,
       promptVersion: requirementAnalysisPrompt.version,
@@ -68,7 +70,11 @@ export async function runRequirementAnalysis(input: {
     },
   });
 
-  return { ...result, enabledChecklistItemIds: promptDraft.enabledChecklistItemIds };
+  return {
+    ...result,
+    enabledChecklistItemIds: promptDraft.enabledChecklistItemIds,
+    relevantProjectKnowledgeBase: promptDraft.relevantProjectKnowledgeBase,
+  };
 }
 
 export function buildRequirementAnalysisPromptDraft(input: {

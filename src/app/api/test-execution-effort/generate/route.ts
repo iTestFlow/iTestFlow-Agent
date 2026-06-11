@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import { loadTestExecutionEffortData } from "@/modules/test-execution-effort/test-execution-effort.data-loader";
@@ -14,6 +15,7 @@ import {
   StoryIdSchema,
   TestExecutionEffortOptionsSchema,
 } from "@/modules/test-execution-effort/test-execution-effort.schema";
+import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
 
 export const runtime = "nodejs";
 
@@ -66,11 +68,16 @@ export async function POST(request: Request) {
       projectKnowledgeBase: data.projectKnowledgeBase,
       options,
     });
+    const contextCitations = buildWorkflowContextCitations({
+      resolvedContextUsed: data.resolvedContextUsed,
+      relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
+    });
 
     return NextResponse.json({
       ...preview,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: data.resolvedContextUsed,
+      contextCitations,
       retrievalTopK: data.retrievalTopK,
       options,
       provider: result.provider,
@@ -78,9 +85,11 @@ export async function POST(request: Request) {
       rawOutput: result.rawOutput,
       tokenUsage: provider.getTokenUsage(),
       estimate: result.validatedOutput,
+      warnings: result.warnings,
     });
   } catch (error) {
     const safeError = toSafeTestExecutionEffortError(error, "Test Execution Effort generation failed.", parsed.data.storyId);
+    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "test_execution_effort.run", label: "Test Execution Effort generation failed.", error });
     return NextResponse.json({ error: safeError.message }, { status: safeError.status });
   }
 }

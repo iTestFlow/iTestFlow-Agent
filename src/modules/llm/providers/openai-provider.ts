@@ -1,7 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
-import { DEFAULT_MAX_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defaults";
+import { DEFAULT_TEXT_OUTPUT_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defaults";
 import { withStructuredOutputInstruction } from "../prompts";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
@@ -28,7 +28,7 @@ export class OpenAIProvider extends BaseJsonProvider {
     if (!this.config.apiKey) throw new Error("OpenAI API key is not configured.");
     const requestBody = {
       model: this.model,
-      max_tokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
+      max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
       messages: [
         { role: "system", content: input.system },
         { role: "user", content: input.user },
@@ -59,7 +59,7 @@ export class OpenAIProvider extends BaseJsonProvider {
     if (!this.config.apiKey) throw new Error("OpenAI API key is not configured.");
     const requestBody = {
       model: this.model,
-      max_tokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
+      max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: withStructuredOutputInstruction(input.system, input.schemaName) },

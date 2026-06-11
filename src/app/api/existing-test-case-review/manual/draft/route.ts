@@ -7,6 +7,7 @@ import { resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-res
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
+import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
 
 export const runtime = "nodejs";
 
@@ -52,12 +53,17 @@ export async function POST(request: Request) {
       projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
       extraInstructions: parsed.data.extraInstructions,
     });
+    const contextCitations = buildWorkflowContextCitations({
+      resolvedContextUsed: autoContext.contextUsed,
+      relevantProjectKnowledgeBase: draft.relevantProjectKnowledgeBase,
+    });
 
     return NextResponse.json({
       targetWorkItemId: parsed.data.targetWorkItemId,
       linkedTestCases,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: autoContext.contextUsed,
+      contextCitations,
       retrievalTopK: autoContext.retrievalTopK,
       ...draft,
     });

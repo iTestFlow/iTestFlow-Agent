@@ -45,6 +45,8 @@ export type AiGenerationController = {
   status: AiGenerationStatus;
   elapsedSeconds: number;
   tokenUsage?: TokenUsage;
+  /** Non-blocking warnings from the request (e.g. the response was truncated at the token cap). */
+  warnings?: string[];
   /** true while a request is in flight (not idle/completed/failed/cancelled). */
   isRunning: boolean;
   errorMessage: string | null;
@@ -104,6 +106,7 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
   const [status, setStatus] = useState<AiGenerationStatus>("idle");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | undefined>(undefined);
+  const [warnings, setWarnings] = useState<string[] | undefined>(undefined);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -131,6 +134,7 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
     setStatus("idle");
     setElapsedSeconds(0);
     setTokenUsage(undefined);
+    setWarnings(undefined);
     setErrorMessage(null);
   }, [clearStageTimeouts, stopTimer]);
 
@@ -148,6 +152,7 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
       setErrorMessage(null);
       setElapsedSeconds(0);
       setTokenUsage(undefined);
+      setWarnings(undefined);
       startedAtRef.current = Date.now();
       timerRef.current = window.setInterval(() => {
         setElapsedSeconds(Math.floor((Date.now() - startedAtRef.current) / 1000));
@@ -188,6 +193,7 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
         }
         setElapsedSeconds(finalElapsedSeconds);
         setTokenUsage(extractTokenUsage(data));
+        setWarnings(extractWarnings(data));
         setStatus("completed");
         return data;
       } catch (error) {
@@ -228,6 +234,7 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
     status,
     elapsedSeconds,
     tokenUsage,
+    warnings,
     isRunning: !TERMINAL.has(status),
     errorMessage,
     start,
@@ -251,4 +258,12 @@ function extractTokenUsage(value: unknown): TokenUsage | undefined {
 
 function validCount(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function extractWarnings(value: unknown): string[] | undefined {
+  if (!value || typeof value !== "object" || !("warnings" in value)) return undefined;
+  const warnings = (value as { warnings?: unknown }).warnings;
+  if (!Array.isArray(warnings)) return undefined;
+  const messages = warnings.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  return messages.length ? messages : undefined;
 }

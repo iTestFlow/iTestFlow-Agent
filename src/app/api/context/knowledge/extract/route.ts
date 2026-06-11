@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { extractAndSaveProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 
@@ -39,6 +40,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json(snapshot);
   } catch (error) {
+    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "rag.extract_project_knowledge_base", label: "Project knowledge extraction failed.", error });
     if (isTruncatedKnowledgeBaseOutputError(error)) {
       return NextResponse.json({ error: TruncatedKnowledgeBaseOutputMessage }, { status: 422 });
     }

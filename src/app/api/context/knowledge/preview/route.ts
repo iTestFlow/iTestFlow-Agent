@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { previewGeneratedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 
@@ -41,6 +42,7 @@ export async function POST(request: Request) {
       tokenUsage: provider.getTokenUsage() ?? (draft.provider === "local" ? { input: 0, output: 0, total: 0 } : undefined),
     });
   } catch (error) {
+    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "rag.preview_project_knowledge_base", label: "Project knowledge preview failed.", error });
     if (isTruncatedKnowledgeBaseOutputError(error)) {
       return NextResponse.json({ error: TruncatedKnowledgeBaseOutputMessage }, { status: 422 });
     }

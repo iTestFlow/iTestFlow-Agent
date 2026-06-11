@@ -105,7 +105,7 @@ The recommended setup path is [http://127.0.0.1:3000/setup](http://127.0.0.1:300
 - Azure DevOps organization URL and Personal Access Token
 - LLM provider and model
 - Provider API key or Ollama base URL
-- Output token budget, retry count, and structured-output attempts
+- Maximum output token cap and transient-failure retry count
 - Project-context retrieval count
 - Optional automatic context-update schedule and filters
 
@@ -126,10 +126,8 @@ NEXT_PUBLIC_LLM_PROVIDER_LABEL=OpenAI
 OPENAI_API_KEY=YOUR_OPENAI_KEY
 OPENAI_MODEL=YOUR_MODEL_ID
 
-LLM_MAX_TOKENS=8000
 LLM_MAX_OUTPUT_TOKEN_CAP=32000
 LLM_RETRY_ATTEMPTS=1
-LLM_MAX_TRUNCATION_ATTEMPTS=3
 PROJECT_CONTEXT_TOP_K=8
 ```
 

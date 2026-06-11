@@ -11,6 +11,7 @@ import {
   StoryIdSchema,
   TestExecutionEffortOptionsSchema,
 } from "@/modules/test-execution-effort/test-execution-effort.schema";
+import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
 
 export const runtime = "nodejs";
 
@@ -20,6 +21,7 @@ const RequestSchema = z.object({
   selectedContextIds: z.array(z.string()).optional().default([]),
   rawOutput: z.string().trim().min(1),
   resolvedContextUsed: z.unknown().optional(),
+  contextCitations: WorkflowContextCitationsSchema,
   retrievalTopK: z.number().int().optional(),
 }).merge(TestExecutionEffortOptionsSchema);
 
@@ -55,6 +57,7 @@ export async function POST(request: Request) {
       ...preview,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: parsed.data.resolvedContextUsed ?? [],
+      contextCitations: parsed.data.contextCitations,
       retrievalTopK: parsed.data.retrievalTopK ?? null,
       options: TestExecutionEffortOptionsSchema.parse(parsed.data),
       provider: result.provider,

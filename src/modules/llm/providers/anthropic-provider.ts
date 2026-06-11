@@ -1,7 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
-import { DEFAULT_MAX_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defaults";
+import { DEFAULT_TEXT_OUTPUT_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defaults";
 import { withStructuredOutputInstruction } from "../prompts";
 import { normalizeProviderBaseUrl } from "../provider-base-url";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
@@ -33,7 +33,7 @@ export class AnthropicProvider extends BaseJsonProvider {
     if (!this.config.apiKey) throw new Error("Anthropic API key is not configured.");
     const requestBody = {
       model: this.model,
-      max_tokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
+      max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
       system: input.system,
       messages: [{ role: "user", content: input.user }],
     };
@@ -70,7 +70,7 @@ export class AnthropicProvider extends BaseJsonProvider {
     if (!this.config.apiKey) throw new Error("Anthropic API key is not configured.");
     const requestBody = {
       model: this.model,
-      max_tokens: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
+      max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
       system: withStructuredOutputInstruction(input.system, input.schemaName),
       messages: [{ role: "user", content: input.user }],
     };

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Play } from "lucide-react";
+import { ArrowLeft, ClipboardList, ListChecks, Play } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -13,13 +13,15 @@ import { GenerationModeToggle } from "@/components/workflow/generation-mode-togg
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
+import { WorkflowContextCitations } from "@/components/workflow/workflow-context-citations";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
+import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import {
   GeneratedTestCasesReview,
   validateGeneratedTestCase,
 } from "@/components/workflow/generated-test-cases-review";
-import { WorkItemPreview, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
+import { WorkItemPreview, useWorkItemLookup, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import {
   EmptyBlock,
   PublishGeneratedCasesPanel,
@@ -51,12 +53,16 @@ import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/mod
 export function TestCaseDesignClient() {
   const scope = useActiveProject();
   const generatedCasesRef = useRef<HTMLDivElement | null>(null);
+  const [activeStep, setActiveStep] = useState<"generate" | "review">("generate");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
+  const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const [extraInstructions, setExtraInstructions] = useState("");
   const [state, setState] = useState<ApiState<TestCaseGenerationRunResult>>({ loading: false, error: null, data: null });
   const gen = useAiGeneration();
   const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
+  const cancelGeneration = gen.cancel;
+  const cancelPreparation = prep.cancel;
   const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
@@ -73,8 +79,18 @@ export function TestCaseDesignClient() {
     busy: state.loading || manualDraft.loading || manualSubmitLoading || gen.isRunning || prep.isRunning,
   });
   useEffect(() => {
+    cancelGeneration();
+    cancelPreparation();
+    setActiveStep("generate");
+    setTargetWorkItemId("");
     setHasUnfinishedWork(false);
-  }, [scope?.azureProjectId]);
+    setState({ loading: false, error: null, data: null });
+    setTestCases([]);
+    setSelectedTestCaseIds([]);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
+  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation]);
   const selectedTargetRangeOption = useMemo(
     () =>
       targetTestCaseRangeOptions.find((option) => option.id === testDesignSettings.targetTestCaseRange) ??
@@ -101,22 +117,40 @@ export function TestCaseDesignClient() {
   );
 
   function changeTargetWorkItemId(value: string) {
+    gen.cancel();
+    prep.cancel();
+    setActiveStep("generate");
     setHasUnfinishedWork(true);
     setTargetWorkItemId(value);
+    setState({ loading: false, error: null, data: null });
+    setTestCases([]);
+    setSelectedTestCaseIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
   }
 
   function changeExtraInstructions(value: string) {
+    gen.cancel();
+    prep.cancel();
+    setActiveStep("generate");
     setHasUnfinishedWork(true);
     setExtraInstructions(value);
+    setState({ loading: false, error: null, data: null });
+    setTestCases([]);
+    setSelectedTestCaseIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
   }
 
   function resetManualDraftForTestDesignOptionsChange() {
+    gen.cancel();
+    prep.cancel();
+    setActiveStep("generate");
+    setState({ loading: false, error: null, data: null });
+    setTestCases([]);
+    setSelectedTestCaseIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
@@ -183,6 +217,7 @@ export function TestCaseDesignClient() {
   }
 
   function applyGeneratedCases(data: TestCaseGenerationRunResult) {
+    setActiveStep("review");
     setHasUnfinishedWork(data.testCases.length > 0);
     setState({ loading: false, error: null, data });
     setTestCases(data.testCases);
@@ -193,6 +228,11 @@ export function TestCaseDesignClient() {
     if (!scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
     if (gen.isRunning) return;
     setState({ loading: true, error: null, data: null });
+    setTestCases([]);
+    setSelectedTestCaseIds([]);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
     const data = await gen.start((signal) =>
       postJson<TestCaseGenerationRunResult>(
         "/api/test-cases/generate",
@@ -216,6 +256,9 @@ export function TestCaseDesignClient() {
   async function prepareManualPrompt() {
     if (!scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
     if (prep.isRunning) return;
+    setState({ loading: false, error: null, data: null });
+    setTestCases([]);
+    setSelectedTestCaseIds([]);
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
@@ -249,6 +292,7 @@ export function TestCaseDesignClient() {
         rawOutput: manualResponse,
         selectedContextIds: manualDraft.data.selectedContextIds ?? [],
         resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
+        contextCitations: manualDraft.data.contextCitations,
         retrievalTopK: manualDraft.data.retrievalTopK,
       });
       applyGeneratedCases(data);
@@ -263,149 +307,193 @@ export function TestCaseDesignClient() {
   return (
     <div className="space-y-6">
       {projectWarning(scope)}
-      <SectionCard
-        title="Generate Test Cases from Azure DevOps Requirement"
-        description="Project context is selected automatically for this run."
-        action={
-          <GenerationModeToggle
-            mode={mode}
-            onChange={(nextMode) => {
-              setHasUnfinishedWork(true);
-              setMode(nextMode);
-            }}
-          />
-        }
-      >
-        <div className="space-y-4 p-4">
-          <div className="grid items-end gap-4 lg:grid-cols-[240px_auto]">
-            <div className="space-y-2">
-              <Label htmlFor="test-case-design-work-item-id" className="text-sm font-semibold text-foreground">
-                {WORK_ITEM_ID_TITLE}
-              </Label>
-              <Input
-                id="test-case-design-work-item-id"
-                value={targetWorkItemId}
-                inputMode="numeric"
-                onChange={(event) => changeTargetWorkItemId(event.target.value)}
-                placeholder={WORK_ITEM_ID_PLACEHOLDER}
-                title={WORK_ITEM_ID_TITLE}
-                aria-label={WORK_ITEM_ID_TITLE}
+      <WorkflowStepper
+        steps={[
+          {
+            id: "generate",
+            label: "Generate Test Cases",
+            description: "Select the requirement and generation options.",
+            icon: ClipboardList,
+          },
+          {
+            id: "review",
+            label: "Generated Test Cases Review",
+            description: "Edit, select, and publish approved test cases.",
+            icon: ListChecks,
+          },
+        ]}
+        activeStepId={activeStep}
+        completedStepIds={state.data ? ["generate"] : []}
+        enabledStepIds={state.data ? ["generate", "review"] : ["generate"]}
+        onStepChange={setActiveStep}
+        ariaLabel="Test Case Design workflow"
+      />
+
+      {activeStep === "generate" ? (
+        <div className="space-y-6">
+          <SectionCard
+            title="Generate Test Cases from Azure DevOps Requirement"
+            description="Project context is selected automatically for this run."
+            action={
+              <GenerationModeToggle
+                mode={mode}
+                onChange={(nextMode) => {
+                  setHasUnfinishedWork(true);
+                  setMode(nextMode);
+                }}
+              />
+            }
+          >
+            <div className="space-y-4 p-4">
+              <div className="grid items-end gap-4 lg:grid-cols-[240px_auto]">
+                <div className="space-y-2">
+                  <Label htmlFor="test-case-design-work-item-id" className="text-sm font-semibold text-foreground">
+                    {WORK_ITEM_ID_TITLE}
+                  </Label>
+                  <Input
+                    id="test-case-design-work-item-id"
+                    value={targetWorkItemId}
+                    inputMode="numeric"
+                    onChange={(event) => changeTargetWorkItemId(event.target.value)}
+                    placeholder={WORK_ITEM_ID_PLACEHOLDER}
+                    title={WORK_ITEM_ID_TITLE}
+                    aria-label={WORK_ITEM_ID_TITLE}
+                  />
+                </div>
+                {mode === "auto" ? (
+                  <Button onClick={generate} disabled={!scope || !targetWorkItemId || gen.isRunning || !testDesignOptionsValid || !extraInstructionsValid}>
+                    <Play className="h-4 w-4" />
+                    {gen.isRunning ? "Generating..." : "Generate"}
+                  </Button>
+                ) : (
+                  <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !testDesignOptionsValid || !extraInstructionsValid}>
+                    <Play className="h-4 w-4" />
+                    {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
+                  </Button>
+                )}
+              </div>
+              <WorkItemPreview scope={scope} workItemId={targetWorkItemId} lookup={workItemLookup} />
+              <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
+              <TestDesignOptionsSelector
+                settings={testDesignSettings}
+                customRangeValid={customRangeValid}
+                coverageFocusSelectionValid={coverageFocusSelectionValid}
+                onTargetRangeChange={changeTargetTestCaseRange}
+                onCustomRangeChange={changeCustomRange}
+                onCoverageFocusToggle={changeCoverageFocusSelection}
+                onSelectAllCoverageFocus={selectAllCoverageFocusItems}
+                onClearAllCoverageFocus={clearAllCoverageFocusItems}
               />
             </div>
-            {mode === "auto" ? (
-              <Button onClick={generate} disabled={!scope || !targetWorkItemId || gen.isRunning || !testDesignOptionsValid || !extraInstructionsValid}>
-                <Play className="h-4 w-4" />
-                {gen.isRunning ? "Generating..." : "Generate"}
-              </Button>
-            ) : (
-              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !testDesignOptionsValid || !extraInstructionsValid}>
-                <Play className="h-4 w-4" />
-                {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
-              </Button>
-            )}
-          </div>
-          <WorkItemPreview scope={scope} workItemId={targetWorkItemId} />
-          <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
-          <TestDesignOptionsSelector
-            settings={testDesignSettings}
-            customRangeValid={customRangeValid}
-            coverageFocusSelectionValid={coverageFocusSelectionValid}
-            onTargetRangeChange={changeTargetTestCaseRange}
-            onCustomRangeChange={changeCustomRange}
-            onCoverageFocusToggle={changeCoverageFocusSelection}
-            onSelectAllCoverageFocus={selectAllCoverageFocusItems}
-            onClearAllCoverageFocus={clearAllCoverageFocusItems}
-          />
-        </div>
-      </SectionCard>
+          </SectionCard>
 
-      {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
-        <AiGenerationProgress
-          mode="prep"
-          variant="test-design"
-          status={prep.status}
-          elapsedSeconds={prep.elapsedSeconds}
-          errorMessage={prep.errorMessage}
-          canCancel
-          onCancel={prep.cancel}
-          onRetry={() => {
-            prep.retry();
-            void prepareManualPrompt();
-          }}
-        />
-      ) : null}
-
-      {mode === "manual" && (manualDraft.data || manualSubmitError) ? (
-        <div className="space-y-4">
-          {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
-          {manualDraft.data ? (
-            <ManualLLMPanel
-              prompt={manualDraft.data.prompt}
-              promptVersion={manualDraft.data.promptVersion}
-              response={manualResponse}
-              onResponseChange={(value) => {
-                setHasUnfinishedWork(true);
-                setManualResponse(value);
+          {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
+            <AiGenerationProgress
+              mode="prep"
+              variant="test-design"
+              status={prep.status}
+              elapsedSeconds={prep.elapsedSeconds}
+              errorMessage={prep.errorMessage}
+              canCancel
+              onCancel={prep.cancel}
+              onRetry={() => {
+                prep.retry();
+                void prepareManualPrompt();
               }}
-              onSubmit={submitManualResponse}
-              submitting={manualSubmitLoading}
-              submitLabel="Validate and Continue"
-              submittingLabel="Validating..."
-              responseLabel="External LLM Response"
-              promptMinHeightClass="min-h-[360px]"
-              responseMinHeightClass="min-h-[260px]"
+            />
+          ) : null}
+
+          {mode === "manual" && (manualDraft.data || manualSubmitError) ? (
+            <div className="space-y-4">
+              {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
+              {manualDraft.data ? (
+                <ManualLLMPanel
+                  prompt={manualDraft.data.prompt}
+                  promptVersion={manualDraft.data.promptVersion}
+                  contextCitations={manualDraft.data.contextCitations}
+                  response={manualResponse}
+                  onResponseChange={(value) => {
+                    setHasUnfinishedWork(true);
+                    setManualResponse(value);
+                  }}
+                  onSubmit={submitManualResponse}
+                  submitting={manualSubmitLoading}
+                  submitLabel="Validate and Continue"
+                  submittingLabel="Validating..."
+                  responseLabel="External LLM Response"
+                  promptMinHeightClass="min-h-[360px]"
+                  responseMinHeightClass="min-h-[260px]"
+                />
+              ) : null}
+            </div>
+          ) : null}
+
+          {gen.status !== "idle" && gen.status !== "completed" ? (
+            <AiGenerationProgress
+              variant="test-design"
+              status={gen.status}
+              elapsedSeconds={gen.elapsedSeconds}
+              errorMessage={gen.errorMessage}
+              canCancel
+              onCancel={gen.cancel}
+              onRetry={() => {
+                gen.retry();
+                void generate();
+              }}
             />
           ) : null}
         </div>
-      ) : null}
-
-      <div ref={generatedCasesRef} className="space-y-6">
-        {gen.status !== "idle" && gen.status !== "completed" ? (
-          <AiGenerationProgress
-            variant="test-design"
-            status={gen.status}
-            elapsedSeconds={gen.elapsedSeconds}
-            errorMessage={gen.errorMessage}
-            canCancel
-            onCancel={gen.cancel}
-            onRetry={() => {
-              gen.retry();
-              void generate();
-            }}
-          />
-        ) : null}
-        {state.data || testCases.length ? (
-          <>
-            <div className="space-y-2">
-              {mode === "auto" && gen.status === "completed" ? (
-                <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} />
-              ) : null}
-              <GeneratedTestCasesReview
-                testCases={testCases}
-                onChange={(nextCases) => {
-                  setHasUnfinishedWork(true);
-                  setTestCases(nextCases);
-                }}
-                selectedIds={selectedTestCaseIds}
-                onSelectedIdsChange={(ids) => {
-                  setHasUnfinishedWork(true);
-                  setSelectedTestCaseIds(ids);
-                }}
-              />
+      ) : (
+        <div ref={generatedCasesRef} className="space-y-6">
+          <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-foreground">
+                Reviewing generated test cases for #{targetWorkItemId}
+                {workItemLookup.data?.title ? (
+                  <span className="font-normal text-muted-foreground"> — {workItemLookup.data.title}</span>
+                ) : null}
+              </div>
+              <div className="text-xs text-muted-foreground">Generated content stays available while you revisit the inputs.</div>
             </div>
-            <PublishGeneratedCasesPanel
-              scope={scope}
-              targetWorkItemId={targetWorkItemId}
-              testCases={selectedTestCases}
-              invalidCaseCount={invalidSelectedCaseCount}
-              onDirty={() => setHasUnfinishedWork(true)}
-              onPublished={() => setHasUnfinishedWork(false)}
-            />
-          </>
-        ) : gen.status === "idle" ? (
-          <EmptyBlock message="No generated test cases yet. Run generation against a real Azure DevOps work item." />
-        ) : null}
-      </div>
+            <Button type="button" variant="outline" onClick={() => setActiveStep("generate")}>
+              <ArrowLeft className="size-4" />
+              Back to inputs
+            </Button>
+          </div>
+          {state.data ? (
+            <>
+              <div className="space-y-2">
+                {mode === "auto" && gen.status === "completed" ? (
+                  <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
+                ) : null}
+                <WorkflowContextCitations citations={state.data.contextCitations ?? []} />
+                <GeneratedTestCasesReview
+                  testCases={testCases}
+                  onChange={(nextCases) => {
+                    setHasUnfinishedWork(true);
+                    setTestCases(nextCases);
+                  }}
+                  selectedIds={selectedTestCaseIds}
+                  onSelectedIdsChange={(ids) => {
+                    setHasUnfinishedWork(true);
+                    setSelectedTestCaseIds(ids);
+                  }}
+                />
+              </div>
+              <PublishGeneratedCasesPanel
+                scope={scope}
+                targetWorkItemId={targetWorkItemId}
+                testCases={selectedTestCases}
+                invalidCaseCount={invalidSelectedCaseCount}
+                onDirty={() => setHasUnfinishedWork(true)}
+                onPublished={() => setHasUnfinishedWork(false)}
+              />
+            </>
+          ) : (
+            <EmptyBlock message="No generated test cases yet. Return to Step 1 and run generation." />
+          )}
+        </div>
+      )}
     </div>
   );
 }

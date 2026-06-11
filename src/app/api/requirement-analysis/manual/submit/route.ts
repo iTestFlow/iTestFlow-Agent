@@ -3,6 +3,7 @@ import { z } from "zod";
 import { completeManualRequirementAnalysis } from "@/modules/requirement-analysis/application/requirement-analysis.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
+import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
 
 export const runtime = "nodejs";
 
@@ -15,6 +16,7 @@ const RequestSchema = z.object({
     .min(1, "Select at least one requirement analysis checklist item."),
   rawOutput: z.string().min(1),
   resolvedContextUsed: z.unknown().optional(),
+  contextCitations: WorkflowContextCitationsSchema,
   retrievalTopK: z.number().int().optional(),
 });
 
@@ -41,6 +43,7 @@ export async function POST(request: Request) {
       targetWorkItemId: parsed.data.targetWorkItemId,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: parsed.data.resolvedContextUsed ?? [],
+      contextCitations: parsed.data.contextCitations,
       retrievalTopK: parsed.data.retrievalTopK ?? null,
       enabledChecklistItemIds: parsed.data.enabledChecklistItemIds,
       provider: result.provider,

@@ -2,6 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 import { writeAuditLog } from "@/modules/audit/audit.service";
+import { truncationAuditDetails } from "@/modules/llm/llm-warnings";
 import type { TestCase } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { parseExternalJson } from "@/modules/llm/external-structured-output";
 import type { LLMProvider } from "@/modules/llm/llm-types";
@@ -85,6 +86,7 @@ export async function generateTestExecutionEffort(input: {
     status: "Success",
     message: `Generated a manual execution effort estimate for ${input.linkedTestCases.length} linked test cases.`,
     details: {
+      ...truncationAuditDetails(result.warnings),
       provider: result.provider,
       model: result.model,
       promptVersion: testExecutionEffortPrompt.version,
@@ -92,7 +94,10 @@ export async function generateTestExecutionEffort(input: {
     },
   });
 
-  return result;
+  return {
+    ...result,
+    relevantProjectKnowledgeBase: promptDraft.relevantProjectKnowledgeBase,
+  };
 }
 
 export function buildTestExecutionEffortPromptDraft(input: {

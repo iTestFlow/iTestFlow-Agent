@@ -360,7 +360,7 @@ export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
     const sourceRows = loadSourceWorkItems(scope);
     const sourceById = new Map(sourceRows.map((source) => [source.azure_work_item_id, source]));
     const activeSourceIds = new Set(sourceRows.filter((source) => source.sync_status !== "inactive").map((source) => source.azure_work_item_id));
-    const modules = new Set(knowledgeBase.modules.map((module) => normalizeKey(module.name)));
+    const moduleNameIndex = buildModuleNameIndex(knowledgeBase.modules);
     const dependencyEndpoints = buildKnownDependencyEndpoints(knowledgeBase);
 
     addDuplicateEntryKeyIssues(entries, issues);
@@ -419,7 +419,7 @@ export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
     });
 
     knowledgeBase.businessRules.forEach((rule) => {
-      if (!rule.moduleName || modules.has(normalizeKey(rule.moduleName))) return;
+      if (!rule.moduleName || isKnownModuleName(rule.moduleName, moduleNameIndex)) return;
       issues.push({
         issueType: "unknown_module_reference",
         severity: "warning",
@@ -973,6 +973,75 @@ function normalizeKey(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+type ModuleNameEntry = {
+  name: string;
+  key: string;
+  words: string[];
+};
+
+function buildModuleNameIndex(modules: ProjectKnowledgeBase["modules"]): ModuleNameEntry[] {
+  return modules.map((module) => {
+    const key = normalizeKey(module.name);
+    return { name: module.name, key, words: tokenizeKey(key) };
+  });
+}
+
+function isKnownModuleName(moduleName: string, moduleIndex: ModuleNameEntry[]) {
+  return Boolean(resolveModuleName(moduleName, moduleIndex));
+}
+
+function resolveModuleName(moduleName: string, moduleIndex: ModuleNameEntry[]) {
+  const key = normalizeKey(moduleName);
+  const exact = moduleIndex.find((entry) => entry.key === key);
+  if (exact) return exact;
+
+  // Tolerate a trailing step or parenthetical qualifier, e.g. "Policy Summary (Step 5)" -> "Policy Summary".
+  const baseKey = normalizeKey(stripModuleQualifier(moduleName));
+  if (baseKey && baseKey !== key) {
+    const baseExact = moduleIndex.find((entry) => entry.key === baseKey);
+    if (baseExact) return baseExact;
+  }
+
+  // Tolerate a name that is a word-boundary prefix of (or extends) exactly one module,
+  // e.g. "Terms & Conditions" -> "Terms & Conditions Acceptance". Ambiguous matches stay unresolved.
+  return matchModuleByContainment(tokenizeKey(baseKey || key), moduleIndex);
+}
+
+function stripModuleQualifier(value: string) {
+  const withoutParens = value.trim().replace(/\s*\([^)]*\)\s*$/, "").trim();
+  return getWorkflowStepParentEndpoint(withoutParens) ?? withoutParens;
+}
+
+function matchModuleByContainment(referenceWords: string[], moduleIndex: ModuleNameEntry[]) {
+  if (referenceWords.length < 2) return null;
+  const candidates = moduleIndex.filter(
+    (entry) =>
+      entry.words.length >= 2 && (isWordPrefix(referenceWords, entry.words) || isWordPrefix(entry.words, referenceWords)),
+  );
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function matchEndpointByContainment(endpointKey: string, knownEndpoints: KnownDependencyEndpoint[], oppositeKey: string) {
+  const referenceWords = tokenizeKey(endpointKey);
+  if (referenceWords.length < 2) return null;
+  const candidates = knownEndpoints.filter((candidate) => {
+    if (candidate.key === oppositeKey) return false;
+    const words = tokenizeKey(candidate.key);
+    return words.length >= 2 && (isWordPrefix(referenceWords, words) || isWordPrefix(words, referenceWords));
+  });
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function tokenizeKey(key: string) {
+  return key.split(/\s+/).filter(Boolean);
+}
+
+// True when `shorter` is a strict, word-for-word leading prefix of `longer`.
+function isWordPrefix(shorter: string[], longer: string[]) {
+  if (!shorter.length || shorter.length >= longer.length) return false;
+  return shorter.every((word, index) => word === longer[index]);
+}
+
 type KnownDependencyEndpoint = {
   name: string;
   key: string;
@@ -1043,7 +1112,11 @@ function resolveKnownDependencyEndpoint(
   const idMatch = chooseBestDependencyEndpoint(
     knownEndpoints.filter((candidate) => candidate.key !== oppositeKey && dependencySlug.includes(candidate.slug)),
   );
-  return idMatch ?? null;
+  if (idMatch) return idMatch;
+
+  // Tolerate an endpoint that is a word-boundary prefix of (or extends) exactly one known endpoint,
+  // e.g. "Terms & Conditions" -> "Terms & Conditions Acceptance". Ambiguous matches stay unresolved.
+  return matchEndpointByContainment(endpointKey, knownEndpoints, oppositeKey);
 }
 
 function endpointMatchesAlias(candidate: KnownDependencyEndpoint, aliasKey: string, aliasSlug: string) {

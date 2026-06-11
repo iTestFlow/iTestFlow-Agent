@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { runRequirementAnalysis } from "@/modules/requirement-analysis/application/requirement-analysis.service";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
+import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
 
 export const runtime = "nodejs";
 
@@ -24,6 +26,7 @@ const RequestSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  let scope: ProjectScope | undefined;
   try {
     const parsed = RequestSchema.safeParse(await request.json());
     if (!parsed.success) {
@@ -34,6 +37,7 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    scope = parsed.data.scope;
 
     const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const provider = getConfiguredProviderFromEnv();
@@ -67,11 +71,16 @@ export async function POST(request: Request) {
       enabledChecklistItemIds: parsed.data.enabledChecklistItemIds,
       extraInstructions: parsed.data.extraInstructions,
     });
+    const contextCitations = buildWorkflowContextCitations({
+      resolvedContextUsed: autoContext.contextUsed,
+      relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
+    });
 
     return NextResponse.json({
       targetWorkItemId: parsed.data.targetWorkItemId,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: autoContext.contextUsed,
+      contextCitations,
       retrievalTopK: autoContext.retrievalTopK,
       enabledChecklistItemIds: result.enabledChecklistItemIds,
       provider: result.provider,
@@ -79,9 +88,11 @@ export async function POST(request: Request) {
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
       tokenUsage: provider.getTokenUsage(),
+      warnings: result.warnings,
     });
   } catch (error) {
     console.error("Requirement analysis failed", error);
+    if (scope) writeGenerationFailureAudit({ scope, action: "requirement_analysis.run", label: "Requirement analysis failed.", error });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Requirement analysis failed." },
       { status: 503 },

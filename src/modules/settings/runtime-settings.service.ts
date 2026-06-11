@@ -4,8 +4,6 @@ import { z } from "zod";
 import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
 import {
   DEFAULT_MAX_OUTPUT_TOKEN_CAP,
-  DEFAULT_MAX_TOKENS,
-  DEFAULT_MAX_TRUNCATION_ATTEMPTS,
   DEFAULT_RETRY_ATTEMPTS,
   normalizeLLMControlSettings,
 } from "@/modules/llm/llm-defaults";
@@ -82,6 +80,52 @@ export function getEffectiveRuntimeSettings(): RuntimeSettings | null {
   return getRuntimeSettings() ?? getSettingsFromEnv();
 }
 
+/**
+ * Fills blank secrets in an inbound settings payload from the currently effective
+ * settings, so a user can save changes (or test connections) without re-typing a
+ * Personal Access Token or API key that is already stored. The API key is only
+ * preserved when the submitted provider matches the saved provider — switching
+ * providers always requires a fresh key. Returns the input unchanged when nothing
+ * is stored yet (first-time setup), so required-secret validation still applies.
+ */
+export function withPreservedSecrets(input: unknown): unknown {
+  if (!input || typeof input !== "object") return input;
+  const effective = getEffectiveRuntimeSettings();
+  if (!effective) return input;
+
+  const candidate = input as {
+    azureDevOps?: { personalAccessToken?: unknown } & Record<string, unknown>;
+    llm?: { apiKey?: unknown; provider?: unknown } & Record<string, unknown>;
+  } & Record<string, unknown>;
+  const next = { ...candidate };
+
+  if (
+    candidate.azureDevOps &&
+    typeof candidate.azureDevOps === "object" &&
+    isBlankSecret(candidate.azureDevOps.personalAccessToken)
+  ) {
+    next.azureDevOps = {
+      ...candidate.azureDevOps,
+      personalAccessToken: effective.azureDevOps.personalAccessToken,
+    };
+  }
+
+  if (
+    candidate.llm &&
+    typeof candidate.llm === "object" &&
+    isBlankSecret(candidate.llm.apiKey) &&
+    candidate.llm.provider === effective.llm.provider
+  ) {
+    next.llm = { ...candidate.llm, apiKey: effective.llm.apiKey };
+  }
+
+  return next;
+}
+
+function isBlankSecret(value: unknown): boolean {
+  return typeof value !== "string" || value.trim() === "";
+}
+
 function summarizeRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsSummary {
   return {
     configured: true,
@@ -95,10 +139,8 @@ function summarizeRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsSum
       model: settings.llm.model,
       baseUrl: settings.llm.baseUrl,
       hasApiKey: Boolean(settings.llm.apiKey),
-      maxTokens: settings.llm.maxTokens,
       maxOutputTokenCap: settings.llm.maxOutputTokenCap,
       retryAttempts: settings.llm.retryAttempts,
-      maxTruncationAttempts: settings.llm.maxTruncationAttempts,
     },
     context: {
       retrievalTopK: settings.context.retrievalTopK,
@@ -145,10 +187,8 @@ function getSettingsFromEnv(): RuntimeSettings | null {
   if (!model) return null;
 
   const llmControls = normalizeLLMControlSettings({
-    maxTokens: process.env.LLM_MAX_TOKENS ?? DEFAULT_MAX_TOKENS,
     maxOutputTokenCap: process.env.LLM_MAX_OUTPUT_TOKEN_CAP ?? DEFAULT_MAX_OUTPUT_TOKEN_CAP,
     retryAttempts: process.env.LLM_RETRY_ATTEMPTS ?? DEFAULT_RETRY_ATTEMPTS,
-    maxTruncationAttempts: process.env.LLM_MAX_TRUNCATION_ATTEMPTS ?? DEFAULT_MAX_TRUNCATION_ATTEMPTS,
   });
 
   const parsed = RuntimeSettingsInputSchema.safeParse({

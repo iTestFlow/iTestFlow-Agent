@@ -1,6 +1,6 @@
 "use client";
 
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import {
@@ -9,19 +9,29 @@ import {
   RecentActivityList,
 } from "@/components/dashboard/analytics-components";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Callout } from "@/components/qa/callout";
+import { DataToolbar } from "@/components/qa/data-toolbar";
 import { useActiveProject } from "@/shared/lib/use-active-project";
-import type { DashboardAnalytics } from "@/types/dashboard";
+import type { ActivityLogResult } from "@/types/activity-log";
 
 type ActivityLogState = {
   loading: boolean;
   error: string | null;
-  data: DashboardAnalytics | null;
+  data: ActivityLogResult | null;
 };
 
 const RECENT_ACTIVITY_INITIAL_LIMIT = 20;
 const RECENT_ACTIVITY_LOAD_INCREMENT = 20;
 const RECENT_ACTIVITY_MAX_LIMIT = 100;
+const SEARCH_DEBOUNCE_MS = 300;
 
 function formatGeneratedAt(value?: string) {
   if (!value) return "Not loaded";
@@ -36,40 +46,97 @@ export function ActivityLogClient() {
   const [state, setState] = useState<ActivityLogState>({ loading: true, error: null, data: null });
   const [recentActivityLimit, setRecentActivityLimit] = useState(RECENT_ACTIVITY_INITIAL_LIMIT);
 
-  const body = useMemo(() => ({ scope: scope ?? null, recentActivityLimit }), [recentActivityLimit, scope]);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [group, setGroup] = useState("all");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
 
-  async function loadActivity() {
-    if (scope === undefined) return;
-    setState((current) => ({ ...current, loading: true, error: null }));
-    try {
-      const response = await fetch("/api/dashboard/analytics", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const json = await response.json();
-      if (!response.ok) throw new Error(json.error ?? "Recent activity failed to load.");
-      setState({ loading: false, error: null, data: json });
-    } catch (error) {
-      setState({
-        loading: false,
-        error: error instanceof Error ? error.message : "Recent activity failed to load.",
-        data: null,
-      });
-    }
-  }
+  const hasActiveFilters = search.trim() !== "" || group !== "all" || from !== "" || to !== "";
 
+  // Debounce the free-text search and reset pagination so a new query starts at page one.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setDebouncedSearch(search);
+      setRecentActivityLimit(RECENT_ACTIVITY_INITIAL_LIMIT);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(handle);
+  }, [search]);
+
+  const body = useMemo(
+    () => ({
+      scope: scope ?? null,
+      search: debouncedSearch.trim(),
+      groups: group === "all" ? [] : [group],
+      from: from || undefined,
+      to: to || undefined,
+      limit: recentActivityLimit,
+    }),
+    [scope, debouncedSearch, group, from, to, recentActivityLimit],
+  );
+
+  // A new AbortController per request guarantees a slow earlier response cannot overwrite
+  // newer filter state; the cleanup aborts the in-flight request when the body changes.
   useEffect(() => {
     if (scope === undefined) return;
-    void loadActivity();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [body, scope]);
+    const controller = new AbortController();
+
+    void (async () => {
+      setState((current) => ({ ...current, loading: true, error: null }));
+      try {
+        const response = await fetch("/api/activity-log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        const json = await response.json();
+        if (!response.ok) throw new Error(json.error ?? "Activity log failed to load.");
+        setState({ loading: false, error: null, data: json as ActivityLogResult });
+      } catch (error) {
+        if (controller.signal.aborted) return; // superseded by a newer request
+        setState({
+          loading: false,
+          error: error instanceof Error ? error.message : "Activity log failed to load.",
+          data: null,
+        });
+      }
+    })();
+
+    return () => controller.abort();
+  }, [body, scope, reloadToken]);
 
   function loadMoreRecentActivity() {
     setRecentActivityLimit((current) => Math.min(current + RECENT_ACTIVITY_LOAD_INCREMENT, RECENT_ACTIVITY_MAX_LIMIT));
   }
 
+  function changeGroup(value: string) {
+    setGroup(value);
+    setRecentActivityLimit(RECENT_ACTIVITY_INITIAL_LIMIT);
+  }
+
+  function changeFrom(value: string) {
+    setFrom(value);
+    setRecentActivityLimit(RECENT_ACTIVITY_INITIAL_LIMIT);
+  }
+
+  function changeTo(value: string) {
+    setTo(value);
+    setRecentActivityLimit(RECENT_ACTIVITY_INITIAL_LIMIT);
+  }
+
+  function clearFilters() {
+    setSearch("");
+    setDebouncedSearch("");
+    setGroup("all");
+    setFrom("");
+    setTo("");
+    setRecentActivityLimit(RECENT_ACTIVITY_INITIAL_LIMIT);
+  }
+
   const data = state.data;
+  const actionOptions = data?.availableActions ?? [];
 
   return (
     <div className="space-y-5">
@@ -81,7 +148,7 @@ export function ActivityLogClient() {
             <span className="hidden rounded-full border border-border bg-background/70 px-3 py-1.5 text-xs text-muted-foreground md:inline-flex">
               Updated {formatGeneratedAt(data?.generatedAt)}
             </span>
-            <Button size="sm" variant="outline" onClick={() => void loadActivity()} disabled={state.loading}>
+            <Button size="sm" variant="outline" onClick={() => setReloadToken((token) => token + 1)} disabled={state.loading}>
               <RefreshCw className={state.loading ? "size-4 animate-spin" : "size-4"} />
               Refresh
             </Button>
@@ -92,11 +159,61 @@ export function ActivityLogClient() {
       {state.error ? <Callout tone="error">{state.error}</Callout> : null}
 
       <ChartCard title="Recent Activity" description="Latest local workflow audit entries." marker="red">
+        <div className="-mx-5 mb-4 border-y border-border bg-muted/20">
+          <DataToolbar
+            className="border-b-0 px-5"
+            searchPlaceholder="Search by message, action, entity, or user"
+            searchValue={search}
+            onSearchChange={setSearch}
+            filters={
+              <>
+                <Select value={group} onValueChange={changeGroup}>
+                  <SelectTrigger className="h-8 w-[200px]" aria-label="Activity type">
+                    <SelectValue placeholder="All types" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All types</SelectItem>
+                    {actionOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  type="date"
+                  aria-label="From date"
+                  value={from}
+                  max={to || undefined}
+                  onChange={(event) => changeFrom(event.target.value)}
+                  className="h-8 w-[150px]"
+                />
+                <span className="text-xs text-muted-foreground">to</span>
+                <Input
+                  type="date"
+                  aria-label="To date"
+                  value={to}
+                  min={from || undefined}
+                  onChange={(event) => changeTo(event.target.value)}
+                  className="h-8 w-[150px]"
+                />
+                {hasActiveFilters ? (
+                  <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
+                    <X className="size-4" />
+                    Clear
+                  </Button>
+                ) : null}
+              </>
+            }
+          />
+        </div>
+
         <RecentActivityList
-          items={data?.recentActivity ?? []}
-          hasMore={data?.recentActivityHasMore ?? false}
+          items={data?.items ?? []}
+          hasMore={data?.hasMore ?? false}
           loadingMore={state.loading && Boolean(data)}
           onLoadMore={loadMoreRecentActivity}
+          emptyLabel={hasActiveFilters ? "No activity matches your filters." : "No recent local activity yet"}
         />
       </ChartCard>
     </div>

@@ -3,11 +3,13 @@ import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { reviewExistingLinkedTestCases } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
+import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
 
 export const runtime = "nodejs";
 
@@ -64,20 +66,27 @@ export async function POST(request: Request) {
       projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
       extraInstructions: parsed.data.extraInstructions,
     });
+    const contextCitations = buildWorkflowContextCitations({
+      resolvedContextUsed: autoContext.contextUsed,
+      relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
+    });
 
     return NextResponse.json({
       targetWorkItemId: parsed.data.targetWorkItemId,
       linkedTestCases,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: autoContext.contextUsed,
+      contextCitations,
       retrievalTopK: autoContext.retrievalTopK,
       provider: result.provider,
       model: result.model,
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
       tokenUsage: provider.getTokenUsage(),
+      warnings: result.warnings,
     });
   } catch (error) {
+    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "existing_test_case_review.run", label: "Test Coverage Matrix generation failed.", error });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Test Coverage Matrix generation failed." },
       { status: 503 },

@@ -1,7 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
-import { DEFAULT_MAX_TOKENS } from "../llm-defaults";
+import { DEFAULT_TEXT_OUTPUT_TOKENS } from "../llm-defaults";
 import { buildStructuredOutputUserPrompt } from "../prompts";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import type { GenerateStructuredOutputInput, GenerateTextInput } from "../llm-types";
@@ -49,7 +49,7 @@ export class OllamaProvider extends BaseJsonProvider {
       format: "json",
       prompt: buildStructuredOutputUserPrompt(input),
       options: {
-        num_predict: input.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
+        num_predict: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
       },
     };
     const response = await fetch(`${this.config.baseUrl ?? "http://localhost:11434"}/api/generate`, {

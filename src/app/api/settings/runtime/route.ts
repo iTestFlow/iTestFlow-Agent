@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getEffectiveRuntimeSettings, getRuntimeSettingsSummary, saveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
+import { getEffectiveRuntimeSettings, getRuntimeSettingsSummary, saveRuntimeSettings, withPreservedSecrets } from "@/modules/settings/runtime-settings.service";
 import { RuntimeSettingsInputSchema, type RuntimeSettingsSummary } from "@/modules/settings/runtime-settings.schema";
 import { getLatestContextAutoUpdateRun } from "@/modules/rag/context-auto-update-run-history.service";
 import { zodErrorResponse } from "@/shared/validators/api-validation-errors";
@@ -21,7 +21,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const parsed = RuntimeSettingsInputSchema.safeParse(await request.json());
+  const parsed = RuntimeSettingsInputSchema.safeParse(withPreservedSecrets(await request.json()));
   if (!parsed.success) {
     return NextResponse.json(
       zodErrorResponse("Configuration could not be saved.", parsed.error),

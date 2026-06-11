@@ -1,6 +1,7 @@
 import "server-only";
 
 import { writeAuditLog } from "@/modules/audit/audit.service";
+import { truncationAuditDetails } from "@/modules/llm/llm-warnings";
 import { parseExternalStructuredOutput } from "@/modules/llm/external-structured-output";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
@@ -55,13 +56,17 @@ export async function reviewExistingLinkedTestCases(input: {
     status: "Success",
     message: `Built a Test Coverage Matrix from ${input.linkedTestCases.length} linked Azure DevOps test cases.`,
     details: {
+      ...truncationAuditDetails(result.warnings),
       provider: result.provider,
       model: result.model,
       promptVersion: existingTestCaseReviewPrompt.version,
     },
   });
 
-  return result;
+  return {
+    ...result,
+    relevantProjectKnowledgeBase: promptDraft.relevantProjectKnowledgeBase,
+  };
 }
 
 export function buildExistingTestCaseReviewPromptDraft(input: {

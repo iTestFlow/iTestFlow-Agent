@@ -1,6 +1,7 @@
 import "server-only";
 
 import { writeAuditLog } from "@/modules/audit/audit.service";
+import { truncationAuditDetails } from "@/modules/llm/llm-warnings";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { contextSelectionPrompt } from "@/modules/llm/prompts";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
@@ -48,7 +49,7 @@ export async function suggestContextStories(input: {
     action: "context_selection.suggest",
     status: "Success",
     message: `Suggested ${result.validatedOutput.suggestedItems.length} context stories.`,
-    details: { provider: result.provider, model: result.model, promptVersion: contextSelectionPrompt.version },
+    details: { ...truncationAuditDetails(result.warnings), provider: result.provider, model: result.model, promptVersion: contextSelectionPrompt.version },
   });
 
   return result;
