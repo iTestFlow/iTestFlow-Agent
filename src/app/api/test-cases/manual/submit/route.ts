@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { completeManualTestCaseGeneration } from "@/modules/test-case-design/application/test-case-generation.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
 
 export const runtime = "nodejs";
 
@@ -11,6 +12,7 @@ const RequestSchema = z.object({
   selectedContextIds: z.array(z.string()).optional().default([]),
   rawOutput: z.string().min(1),
   resolvedContextUsed: z.unknown().optional(),
+  contextCitations: WorkflowContextCitationsSchema,
   retrievalTopK: z.number().int().optional(),
 });
 
@@ -31,6 +33,7 @@ export async function POST(request: Request) {
       targetWorkItemId: parsed.data.targetWorkItemId,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: parsed.data.resolvedContextUsed ?? [],
+      contextCitations: parsed.data.contextCitations,
       retrievalTopK: parsed.data.retrievalTopK ?? null,
       provider: result.provider,
       model: result.model,

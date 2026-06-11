@@ -63,7 +63,10 @@ export async function reviewExistingLinkedTestCases(input: {
     },
   });
 
-  return result;
+  return {
+    ...result,
+    relevantProjectKnowledgeBase: promptDraft.relevantProjectKnowledgeBase,
+  };
 }
 
 export function buildExistingTestCaseReviewPromptDraft(input: {

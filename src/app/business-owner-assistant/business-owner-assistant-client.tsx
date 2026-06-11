@@ -9,7 +9,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { Callout } from "@/components/qa/callout";
+import { ContextCitationBadges } from "@/components/workflow/workflow-context-citations";
 import { cn } from "@/lib/utils";
+import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-citations";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
 type ChatRole = "user" | "assistant";
@@ -29,15 +31,7 @@ type ChatMessage = {
   welcome?: boolean;
 };
 
-type ContextChatbotCitation = {
-  sourceType: "project_context" | "project_knowledge";
-  sourceId: string;
-  title: string;
-  workItemId?: string;
-  workItemType?: string;
-  category?: string;
-  sourceWorkItemIds?: string[];
-};
+type ContextChatbotCitation = WorkflowContextCitation;
 
 type ContextChatbotResponse = {
   answer: string;
@@ -638,16 +632,7 @@ function renderInlineMarkdown(value: string) {
 function CitationList({ citations }: { citations: ContextChatbotCitation[] }) {
   return (
     <div className="flex flex-wrap gap-1.5">
-      {citations.slice(0, 12).map((citation) => (
-        <Badge key={citation.sourceId} variant="outline" title={citation.title} className="max-w-full">
-          <span className="truncate">
-            {citation.sourceType === "project_context"
-              ? `${citation.sourceId} ${citation.workItemType ?? ""}`.trim()
-              : citation.sourceId}
-          </span>
-        </Badge>
-      ))}
-      {citations.length > 12 ? <Badge variant="secondary">+{citations.length - 12}</Badge> : null}
+      <ContextCitationBadges citations={citations} />
     </div>
   );
 }

@@ -65,7 +65,10 @@ export async function generateTestCases(input: {
     },
   });
 
-  return result;
+  return {
+    ...result,
+    relevantProjectKnowledgeBase: promptDraft.relevantProjectKnowledgeBase,
+  };
 }
 
 export function buildTestCaseGenerationPromptDraft(input: {

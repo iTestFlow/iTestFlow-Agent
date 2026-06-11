@@ -11,6 +11,7 @@ import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.se
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
+import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
 
 export const runtime = "nodejs";
 
@@ -65,11 +66,16 @@ export async function POST(request: Request) {
       options,
       extraInstructions: parsed.data.extraInstructions,
     });
+    const contextCitations = buildWorkflowContextCitations({
+      resolvedContextUsed: autoContext.contextUsed,
+      relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
+    });
 
     return NextResponse.json({
       targetWorkItemId: parsed.data.targetWorkItemId,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: autoContext.contextUsed,
+      contextCitations,
       retrievalTopK: autoContext.retrievalTopK,
       options,
       provider: result.provider,

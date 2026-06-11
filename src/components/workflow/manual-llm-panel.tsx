@@ -9,7 +9,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { CopyButton } from "@/components/workflow/copy-button"
+import { WorkflowContextCitations } from "@/components/workflow/workflow-context-citations"
 import { cn } from "@/lib/utils"
+import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-citations"
 
 /**
  * External-LLM prompt + response panel shared by every "External LLM" workflow
@@ -25,6 +27,7 @@ export function ManualLLMPanel({
   promptVersion,
   schemaName,
   badges,
+  contextCitations,
   response,
   onResponseChange,
   onSubmit,
@@ -43,6 +46,7 @@ export function ManualLLMPanel({
   promptVersion?: string
   schemaName?: string
   badges?: ReactNode
+  contextCitations?: WorkflowContextCitation[]
   response: string
   onResponseChange: (value: string) => void
   onSubmit: () => void
@@ -75,6 +79,9 @@ export function ManualLLMPanel({
             {schemaName ? <Badge variant="outline">{schemaName}</Badge> : null}
             {badges}
           </div>
+        ) : null}
+        {contextCitations !== undefined ? (
+          <WorkflowContextCitations citations={contextCitations} />
         ) : null}
         <Textarea
           value={prompt}

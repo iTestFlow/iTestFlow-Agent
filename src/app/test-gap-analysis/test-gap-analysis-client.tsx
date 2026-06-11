@@ -14,6 +14,7 @@ import { GenerationModeToggle } from "@/components/workflow/generation-mode-togg
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
+import { WorkflowContextCitations } from "@/components/workflow/workflow-context-citations";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
 import {
@@ -72,6 +73,11 @@ export function TestGapAnalysisClient() {
   });
   useEffect(() => {
     setHasUnfinishedWork(false);
+    setState({ loading: false, error: null, data: null });
+    setSelectedSuggestedIds([]);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
   }, [scope?.azureProjectId]);
   const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
   const suggestedAdditions = useMemo(() => state.data?.suggestedAdditions ?? [], [state.data?.suggestedAdditions]);
@@ -87,6 +93,8 @@ export function TestGapAnalysisClient() {
   function changeTargetWorkItemId(value: string) {
     setHasUnfinishedWork(true);
     setTargetWorkItemId(value);
+    setState({ loading: false, error: null, data: null });
+    setSelectedSuggestedIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
@@ -95,6 +103,8 @@ export function TestGapAnalysisClient() {
   function changeExtraInstructions(value: string) {
     setHasUnfinishedWork(true);
     setExtraInstructions(value);
+    setState({ loading: false, error: null, data: null });
+    setSelectedSuggestedIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
@@ -118,6 +128,10 @@ export function TestGapAnalysisClient() {
     if (!scope || !targetWorkItemId || !extraInstructionsValid) return;
     if (gen.isRunning) return;
     setState({ loading: true, error: null, data: null });
+    setSelectedSuggestedIds([]);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
     const data = await gen.start((signal) =>
       postJson<ExistingReviewResult>(
         "/api/existing-test-case-review/run",
@@ -136,6 +150,8 @@ export function TestGapAnalysisClient() {
   async function prepareManualPrompt() {
     if (!scope || !targetWorkItemId || !extraInstructionsValid) return;
     if (prep.isRunning) return;
+    setState({ loading: false, error: null, data: null });
+    setSelectedSuggestedIds([]);
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
@@ -164,6 +180,7 @@ export function TestGapAnalysisClient() {
         rawOutput: manualResponse,
         selectedContextIds: manualDraft.data.selectedContextIds ?? [],
         resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
+        contextCitations: manualDraft.data.contextCitations,
         retrievalTopK: manualDraft.data.retrievalTopK,
       });
       applyReviewResult(data);
@@ -247,6 +264,7 @@ export function TestGapAnalysisClient() {
             <ManualLLMPanel
               prompt={manualDraft.data.prompt}
               promptVersion={manualDraft.data.promptVersion}
+              contextCitations={manualDraft.data.contextCitations}
               response={manualResponse}
               onResponseChange={(value) => {
                 setHasUnfinishedWork(true);
@@ -285,6 +303,7 @@ export function TestGapAnalysisClient() {
               {mode === "auto" && gen.status === "completed" ? (
                 <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
               ) : null}
+              <WorkflowContextCitations citations={state.data.contextCitations} />
               <ExistingTraceabilitySummary result={state.data} />
             </div>
             <ExistingTraceabilityMatrix rows={state.data.traceabilityMatrix} />

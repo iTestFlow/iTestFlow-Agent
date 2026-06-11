@@ -18,11 +18,13 @@ import { GenerationModeToggle } from "@/components/workflow/generation-mode-togg
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
+import { WorkflowContextCitations } from "@/components/workflow/workflow-context-citations";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { isRequirementLikeType } from "@/components/workflow/test-intelligence-shared";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import type { TokenUsage } from "@/modules/llm/llm-types";
+import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-citations";
 
 type WorkflowMode = "auto" | "manual";
 type TesterSeniority = "junior" | "mid" | "senior";
@@ -79,6 +81,7 @@ type EffortPreview = {
   testCases: PreviewTestCase[];
   selectedContextIds?: string[];
   resolvedContextUsed?: unknown[];
+  contextCitations: WorkflowContextCitation[];
   retrievalTopK?: number | null;
   options?: EffortOptions;
 };
@@ -194,6 +197,8 @@ export function TestExecutionEffortClient() {
 
   useEffect(() => {
     setHasUnfinishedWork(false);
+    setStoryLookup({ loading: false, error: null, data: null });
+    clearOutputs();
   }, [scope?.azureProjectId]);
 
   const requestPayload = useMemo(() => ({
@@ -256,6 +261,10 @@ export function TestExecutionEffortClient() {
     if (!canSubmit()) return;
     if (gen.isRunning) return;
     setError(null);
+    setPreview(null);
+    setEstimateResult(null);
+    setExternalDraft(null);
+    setExternalResponse("");
     const data = await gen.start((signal) =>
       postJson<GenerateResponse>("/api/test-execution-effort/generate", requestPayload, signal),
     );
@@ -272,6 +281,10 @@ export function TestExecutionEffortClient() {
     if (!canSubmit()) return;
     if (prep.isRunning) return;
     setError(null);
+    setPreview(null);
+    setEstimateResult(null);
+    setExternalDraft(null);
+    setExternalResponse("");
     const data = await prep.start((signal) =>
       postJson<ExternalPromptDraft>("/api/test-execution-effort/external-prompt", requestPayload, signal),
     );
@@ -293,6 +306,7 @@ export function TestExecutionEffortClient() {
         rawOutput: externalResponse,
         selectedContextIds: externalDraft.selectedContextIds ?? [],
         resolvedContextUsed: externalDraft.resolvedContextUsed ?? [],
+        contextCitations: externalDraft.contextCitations,
         retrievalTopK: externalDraft.retrievalTopK,
       });
       setPreview(data);
@@ -476,6 +490,7 @@ export function TestExecutionEffortClient() {
           prompt={externalDraft.prompt}
           promptVersion={externalDraft.promptVersion}
           schemaName={externalDraft.schemaName}
+          contextCitations={externalDraft.contextCitations}
           response={externalResponse}
           onResponseChange={(value) => {
             setHasUnfinishedWork(true);
@@ -505,6 +520,7 @@ export function TestExecutionEffortClient() {
           {mode === "auto" && gen.status === "completed" ? (
             <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
           ) : null}
+          <WorkflowContextCitations citations={estimateResult.contextCitations} />
           <EstimateResultPanel result={estimateResult.estimate} />
         </div>
       ) : null}

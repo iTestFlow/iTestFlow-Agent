@@ -94,7 +94,10 @@ export async function generateTestExecutionEffort(input: {
     },
   });
 
-  return result;
+  return {
+    ...result,
+    relevantProjectKnowledgeBase: promptDraft.relevantProjectKnowledgeBase,
+  };
 }
 
 export function buildTestExecutionEffortPromptDraft(input: {

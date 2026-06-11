@@ -16,6 +16,7 @@ import { GenerationModeToggle } from "@/components/workflow/generation-mode-togg
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
+import { WorkflowContextCitations } from "@/components/workflow/workflow-context-citations";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
 import {
@@ -101,6 +102,12 @@ export function RequirementsAnalysisClient() {
   });
   useEffect(() => {
     setHasUnfinishedWork(false);
+    setAnalysis({ loading: false, error: null, data: null });
+    setFindings([]);
+    setSelectedFindingIds([]);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
   }, [scope?.azureProjectId]);
   const sortedFindingList = useMemo(
     () => [...findings].sort((left, right) => severityRank(left.severity) - severityRank(right.severity)),
@@ -167,12 +174,18 @@ export function RequirementsAnalysisClient() {
   function changeExtraInstructions(value: string) {
     setHasUnfinishedWork(true);
     setExtraInstructions(value);
+    setAnalysis({ loading: false, error: null, data: null });
+    setFindings([]);
+    setSelectedFindingIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
   }
 
   function resetManualDraftForChecklistChange() {
+    setAnalysis({ loading: false, error: null, data: null });
+    setFindings([]);
+    setSelectedFindingIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
@@ -218,6 +231,11 @@ export function RequirementsAnalysisClient() {
     if (!scope || !targetWorkItemId || !checklistSelectionValid || !extraInstructionsValid) return;
     if (gen.isRunning) return;
     setAnalysis({ loading: true, error: null, data: null });
+    setFindings([]);
+    setSelectedFindingIds([]);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitError(null);
     const data = await gen.start((signal) =>
       postJson<RequirementAnalysisRunResult>(
         "/api/requirement-analysis/run",
@@ -236,6 +254,9 @@ export function RequirementsAnalysisClient() {
   async function prepareManualPrompt() {
     if (!scope || !targetWorkItemId || !checklistSelectionValid || !extraInstructionsValid) return;
     if (prep.isRunning) return;
+    setAnalysis({ loading: false, error: null, data: null });
+    setFindings([]);
+    setSelectedFindingIds([]);
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
@@ -265,6 +286,7 @@ export function RequirementsAnalysisClient() {
         enabledChecklistItemIds: manualDraft.data.enabledChecklistItemIds ?? enabledChecklistItemIds,
         selectedContextIds: manualDraft.data.selectedContextIds ?? [],
         resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
+        contextCitations: manualDraft.data.contextCitations,
         retrievalTopK: manualDraft.data.retrievalTopK,
       });
       applyAnalysisResult(data);
@@ -412,6 +434,7 @@ export function RequirementsAnalysisClient() {
             <ManualLLMPanel
               prompt={manualDraft.data.prompt}
               promptVersion={manualDraft.data.promptVersion}
+              contextCitations={manualDraft.data.contextCitations}
               response={manualResponse}
               onResponseChange={(value) => {
                 setHasUnfinishedWork(true);
@@ -450,6 +473,7 @@ export function RequirementsAnalysisClient() {
           {mode === "auto" && gen.status === "completed" ? (
             <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
           ) : null}
+          <WorkflowContextCitations citations={analysis.data.contextCitations} />
           <RequirementFindingsReview
             key={findingsReviewVersion}
             findings={findings}

@@ -13,6 +13,7 @@ import {
   StoryIdSchema,
   TestExecutionEffortOptionsSchema,
 } from "@/modules/test-execution-effort/test-execution-effort.schema";
+import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
 
 export const runtime = "nodejs";
 
@@ -55,11 +56,16 @@ export async function POST(request: Request) {
       projectKnowledgeBase: data.projectKnowledgeBase,
       options,
     });
+    const contextCitations = buildWorkflowContextCitations({
+      resolvedContextUsed: data.resolvedContextUsed,
+      relevantProjectKnowledgeBase: draft.relevantProjectKnowledgeBase,
+    });
 
     return NextResponse.json({
       ...preview,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: data.resolvedContextUsed,
+      contextCitations,
       retrievalTopK: data.retrievalTopK,
       options,
       ...draft,

@@ -70,7 +70,11 @@ export async function runRequirementAnalysis(input: {
     },
   });
 
-  return { ...result, enabledChecklistItemIds: promptDraft.enabledChecklistItemIds };
+  return {
+    ...result,
+    enabledChecklistItemIds: promptDraft.enabledChecklistItemIds,
+    relevantProjectKnowledgeBase: promptDraft.relevantProjectKnowledgeBase,
+  };
 }
 
 export function buildRequirementAnalysisPromptDraft(input: {

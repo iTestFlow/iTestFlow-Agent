@@ -6,6 +6,7 @@ import type {
 } from "@/modules/requirement-analysis/finding-options";
 import type { TokenUsage } from "@/modules/llm/llm-types";
 import type { TestDesignOptions } from "@/modules/test-case-design/test-design-options";
+import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-citations";
 
 /**
  * Shared client-side types for the AI test-intelligence workflows (Requirement
@@ -59,6 +60,7 @@ export type RequirementAnalysisRunResult = {
   contextUsed: string[];
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   resolvedContextUsed?: unknown[];
+  contextCitations: WorkflowContextCitation[];
   tokenUsage?: TokenUsage;
 };
 
@@ -90,6 +92,7 @@ export type TestCaseGenerationRunResult = {
   summary: TestCaseSummary;
   contextUsed: string[];
   resolvedContextUsed?: unknown[];
+  contextCitations: WorkflowContextCitation[];
   options?: TestDesignOptions;
   tokenUsage?: TokenUsage;
 };
@@ -101,6 +104,7 @@ export type ManualPromptDraft = {
   options?: TestDesignOptions;
   selectedContextIds?: string[];
   resolvedContextUsed?: unknown[];
+  contextCitations: WorkflowContextCitation[];
   retrievalTopK?: number;
 };
 
@@ -169,6 +173,7 @@ export type ExistingReviewResult = {
   findings: ExistingReviewFinding[];
   suggestedAdditions: GeneratedTestCase[];
   contextUsed: string[];
+  contextCitations: WorkflowContextCitation[];
   tokenUsage?: TokenUsage;
 };
 
