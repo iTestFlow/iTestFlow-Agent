@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, Loader2, Play, Send, X } from "lucide-react";
+import { ArrowLeft, CheckCircle2, FileSearch, ListChecks, Loader2, Play, Send, X } from "lucide-react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generatio
 import { WorkflowContextCitations } from "@/components/workflow/workflow-context-citations";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
+import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import {
   RequirementFindingsReview,
   validateRequirementFinding,
@@ -68,6 +69,7 @@ function buildCommentBodyWithMentions(commentBody: string, mentionedUsers: Proje
 export function RequirementsAnalysisClient() {
   const scope = useActiveProject();
   const findingsCardRef = useRef<HTMLDivElement | null>(null);
+  const [activeStep, setActiveStep] = useState<"analyze" | "review">("analyze");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const [extraInstructions, setExtraInstructions] = useState("");
@@ -79,6 +81,8 @@ export function RequirementsAnalysisClient() {
   });
   const gen = useAiGeneration();
   const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
+  const cancelGeneration = gen.cancel;
+  const cancelPreparation = prep.cancel;
   const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
@@ -101,6 +105,10 @@ export function RequirementsAnalysisClient() {
       prep.isRunning,
   });
   useEffect(() => {
+    cancelGeneration();
+    cancelPreparation();
+    setActiveStep("analyze");
+    setTargetWorkItemId("");
     setHasUnfinishedWork(false);
     setAnalysis({ loading: false, error: null, data: null });
     setFindings([]);
@@ -108,7 +116,9 @@ export function RequirementsAnalysisClient() {
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
-  }, [scope?.azureProjectId]);
+    setPushState({ loading: false, error: null, data: null });
+    setSelectedMentionUserIds([]);
+  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation]);
   const sortedFindingList = useMemo(
     () => [...findings].sort((left, right) => severityRank(left.severity) - severityRank(right.severity)),
     [findings],
@@ -158,6 +168,9 @@ export function RequirementsAnalysisClient() {
   }, [scope]);
 
   function changeTargetWorkItemId(value: string) {
+    gen.cancel();
+    prep.cancel();
+    setActiveStep("analyze");
     setHasUnfinishedWork(true);
     setTargetWorkItemId(value);
     setAnalysis({ loading: false, error: null, data: null });
@@ -172,6 +185,9 @@ export function RequirementsAnalysisClient() {
   }
 
   function changeExtraInstructions(value: string) {
+    gen.cancel();
+    prep.cancel();
+    setActiveStep("analyze");
     setHasUnfinishedWork(true);
     setExtraInstructions(value);
     setAnalysis({ loading: false, error: null, data: null });
@@ -183,6 +199,9 @@ export function RequirementsAnalysisClient() {
   }
 
   function resetManualDraftForChecklistChange() {
+    gen.cancel();
+    prep.cancel();
+    setActiveStep("analyze");
     setAnalysis({ loading: false, error: null, data: null });
     setFindings([]);
     setSelectedFindingIds([]);
@@ -218,6 +237,7 @@ export function RequirementsAnalysisClient() {
   }
 
   function applyAnalysisResult(data: RequirementAnalysisRunResult) {
+    setActiveStep("review");
     setHasUnfinishedWork(data.findings.length > 0);
     setAnalysis({ loading: false, error: null, data });
     setFindings(data.findings);
@@ -245,6 +265,7 @@ export function RequirementsAnalysisClient() {
     );
     if (data) {
       applyAnalysisResult(data);
+      scrollToNextStep(findingsCardRef);
     } else {
       // cancelled or failed: the progress panel owns the message.
       setAnalysis({ loading: false, error: null, data: null });
@@ -359,117 +380,150 @@ export function RequirementsAnalysisClient() {
   return (
     <div className="space-y-6">
       {projectWarning(scope)}
-      <SectionCard
-        title="Target Requirement"
-        description="Enter a real Azure DevOps work item ID. Project context is selected automatically for this run."
-        action={
-          <GenerationModeToggle
-            mode={mode}
-            onChange={(nextMode) => {
-              setHasUnfinishedWork(true);
-              setMode(nextMode);
-            }}
-          />
-        }
-      >
-        <div className="space-y-4 p-4">
-          <div className="grid items-end gap-4 lg:grid-cols-[240px_auto]">
-            <div className="space-y-2">
-              <Label htmlFor="requirement-analysis-work-item-id" className="text-sm font-semibold text-foreground">
-                {WORK_ITEM_ID_TITLE}
-              </Label>
-              <Input
-                id="requirement-analysis-work-item-id"
-                value={targetWorkItemId}
-                inputMode="numeric"
-                onChange={(event) => changeTargetWorkItemId(event.target.value)}
-                placeholder={WORK_ITEM_ID_PLACEHOLDER}
-                title={WORK_ITEM_ID_TITLE}
-                aria-label={WORK_ITEM_ID_TITLE}
+      <WorkflowStepper
+        steps={[
+          {
+            id: "analyze",
+            label: "Analyze Requirement",
+            description: "Choose the requirement and analysis checklist.",
+            icon: FileSearch,
+          },
+          {
+            id: "review",
+            label: "Review & Publish Findings",
+            description: "Refine findings and publish the approved comment.",
+            icon: ListChecks,
+          },
+        ]}
+        activeStepId={activeStep}
+        completedStepIds={analysis.data ? ["analyze"] : []}
+        enabledStepIds={analysis.data ? ["analyze", "review"] : ["analyze"]}
+        onStepChange={setActiveStep}
+        ariaLabel="Requirements Analysis workflow"
+      />
+
+      {activeStep === "analyze" ? (
+        <div className="space-y-6">
+          <SectionCard
+            title="Analyze Azure DevOps Requirement"
+            description="Enter a real Azure DevOps work item ID. Project context is selected automatically for this run."
+            action={
+              <GenerationModeToggle
+                mode={mode}
+                onChange={(nextMode) => {
+                  setHasUnfinishedWork(true);
+                  setMode(nextMode);
+                }}
+              />
+            }
+          >
+            <div className="space-y-4 p-4">
+              <div className="grid items-end gap-4 lg:grid-cols-[240px_auto]">
+                <div className="space-y-2">
+                  <Label htmlFor="requirement-analysis-work-item-id" className="text-sm font-semibold text-foreground">
+                    {WORK_ITEM_ID_TITLE}
+                  </Label>
+                  <Input
+                    id="requirement-analysis-work-item-id"
+                    value={targetWorkItemId}
+                    inputMode="numeric"
+                    onChange={(event) => changeTargetWorkItemId(event.target.value)}
+                    placeholder={WORK_ITEM_ID_PLACEHOLDER}
+                    title={WORK_ITEM_ID_TITLE}
+                    aria-label={WORK_ITEM_ID_TITLE}
+                  />
+                </div>
+                {mode === "auto" ? (
+                  <Button onClick={runAnalysis} disabled={!scope || !targetWorkItemId || gen.isRunning || !checklistSelectionValid || !extraInstructionsValid}>
+                    <Play className="h-4 w-4" />
+                    {gen.isRunning ? "Analyzing..." : "Analyze"}
+                  </Button>
+                ) : (
+                  <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !checklistSelectionValid || !extraInstructionsValid}>
+                    <Play className="h-4 w-4" />
+                    {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
+                  </Button>
+                )}
+              </div>
+              <WorkItemPreview scope={scope} workItemId={targetWorkItemId} />
+              <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
+              <RequirementChecklistSelector
+                selectedIds={enabledChecklistItemIds}
+                onToggle={changeChecklistSelection}
+                onSelectAll={selectAllChecklistItems}
+                onClearAll={clearAllChecklistItems}
               />
             </div>
-            {mode === "auto" ? (
-              <Button onClick={runAnalysis} disabled={!scope || !targetWorkItemId || gen.isRunning || !checklistSelectionValid || !extraInstructionsValid}>
-                <Play className="h-4 w-4" />
-                {gen.isRunning ? "Analyzing..." : "Analyze"}
-              </Button>
-            ) : (
-              <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !checklistSelectionValid || !extraInstructionsValid}>
-                <Play className="h-4 w-4" />
-                {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
-              </Button>
-            )}
-          </div>
-          <WorkItemPreview scope={scope} workItemId={targetWorkItemId} />
-          <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
-          <RequirementChecklistSelector
-            selectedIds={enabledChecklistItemIds}
-            onToggle={changeChecklistSelection}
-            onSelectAll={selectAllChecklistItems}
-            onClearAll={clearAllChecklistItems}
-          />
-        </div>
-      </SectionCard>
+          </SectionCard>
 
-      {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
-        <AiGenerationProgress
-          mode="prep"
-          variant="analysis"
-          status={prep.status}
-          elapsedSeconds={prep.elapsedSeconds}
-          errorMessage={prep.errorMessage}
-          canCancel
-          onCancel={prep.cancel}
-          onRetry={() => {
-            prep.retry();
-            void prepareManualPrompt();
-          }}
-        />
-      ) : null}
-
-      {mode === "manual" && (manualDraft.data || manualSubmitError) ? (
-        <div className="space-y-4">
-          {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
-          {manualDraft.data ? (
-            <ManualLLMPanel
-              prompt={manualDraft.data.prompt}
-              promptVersion={manualDraft.data.promptVersion}
-              contextCitations={manualDraft.data.contextCitations}
-              response={manualResponse}
-              onResponseChange={(value) => {
-                setHasUnfinishedWork(true);
-                setManualResponse(value);
+          {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
+            <AiGenerationProgress
+              mode="prep"
+              variant="analysis"
+              status={prep.status}
+              elapsedSeconds={prep.elapsedSeconds}
+              errorMessage={prep.errorMessage}
+              canCancel
+              onCancel={prep.cancel}
+              onRetry={() => {
+                prep.retry();
+                void prepareManualPrompt();
               }}
-              onSubmit={submitManualResponse}
-              submitting={manualSubmitLoading}
-              submitLabel="Validate and Continue"
-              submittingLabel="Validating..."
-              responseLabel="External LLM Response"
-              promptMinHeightClass="min-h-[360px]"
-              responseMinHeightClass="min-h-[260px]"
+            />
+          ) : null}
+
+          {mode === "manual" && (manualDraft.data || manualSubmitError) ? (
+            <div className="space-y-4">
+              {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
+              {manualDraft.data ? (
+                <ManualLLMPanel
+                  prompt={manualDraft.data.prompt}
+                  promptVersion={manualDraft.data.promptVersion}
+                  contextCitations={manualDraft.data.contextCitations}
+                  response={manualResponse}
+                  onResponseChange={(value) => {
+                    setHasUnfinishedWork(true);
+                    setManualResponse(value);
+                  }}
+                  onSubmit={submitManualResponse}
+                  submitting={manualSubmitLoading}
+                  submitLabel="Validate and Continue"
+                  submittingLabel="Validating..."
+                  responseLabel="External LLM Response"
+                  promptMinHeightClass="min-h-[360px]"
+                  responseMinHeightClass="min-h-[260px]"
+                />
+              ) : null}
+            </div>
+          ) : null}
+
+          {gen.status !== "idle" && gen.status !== "completed" ? (
+            <AiGenerationProgress
+              variant="analysis"
+              status={gen.status}
+              elapsedSeconds={gen.elapsedSeconds}
+              errorMessage={gen.errorMessage}
+              canCancel
+              onCancel={gen.cancel}
+              onRetry={() => {
+                gen.retry();
+                void runAnalysis();
+              }}
             />
           ) : null}
         </div>
-      ) : null}
-
-      {gen.status !== "idle" && gen.status !== "completed" ? (
-        <div ref={findingsCardRef}>
-          <AiGenerationProgress
-            variant="analysis"
-            status={gen.status}
-            elapsedSeconds={gen.elapsedSeconds}
-            errorMessage={gen.errorMessage}
-            canCancel
-            onCancel={gen.cancel}
-            onRetry={() => {
-              gen.retry();
-              void runAnalysis();
-            }}
-          />
-        </div>
-      ) : null}
-      {analysis.data ? (
-        <div ref={findingsCardRef} className="space-y-2">
+      ) : analysis.data ? (
+        <div ref={findingsCardRef} className="space-y-3">
+          <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-foreground">Reviewing work item #{targetWorkItemId}</div>
+              <div className="text-xs text-muted-foreground">Your generated findings remain available when you return to the checklist.</div>
+            </div>
+            <Button type="button" variant="outline" onClick={() => setActiveStep("analyze")}>
+              <ArrowLeft className="size-4" />
+              Back to inputs
+            </Button>
+          </div>
           {mode === "auto" && gen.status === "completed" ? (
             <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
           ) : null}

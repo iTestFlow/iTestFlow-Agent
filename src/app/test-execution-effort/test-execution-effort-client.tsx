@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { AlertCircle, CheckCircle2, Loader2, Sparkles, SquareTerminal } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AlertCircle, ArrowLeft, Calculator, CheckCircle2, ClipboardCheck, Play, Sparkles } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,8 +19,10 @@ import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
 import { WorkflowContextCitations } from "@/components/workflow/workflow-context-citations";
+import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
-import { isRequirementLikeType } from "@/components/workflow/test-intelligence-shared";
+import { isRequirementLikeType, scrollToNextStep } from "@/components/workflow/test-intelligence-shared";
+import { WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import type { TokenUsage } from "@/modules/llm/llm-types";
@@ -177,6 +179,8 @@ const executionTypeDescription: Record<ExecutionType, string> = {
 
 export function TestExecutionEffortClient() {
   const scope = useActiveProject();
+  const reviewRef = useRef<HTMLDivElement | null>(null);
+  const [activeStep, setActiveStep] = useState<"configure" | "review">("configure");
   const [storyId, setStoryId] = useState("");
   const [storyLookup, setStoryLookup] = useState<ApiState<WorkItem>>({ loading: false, error: null, data: null });
   const [mode, setMode] = useState<WorkflowMode>("auto");
@@ -189,6 +193,8 @@ export function TestExecutionEffortClient() {
   const [error, setError] = useState<string | null>(null);
   const gen = useAiGeneration();
   const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
+  const cancelGeneration = gen.cancel;
+  const cancelPreparation = prep.cancel;
   const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
   useUnsavedChangesGuard({
     dirty: hasUnfinishedWork,
@@ -196,10 +202,18 @@ export function TestExecutionEffortClient() {
   });
 
   useEffect(() => {
+    cancelGeneration();
+    cancelPreparation();
+    setActiveStep("configure");
+    setStoryId("");
     setHasUnfinishedWork(false);
     setStoryLookup({ loading: false, error: null, data: null });
-    clearOutputs();
-  }, [scope?.azureProjectId]);
+    setPreview(null);
+    setEstimateResult(null);
+    setExternalDraft(null);
+    setExternalResponse("");
+    setError(null);
+  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation]);
 
   const requestPayload = useMemo(() => ({
     scope,
@@ -208,6 +222,9 @@ export function TestExecutionEffortClient() {
   }), [options, scope, storyId]);
 
   function clearOutputs() {
+    gen.cancel();
+    prep.cancel();
+    setActiveStep("configure");
     setPreview(null);
     setEstimateResult(null);
     setExternalDraft(null);
@@ -274,6 +291,8 @@ export function TestExecutionEffortClient() {
       setExternalDraft(null);
       setExternalResponse("");
       setHasUnfinishedWork(false);
+      setActiveStep("review");
+      scrollToNextStep(reviewRef);
     }
   }
 
@@ -312,6 +331,8 @@ export function TestExecutionEffortClient() {
       setPreview(data);
       setEstimateResult(data);
       setHasUnfinishedWork(false);
+      setActiveStep("review");
+      scrollToNextStep(reviewRef);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "External LLM response validation failed.");
     } finally {
@@ -349,179 +370,219 @@ export function TestExecutionEffortClient() {
         </Alert>
       ) : null}
 
-      <Card>
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-0.5">
-            <CardTitle className="text-base">Estimate Inputs</CardTitle>
-            <CardDescription>Load the story, linked Azure DevOps test cases, and project context before estimating manual execution effort.</CardDescription>
-          </div>
-          <GenerationModeToggle
-            mode={mode}
-            onChange={(nextMode) => {
-              setHasUnfinishedWork(true);
-              setMode(nextMode);
-            }}
-          />
-        </CardHeader>
-        <CardContent className="space-y-5 pt-5">
-          <div className="grid gap-4 lg:grid-cols-[minmax(260px,360px)_1fr]">
-            <Field label="User Story ID">
-              <Input
-                value={storyId}
-                inputMode="numeric"
-                maxLength={10}
-                placeholder="e.g. 123456"
-                onChange={(event) => {
+      <WorkflowStepper
+        steps={[
+          {
+            id: "configure",
+            label: "Configure & Generate Estimate",
+            description: "Choose the story and execution assumptions.",
+            icon: Calculator,
+          },
+          {
+            id: "review",
+            label: "Review Effort Estimate",
+            description: "Inspect the estimate, assumptions, and risks.",
+            icon: ClipboardCheck,
+          },
+        ]}
+        activeStepId={activeStep}
+        completedStepIds={estimateResult ? ["configure"] : []}
+        enabledStepIds={estimateResult ? ["configure", "review"] : ["configure"]}
+        onStepChange={setActiveStep}
+        ariaLabel="Test Execution Effort workflow"
+      />
+
+      {activeStep === "configure" ? (
+        <div className="space-y-5">
+          <Card>
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="space-y-0.5">
+                <CardTitle className="text-base">Estimate Inputs</CardTitle>
+                <CardDescription>Load the story, linked Azure DevOps test cases, and project context before estimating manual execution effort.</CardDescription>
+              </div>
+              <GenerationModeToggle
+                mode={mode}
+                onChange={(nextMode) => {
                   setHasUnfinishedWork(true);
-                  setStoryId(event.target.value);
-                  setStoryLookup({ loading: false, error: null, data: null });
-                  clearOutputs();
+                  setMode(nextMode);
                 }}
               />
-            </Field>
-            <WorkItemSummaryCard
-              story={storyLookup.data}
-              loading={storyLookup.loading}
-              error={storyLookup.error}
-              valid={storyLookup.data ? isRequirementLikeType(storyLookup.data.workItemType) : true}
-              invalidNote="This work item is not a typical story/requirement type."
-              loadingText="Loading user story..."
-            />
-          </div>
+            </CardHeader>
+            <CardContent className="space-y-5 pt-5">
+              <div className="grid items-end gap-4 lg:grid-cols-[240px_auto]">
+                <div className="space-y-2">
+                  <Label htmlFor="test-execution-effort-work-item-id" className="text-sm font-semibold text-foreground">
+                    {WORK_ITEM_ID_TITLE}
+                  </Label>
+                  <Input
+                    id="test-execution-effort-work-item-id"
+                    value={storyId}
+                    inputMode="numeric"
+                    maxLength={10}
+                    placeholder={WORK_ITEM_ID_PLACEHOLDER}
+                    title={WORK_ITEM_ID_TITLE}
+                    aria-label={WORK_ITEM_ID_TITLE}
+                    onChange={(event) => {
+                      setHasUnfinishedWork(true);
+                      setStoryId(event.target.value);
+                      setStoryLookup({ loading: false, error: null, data: null });
+                      clearOutputs();
+                    }}
+                  />
+                </div>
+                {mode === "auto" ? (
+                  <Button onClick={generateEstimate} disabled={actionDisabled || gen.isRunning}>
+                    <Play className="size-4" />
+                    {gen.isRunning ? "Generating..." : "Generate"}
+                  </Button>
+                ) : (
+                  <Button onClick={prepareExternalPrompt} disabled={actionDisabled || prep.isRunning}>
+                    <Play className="size-4" />
+                    {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
+                  </Button>
+                )}
+              </div>
+              <WorkItemSummaryCard
+                story={storyLookup.data}
+                loading={storyLookup.loading}
+                error={storyLookup.error}
+                valid={storyLookup.data ? isRequirementLikeType(storyLookup.data.workItemType) : true}
+                invalidNote="This work item is not a typical story/requirement type."
+                loadingText="Loading work item..."
+              />
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Field label="Tester Seniority">
-              <Select value={options.testerSeniority} onValueChange={(value) => updateOption("testerSeniority", value as TesterSeniority)}>
-                <SelectTrigger className="h-8 w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="junior">Junior QA</SelectItem>
-                  <SelectItem value="mid">Mid-level QA</SelectItem>
-                  <SelectItem value="senior">Senior QA</SelectItem>
-                </SelectContent>
-              </Select>
-              <OptionDescription>{testerSeniorityDescription[options.testerSeniority]}</OptionDescription>
-            </Field>
-            <Field label="Execution Type">
-              <Select value={options.executionType} onValueChange={(value) => updateOption("executionType", value as ExecutionType)}>
-                <SelectTrigger className="h-8 w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="first_execution">First Execution</SelectItem>
-                  <SelectItem value="regression_reexecution">Regression Re-execution</SelectItem>
-                  <SelectItem value="uat_support">UAT Support</SelectItem>
-                </SelectContent>
-              </Select>
-              <OptionDescription>{executionTypeDescription[options.executionType]}</OptionDescription>
-            </Field>
-          </div>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Field label="Tester Seniority">
+                  <Select value={options.testerSeniority} onValueChange={(value) => updateOption("testerSeniority", value as TesterSeniority)}>
+                    <SelectTrigger className="h-8 w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="junior">Junior QA</SelectItem>
+                      <SelectItem value="mid">Mid-level QA</SelectItem>
+                      <SelectItem value="senior">Senior QA</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <OptionDescription>{testerSeniorityDescription[options.testerSeniority]}</OptionDescription>
+                </Field>
+                <Field label="Execution Type">
+                  <Select value={options.executionType} onValueChange={(value) => updateOption("executionType", value as ExecutionType)}>
+                    <SelectTrigger className="h-8 w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="first_execution">First Execution</SelectItem>
+                      <SelectItem value="regression_reexecution">Regression Re-execution</SelectItem>
+                      <SelectItem value="uat_support">UAT Support</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <OptionDescription>{executionTypeDescription[options.executionType]}</OptionDescription>
+                </Field>
+              </div>
 
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <OptionToggle
-              checked={options.includeDataPreparation}
-              label="Include test data preparation time"
-              onChange={(checked) => updateOption("includeDataPreparation", checked)}
-            />
-            <OptionToggle
-              checked={options.includeEnvironmentSetup}
-              label="Include environment/setup time"
-              onChange={(checked) => updateOption("includeEnvironmentSetup", checked)}
-            />
-            <OptionToggle
-              checked={options.includeEvidenceAndDefectLogging}
-              label="Include evidence capture and defect logging buffer"
-              onChange={(checked) => updateOption("includeEvidenceAndDefectLogging", checked)}
-            />
-            <OptionToggle
-              checked={options.includeRetestingBuffer}
-              label="Include retesting buffer"
-              onChange={(checked) => updateOption("includeRetestingBuffer", checked)}
-            />
-          </div>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <OptionToggle
+                  checked={options.includeDataPreparation}
+                  label="Include test data preparation time"
+                  onChange={(checked) => updateOption("includeDataPreparation", checked)}
+                />
+                <OptionToggle
+                  checked={options.includeEnvironmentSetup}
+                  label="Include environment/setup time"
+                  onChange={(checked) => updateOption("includeEnvironmentSetup", checked)}
+                />
+                <OptionToggle
+                  checked={options.includeEvidenceAndDefectLogging}
+                  label="Include evidence capture and defect logging buffer"
+                  onChange={(checked) => updateOption("includeEvidenceAndDefectLogging", checked)}
+                />
+                <OptionToggle
+                  checked={options.includeRetestingBuffer}
+                  label="Include retesting buffer"
+                  onChange={(checked) => updateOption("includeRetestingBuffer", checked)}
+                />
+              </div>
 
-          <div className="flex justify-end">
-            <div className="flex flex-col gap-2 sm:flex-row">
-              {mode === "auto" ? (
-                <Button onClick={generateEstimate} disabled={actionDisabled || gen.isRunning}>
-                  {gen.isRunning ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-                  {gen.isRunning ? "Generating..." : "Generate Estimate"}
-                </Button>
-              ) : (
-                <Button onClick={prepareExternalPrompt} disabled={actionDisabled || prep.isRunning}>
-                  {prep.isRunning ? <Loader2 className="size-4 animate-spin" /> : <SquareTerminal className="size-4" />}
-                  {prep.isRunning ? "Preparing..." : "Prepare External LLM Prompt"}
-                </Button>
-              )}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
 
-      {error ? (
-        <Alert variant="destructive">
-          <AlertCircle className="size-4" />
-          <AlertTitle>Request failed</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      ) : null}
-
-      {preview ? <StorySummaryPanel preview={preview} /> : null}
-
-      {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
-        <AiGenerationProgress
-          mode="prep"
-          variant="advice"
-          status={prep.status}
-          elapsedSeconds={prep.elapsedSeconds}
-          errorMessage={prep.errorMessage}
-          canCancel
-          onCancel={prep.cancel}
-          onRetry={() => {
-            prep.retry();
-            void prepareExternalPrompt();
-          }}
-        />
-      ) : null}
-
-      {externalDraft ? (
-        <ManualLLMPanel
-          prompt={externalDraft.prompt}
-          promptVersion={externalDraft.promptVersion}
-          schemaName={externalDraft.schemaName}
-          contextCitations={externalDraft.contextCitations}
-          response={externalResponse}
-          onResponseChange={(value) => {
-            setHasUnfinishedWork(true);
-            setExternalResponse(value);
-          }}
-          onSubmit={submitExternalResponse}
-          submitting={loadingAction === "submit"}
-        />
-      ) : null}
-
-      {gen.status !== "idle" && gen.status !== "completed" ? (
-        <AiGenerationProgress
-          variant="advice"
-          status={gen.status}
-          elapsedSeconds={gen.elapsedSeconds}
-          errorMessage={gen.errorMessage}
-          canCancel
-          onCancel={gen.cancel}
-          onRetry={() => {
-            gen.retry();
-            void generateEstimate();
-          }}
-        />
-      ) : null}
-      {estimateResult ? (
-        <div className="space-y-2">
-          {mode === "auto" && gen.status === "completed" ? (
-            <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
+          {error ? (
+            <Alert variant="destructive">
+              <AlertCircle className="size-4" />
+              <AlertTitle>Request failed</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           ) : null}
-          <WorkflowContextCitations citations={estimateResult.contextCitations} />
-          <EstimateResultPanel result={estimateResult.estimate} />
+
+          {mode === "manual" && preview ? <StorySummaryPanel preview={preview} /> : null}
+
+          {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
+            <AiGenerationProgress
+              mode="prep"
+              variant="advice"
+              status={prep.status}
+              elapsedSeconds={prep.elapsedSeconds}
+              errorMessage={prep.errorMessage}
+              canCancel
+              onCancel={prep.cancel}
+              onRetry={() => {
+                prep.retry();
+                void prepareExternalPrompt();
+              }}
+            />
+          ) : null}
+
+          {externalDraft ? (
+            <ManualLLMPanel
+              prompt={externalDraft.prompt}
+              promptVersion={externalDraft.promptVersion}
+              schemaName={externalDraft.schemaName}
+              contextCitations={externalDraft.contextCitations}
+              response={externalResponse}
+              onResponseChange={(value) => {
+                setHasUnfinishedWork(true);
+                setExternalResponse(value);
+              }}
+              onSubmit={submitExternalResponse}
+              submitting={loadingAction === "submit"}
+            />
+          ) : null}
+
+          {gen.status !== "idle" && gen.status !== "completed" ? (
+            <AiGenerationProgress
+              variant="advice"
+              status={gen.status}
+              elapsedSeconds={gen.elapsedSeconds}
+              errorMessage={gen.errorMessage}
+              canCancel
+              onCancel={gen.cancel}
+              onRetry={() => {
+                gen.retry();
+                void generateEstimate();
+              }}
+            />
+          ) : null}
+        </div>
+      ) : estimateResult ? (
+        <div ref={reviewRef} className="space-y-5">
+          <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-foreground">Reviewing effort for story #{storyId}</div>
+              <div className="text-xs text-muted-foreground">The estimate remains available while you revisit execution assumptions.</div>
+            </div>
+            <Button type="button" variant="outline" onClick={() => setActiveStep("configure")}>
+              <ArrowLeft className="size-4" />
+              Back to inputs
+            </Button>
+          </div>
+          <StorySummaryPanel preview={estimateResult} />
+          <div className="space-y-2">
+            {mode === "auto" && gen.status === "completed" ? (
+              <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
+            ) : null}
+            <WorkflowContextCitations citations={estimateResult.contextCitations} />
+            <EstimateResultPanel result={estimateResult.estimate} />
+          </div>
         </div>
       ) : null}
     </div>

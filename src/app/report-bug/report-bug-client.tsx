@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, FileUp, Loader2, Play, Plus, Send, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Bug, CheckCircle2, ChevronDown, FileUp, ListChecks, Loader2, Play, Plus, Send, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,6 +20,7 @@ import {
   validateGeneratedTestCase,
 } from "@/components/workflow/generated-test-cases-review";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
+import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import type { GeneratedTestCase } from "@/components/workflow/test-intelligence-types";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
@@ -162,6 +163,8 @@ function parseJsonResponse(text: string, ok: boolean) {
 export function ReportBugClient() {
   const reviewSectionRef = useRef<HTMLDivElement | null>(null);
   const shouldScrollToReviewRef = useRef(false);
+  const generationRequestVersionRef = useRef(0);
+  const [activeStep, setActiveStep] = useState<"describe" | "review">("describe");
   const [scope, setScope] = useState<ActiveProjectScope | null>(null);
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const [bugDescription, setBugDescription] = useState("");
@@ -210,7 +213,9 @@ export function ReportBugClient() {
     setScope(readActiveProject());
     const onChange = (event: Event) => {
       const custom = event as CustomEvent<ActiveProjectScope>;
+      generationRequestVersionRef.current += 1;
       setScope(custom.detail ?? readActiveProject());
+      setActiveStep("describe");
       setParentStoryId("");
       setParentStory(null);
       setAssignedTo("");
@@ -218,6 +223,10 @@ export function ReportBugClient() {
       setSelectedIterationPath("");
       setAttachments([]);
       setCustomFieldRows([]);
+      setGenerateState({ loading: false, error: null, data: null });
+      setManualDraft({ loading: false, error: null, data: null });
+      setManualResponse("");
+      setManualSubmitError(null);
       setReport(null);
       setPostState({ loading: false, error: null, data: null });
       resetTestCaseWorkflow();
@@ -251,6 +260,7 @@ export function ReportBugClient() {
   }, [scope]);
 
   function changeParentStoryId(value: string) {
+    invalidateGeneratedReport();
     setHasUnfinishedWork(true);
     setParentStoryId(value.replace(/\D/g, "").slice(0, 10));
     setParentStory(null);
@@ -261,6 +271,7 @@ export function ReportBugClient() {
   }
 
   function changeBugDescription(value: string) {
+    invalidateGeneratedReport();
     setHasUnfinishedWork(true);
     setBugDescription(value);
     resetManual();
@@ -278,6 +289,17 @@ export function ReportBugClient() {
     setLinkedTestCases({ loading: false, error: null, data: null });
     setSelectedTestCaseId("");
     setSuggestTestCaseChecked(false);
+    setSuggestedTestCase(null);
+    setTestCasePublishState({ loading: false, error: null, data: null });
+  }
+
+  function invalidateGeneratedReport() {
+    generationRequestVersionRef.current += 1;
+    resetManual();
+    setActiveStep("describe");
+    setGenerateState({ loading: false, error: null, data: null });
+    setReport(null);
+    setPostState({ loading: false, error: null, data: null });
     setSuggestedTestCase(null);
     setTestCasePublishState({ loading: false, error: null, data: null });
   }
@@ -358,32 +380,41 @@ export function ReportBugClient() {
 
   async function generate() {
     if (!scope || !bugDescription.trim() || parentStoryInvalid) return;
+    invalidateGeneratedReport();
+    const requestVersion = generationRequestVersionRef.current;
     setGenerateState({ loading: true, error: null, data: null });
     setPostState({ loading: false, error: null, data: null });
     try {
       const data = await postJson<BugReport>("/api/bugs/generate", buildGenerationPayload(scope));
+      if (requestVersion !== generationRequestVersionRef.current) return;
       applyGeneratedReport(data);
       setGenerateState({ loading: false, error: null, data });
     } catch (error) {
+      if (requestVersion !== generationRequestVersionRef.current) return;
       setGenerateState({ loading: false, error: error instanceof Error ? error.message : "Bug report generation failed.", data: null });
     }
   }
 
   async function prepareManualPrompt() {
     if (!scope || !bugDescription.trim() || parentStoryInvalid) return;
+    invalidateGeneratedReport();
+    const requestVersion = generationRequestVersionRef.current;
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
     try {
       const data = await postJson<ManualPromptDraft>("/api/bugs/manual/draft", buildGenerationPayload(scope));
+      if (requestVersion !== generationRequestVersionRef.current) return;
       setManualDraft({ loading: false, error: null, data });
     } catch (error) {
+      if (requestVersion !== generationRequestVersionRef.current) return;
       setManualDraft({ loading: false, error: error instanceof Error ? error.message : "External LLM prompt preparation failed.", data: null });
     }
   }
 
   async function submitManualResponse() {
     if (!scope || !manualResponse.trim()) return;
+    const requestVersion = generationRequestVersionRef.current;
     setManualSubmitLoading(true);
     setManualSubmitError(null);
     try {
@@ -392,9 +423,11 @@ export function ReportBugClient() {
         parentStoryId: parentStoryId.trim() || undefined,
         rawOutput: manualResponse,
       });
+      if (requestVersion !== generationRequestVersionRef.current) return;
       applyGeneratedReport(data);
       setGenerateState({ loading: false, error: null, data });
     } catch (error) {
+      if (requestVersion !== generationRequestVersionRef.current) return;
       setManualSubmitError(error instanceof Error ? error.message : "External LLM response validation failed.");
     } finally {
       setManualSubmitLoading(false);
@@ -435,6 +468,7 @@ export function ReportBugClient() {
   }
 
   function applyGeneratedReport(data: BugReport) {
+    setActiveStep("review");
     setHasUnfinishedWork(true);
     const mergedCustomFields = mergeCustomFields(customFields, data.customFields ?? []);
     const nextReport = { ...data, customFields: mergedCustomFields };
@@ -452,6 +486,7 @@ export function ReportBugClient() {
   }
 
   function updateCustomFieldRow(rowId: string, patch: Partial<CustomFieldRow>) {
+    invalidateGeneratedReport();
     setHasUnfinishedWork(true);
     setCustomFieldRows((current) =>
       current.map((row) => {
@@ -471,16 +506,19 @@ export function ReportBugClient() {
   }
 
   function addCustomFieldRow() {
+    invalidateGeneratedReport();
     setHasUnfinishedWork(true);
     setCustomFieldRows((current) => [...current, { id: createLocalId("field"), referenceName: "", value: "" }]);
   }
 
   function removeCustomFieldRow(rowId: string) {
+    invalidateGeneratedReport();
     setHasUnfinishedWork(true);
     setCustomFieldRows((current) => current.filter((row) => row.id !== rowId));
   }
 
   function selectRelatedTestCase(testCaseId: string) {
+    invalidateGeneratedReport();
     setHasUnfinishedWork(true);
     setSelectedTestCaseId(testCaseId);
     if (testCaseId) {
@@ -491,10 +529,11 @@ export function ReportBugClient() {
   }
 
   function changeSuggestTestCaseChecked(checked: boolean) {
+    invalidateGeneratedReport();
     setHasUnfinishedWork(true);
     setSuggestTestCaseChecked(checked);
     setTestCasePublishState({ loading: false, error: null, data: null });
-    setSuggestedTestCase(checked && report ? buildSuggestedTestCaseFromBugReport(report, bugDescription) : null);
+    setSuggestedTestCase(null);
   }
 
   function updateSuggestedTestCase(patch: Partial<GeneratedTestCase>) {
@@ -572,7 +611,31 @@ export function ReportBugClient() {
   return (
     <div className="space-y-5">
       {!scope ? <WarningBlock message="Please select an Azure DevOps project before creating a bug." /> : null}
-      <Card>
+      <WorkflowStepper
+        steps={[
+          {
+            id: "describe",
+            label: "Describe & Generate Bug",
+            description: "Capture the defect, context, Azure fields, and evidence.",
+            icon: Bug,
+          },
+          {
+            id: "review",
+            label: "Review & Post Bug",
+            description: "Refine the generated report and publish it to Azure DevOps.",
+            icon: ListChecks,
+          },
+        ]}
+        activeStepId={activeStep}
+        completedStepIds={report ? ["describe"] : []}
+        enabledStepIds={report ? ["describe", "review"] : ["describe"]}
+        onStepChange={setActiveStep}
+        ariaLabel="Report Bug workflow"
+      />
+
+      {activeStep === "describe" ? (
+        <div className="space-y-5">
+          <Card>
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <CardTitle className="text-base">Describe Bug</CardTitle>
@@ -693,6 +756,7 @@ export function ReportBugClient() {
                   accept="image/*,video/*,.gif"
                   className="sr-only"
                   onChange={(event) => {
+                    invalidateGeneratedReport();
                     setHasUnfinishedWork(true);
                     setAttachments(Array.from(event.target.files ?? []));
                   }}
@@ -736,39 +800,53 @@ export function ReportBugClient() {
             )}
           </div>
         </CardContent>
-      </Card>
+          </Card>
 
-      {mode === "manual" ? (
-        <div className="space-y-4">
-          {(manualDraft.error ?? manualSubmitError) ? (
-            <Callout tone="error">{manualDraft.error ?? manualSubmitError}</Callout>
+          {mode === "manual" ? (
+            <div className="space-y-4">
+              {(manualDraft.error ?? manualSubmitError) ? (
+                <Callout tone="error">{manualDraft.error ?? manualSubmitError}</Callout>
+              ) : null}
+              {manualDraft.data ? (
+                <ManualLLMPanel
+                  prompt={manualDraft.data.prompt}
+                  promptVersion={manualDraft.data.promptVersion}
+                  response={manualResponse}
+                  onResponseChange={(value) => {
+                    setHasUnfinishedWork(true);
+                    setManualResponse(value);
+                  }}
+                  onSubmit={submitManualResponse}
+                  submitting={manualSubmitLoading}
+                  submitLabel="Validate and Continue"
+                  submittingLabel="Validating..."
+                  responseLabel="External LLM response"
+                  responsePlaceholder="Paste the JSON response here."
+                  promptMinHeightClass="min-h-[320px]"
+                  responseMinHeightClass="min-h-[240px]"
+                />
+              ) : null}
+            </div>
           ) : null}
-          {manualDraft.data ? (
-            <ManualLLMPanel
-              prompt={manualDraft.data.prompt}
-              promptVersion={manualDraft.data.promptVersion}
-              response={manualResponse}
-              onResponseChange={(value) => {
-                setHasUnfinishedWork(true);
-                setManualResponse(value);
-              }}
-              onSubmit={submitManualResponse}
-              submitting={manualSubmitLoading}
-              submitLabel="Validate and Continue"
-              submittingLabel="Validating..."
-              responseLabel="External LLM response"
-              responsePlaceholder="Paste the JSON response here."
-              promptMinHeightClass="min-h-[320px]"
-              responseMinHeightClass="min-h-[240px]"
-            />
-          ) : null}
+
+          {generateState.error ? <ErrorBlock message={generateState.error} /> : null}
         </div>
-      ) : null}
+      ) : report ? (
+        <div ref={reviewSectionRef} className="space-y-5">
+          <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-foreground">
+                {parentStoryId ? `Reviewing bug for story #${parentStoryId}` : "Reviewing generated bug report"}
+              </div>
+              <div className="text-xs text-muted-foreground">The generated report stays available while you revisit the source details.</div>
+            </div>
+            <Button type="button" variant="outline" onClick={() => setActiveStep("describe")}>
+              <ArrowLeft className="size-4" />
+              Back to inputs
+            </Button>
+          </div>
 
-      {generateState.error ? <ErrorBlock message={generateState.error} /> : null}
-
-      {report ? (
-        <Card ref={reviewSectionRef}>
+        <Card>
           <CardHeader>
             <CardTitle className="text-base">Review & Post</CardTitle>
           </CardHeader>
@@ -843,9 +921,8 @@ export function ReportBugClient() {
             ) : null}
           </CardContent>
         </Card>
-      ) : (
-        <EmptyBlock message="No bug report draft yet. Generate one from the description to review it here." />
-      )}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1301,17 +1378,6 @@ function WarningBlock({ message }: { message: string }) {
 
 function InfoBlock({ message }: { message: string }) {
   return <div className="rounded-md border border-input bg-muted/20 p-3 text-sm text-muted-foreground">{message}</div>;
-}
-
-function EmptyBlock({ message }: { message: string }) {
-  return (
-    <div className="rounded-md border border-dashed border-input bg-background p-6 text-sm text-muted-foreground">
-      <div className="flex items-center gap-2">
-        <CheckCircle2 className="size-4 text-primary" />
-        {message}
-      </div>
-    </div>
-  );
 }
 
 function buildSuggestedTestCaseFromBugReport(report: BugReport, sourceBugDescription: string): GeneratedTestCase {

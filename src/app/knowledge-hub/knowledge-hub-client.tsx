@@ -7,7 +7,6 @@ import {
   BookOpen,
   ChevronLeft,
   ChevronRight,
-  CheckCircle2,
   Copy,
   Database,
   Download,
@@ -25,6 +24,7 @@ import { ContextFilterSelector } from "@/components/domain/context-filter-select
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle"
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress"
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics"
+import { WorkflowStepper } from "@/components/workflow/workflow-stepper"
 import { useAiGeneration } from "@/components/workflow/use-ai-generation"
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
 import { Input } from "@/components/ui/input"
@@ -1256,34 +1256,35 @@ function MetricPanel({ label, value }: { label: string; value: number | string }
 
 function BuildStepper({ step }: { step: BuildStep }) {
   const steps = [
-    { key: "index", label: "Load Project Index" },
-    { key: "prepare", label: "Prepare Knowledge Preview" },
-    { key: "preview", label: "Preview & Save" },
+    {
+      id: "index",
+      label: "Load Project Index",
+      description: "Select and sync source work items.",
+      icon: Database,
+    },
+    {
+      id: "prepare",
+      label: "Prepare Knowledge Preview",
+      description: "Compile source-backed project knowledge.",
+      icon: BookOpen,
+    },
+    {
+      id: "preview",
+      label: "Preview & Save",
+      description: "Inspect and save the prepared knowledge.",
+      icon: Save,
+    },
   ] as const
-  const activeIndex = steps.findIndex((item) => item.key === step)
+  const activeIndex = steps.findIndex((item) => item.id === step)
 
   return (
-    <div className="grid gap-2 rounded-md border border-border bg-muted p-3 lg:grid-cols-3">
-      {steps.map((item, index) => {
-        const done = index < activeIndex
-        const active = item.key === step
-        return (
-          <div
-            key={item.key}
-            className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${
-              active
-                ? "border-primary bg-accent text-primary"
-                : done
-                  ? "border-success/30 bg-success/10 text-success"
-                  : "border-border bg-card text-muted-foreground"
-            }`}
-          >
-            {done ? <CheckCircle2 className="size-4" /> : <span className="font-mono text-xs">{index + 1}</span>}
-            <span className="font-semibold">{item.label}</span>
-          </div>
-        )
-      })}
-    </div>
+    <WorkflowStepper
+      steps={steps}
+      activeStepId={step}
+      completedStepIds={steps.slice(0, activeIndex).map((item) => item.id)}
+      enabledStepIds={[step]}
+      ariaLabel="Build Knowledge workflow"
+    />
   )
 }
 
