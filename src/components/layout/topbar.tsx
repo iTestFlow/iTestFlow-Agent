@@ -412,7 +412,7 @@ function connectivityChipClass(
 function getCronStatus(summary: RuntimeSettingsSummary | null, settingsError: boolean) {
   if (!summary && !settingsError) {
     return {
-      text: "Cron: Checking",
+      text: "Sync: Checking",
       tone: "checking" as const,
       title: "Checking automatic project context update schedule.",
     }
@@ -420,7 +420,7 @@ function getCronStatus(summary: RuntimeSettingsSummary | null, settingsError: bo
 
   if (settingsError) {
     return {
-      text: "Cron: Unavailable",
+      text: "Sync: Unavailable",
       tone: "warning" as const,
       title: "Runtime settings could not be loaded, so the automatic project context update schedule is unavailable.",
     }
@@ -429,7 +429,7 @@ function getCronStatus(summary: RuntimeSettingsSummary | null, settingsError: bo
   const autoUpdate = summary?.context?.autoUpdate
   if (!summary?.configured || !autoUpdate?.enabled) {
     return {
-      text: "Cron: Off",
+      text: "Sync: Off",
       tone: "missing" as const,
       title: "Automatic project context and knowledge base updates are disabled. Enable them in Settings.",
     }
@@ -440,7 +440,7 @@ function getCronStatus(summary: RuntimeSettingsSummary | null, settingsError: bo
   const projectText = projectName ? ` for ${projectName}` : ""
 
   return {
-    text: "Cron: Active",
+    text: "Sync: On",
     tone: "connected" as const,
     title: nextRun
       ? `Next automatic project context update${projectText}: ${formatDateTime(nextRun)} local server time. Cron: ${autoUpdate.cronExpression}.`

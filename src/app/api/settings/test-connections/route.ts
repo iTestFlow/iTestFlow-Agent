@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 import { AzureDevOpsRestAdapter } from "@/modules/integrations/azure-devops/azure-devops-client";
 import { createLLMProvider } from "@/modules/llm/llm-provider.factory";
 import { RuntimeSettingsInputSchema } from "@/modules/settings/runtime-settings.schema";
+import { withPreservedSecrets } from "@/modules/settings/runtime-settings.service";
 import { zodErrorResponse } from "@/shared/validators/api-validation-errors";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const parsed = RuntimeSettingsInputSchema.safeParse(await request.json());
+  const parsed = RuntimeSettingsInputSchema.safeParse(withPreservedSecrets(await request.json()));
   if (!parsed.success) {
     return NextResponse.json(
       zodErrorResponse("Connection test could not run.", parsed.error),
