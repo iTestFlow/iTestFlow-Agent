@@ -253,6 +253,7 @@ type KnowledgeManualValidationResult = {
 type BuildMode = "auto" | "manual"
 type BuildStep = "index" | "prepare" | "preview"
 type TopTab = "hub" | "build"
+type HubView = "explorer" | "context"
 
 const KNOWLEDGE_CATEGORIES = [
   { key: "modules", label: "Modules", badge: "Module" },
@@ -323,6 +324,7 @@ function parseJsonResponse(text: string, ok: boolean) {
 export function KnowledgeHubClient() {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null)
   const [activeTab, setActiveTab] = useState<TopTab>("hub")
+  const [hubView, setHubView] = useState<HubView>("explorer")
   const [buildMode, setBuildMode] = useState<BuildMode>("auto")
   const [buildStep, setBuildStep] = useState<BuildStep>("index")
   const [compileMode, setCompileMode] = useState<KnowledgeCompileMode>("incremental")
@@ -940,38 +942,55 @@ export function KnowledgeHubClient() {
           ) : null}
 
           <Card className="qa-card">
-            <CardHeader>
-              <CardTitle className="text-base">Knowledge Explorer</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {knowledgeStatusLoading ? (
-                <div className="text-sm text-muted-foreground">Loading saved knowledge base...</div>
-              ) : knowledgeSnapshot ? (
-                <KnowledgeExplorer knowledgeBase={knowledgeSnapshot.knowledgeBase} />
-              ) : (
-                <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
-                  No knowledge base has been saved yet. Use Build Knowledge to compile source-backed project knowledge.
-                </div>
-              )}
-            </CardContent>
-          </Card>
+            <Tabs
+              value={hubView}
+              onValueChange={(value) => setHubView(value as HubView)}
+              className="flex-col gap-0"
+            >
+              <div className="border-b border-border">
+                <TabsList
+                  variant="line"
+                  className="group-data-horizontal/tabs:h-auto w-full justify-start gap-5 px-4 py-0"
+                >
+                  <HubViewTab value="explorer" label="Knowledge Explorer" count={knowledgeStatusLoading ? "-" : totalKnowledgeItems} />
+                  <HubViewTab value="context" label="Indexed Project Context" count={totalCount} />
+                </TabsList>
+              </div>
 
-          <IndexedContextPanel
-            items={recentItems}
-            totalCount={totalCount}
-            rangeStart={rangeStart}
-            rangeEnd={rangeEnd}
-            page={page}
-            totalPages={totalPages}
-            sortBy={sortBy}
-            sortDirection={sortDirection}
-            search={contextSearch}
-            loading={statusLoading}
-            emptyMessage="No project context has been indexed yet. Use Build Knowledge to prepare context from Azure DevOps work items."
-            onSearchChange={setContextSearch}
-            onSortChange={changeSort}
-            onPageChange={changePage}
-          />
+              <CardContent className="pt-4">
+                <TabsContent value="explorer" className="mt-0">
+                  {knowledgeStatusLoading ? (
+                    <div className="text-sm text-muted-foreground">Loading saved knowledge base...</div>
+                  ) : knowledgeSnapshot ? (
+                    <KnowledgeExplorer knowledgeBase={knowledgeSnapshot.knowledgeBase} />
+                  ) : (
+                    <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
+                      No knowledge base has been saved yet. Use Build Knowledge to compile source-backed project knowledge.
+                    </div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="context" className="mt-0">
+                  <IndexedContextView
+                    items={recentItems}
+                    totalCount={totalCount}
+                    rangeStart={rangeStart}
+                    rangeEnd={rangeEnd}
+                    page={page}
+                    totalPages={totalPages}
+                    sortBy={sortBy}
+                    sortDirection={sortDirection}
+                    search={contextSearch}
+                    loading={statusLoading}
+                    emptyMessage="No project context has been indexed yet. Use Build Knowledge to prepare context from Azure DevOps work items."
+                    onSearchChange={setContextSearch}
+                    onSortChange={changeSort}
+                    onPageChange={changePage}
+                  />
+                </TabsContent>
+              </CardContent>
+            </Tabs>
+          </Card>
         </TabsContent>
 
         <TabsContent value="build" className="space-y-4">
@@ -1251,6 +1270,18 @@ function MetricPanel({ label, value }: { label: string; value: number | string }
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 text-xl font-semibold text-foreground">{value}</div>
     </div>
+  )
+}
+
+function HubViewTab({ value, label, count }: { value: HubView; label: string; count: number | string }) {
+  return (
+    <TabsTrigger
+      value={value}
+      className="relative h-auto flex-none gap-2 rounded-none border-0 px-1 py-3 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-primary after:opacity-0 group-data-horizontal/tabs:after:bottom-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-primary data-[state=active]:shadow-none data-[state=active]:after:opacity-100"
+    >
+      {label}
+      <Badge variant="secondary">{count}</Badge>
+    </TabsTrigger>
   )
 }
 
@@ -1672,22 +1703,20 @@ function SortHeader({
   )
 }
 
-function IndexedContextPanel({
-  items,
-  totalCount,
-  rangeStart,
-  rangeEnd,
-  page,
-  totalPages,
-  sortBy,
-  sortDirection,
-  search,
-  loading,
-  emptyMessage,
-  onSearchChange,
-  onSortChange,
-  onPageChange,
-}: {
+function IndexedContextPanel(props: IndexedContextViewProps) {
+  return (
+    <Card className="qa-card">
+      <CardHeader>
+        <CardTitle className="text-base">Indexed Project Context</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <IndexedContextView {...props} />
+      </CardContent>
+    </Card>
+  )
+}
+
+type IndexedContextViewProps = {
   items: RecentContextItem[]
   totalCount: number
   rangeStart: number
@@ -1702,108 +1731,120 @@ function IndexedContextPanel({
   onSearchChange: (value: string) => void
   onSortChange: (sortBy: ContextSortBy) => void
   onPageChange: (page: number) => void
-}) {
+}
+
+function IndexedContextView({
+  items,
+  totalCount,
+  rangeStart,
+  rangeEnd,
+  page,
+  totalPages,
+  sortBy,
+  sortDirection,
+  search,
+  loading,
+  emptyMessage,
+  onSearchChange,
+  onSortChange,
+  onPageChange,
+}: IndexedContextViewProps) {
   const safeTotalPages = Math.max(1, totalPages)
   const safePage = Math.min(Math.max(1, page), safeTotalPages)
   const canGoPrevious = safePage > 1
   const canGoNext = safePage < safeTotalPages
 
   return (
-    <Card className="qa-card">
-      <CardHeader>
-        <CardTitle className="text-base">Indexed Project Context</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="text-sm text-muted-foreground">
-            Showing {rangeStart}-{rangeEnd} of {totalCount} active source work items available for retrieval.
+    <>
+      <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="text-sm text-muted-foreground">
+          Showing {rangeStart}-{rangeEnd} of {totalCount} active source work items available for retrieval.
+        </div>
+        <div className="relative w-full lg:w-[360px]">
+          <Search className="pointer-events-none absolute left-2.5 top-2 size-4 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(event) => onSearchChange(event.target.value)}
+            className="pl-8"
+            placeholder="Search ID, title, or indexed text"
+          />
+        </div>
+      </div>
+
+      {!items.length && loading ? (
+        <div className="text-sm text-muted-foreground">Loading indexed context...</div>
+      ) : items.length ? (
+        <div className="space-y-3">
+          <div className="overflow-x-auto">
+            <Table className={loading ? "opacity-60" : undefined}>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>ID</TableHead>
+                  <TableHead>
+                    <SortHeader label="Type" active={sortBy === "type"} direction={sortDirection} onClick={() => onSortChange("type")} />
+                  </TableHead>
+                  <TableHead className="min-w-[320px]">Title</TableHead>
+                  <TableHead>Chunks</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>
+                    <SortHeader
+                      label="Last Indexed"
+                      active={sortBy === "lastIndexedAt"}
+                      direction={sortDirection}
+                      onClick={() => onSortChange("lastIndexedAt")}
+                    />
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {items.map((item) => (
+                  <TableRow key={item.workItemId}>
+                    <TableCell className="font-mono text-xs font-semibold text-primary">{item.workItemId}</TableCell>
+                    <TableCell><Badge variant="secondary">{item.workItemType}</Badge></TableCell>
+                    <TableCell className="font-medium text-foreground">{item.title}</TableCell>
+                    <TableCell>{item.chunkCount}</TableCell>
+                    <TableCell><Badge variant="outline">{item.syncStatus ?? "active"}</Badge></TableCell>
+                    <TableCell>{formatDate(item.lastIndexedAt)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           </div>
-          <div className="relative w-full lg:w-[360px]">
-            <Search className="pointer-events-none absolute left-2.5 top-2 size-4 text-muted-foreground" />
-            <Input
-              value={search}
-              onChange={(event) => onSearchChange(event.target.value)}
-              className="pl-8"
-              placeholder="Search ID, title, or indexed text"
-            />
+          <div className="flex flex-col gap-3 border-t border-border pt-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              Page {safePage} of {safeTotalPages}
+              {loading ? " - Loading" : ""}
+            </span>
+            <div className="flex gap-2">
+              <Button
+                size="icon-sm"
+                variant="outline"
+                disabled={!canGoPrevious || loading}
+                onClick={() => onPageChange(safePage - 1)}
+                aria-label="Previous page"
+                title="Previous page"
+              >
+                <ChevronLeft className="size-4" />
+              </Button>
+              <Button
+                size="icon-sm"
+                variant="outline"
+                disabled={!canGoNext || loading}
+                onClick={() => onPageChange(safePage + 1)}
+                aria-label="Next page"
+                title="Next page"
+              >
+                <ChevronRight className="size-4" />
+              </Button>
+            </div>
           </div>
         </div>
-
-        {!items.length && loading ? (
-          <div className="text-sm text-muted-foreground">Loading indexed context...</div>
-        ) : items.length ? (
-          <div className="space-y-3">
-            <div className="overflow-x-auto">
-              <Table className={loading ? "opacity-60" : undefined}>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>ID</TableHead>
-                    <TableHead>
-                      <SortHeader label="Type" active={sortBy === "type"} direction={sortDirection} onClick={() => onSortChange("type")} />
-                    </TableHead>
-                    <TableHead className="min-w-[320px]">Title</TableHead>
-                    <TableHead>Chunks</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>
-                      <SortHeader
-                        label="Last Indexed"
-                        active={sortBy === "lastIndexedAt"}
-                        direction={sortDirection}
-                        onClick={() => onSortChange("lastIndexedAt")}
-                      />
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {items.map((item) => (
-                    <TableRow key={item.workItemId}>
-                      <TableCell className="font-mono text-xs font-semibold text-primary">{item.workItemId}</TableCell>
-                      <TableCell><Badge variant="secondary">{item.workItemType}</Badge></TableCell>
-                      <TableCell className="font-medium text-foreground">{item.title}</TableCell>
-                      <TableCell>{item.chunkCount}</TableCell>
-                      <TableCell><Badge variant="outline">{item.syncStatus ?? "active"}</Badge></TableCell>
-                      <TableCell>{formatDate(item.lastIndexedAt)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-            <div className="flex flex-col gap-3 border-t border-border pt-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-              <span>
-                Page {safePage} of {safeTotalPages}
-                {loading ? " - Loading" : ""}
-              </span>
-              <div className="flex gap-2">
-                <Button
-                  size="icon-sm"
-                  variant="outline"
-                  disabled={!canGoPrevious || loading}
-                  onClick={() => onPageChange(safePage - 1)}
-                  aria-label="Previous page"
-                  title="Previous page"
-                >
-                  <ChevronLeft className="size-4" />
-                </Button>
-                <Button
-                  size="icon-sm"
-                  variant="outline"
-                  disabled={!canGoNext || loading}
-                  onClick={() => onPageChange(safePage + 1)}
-                  aria-label="Next page"
-                  title="Next page"
-                >
-                  <ChevronRight className="size-4" />
-                </Button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
-            {search.trim() ? "No indexed work items match the current search." : emptyMessage}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      ) : (
+        <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
+          {search.trim() ? "No indexed work items match the current search." : emptyMessage}
+        </div>
+      )}
+    </>
   )
 }
 
