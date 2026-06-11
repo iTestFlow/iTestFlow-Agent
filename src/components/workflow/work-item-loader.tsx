@@ -37,18 +37,21 @@ export function useWorkItemLookup({
   debounceMs = WORK_ITEM_LOOKUP_DEBOUNCE_MS,
   errorMessage = "Work item lookup failed.",
   invalidIdMessage = "Enter a valid numeric work item ID.",
+  enabled = true,
 }: {
   scope: ActiveProjectScope | null;
   workItemId: string;
   debounceMs?: number;
   errorMessage?: string;
   invalidIdMessage?: string;
+  /** When false, the hook stays idle and performs no lookup — used when a caller passes a shared lookup down instead. */
+  enabled?: boolean;
 }): ApiState<LoadedWorkItem> {
   const [state, setState] = useState<ApiState<LoadedWorkItem>>({ loading: false, error: null, data: null });
   const trimmed = workItemId.trim();
 
   useEffect(() => {
-    if (!scope || !trimmed) {
+    if (!enabled || !scope || !trimmed) {
       setState({ loading: false, error: null, data: null });
       return;
     }
@@ -75,7 +78,7 @@ export function useWorkItemLookup({
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [scope, trimmed, debounceMs, errorMessage, invalidIdMessage]);
+  }, [enabled, scope, trimmed, debounceMs, errorMessage, invalidIdMessage]);
 
   return state;
 }
@@ -89,6 +92,7 @@ export function WorkItemPreview({
   loadingText,
   invalidNote = "This work item is not a typical story/requirement type.",
   isValidType = isRequirementLikeType,
+  lookup: externalLookup,
 }: {
   scope: ActiveProjectScope | null;
   workItemId: string;
@@ -98,8 +102,15 @@ export function WorkItemPreview({
   loadingText?: string;
   invalidNote?: string;
   isValidType?: (workItemType: string) => boolean;
+  /**
+   * Optional caller-owned lookup state. When provided, the preview renders it
+   * directly and skips its own fetch — lets a page share one lookup between
+   * this preview and, e.g., a review-step header that also needs the title.
+   */
+  lookup?: ApiState<LoadedWorkItem>;
 }) {
-  const lookup = useWorkItemLookup({ scope, workItemId, debounceMs });
+  const internalLookup = useWorkItemLookup({ scope, workItemId, debounceMs, enabled: externalLookup === undefined });
+  const lookup = externalLookup ?? internalLookup;
   const valid = lookup.data ? isValidType(lookup.data.workItemType) : true;
 
   return (

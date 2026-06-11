@@ -21,7 +21,7 @@ import {
   GeneratedTestCasesReview,
   validateGeneratedTestCase,
 } from "@/components/workflow/generated-test-cases-review";
-import { WorkItemPreview, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
+import { WorkItemPreview, useWorkItemLookup, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import {
   EmptyBlock,
   PublishGeneratedCasesPanel,
@@ -55,6 +55,7 @@ export function TestCaseDesignClient() {
   const generatedCasesRef = useRef<HTMLDivElement | null>(null);
   const [activeStep, setActiveStep] = useState<"generate" | "review">("generate");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
+  const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const [extraInstructions, setExtraInstructions] = useState("");
   const [state, setState] = useState<ApiState<TestCaseGenerationRunResult>>({ loading: false, error: null, data: null });
@@ -371,7 +372,7 @@ export function TestCaseDesignClient() {
                   </Button>
                 )}
               </div>
-              <WorkItemPreview scope={scope} workItemId={targetWorkItemId} />
+              <WorkItemPreview scope={scope} workItemId={targetWorkItemId} lookup={workItemLookup} />
               <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
               <TestDesignOptionsSelector
                 settings={testDesignSettings}
@@ -446,7 +447,12 @@ export function TestCaseDesignClient() {
         <div ref={generatedCasesRef} className="space-y-6">
           <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="text-sm font-semibold text-foreground">Reviewing work item #{targetWorkItemId}</div>
+              <div className="text-sm font-semibold text-foreground">
+                Reviewing generated test cases for #{targetWorkItemId}
+                {workItemLookup.data?.title ? (
+                  <span className="font-normal text-muted-foreground"> — {workItemLookup.data.title}</span>
+                ) : null}
+              </div>
               <div className="text-xs text-muted-foreground">Generated content stays available while you revisit the inputs.</div>
             </div>
             <Button type="button" variant="outline" onClick={() => setActiveStep("generate")}>

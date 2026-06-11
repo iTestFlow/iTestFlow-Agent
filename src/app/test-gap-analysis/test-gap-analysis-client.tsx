@@ -22,7 +22,7 @@ import {
   GeneratedTestCasesReview,
   validateGeneratedTestCase,
 } from "@/components/workflow/generated-test-cases-review";
-import { WorkItemPreview, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
+import { WorkItemPreview, useWorkItemLookup, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import {
   EmptyBlock,
   ErrorBlock,
@@ -58,6 +58,7 @@ export function TestGapAnalysisClient() {
   const resultsRef = useRef<HTMLDivElement | null>(null);
   const [activeStep, setActiveStep] = useState<"analyze" | "review">("analyze");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
+  const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const [extraInstructions, setExtraInstructions] = useState("");
   const [state, setState] = useState<ApiState<ExistingReviewResult>>({ loading: false, error: null, data: null });
@@ -275,7 +276,7 @@ export function TestGapAnalysisClient() {
                   </Button>
                 )}
               </div>
-              <WorkItemPreview scope={scope} workItemId={targetWorkItemId} />
+              <WorkItemPreview scope={scope} workItemId={targetWorkItemId} lookup={workItemLookup} />
               <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
             </div>
           </SectionCard>
@@ -340,7 +341,12 @@ export function TestGapAnalysisClient() {
         <div ref={resultsRef} className="space-y-6">
           <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="text-sm font-semibold text-foreground">Reviewing work item #{targetWorkItemId}</div>
+              <div className="text-sm font-semibold text-foreground">
+                Reviewing coverage gaps for #{targetWorkItemId}
+                {workItemLookup.data?.title ? (
+                  <span className="font-normal text-muted-foreground"> — {workItemLookup.data.title}</span>
+                ) : null}
+              </div>
               <div className="text-xs text-muted-foreground">Coverage results remain available while you revisit the analysis input.</div>
             </div>
             <Button type="button" variant="outline" onClick={() => setActiveStep("analyze")}>
