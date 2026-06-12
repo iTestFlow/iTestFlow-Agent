@@ -42,6 +42,7 @@ export function mapAzureWorkItem(item: AzureWorkItem, azureProjectId: string): R
     state: text(fields["System.State"]),
     assignedTo: identityDisplayName(fields["System.AssignedTo"]),
     priority: numberValue(fields["Microsoft.VSTS.Common.Priority"]),
+    severity: text(fields["Microsoft.VSTS.Common.Severity"]),
     tags: text(fields["System.Tags"])?.split(";").map((tag) => tag.trim()).filter(Boolean),
     areaPath: text(fields["System.AreaPath"]),
     iterationPath: text(fields["System.IterationPath"]),
@@ -51,6 +52,7 @@ export function mapAzureWorkItem(item: AzureWorkItem, azureProjectId: string): R
     testedByLinks: relations.filter((rel) => rel.rel?.includes("TestedBy")).map((rel) => parseWorkItemIdFromUrl(rel.url)).filter(Boolean) as string[],
     testsLinks: relations.filter((rel) => rel.rel?.includes("Tests")).map((rel) => parseWorkItemIdFromUrl(rel.url)).filter(Boolean) as string[],
     createdDate: text(fields["System.CreatedDate"]),
+    closedDate: text(fields["Microsoft.VSTS.Common.ClosedDate"]),
     updatedDate: text(fields["System.ChangedDate"]),
     raw: item,
   };

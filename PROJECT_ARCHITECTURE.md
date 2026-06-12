@@ -106,9 +106,11 @@ Project scoping:
 
 Dashboard analytics:
 
-- `/dashboard` renders local DevOps analytics from existing workflow, context, LLM, publish, and audit data.
-- `/api/dashboard/analytics` returns project-scoped or all-project local SQLite aggregates for KPI cards, charts, and recent activity.
-- Dashboard UI uses reusable components under `src/components/dashboard` and theme-aware Recharts visualizations.
+- `/dashboards` renders project-scoped QA leadership analytics from live Azure DevOps Test Plans, Test Points, Test Runs, Test Results, work items, work-item links, and reporting revisions.
+- `/api/dashboard/analytics` accepts validated date, plan, suite, area, iteration, requirement-type, and assignee filters. It returns KPIs, execution, defect, coverage, blocker, readiness, trend, filter-metadata, and section-completeness contracts.
+- Current open defects and latest Test Point outcomes remain in readiness regardless of the selected history range. The range filters Test Run/Result and work-item revision events.
+- Dashboard aggregation isolates source failures and returns partial sections with data-quality warnings. Short-lived in-memory caching limits repeated Azure reads; Refresh bypasses that cache.
+- Readiness thresholds and normalization rules live in `src/modules/dashboard/dashboard-metrics.ts`; UI components under `src/components/dashboard` use theme-aware Recharts visualizations and reusable tables.
 
 Project Context:
 

@@ -9,6 +9,9 @@ import type {
   AzureProjectUser,
   AzureProjectWorkItemMetadata,
   AzureTestPoint,
+  AzureTestResult,
+  AzureTestRun,
+  AzureWorkItemRevision,
   AzureWorkItemTypeField,
   CreateTestSuiteInput,
   FinalApprovedTestCase,
@@ -53,6 +56,8 @@ export interface AzureDevOpsAdapter {
     states?: string[];
     areaPath?: string;
     iterationPath?: string;
+    assignedTo?: string;
+    limit?: number;
   }): Promise<Requirement[]>;
 
   fetchWorkItemById(input: {
@@ -125,6 +130,26 @@ export interface AzureDevOpsAdapter {
     testPlanId: string;
     testSuiteId: string;
   }): Promise<AzureTestPoint[]>;
+
+  fetchTestRuns(input: {
+    projectId: string;
+    testPlanId?: string;
+    limit?: number;
+  }): Promise<AzureTestRun[]>;
+
+  fetchTestResults(input: {
+    projectId: string;
+    runId: string;
+    limit?: number;
+  }): Promise<AzureTestResult[]>;
+
+  fetchWorkItemRevisions(input: {
+    projectId: string;
+    workItemTypes: string[];
+    startDateTime: string;
+    fields: string[];
+    limit?: number;
+  }): Promise<AzureWorkItemRevision[]>;
 
   addTestCasesToSuite(input: {
     projectId: string;

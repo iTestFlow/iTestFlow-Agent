@@ -53,7 +53,7 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 
 - **Suite Migration** previews and runs same-project Test Suite copy or move operations while preserving the latest matching test-point outcomes.
 - **Bulk Task Creation** creates one Azure DevOps Task under each selected User Story.
-- **Dashboards** summarize project-scoped workflow activity, coverage, publishing, context, and LLM usage.
+- **Dashboards** combine current Azure Test Plan outcomes, bugs, requirement-to-test coverage, release blockers, and live execution/defect history into a project-scoped QA leadership view.
 - **Activity Log** provides a traceable history of generated outputs, publishing operations, and user actions.
 - **Human review gates** keep AI-generated analysis and artifacts editable before any Azure DevOps write.
 - **Project isolation** validates Azure DevOps resources against the active project before project-scoped reads or writes.
@@ -83,7 +83,7 @@ These links work while the local development or production server is running on 
 
 | Area | Page | Description |
 | --- | --- | --- |
-| Overview | [Dashboards](http://127.0.0.1:3000/dashboards) | Project-scoped QA and DevOps analytics |
+| Overview | [Dashboards](http://127.0.0.1:3000/dashboards) | Testing progress, bug health, coverage, blockers, trends, and release readiness |
 | Knowledge | [Knowledge Hub](http://127.0.0.1:3000/knowledge-hub) | Index context, compile knowledge, and review health |
 | Knowledge | [Business Owner Assistant](http://127.0.0.1:3000/business-owner-assistant) | Ask grounded questions about the active project |
 | Testing | [Requirements Analysis](http://127.0.0.1:3000/requirements-analysis) | Analyze a real Azure DevOps requirement |

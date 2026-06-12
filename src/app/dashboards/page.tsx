@@ -5,7 +5,7 @@ export default function DashboardsPage() {
   return (
     <ContentShell
       title="Dashboards"
-      description="A project-scoped DevOps analytics command center for requirements analysis, context management, test design, coverage, and publishing."
+      description="Testing progress, bug status, coverage, and release readiness overview."
     >
       <DashboardsClient />
     </ContentShell>

@@ -87,6 +87,7 @@ export type Requirement = {
   state?: string;
   assignedTo?: string;
   priority?: number;
+  severity?: string;
   tags?: string[];
   areaPath?: string;
   iterationPath?: string;
@@ -96,6 +97,7 @@ export type Requirement = {
   testedByLinks?: string[];
   testsLinks?: string[];
   createdDate?: string;
+  closedDate?: string;
   updatedDate?: string;
   raw?: unknown;
 };
@@ -204,6 +206,60 @@ export type AzureTestPoint = {
   lastRunDate?: string;
   tester?: AzureIdentityRef;
   assignedTo?: AzureIdentityRef;
+  raw?: unknown;
+};
+
+export type AzureTestRun = {
+  id: string;
+  name: string;
+  state?: string;
+  planId?: string;
+  iteration?: string;
+  isAutomated?: boolean;
+  startedDate?: string;
+  completedDate?: string;
+  createdDate?: string;
+  lastUpdatedDate?: string;
+  totalTests?: number;
+  passedTests?: number;
+  incompleteTests?: number;
+  notApplicableTests?: number;
+  unanalyzedTests?: number;
+  owner?: AzureIdentityRef;
+  raw?: unknown;
+};
+
+export type AzureTestResult = {
+  id: string;
+  runId: string;
+  testCaseId?: string;
+  testCaseTitle?: string;
+  outcome?: string;
+  state?: string;
+  startedDate?: string;
+  completedDate?: string;
+  durationInMs?: number;
+  owner?: AzureIdentityRef;
+  comment?: string;
+  errorMessage?: string;
+  associatedBugIds: string[];
+  raw?: unknown;
+};
+
+export type AzureWorkItemRevision = {
+  workItemId: string;
+  revision: number;
+  revisedDate?: string;
+  workItemType?: string;
+  title?: string;
+  state?: string;
+  severity?: string;
+  priority?: number;
+  assignedTo?: string;
+  createdDate?: string;
+  closedDate?: string;
+  areaPath?: string;
+  iterationPath?: string;
   raw?: unknown;
 };
 
