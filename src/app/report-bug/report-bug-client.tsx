@@ -19,7 +19,10 @@ import {
   GeneratedTestCaseReviewCard,
   validateGeneratedTestCase,
 } from "@/components/workflow/generated-test-cases-review";
+import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
+import { SectionCard } from "@/components/workflow/test-intelligence-shared";
+import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import type { GeneratedTestCase } from "@/components/workflow/test-intelligence-types";
@@ -141,11 +144,12 @@ type ReproductionPublishResult = {
   error?: string;
 };
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
+async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   const text = await response.text();
   const json = parseJsonResponse(text, response.ok);
@@ -179,9 +183,12 @@ export function ReportBugClient() {
   const [selectedIterationPath, setSelectedIterationPath] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const [customFieldRows, setCustomFieldRows] = useState<CustomFieldRow[]>([]);
-  const [generateState, setGenerateState] = useState<ApiState<GeneratedBugReport>>({ loading: false, error: null, data: null });
+  const gen = useAiGeneration();
+  const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
+  const resetGeneration = gen.reset;
+  const resetPreparation = prep.reset;
   const [analyticsRunId, setAnalyticsRunId] = useState<string | undefined>();
-  const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
+  const [manualDraft, setManualDraft] = useState<ManualPromptDraft | null>(null);
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
@@ -196,8 +203,8 @@ export function ReportBugClient() {
   useUnsavedChangesGuard({
     dirty: hasUnfinishedWork,
     busy:
-      generateState.loading ||
-      manualDraft.loading ||
+      gen.isRunning ||
+      prep.isRunning ||
       manualSubmitLoading ||
       postState.loading ||
       testCasePublishState.loading,
@@ -217,6 +224,8 @@ export function ReportBugClient() {
     const onChange = (event: Event) => {
       const custom = event as CustomEvent<ActiveProjectScope>;
       generationRequestVersionRef.current += 1;
+      resetGeneration();
+      resetPreparation();
       setScope(custom.detail ?? readActiveProject());
       setActiveStep("describe");
       setParentStoryId("");
@@ -226,9 +235,8 @@ export function ReportBugClient() {
       setSelectedIterationPath("");
       setAttachments([]);
       setCustomFieldRows([]);
-      setGenerateState({ loading: false, error: null, data: null });
       setAnalyticsRunId(undefined);
-      setManualDraft({ loading: false, error: null, data: null });
+      setManualDraft(null);
       setManualResponse("");
       setManualSubmitError(null);
       setReport(null);
@@ -238,7 +246,7 @@ export function ReportBugClient() {
     };
     window.addEventListener("itestflow:active-project-changed", onChange);
     return () => window.removeEventListener("itestflow:active-project-changed", onChange);
-  }, []);
+  }, [resetGeneration, resetPreparation]);
 
   useEffect(() => {
     if (!scope) {
@@ -284,7 +292,7 @@ export function ReportBugClient() {
   }
 
   function resetManual() {
-    setManualDraft({ loading: false, error: null, data: null });
+    setManualDraft(null);
     setManualResponse("");
     setManualSubmitError(null);
   }
@@ -299,9 +307,10 @@ export function ReportBugClient() {
 
   function invalidateGeneratedReport() {
     generationRequestVersionRef.current += 1;
+    gen.reset();
+    prep.reset();
     resetManual();
     setActiveStep("describe");
-    setGenerateState({ loading: false, error: null, data: null });
     setAnalyticsRunId(undefined);
     setReport(null);
     setPostState({ loading: false, error: null, data: null });
@@ -385,36 +394,27 @@ export function ReportBugClient() {
 
   async function generate() {
     if (!scope || !bugDescription.trim() || parentStoryInvalid) return;
+    if (gen.isRunning) return;
     invalidateGeneratedReport();
-    const requestVersion = generationRequestVersionRef.current;
-    setGenerateState({ loading: true, error: null, data: null });
     setPostState({ loading: false, error: null, data: null });
-    try {
-      const data = await postJson<GeneratedBugReport>("/api/bugs/generate", buildGenerationPayload(scope));
-      if (requestVersion !== generationRequestVersionRef.current) return;
+    const data = await gen.start((signal) =>
+      postJson<GeneratedBugReport>("/api/bugs/generate", buildGenerationPayload(scope), signal),
+    );
+    if (data) {
       applyGeneratedReport(data);
-      setGenerateState({ loading: false, error: null, data });
-    } catch (error) {
-      if (requestVersion !== generationRequestVersionRef.current) return;
-      setGenerateState({ loading: false, error: error instanceof Error ? error.message : "Bug report generation failed.", data: null });
     }
   }
 
   async function prepareManualPrompt() {
     if (!scope || !bugDescription.trim() || parentStoryInvalid) return;
+    if (prep.isRunning) return;
     invalidateGeneratedReport();
-    const requestVersion = generationRequestVersionRef.current;
-    setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
-    try {
-      const data = await postJson<ManualPromptDraft>("/api/bugs/manual/draft", buildGenerationPayload(scope));
-      if (requestVersion !== generationRequestVersionRef.current) return;
-      setManualDraft({ loading: false, error: null, data });
-    } catch (error) {
-      if (requestVersion !== generationRequestVersionRef.current) return;
-      setManualDraft({ loading: false, error: error instanceof Error ? error.message : "External LLM prompt preparation failed.", data: null });
-    }
+    const data = await prep.start((signal) =>
+      postJson<ManualPromptDraft>("/api/bugs/manual/draft", buildGenerationPayload(scope), signal),
+    );
+    if (data) setManualDraft(data);
   }
 
   async function submitManualResponse() {
@@ -430,7 +430,6 @@ export function ReportBugClient() {
       });
       if (requestVersion !== generationRequestVersionRef.current) return;
       applyGeneratedReport(data);
-      setGenerateState({ loading: false, error: null, data });
     } catch (error) {
       if (requestVersion !== generationRequestVersionRef.current) return;
       setManualSubmitError(error instanceof Error ? error.message : "External LLM response validation failed.");
@@ -606,7 +605,13 @@ export function ReportBugClient() {
     }
   }
 
-  const generateDisabled = !scope || !bugDescription.trim() || generateState.loading || manualDraft.loading || parentStoryInvalid;
+  const generateDisabled =
+    !scope ||
+    !bugDescription.trim() ||
+    metadata.loading ||
+    gen.isRunning ||
+    prep.isRunning ||
+    parentStoryInvalid;
   const postDisabled = !scope || !report || !report.title.trim() || !report.actualResult.trim() || !report.stepsToReproduce.trim() || postState.loading || parentStoryInvalid;
   const publishTestCaseDisabled =
     !scope ||
@@ -643,182 +648,195 @@ export function ReportBugClient() {
 
       {activeStep === "describe" ? (
         <div className="space-y-5">
-          <Card>
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <CardTitle className="text-base">Describe Bug</CardTitle>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">Capture the defect, parent story, Azure fields, assignee, and evidence.</p>
-          </div>
-          <GenerationModeToggle
-            mode={mode}
-            onChange={(nextMode) => {
-              setHasUnfinishedWork(true);
-              setMode(nextMode);
-            }}
-          />
-        </CardHeader>
-        <CardContent className="space-y-5 pt-5">
-          {metadata.error ? <ErrorBlock message={metadata.error} /> : null}
-          <Field label="Bug description">
-            <Textarea
-              value={bugDescription}
-              onChange={(event) => changeBugDescription(event.target.value)}
-              className="min-h-32"
-              placeholder="Describe what went wrong, where it happened, and what you expected instead."
-            />
-          </Field>
-
-          <div className="grid gap-4 lg:grid-cols-[minmax(260px,360px)_1fr]">
-            <Field label="Parent Story ID">
-              <Input
-                value={parentStoryId}
-                onChange={(event) => changeParentStoryId(event.target.value)}
-                inputMode="numeric"
-                maxLength={10}
-                placeholder="e.g. 123456"
+          <SectionCard
+            title="Describe Bug"
+            description="Capture the defect, parent story, Azure fields, assignee, and evidence."
+            action={
+              <GenerationModeToggle
+                mode={mode}
+                onChange={(nextMode) => {
+                  if (nextMode === mode) return;
+                  setHasUnfinishedWork(true);
+                  invalidateGeneratedReport();
+                  setMode(nextMode);
+                }}
               />
-            </Field>
-            <WorkItemSummaryCard
-              story={parentStory}
-              loading={parentState.loading}
-              error={parentState.error}
-              valid={parentStory?.workItemType === "User Story"}
-              invalidNote="Parent link requires a User Story."
-              loadingText="Loading parent story..."
-            />
-          </div>
-
-          <RelatedTestCasePanel
-            parentStory={parentStory}
-            linkedTestCases={linkedTestCases}
-            selectedTestCaseId={selectedTestCaseId}
-            suggestTestCaseChecked={suggestTestCaseChecked}
-            onSelectTestCase={selectRelatedTestCase}
-            onSuggestTestCaseChange={changeSuggestTestCaseChecked}
-          />
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Field label="Assignee">
-              <ProjectUserPicker
-                mode="single"
-                value={assignedTo}
-                users={users}
-                loading={metadata.loading}
-                disabled={!scope}
-                onValueChange={(value) => {
-                  setHasUnfinishedWork(true);
-                  setAssignedTo(value);
-                }}
-                placeholder="Unassigned"
-                emptyOptionLabel="Unassigned"
-                clearable
-                ariaLabel="Assignee"
-              />
-            </Field>
-            <Field label="Area path">
-              <select
-                value={selectedAreaPath}
-                onChange={(event) => {
-                  setHasUnfinishedWork(true);
-                  setSelectedAreaPath(event.target.value);
-                }}
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                disabled={metadata.loading}
-              >
-                <option value="">{metadata.loading ? "Loading areas..." : "Azure DevOps default"}</option>
-                {areas.map((area) => (
-                  <option key={area.id} value={area.path}>
-                    {area.path}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Iteration path">
-              <select
-                value={selectedIterationPath}
-                onChange={(event) => {
-                  setHasUnfinishedWork(true);
-                  setSelectedIterationPath(event.target.value);
-                }}
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                disabled={metadata.loading}
-              >
-                <option value="">{metadata.loading ? "Loading iterations..." : "Azure DevOps default"}</option>
-                {iterations.map((iteration) => (
-                  <option key={iteration.id} value={iteration.path}>
-                    {iteration.path}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
-
-          <Field label="Attachments">
-            <div className="rounded-md border border-dashed border-input bg-muted/20 p-4">
-              <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-muted">
-                <FileUp className="size-4" />
-                Select files
-                <input
-                  type="file"
-                  multiple
-                  accept="image/*,video/*,.gif"
-                  className="sr-only"
-                  onChange={(event) => {
-                    invalidateGeneratedReport();
-                    setHasUnfinishedWork(true);
-                    setAttachments(Array.from(event.target.files ?? []));
-                  }}
+            }
+          >
+            <div className="space-y-5 p-4">
+              {metadata.error ? <ErrorBlock message={metadata.error} /> : null}
+              <Field label="Bug description">
+                <Textarea
+                  value={bugDescription}
+                  onChange={(event) => changeBugDescription(event.target.value)}
+                  className="min-h-32"
+                  placeholder="Describe what went wrong, where it happened, and what you expected instead."
                 />
-              </label>
-              {attachments.length ? (
-                <div className="mt-3 grid gap-2">
-                  {attachments.map((file) => (
-                    <div key={`${file.name}-${file.size}`} className="flex items-center justify-between gap-3 rounded-md bg-background px-3 py-2 text-sm">
-                      <span className="min-w-0 truncate">{file.name}</span>
-                      <span className="shrink-0 text-xs text-muted-foreground">{formatFileSize(file.size)}</span>
+              </Field>
+
+              <div className="grid items-end gap-4 lg:grid-cols-[minmax(260px,360px)_auto]">
+                <Field label="Parent Story ID">
+                  <Input
+                    value={parentStoryId}
+                    onChange={(event) => changeParentStoryId(event.target.value)}
+                    inputMode="numeric"
+                    maxLength={10}
+                    placeholder="e.g. 123456"
+                  />
+                </Field>
+                {mode === "auto" ? (
+                  <Button type="button" onClick={generate} disabled={generateDisabled}>
+                    <Play className="size-4" />
+                    {gen.isRunning ? "Generating..." : "Generate"}
+                  </Button>
+                ) : (
+                  <Button type="button" onClick={prepareManualPrompt} disabled={generateDisabled}>
+                    <Play className="size-4" />
+                    {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
+                  </Button>
+                )}
+              </div>
+
+              <WorkItemSummaryCard
+                story={parentStory}
+                loading={parentState.loading}
+                error={parentState.error}
+                valid={parentStory?.workItemType === "User Story"}
+                invalidNote="Parent link requires a User Story."
+                loadingText="Loading parent story..."
+              />
+
+              <RelatedTestCasePanel
+                parentStory={parentStory}
+                linkedTestCases={linkedTestCases}
+                selectedTestCaseId={selectedTestCaseId}
+                suggestTestCaseChecked={suggestTestCaseChecked}
+                onSelectTestCase={selectRelatedTestCase}
+                onSuggestTestCaseChange={changeSuggestTestCaseChecked}
+              />
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Field label="Assignee">
+                  <ProjectUserPicker
+                    mode="single"
+                    value={assignedTo}
+                    users={users}
+                    loading={metadata.loading}
+                    disabled={!scope}
+                    onValueChange={(value) => {
+                      setHasUnfinishedWork(true);
+                      setAssignedTo(value);
+                    }}
+                    placeholder="Unassigned"
+                    emptyOptionLabel="Unassigned"
+                    clearable
+                    ariaLabel="Assignee"
+                  />
+                </Field>
+                <Field label="Area path">
+                  <select
+                    value={selectedAreaPath}
+                    onChange={(event) => {
+                      setHasUnfinishedWork(true);
+                      setSelectedAreaPath(event.target.value);
+                    }}
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    disabled={metadata.loading}
+                  >
+                    <option value="">{metadata.loading ? "Loading areas..." : "Azure DevOps default"}</option>
+                    {areas.map((area) => (
+                      <option key={area.id} value={area.path}>
+                        {area.path}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Iteration path">
+                  <select
+                    value={selectedIterationPath}
+                    onChange={(event) => {
+                      setHasUnfinishedWork(true);
+                      setSelectedIterationPath(event.target.value);
+                    }}
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    disabled={metadata.loading}
+                  >
+                    <option value="">{metadata.loading ? "Loading iterations..." : "Azure DevOps default"}</option>
+                    {iterations.map((iteration) => (
+                      <option key={iteration.id} value={iteration.path}>
+                        {iteration.path}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+
+              <Field label="Attachments">
+                <div className="rounded-md border border-dashed border-input bg-muted/20 p-4">
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-muted">
+                    <FileUp className="size-4" />
+                    Select files
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*,video/*,.gif"
+                      className="sr-only"
+                      onChange={(event) => {
+                        invalidateGeneratedReport();
+                        setHasUnfinishedWork(true);
+                        setAttachments(Array.from(event.target.files ?? []));
+                      }}
+                    />
+                  </label>
+                  {attachments.length ? (
+                    <div className="mt-3 grid gap-2">
+                      {attachments.map((file) => (
+                        <div key={`${file.name}-${file.size}`} className="flex items-center justify-between gap-3 rounded-md bg-background px-3 py-2 text-sm">
+                          <span className="min-w-0 truncate">{file.name}</span>
+                          <span className="shrink-0 text-xs text-muted-foreground">{formatFileSize(file.size)}</span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  ) : (
+                    <p className="mt-2 text-xs text-muted-foreground">No files selected.</p>
+                  )}
                 </div>
-              ) : (
-                <p className="mt-2 text-xs text-muted-foreground">No files selected.</p>
-              )}
+              </Field>
+
+              <CustomFieldsEditor
+                rows={customFieldRows}
+                fields={fields}
+                datalistId={fieldOptionsId}
+                onAdd={addCustomFieldRow}
+                onRemove={removeCustomFieldRow}
+                onChange={updateCustomFieldRow}
+              />
             </div>
-          </Field>
+          </SectionCard>
 
-          <CustomFieldsEditor
-            rows={customFieldRows}
-            fields={fields}
-            datalistId={fieldOptionsId}
-            onAdd={addCustomFieldRow}
-            onRemove={removeCustomFieldRow}
-            onChange={updateCustomFieldRow}
-          />
-
-          <div className="flex justify-end">
-            {mode === "auto" ? (
-              <Button type="button" onClick={generate} disabled={generateDisabled}>
-                {generateState.loading ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                {generateState.loading ? "Generating..." : "Generate"}
-              </Button>
-            ) : (
-              <Button type="button" onClick={prepareManualPrompt} disabled={generateDisabled}>
-                {manualDraft.loading ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                {manualDraft.loading ? "Preparing..." : "Prepare Prompt"}
-              </Button>
-            )}
-          </div>
-        </CardContent>
-          </Card>
+          {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
+            <AiGenerationProgress
+              mode="prep"
+              variant="generic"
+              status={prep.status}
+              elapsedSeconds={prep.elapsedSeconds}
+              errorMessage={prep.errorMessage}
+              canCancel
+              onCancel={prep.cancel}
+              onRetry={() => {
+                prep.retry();
+                void prepareManualPrompt();
+              }}
+            />
+          ) : null}
 
           {mode === "manual" ? (
             <div className="space-y-4">
-              {(manualDraft.error ?? manualSubmitError) ? (
-                <Callout tone="error">{manualDraft.error ?? manualSubmitError}</Callout>
-              ) : null}
-              {manualDraft.data ? (
+              {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
+              {manualDraft ? (
                 <ManualLLMPanel
-                  prompt={manualDraft.data.prompt}
-                  promptVersion={manualDraft.data.promptVersion}
+                  prompt={manualDraft.prompt}
+                  promptVersion={manualDraft.promptVersion}
                   response={manualResponse}
                   onResponseChange={(value) => {
                     setHasUnfinishedWork(true);
@@ -837,7 +855,20 @@ export function ReportBugClient() {
             </div>
           ) : null}
 
-          {generateState.error ? <ErrorBlock message={generateState.error} /> : null}
+          {gen.status !== "idle" && gen.status !== "completed" ? (
+            <AiGenerationProgress
+              variant="generic"
+              status={gen.status}
+              elapsedSeconds={gen.elapsedSeconds}
+              errorMessage={gen.errorMessage}
+              canCancel
+              onCancel={gen.cancel}
+              onRetry={() => {
+                gen.retry();
+                void generate();
+              }}
+            />
+          ) : null}
         </div>
       ) : report ? (
         <div ref={reviewSectionRef} className="space-y-5">
@@ -845,6 +876,9 @@ export function ReportBugClient() {
             <div>
               <div className="text-sm font-semibold text-foreground">
                 {parentStoryId ? `Reviewing bug for story #${parentStoryId}` : "Reviewing generated bug report"}
+                {parentStory?.title ? (
+                  <span className="font-normal text-muted-foreground"> - {parentStory.title}</span>
+                ) : null}
               </div>
               <div className="text-xs text-muted-foreground">The generated report stays available while you revisit the source details.</div>
             </div>
