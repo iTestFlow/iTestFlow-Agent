@@ -5,7 +5,7 @@ export default function BulkTaskCreationPage() {
   return (
     <ContentShell
       title="Bulk Task Creation"
-      description="Create one Azure DevOps Task under each selected User Story."
+      description="Define task templates, select target stories, then review and create the Azure DevOps task batch."
     >
       <BulkTaskCreationClient />
     </ContentShell>
