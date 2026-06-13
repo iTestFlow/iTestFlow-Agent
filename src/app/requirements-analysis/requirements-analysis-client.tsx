@@ -48,6 +48,7 @@ import {
 import { buildRequirementAnalysisComment } from "@/modules/requirement-analysis/comment/requirement-analysis-comment";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 import type { ProjectUser } from "@/types/azure-devops";
+import { WorkflowFeedback } from "@/components/workflow/workflow-feedback";
 
 function severityRank(value: RequirementFinding["severity"]) {
   const ranks: Record<RequirementFinding["severity"], number> = {
@@ -135,6 +136,10 @@ export function RequirementsAnalysisClient() {
     () => selectedFindingList.filter((finding) => !validateRequirementFinding(finding).valid).length,
     [selectedFindingList],
   );
+  const editedSelectedFindingCount = useMemo(() => {
+    const originalById = new Map((analysis.data?.findings ?? []).map((finding) => [finding.id, finding]));
+    return selectedFindingList.filter((finding) => JSON.stringify(finding) !== JSON.stringify(originalById.get(finding.id))).length;
+  }, [analysis.data?.findings, selectedFindingList]);
   const projectUsers = useMemo(() => projectUsersState.data ?? [], [projectUsersState.data]);
   const selectedMentionUsers = useMemo(() => {
     const selectedIds = new Set(selectedMentionUserIds);
@@ -362,6 +367,9 @@ export function RequirementsAnalysisClient() {
     try {
       await postJson("/api/requirement-analysis/comment", {
         scope,
+        analyticsRunId: analysis.data.analyticsRunId,
+        itemsGenerated: analysis.data.findings.length,
+        itemsEdited: editedSelectedFindingCount,
         targetWorkItemId,
         selectedFindingIds: selectedFindingList.map((finding) => finding.id),
         commentBody: buildCommentBodyWithMentions(commentBody, selectedMentionUsers),
@@ -593,12 +601,15 @@ export function RequirementsAnalysisClient() {
                 ) : null}
                 {pushState.error ? <ErrorBlock message={pushState.error} /> : null}
                 {pushState.data?.success ? (
-                  <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success">
-                    <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
-                    <div>
-                      <div className="font-semibold text-foreground">Comment pushed to Azure DevOps</div>
-                      <p className="mt-1 text-success">The selected requirements findings were added to the target work item.</p>
+                  <div className="space-y-3">
+                    <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success">
+                      <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
+                      <div>
+                        <div className="font-semibold text-foreground">Comment pushed to Azure DevOps</div>
+                        <p className="mt-1 text-success">The selected requirements findings were added to the target work item.</p>
+                      </div>
                     </div>
+                    <WorkflowFeedback scope={scope} runId={analysis.data.analyticsRunId} />
                   </div>
                 ) : null}
               </div>

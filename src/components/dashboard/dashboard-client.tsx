@@ -22,14 +22,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { AutoRefreshStatus } from "@/components/dashboard/auto-refresh-status";
 import { useActiveProject } from "@/shared/lib/use-active-project";
-import { useAutoRefresh } from "@/shared/lib/use-auto-refresh";
+import { useDashboardRefresh } from "@/shared/lib/use-dashboard-refresh";
 import type {
   DashboardAnalytics,
   DashboardFilterMetadata,
   DashboardTab,
   DashboardTrendPoint,
 } from "@/types/dashboard";
+import { SystemDashboardsClient } from "@/components/dashboard/system-dashboard-client";
 
 type DashboardState = {
   loading: boolean;
@@ -56,30 +58,32 @@ const emptyMetadata: DashboardFilterMetadata = {
 };
 
 export function DashboardsClient() {
+  const [activeDashboard, setActiveDashboard] = useState<"project" | "system">("project");
+
+  return (
+    <Tabs value={activeDashboard} onValueChange={(value) => setActiveDashboard(value as "project" | "system")} className="flex-col gap-4">
+      <TabsList variant="primary" className="grid h-auto w-full grid-cols-2 sm:inline-grid sm:w-fit sm:min-w-[460px]">
+        <TabsTrigger value="project" className="h-10 px-3 py-2 duration-200">Project Dashboards</TabsTrigger>
+        <TabsTrigger value="system" className="h-10 px-3 py-2 duration-200">System Dashboards</TabsTrigger>
+      </TabsList>
+      <TabsContent value="project" forceMount hidden={activeDashboard !== "project"} className="space-y-4">
+        <ProjectDashboardsClient active={activeDashboard === "project"} />
+      </TabsContent>
+      <TabsContent value="system" forceMount hidden={activeDashboard !== "system"} className="space-y-4">
+        <SystemDashboardsClient active={activeDashboard === "system"} />
+      </TabsContent>
+    </Tabs>
+  );
+}
+
+function ProjectDashboardsClient({ active }: { active: boolean }) {
   const scope = useActiveProject();
   const previousProjectId = useRef<string | null>(null);
   const bypassCacheRef = useRef(false);
-  const backgroundRef = useRef(false);
-  const interactingTimerRef = useRef<number | null>(null);
   const [filters, setFilters] = useState<DashboardFilterState>(defaultDashboardFilters);
   const [state, setState] = useState<DashboardState>({ loading: true, error: null, data: null });
-  const [refreshToken, setRefreshToken] = useState(0);
-  const [lastFetchAt, setLastFetchAt] = useState<number | null>(null);
-  const [backgroundRefreshing, setBackgroundRefreshing] = useState(false);
-  const [refreshFailed, setRefreshFailed] = useState(false);
-  const [interacting, setInteracting] = useState(false);
   const [activeTab, setActiveTab] = useState<DashboardTab>("testing");
   const [blockerView, setBlockerView] = useState<BlockerView>("all");
-
-  useEffect(() => {
-    const projectId = scope?.azureProjectId ?? null;
-    if (projectId !== previousProjectId.current) {
-      previousProjectId.current = projectId;
-      setFilters(defaultDashboardFilters);
-      setState({ loading: Boolean(scope), error: null, data: null });
-      setActiveTab("testing");
-    }
-  }, [scope]);
 
   const requestBody = useMemo(() => ({
     scope,
@@ -96,7 +100,38 @@ export function DashboardsClient() {
     },
   }), [filters, scope]);
 
+  const {
+    refreshToken,
+    fetching,
+    refreshFailed,
+    setRefreshFailed,
+    nextRefreshAt,
+    triggerRefresh,
+    markInteracting,
+    beginFetch,
+    settleFetch,
+  } = useDashboardRefresh({
+    enabled: active && Boolean(scope) && Boolean(state.data),
+    loading: state.loading,
+    intervalMs: AUTO_REFRESH_INTERVAL_MS,
+    staleMs: STALE_THRESHOLD_MS,
+    filterSettleMs: FILTER_SETTLE_MS,
+    // The project dashboard forces a fresh build on any explicit refresh.
+    onTrigger: () => { bypassCacheRef.current = true; },
+  });
+
   useEffect(() => {
+    const projectId = scope?.azureProjectId ?? null;
+    if (projectId !== previousProjectId.current) {
+      previousProjectId.current = projectId;
+      setFilters(defaultDashboardFilters);
+      setState({ loading: Boolean(scope), error: null, data: null });
+      setActiveTab("testing");
+    }
+  }, [scope]);
+
+  useEffect(() => {
+    if (!active) return;
     if (scope === undefined) return;
     if (!scope) {
       setState({ loading: false, error: null, data: null });
@@ -104,15 +139,12 @@ export function DashboardsClient() {
     }
     const controller = new AbortController();
     void (async () => {
-      // Capture and immediately clear the per-attempt flags so they apply to exactly
-      // this one attempt regardless of whether it succeeds, errors, or is aborted.
+      // Capture and clear the project-only bypass-cache flag for exactly this attempt.
       const bypassCache = bypassCacheRef.current;
       bypassCacheRef.current = false;
-      const background = backgroundRef.current;
-      backgroundRef.current = false;
       // A background (auto) refresh stays quiet: it never flips the full-page loading
       // state, so existing data and filters remain interactive while it runs.
-      setBackgroundRefreshing(background);
+      const background = beginFetch();
       if (!background) {
         setState((current) => ({ ...current, loading: true, error: null }));
       }
@@ -141,46 +173,21 @@ export function DashboardsClient() {
           }));
         }
       } finally {
-        // Anchor the auto-refresh countdown to the moment this attempt settled, but
-        // ignore aborted attempts — the request that superseded them owns the state.
         if (!controller.signal.aborted) {
-          setBackgroundRefreshing(false);
-          setLastFetchAt(Date.now());
+          settleFetch();
         }
       }
     })();
     return () => controller.abort();
-  }, [requestBody, scope, refreshToken]);
+  }, [active, requestBody, scope, refreshToken, beginFetch, settleFetch, setRefreshFailed]);
 
-  useEffect(() => () => {
-    if (interactingTimerRef.current) window.clearTimeout(interactingTimerRef.current);
-  }, []);
-
-  function triggerRefresh(background: boolean) {
-    bypassCacheRef.current = true;
-    backgroundRef.current = background;
-    setRefreshToken((token) => token + 1);
-  }
-
-  // Applying a filter triggers its own fetch (which re-anchors the auto-refresh
-  // timer); we also flag a short settle window so an auto-refresh never fires
+  // Applying a filter triggers its own fetch (which re-anchors the auto-refresh timer);
+  // markInteracting also flags a short settle window so an auto-refresh never fires
   // mid-edit when the user is still adjusting controls.
   function handleFiltersChange(next: DashboardFilterState) {
     setFilters(next);
-    setInteracting(true);
-    if (interactingTimerRef.current) window.clearTimeout(interactingTimerRef.current);
-    interactingTimerRef.current = window.setTimeout(() => setInteracting(false), FILTER_SETTLE_MS);
+    markInteracting();
   }
-
-  const fetching = state.loading || backgroundRefreshing;
-  const { nextRefreshAt } = useAutoRefresh({
-    enabled: Boolean(scope) && Boolean(state.data),
-    intervalMs: AUTO_REFRESH_INTERVAL_MS,
-    staleMs: STALE_THRESHOLD_MS,
-    lastFetchAt,
-    suspended: interacting || fetching,
-    onRefresh: () => triggerRefresh(true),
-  });
 
   if (scope === undefined) return <LoadingState rows={8} />;
   if (!scope) {
@@ -427,48 +434,6 @@ function ReportingScope({
   );
 }
 
-/**
- * Live status line for the dashboard's quiet auto-refresh. Runs its own one-second
- * ticker so only this leaf re-renders on the countdown, not the whole dashboard.
- */
-function AutoRefreshStatus({
-  generatedAt,
-  nextRefreshAt,
-  refreshing,
-  failed,
-}: {
-  generatedAt?: string;
-  nextRefreshAt: number | null;
-  refreshing: boolean;
-  failed: boolean;
-}) {
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    setNow(Date.now());
-    if (nextRefreshAt === null || refreshing) return;
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [nextRefreshAt, refreshing]);
-
-  const secondsRemaining = nextRefreshAt === null ? null : Math.max(0, Math.round((nextRefreshAt - now) / 1000));
-
-  return (
-    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-      <span>Last updated {formatGeneratedAt(generatedAt)}</span>
-      {refreshing ? (
-        <span className="flex items-center gap-1 text-primary"><RefreshCw className="size-3 animate-spin" />Refreshing</span>
-      ) : failed ? (
-        <span className="flex items-center gap-1 text-warning"><AlertTriangle className="size-3" />Refresh failed</span>
-      ) : secondsRemaining !== null ? (
-        <span>· Next refresh in {formatCountdown(secondsRemaining)}</span>
-      ) : (
-        <span>· Auto-refresh paused</span>
-      )}
-    </span>
-  );
-}
-
 function DataQualityNotice({ warnings }: { warnings: string[] }) {
   const multiple = warnings.length > 1;
   return (
@@ -587,17 +552,6 @@ function sparseTrendMessage(data: DashboardTrendPoint[], keys: Array<keyof Dashb
   })).length;
   if (recordedDays === 0 || recordedDays > 5 || recordedDays === data.length) return null;
   return `Only ${recordedDays} ${recordedDays === 1 ? "day has" : "days have"} recorded results in this range.`;
-}
-
-function formatGeneratedAt(value?: string) {
-  if (!value) return "not loaded";
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-}
-
-function formatCountdown(totalSeconds: number) {
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
 function formatDate(value: string) {

@@ -4,6 +4,10 @@ import { postBugReportToAzureDevOps } from "@/modules/bug-reporting/bug-posting.
 import { FinalBugReportSchema } from "@/modules/bug-reporting/schemas/bug-report.schema";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import {
+  completeWorkflowRun,
+  failWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -14,9 +18,11 @@ const PayloadSchema = z.object({
   assignedTo: z.string().trim().optional(),
   areaPath: z.string().trim().optional(),
   iterationPath: z.string().trim().optional(),
+  analyticsRunId: z.string().min(1).optional(),
 });
 
 export async function POST(request: Request) {
+  let analyticsContext: { scope: z.infer<typeof ProjectScopeSchema>; runId: string } | undefined;
   try {
     const formData = await request.formData();
     const payloadRaw = formData.get("payload");
@@ -27,6 +33,12 @@ export async function POST(request: Request) {
     const parsed = PayloadSchema.safeParse(JSON.parse(payloadRaw));
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Bug report details are invalid." }, { status: 400 });
+    }
+
+    // Establish the analytics context before any work that can fail, so a failed
+    // Azure DevOps post is recorded against the run rather than left as "started".
+    if (parsed.data.analyticsRunId) {
+      analyticsContext = { scope: parsed.data.scope, runId: parsed.data.analyticsRunId };
     }
 
     const attachments = await Promise.all(
@@ -51,9 +63,29 @@ export async function POST(request: Request) {
       iterationPath: parsed.data.iterationPath,
       attachments,
     });
+    if (analyticsContext) {
+      completeWorkflowRun({
+        scope: analyticsContext.scope,
+        runId: analyticsContext.runId,
+        status: "published",
+        valueRealized: true,
+        patch: {
+          itemsSelected: 1,
+          itemsPublished: 1,
+          manualActionsAvoided: 1 + result.attachmentResults.filter((attachment) => attachment.success).length,
+        },
+      });
+    }
 
     return NextResponse.json(result);
   } catch (error) {
+    if (analyticsContext) {
+      failWorkflowRun({
+        scope: analyticsContext.scope,
+        runId: analyticsContext.runId,
+        error: error instanceof Error ? error.message : "Azure DevOps bug creation failed.",
+      });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Azure DevOps bug creation failed." },
       { status: 503 },

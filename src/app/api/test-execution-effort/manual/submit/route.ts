@@ -12,6 +12,11 @@ import {
   TestExecutionEffortOptionsSchema,
 } from "@/modules/test-execution-effort/test-execution-effort.schema";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
+import {
+  completeWorkflowRun,
+  failWorkflowRun,
+  startWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -31,7 +36,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Paste the external LLM response before continuing." }, { status: 400 });
   }
 
+  let analyticsRunId: string | undefined;
   try {
+    analyticsRunId = startWorkflowRun({
+      scope: parsed.data.scope,
+      workflowType: "test_execution_effort",
+      workItemId: parsed.data.storyId,
+    });
     const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const targetRequirement = await adapter.fetchWorkItemById({
       projectId: parsed.data.scope.azureProjectId,
@@ -52,8 +63,19 @@ export async function POST(request: Request) {
       linkedTestCases,
       hasProjectContext: Boolean(parsed.data.resolvedContextUsed),
     });
+    completeWorkflowRun({
+      scope: parsed.data.scope,
+      runId: analyticsRunId,
+      valueRealized: false,
+      patch: {
+        itemsGenerated: 1,
+        usedKnowledgeContext: parsed.data.contextCitations.length > 0,
+        metadata: { contextUsed: parsed.data.resolvedContextUsed ?? [] },
+      },
+    });
 
     return NextResponse.json({
+      analyticsRunId,
       ...preview,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: parsed.data.resolvedContextUsed ?? [],
@@ -67,6 +89,9 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
+    if (analyticsRunId) {
+      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: message || "Manual Test Execution Effort validation failed." });
+    }
     if (message.includes("External LLM output") || message.includes("Paste the external LLM JSON") || message.includes("schema validation")) {
       return NextResponse.json({ error: message }, { status: 422 });
     }

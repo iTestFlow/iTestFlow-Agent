@@ -4,6 +4,7 @@ import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
 import type { AzureTestPoint, TestSuiteType } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { assertProjectScope } from "@/modules/projects/project-isolation.guard";
+import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
 import type {
   MigrationAction,
   MigrationError,
@@ -613,12 +614,4 @@ function buildReport(
       sourceSuitesDeleted: actions.filter((action) => action.action === "deleteSourceSuite" && action.status === "success").length,
     },
   };
-}
-
-function sanitizeAzureError(value: string) {
-  return value
-    .replace(/Authorization:\s*Basic\s+[A-Za-z0-9+/=]+/gi, "Authorization: Basic [redacted]")
-    .replace(/Basic\s+[A-Za-z0-9+/=]{20,}/g, "Basic [redacted]")
-    .replace(/personalAccessToken["'\s:=]+[^"',\s}]+/gi, "personalAccessToken: [redacted]")
-    .replace(/pat["'\s:=]+[^"',\s}]+/gi, "PAT: [redacted]");
 }

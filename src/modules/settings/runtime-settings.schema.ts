@@ -7,6 +7,10 @@ import {
   RETRY_ATTEMPT_OPTIONS,
 } from "@/modules/llm/llm-defaults";
 import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION, validateCronExpression } from "./cron-expression";
+import {
+  defaultWorkflowBaselines,
+  workflowTypeValues,
+} from "@/modules/analytics/analytics-config";
 
 export const LLMProviderNameSchema = z.enum(["openai", "gemini", "anthropic", "ollama"]);
 
@@ -72,6 +76,20 @@ const LLMSettingsSchema = z.object({
   ).default(DEFAULT_RETRY_ATTEMPTS),
 });
 
+const ManualBaselineMinutesSchema = z.object(
+  Object.fromEntries(
+    workflowTypeValues.map((workflowType) => [
+      workflowType,
+      z.number().finite().min(0).max(1440).default(defaultWorkflowBaselines[workflowType]),
+    ]),
+  ) as Record<(typeof workflowTypeValues)[number], z.ZodDefault<z.ZodNumber>>,
+);
+
+export const DashboardValueMetricsSettingsSchema = z.object({
+  feedbackPromptEnabled: z.boolean().default(true),
+  manualBaselineMinutes: ManualBaselineMinutesSchema.default(defaultWorkflowBaselines),
+});
+
 export const RuntimeSettingsInputSchema = z.object({
   azureDevOps: z.object({
     organizationUrl: z.string({
@@ -94,6 +112,10 @@ export const RuntimeSettingsInputSchema = z.object({
       states: DEFAULT_CONTEXT_STATES,
     }),
   }).default({ retrievalTopK: 8 }),
+  dashboardValueMetrics: DashboardValueMetricsSettingsSchema.default({
+    feedbackPromptEnabled: true,
+    manualBaselineMinutes: defaultWorkflowBaselines,
+  }),
 });
 
 export type RuntimeSettingsInput = z.infer<typeof RuntimeSettingsInputSchema>;
@@ -149,6 +171,7 @@ export type RuntimeSettingsSummary = {
       } | null;
     };
   };
+  dashboardValueMetrics?: RuntimeSettingsInput["dashboardValueMetrics"];
 };
 
 function normalizeFilterValues(values: string[]) {

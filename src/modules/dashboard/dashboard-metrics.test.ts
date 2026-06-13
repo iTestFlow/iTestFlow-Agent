@@ -7,10 +7,13 @@ import {
   buildRequirementRows,
   calculatePercentage,
   calculateReleaseReadiness,
+  isOpenBugState,
+  isResolvedBugState,
   normalizeSeverity,
   normalizeTestOutcome,
   trimTrailingEmptyTrend,
 } from "./dashboard-metrics";
+import { toLocalDayString } from "@/shared/lib/local-day";
 
 describe("dashboard metric normalization", () => {
   it("normalizes Azure severity and outcome variants", () => {
@@ -25,6 +28,58 @@ describe("dashboard metric normalization", () => {
     expect(calculatePercentage(0, 0)).toBeNull();
     expect(calculatePercentage(9, 10)).toBe(90);
     expect(calculatePercentage(1, 3)).toBe(33.3);
+  });
+});
+
+describe("bug state classification", () => {
+  it("treats standard closed/done states as not open", () => {
+    for (const state of ["Closed", "Done", "Completed", "Removed", "Rejected"]) {
+      expect(isOpenBugState(state)).toBe(false);
+    }
+  });
+
+  it("treats active/new/resolved states as open", () => {
+    for (const state of ["New", "Active", "Committed", "Approved", "Resolved", "Reopened"]) {
+      expect(isOpenBugState(state)).toBe(true);
+    }
+  });
+
+  it("classifies decorated closed states by their leading word", () => {
+    expect(isOpenBugState("Closed - Duplicate")).toBe(false);
+    expect(isOpenBugState("Done (Verified)")).toBe(false);
+  });
+
+  it("does not misclassify negated states that merely contain a closed token", () => {
+    expect(isOpenBugState("Not Done")).toBe(true);
+    expect(isOpenBugState("Not Completed")).toBe(true);
+  });
+
+  it("detects resolved / retest-pending states without false positives", () => {
+    expect(isResolvedBugState("Resolved")).toBe(true);
+    expect(isResolvedBugState("Fixed")).toBe(true);
+    expect(isResolvedBugState("Ready for Retest")).toBe(true);
+    expect(isResolvedBugState("Ready to Test")).toBe(true);
+    expect(isResolvedBugState("Not Fixed")).toBe(false);
+    expect(isResolvedBugState("Active")).toBe(false);
+  });
+});
+
+describe("daily trend axis (local calendar days)", () => {
+  it("produces a consecutive run of local days and aligns points by date", () => {
+    const trend = buildDailyTrend("2026-06-01", "2026-06-04", [{ date: "2026-06-03", opened: 5 }]);
+    expect(trend.map((point) => point.date)).toEqual([
+      "2026-06-01",
+      "2026-06-02",
+      "2026-06-03",
+      "2026-06-04",
+    ]);
+    expect(trend[2].opened).toBe(5);
+    expect(trend[0].opened).toBeUndefined();
+  });
+
+  it("formats a Date as its local calendar day", () => {
+    // Month is 0-indexed; this is local June 9, 2026 regardless of host timezone.
+    expect(toLocalDayString(new Date(2026, 5, 9))).toBe("2026-06-09");
   });
 });
 

@@ -9,6 +9,8 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // Neutralize the RSC-only guard so server modules' pure helpers are unit-testable.
+      "server-only": fileURLToPath(new URL("./src/test/server-only-stub.ts", import.meta.url)),
     },
   },
   test: {

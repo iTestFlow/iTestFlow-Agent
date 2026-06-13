@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { countTestCategories } from "@/modules/analytics/test-category-normalization";
 import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
@@ -10,6 +11,11 @@ import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.serv
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
+import {
+  failWorkflowRun,
+  startWorkflowRun,
+  updateWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -29,6 +35,7 @@ export async function POST(request: Request) {
     );
   }
 
+  let analyticsRunId: string | undefined;
   try {
     const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const provider = getConfiguredProviderFromEnv();
@@ -38,6 +45,11 @@ export async function POST(request: Request) {
         { status: 503 },
       );
     }
+    analyticsRunId = startWorkflowRun({
+      scope: parsed.data.scope,
+      workflowType: "test_gap_analysis",
+      workItemId: parsed.data.targetWorkItemId,
+    });
 
     const targetRequirement = await adapter.fetchWorkItemById({
       projectId: parsed.data.scope.azureProjectId,
@@ -70,8 +82,33 @@ export async function POST(request: Request) {
       resolvedContextUsed: autoContext.contextUsed,
       relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
     });
+    const gapRows = result.validatedOutput.traceabilityMatrix.filter((row) => row.coverageStatus !== "Covered");
+    const weakDuplicateCases = result.validatedOutput.findings.filter((finding) => finding.category === "Duplicate" || finding.category.startsWith("Weak")).length;
+    updateWorkflowRun({
+      scope: parsed.data.scope,
+      runId: analyticsRunId,
+      patch: {
+        status: "generated",
+        generationCompletedAt: new Date().toISOString(),
+        itemsGenerated: result.validatedOutput.suggestedAdditions.length,
+        highRiskItemsFound: result.validatedOutput.findings.filter((finding) => finding.severity === "High").length,
+        mediumRiskItemsFound: result.validatedOutput.findings.filter((finding) => finding.severity === "Medium").length,
+        lowRiskItemsFound: result.validatedOutput.findings.filter((finding) => finding.severity === "Low").length,
+        usedKnowledgeContext: contextCitations.length > 0,
+        metadata: {
+          coverage: {
+            score: result.validatedOutput.coverageScore,
+            missingAreas: gapRows.length,
+            weakDuplicateCases,
+          },
+          testDesign: { categories: countTestCategories(result.validatedOutput.suggestedAdditions) },
+          contextUsed: result.validatedOutput.contextUsed,
+        },
+      },
+    });
 
     return NextResponse.json({
+      analyticsRunId,
       targetWorkItemId: parsed.data.targetWorkItemId,
       linkedTestCases,
       selectedContextIds: parsed.data.selectedContextIds,
@@ -87,6 +124,9 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     writeGenerationFailureAudit({ scope: parsed.data.scope, action: "existing_test_case_review.run", label: "Test Coverage Matrix generation failed.", error });
+    if (analyticsRunId) {
+      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Test Coverage Matrix failed." });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Test Coverage Matrix generation failed." },
       { status: 503 },

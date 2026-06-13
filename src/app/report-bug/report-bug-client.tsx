@@ -104,6 +104,8 @@ type BugReport = {
   contextUsed: string[];
 };
 
+type GeneratedBugReport = BugReport & { analyticsRunId?: string };
+
 type ManualPromptDraft = {
   prompt: string;
   promptVersion: string;
@@ -177,7 +179,8 @@ export function ReportBugClient() {
   const [selectedIterationPath, setSelectedIterationPath] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const [customFieldRows, setCustomFieldRows] = useState<CustomFieldRow[]>([]);
-  const [generateState, setGenerateState] = useState<ApiState<BugReport>>({ loading: false, error: null, data: null });
+  const [generateState, setGenerateState] = useState<ApiState<GeneratedBugReport>>({ loading: false, error: null, data: null });
+  const [analyticsRunId, setAnalyticsRunId] = useState<string | undefined>();
   const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
@@ -224,6 +227,7 @@ export function ReportBugClient() {
       setAttachments([]);
       setCustomFieldRows([]);
       setGenerateState({ loading: false, error: null, data: null });
+      setAnalyticsRunId(undefined);
       setManualDraft({ loading: false, error: null, data: null });
       setManualResponse("");
       setManualSubmitError(null);
@@ -298,6 +302,7 @@ export function ReportBugClient() {
     resetManual();
     setActiveStep("describe");
     setGenerateState({ loading: false, error: null, data: null });
+    setAnalyticsRunId(undefined);
     setReport(null);
     setPostState({ loading: false, error: null, data: null });
     setSuggestedTestCase(null);
@@ -385,7 +390,7 @@ export function ReportBugClient() {
     setGenerateState({ loading: true, error: null, data: null });
     setPostState({ loading: false, error: null, data: null });
     try {
-      const data = await postJson<BugReport>("/api/bugs/generate", buildGenerationPayload(scope));
+      const data = await postJson<GeneratedBugReport>("/api/bugs/generate", buildGenerationPayload(scope));
       if (requestVersion !== generationRequestVersionRef.current) return;
       applyGeneratedReport(data);
       setGenerateState({ loading: false, error: null, data });
@@ -418,7 +423,7 @@ export function ReportBugClient() {
     setManualSubmitLoading(true);
     setManualSubmitError(null);
     try {
-      const data = await postJson<BugReport>("/api/bugs/manual/submit", {
+      const data = await postJson<GeneratedBugReport>("/api/bugs/manual/submit", {
         scope,
         parentStoryId: parentStoryId.trim() || undefined,
         rawOutput: manualResponse,
@@ -467,11 +472,13 @@ export function ReportBugClient() {
     };
   }
 
-  function applyGeneratedReport(data: BugReport) {
+  function applyGeneratedReport(data: GeneratedBugReport) {
     setActiveStep("review");
     setHasUnfinishedWork(true);
-    const mergedCustomFields = mergeCustomFields(customFields, data.customFields ?? []);
-    const nextReport = { ...data, customFields: mergedCustomFields };
+    const { analyticsRunId: nextAnalyticsRunId, ...generatedReport } = data;
+    setAnalyticsRunId(nextAnalyticsRunId);
+    const mergedCustomFields = mergeCustomFields(customFields, generatedReport.customFields ?? []);
+    const nextReport = { ...generatedReport, customFields: mergedCustomFields };
     shouldScrollToReviewRef.current = true;
     setReport(nextReport);
     setCustomFieldRows(customFieldsToRows(mergedCustomFields, fields));
@@ -580,6 +587,7 @@ export function ReportBugClient() {
           assignedTo: assignedTo || undefined,
           areaPath: selectedAreaPath || undefined,
           iterationPath: selectedIterationPath || undefined,
+          analyticsRunId,
           report: { ...report, customFields },
         }),
       );

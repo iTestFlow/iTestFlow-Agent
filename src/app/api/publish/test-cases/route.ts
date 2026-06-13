@@ -3,6 +3,10 @@ import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { publishApprovedTestCases } from "@/modules/integrations/azure-devops/azure-devops-test-plan.service";
+import {
+  completeWorkflowRun,
+  failWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -34,6 +38,9 @@ const RequestSchema = z.object({
   parentSuiteId: azureIdSchema("suite").optional(),
   suiteMode: z.enum(["existing", "requirement", "none"]).default("existing"),
   testCases: z.array(FinalApprovedTestCaseSchema).min(1),
+  analyticsRunId: z.string().min(1).optional(),
+  itemsGenerated: z.number().int().nonnegative().optional(),
+  itemsEdited: z.number().int().nonnegative().optional(),
 }).superRefine((value, ctx) => {
   if (value.suiteMode !== "none" && !value.testPlanId) {
     ctx.addIssue({
@@ -87,6 +94,26 @@ export async function POST(request: Request) {
       suiteMode: parsed.data.suiteMode,
       testCases: parsed.data.testCases,
     });
+    const successCount = result.results.filter((item) => item.success).length;
+    if (parsed.data.analyticsRunId) {
+      if (successCount > 0) {
+        completeWorkflowRun({
+          scope: parsed.data.scope,
+          runId: parsed.data.analyticsRunId,
+          status: "published",
+          valueRealized: true,
+          patch: {
+            itemsSelected: parsed.data.testCases.length,
+            itemsEdited: parsed.data.itemsEdited ?? 0,
+            itemsPublished: successCount,
+            itemsRejected: Math.max((parsed.data.itemsGenerated ?? parsed.data.testCases.length) - parsed.data.testCases.length, 0),
+            manualActionsAvoided: countPublishActions(result),
+          },
+        });
+      } else {
+        failWorkflowRun({ scope: parsed.data.scope, runId: parsed.data.analyticsRunId, error: "No test cases were published successfully." });
+      }
+    }
 
     return NextResponse.json({
       targetWorkItemId: parsed.data.targetWorkItemId,
@@ -97,11 +124,28 @@ export async function POST(request: Request) {
       ...result,
     });
   } catch (error) {
+    if (parsed.data.analyticsRunId) {
+      failWorkflowRun({
+        scope: parsed.data.scope,
+        runId: parsed.data.analyticsRunId,
+        error: error instanceof Error ? error.message : "Azure Test Plan publish failed.",
+      });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Azure Test Plan publish failed." },
       { status: 503 },
     );
   }
+}
+
+function countPublishActions(result: Awaited<ReturnType<typeof publishApprovedTestCases>>) {
+  const caseActions = result.results.reduce((total, item) => {
+    return total
+      + (item.create.success ? 1 : 0)
+      + (item.link.success ? 1 : 0)
+      + (item.suite?.success ? 1 : 0);
+  }, 0);
+  return caseActions + (result.requirementSuite?.success ? 1 : 0);
 }
 
 function azureIdSchema(kind: "plan" | "suite") {

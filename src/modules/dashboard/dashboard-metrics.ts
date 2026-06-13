@@ -12,6 +12,7 @@ import type {
   DashboardTestOutcome,
   DashboardTrendPoint,
 } from "@/types/dashboard";
+import { toLocalDayString } from "@/shared/lib/local-day";
 
 export const DASHBOARD_LIMITS = {
   workItems: 1000,
@@ -20,6 +21,7 @@ export const DASHBOARD_LIMITS = {
   testResults: 5000,
   revisions: 5000,
   tableRows: 100,
+  suites: 100,
 } as const;
 
 export const READINESS_THRESHOLDS = {
@@ -36,6 +38,19 @@ export const READINESS_THRESHOLDS = {
 
 const closedStateTokens = ["closed", "done", "completed", "removed", "rejected"];
 const resolvedStateTokens = ["resolved", "fixed", "ready for retest", "ready to test"];
+
+// Match a state name that *begins* with a token word, so decorated states like
+// "Closed - Duplicate" / "Done (Verified)" classify correctly, while a negated state
+// like "Not Done" / "Not Fixed" (which only contains the token) does NOT. The trailing
+// \b stops a token from matching a longer word ("done" must not match "doner").
+const toStatePattern = (token: string) => new RegExp(`^${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+const closedStatePatterns = closedStateTokens.map(toStatePattern);
+const resolvedStatePatterns = resolvedStateTokens.map(toStatePattern);
+
+function matchesState(value: string | null | undefined, patterns: RegExp[]) {
+  const normalized = (value ?? "").trim().toLowerCase();
+  return patterns.some((pattern) => pattern.test(normalized));
+}
 
 export function normalizeSeverity(value?: string | null) {
   const normalized = (value ?? "").trim().toLowerCase();
@@ -61,13 +76,11 @@ export function normalizeTestOutcome(value?: string | null): DashboardTestOutcom
 }
 
 export function isOpenBugState(value?: string | null) {
-  const normalized = (value ?? "").trim().toLowerCase();
-  return !closedStateTokens.some((token) => normalized === token || normalized.includes(token));
+  return !matchesState(value, closedStatePatterns);
 }
 
 export function isResolvedBugState(value?: string | null) {
-  const normalized = (value ?? "").trim().toLowerCase();
-  return resolvedStateTokens.some((token) => normalized === token || normalized.includes(token));
+  return matchesState(value, resolvedStatePatterns);
 }
 
 export function calculatePercentage(numerator: number, denominator: number) {
@@ -397,12 +410,14 @@ export function buildDailyTrend(
 ): DashboardTrendPoint[] {
   const byDate = new Map(points.map((point) => [point.date, point]));
   const result: DashboardTrendPoint[] = [];
-  const cursor = new Date(`${from}T00:00:00.000Z`);
-  const end = new Date(`${to}T00:00:00.000Z`);
+  // Iterate local calendar days (note: no trailing Z) so the axis aligns with the
+  // local-day buckets that datePart produces for each event.
+  const cursor = new Date(`${from}T00:00:00`);
+  const end = new Date(`${to}T00:00:00`);
   while (cursor <= end) {
-    const date = cursor.toISOString().slice(0, 10);
+    const date = toLocalDayString(cursor);
     result.push({ date, ...(byDate.get(date) ?? {}) });
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
+    cursor.setDate(cursor.getDate() + 1);
   }
   return result;
 }

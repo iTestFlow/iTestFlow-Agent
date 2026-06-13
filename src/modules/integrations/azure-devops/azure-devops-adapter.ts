@@ -43,6 +43,8 @@ export interface AzureDevOpsAdapter {
 
   fetchProjectWorkItemMetadata(input: {
     projectId: string;
+    /** Include the per-type state lists (one extra REST call per work-item type). Defaults to true. */
+    includeStates?: boolean;
   }): Promise<AzureProjectWorkItemMetadata>;
 
   fetchWorkItemTypeFields(input: {

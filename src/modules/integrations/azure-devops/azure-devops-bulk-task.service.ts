@@ -2,6 +2,7 @@ import "server-only";
 
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
+import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
 import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
 import type { BulkTaskResult, BulkTaskTarget, BulkTaskTemplate, CreatedBulkTask, FailedBulkTask, Requirement } from "./azure-devops-types";
 
@@ -125,12 +126,4 @@ function normalizeOptionalText(value?: string) {
 
 function normalizeTitleForMatch(value: string) {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
-}
-
-function sanitizeAzureError(value: string) {
-  return value
-    .replace(/Authorization:\s*Basic\s+[A-Za-z0-9+/=]+/gi, "Authorization: Basic [redacted]")
-    .replace(/Basic\s+[A-Za-z0-9+/=]{20,}/g, "Basic [redacted]")
-    .replace(/personalAccessToken["'\s:=]+[^"',\s}]+/gi, "personalAccessToken: [redacted]")
-    .replace(/pat["'\s:=]+[^"',\s}]+/gi, "PAT: [redacted]");
 }

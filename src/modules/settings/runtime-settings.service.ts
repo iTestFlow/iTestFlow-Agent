@@ -152,6 +152,7 @@ function summarizeRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsSum
         states: settings.context.autoUpdate.states,
       },
     },
+    dashboardValueMetrics: settings.dashboardValueMetrics,
   };
 }
 
@@ -220,6 +221,7 @@ function getSettingsFromEnv(): RuntimeSettings | null {
         states: DEFAULT_CONTEXT_STATES,
       },
     },
+    dashboardValueMetrics: undefined,
   });
 
   if (!parsed.success) return null;

@@ -46,6 +46,7 @@ import {
   trimTrailingEmptyTrend,
   type DashboardExecutionItem,
 } from "./dashboard-metrics";
+import { localDayStartIso, toLocalDayString } from "@/shared/lib/local-day";
 
 export type DashboardAnalyticsInput = {
   scope: ProjectScope;
@@ -105,7 +106,14 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
     : ({ ok: true, data: [] } satisfies SourceResult<TestSuite[]>);
   const suites = suiteResult.ok ? flattenSuites(suiteResult.data) : [];
   const requestedSuiteIds = input.filters?.testSuiteIds?.filter((id) => suites.some((suite) => suite.id === id)) ?? [];
-  const selectedSuiteIds = requestedSuiteIds.length ? requestedSuiteIds : suites.map((suite) => suite.id);
+  const allSuiteIds = suites.map((suite) => suite.id);
+  // With no explicit suite filter the dashboard would otherwise issue one ADO test-point
+  // request per suite. Cap the default fan-out to bound cold-load cost on large plans; an
+  // explicit suite selection is never capped, and truncation is surfaced as a warning.
+  const suitesTruncated = !requestedSuiteIds.length && allSuiteIds.length > DASHBOARD_LIMITS.suites;
+  const selectedSuiteIds = requestedSuiteIds.length
+    ? requestedSuiteIds
+    : allSuiteIds.slice(0, DASHBOARD_LIMITS.suites);
 
   const filters: DashboardFilters = {
     dateRange,
@@ -147,7 +155,7 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
     capture(() => adapter.fetchWorkItemRevisions({
       projectId: scope.azureProjectId,
       workItemTypes: ["Bug"],
-      startDateTime: `${dateRange.from}T00:00:00.000Z`,
+      startDateTime: localDayStartIso(dateRange.from),
       fields: [
         "System.Id",
         "System.Rev",
@@ -303,6 +311,8 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
     runsTruncated: runsResult.ok && runsResult.data.length >= DASHBOARD_LIMITS.testRuns,
     trendRunsInRange: runsInRange.length,
     revisionsTruncated: revisions.length >= DASHBOARD_LIMITS.revisions,
+    suitesTruncated,
+    totalSuites: suites.length,
   });
 
   const response: DashboardAnalytics = {
@@ -401,7 +411,7 @@ async function getCachedMetadata(
   bypassCache: boolean | undefined,
   loader: () => ReturnType<typeof loadBaseMetadata>,
 ) {
-  const key = `${scope.azureOrganizationUrl}|${scope.azureProjectId}`;
+  const key = scope.azureProjectId;
   const cached = metadataCache.get(key);
   if (!bypassCache && cached && cached.expiresAt > Date.now()) return cached.value;
   const value = await loader();
@@ -418,7 +428,7 @@ async function loadBaseMetadata(
     capture(() => adapter.fetchAreas({ projectId: scope.azureProjectId })),
     capture(() => adapter.fetchIterations({ projectId: scope.azureProjectId })),
     capture(() => adapter.fetchProjectUsers({ projectId: scope.azureProjectId })),
-    capture(() => adapter.fetchProjectWorkItemMetadata({ projectId: scope.azureProjectId })),
+    capture(() => adapter.fetchProjectWorkItemMetadata({ projectId: scope.azureProjectId, includeStates: false })),
   ]);
   return {
     plans,
@@ -499,7 +509,7 @@ function buildBugRows(
         id: bug.id,
         title: bug.title,
         severity: normalizeSeverity(bug.severity),
-        priority: bug.priority ?? null,
+        priority: normalizePriority(bug.priority),
         status: bug.state ?? "Unknown",
         assignee: bug.assignedTo ?? null,
         ageDays: calculateAgingDays(bug.createdDate),
@@ -704,6 +714,8 @@ function buildWarnings(input: {
   runsTruncated: boolean;
   trendRunsInRange: number;
   revisionsTruncated: boolean;
+  suitesTruncated: boolean;
+  totalSuites: number;
 }) {
   const warnings = [
     ...Object.values(input.metadata).filter((result): result is { ok: false; error: string } => !result.ok).map((result) => result.error),
@@ -718,6 +730,9 @@ function buildWarnings(input: {
     warnings.push(`Trends reflect only the most recent ${DASHBOARD_LIMITS.trendRuns} of ${input.trendRunsInRange} test runs in the selected range.`);
   }
   if (input.revisionsTruncated) warnings.push(`Bug history is limited to ${DASHBOARD_LIMITS.revisions} revisions.`);
+  if (input.suitesTruncated) {
+    warnings.push(`Execution, coverage, and blocker metrics reflect only the first ${DASHBOARD_LIMITS.suites} of ${input.totalSuites} test suites; apply a Test Suite filter for full coverage.`);
+  }
   return unique(warnings);
 }
 
@@ -763,7 +778,7 @@ function resolveDateRange(
   }
   const days = preset === "7d" ? 7 : preset === "14d" ? 14 : 30;
   const fromDate = new Date(today);
-  fromDate.setUTCDate(fromDate.getUTCDate() - (days - 1));
+  fromDate.setDate(fromDate.getDate() - (days - 1));
   return { preset, from: dayString(fromDate), to };
 }
 
@@ -852,7 +867,7 @@ function isDateInRange(value: string | undefined, from: string, to: string) {
 function datePart(value?: string | null) {
   if (!value) return null;
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+  return Number.isNaN(date.getTime()) ? null : toLocalDayString(date);
 }
 
 function dateTime(value?: string | null) {
@@ -862,7 +877,7 @@ function dateTime(value?: string | null) {
 }
 
 function dayString(value: Date) {
-  return value.toISOString().slice(0, 10);
+  return toLocalDayString(value);
 }
 
 function severityRank(value: string) {
@@ -935,7 +950,10 @@ function buildCacheKey(scope: ProjectScope, filters: DashboardAnalyticsInput["fi
     workItemTypes: [...(f.workItemTypes ?? [])].sort(),
     assignee: f.assignee ?? null,
   };
-  return `${scope.azureOrganizationUrl}|${scope.azureProjectId}|${JSON.stringify(canonical)}`;
+  // Keyed on the project id (a globally-unique ADO GUID) + canonical filters. The org
+  // URL is fixed by server runtime settings, so it adds nothing but a client-forgeable
+  // partition dimension — deliberately excluded.
+  return `${scope.azureProjectId}|${JSON.stringify(canonical)}`;
 }
 
 function pruneAndSet<V>(
@@ -955,3 +973,14 @@ function pruneAndSet<V>(
     cache.delete(oldest);
   }
 }
+
+// Exposed for unit tests only — these are otherwise module-private pure helpers
+// (no I/O). Tests import this barrel rather than the heavyweight getDashboardAnalytics.
+export const __testables = {
+  buildBugTrend,
+  buildExecutionTrend,
+  findReopenedBugIds,
+  latestResultsByCase,
+  resolveDateRange,
+  datePart,
+};

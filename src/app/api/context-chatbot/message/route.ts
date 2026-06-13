@@ -4,6 +4,11 @@ import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider"
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { answerContextChatbot } from "@/modules/context-chatbot/context-chatbot.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import {
+  completeWorkflowRun,
+  failWorkflowRun,
+  startWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -27,6 +32,7 @@ export async function POST(request: Request) {
     );
   }
 
+  let analyticsRunId: string | undefined;
   try {
     const provider = getConfiguredProviderFromEnv();
     if (!provider) {
@@ -35,6 +41,10 @@ export async function POST(request: Request) {
         { status: 503 },
       );
     }
+    analyticsRunId = startWorkflowRun({
+      scope: parsed.data.scope,
+      workflowType: "business_owner_assistant",
+    });
 
     const result = await answerContextChatbot({
       scope: parsed.data.scope,
@@ -42,10 +52,23 @@ export async function POST(request: Request) {
       message: parsed.data.message,
       history: parsed.data.history,
     });
+    completeWorkflowRun({
+      scope: parsed.data.scope,
+      runId: analyticsRunId,
+      valueRealized: false,
+      patch: {
+        itemsGenerated: 1,
+        usedKnowledgeContext: result.citations.length > 0,
+        metadata: { contextUsed: result.citations.map((citation) => citation.sourceId) },
+      },
+    });
 
-    return NextResponse.json(result);
+    return NextResponse.json({ ...result, analyticsRunId });
   } catch (error) {
     writeGenerationFailureAudit({ scope: parsed.data.scope, action: "context_chatbot.answer", label: "Context chatbot failed.", error });
+    if (analyticsRunId) {
+      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Context chatbot failed." });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Context chatbot failed." },
       { status: 503 },

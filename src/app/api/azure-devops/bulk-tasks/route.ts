@@ -3,6 +3,12 @@ import { z } from "zod";
 import { createBulkTasks } from "@/modules/integrations/azure-devops/azure-devops-bulk-task.service";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
+import {
+  completeWorkflowRun,
+  failWorkflowRun,
+  startWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -60,27 +66,41 @@ export async function POST(request: Request) {
     );
   }
 
+  const analyticsRunId = startWorkflowRun({
+    scope: parsed.data.scope,
+    workflowType: "bulk_task_creation",
+    workItemId: "bulk-tasks",
+  });
   try {
     const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const result = await createBulkTasks(adapter, parsed.data.scope, {
       template: parsed.data.template,
       tasks: parsed.data.tasks,
     });
-    return NextResponse.json(result);
+    if (result.created.length > 0) {
+      completeWorkflowRun({
+        scope: parsed.data.scope,
+        runId: analyticsRunId,
+        valueRealized: true,
+        patch: {
+          itemsGenerated: result.requestedCount,
+          itemsSelected: result.requestedCount,
+          itemsPublished: result.created.length,
+          itemsRejected: result.failed.length,
+          manualActionsAvoided: result.created.length,
+        },
+      });
+    } else {
+      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: "No bulk tasks were created." });
+    }
+    return NextResponse.json({ ...result, analyticsRunId });
   } catch (error) {
+    failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Bulk task creation failed." });
     return NextResponse.json(
       { error: error instanceof Error ? sanitizeAzureError(error.message) : "Azure DevOps bulk task creation failed." },
       { status: 503 },
     );
   }
-}
-
-function sanitizeAzureError(value: string) {
-  return value
-    .replace(/Authorization:\s*Basic\s+[A-Za-z0-9+/=]+/gi, "Authorization: Basic [redacted]")
-    .replace(/Basic\s+[A-Za-z0-9+/=]{20,}/g, "Basic [redacted]")
-    .replace(/personalAccessToken["'\s:=]+[^"',\s}]+/gi, "personalAccessToken: [redacted]")
-    .replace(/pat["'\s:=]+[^"',\s}]+/gi, "PAT: [redacted]");
 }
 
 function isValidEstimateText(value: string) {

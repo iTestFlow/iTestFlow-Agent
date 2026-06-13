@@ -135,7 +135,7 @@ export async function publishApprovedTestCases(
     entityType: "work_item",
     entityId: input.targetUserStoryId,
     action: "azure_devops.publish_test_cases",
-    status: results.every((result) => result.success) ? "Success" : "Partial failure",
+    status: results.every((result) => result.success) ? "Success" : results.some((result) => result.success) ? "Partial failure" : "Failed",
     message:
       input.suiteMode === "none"
         ? `Created and linked ${results.filter((result) => result.success).length} of ${input.testCases.length} selected test cases.`

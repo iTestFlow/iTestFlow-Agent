@@ -3,6 +3,10 @@ import { z } from "zod";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import {
+  completeWorkflowRun,
+  failWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -30,6 +34,9 @@ const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   targetWorkItemId: z.string().min(1),
   testCases: z.array(SuggestedAdditionSchema).min(1),
+  analyticsRunId: z.string().min(1).optional(),
+  itemsGenerated: z.number().int().nonnegative().optional(),
+  itemsEdited: z.number().int().nonnegative().optional(),
 });
 
 export async function POST(request: Request) {
@@ -87,16 +94,46 @@ export async function POST(request: Request) {
       entityType: "work_item",
       entityId: parsed.data.targetWorkItemId,
       action: "test_coverage_matrix.publish_suggested_additions",
-      status: results.every((result) => result.success) ? "Success" : "Partial failure",
+      status: results.every((result) => result.success) ? "Success" : results.some((result) => result.success) ? "Partial failure" : "Failed",
       message: `Created and linked ${results.filter((result) => result.success).length} of ${parsed.data.testCases.length} suggested test cases.`,
       details: { results },
     });
+    const successCount = results.filter((result) => result.success).length;
+    if (parsed.data.analyticsRunId) {
+      if (successCount > 0) {
+        completeWorkflowRun({
+          scope: parsed.data.scope,
+          runId: parsed.data.analyticsRunId,
+          status: "published",
+          valueRealized: true,
+          patch: {
+            itemsSelected: parsed.data.testCases.length,
+            itemsEdited: parsed.data.itemsEdited ?? 0,
+            itemsPublished: successCount,
+            itemsRejected: Math.max((parsed.data.itemsGenerated ?? parsed.data.testCases.length) - parsed.data.testCases.length, 0),
+            manualActionsAvoided: results.reduce(
+              (total, result) => total + (result.create.success ? 1 : 0) + (result.link.success ? 1 : 0),
+              0,
+            ),
+          },
+        });
+      } else {
+        failWorkflowRun({ scope: parsed.data.scope, runId: parsed.data.analyticsRunId, error: "No suggested test cases were published successfully." });
+      }
+    }
 
     return NextResponse.json({
       targetWorkItemId: parsed.data.targetWorkItemId,
       results,
     });
   } catch (error) {
+    if (parsed.data.analyticsRunId) {
+      failWorkflowRun({
+        scope: parsed.data.scope,
+        runId: parsed.data.analyticsRunId,
+        error: error instanceof Error ? error.message : "Suggested additions publish failed.",
+      });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Suggested additions publish failed." },
       { status: 503 },

@@ -228,7 +228,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     return [...users.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
   }
 
-  async fetchProjectWorkItemMetadata(input: { projectId: string }): Promise<AzureProjectWorkItemMetadata> {
+  async fetchProjectWorkItemMetadata(input: { projectId: string; includeStates?: boolean }): Promise<AzureProjectWorkItemMetadata> {
     const projectId = encodeURIComponent(input.projectId);
     const typesResponse = await this.requestJson<{ value?: Array<{ name?: string }> }>(
       `${projectId}/_apis/wit/workitemtypes?api-version=7.1`,
@@ -236,6 +236,11 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     const workItemTypes = uniqueSortedValues(
       (typesResponse.value ?? []).map((type) => type.name ?? ""),
     );
+    // The per-type /states endpoint costs one REST round-trip per work-item type. Callers
+    // that only need the type list (e.g. the dashboard) pass includeStates: false to skip it.
+    if (input.includeStates === false) {
+      return { workItemTypes, states: [] };
+    }
     const stateResponses = await Promise.all(
       workItemTypes.map((workItemType) =>
         this.requestJson<{ value?: Array<{ name?: string }> }>(

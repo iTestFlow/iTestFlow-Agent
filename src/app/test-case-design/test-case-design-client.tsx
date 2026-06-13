@@ -115,6 +115,10 @@ export function TestCaseDesignClient() {
     () => selectedTestCases.filter((testCase) => !validateGeneratedTestCase(testCase).valid).length,
     [selectedTestCases],
   );
+  const editedSelectedCaseCount = useMemo(() => {
+    const originalById = new Map((state.data?.testCases ?? []).map((testCase) => [testCase.id, testCase]));
+    return selectedTestCases.filter((testCase) => JSON.stringify(testCase) !== JSON.stringify(originalById.get(testCase.id))).length;
+  }, [selectedTestCases, state.data?.testCases]);
 
   function changeTargetWorkItemId(value: string) {
     gen.cancel();
@@ -487,6 +491,9 @@ export function TestCaseDesignClient() {
                 invalidCaseCount={invalidSelectedCaseCount}
                 onDirty={() => setHasUnfinishedWork(true)}
                 onPublished={() => setHasUnfinishedWork(false)}
+                analyticsRunId={state.data.analyticsRunId}
+                itemsGenerated={state.data.testCases.length}
+                itemsEdited={editedSelectedCaseCount}
               />
             </>
           ) : (
