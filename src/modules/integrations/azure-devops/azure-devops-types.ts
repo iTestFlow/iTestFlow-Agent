@@ -296,6 +296,7 @@ export type AzureDevOpsSettings = {
 };
 
 export type BulkTaskTemplate = {
+  templateId: string;
   title: string;
   description?: string;
   assignedTo?: string;
@@ -305,24 +306,33 @@ export type BulkTaskTemplate = {
 
 export type BulkTaskTarget = {
   storyId: string;
+  taskOverrides?: BulkTaskTargetOverride[];
+};
+
+export type BulkTaskTargetOverride = {
+  templateId: string;
   assignedTo?: string;
   originalEstimate?: number;
 };
 
 export type CreatedBulkTask = {
+  templateId: string;
   storyId: string;
   taskId: string;
   title: string;
 };
 
 export type FailedBulkTask = {
+  templateId: string;
   storyId: string;
+  title: string;
   error: string;
-  status: "failed" | "skipped";
 };
 
 export type BulkTaskResult = {
+  templateId: string;
   storyId: string;
+  title: string;
   status: "created" | "failed" | "skipped";
   taskId?: string;
   error?: string;

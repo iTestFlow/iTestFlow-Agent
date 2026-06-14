@@ -180,6 +180,7 @@ const executionTypeDescription: Record<ExecutionType, string> = {
 export function TestExecutionEffortClient() {
   const scope = useActiveProject();
   const reviewRef = useRef<HTMLDivElement | null>(null);
+  const promptSectionRef = useRef<HTMLDivElement | null>(null);
   const [activeStep, setActiveStep] = useState<"configure" | "review">("configure");
   const [storyId, setStoryId] = useState("");
   const [storyLookup, setStoryLookup] = useState<ApiState<WorkItem>>({ loading: false, error: null, data: null });
@@ -304,6 +305,7 @@ export function TestExecutionEffortClient() {
     setEstimateResult(null);
     setExternalDraft(null);
     setExternalResponse("");
+    scrollToNextStep(promptSectionRef);
     const data = await prep.start((signal) =>
       postJson<ExternalPromptDraft>("/api/test-execution-effort/external-prompt", requestPayload, signal),
     );
@@ -312,6 +314,7 @@ export function TestExecutionEffortClient() {
       setEstimateResult(null);
       setExternalDraft(data);
       setExternalResponse("");
+      scrollToNextStep(promptSectionRef);
     }
   }
 
@@ -516,37 +519,39 @@ export function TestExecutionEffortClient() {
 
           {mode === "manual" && preview ? <StorySummaryPanel preview={preview} /> : null}
 
-          {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
-            <AiGenerationProgress
-              mode="prep"
-              variant="advice"
-              status={prep.status}
-              elapsedSeconds={prep.elapsedSeconds}
-              errorMessage={prep.errorMessage}
-              canCancel
-              onCancel={prep.cancel}
-              onRetry={() => {
-                prep.retry();
-                void prepareExternalPrompt();
-              }}
-            />
-          ) : null}
+          <div ref={promptSectionRef} className="scroll-mt-4 space-y-4">
+            {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
+              <AiGenerationProgress
+                mode="prep"
+                variant="advice"
+                status={prep.status}
+                elapsedSeconds={prep.elapsedSeconds}
+                errorMessage={prep.errorMessage}
+                canCancel
+                onCancel={prep.cancel}
+                onRetry={() => {
+                  prep.retry();
+                  void prepareExternalPrompt();
+                }}
+              />
+            ) : null}
 
-          {externalDraft ? (
-            <ManualLLMPanel
-              prompt={externalDraft.prompt}
-              promptVersion={externalDraft.promptVersion}
-              schemaName={externalDraft.schemaName}
-              contextCitations={externalDraft.contextCitations}
-              response={externalResponse}
-              onResponseChange={(value) => {
-                setHasUnfinishedWork(true);
-                setExternalResponse(value);
-              }}
-              onSubmit={submitExternalResponse}
-              submitting={loadingAction === "submit"}
-            />
-          ) : null}
+            {externalDraft ? (
+              <ManualLLMPanel
+                prompt={externalDraft.prompt}
+                promptVersion={externalDraft.promptVersion}
+                schemaName={externalDraft.schemaName}
+                contextCitations={externalDraft.contextCitations}
+                response={externalResponse}
+                onResponseChange={(value) => {
+                  setHasUnfinishedWork(true);
+                  setExternalResponse(value);
+                }}
+                onSubmit={submitExternalResponse}
+                submitting={loadingAction === "submit"}
+              />
+            ) : null}
+          </div>
 
           {gen.status !== "idle" && gen.status !== "completed" ? (
             <AiGenerationProgress

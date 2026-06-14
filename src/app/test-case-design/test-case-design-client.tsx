@@ -53,6 +53,7 @@ import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/mod
 export function TestCaseDesignClient() {
   const scope = useActiveProject();
   const generatedCasesRef = useRef<HTMLDivElement | null>(null);
+  const promptSectionRef = useRef<HTMLDivElement | null>(null);
   const [activeStep, setActiveStep] = useState<"generate" | "review">("generate");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
@@ -266,6 +267,7 @@ export function TestCaseDesignClient() {
     setManualDraft({ loading: true, error: null, data: null });
     setManualSubmitError(null);
     setManualResponse("");
+    scrollToNextStep(promptSectionRef);
     const data = await prep.start((signal) =>
       postJson<ManualPromptDraft>(
         "/api/test-cases/manual/draft",
@@ -280,6 +282,7 @@ export function TestCaseDesignClient() {
     );
     if (data) {
       setManualDraft({ loading: false, error: null, data });
+      scrollToNextStep(promptSectionRef);
     } else {
       setManualDraft({ loading: false, error: null, data: null });
     }
@@ -391,46 +394,48 @@ export function TestCaseDesignClient() {
             </div>
           </SectionCard>
 
-          {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
-            <AiGenerationProgress
-              mode="prep"
-              variant="test-design"
-              status={prep.status}
-              elapsedSeconds={prep.elapsedSeconds}
-              errorMessage={prep.errorMessage}
-              canCancel
-              onCancel={prep.cancel}
-              onRetry={() => {
-                prep.retry();
-                void prepareManualPrompt();
-              }}
-            />
-          ) : null}
+          <div ref={promptSectionRef} className="scroll-mt-4 space-y-4">
+            {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
+              <AiGenerationProgress
+                mode="prep"
+                variant="test-design"
+                status={prep.status}
+                elapsedSeconds={prep.elapsedSeconds}
+                errorMessage={prep.errorMessage}
+                canCancel
+                onCancel={prep.cancel}
+                onRetry={() => {
+                  prep.retry();
+                  void prepareManualPrompt();
+                }}
+              />
+            ) : null}
 
-          {mode === "manual" && (manualDraft.data || manualSubmitError) ? (
-            <div className="space-y-4">
-              {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
-              {manualDraft.data ? (
-                <ManualLLMPanel
-                  prompt={manualDraft.data.prompt}
-                  promptVersion={manualDraft.data.promptVersion}
-                  contextCitations={manualDraft.data.contextCitations}
-                  response={manualResponse}
-                  onResponseChange={(value) => {
-                    setHasUnfinishedWork(true);
-                    setManualResponse(value);
-                  }}
-                  onSubmit={submitManualResponse}
-                  submitting={manualSubmitLoading}
-                  submitLabel="Validate and Continue"
-                  submittingLabel="Validating..."
-                  responseLabel="External LLM Response"
-                  promptMinHeightClass="min-h-[360px]"
-                  responseMinHeightClass="min-h-[260px]"
-                />
-              ) : null}
-            </div>
-          ) : null}
+            {mode === "manual" && (manualDraft.data || manualSubmitError) ? (
+              <div className="space-y-4">
+                {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
+                {manualDraft.data ? (
+                  <ManualLLMPanel
+                    prompt={manualDraft.data.prompt}
+                    promptVersion={manualDraft.data.promptVersion}
+                    contextCitations={manualDraft.data.contextCitations}
+                    response={manualResponse}
+                    onResponseChange={(value) => {
+                      setHasUnfinishedWork(true);
+                      setManualResponse(value);
+                    }}
+                    onSubmit={submitManualResponse}
+                    submitting={manualSubmitLoading}
+                    submitLabel="Validate and Continue"
+                    submittingLabel="Validating..."
+                    responseLabel="External LLM Response"
+                    promptMinHeightClass="min-h-[360px]"
+                    responseMinHeightClass="min-h-[260px]"
+                  />
+                ) : null}
+              </div>
+            ) : null}
+          </div>
 
           {gen.status !== "idle" && gen.status !== "completed" ? (
             <AiGenerationProgress

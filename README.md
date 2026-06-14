@@ -52,7 +52,7 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 ### Utilities and Governance
 
 - **Suite Migration** previews and runs same-project Test Suite copy or move operations while preserving the latest matching test-point outcomes.
-- **Bulk Task Creation** creates one Azure DevOps Task under each selected User Story.
+- **Bulk Task Creation** defines multiple Azure DevOps Tasks once and creates each task under every selected User Story.
 - **Dashboards** combine current Azure Test Plan outcomes, bugs, requirement-to-test coverage, release blockers, and live execution/defect history into a project-scoped QA leadership view.
 - **Activity Log** provides a traceable history of generated outputs, publishing operations, and user actions.
 - **Human review gates** keep AI-generated analysis and artifacts editable before any Azure DevOps write.
@@ -92,7 +92,7 @@ These links work while the local development or production server is running on 
 | Testing | [Test Execution Effort](http://127.0.0.1:3000/test-execution-effort) | Estimate manual QA execution effort |
 | Testing | [Report Bug](http://127.0.0.1:3000/report-bug) | Generate and post Azure DevOps bugs |
 | Utilities | [Suite Migration](http://127.0.0.1:3000/suite-migration) | Preview and execute Test Suite copy or move |
-| Utilities | [Bulk Task Creation](http://127.0.0.1:3000/bulk-task-creation) | Create tasks for selected User Stories |
+| Utilities | [Bulk Task Creation](http://127.0.0.1:3000/bulk-task-creation) | Create multiple tasks across selected User Stories |
 | Administration | [Settings](http://127.0.0.1:3000/settings) | Manage integrations, models, context, and behavior |
 | Administration | [Activity Log](http://127.0.0.1:3000/activity-log) | Review system and user activity |
 
