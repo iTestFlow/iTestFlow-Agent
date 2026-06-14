@@ -64,12 +64,9 @@ export function ManualLLMPanel({
   return (
     <Card>
       <CardHeader className="border-b">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-0.5">
-            <CardTitle>{title}</CardTitle>
-            {description ? <CardDescription>{description}</CardDescription> : null}
-          </div>
-          <CopyButton text={prompt} label="Copy Prompt" copiedLabel="Copied" />
+        <div className="space-y-0.5">
+          <CardTitle>{title}</CardTitle>
+          {description ? <CardDescription>{description}</CardDescription> : null}
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -83,15 +80,23 @@ export function ManualLLMPanel({
         {contextCitations !== undefined ? (
           <WorkflowContextCitations citations={contextCitations} />
         ) : null}
-        <Textarea
-          value={prompt}
-          readOnly
-          className={cn(
-            "bg-muted text-foreground dark:bg-muted font-mono text-xs leading-5",
-            promptMinHeightClass,
-          )}
-          aria-label="External LLM prompt"
-        />
+        <div className="relative">
+          <CopyButton
+            text={prompt}
+            label="Copy Prompt"
+            copiedLabel="Copied"
+            className="absolute right-3 top-3 z-10 bg-background/95 shadow-sm backdrop-blur-sm"
+          />
+          <Textarea
+            value={prompt}
+            readOnly
+            className={cn(
+              "bg-muted pt-12 text-foreground dark:bg-muted font-mono text-xs leading-5",
+              promptMinHeightClass,
+            )}
+            aria-label="External LLM prompt"
+          />
+        </div>
         <div className="space-y-2">
           <Label className="text-sm font-medium">{responseLabel}</Label>
           <Textarea

@@ -698,6 +698,7 @@ export function KnowledgeHubClient() {
     setManualKnowledgeCurrentBatch(1)
     setManualKnowledgeBatchResponses({})
     setManualKnowledgeValidatedBatches({})
+    scrollBuildSection(manualPrepareStepRef)
     try {
       const data = await postJson<KnowledgeManualDraft>("/api/context/knowledge/manual/draft", { scope, mode: compileMode })
       setManualKnowledgeDraft(data)

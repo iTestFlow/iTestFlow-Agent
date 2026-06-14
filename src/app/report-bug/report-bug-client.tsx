@@ -21,7 +21,7 @@ import {
 } from "@/components/workflow/generated-test-cases-review";
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
-import { SectionCard } from "@/components/workflow/test-intelligence-shared";
+import { SectionCard, scrollToNextStep } from "@/components/workflow/test-intelligence-shared";
 import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
@@ -167,6 +167,7 @@ function parseJsonResponse(text: string, ok: boolean) {
 
 export function ReportBugClient() {
   const reviewSectionRef = useRef<HTMLDivElement | null>(null);
+  const promptSectionRef = useRef<HTMLDivElement | null>(null);
   const shouldScrollToReviewRef = useRef(false);
   const generationRequestVersionRef = useRef(0);
   const [activeStep, setActiveStep] = useState<"describe" | "review">("describe");
@@ -407,10 +408,14 @@ export function ReportBugClient() {
     invalidateGeneratedReport();
     setManualSubmitError(null);
     setManualResponse("");
+    scrollToNextStep(promptSectionRef);
     const data = await prep.start((signal) =>
       postJson<ManualPromptDraft>("/api/bugs/manual/draft", buildGenerationPayload(scope), signal),
     );
-    if (data) setManualDraft(data);
+    if (data) {
+      setManualDraft(data);
+      scrollToNextStep(promptSectionRef);
+    }
   }
 
   async function submitManualResponse() {
@@ -824,21 +829,23 @@ Actual: the button stays inactive / no request is triggered.`}
             </div>
           </SectionCard>
 
-          {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
-            <AiGenerationProgress
-              mode="prep"
-              variant="generic"
-              status={prep.status}
-              elapsedSeconds={prep.elapsedSeconds}
-              errorMessage={prep.errorMessage}
-              canCancel
-              onCancel={prep.cancel}
-              onRetry={() => {
-                prep.retry();
-                void prepareManualPrompt();
-              }}
-            />
-          ) : null}
+          <div ref={promptSectionRef} className="scroll-mt-4">
+            {mode === "manual" && prep.status !== "idle" && prep.status !== "completed" ? (
+              <AiGenerationProgress
+                mode="prep"
+                variant="generic"
+                status={prep.status}
+                elapsedSeconds={prep.elapsedSeconds}
+                errorMessage={prep.errorMessage}
+                canCancel
+                onCancel={prep.cancel}
+                onRetry={() => {
+                  prep.retry();
+                  void prepareManualPrompt();
+                }}
+              />
+            ) : null}
+          </div>
 
           {gen.status !== "idle" && gen.status !== "completed" ? (
             <AiGenerationProgress
