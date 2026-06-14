@@ -54,6 +54,7 @@ import { Callout } from "@/components/qa/callout";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { ProjectUserPicker, projectUserLabel, projectUserValue } from "@/components/domain/project-user-picker";
 import { StatCard } from "@/components/qa/stat-card";
+import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { cn } from "@/lib/utils";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
@@ -698,13 +699,22 @@ export function BulkTaskCreationClient() {
       ) : null}
 
       {activeStepId === "review-create" && canOpenReview ? (
-        <StickyCreateBar
-          selectedStoriesCount={targetRows.length}
-          templateCount={taskDefinitions.length}
-          requestedCount={requestedCount}
-          submitLoading={submitLoading}
-          canSubmit={canSubmit}
-          onSubmit={submit}
+        <StickyActionBar
+          title={
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span>{targetRows.length} stories selected</span>
+              <span className="text-muted-foreground">&middot;</span>
+              <span>{taskDefinitions.length} templates</span>
+              <span className="text-muted-foreground">&middot;</span>
+              <span className="font-normal text-muted-foreground">{requestedCount} tasks will be created</span>
+            </div>
+          }
+          actions={
+            <Button type="button" size="lg" onClick={submit} disabled={!canSubmit}>
+              {submitLoading ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+              {submitLoading ? "Creating tasks..." : `Create ${requestedCount} Tasks`}
+            </Button>
+          }
         />
       ) : null}
     </div>
@@ -1842,40 +1852,6 @@ function ReviewFieldMeta({
           <span>{warning.message}</span>
         </p>
       ) : null}
-    </div>
-  );
-}
-
-function StickyCreateBar({
-  selectedStoriesCount,
-  templateCount,
-  requestedCount,
-  submitLoading,
-  canSubmit,
-  onSubmit,
-}: {
-  selectedStoriesCount: number;
-  templateCount: number;
-  requestedCount: number;
-  submitLoading: boolean;
-  canSubmit: boolean;
-  onSubmit: () => void;
-}) {
-  return (
-    <div className="sticky bottom-3 z-20 rounded-xl border border-border bg-card/95 p-3 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-card/90">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-          <span className="font-semibold text-foreground">{selectedStoriesCount} stories selected</span>
-          <span className="text-muted-foreground">·</span>
-          <span className="font-semibold text-foreground">{templateCount} templates</span>
-          <span className="text-muted-foreground">·</span>
-          <span className="text-muted-foreground">{requestedCount} tasks will be created</span>
-        </div>
-        <Button type="button" size="lg" onClick={onSubmit} disabled={!canSubmit}>
-          {submitLoading ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-          {submitLoading ? "Creating tasks..." : `Create ${requestedCount} Tasks`}
-        </Button>
-      </div>
     </div>
   );
 }
