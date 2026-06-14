@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowLeft, Bug, CheckCircle2, ChevronDown, FileUp, ListChecks, Loader2, Play, Plus, Send, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Bug, CheckCircle2, ChevronDown, FileText, FileUp, ListChecks, Loader2, Play, Plus, Send, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,6 +22,7 @@ import {
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { SectionCard } from "@/components/workflow/test-intelligence-shared";
+import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
@@ -516,6 +517,27 @@ export function ReportBugClient() {
     setCustomFieldRows((current) => current.filter((row) => row.id !== rowId));
   }
 
+  function addAttachments(files: File[]) {
+    const existingKeys = new Set(attachments.map(attachmentKey));
+    const additions = files.filter((file) => {
+      const key = attachmentKey(file);
+      if (file.size <= 0 || existingKeys.has(key)) return false;
+      existingKeys.add(key);
+      return true;
+    });
+    if (!additions.length) return;
+
+    invalidateGeneratedReport();
+    setHasUnfinishedWork(true);
+    setAttachments((current) => [...current, ...additions]);
+  }
+
+  function removeAttachment(file: File) {
+    invalidateGeneratedReport();
+    setHasUnfinishedWork(true);
+    setAttachments((current) => current.filter((candidate) => attachmentKey(candidate) !== attachmentKey(file)));
+  }
+
   function selectRelatedTestCase(testCaseId: string) {
     invalidateGeneratedReport();
     setHasUnfinishedWork(true);
@@ -639,10 +661,12 @@ export function ReportBugClient() {
       />
 
       {activeStep === "describe" ? (
-        <div className="space-y-5">
+        <div className="space-y-5 pb-2">
+          {metadata.error ? <ErrorBlock message={metadata.error} /> : null}
+
           <SectionCard
-            title="Describe Bug"
-            description="Capture the defect, parent story, Azure fields, assignee, and evidence."
+            title="Bug Details"
+            description="Describe the defect and connect it to its parent User Story."
             action={
               <GenerationModeToggle
                 mode={mode}
@@ -656,18 +680,28 @@ export function ReportBugClient() {
             }
           >
             <div className="space-y-5 p-4">
-              {metadata.error ? <ErrorBlock message={metadata.error} /> : null}
-              <Field label="Bug description">
+              <Field
+                label="Bug description"
+                description="Tip: Include the page name, action taken, expected result, actual result, frequency, and any error message."
+              >
                 <Textarea
                   value={bugDescription}
                   onChange={(event) => changeBugDescription(event.target.value)}
-                  className="min-h-32"
-                  placeholder="Describe what went wrong, where it happened, and what you expected instead."
+                  className="min-h-52"
+                  placeholder={`Describe what happened, what you expected, and any steps that caused the issue.
+
+Example:
+When clicking Regenerate on the Requirements Analysis result page, nothing happens.
+Expected: the analysis should regenerate using the latest selected context.
+Actual: the button stays inactive / no request is triggered.`}
                 />
               </Field>
 
-              <div className="grid items-end gap-4 lg:grid-cols-[minmax(260px,360px)_auto]">
-                <Field label="Parent Story ID">
+              <div className="grid items-start gap-4 lg:grid-cols-[minmax(240px,360px)_minmax(0,1fr)]">
+                <Field
+                  label="Parent Story ID"
+                  description="Optional. Story details load automatically after you enter a valid numeric ID."
+                >
                   <Input
                     value={parentStoryId}
                     onChange={(event) => changeParentStoryId(event.target.value)}
@@ -676,28 +710,26 @@ export function ReportBugClient() {
                     placeholder="e.g. 123456"
                   />
                 </Field>
-                {mode === "auto" ? (
-                  <Button type="button" onClick={generate} disabled={generateDisabled}>
-                    <Play className="size-4" />
-                    {gen.isRunning ? "Generating..." : "Generate"}
-                  </Button>
-                ) : (
-                  <Button type="button" onClick={prepareManualPrompt} disabled={generateDisabled}>
-                    <Play className="size-4" />
-                    {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
-                  </Button>
-                )}
+
+                <WorkItemSummaryCard
+                  story={parentStory}
+                  loading={parentState.loading}
+                  error={parentState.error}
+                  valid={parentStory?.workItemType === "User Story"}
+                  invalidNote="Parent link requires a User Story."
+                  emptyText="Enter a Parent Story ID to load its title, area, and iteration."
+                  loadingText="Loading parent story..."
+                  className="p-4"
+                />
               </div>
+            </div>
+          </SectionCard>
 
-              <WorkItemSummaryCard
-                story={parentStory}
-                loading={parentState.loading}
-                error={parentState.error}
-                valid={parentStory?.workItemType === "User Story"}
-                invalidNote="Parent link requires a User Story."
-                loadingText="Loading parent story..."
-              />
-
+          <SectionCard
+            title="Reproduction Context"
+            description="Connect an existing test case or ask iTestFlow to prepare an editable reproduction case."
+          >
+            <div className="p-4">
               <RelatedTestCasePanel
                 parentStory={parentStory}
                 linkedTestCases={linkedTestCases}
@@ -706,8 +738,15 @@ export function ReportBugClient() {
                 onSelectTestCase={selectRelatedTestCase}
                 onSuggestTestCaseChange={changeSuggestTestCaseChecked}
               />
+            </div>
+          </SectionCard>
 
-              <div className="grid gap-4 lg:grid-cols-2">
+          <SectionCard
+            title="Azure DevOps Assignment"
+            description="Set ownership, classification paths, and required or custom Bug fields."
+          >
+            <div className="space-y-5 p-4">
+              <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Assignee">
                   <ProjectUserPicker
                     mode="single"
@@ -725,6 +764,7 @@ export function ReportBugClient() {
                     ariaLabel="Assignee"
                   />
                 </Field>
+
                 <Field label="Area path">
                   <select
                     value={selectedAreaPath}
@@ -743,6 +783,7 @@ export function ReportBugClient() {
                     ))}
                   </select>
                 </Field>
+
                 <Field label="Iteration path">
                   <select
                     value={selectedIterationPath}
@@ -763,38 +804,6 @@ export function ReportBugClient() {
                 </Field>
               </div>
 
-              <Field label="Attachments">
-                <div className="rounded-md border border-dashed border-input bg-muted/20 p-4">
-                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-muted">
-                    <FileUp className="size-4" />
-                    Select files
-                    <input
-                      type="file"
-                      multiple
-                      accept="image/*,video/*,.gif"
-                      className="sr-only"
-                      onChange={(event) => {
-                        invalidateGeneratedReport();
-                        setHasUnfinishedWork(true);
-                        setAttachments(Array.from(event.target.files ?? []));
-                      }}
-                    />
-                  </label>
-                  {attachments.length ? (
-                    <div className="mt-3 grid gap-2">
-                      {attachments.map((file) => (
-                        <div key={`${file.name}-${file.size}`} className="flex items-center justify-between gap-3 rounded-md bg-background px-3 py-2 text-sm">
-                          <span className="min-w-0 truncate">{file.name}</span>
-                          <span className="shrink-0 text-xs text-muted-foreground">{formatFileSize(file.size)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="mt-2 text-xs text-muted-foreground">No files selected.</p>
-                  )}
-                </div>
-              </Field>
-
               <CustomFieldsEditor
                 rows={customFieldRows}
                 fields={fields}
@@ -803,6 +812,15 @@ export function ReportBugClient() {
                 onRemove={removeCustomFieldRow}
                 onChange={updateCustomFieldRow}
               />
+            </div>
+          </SectionCard>
+
+          <SectionCard
+            title="Evidence"
+            description="Attach supporting files that help reviewers understand and reproduce the defect."
+          >
+            <div className="p-4">
+              <AttachmentDropzone files={attachments} onAdd={addAttachments} onRemove={removeAttachment} />
             </div>
           </SectionCard>
 
@@ -819,6 +837,52 @@ export function ReportBugClient() {
                 prep.retry();
                 void prepareManualPrompt();
               }}
+            />
+          ) : null}
+
+          {gen.status !== "idle" && gen.status !== "completed" ? (
+            <AiGenerationProgress
+              variant="generic"
+              status={gen.status}
+              elapsedSeconds={gen.elapsedSeconds}
+              errorMessage={gen.errorMessage}
+              canCancel
+              onCancel={gen.cancel}
+              onRetry={() => {
+                gen.retry();
+                void generate();
+              }}
+            />
+          ) : null}
+
+          {!manualDraft ? (
+            <StickyActionBar
+              title={mode === "auto" ? "Ready to generate the bug draft?" : "Ready to prepare the external prompt?"}
+              description="The entered details, parent story, reproduction context, evidence, and Azure DevOps fields will be included."
+              actions={
+                <Button
+                  type="button"
+                  size="lg"
+                  className="w-full sm:w-auto"
+                  onClick={() => {
+                    if (mode === "auto") {
+                      void generate();
+                    } else {
+                      void prepareManualPrompt();
+                    }
+                  }}
+                  disabled={generateDisabled}
+                >
+                  {gen.isRunning || prep.isRunning ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
+                  {mode === "auto"
+                    ? gen.isRunning
+                      ? "Generating Bug Draft..."
+                      : "Generate Bug Draft"
+                    : prep.isRunning
+                      ? "Preparing External Prompt..."
+                      : "Prepare External Prompt"}
+                </Button>
+              }
             />
           ) : null}
 
@@ -845,21 +909,6 @@ export function ReportBugClient() {
                 />
               ) : null}
             </div>
-          ) : null}
-
-          {gen.status !== "idle" && gen.status !== "completed" ? (
-            <AiGenerationProgress
-              variant="generic"
-              status={gen.status}
-              elapsedSeconds={gen.elapsedSeconds}
-              errorMessage={gen.errorMessage}
-              canCancel
-              onCancel={gen.cancel}
-              onRetry={() => {
-                gen.retry();
-                void generate();
-              }}
-            />
           ) : null}
         </div>
       ) : report ? (
@@ -961,11 +1010,120 @@ export function ReportBugClient() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function AttachmentDropzone({
+  files,
+  onAdd,
+  onRemove,
+}: {
+  files: File[];
+  onAdd: (files: File[]) => void;
+  onRemove: (file: File) => void;
+}) {
+  const [dragging, setDragging] = useState(false);
+
+  return (
+    <div className="grid gap-3">
+      <div
+        className={`rounded-lg border border-dashed p-6 text-center transition ${
+          dragging ? "border-primary bg-primary/5" : "border-input bg-muted/15"
+        }`}
+        onDragEnter={(event) => {
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragOver={(event) => {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={(event) => {
+          if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+          setDragging(false);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragging(false);
+          onAdd(Array.from(event.dataTransfer.files));
+        }}
+      >
+        <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-background ring-1 ring-border">
+          <FileUp className="size-5 text-muted-foreground" aria-hidden="true" />
+        </div>
+        <p className="mt-3 text-sm font-medium text-foreground">
+          Drop screenshots, GIFs, videos, logs, or HAR files here
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">or select files from your device</p>
+        <label className="mt-3 inline-flex cursor-pointer">
+          <span className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-sm font-medium transition hover:bg-muted">
+            <FileUp className="size-4" aria-hidden="true" />
+            Select files
+          </span>
+          <input
+            type="file"
+            multiple
+            accept="image/*,video/*,.gif,.log,.txt,.har,.json,text/plain,application/json"
+            className="sr-only"
+            onChange={(event) => {
+              onAdd(Array.from(event.target.files ?? []));
+              event.target.value = "";
+            }}
+          />
+        </label>
+      </div>
+
+      {files.length ? (
+        <div className="grid gap-2">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-medium text-muted-foreground">Selected evidence</p>
+            <Badge variant="secondary">{files.length} file{files.length === 1 ? "" : "s"}</Badge>
+          </div>
+          {files.map((file) => (
+            <div
+              key={attachmentKey(file)}
+              className="flex items-center gap-3 rounded-lg border border-border bg-background px-3 py-2"
+            >
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
+                <FileText className="size-4 text-muted-foreground" aria-hidden="true" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-foreground">{file.name}</p>
+                <p className="text-xs text-muted-foreground">
+                  {formatFileSize(file.size)}
+                  {file.type ? ` · ${file.type}` : ""}
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => onRemove(file)}
+                aria-label={`Remove ${file.name}`}
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">No evidence files selected.</p>
+      )}
+    </div>
+  );
+}
+
+function Field({
+  label,
+  description,
+  children,
+}: {
+  label: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="grid content-start gap-2">
       <Label>{label}</Label>
       {children}
+      {description ? <p className="text-xs leading-5 text-muted-foreground">{description}</p> : null}
     </div>
   );
 }
@@ -1029,7 +1187,7 @@ function RelatedTestCasePanel({
   const selectedCase = cases.find((testCase) => testCaseId(testCase) === selectedTestCaseId);
 
   return (
-    <div className="grid gap-4 rounded-md border border-input bg-muted/10 p-4">
+    <div className="grid gap-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-2">
@@ -1037,7 +1195,7 @@ function RelatedTestCasePanel({
             <Badge variant="secondary">Optional</Badge>
           </div>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            Select an existing story test case, or review the generated reproduction test case after the bug draft is created.
+            Select an existing test case, or let iTestFlow suggest a reproduction test case after the bug draft is generated.
           </p>
         </div>
         {storyReady ? <Badge variant="outline">Story #{parentStory.id}</Badge> : null}
@@ -1057,7 +1215,11 @@ function RelatedTestCasePanel({
       {selectedCase ? <SelectedTestCasePreview testCase={selectedCase} /> : null}
 
       {!selectedTestCaseId ? (
-        <label className={`flex items-start gap-3 rounded-md border border-input bg-background p-3 text-sm ${storyReady ? "" : "opacity-60"}`}>
+        <label
+          className={`flex items-start gap-3 rounded-lg border p-4 text-sm transition ${
+            suggestTestCaseChecked ? "border-primary/40 bg-primary/5" : "border-input bg-background hover:bg-muted/30"
+          } ${storyReady ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}
+        >
           <Checkbox
             checked={suggestTestCaseChecked}
             disabled={!storyReady}
@@ -1065,7 +1227,7 @@ function RelatedTestCasePanel({
             className="mt-0.5"
           />
           <span className="grid gap-1">
-            <span className="font-medium">Suggest test case</span>
+            <span className="font-medium">Suggest reproduction test case</span>
             <span className="text-xs leading-5 text-muted-foreground">
               Build an editable reproduction test case after the bug draft is generated.
             </span>
@@ -1278,21 +1440,52 @@ function CustomFieldsEditor({
         <div className="grid gap-2">
           {rows.map((row) => {
             const metadataField = findField(fields, row.referenceName);
+            const required = Boolean(metadataField?.alwaysRequired || metadataField?.required);
             return (
-              <div key={row.id} className="grid gap-2 rounded-md border border-input p-3 lg:grid-cols-[minmax(220px,320px)_1fr_42px]">
-                <Input
-                  list={datalistId}
-                  value={row.referenceName}
-                  onChange={(event) => onChange(row.id, { referenceName: event.target.value })}
-                  placeholder="Field reference name"
-                  aria-label="Azure DevOps field reference name"
-                />
-                <CustomFieldValueInput row={row} field={metadataField} onChange={(value) => onChange(row.id, { value })} />
-                <Button type="button" variant="ghost" size="icon" onClick={() => onRemove(row.id)} aria-label="Remove custom field">
-                  <Trash2 className="size-4" />
-                </Button>
-                <div className="text-xs text-muted-foreground lg:col-span-3">
-                  {metadataField ? `${metadataField.name}${metadataField.alwaysRequired || metadataField.required ? " - required" : ""}` : "Manual field fallback"}
+              <div key={row.id} className="grid gap-3 rounded-lg border border-input bg-background p-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium text-foreground">
+                        {metadataField?.name ?? row.name ?? "Custom Azure DevOps field"}
+                      </span>
+                      {required ? <Badge variant="secondary">Required</Badge> : null}
+                    </div>
+                    <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
+                      {(metadataField?.referenceName ?? row.referenceName) || "Enter a technical field reference name"}
+                    </p>
+                    {metadataField?.helpText ? (
+                      <p className="mt-1 text-xs leading-5 text-muted-foreground">{metadataField.helpText}</p>
+                    ) : null}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="self-end sm:self-start"
+                    onClick={() => onRemove(row.id)}
+                    aria-label={`Remove ${(metadataField?.name ?? row.referenceName) || "custom field"}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-[minmax(220px,320px)_1fr]">
+                  <Field label="Technical field name">
+                    <Input
+                      list={datalistId}
+                      value={row.referenceName}
+                      onChange={(event) => onChange(row.id, { referenceName: event.target.value })}
+                      placeholder="e.g. Custom.BugCategory"
+                      aria-label="Azure DevOps field reference name"
+                    />
+                  </Field>
+                  <Field label="Value">
+                    <CustomFieldValueInput
+                      row={row}
+                      field={metadataField}
+                      onChange={(value) => onChange(row.id, { value })}
+                    />
+                  </Field>
                 </div>
               </div>
             );
@@ -1316,7 +1509,12 @@ function CustomFieldsSummary({ customFields }: { customFields: BugCustomField[] 
         <div className="mt-3 grid gap-2">
           {customFields.map((field) => (
             <div key={field.referenceName} className="grid gap-1 rounded-md bg-background px-3 py-2 text-sm sm:grid-cols-[minmax(180px,260px)_1fr]">
-              <span className="font-medium text-muted-foreground">{field.name ?? field.referenceName}</span>
+              <span className="grid gap-0.5">
+                <span className="font-medium text-foreground">{field.name ?? field.referenceName}</span>
+                {field.name && field.name !== field.referenceName ? (
+                  <span className="break-all font-mono text-xs text-muted-foreground">{field.referenceName}</span>
+                ) : null}
+              </span>
               <span className="break-words text-foreground">{String(field.value || "-")}</span>
             </div>
           ))}
@@ -1582,6 +1780,10 @@ function defaultFieldValue(field: BugFieldMetadata) {
 
 function createLocalId(prefix: string) {
   return `${prefix.replace(/[^a-z0-9]/gi, "-")}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function attachmentKey(file: File) {
+  return `${file.name}-${file.size}-${file.lastModified}-${file.type}`;
 }
 
 function formatFileSize(size: number) {
