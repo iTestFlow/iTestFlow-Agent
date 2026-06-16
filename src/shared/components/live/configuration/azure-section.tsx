@@ -9,7 +9,7 @@ import type { FormState } from "./form-state";
 import type { ServiceTestResult } from "./types";
 import { ConnectionResult, Field, SecretField } from "./section-card";
 
-/** True when the value parses as an http(s) URL — mirrors the schema's `.url()` requirement. */
+/** True when the value parses as an http(s) URL - mirrors the schema's `.url()` requirement. */
 export function isValidOrganizationUrl(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return false;
@@ -95,7 +95,7 @@ export function AzureSection({
         onChange={(value) => update("personalAccessToken", value)}
         placeholder="Enter Azure DevOps PAT"
         hasSaved={hasSavedPat}
-        description="Use a PAT with Work Items (Read & Write) and Test Management (Read & Write) scopes. Stored encrypted on this machine."
+        description="Use a PAT with Work Items (Read & Write) and Test Management (Read & Write) scopes. Leave empty to keep the saved token; re-enter it only when rotating credentials."
       />
 
       <div className="space-y-3">

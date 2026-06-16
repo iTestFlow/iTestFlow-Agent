@@ -213,7 +213,7 @@ export function SystemDashboardsClient({ active }: { active: boolean }) {
                 <TabsTrigger value="coverage" className="h-8 px-4">Test Design & Coverage</TabsTrigger>
                 <TabsTrigger value="knowledge" className="h-8 px-4">Knowledge Hub</TabsTrigger>
                 <TabsTrigger value="ado" className="h-8 px-4">ADO Automation</TabsTrigger>
-                <TabsTrigger value="adoption" className="h-8 px-4">Adoption & Feedback</TabsTrigger>
+                <TabsTrigger value="adoption" className="h-8 px-4">Adoption</TabsTrigger>
               </TabsList>
             </div>
 
@@ -391,7 +391,7 @@ function SavingsSection({ data }: { data: SystemDashboardAnalytics }) {
         <CardHeader><CardTitle className="text-base">Workflow Time Savings</CardTitle></CardHeader>
         <CardContent className="space-y-3 overflow-x-auto">
           <p className="text-xs text-muted-foreground">
-            Actual time is available after generation completes. Estimated savings are counted only after output is accepted, published, or rated useful.
+            Actual time is available after generation completes. Estimated savings are counted only after output is accepted or published.
           </p>
           <Table>
             <TableHeader><TableRow>
@@ -491,16 +491,14 @@ function AdoSection({ data }: { data: SystemDashboardAnalytics }) {
 }
 
 function AdoptionSection({ data }: { data: SystemDashboardAnalytics }) {
-  const value = data.adoptionFeedback;
+  const value = data.adoption;
   return <MetricGrid items={[
     ["Active Users", value.activeUsers, "Distinct recorded workflow users.", Activity],
+    ["Workflow Runs", value.workflowRuns, "Recorded workflow runs in the selected period.", Sparkles],
     ["Runs per User", value.runsPerUser, "Workflow runs divided by active users.", Workflow],
     ["Most Used Feature", value.mostUsedFeature, "Workflow with the most recorded runs.", Zap],
-    ["Average Feedback Rating", value.averageFeedbackRating, "1 Not useful, 2 Partially useful, 3 Useful.", Sparkles],
-    ["Useful Output Rate", value.usefulOutputRate === null ? null : `${value.usefulOutputRate}%`, "Useful or partially useful ratings.", CheckCircle2],
     ["Rejection Rate", value.rejectionRate === null ? null : `${value.rejectionRate}%`, "Rejected outputs divided by generated outputs.", ShieldAlert],
     ["Top Workflow by Adoption", value.topWorkflowByAdoption, "Workflow with the greatest recorded adoption.", Gauge],
-    ["Feedback Responses", value.feedbackCount, "Optional feedback responses collected.", Bot],
   ]} />;
 }
 

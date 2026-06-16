@@ -107,20 +107,21 @@ export function ScheduledSyncSection({
 
   return (
     <div className="space-y-5">
-      <label className="flex items-start gap-3">
+      <div className="flex items-start gap-3 rounded-lg border border-border p-3">
         <Checkbox
+          id="auto-sync-enabled"
+          className="mt-0.5"
           checked={form.autoUpdateEnabled}
           onCheckedChange={(checked) => onToggleEnabled(checked === true)}
-          className="mt-0.5"
           aria-label="Enable automatic sync"
         />
-        <span>
+        <label htmlFor="auto-sync-enabled" className="min-w-0">
           <span className="block text-sm font-medium text-foreground">Enable automatic sync</span>
           <span className="mt-1 block text-xs leading-5 text-muted-foreground">
             Runs on the local server for the selected Azure DevOps project using the filters configured here.
           </span>
-        </span>
-      </label>
+        </label>
+      </div>
 
       {form.autoUpdateEnabled ? (
         <div className="space-y-5 border-t border-border pt-5">
@@ -292,8 +293,8 @@ function LatestRunSummary({ run }: { run: LatestAutoUpdateRun }) {
 }
 
 function formatDateTime(value?: string | Date | null): string {
-  if (!value) return "—";
+  if (!value) return "-";
   const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
+  if (Number.isNaN(date.getTime())) return "-";
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }

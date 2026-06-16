@@ -5,7 +5,6 @@ import { resetDatabaseForTests } from "@/modules/shared/infrastructure/database/
 import {
   completeWorkflowRun,
   failWorkflowRun,
-  recordWorkflowFeedback,
   startWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
 import { getSystemDashboardAnalytics } from "@/modules/analytics/system-dashboard.service";
@@ -69,11 +68,9 @@ describe("system dashboard analytics (DB-backed)", () => {
       status: "published",
       patch: { itemsGenerated: 1, itemsPublished: 1, itemsRejected: 1 },
     });
-    recordWorkflowFeedback({ scope, runId: run, rating: 1, label: "rejected" });
-
     const analytics = getSystemDashboardAnalytics({ scope });
     // 1 rejected item / 1 generated item = 100% (the old mixed-unit formula gave 200%).
-    expect(analytics.adoptionFeedback.rejectionRate).toBe(100);
+    expect(analytics.adoption.rejectionRate).toBe(100);
   });
 
   it("counts only full successes toward publish success rate; partial failures are neutral", () => {
@@ -88,11 +85,9 @@ describe("system dashboard analytics (DB-backed)", () => {
     expect(analytics.adoAutomation.failedOperations).toBe(1);
   });
 
-  it("does not revive estimated savings when useful feedback lands on a failed run", () => {
+  it("does not count failed runs as estimated savings", () => {
     const run = startWorkflowRun({ scope, workflowType: "test_case_design" });
     failWorkflowRun({ scope, runId: run, error: "boom" });
-    // A 'useful' rating must not resurrect savings on a run that already failed.
-    recordWorkflowFeedback({ scope, runId: run, rating: 3 });
 
     const analytics = getSystemDashboardAnalytics({ scope });
     expect(analytics.overview.estimatedHoursSaved.value).toBe(0);

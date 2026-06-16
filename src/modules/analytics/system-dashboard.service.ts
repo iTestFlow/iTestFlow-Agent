@@ -38,8 +38,6 @@ type AnalyticsRow = {
   low_risk_items_found: number;
   manual_actions_avoided: number;
   used_knowledge_context: number;
-  feedback_rating: number | null;
-  feedback_label: string | null;
   metadata_json: string | null;
 };
 
@@ -92,7 +90,7 @@ export function getSystemDashboardAnalytics(input: SystemDashboardInput): System
   const testDesignCoverage = buildTestDesignCoverage(rows);
   const knowledgeHub = buildKnowledgeHub(scope, rows);
   const adoAutomation = buildAdoAutomation(scope, dateRange.from, addDays(dateRange.to, 1), rows);
-  const adoptionFeedback = buildAdoptionFeedback(rows);
+  const adoption = buildAdoption(rows);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -132,7 +130,7 @@ export function getSystemDashboardAnalytics(input: SystemDashboardInput): System
     testDesignCoverage,
     knowledgeHub,
     adoAutomation,
-    adoptionFeedback,
+    adoption,
     warnings: rows.length
       ? []
       : ["No workflow analytics are available for the selected period. New workflow activity will appear here automatically."],
@@ -164,8 +162,7 @@ function loadAnalyticsRows(input: {
             manual_baseline_minutes, actual_duration_minutes, estimated_saved_minutes,
             items_generated, items_selected, items_edited, items_published, items_rejected,
             high_risk_items_found, medium_risk_items_found, low_risk_items_found,
-            manual_actions_avoided, used_knowledge_context, feedback_rating, feedback_label,
-            metadata_json
+            manual_actions_avoided, used_knowledge_context, metadata_json
      FROM analytics_workflow_runs
      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
        AND started_at >= @from AND started_at < @to
@@ -372,29 +369,22 @@ function buildAdoAutomation(
   };
 }
 
-function buildAdoptionFeedback(rows: AnalyticsRow[]): SystemDashboardAnalytics["adoptionFeedback"] {
+function buildAdoption(rows: AnalyticsRow[]): SystemDashboardAnalytics["adoption"] {
   const users = distinct(rows.map((row) => row.user_id));
   const byWorkflow = new Map<WorkflowType, number>();
   rows.forEach((row) => byWorkflow.set(row.workflow_type, (byWorkflow.get(row.workflow_type) ?? 0) + 1));
   const top = [...byWorkflow.entries()].sort((left, right) => right[1] - left[1])[0];
-  const feedbackRows = rows.filter((row) => row.feedback_rating !== null);
   // Rejected items vs generated items — one consistent unit so the rate stays <= 100%.
-  // (Mixing item counts with a per-run feedback flag previously allowed >100%.)
   const rejected = sum(rows, "items_rejected");
   const generated = sum(rows, "items_generated");
-  const useful = feedbackRows.filter((row) => (row.feedback_rating ?? 0) >= 2).length;
 
   return {
     activeUsers: users.length,
+    workflowRuns: rows.length,
     runsPerUser: users.length ? round(rows.length / users.length, 1) : null,
     mostUsedFeature: top ? workflowLabels[top[0]] : null,
-    averageFeedbackRating: feedbackRows.length
-      ? round(average(feedbackRows.map((row) => row.feedback_rating ?? 0)) ?? 0, 1)
-      : null,
-    usefulOutputRate: feedbackRows.length ? round((useful / feedbackRows.length) * 100, 1) : null,
     rejectionRate: generated ? round((rejected / generated) * 100, 1) : null,
     topWorkflowByAdoption: top ? workflowLabels[top[0]] : null,
-    feedbackCount: feedbackRows.length,
   };
 }
 

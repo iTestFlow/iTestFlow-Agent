@@ -7,14 +7,14 @@ import { ConfigurationForm } from "@/shared/components/live/configuration-form"
 export default function SettingsPage() {
   return (
     <ContentShell
-      title="Integration Settings"
-      description="Manage Azure DevOps, AI provider, and project context sync settings for iTestFlow."
+      title="Settings"
+      description="Manage integrations, AI generation, knowledge retrieval, automation, and value metrics for iTestFlow."
     >
-      <div className="space-y-6">
-        <Alert className="border-primary/20 bg-primary/10">
-          <AlertTitle>Editable live runtime settings</AlertTitle>
+      <div className="space-y-4">
+        <Alert className="border-primary/20 bg-primary/10 py-3">
+          <AlertTitle className="text-sm">Live runtime settings</AlertTitle>
           <AlertDescription className="text-muted-foreground">
-            Values on this page load from the live runtime settings API and save back through it. Re-enter secrets only when rotating credentials.
+            Saved locally through the runtime settings API. Re-enter secrets only when rotating credentials.
           </AlertDescription>
         </Alert>
         <ConfigurationForm mode="settings" redirectTo={null} />

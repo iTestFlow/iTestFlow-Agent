@@ -7,6 +7,7 @@ import { Check, CheckCircle2, Loader2, ShieldCheck, XCircle } from "lucide-react
 
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BRAND_LOGO_FULL_SRC } from "@/lib/constants";
 import {
   DEFAULT_CONTEXT_STATES,
@@ -44,6 +45,16 @@ const SETUP_CHECKLIST = [
   "Start Intelligent Testing",
 ];
 
+type SettingsTab = "connections" | "ai" | "context" | "automation" | "metrics";
+
+const SETTINGS_TABS: { value: SettingsTab; label: string }[] = [
+  { value: "connections", label: "Connections" },
+  { value: "ai", label: "AI & Generation" },
+  { value: "context", label: "Knowledge & Context" },
+  { value: "automation", label: "Automation" },
+  { value: "metrics", label: "Value Metrics" },
+];
+
 export function ConfigurationForm({
   mode = "setup",
   redirectTo = "/dashboards",
@@ -73,11 +84,13 @@ export function ConfigurationForm({
   const [latestRun, setLatestRun] = useState<LatestAutoUpdateRun | null>(null);
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   const [savedBaseline, setSavedBaseline] = useState<FormState | null>(null);
+  const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTab>("connections");
   const filterProjectKeyRef = useRef<string | null>(null);
   const formRef = useRef(form);
   formRef.current = form;
 
   const isDirty = useMemo(() => (savedBaseline ? !formsEqual(form, savedBaseline) : false), [form, savedBaseline]);
+  const dirtyTabs = useMemo(() => getDirtySettingsTabs(form, savedBaseline), [form, savedBaseline]);
   useUnsavedChangesGuard({ dirty: isDirty, busy: saving || testing });
 
   const selectedModelLabel =
@@ -417,62 +430,102 @@ export function ConfigurationForm({
     />
   );
 
+  const scheduledSyncSection = (
+    <ScheduledSyncSection
+      form={form}
+      update={update}
+      onToggleEnabled={toggleAutoUpdate}
+      scheduledProject={autoUpdateProject}
+      workItemTypeOptions={workItemMetadata?.workItemTypes ?? []}
+      stateOptions={workItemMetadata?.states ?? []}
+      metadataLoading={workItemMetadataLoading}
+      metadataError={workItemMetadataError}
+      onRetryMetadata={retryWorkItemMetadata}
+      latestRun={latestRun}
+    />
+  );
+
   if (embedded) {
     return (
-      <div className="space-y-6 text-foreground">
-        <StatusSummary azure={azureStatus} ai={aiStatus} sync={syncStatus} />
+      <div className="space-y-4 text-foreground">
+        <StatusSummary azure={azureStatus} ai={aiStatus} sync={syncStatus} dirty={isDirty} />
         {feedback}
 
-        <SectionCard
-          title="Azure DevOps Connection"
-          description="Connect iTestFlow to your Azure DevOps organization."
-          action={<StatusBadge tone={azureStatus.tone} label={azureStatus.label} />}
+        <Tabs
+          value={activeSettingsTab}
+          onValueChange={(value) => setActiveSettingsTab(value as SettingsTab)}
+          className="flex-col gap-4"
         >
-          {azureSection}
-        </SectionCard>
+          <div className="overflow-x-auto pb-1">
+            <TabsList variant="primary" className="h-auto min-w-max justify-start">
+              {SETTINGS_TABS.map((tab) => (
+                <TabsTrigger key={tab.value} value={tab.value} className="h-9 flex-none px-3">
+                  <SettingsTabLabel label={tab.label} dirty={dirtyTabs[tab.value]} />
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
 
-        <SectionCard
-          title="AI Provider Configuration"
-          description="Choose your model provider, authenticate, and select a model."
-          action={<StatusBadge tone={aiStatus.tone} label={aiStatus.label} />}
-        >
-          {aiSection}
-        </SectionCard>
+          <TabsContent
+            value="connections"
+            forceMount
+            hidden={activeSettingsTab !== "connections"}
+            className="space-y-4"
+          >
+            <SectionCard
+              title="Azure DevOps Connection"
+              description="Connect iTestFlow to your Azure DevOps organization."
+              action={<StatusBadge tone={azureStatus.tone} label={azureStatus.label} />}
+            >
+              {azureSection}
+            </SectionCard>
+          </TabsContent>
 
-        <AdvancedLlmControls form={form} update={update} />
+          <TabsContent value="ai" forceMount hidden={activeSettingsTab !== "ai"} className="space-y-4">
+            <SectionCard
+              title="AI Provider Configuration"
+              description="Choose your model provider, authenticate, and select a model."
+              action={<StatusBadge tone={aiStatus.tone} label={aiStatus.label} />}
+            >
+              {aiSection}
+            </SectionCard>
 
-        <SectionCard
-          title="Project Context Retrieval"
-          description="Tune how much project context the AI retrieves for analysis and test design."
-        >
-          <ProjectContextSection form={form} update={update} />
-        </SectionCard>
+            <AdvancedLlmControls form={form} update={update} />
+          </TabsContent>
 
-        <SectionCard
-          title="Scheduled Knowledge Sync"
-          description="Keep the project context and knowledge base up to date on a schedule."
-          action={<StatusBadge tone={syncStatus.tone} label={syncStatus.label} />}
-        >
-          <ScheduledSyncSection
-            form={form}
-            update={update}
-            onToggleEnabled={toggleAutoUpdate}
-            scheduledProject={autoUpdateProject}
-            workItemTypeOptions={workItemMetadata?.workItemTypes ?? []}
-            stateOptions={workItemMetadata?.states ?? []}
-            metadataLoading={workItemMetadataLoading}
-            metadataError={workItemMetadataError}
-            onRetryMetadata={retryWorkItemMetadata}
-            latestRun={latestRun}
-          />
-        </SectionCard>
+          <TabsContent value="context" forceMount hidden={activeSettingsTab !== "context"} className="space-y-4">
+            <SectionCard
+              title="Project Context Retrieval"
+              description="Tune how much project context the AI retrieves for analysis and test design."
+            >
+              <ProjectContextSection form={form} update={update} />
+            </SectionCard>
+          </TabsContent>
 
-        <SectionCard
-          title="Dashboard Value Metrics"
-          description="Configure transparent assumptions used by stakeholder value dashboards."
-        >
-          <DashboardValueMetricsSection form={form} update={update} />
-        </SectionCard>
+          <TabsContent
+            value="automation"
+            forceMount
+            hidden={activeSettingsTab !== "automation"}
+            className="space-y-4"
+          >
+            <SectionCard
+              title="Scheduled Knowledge Sync"
+              description="Keep the project context and knowledge base up to date on a schedule."
+              action={<StatusBadge tone={syncStatus.tone} label={syncStatus.label} />}
+            >
+              {scheduledSyncSection}
+            </SectionCard>
+          </TabsContent>
+
+          <TabsContent value="metrics" forceMount hidden={activeSettingsTab !== "metrics"} className="space-y-4">
+            <SectionCard
+              title="Dashboard Value Metrics"
+              description="These values are used only to estimate time savings in stakeholder dashboards. They do not affect AI generation."
+            >
+              <DashboardValueMetricsSection form={form} update={update} />
+            </SectionCard>
+          </TabsContent>
+        </Tabs>
 
         <SaveActionBar
           visible={isDirty}
@@ -562,4 +615,57 @@ export function ConfigurationForm({
       </div>
     </div>
   );
+}
+
+function SettingsTabLabel({ label, dirty }: { label: string; dirty: boolean }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {label}
+      {dirty ? (
+        <>
+          <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-primary" />
+          <span className="sr-only"> has unsaved changes</span>
+        </>
+      ) : null}
+    </span>
+  );
+}
+
+function getDirtySettingsTabs(form: FormState, savedBaseline: FormState | null): Record<SettingsTab, boolean> {
+  const clean: Record<SettingsTab, boolean> = {
+    connections: false,
+    ai: false,
+    context: false,
+    automation: false,
+    metrics: false,
+  };
+
+  if (!savedBaseline) return clean;
+
+  return {
+    connections:
+      form.organizationUrl !== savedBaseline.organizationUrl ||
+      form.personalAccessToken !== savedBaseline.personalAccessToken,
+    ai:
+      form.provider !== savedBaseline.provider ||
+      form.model !== savedBaseline.model ||
+      form.apiKey !== savedBaseline.apiKey ||
+      form.baseUrl !== savedBaseline.baseUrl ||
+      form.maxOutputTokenCap !== savedBaseline.maxOutputTokenCap ||
+      form.retryAttempts !== savedBaseline.retryAttempts,
+    context: form.retrievalTopK !== savedBaseline.retrievalTopK,
+    automation:
+      form.autoUpdateEnabled !== savedBaseline.autoUpdateEnabled ||
+      form.autoUpdateCronExpression !== savedBaseline.autoUpdateCronExpression ||
+      projectScopeKey(form.autoUpdateProjectScope) !== projectScopeKey(savedBaseline.autoUpdateProjectScope) ||
+      !sameStringSet(form.autoUpdateWorkItemTypes, savedBaseline.autoUpdateWorkItemTypes) ||
+      !sameStringSet(form.autoUpdateStates, savedBaseline.autoUpdateStates),
+    metrics: JSON.stringify(form.dashboardValueMetrics) !== JSON.stringify(savedBaseline.dashboardValueMetrics),
+  };
+}
+
+function sameStringSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((value) => set.has(value));
 }
