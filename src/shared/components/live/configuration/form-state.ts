@@ -10,6 +10,7 @@ import { DEFAULT_AUTO_UPDATE_CRON_EXPRESSION } from "@/modules/settings/cron-exp
 import { projectScopeKey } from "@/shared/lib/use-project-work-item-metadata";
 import type { ActiveProjectScope } from "@/shared/lib/active-project";
 import type { Provider } from "./types";
+import { defaultWorkflowBaselines } from "@/modules/analytics/analytics-config";
 
 export type FormState = {
   organizationUrl: string;
@@ -26,6 +27,10 @@ export type FormState = {
   autoUpdateProjectScope: ActiveProjectScope | null;
   autoUpdateWorkItemTypes: string[];
   autoUpdateStates: string[];
+  dashboardValueMetrics: {
+    feedbackPromptEnabled: boolean;
+    manualBaselineMinutes: typeof defaultWorkflowBaselines;
+  };
 };
 
 export const INITIAL_FORM: FormState = {
@@ -43,6 +48,10 @@ export const INITIAL_FORM: FormState = {
   autoUpdateProjectScope: null,
   autoUpdateWorkItemTypes: DEFAULT_CONTEXT_WORK_ITEM_TYPES,
   autoUpdateStates: DEFAULT_CONTEXT_STATES,
+  dashboardValueMetrics: {
+    feedbackPromptEnabled: true,
+    manualBaselineMinutes: { ...defaultWorkflowBaselines },
+  },
 };
 
 /**
@@ -67,7 +76,8 @@ export function formsEqual(a: FormState, b: FormState): boolean {
     a.autoUpdateCronExpression === b.autoUpdateCronExpression &&
     projectScopeKey(a.autoUpdateProjectScope) === projectScopeKey(b.autoUpdateProjectScope) &&
     sameStringSet(a.autoUpdateWorkItemTypes, b.autoUpdateWorkItemTypes) &&
-    sameStringSet(a.autoUpdateStates, b.autoUpdateStates)
+    sameStringSet(a.autoUpdateStates, b.autoUpdateStates) &&
+    JSON.stringify(a.dashboardValueMetrics) === JSON.stringify(b.dashboardValueMetrics)
   );
 }
 

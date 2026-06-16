@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { SuiteMigrationRequestSchema } from "@/modules/test-suite-migration/test-suite-migration.schema";
 import { buildMigrationPreview } from "@/modules/test-suite-migration/test-suite-migration.service";
+import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
 
 export const runtime = "nodejs";
 
@@ -21,12 +22,4 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
-}
-
-function sanitizeAzureError(value: string) {
-  return value
-    .replace(/Authorization:\s*Basic\s+[A-Za-z0-9+/=]+/gi, "Authorization: Basic [redacted]")
-    .replace(/Basic\s+[A-Za-z0-9+/=]{20,}/g, "Basic [redacted]")
-    .replace(/personalAccessToken["'\s:=]+[^"',\s}]+/gi, "personalAccessToken: [redacted]")
-    .replace(/pat["'\s:=]+[^"',\s}]+/gi, "PAT: [redacted]");
 }

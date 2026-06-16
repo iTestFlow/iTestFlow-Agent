@@ -57,6 +57,7 @@ export async function PATCH(request: Request) {
       model: parsed.data.llm.model,
     },
     context: settings.context,
+    dashboardValueMetrics: settings.dashboardValueMetrics,
   });
 
   return NextResponse.json(withContextAutoUpdateStatus(summary));

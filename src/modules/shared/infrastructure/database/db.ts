@@ -19,8 +19,10 @@ export function getDatabase() {
 
   const fs = getFs();
   const path = getPath();
-  const dbPath = path.join(process.cwd(), "data", "itestflow.sqlite");
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  const dbPath = process.env.ITESTFLOW_DB_PATH || path.join(process.cwd(), "data", "itestflow.sqlite");
+  if (dbPath !== ":memory:") {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  }
 
   const { DatabaseSync } = nativeRequire("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
   instance = new DatabaseSync(dbPath);
@@ -31,6 +33,14 @@ export function getDatabase() {
   instance.exec(schema);
 
   return instance;
+}
+
+/**
+ * Test-only: drop the memoized connection so the next getDatabase() reinitializes —
+ * e.g. against a fresh in-memory database when ITESTFLOW_DB_PATH=":memory:".
+ */
+export function resetDatabaseForTests() {
+  instance = undefined;
 }
 
 export function nowIso() {

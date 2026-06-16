@@ -7,6 +7,11 @@ import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider"
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import {
+  failWorkflowRun,
+  startWorkflowRun,
+  updateWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -25,6 +30,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Bug description is required." }, { status: 400 });
   }
 
+  let analyticsRunId: string | undefined;
   try {
     const provider = getConfiguredProviderFromEnv();
     if (!provider) {
@@ -33,6 +39,11 @@ export async function POST(request: Request) {
         { status: 503 },
       );
     }
+    analyticsRunId = startWorkflowRun({
+      scope: parsed.data.scope,
+      workflowType: "report_bug",
+      workItemId: parsed.data.parentStoryId,
+    });
 
     const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const parentStory = parsed.data.parentStoryId
@@ -56,8 +67,20 @@ export async function POST(request: Request) {
       attachments: parsed.data.attachments,
       projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
     });
+    updateWorkflowRun({
+      scope: parsed.data.scope,
+      runId: analyticsRunId,
+      patch: {
+        status: "generated",
+        generationCompletedAt: new Date().toISOString(),
+        itemsGenerated: 1,
+        usedKnowledgeContext: result.validatedOutput.contextUsed.length > 0,
+        metadata: { contextUsed: result.validatedOutput.contextUsed },
+      },
+    });
 
     return NextResponse.json({
+      analyticsRunId,
       parentStoryId: parsed.data.parentStoryId ?? null,
       provider: result.provider,
       model: result.model,
@@ -66,6 +89,9 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     writeGenerationFailureAudit({ scope: parsed.data.scope, action: "bug_report.generate", label: "Bug report generation failed.", error });
+    if (analyticsRunId) {
+      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Bug report generation failed." });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Bug report generation failed." },
       { status: 503 },

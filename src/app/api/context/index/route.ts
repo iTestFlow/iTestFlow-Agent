@@ -3,6 +3,11 @@ import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { indexAzureWorkItemsAsProjectContext } from "@/modules/rag/project-context-store.service";
+import {
+  completeWorkflowRun,
+  failWorkflowRun,
+  startWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -22,6 +27,10 @@ export async function POST(request: Request) {
     );
   }
 
+  const analyticsRunId = startWorkflowRun({
+    scope: parsed.data.scope,
+    workflowType: "knowledge_indexing",
+  });
   try {
     const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const result = await indexAzureWorkItemsAsProjectContext({
@@ -31,9 +40,26 @@ export async function POST(request: Request) {
       states: parsed.data.states,
       mode: parsed.data.mode ?? "incremental",
     });
+    completeWorkflowRun({
+      scope: parsed.data.scope,
+      runId: analyticsRunId,
+      valueRealized: true,
+      patch: {
+        itemsGenerated: result.indexedWorkItemCount,
+        itemsSelected: result.fetchedCount,
+        itemsPublished: result.indexedWorkItemCount,
+        metadata: {
+          knowledge: {
+            indexedWorkItemCount: result.indexedWorkItemCount,
+            indexedChunkCount: result.indexedChunkCount,
+          },
+        },
+      },
+    });
 
-    return NextResponse.json({ source: "live", ...result });
+    return NextResponse.json({ source: "live", analyticsRunId, ...result });
   } catch (error) {
+    failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Project context indexing failed." });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Project context indexing failed." },
       { status: 503 },

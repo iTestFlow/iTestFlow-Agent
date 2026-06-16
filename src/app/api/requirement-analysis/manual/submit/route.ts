@@ -4,6 +4,12 @@ import { completeManualRequirementAnalysis } from "@/modules/requirement-analysi
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
+import {
+  failWorkflowRun,
+  startWorkflowRun,
+  updateWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
+import { requirementAnalysisChecklistOptions } from "@/modules/requirement-analysis/checklist-options";
 
 export const runtime = "nodejs";
 
@@ -31,6 +37,11 @@ export async function POST(request: Request) {
     );
   }
 
+  const analyticsRunId = startWorkflowRun({
+    scope: parsed.data.scope,
+    workflowType: "requirements_analysis",
+    workItemId: parsed.data.targetWorkItemId,
+  });
   try {
     const result = completeManualRequirementAnalysis({
       scope: parsed.data.scope,
@@ -38,8 +49,29 @@ export async function POST(request: Request) {
       targetWorkItemId: parsed.data.targetWorkItemId,
       enabledChecklistItemIds: parsed.data.enabledChecklistItemIds,
     });
+    updateWorkflowRun({
+      scope: parsed.data.scope,
+      runId: analyticsRunId,
+      patch: {
+        status: "generated",
+        generationCompletedAt: new Date().toISOString(),
+        itemsGenerated: result.validatedOutput.findings.length,
+        highRiskItemsFound: result.validatedOutput.summary.criticalCount + result.validatedOutput.summary.highCount,
+        mediumRiskItemsFound: result.validatedOutput.summary.mediumCount,
+        lowRiskItemsFound: result.validatedOutput.summary.lowCount,
+        usedKnowledgeContext: parsed.data.contextCitations.length > 0,
+        metadata: {
+          requirement: {
+            testabilityScore: result.validatedOutput.summary.testabilityScore,
+            issueCategories: countRequirementCategories(result.validatedOutput.findings),
+          },
+          contextUsed: result.validatedOutput.contextUsed,
+        },
+      },
+    });
 
     return NextResponse.json({
+      analyticsRunId,
       targetWorkItemId: parsed.data.targetWorkItemId,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: parsed.data.resolvedContextUsed ?? [],
@@ -52,9 +84,20 @@ export async function POST(request: Request) {
       ...result.validatedOutput,
     });
   } catch (error) {
+    failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External requirement analysis failed." });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "External LLM requirement analysis validation failed." },
       { status: 422 },
     );
   }
+}
+
+const checklistLabels = new Map(requirementAnalysisChecklistOptions.map((item) => [item.id, item.title]));
+
+function countRequirementCategories(findings: Array<{ checklistItemId: string }>) {
+  return findings.reduce<Record<string, number>>((counts, finding) => {
+    const label = checklistLabels.get(finding.checklistItemId as never) ?? finding.checklistItemId;
+    counts[label] = (counts[label] ?? 0) + 1;
+    return counts;
+  }, {});
 }

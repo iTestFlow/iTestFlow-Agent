@@ -54,6 +54,7 @@ export type RequirementSummary = {
 };
 
 export type RequirementAnalysisRunResult = {
+  analyticsRunId?: string;
   findings: RequirementFinding[];
   summary: RequirementSummary;
   recommendations: string[];
@@ -88,6 +89,7 @@ export type TestCaseSummary = {
 };
 
 export type TestCaseGenerationRunResult = {
+  analyticsRunId?: string;
   testCases: GeneratedTestCase[];
   summary: TestCaseSummary;
   contextUsed: string[];
@@ -165,6 +167,7 @@ export type ExistingReviewFinding = {
 };
 
 export type ExistingReviewResult = {
+  analyticsRunId?: string;
   summary: string;
   coverageScore: number;
   traceabilityMatrix: ExistingTraceabilityRow[];

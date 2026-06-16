@@ -16,6 +16,11 @@ import {
   TestExecutionEffortOptionsSchema,
 } from "@/modules/test-execution-effort/test-execution-effort.schema";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
+import {
+  completeWorkflowRun,
+  failWorkflowRun,
+  startWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -34,6 +39,7 @@ export async function POST(request: Request) {
     );
   }
 
+  let analyticsRunId: string | undefined;
   try {
     const provider = getConfiguredProviderFromEnv();
     if (!provider) {
@@ -42,6 +48,11 @@ export async function POST(request: Request) {
         { status: 503 },
       );
     }
+    analyticsRunId = startWorkflowRun({
+      scope: parsed.data.scope,
+      workflowType: "test_execution_effort",
+      workItemId: parsed.data.storyId,
+    });
 
     const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const options = TestExecutionEffortOptionsSchema.parse(parsed.data);
@@ -72,8 +83,19 @@ export async function POST(request: Request) {
       resolvedContextUsed: data.resolvedContextUsed,
       relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
     });
+    completeWorkflowRun({
+      scope: parsed.data.scope,
+      runId: analyticsRunId,
+      valueRealized: false,
+      patch: {
+        itemsGenerated: 1,
+        usedKnowledgeContext: contextCitations.length > 0,
+        metadata: { contextUsed: data.resolvedContextUsed },
+      },
+    });
 
     return NextResponse.json({
+      analyticsRunId,
       ...preview,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: data.resolvedContextUsed,
@@ -90,6 +112,9 @@ export async function POST(request: Request) {
   } catch (error) {
     const safeError = toSafeTestExecutionEffortError(error, "Test Execution Effort generation failed.", parsed.data.storyId);
     writeGenerationFailureAudit({ scope: parsed.data.scope, action: "test_execution_effort.run", label: "Test Execution Effort generation failed.", error });
+    if (analyticsRunId) {
+      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: safeError.message });
+    }
     return NextResponse.json({ error: safeError.message }, { status: safeError.status });
   }
 }

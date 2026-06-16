@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { countTestCategories } from "@/modules/analytics/test-category-normalization";
 import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
@@ -12,6 +13,11 @@ import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.serv
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
+import {
+  failWorkflowRun,
+  startWorkflowRun,
+  updateWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -32,6 +38,7 @@ export async function POST(request: Request) {
     );
   }
 
+  let analyticsRunId: string | undefined;
   try {
     const options = parsed.data.options ?? defaultTestDesignOptions;
     const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
@@ -42,6 +49,11 @@ export async function POST(request: Request) {
         { status: 503 },
       );
     }
+    analyticsRunId = startWorkflowRun({
+      scope: parsed.data.scope,
+      workflowType: "test_case_design",
+      workItemId: parsed.data.targetWorkItemId,
+    });
 
     const targetRequirement = await adapter.fetchWorkItemById({
       projectId: parsed.data.scope.azureProjectId,
@@ -70,8 +82,24 @@ export async function POST(request: Request) {
       resolvedContextUsed: autoContext.contextUsed,
       relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
     });
+    updateWorkflowRun({
+      scope: parsed.data.scope,
+      runId: analyticsRunId,
+      patch: {
+        status: "generated",
+        generationCompletedAt: new Date().toISOString(),
+        itemsGenerated: result.validatedOutput.testCases.length,
+        usedKnowledgeContext: contextCitations.length > 0,
+        metadata: {
+          testDesign: { categories: countTestCategories(result.validatedOutput.testCases) },
+          coverage: { score: result.validatedOutput.summary.coverageEstimate },
+          contextUsed: result.validatedOutput.contextUsed,
+        },
+      },
+    });
 
     return NextResponse.json({
+      analyticsRunId,
       targetWorkItemId: parsed.data.targetWorkItemId,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: autoContext.contextUsed,
@@ -87,6 +115,9 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     writeGenerationFailureAudit({ scope: parsed.data.scope, action: "test_case_generation.run", label: "Test case generation failed.", error });
+    if (analyticsRunId) {
+      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Test case generation failed." });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Test case generation failed." },
       { status: 503 },

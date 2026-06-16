@@ -1,9 +1,15 @@
 import { NextResponse } from "next/server";
+import { countTestCategories } from "@/modules/analytics/test-category-normalization";
 import { z } from "zod";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import { completeManualExistingTestCaseReview } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
+import {
+  failWorkflowRun,
+  startWorkflowRun,
+  updateWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -23,6 +29,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Paste the external LLM response before continuing." }, { status: 400 });
   }
 
+  const analyticsRunId = startWorkflowRun({
+    scope: parsed.data.scope,
+    workflowType: "test_gap_analysis",
+    workItemId: parsed.data.targetWorkItemId,
+  });
   try {
     const result = completeManualExistingTestCaseReview({
       scope: parsed.data.scope,
@@ -34,8 +45,33 @@ export async function POST(request: Request) {
       projectId: parsed.data.scope.azureProjectId,
       userStoryId: parsed.data.targetWorkItemId,
     });
+    const gapRows = result.validatedOutput.traceabilityMatrix.filter((row) => row.coverageStatus !== "Covered");
+    const weakDuplicateCases = result.validatedOutput.findings.filter((finding) => finding.category === "Duplicate" || finding.category.startsWith("Weak")).length;
+    updateWorkflowRun({
+      scope: parsed.data.scope,
+      runId: analyticsRunId,
+      patch: {
+        status: "generated",
+        generationCompletedAt: new Date().toISOString(),
+        itemsGenerated: result.validatedOutput.suggestedAdditions.length,
+        highRiskItemsFound: result.validatedOutput.findings.filter((finding) => finding.severity === "High").length,
+        mediumRiskItemsFound: result.validatedOutput.findings.filter((finding) => finding.severity === "Medium").length,
+        lowRiskItemsFound: result.validatedOutput.findings.filter((finding) => finding.severity === "Low").length,
+        usedKnowledgeContext: parsed.data.contextCitations.length > 0,
+        metadata: {
+          coverage: {
+            score: result.validatedOutput.coverageScore,
+            missingAreas: gapRows.length,
+            weakDuplicateCases,
+          },
+          testDesign: { categories: countTestCategories(result.validatedOutput.suggestedAdditions) },
+          contextUsed: result.validatedOutput.contextUsed,
+        },
+      },
+    });
 
     return NextResponse.json({
+      analyticsRunId,
       targetWorkItemId: parsed.data.targetWorkItemId,
       linkedTestCases,
       selectedContextIds: parsed.data.selectedContextIds,
@@ -48,6 +84,7 @@ export async function POST(request: Request) {
       ...result.validatedOutput,
     });
   } catch (error) {
+    failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External traceability review failed." });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "External LLM traceability review validation failed." },
       { status: 422 },

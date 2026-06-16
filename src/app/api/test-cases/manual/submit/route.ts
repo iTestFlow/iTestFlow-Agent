@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
+import { countTestCategories } from "@/modules/analytics/test-category-normalization";
 import { z } from "zod";
 import { completeManualTestCaseGeneration } from "@/modules/test-case-design/application/test-case-generation.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
+import {
+  failWorkflowRun,
+  startWorkflowRun,
+  updateWorkflowRun,
+} from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
 
@@ -22,14 +28,35 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Paste the external LLM response before continuing." }, { status: 400 });
   }
 
+  const analyticsRunId = startWorkflowRun({
+    scope: parsed.data.scope,
+    workflowType: "test_case_design",
+    workItemId: parsed.data.targetWorkItemId,
+  });
   try {
     const result = completeManualTestCaseGeneration({
       scope: parsed.data.scope,
       rawOutput: parsed.data.rawOutput,
       targetWorkItemId: parsed.data.targetWorkItemId,
     });
+    updateWorkflowRun({
+      scope: parsed.data.scope,
+      runId: analyticsRunId,
+      patch: {
+        status: "generated",
+        generationCompletedAt: new Date().toISOString(),
+        itemsGenerated: result.validatedOutput.testCases.length,
+        usedKnowledgeContext: parsed.data.contextCitations.length > 0,
+        metadata: {
+          testDesign: { categories: countTestCategories(result.validatedOutput.testCases) },
+          coverage: { score: result.validatedOutput.summary.coverageEstimate },
+          contextUsed: result.validatedOutput.contextUsed,
+        },
+      },
+    });
 
     return NextResponse.json({
+      analyticsRunId,
       targetWorkItemId: parsed.data.targetWorkItemId,
       selectedContextIds: parsed.data.selectedContextIds,
       resolvedContextUsed: parsed.data.resolvedContextUsed ?? [],
@@ -41,6 +68,7 @@ export async function POST(request: Request) {
       ...result.validatedOutput,
     });
   } catch (error) {
+    failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External test case generation failed." });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "External LLM test case validation failed." },
       { status: 422 },

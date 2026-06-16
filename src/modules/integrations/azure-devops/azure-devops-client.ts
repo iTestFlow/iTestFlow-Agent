@@ -17,7 +17,10 @@ import type {
   AzureProjectUser,
   AzureProjectWorkItemMetadata,
   AzureTestPoint,
+  AzureTestResult,
+  AzureTestRun,
   AzureWorkItemFieldValue,
+  AzureWorkItemRevision,
   AzureWorkItemTypeField,
   CreateTestSuiteInput,
   FinalApprovedTestCase,
@@ -225,7 +228,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     return [...users.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
   }
 
-  async fetchProjectWorkItemMetadata(input: { projectId: string }): Promise<AzureProjectWorkItemMetadata> {
+  async fetchProjectWorkItemMetadata(input: { projectId: string; includeStates?: boolean }): Promise<AzureProjectWorkItemMetadata> {
     const projectId = encodeURIComponent(input.projectId);
     const typesResponse = await this.requestJson<{ value?: Array<{ name?: string }> }>(
       `${projectId}/_apis/wit/workitemtypes?api-version=7.1`,
@@ -233,6 +236,11 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     const workItemTypes = uniqueSortedValues(
       (typesResponse.value ?? []).map((type) => type.name ?? ""),
     );
+    // The per-type /states endpoint costs one REST round-trip per work-item type. Callers
+    // that only need the type list (e.g. the dashboard) pass includeStates: false to skip it.
+    if (input.includeStates === false) {
+      return { workItemTypes, states: [] };
+    }
     const stateResponses = await Promise.all(
       workItemTypes.map((workItemType) =>
         this.requestJson<{ value?: Array<{ name?: string }> }>(
@@ -263,6 +271,8 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     states?: string[];
     areaPath?: string;
     iterationPath?: string;
+    assignedTo?: string;
+    limit?: number;
   }): Promise<Requirement[]> {
     const types = input.workItemTypes?.length ? input.workItemTypes : ["Epic", "Feature", "User Story", "Bug"];
     const where = [
@@ -275,6 +285,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     const iterationPath = normalizeIterationPathForWiql(input.iterationPath);
     if (input.areaPath) where.push(`[System.AreaPath] UNDER '${escapeWiqlValue(input.areaPath)}'`);
     if (iterationPath) where.push(`[System.IterationPath] UNDER '${escapeWiqlValue(iterationPath)}'`);
+    if (input.assignedTo) where.push(`[System.AssignedTo] = '${escapeWiqlValue(input.assignedTo)}'`);
 
     const wiql = {
       query: `SELECT [System.Id] FROM WorkItems WHERE ${where.join(" AND ")} ORDER BY [System.ChangedDate] DESC`,
@@ -283,9 +294,10 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       `${encodeURIComponent(input.projectId)}/_apis/wit/wiql?api-version=7.1`,
       { method: "POST", body: JSON.stringify(wiql) },
     );
-    const ids = (query.workItems ?? []).slice(0, 200).map((item) => item.id);
+    const limit = Math.min(Math.max(Math.trunc(input.limit ?? 200), 1), 5000);
+    const ids = (query.workItems ?? []).slice(0, limit).map((item) => item.id);
     if (!ids.length) return [];
-    return this.fetchWorkItemsBatch(input.projectId, ids);
+    return this.fetchWorkItemsInChunks(input.projectId, ids);
   }
 
   async fetchWorkItemById(input: { projectId: string; workItemId: string }): Promise<Requirement> {
@@ -299,7 +311,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   async fetchWorkItemsByIds(input: { projectId: string; workItemIds: string[] }): Promise<Requirement[]> {
     const ids = input.workItemIds.map((id) => Number(id)).filter((id) => Number.isInteger(id));
     if (!ids.length) return [];
-    return this.fetchWorkItemsBatch(input.projectId, ids);
+    return this.fetchWorkItemsInChunks(input.projectId, ids);
   }
 
   async fetchLinkedWorkItems(input: { projectId: string; workItemId: string }): Promise<Requirement[]> {
@@ -495,6 +507,99 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     }
 
     return points;
+  }
+
+  async fetchTestRuns(input: { projectId: string; testPlanId?: string; limit?: number }): Promise<AzureTestRun[]> {
+    const limit = Math.min(Math.max(Math.trunc(input.limit ?? 200), 1), 1000);
+    const top = Math.min(limit, 100);
+    const runs: AzureTestRun[] = [];
+    let skip = 0;
+
+    while (runs.length < limit) {
+      const query = new URLSearchParams({
+        includeRunDetails: "true",
+        "$skip": String(skip),
+        "$top": String(Math.min(top, limit - runs.length)),
+        "api-version": "7.1",
+      });
+      if (input.testPlanId) query.set("planId", input.testPlanId);
+      const json = await this.requestJson<{ value?: Array<JsonValue> }>(
+        `${encodeURIComponent(input.projectId)}/_apis/test/runs?${query.toString()}`,
+      );
+      const batch = (json.value ?? []).map(mapAzureTestRun);
+      runs.push(...batch);
+      if (batch.length < top) break;
+      skip += batch.length;
+    }
+
+    return runs;
+  }
+
+  async fetchTestResults(input: { projectId: string; runId: string; limit?: number }): Promise<AzureTestResult[]> {
+    const limit = Math.min(Math.max(Math.trunc(input.limit ?? 1000), 1), 5000);
+    const top = Math.min(limit, 200);
+    const results: AzureTestResult[] = [];
+    let skip = 0;
+
+    while (results.length < limit) {
+      const query = new URLSearchParams({
+        detailsToInclude: "WorkItems",
+        "$skip": String(skip),
+        "$top": String(Math.min(top, limit - results.length)),
+        "api-version": "7.1",
+      });
+      const json = await this.requestJson<{ value?: Array<JsonValue> }>(
+        `${encodeURIComponent(input.projectId)}/_apis/test/Runs/${input.runId}/results?${query.toString()}`,
+      );
+      const batch = (json.value ?? []).map((result) => mapAzureTestResult(result, input.runId));
+      results.push(...batch);
+      if (batch.length < top) break;
+      skip += batch.length;
+    }
+
+    return results;
+  }
+
+  async fetchWorkItemRevisions(input: {
+    projectId: string;
+    workItemTypes: string[];
+    startDateTime: string;
+    fields: string[];
+    limit?: number;
+  }): Promise<AzureWorkItemRevision[]> {
+    const limit = Math.min(Math.max(Math.trunc(input.limit ?? 5000), 1), 10000);
+    const revisions: AzureWorkItemRevision[] = [];
+    let continuationToken: string | undefined;
+
+    while (revisions.length < limit) {
+      const query = new URLSearchParams({
+        fields: input.fields.join(","),
+        types: input.workItemTypes.join(","),
+        startDateTime: input.startDateTime,
+        includeIdentityRef: "true",
+        includeDeleted: "false",
+        includeLatestOnly: "false",
+        "$maxPageSize": String(Math.min(1000, limit - revisions.length)),
+        "api-version": "7.1",
+      });
+      if (continuationToken) {
+        query.delete("startDateTime");
+        query.set("continuationToken", continuationToken);
+      }
+      const json = await this.requestJson<{
+        values?: Array<JsonValue>;
+        continuationToken?: string;
+        isLastBatch?: boolean;
+      }>(
+        `${encodeURIComponent(input.projectId)}/_apis/wit/reporting/workitemrevisions?${query.toString()}`,
+      );
+      const batch = (json.values ?? []).map(mapAzureWorkItemRevision);
+      revisions.push(...batch);
+      continuationToken = json.continuationToken;
+      if (json.isLastBatch || !continuationToken || !batch.length) break;
+    }
+
+    return revisions;
   }
 
   async addTestCasesToSuite(input: {
@@ -864,6 +969,14 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       .map((workItem) => mapAzureWorkItem(workItem as never, projectId));
   }
 
+  private async fetchWorkItemsInChunks(projectId: string, ids: number[]): Promise<Requirement[]> {
+    const chunks: number[][] = [];
+    for (let index = 0; index < ids.length; index += 200) chunks.push(ids.slice(index, index + 200));
+    const results: Requirement[] = [];
+    for (const chunk of chunks) results.push(...await this.fetchWorkItemsBatch(projectId, chunk));
+    return results;
+  }
+
   private async queryLinkedWorkItemIds(projectId: string, query: string, side: "source" | "target") {
     const result = await this.requestJson<{
       workItemRelations?: Array<{
@@ -1028,6 +1141,70 @@ function mapAzureTestPoint(point: JsonValue): AzureTestPoint {
   };
 }
 
+function mapAzureTestRun(run: JsonValue): AzureTestRun {
+  const plan = objectValue(run.plan);
+  return {
+    id: stringValue(run.id),
+    name: stringValue(run.name),
+    state: textValue(run.state),
+    planId: idValue(plan?.id),
+    iteration: textValue(run.iteration),
+    isAutomated: booleanValue(run.isAutomated),
+    startedDate: textValue(run.startedDate),
+    completedDate: textValue(run.completedDate),
+    createdDate: textValue(run.createdDate),
+    lastUpdatedDate: textValue(run.lastUpdatedDate),
+    totalTests: numericValue(run.totalTests),
+    passedTests: numericValue(run.passedTests),
+    incompleteTests: numericValue(run.incompleteTests),
+    notApplicableTests: numericValue(run.notApplicableTests),
+    unanalyzedTests: numericValue(run.unanalyzedTests),
+    owner: mapIdentityRef(run.owner),
+    raw: run,
+  };
+}
+
+function mapAzureTestResult(result: JsonValue, runId: string): AzureTestResult {
+  const testCase = objectValue(result.testCase) ?? objectValue(result.testCaseReference);
+  const associatedBugs = arrayValue(result.associatedBugs);
+  return {
+    id: stringValue(result.id),
+    runId,
+    testCaseId: idValue(testCase?.id),
+    testCaseTitle: textValue(result.testCaseTitle) ?? textValue(testCase?.name),
+    outcome: textValue(result.outcome),
+    state: textValue(result.state),
+    startedDate: textValue(result.startedDate),
+    completedDate: textValue(result.completedDate),
+    durationInMs: numericValue(result.durationInMs),
+    owner: mapIdentityRef(result.owner),
+    comment: textValue(result.comment),
+    errorMessage: textValue(result.errorMessage),
+    associatedBugIds: associatedBugs.map((bug) => idValue(bug.id)).filter(isDefined),
+    raw: result,
+  };
+}
+
+function mapAzureWorkItemRevision(revision: JsonValue): AzureWorkItemRevision {
+  const fields = objectValue(revision.fields) ?? {};
+  return {
+    workItemId: stringValue(revision.id ?? fields["System.Id"]),
+    revision: numericValue(revision.rev ?? fields["System.Rev"]) ?? 0,
+    revisedDate: textValue(fields["System.ChangedDate"]) ?? textValue(fields["System.RevisedDate"]),
+    workItemType: textValue(fields["System.WorkItemType"]),
+    title: textValue(fields["System.Title"]),
+    state: textValue(fields["System.State"]),
+    severity: textValue(fields["Microsoft.VSTS.Common.Severity"]),
+    priority: numericValue(fields["Microsoft.VSTS.Common.Priority"]),
+    assignedTo: identityDisplayName(fields["System.AssignedTo"]),
+    createdDate: textValue(fields["System.CreatedDate"]),
+    closedDate: textValue(fields["Microsoft.VSTS.Common.ClosedDate"]),
+    areaPath: textValue(fields["System.AreaPath"]),
+    iterationPath: textValue(fields["System.IterationPath"]),
+    raw: revision,
+  };
+}
+
 function mapConfigurationReference(value: unknown): TestConfigurationReference | undefined {
   const item = objectValue(value);
   const id = idValue(item?.id);
@@ -1099,6 +1276,18 @@ function textValue(value: unknown) {
 
 function booleanValue(value: unknown) {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function numericValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return undefined;
+}
+
+function identityDisplayName(value: unknown) {
+  if (typeof value === "string") return value;
+  const identity = objectValue(value);
+  return textValue(identity?.displayName) ?? textValue(identity?.uniqueName);
 }
 
 function isDefined<T>(value: T | undefined): value is T {

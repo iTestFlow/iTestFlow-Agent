@@ -12,6 +12,7 @@ import { SearchableCombobox } from "@/components/ui/searchable-combobox";
 import { Callout } from "@/components/qa/callout";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
+import { WorkflowFeedback } from "@/components/workflow/workflow-feedback";
 import { RefreshButton } from "@/components/qa/refresh-button";
 import { toneClass, type Tone } from "@/components/qa/tone";
 import { cn } from "@/lib/utils";
@@ -374,6 +375,9 @@ export function PublishGeneratedCasesPanel({
   invalidCaseCount = 0,
   onDirty,
   onPublished,
+  analyticsRunId,
+  itemsGenerated,
+  itemsEdited,
 }: {
   scope: ActiveProjectScope | null;
   targetWorkItemId: string;
@@ -381,6 +385,9 @@ export function PublishGeneratedCasesPanel({
   invalidCaseCount?: number;
   onDirty?: () => void;
   onPublished?: () => void;
+  analyticsRunId?: string;
+  itemsGenerated?: number;
+  itemsEdited?: number;
 }) {
   const [testPlanInput, setTestPlanInput] = useState("");
   const [parentSuiteInput, setParentSuiteInput] = useState("");
@@ -531,6 +538,9 @@ export function PublishGeneratedCasesPanel({
     try {
       const data = await postJson<PublishRunResult>("/api/publish/test-cases", {
         scope,
+        analyticsRunId,
+        itemsGenerated,
+        itemsEdited,
         targetWorkItemId,
         suiteMode: createRequirementSuite ? "requirement" : "none",
         ...(createRequirementSuite
@@ -697,6 +707,9 @@ export function PublishGeneratedCasesPanel({
         </div>
 
         {state.data ? <PublishResultSummary data={state.data} /> : null}
+        {state.data?.results.some((result) => result.success) ? (
+          <WorkflowFeedback scope={scope} runId={analyticsRunId} />
+        ) : null}
       </div>
     </SectionCard>
   );

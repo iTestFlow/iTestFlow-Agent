@@ -35,6 +35,7 @@ import { ScheduledSyncSection } from "./configuration/scheduled-sync-section";
 import { StatusSummary } from "./configuration/status-summary";
 import { SaveActionBar } from "./configuration/save-action-bar";
 import { deriveAiStatus, deriveAzureStatus, deriveSyncStatus } from "./configuration/status";
+import { DashboardValueMetricsSection } from "./configuration/dashboard-value-metrics-section";
 
 const SETUP_CHECKLIST = [
   "Connect Azure DevOps",
@@ -117,6 +118,7 @@ export function ConfigurationForm({
           autoUpdateProjectScope: savedProjectScope ?? INITIAL_FORM.autoUpdateProjectScope,
           autoUpdateWorkItemTypes: summary.context?.autoUpdate?.workItemTypes ?? INITIAL_FORM.autoUpdateWorkItemTypes,
           autoUpdateStates: summary.context?.autoUpdate?.states ?? INITIAL_FORM.autoUpdateStates,
+          dashboardValueMetrics: summary.dashboardValueMetrics ?? INITIAL_FORM.dashboardValueMetrics,
         };
         setForm(nextForm);
         setSavedBaseline(nextForm);
@@ -239,6 +241,7 @@ export function ConfigurationForm({
           states: form.autoUpdateStates,
         },
       },
+      dashboardValueMetrics: form.dashboardValueMetrics,
     };
   }
 
@@ -462,6 +465,13 @@ export function ConfigurationForm({
             onRetryMetadata={retryWorkItemMetadata}
             latestRun={latestRun}
           />
+        </SectionCard>
+
+        <SectionCard
+          title="Dashboard Value Metrics"
+          description="Configure transparent assumptions used by stakeholder value dashboards."
+        >
+          <DashboardValueMetricsSection form={form} update={update} />
         </SectionCard>
 
         <SaveActionBar

@@ -785,6 +785,42 @@ CREATE TABLE IF NOT EXISTS llm_request_logs (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS analytics_workflow_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  azure_project_id TEXT NOT NULL,
+  user_id TEXT NOT NULL DEFAULT 'local-user',
+  workflow_type TEXT NOT NULL,
+  work_item_id TEXT,
+  source_run_id TEXT,
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  generation_started_at TEXT,
+  generation_completed_at TEXT,
+  review_started_at TEXT,
+  published_at TEXT,
+  status TEXT NOT NULL,
+  manual_baseline_minutes REAL NOT NULL DEFAULT 0,
+  actual_duration_minutes REAL,
+  estimated_saved_minutes REAL NOT NULL DEFAULT 0,
+  items_generated INTEGER NOT NULL DEFAULT 0,
+  items_selected INTEGER NOT NULL DEFAULT 0,
+  items_edited INTEGER NOT NULL DEFAULT 0,
+  items_published INTEGER NOT NULL DEFAULT 0,
+  items_rejected INTEGER NOT NULL DEFAULT 0,
+  high_risk_items_found INTEGER NOT NULL DEFAULT 0,
+  medium_risk_items_found INTEGER NOT NULL DEFAULT 0,
+  low_risk_items_found INTEGER NOT NULL DEFAULT 0,
+  manual_actions_avoided INTEGER NOT NULL DEFAULT 0,
+  used_knowledge_context INTEGER NOT NULL DEFAULT 0,
+  feedback_rating INTEGER,
+  feedback_label TEXT,
+  feedback_comment TEXT,
+  metadata_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_work_items_project ON azure_devops_work_items(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_project ON document_chunks(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_context_selected_project ON context_selected_items(project_id, azure_project_id);
@@ -799,3 +835,6 @@ CREATE INDEX IF NOT EXISTS idx_test_cases_project ON test_cases(project_id, azur
 CREATE INDEX IF NOT EXISTS idx_audit_project ON audit_logs(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_llm_request_logs_project ON llm_request_logs(project_id, azure_project_id);
 CREATE INDEX IF NOT EXISTS idx_llm_request_logs_created_at ON llm_request_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_analytics_runs_project_date ON analytics_workflow_runs(project_id, azure_project_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_analytics_runs_workflow ON analytics_workflow_runs(workflow_type, status);
+CREATE INDEX IF NOT EXISTS idx_analytics_runs_user ON analytics_workflow_runs(user_id, started_at);

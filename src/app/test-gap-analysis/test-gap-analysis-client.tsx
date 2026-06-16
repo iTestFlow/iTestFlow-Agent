@@ -390,6 +390,12 @@ export function TestGapAnalysisClient() {
                 testCases={selectedSuggestedAdditions}
                 invalidCaseCount={invalidSelectedSuggestedCount}
                 onPublished={() => setHasUnfinishedWork(false)}
+                analyticsRunId={state.data.analyticsRunId}
+                itemsGenerated={state.data.suggestedAdditions.length}
+                itemsEdited={selectedSuggestedAdditions.filter((testCase) => {
+                  const original = state.data?.suggestedAdditions.find((item) => item.id === testCase.id);
+                  return JSON.stringify(testCase) !== JSON.stringify(original);
+                }).length}
               />
             </>
           ) : (
@@ -594,12 +600,18 @@ function SuggestedAdditionsPublishPanel({
   testCases,
   invalidCaseCount,
   onPublished,
+  analyticsRunId,
+  itemsGenerated,
+  itemsEdited,
 }: {
   scope: ActiveProjectScope | null;
   targetWorkItemId: string;
   testCases: GeneratedTestCase[];
   invalidCaseCount: number;
   onPublished: () => void;
+  analyticsRunId?: string;
+  itemsGenerated: number;
+  itemsEdited: number;
 }) {
   const [state, setState] = useState<ApiState<SuggestedAdditionsPublishResult>>({ loading: false, error: null, data: null });
   useUnsavedChangesGuard({ dirty: false, busy: state.loading });
@@ -610,6 +622,9 @@ function SuggestedAdditionsPublishPanel({
     try {
       const data = await postJson<SuggestedAdditionsPublishResult>("/api/test-coverage-matrix/suggested-additions/publish", {
         scope,
+        analyticsRunId,
+        itemsGenerated,
+        itemsEdited,
         targetWorkItemId,
         testCases: testCases.map((testCase) => ({
           ...testCase,
