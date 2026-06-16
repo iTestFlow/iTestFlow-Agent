@@ -41,6 +41,14 @@ export type AiGenerationProgressProps = {
 
 const DEFAULT_TITLE = "Generating with AI";
 const PREP_TITLE = "Preparing prompt";
+const ACTIVE_GENERATION_STATUSES: ReadonlySet<AiGenerationStatus> = new Set([
+  "preparing_context",
+  "building_prompt",
+  "sending_request",
+  "waiting_llm",
+  "streaming",
+  "validating_response",
+]);
 
 function dynamicSubtitle(status: AiGenerationStatus, mode: "full" | "prep"): string {
   if (mode === "prep") {
@@ -267,7 +275,24 @@ export function AiGenerationProgress({
   variant = "generic",
   mode = "full",
 }: AiGenerationProgressProps) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const scrolledForRunRef = useRef(false);
   const retryButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  // Full auto-generation panels are rendered below the input card, so make the
+  // active "Generating with AI" panel visible as soon as it appears.
+  useEffect(() => {
+    if (mode !== "full" || !ACTIVE_GENERATION_STATUSES.has(status)) {
+      scrolledForRunRef.current = false;
+      return;
+    }
+    if (scrolledForRunRef.current) return;
+
+    scrolledForRunRef.current = true;
+    window.setTimeout(() => {
+      panelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+  }, [mode, status]);
 
   // Move focus to the recovery action when generation fails or is cancelled.
   useEffect(() => {
@@ -312,47 +337,49 @@ export function AiGenerationProgress({
   const subtitle = description ?? dynamicSubtitle(status, mode);
 
   return (
-    <PanelShell active>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 items-start gap-2">
-          <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
-          <div className="min-w-0 space-y-0.5">
-            <div className="font-heading text-base font-medium leading-snug text-foreground">{resolvedTitle}</div>
-            <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
-              {subtitle}
-            </p>
+    <div ref={panelRef} className="scroll-mt-4">
+      <PanelShell active>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 items-start gap-2">
+            <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
+            <div className="min-w-0 space-y-0.5">
+              <div className="font-heading text-base font-medium leading-snug text-foreground">{resolvedTitle}</div>
+              <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+                {subtitle}
+              </p>
+            </div>
           </div>
+          {typeof elapsedSeconds === "number" ? (
+            <AiGenerationMetrics
+              elapsedSeconds={elapsedSeconds}
+              calculatingTokens={mode === "full"}
+              showTokens={mode === "full"}
+              className="sm:text-right"
+            />
+          ) : null}
         </div>
-        {typeof elapsedSeconds === "number" ? (
-          <AiGenerationMetrics
-            elapsedSeconds={elapsedSeconds}
-            calculatingTokens={mode === "full"}
-            showTokens={mode === "full"}
-            className="sm:text-right"
-          />
+
+        <StepList steps={steps} status={status} currentStepLabel={currentStepLabel} />
+
+        {mode === "full" ? (
+          <>
+            <p className="text-xs text-muted-foreground">
+              Please keep this page open while the response is being generated. Large stories or rich project context may
+              take longer.
+            </p>
+            <VariantSkeleton variant={variant} />
+          </>
         ) : null}
-      </div>
 
-      <StepList steps={steps} status={status} currentStepLabel={currentStepLabel} />
-
-      {mode === "full" ? (
-        <>
-          <p className="text-xs text-muted-foreground">
-            Please keep this page open while the response is being generated. Large stories or rich project context may
-            take longer.
-          </p>
-          <VariantSkeleton variant={variant} />
-        </>
-      ) : null}
-
-      {canCancel && onCancel ? (
-        <div className="flex justify-end">
-          <Button variant="outline" size="sm" onClick={onCancel}>
-            <X className="size-3.5" aria-hidden="true" />
-            {mode === "prep" ? "Cancel" : "Stop generation"}
-          </Button>
-        </div>
-      ) : null}
-    </PanelShell>
+        {canCancel && onCancel ? (
+          <div className="flex justify-end">
+            <Button variant="outline" size="sm" onClick={onCancel}>
+              <X className="size-3.5" aria-hidden="true" />
+              {mode === "prep" ? "Cancel" : "Stop generation"}
+            </Button>
+          </div>
+        ) : null}
+      </PanelShell>
+    </div>
   );
 }
