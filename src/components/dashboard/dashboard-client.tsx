@@ -256,7 +256,12 @@ function ProjectDashboardsClient({ active }: { active: boolean }) {
                 <DashboardChartCard title="Test Execution Status" description="Latest outcome for each selected Azure Test Plan point." hasData={hasValues(data.testingProgress.statusDistribution)} emptyMessage={section?.testExecution.message ?? "No test execution data is available."} summary={distributionSummary(data.testingProgress.statusDistribution)}>
                   <DonutChart data={data.testingProgress.statusDistribution} centerLabel="Test points" />
                 </DashboardChartCard>
-                <DashboardChartCard title="Execution Progress by Module" description="Latest outcome distribution across the selected Test Suites. Full suite names are available in tooltips." hasData={Boolean(data.testingProgress.byModule.length)} emptyMessage={section?.testExecution.message ?? "No module execution data is available."}>
+                <DashboardChartCard
+                  title="Top 10 Execution Risk by Test Suite"
+                  description="Latest outcome distribution across the selected Test Suites. Full suite names are available in tooltips."
+                  hasData={Boolean(data.testingProgress.byModule.length)}
+                  emptyMessage={section?.testExecution.message ?? "No module execution data is available."}
+                >
                   <ExecutionStackedBarChart data={data.testingProgress.byModule} />
                 </DashboardChartCard>
               </div>
