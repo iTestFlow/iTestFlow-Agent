@@ -129,18 +129,22 @@ export function SecretField({
   hasSaved: boolean;
   id?: string;
 }) {
+  const generatedId = React.useId();
+  const inputId = id ?? generatedId;
+  const labelId = `${inputId}-label`;
   const [replacing, setReplacing] = React.useState(false);
   const [reveal, setReveal] = React.useState(false);
   const editing = !hasSaved || replacing || value.length > 0;
 
   return (
     <div className="block">
-      <span className="mb-2 block text-sm font-medium text-foreground">{label}</span>
+      <label id={labelId} htmlFor={editing ? inputId : undefined} className="mb-2 block text-sm font-medium text-foreground">
+        {label}
+      </label>
       {editing ? (
         <div className="relative">
           <Input
-            id={id}
-            aria-label={label}
+            id={inputId}
             className="h-11 border-input bg-card pr-10 text-foreground"
             type={reveal ? "text" : "password"}
             value={value}
@@ -152,15 +156,25 @@ export function SecretField({
             type="button"
             onClick={() => setReveal((current) => !current)}
             className="absolute inset-y-0 right-2 flex items-center text-muted-foreground hover:text-foreground"
-            aria-label={reveal ? "Hide token" : "Show token"}
+            aria-label={reveal ? `Hide ${label}` : `Show ${label}`}
           >
             {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
         </div>
       ) : (
-        <div className="flex h-11 items-center justify-between rounded-md border border-input bg-card px-3">
-          <span className="text-sm text-muted-foreground">•••••••••••• Saved</span>
-          <Button type="button" variant="outline" size="sm" onClick={() => setReplacing(true)}>
+        <div
+          role="group"
+          aria-labelledby={labelId}
+          className="flex h-11 items-center justify-between rounded-md border border-input bg-card px-3"
+        >
+          <span className="text-sm text-muted-foreground">************ Saved</span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-label={`Replace ${label}`}
+            onClick={() => setReplacing(true)}
+          >
             Replace
           </Button>
         </div>

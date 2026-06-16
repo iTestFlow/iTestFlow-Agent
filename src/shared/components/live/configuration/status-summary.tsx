@@ -1,38 +1,38 @@
-"use client";
-
-import { Card, CardContent } from "@/components/ui/card";
 import type { StatusValue } from "./types";
 import { StatusBadge } from "./section-card";
 
-/** Three at-a-glance status cards shown at the top of the settings page. */
+/** Compact at-a-glance status bar shown at the top of the settings page. */
 export function StatusSummary({
   azure,
   ai,
   sync,
+  dirty = false,
 }: {
   azure: StatusValue;
   ai: StatusValue;
   sync: StatusValue;
+  dirty?: boolean;
 }) {
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      <StatusCard title="Azure DevOps" status={azure} />
-      <StatusCard title="AI provider" status={ai} />
-      <StatusCard title="Knowledge sync" status={sync} />
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-border bg-card px-3 py-2 text-sm">
+      <StatusItem title="Azure DevOps" status={azure} />
+      <StatusItem title="AI Provider" status={ai} />
+      <StatusItem title="Knowledge Sync" status={sync} />
+      {dirty ? (
+        <div className="flex items-center gap-2 border-border text-xs text-muted-foreground sm:border-l sm:pl-4">
+          <span className="font-medium text-foreground">Unsaved changes</span>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function StatusCard({ title, status }: { title: string; status: StatusValue }) {
+function StatusItem({ title, status }: { title: string; status: StatusValue }) {
   return (
-    <Card>
-      <CardContent className="space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-sm font-medium text-foreground">{title}</span>
-          <StatusBadge tone={status.tone} label={status.label} />
-        </div>
-        <p className="min-h-4 text-xs leading-5 text-muted-foreground">{status.detail ?? ""}</p>
-      </CardContent>
-    </Card>
+    <div className="flex items-center gap-2 border-border pr-0 sm:border-r sm:pr-4">
+      <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">{title}</span>
+      <StatusBadge tone={status.tone} label={status.label} />
+      {status.detail ? <span className="hidden max-w-56 truncate text-xs text-muted-foreground lg:inline">{status.detail}</span> : null}
+    </div>
   );
 }

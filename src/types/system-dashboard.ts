@@ -101,15 +101,13 @@ export type SystemDashboardAnalytics = {
     publishSuccessRate: number | null;
     failedOperations: number;
   };
-  adoptionFeedback: {
+  adoption: {
     activeUsers: number;
+    workflowRuns: number;
     runsPerUser: number | null;
     mostUsedFeature: string | null;
-    averageFeedbackRating: number | null;
-    usefulOutputRate: number | null;
     rejectionRate: number | null;
     topWorkflowByAdoption: string | null;
-    feedbackCount: number;
   };
   warnings: string[];
 };

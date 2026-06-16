@@ -22,7 +22,7 @@ export function ProjectContextSection({
     <Field
       label="Related work items to retrieve"
       htmlFor="retrieval-top-k"
-      description="Recommended: 5–10. Higher values give the AI more context but may increase token usage. Pinned and linked items are always added on top."
+      description="Recommended is used by default. Higher values give the AI more context but may increase token usage. Pinned and linked items are always added on top."
     >
       <div className="flex flex-wrap items-center gap-2">
         {PRESETS.map((preset) => (
@@ -34,7 +34,7 @@ export function ProjectContextSection({
             aria-pressed={form.retrievalTopK === preset.value}
             onClick={() => update("retrievalTopK", preset.value)}
           >
-            {preset.label} · {preset.value}
+            {preset.label}: {preset.value}
           </Button>
         ))}
         <Input

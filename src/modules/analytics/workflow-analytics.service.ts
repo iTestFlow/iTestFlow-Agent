@@ -22,7 +22,6 @@ type WorkflowRunRow = {
   items_generated: number;
   items_selected: number;
   items_published: number;
-  feedback_rating: number | null;
   actual_duration_minutes: number | null;
 };
 
@@ -193,7 +192,6 @@ function completeWorkflowRunImpl(input: {
   const realized = input.valueRealized ?? isRealizedValue({
     itemsPublished,
     itemsSelected,
-    feedbackRating: row.feedback_rating,
   });
   const estimatedSavedMinutes = realized
     ? calculateEstimatedSavings(row.manual_baseline_minutes, actualDurationMinutes)
@@ -255,57 +253,6 @@ function failWorkflowRunImpl(input: {
   });
 }
 
-// Unlike the other instrumentation functions, this is the primary operation of the
-// workflow-feedback endpoint (not best-effort telemetry embedded in another request),
-// so it reports whether a row was updated and is allowed to throw — the route turns
-// that into an honest 404 / 503 instead of a blanket success.
-export function recordWorkflowFeedback(input: {
-  scope: ProjectScope;
-  runId: string;
-  rating: 1 | 2 | 3;
-  label?: "accepted_without_edits" | "accepted_minor_edits" | "accepted_major_edits" | "rejected";
-  comment?: string;
-}): { recorded: boolean } {
-  const scope = assertProjectScope(input.scope);
-  const result = getDatabase().prepare(
-    `UPDATE analytics_workflow_runs
-     SET feedback_rating = @rating, feedback_label = @label, feedback_comment = @comment,
-         updated_at = @updatedAt
-     WHERE id = @runId AND project_id = @projectId AND azure_project_id = @azureProjectId`,
-  ).run({
-    runId: input.runId,
-    projectId: scope.projectId,
-    azureProjectId: scope.azureProjectId,
-    rating: input.rating,
-    label: input.label ?? null,
-    comment: input.comment?.trim() || null,
-    updatedAt: nowIso(),
-  }) as { changes: number | bigint };
-
-  // No row matched the scoped runId (stale, or belongs to another project): report it
-  // so the caller can return not-found rather than a false success.
-  if (Number(result.changes) === 0) return { recorded: false };
-
-  const row = getRun(scope, input.runId);
-  if (!row || row.feedback_rating === null || row.feedback_rating < 2) return { recorded: true };
-  // Only credit estimated savings for runs that genuinely produced value. Never
-  // revive savings on failed/cancelled runs (failWorkflowRun deliberately sets 0),
-  // and never fabricate a duration from wall-clock when the run never recorded one.
-  if (row.status === "failed" || row.status === "cancelled") return { recorded: true };
-  if (row.actual_duration_minutes === null) return { recorded: true };
-  getDatabase().prepare(
-    `UPDATE analytics_workflow_runs
-     SET estimated_saved_minutes = @estimatedSavedMinutes
-     WHERE id = @runId AND project_id = @projectId AND azure_project_id = @azureProjectId`,
-  ).run({
-    runId: input.runId,
-    projectId: scope.projectId,
-    azureProjectId: scope.azureProjectId,
-    estimatedSavedMinutes: calculateEstimatedSavings(row.manual_baseline_minutes, row.actual_duration_minutes),
-  });
-  return { recorded: true };
-}
-
 function getWorkflowBaseline(workflowType: WorkflowType) {
   return getEffectiveRuntimeSettings()?.dashboardValueMetrics?.manualBaselineMinutes?.[workflowType]
     ?? defaultWorkflowBaselines[workflowType];
@@ -314,7 +261,7 @@ function getWorkflowBaseline(workflowType: WorkflowType) {
 function getRun(scope: ProjectScope, runId: string) {
   return getDatabase().prepare(
     `SELECT id, status, started_at, manual_baseline_minutes, items_generated, items_selected,
-            items_published, feedback_rating, actual_duration_minutes
+            items_published, actual_duration_minutes
      FROM analytics_workflow_runs
      WHERE id = @runId AND project_id = @projectId AND azure_project_id = @azureProjectId`,
   ).get({

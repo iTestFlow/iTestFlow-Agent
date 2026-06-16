@@ -1,9 +1,10 @@
 "use client";
 
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import {
+  defaultWorkflowBaselines,
   workflowLabels,
   workflowTypeValues,
   type WorkflowType,
@@ -33,20 +34,24 @@ export function DashboardValueMetricsSection({
     });
   }
 
-  return (
-    <div className="space-y-5 p-4">
-      <div className="grid gap-3 md:grid-cols-2">
-        <ToggleRow
-          label="Enable workflow feedback prompts"
-          description="Allow users to rate completed workflow outputs."
-          checked={settings.feedbackPromptEnabled}
-          onCheckedChange={(feedbackPromptEnabled) => patch({ feedbackPromptEnabled })}
-        />
-      </div>
+  function resetToDefaults() {
+    patch({ manualBaselineMinutes: { ...defaultWorkflowBaselines } });
+  }
 
+  return (
+    <div className="space-y-5">
       <div>
-        <div className="text-sm font-semibold text-foreground">Manual baseline minutes</div>
-        <p className="mt-1 text-xs text-muted-foreground">Used only for transparent Estimated time-saving calculations.</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-foreground">Manual baseline minutes</div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Used only for transparent estimated time-saving calculations.
+            </p>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={resetToDefaults}>
+            Reset to recommended defaults
+          </Button>
+        </div>
         <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {workflowTypeValues.map((workflowType) => (
             <div key={workflowType} className="space-y-1.5">
@@ -63,28 +68,6 @@ export function DashboardValueMetricsSection({
           ))}
         </div>
       </div>
-    </div>
-  );
-}
-
-function ToggleRow({
-  label,
-  description,
-  checked,
-  onCheckedChange,
-}: {
-  label: string;
-  description: string;
-  checked: boolean;
-  onCheckedChange: (checked: boolean) => void;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-4 rounded-lg border border-border p-3">
-      <div>
-        <div className="text-sm font-medium text-foreground">{label}</div>
-        <div className="mt-1 text-xs leading-5 text-muted-foreground">{description}</div>
-      </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} aria-label={label} />
     </div>
   );
 }

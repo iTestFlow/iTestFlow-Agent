@@ -48,7 +48,6 @@ import {
 import { buildRequirementAnalysisComment } from "@/modules/requirement-analysis/comment/requirement-analysis-comment";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 import type { ProjectUser } from "@/types/azure-devops";
-import { WorkflowFeedback } from "@/components/workflow/workflow-feedback";
 
 function severityRank(value: RequirementFinding["severity"]) {
   const ranks: Record<RequirementFinding["severity"], number> = {
@@ -606,15 +605,12 @@ export function RequirementsAnalysisClient() {
                 ) : null}
                 {pushState.error ? <ErrorBlock message={pushState.error} /> : null}
                 {pushState.data?.success ? (
-                  <div className="space-y-3">
-                    <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success">
-                      <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
-                      <div>
-                        <div className="font-semibold text-foreground">Comment pushed to Azure DevOps</div>
-                        <p className="mt-1 text-success">The selected requirements findings were added to the target work item.</p>
-                      </div>
+                  <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success">
+                    <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
+                    <div>
+                      <div className="font-semibold text-foreground">Comment pushed to Azure DevOps</div>
+                      <p className="mt-1 text-success">The selected requirements findings were added to the target work item.</p>
                     </div>
-                    <WorkflowFeedback scope={scope} runId={analysis.data.analyticsRunId} />
                   </div>
                 ) : null}
               </div>

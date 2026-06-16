@@ -12,7 +12,6 @@ import { SearchableCombobox } from "@/components/ui/searchable-combobox";
 import { Callout } from "@/components/qa/callout";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
-import { WorkflowFeedback } from "@/components/workflow/workflow-feedback";
 import { RefreshButton } from "@/components/qa/refresh-button";
 import { toneClass, type Tone } from "@/components/qa/tone";
 import { cn } from "@/lib/utils";
@@ -707,9 +706,6 @@ export function PublishGeneratedCasesPanel({
         </div>
 
         {state.data ? <PublishResultSummary data={state.data} /> : null}
-        {state.data?.results.some((result) => result.success) ? (
-          <WorkflowFeedback scope={scope} runId={analyticsRunId} />
-        ) : null}
       </div>
     </SectionCard>
   );

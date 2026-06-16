@@ -19,13 +19,13 @@ import {
 function providerHelp(provider: Provider): string {
   switch (provider) {
     case "openai":
-      return "Use an OpenAI API key (sk-…). A base URL is only needed for Azure OpenAI or an OpenAI-compatible proxy.";
+      return "Use an OpenAI API key. Leave empty to keep the saved token; re-enter it only when rotating credentials.";
     case "gemini":
-      return "Use a Google AI Studio API key. A base URL is only needed for a compatible proxy.";
+      return "Use a Google AI Studio API key. Leave empty to keep the saved token; re-enter it only when rotating credentials.";
     case "anthropic":
-      return "Use an Anthropic API key (sk-ant-…). A base URL is only needed for a proxy or gateway.";
+      return "Use an Anthropic API key. Leave empty to keep the saved token; re-enter it only when rotating credentials.";
     case "ollama":
-      return "Runs against a local Ollama server. An API key is only needed if your endpoint requires authentication.";
+      return "Runs against a local Ollama server. Add a token only if your endpoint requires authentication.";
   }
 }
 
@@ -70,7 +70,7 @@ export function AiProviderSection({
   const modelHint = !canLoadModels
     ? "Enter the provider API token, then refresh to load models from the live provider API."
     : loadingModels
-      ? "Fetching available models from the selected provider API…"
+      ? "Fetching available models from the selected provider API..."
       : modelError
         ? "Model list could not be loaded. Use Refresh models to try again."
         : modelsRefreshedAt
@@ -106,7 +106,7 @@ export function AiProviderSection({
       <Field
         label="Provider Base URL (optional)"
         htmlFor="llm-base-url"
-        description="Use this when routing provider requests through a proxy or custom-compatible endpoint."
+        description="Optional. Use this only for Azure OpenAI, a proxy, or another provider-compatible endpoint."
       >
         <Input
           id="llm-base-url"
@@ -133,7 +133,7 @@ export function AiProviderSection({
                 aria-expanded={modelDropdownOpen}
                 className="flex h-11 w-full items-center justify-between rounded-md border border-input bg-card px-3 text-left text-sm"
               >
-                <span className="truncate">{loadingModels ? "Loading models from provider…" : selectedModelLabel}</span>
+                <span className="truncate">{loadingModels ? "Loading models from provider..." : selectedModelLabel}</span>
                 {loadingModels ? (
                   <Loader2 className="h-4 w-4 animate-spin text-primary" />
                 ) : (

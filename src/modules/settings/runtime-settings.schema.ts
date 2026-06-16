@@ -86,7 +86,6 @@ const ManualBaselineMinutesSchema = z.object(
 );
 
 export const DashboardValueMetricsSettingsSchema = z.object({
-  feedbackPromptEnabled: z.boolean().default(true),
   manualBaselineMinutes: ManualBaselineMinutesSchema.default(defaultWorkflowBaselines),
 });
 
@@ -113,7 +112,6 @@ export const RuntimeSettingsInputSchema = z.object({
     }),
   }).default({ retrievalTopK: 8 }),
   dashboardValueMetrics: DashboardValueMetricsSettingsSchema.default({
-    feedbackPromptEnabled: true,
     manualBaselineMinutes: defaultWorkflowBaselines,
   }),
 });

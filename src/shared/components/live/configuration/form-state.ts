@@ -28,7 +28,6 @@ export type FormState = {
   autoUpdateWorkItemTypes: string[];
   autoUpdateStates: string[];
   dashboardValueMetrics: {
-    feedbackPromptEnabled: boolean;
     manualBaselineMinutes: typeof defaultWorkflowBaselines;
   };
 };
@@ -49,7 +48,6 @@ export const INITIAL_FORM: FormState = {
   autoUpdateWorkItemTypes: DEFAULT_CONTEXT_WORK_ITEM_TYPES,
   autoUpdateStates: DEFAULT_CONTEXT_STATES,
   dashboardValueMetrics: {
-    feedbackPromptEnabled: true,
     manualBaselineMinutes: { ...defaultWorkflowBaselines },
   },
 };

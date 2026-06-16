@@ -44,8 +44,7 @@ describe("stakeholder value calculations", () => {
     expect(isRealizedValue({ itemsPublished: 0, itemsSelected: 0 })).toBe(false);
   });
 
-  it("counts useful feedback and completed automation as realized value", () => {
-    expect(isRealizedValue({ feedbackRating: 2 })).toBe(true);
+  it("counts completed automation as realized value", () => {
     expect(isRealizedValue({ automationCompleted: true })).toBe(true);
   });
 });

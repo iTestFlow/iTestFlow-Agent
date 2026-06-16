@@ -16,13 +16,11 @@ export function calculateRate(numerator: number, denominator: number) {
 export function isRealizedValue(input: {
   itemsPublished?: number;
   itemsSelected?: number;
-  feedbackRating?: number | null;
   automationCompleted?: boolean;
 }) {
   return Boolean(
     input.automationCompleted
     || (input.itemsPublished ?? 0) > 0
     || (input.itemsSelected ?? 0) > 0
-    || (input.feedbackRating ?? 0) >= 2,
   );
 }
