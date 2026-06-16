@@ -35,7 +35,6 @@ export type WorkflowSavingsRow = {
   actualAverageMinutes: number | null;
   averageSavedMinutes: number;
   totalSavedMinutes: number;
-  potentialSavedMinutes: number;
   acceptanceRate: number | null;
 };
 
@@ -57,7 +56,7 @@ export type SystemDashboardAnalytics = {
   };
   workflowSavings: {
     rows: WorkflowSavingsRow[];
-    trend: Array<{ date: string; savedHours: number; potentialSavedHours: number }>;
+    trend: Array<{ date: string; savedHours: number }>;
   };
   requirementQuality: {
     requirementsAnalyzed: number;

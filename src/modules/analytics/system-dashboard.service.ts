@@ -184,10 +184,6 @@ function buildWorkflowSavings(rows: AnalyticsRow[]): WorkflowSavingsRow[] {
       .map(effectiveDurationMinutes)
       .filter((value): value is number => value !== null);
     const totalSavedMinutes = sum(workflowRows, "estimated_saved_minutes");
-    const potentialSavedMinutes = workflowRows.reduce(
-      (total, row) => total + potentialSavingsMinutes(row),
-      0,
-    );
     return {
       workflowType,
       workflow: workflowLabels[workflowType],
@@ -196,7 +192,6 @@ function buildWorkflowSavings(rows: AnalyticsRow[]): WorkflowSavingsRow[] {
       actualAverageMinutes: durations.length ? round(average(durations) ?? 0, 1) : null,
       averageSavedMinutes: workflowRows.length ? round(totalSavedMinutes / workflowRows.length, 1) : 0,
       totalSavedMinutes: round(totalSavedMinutes, 1),
-      potentialSavedMinutes: round(potentialSavedMinutes, 1),
       acceptanceRate: PUBLISH_WORKFLOW_TYPES.includes(workflowType) && generated
         ? round((accepted / generated) * 100, 1)
         : null,
@@ -210,21 +205,12 @@ function effectiveDurationMinutes(row: AnalyticsRow) {
   return calculateElapsedMinutes(row.started_at, row.generation_completed_at);
 }
 
-function potentialSavingsMinutes(row: AnalyticsRow) {
-  if (row.estimated_saved_minutes > 0 || row.items_generated <= 0) return 0;
-  if (row.status === "failed" || row.status === "cancelled") return 0;
-  const duration = effectiveDurationMinutes(row);
-  if (duration === null) return 0;
-  return Math.max(row.manual_baseline_minutes - duration, 0);
-}
-
 function buildSavingsTrend(rows: AnalyticsRow[]) {
-  const grouped = new Map<string, { savedHours: number; potentialSavedHours: number }>();
+  const grouped = new Map<string, { savedHours: number }>();
   for (const row of rows) {
     const date = toLocalDayString(new Date(row.started_at));
-    const current = grouped.get(date) ?? { savedHours: 0, potentialSavedHours: 0 };
+    const current = grouped.get(date) ?? { savedHours: 0 };
     current.savedHours += row.estimated_saved_minutes / 60;
-    current.potentialSavedHours += potentialSavingsMinutes(row) / 60;
     grouped.set(date, current);
   }
   return [...grouped.entries()]
@@ -232,7 +218,6 @@ function buildSavingsTrend(rows: AnalyticsRow[]) {
     .map(([date, values]) => ({
       date,
       savedHours: round(values.savedHours, 1),
-      potentialSavedHours: round(values.potentialSavedHours, 1),
     }));
 }
 

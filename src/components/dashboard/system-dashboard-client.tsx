@@ -397,7 +397,7 @@ function SavingsSection({ data }: { data: SystemDashboardAnalytics }) {
             <TableHeader><TableRow>
               <TableHead>Workflow</TableHead><TableHead>Runs</TableHead><TableHead>Manual Baseline</TableHead>
               <TableHead>Actual Avg</TableHead><TableHead>Avg Saved</TableHead><TableHead>Total Saved</TableHead>
-              <TableHead>Pending Potential</TableHead><TableHead>Acceptance</TableHead>
+              <TableHead>Acceptance</TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {data.workflowSavings.rows.map((row) => (
@@ -408,7 +408,6 @@ function SavingsSection({ data }: { data: SystemDashboardAnalytics }) {
                   <TableCell>{row.actualAverageMinutes === null ? "Needs data" : minutes(row.actualAverageMinutes)}</TableCell>
                   <TableCell>{minutes(row.averageSavedMinutes)}</TableCell>
                   <TableCell>{hours(row.totalSavedMinutes)}</TableCell>
-                  <TableCell>{hours(row.potentialSavedMinutes)}</TableCell>
                   <TableCell>{row.acceptanceRate === null ? "Needs data" : `${row.acceptanceRate}%`}</TableCell>
                 </TableRow>
               ))}
@@ -558,11 +557,10 @@ function ChartCard({ title, empty, children }: { title: string; empty: boolean; 
 
 function SavedHoursBar({ rows }: { rows: SystemDashboardAnalytics["workflowSavings"]["rows"] }) {
   const values = rows
-    .filter((row) => row.totalSavedMinutes > 0 || row.potentialSavedMinutes > 0)
+    .filter((row) => row.totalSavedMinutes > 0)
     .map((row) => ({
       name: row.workflow,
       realizedHours: round(row.totalSavedMinutes / 60),
-      potentialHours: round(row.potentialSavedMinutes / 60),
     }));
   return (
     <div className="h-[300px]">
@@ -577,7 +575,6 @@ function SavedHoursBar({ rows }: { rows: SystemDashboardAnalytics["workflowSavin
           />
           <Legend />
           <Bar dataKey="realizedHours" name="Realized estimated hours" fill="hsl(var(--chart-1))" radius={[2, 6, 6, 2]} />
-          <Bar dataKey="potentialHours" name="Potential awaiting acceptance" fill="hsl(var(--chart-3))" radius={[2, 6, 6, 2]} />
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -595,7 +592,6 @@ function SavedHoursTrend({ rows }: { rows: SystemDashboardAnalytics["workflowSav
           <Tooltip content={<SystemChartTooltip suffix=" hr" />} />
           <Legend />
           <Line type="monotone" dataKey="savedHours" name="Realized estimated hours" stroke="hsl(var(--chart-1))" strokeWidth={2} />
-          <Line type="monotone" dataKey="potentialSavedHours" name="Potential awaiting acceptance" stroke="hsl(var(--chart-3))" strokeWidth={2} strokeDasharray="5 4" />
         </LineChart>
       </ResponsiveContainer>
     </div>
@@ -689,7 +685,5 @@ function round(value: number) {
 }
 
 function hasSavingsData(data: SystemDashboardAnalytics) {
-  return data.workflowSavings.rows.some(
-    (row) => row.totalSavedMinutes > 0 || row.potentialSavedMinutes > 0,
-  );
+  return data.workflowSavings.rows.some((row) => row.totalSavedMinutes > 0);
 }
