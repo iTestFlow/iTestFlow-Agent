@@ -63,6 +63,7 @@ export type RequirementAnalysisRunResult = {
   resolvedContextUsed?: unknown[];
   contextCitations: WorkflowContextCitation[];
   tokenUsage?: TokenUsage;
+  warnings?: string[];
 };
 
 export type GeneratedTestCase = {

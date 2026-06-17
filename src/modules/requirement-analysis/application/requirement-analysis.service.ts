@@ -51,7 +51,7 @@ export async function runRequirementAnalysis(input: {
       targetWorkItemId: extractWorkItemId(input.targetRequirement),
     },
   });
-  assertRequirementAnalysisChecklistScope(result.validatedOutput, promptDraft.enabledChecklistItemIds);
+  const scopedOutput = normalizeRequirementAnalysisChecklistScope(result.validatedOutput, promptDraft.enabledChecklistItemIds);
 
   writeAuditLog({
     projectId: scope.projectId,
@@ -67,13 +67,16 @@ export async function runRequirementAnalysis(input: {
       model: result.model,
       promptVersion: requirementAnalysisPrompt.version,
       enabledChecklistItemIds: promptDraft.enabledChecklistItemIds,
+      droppedDisabledChecklistFindings: scopedOutput.droppedFindings,
     },
   });
 
   return {
     ...result,
+    validatedOutput: scopedOutput.output,
     enabledChecklistItemIds: promptDraft.enabledChecklistItemIds,
     relevantProjectKnowledgeBase: promptDraft.relevantProjectKnowledgeBase,
+    warnings: mergeWarnings(result.warnings, scopedOutput.warnings),
   };
 }
 
@@ -131,7 +134,7 @@ export function completeManualRequirementAnalysis(input: {
     schema: RequirementAnalysisOutputSchema,
     rawOutput: input.rawOutput,
   });
-  assertRequirementAnalysisChecklistScope(validatedOutput, enabledChecklistItemIds);
+  const scopedOutput = normalizeRequirementAnalysisChecklistScope(validatedOutput, enabledChecklistItemIds);
 
   writeAuditLog({
     projectId: scope.projectId,
@@ -147,6 +150,7 @@ export function completeManualRequirementAnalysis(input: {
       promptVersion: requirementAnalysisPrompt.version,
       targetWorkItemId: input.targetWorkItemId,
       enabledChecklistItemIds,
+      droppedDisabledChecklistFindings: scopedOutput.droppedFindings,
     },
   });
 
@@ -154,7 +158,8 @@ export function completeManualRequirementAnalysis(input: {
     provider: "external",
     model: "manual-external",
     rawOutput: input.rawOutput,
-    validatedOutput,
+    validatedOutput: scopedOutput.output,
+    warnings: scopedOutput.warnings,
   };
 }
 
@@ -196,14 +201,56 @@ function buildRequirementOutputContract(enabledChecklistItemIds: RequirementAnal
   };
 }
 
-function assertRequirementAnalysisChecklistScope(output: RequirementAnalysisOutput, enabledChecklistItemIds: RequirementAnalysisChecklistItemId[]) {
+export function normalizeRequirementAnalysisChecklistScope(
+  output: RequirementAnalysisOutput,
+  enabledChecklistItemIds: RequirementAnalysisChecklistItemId[],
+) {
   const enabledChecklistItemIdSet = new Set(enabledChecklistItemIds);
   const invalidFindings = output.findings.filter((finding) => !enabledChecklistItemIdSet.has(finding.checklistItemId));
 
-  if (!invalidFindings.length) return;
+  if (!invalidFindings.length) {
+    return { output, warnings: undefined, droppedFindings: [] };
+  }
 
+  const scopedFindings = output.findings.filter((finding) => enabledChecklistItemIdSet.has(finding.checklistItemId));
   const invalidSummary = invalidFindings.map((finding) => `${finding.id} uses ${finding.checklistItemId}`).join(", ");
-  throw new Error(
-    `Requirement analysis output included findings for disabled checklist items: ${invalidSummary}. Enabled checklist items: ${enabledChecklistItemIds.join(", ")}.`,
+  const warning = `Ignored ${invalidFindings.length} requirement analysis finding${invalidFindings.length === 1 ? "" : "s"} for disabled checklist item${invalidFindings.length === 1 ? "" : "s"}: ${invalidSummary}.`;
+
+  return {
+    output: {
+      ...output,
+      findings: scopedFindings,
+      summary: summarizeFindings(output.summary, scopedFindings),
+    },
+    warnings: [warning],
+    droppedFindings: invalidFindings.map((finding) => ({
+      id: finding.id,
+      checklistItemId: finding.checklistItemId,
+    })),
+  };
+}
+
+function summarizeFindings(summary: RequirementAnalysisOutput["summary"], findings: RequirementAnalysisOutput["findings"]) {
+  const counts = findings.reduce(
+    (accumulator, finding) => {
+      accumulator[finding.severity] += 1;
+      return accumulator;
+    },
+    { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
   );
+
+  return {
+    ...summary,
+    totalFindings: findings.length,
+    criticalCount: counts.critical,
+    highCount: counts.high,
+    mediumCount: counts.medium,
+    lowCount: counts.low,
+    infoCount: counts.info,
+  };
+}
+
+function mergeWarnings(...warningGroups: Array<string[] | undefined>) {
+  const warnings = warningGroups.flatMap((group) => group ?? []).filter((warning) => warning.trim().length > 0);
+  return warnings.length ? warnings : undefined;
 }

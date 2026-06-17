@@ -82,6 +82,7 @@ export async function POST(request: Request) {
       model: result.model,
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
+      warnings: result.warnings,
     });
   } catch (error) {
     failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External requirement analysis failed." });

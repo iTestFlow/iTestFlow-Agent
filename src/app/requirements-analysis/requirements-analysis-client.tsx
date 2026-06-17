@@ -545,6 +545,11 @@ export function RequirementsAnalysisClient() {
           {mode === "auto" && gen.status === "completed" ? (
             <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
           ) : null}
+          {mode === "manual" && analysis.data.warnings?.length ? (
+            <Callout tone="warning" title="Analysis warnings">
+              {analysis.data.warnings.join(" ")}
+            </Callout>
+          ) : null}
           <WorkflowContextCitations citations={analysis.data.contextCitations} />
           <RequirementFindingsReview
             key={findingsReviewVersion}
