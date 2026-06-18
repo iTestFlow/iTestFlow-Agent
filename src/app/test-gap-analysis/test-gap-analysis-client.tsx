@@ -53,11 +53,13 @@ import type {
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 import type { ActiveProjectScope } from "@/shared/lib/active-project";
 
+type TestGapAnalysisStep = "analyze" | "review" | "linkedCases";
+
 export function TestGapAnalysisClient() {
   const scope = useActiveProject();
   const resultsRef = useRef<HTMLDivElement | null>(null);
   const promptSectionRef = useRef<HTMLDivElement | null>(null);
-  const [activeStep, setActiveStep] = useState<"analyze" | "review">("analyze");
+  const [activeStep, setActiveStep] = useState<TestGapAnalysisStep>("analyze");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
   const [mode, setMode] = useState<WorkflowMode>("auto");
@@ -224,14 +226,20 @@ export function TestGapAnalysisClient() {
           },
           {
             id: "review",
-            label: "Review Gaps & Publish Additions",
-            description: "Inspect coverage and approve suggested test cases.",
+            label: "Review Gaps",
+            description: "Inspect coverage gaps, traceability, and review findings.",
+            icon: ListChecks,
+          },
+          {
+            id: "linkedCases",
+            label: "Linked Cases & Additions",
+            description: "Review linked Azure DevOps test cases and approve suggested additions.",
             icon: ListChecks,
           },
         ]}
         activeStepId={activeStep}
-        completedStepIds={state.data ? ["analyze"] : []}
-        enabledStepIds={state.data ? ["analyze", "review"] : ["analyze"]}
+        completedStepIds={state.data ? (activeStep === "linkedCases" ? ["analyze", "review"] : ["analyze"]) : []}
+        enabledStepIds={state.data ? ["analyze", "review", "linkedCases"] : ["analyze"]}
         onStepChange={setActiveStep}
         ariaLabel="Test Gap Analysis workflow"
       />
@@ -347,7 +355,7 @@ export function TestGapAnalysisClient() {
           <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="text-sm font-semibold text-foreground">
-                Reviewing coverage gaps for #{targetWorkItemId}
+                {activeStep === "linkedCases" ? "Reviewing linked cases and additions" : "Reviewing coverage gaps"} for #{targetWorkItemId}
                 {workItemLookup.data?.title ? (
                   <span className="font-normal text-muted-foreground"> — {workItemLookup.data.title}</span>
                 ) : null}
@@ -359,48 +367,62 @@ export function TestGapAnalysisClient() {
               Back to inputs
             </Button>
           </div>
-          <div className="space-y-2">
-            {mode === "auto" && gen.status === "completed" ? (
-              <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
-            ) : null}
-            <WorkflowContextCitations citations={state.data.contextCitations} />
-            <ExistingTraceabilitySummary result={state.data} />
-          </div>
-          <ExistingTraceabilityMatrix rows={state.data.traceabilityMatrix} />
-          <ExistingReviewInsights insights={state.data.insights} findings={state.data.findings} />
-          <ExistingLinkedTestCasesList linkedTestCases={state.data.linkedTestCases} />
-          {state.data.suggestedAdditions.length ? (
+          {activeStep === "review" ? (
             <>
-              <GeneratedTestCasesReview
-                testCases={state.data.suggestedAdditions}
-                onChange={updateSuggestedAdditions}
-                selectedIds={selectedSuggestedIds}
-                onSelectedIdsChange={(ids) => {
-                  setHasUnfinishedWork(true);
-                  setSelectedSuggestedIds(ids);
-                }}
-                title="Suggested Additions"
-                description="Review missing-coverage recommendations and create only the selected, approved additions."
-                allowAdd={false}
-                allowDelete
-              />
-              <SuggestedAdditionsPublishPanel
-                scope={scope}
-                targetWorkItemId={targetWorkItemId}
-                testCases={selectedSuggestedAdditions}
-                invalidCaseCount={invalidSelectedSuggestedCount}
-                onPublished={() => setHasUnfinishedWork(false)}
-                analyticsRunId={state.data.analyticsRunId}
-                itemsGenerated={state.data.suggestedAdditions.length}
-                itemsEdited={selectedSuggestedAdditions.filter((testCase) => {
-                  const original = state.data?.suggestedAdditions.find((item) => item.id === testCase.id);
-                  return JSON.stringify(testCase) !== JSON.stringify(original);
-                }).length}
-              />
+              <div className="space-y-2">
+                {mode === "auto" && gen.status === "completed" ? (
+                  <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
+                ) : null}
+                <WorkflowContextCitations citations={state.data.contextCitations} />
+                <ExistingTraceabilitySummary result={state.data} />
+              </div>
+              <ExistingTraceabilityMatrix rows={state.data.traceabilityMatrix} />
+              <ExistingReviewInsights insights={state.data.insights} findings={state.data.findings} />
+              <div className="flex justify-end">
+                <Button type="button" onClick={() => setActiveStep("linkedCases")}>
+                  <ListChecks className="size-4" />
+                  Review linked cases and additions
+                </Button>
+              </div>
             </>
-          ) : (
-            <EmptyBlock message="No draft additions were suggested. The current linked test cases may already cover the reviewed points, or only clarification is needed." />
-          )}
+          ) : null}
+          {activeStep === "linkedCases" ? (
+            <>
+              <ExistingLinkedTestCasesList linkedTestCases={state.data.linkedTestCases} />
+              {state.data.suggestedAdditions.length ? (
+                <>
+                  <GeneratedTestCasesReview
+                    testCases={state.data.suggestedAdditions}
+                    onChange={updateSuggestedAdditions}
+                    selectedIds={selectedSuggestedIds}
+                    onSelectedIdsChange={(ids) => {
+                      setHasUnfinishedWork(true);
+                      setSelectedSuggestedIds(ids);
+                    }}
+                    title="Suggested Additions"
+                    description="Review missing-coverage recommendations and create only the selected, approved additions."
+                    allowAdd={false}
+                    allowDelete
+                  />
+                  <SuggestedAdditionsPublishPanel
+                    scope={scope}
+                    targetWorkItemId={targetWorkItemId}
+                    testCases={selectedSuggestedAdditions}
+                    invalidCaseCount={invalidSelectedSuggestedCount}
+                    onPublished={() => setHasUnfinishedWork(false)}
+                    analyticsRunId={state.data.analyticsRunId}
+                    itemsGenerated={state.data.suggestedAdditions.length}
+                    itemsEdited={selectedSuggestedAdditions.filter((testCase) => {
+                      const original = state.data?.suggestedAdditions.find((item) => item.id === testCase.id);
+                      return JSON.stringify(testCase) !== JSON.stringify(original);
+                    }).length}
+                  />
+                </>
+              ) : (
+                <EmptyBlock message="No draft additions were suggested. The current linked test cases may already cover the reviewed points, or only clarification is needed." />
+              )}
+            </>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -560,7 +582,7 @@ function ExistingLinkedTestCasesList({ linkedTestCases }: { linkedTestCases: Exi
 
   return (
     <SectionCard
-      title="Linked Test Cases from Azure DevOps"
+      title="Linked Test Cases"
       action={
         <Button
           type="button"
@@ -711,3 +733,4 @@ function coverageSourceLabel(sourceType: ExistingTraceabilityRow["sourceType"]) 
   if (sourceType === "description") return "Description";
   return "Story";
 }
+
