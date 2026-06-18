@@ -31,7 +31,7 @@ export async function POST(request: Request) {
 
   const [azureResult, llmResult] = await Promise.allSettled([
     azureAdapter.testConnection(),
-    parsed.data.llm.provider === "ollama" || parsed.data.llm.apiKey
+    parsed.data.llm.apiKey
       ? llmProvider.testConnection()
       : Promise.resolve(false),
   ]);

@@ -1,6 +1,6 @@
 import type { ActiveProjectScope } from "@/shared/lib/active-project";
 
-export type Provider = "openai" | "gemini" | "anthropic" | "ollama";
+export type Provider = "openai" | "gemini" | "anthropic";
 
 export type ServiceTestResult = { success: boolean; error?: string };
 

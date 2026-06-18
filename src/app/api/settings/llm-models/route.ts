@@ -26,7 +26,7 @@ export async function POST(request: Request) {
   const savedProviderSettings = savedSettings?.llm.provider === requestBody.data.provider ? savedSettings.llm : null;
   const apiKey = requestBody.data.apiKey?.trim() || savedProviderSettings?.apiKey;
 
-  if (requestBody.data.provider !== "ollama" && !apiKey) {
+  if (!apiKey) {
     return NextResponse.json(
       {
         error: "Model list could not be loaded. Enter the selected provider API token so the app can fetch models from the live provider API.",

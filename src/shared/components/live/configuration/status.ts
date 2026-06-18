@@ -38,7 +38,7 @@ export function deriveAiStatus(input: {
     return { tone: "destructive", label: "Failed", detail: input.testResult.error };
   }
   if (!input.model.trim()) return { tone: "warning", label: "Model unavailable" };
-  if (input.provider !== "ollama" && !input.canUseSavedLlmKey && !input.apiKey.trim()) {
+  if (!input.canUseSavedLlmKey && !input.apiKey.trim()) {
     return { tone: "warning", label: "Needs token" };
   }
   return { tone: "info", label: "Configured", detail: input.model };

@@ -66,7 +66,7 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 - npm
 - An Azure DevOps organization URL, such as `https://dev.azure.com/YOUR_ORG`
 - An Azure DevOps Personal Access Token with the permissions needed for work items, comments, Test Plans, Test Suites, test cases, and links
-- One LLM provider: OpenAI, Gemini, Anthropic, or Ollama
+- One LLM provider: OpenAI, Gemini, or Anthropic
 
 ### Install and Run
 
@@ -104,7 +104,7 @@ The recommended setup path is [http://127.0.0.1:3000/setup](http://127.0.0.1:300
 
 - Azure DevOps organization URL and Personal Access Token
 - LLM provider and model
-- Provider API key or Ollama base URL
+- Provider API key
 - Maximum output token cap and transient-failure retry count
 - Project-context retrieval count
 - Optional automatic context-update schedule and filters
@@ -143,11 +143,6 @@ GEMINI_MODEL=YOUR_MODEL_ID
 DEFAULT_LLM_PROVIDER=anthropic
 ANTHROPIC_API_KEY=YOUR_ANTHROPIC_KEY
 ANTHROPIC_MODEL=YOUR_MODEL_ID
-
-# Local Ollama
-DEFAULT_LLM_PROVIDER=ollama
-OLLAMA_MODEL=YOUR_LOCAL_MODEL
-OLLAMA_BASE_URL=http://localhost:11434
 ```
 
 ## First-Run Workflow

@@ -165,25 +165,21 @@ function summarizeEnvSettings(): RuntimeSettingsSummary {
 function getSettingsFromEnv(): RuntimeSettings | null {
   const provider = process.env.DEFAULT_LLM_PROVIDER;
   if (!process.env.AZURE_DEVOPS_ORG_URL || !process.env.AZURE_DEVOPS_PAT || !provider) return null;
-  if (!["openai", "gemini", "anthropic", "ollama"].includes(provider)) return null;
+  if (!["openai", "gemini", "anthropic"].includes(provider)) return null;
 
   const apiKey =
     provider === "openai"
       ? process.env.OPENAI_API_KEY
       : provider === "gemini"
         ? process.env.GEMINI_API_KEY
-        : provider === "anthropic"
-          ? process.env.ANTHROPIC_API_KEY
-          : undefined;
+        : process.env.ANTHROPIC_API_KEY;
 
   const model =
     provider === "openai"
       ? process.env.OPENAI_MODEL
       : provider === "gemini"
         ? process.env.GEMINI_MODEL
-        : provider === "anthropic"
-          ? process.env.ANTHROPIC_MODEL
-          : process.env.OLLAMA_MODEL;
+        : process.env.ANTHROPIC_MODEL;
 
   if (!model) return null;
 
@@ -206,9 +202,7 @@ function getSettingsFromEnv(): RuntimeSettings | null {
           ? optionalEnv(process.env.OPENAI_BASE_URL)
           : provider === "gemini"
             ? optionalEnv(process.env.GEMINI_BASE_URL)
-            : provider === "anthropic"
-              ? optionalEnv(process.env.ANTHROPIC_BASE_URL)
-              : optionalEnv(process.env.OLLAMA_BASE_URL),
+            : optionalEnv(process.env.ANTHROPIC_BASE_URL),
       ...llmControls,
     },
     context: {

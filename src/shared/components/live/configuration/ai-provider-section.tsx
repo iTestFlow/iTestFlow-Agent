@@ -24,8 +24,6 @@ function providerHelp(provider: Provider): string {
       return "Use a Google AI Studio API key. Leave empty to keep the saved token; re-enter it only when rotating credentials.";
     case "anthropic":
       return "Use an Anthropic API key. Leave empty to keep the saved token; re-enter it only when rotating credentials.";
-    case "ollama":
-      return "Runs against a local Ollama server. Add a token only if your endpoint requires authentication.";
   }
 }
 
@@ -64,8 +62,7 @@ export function AiProviderSection({
   testing: boolean;
   testResult?: ServiceTestResult;
 }) {
-  const isOllama = form.provider === "ollama";
-  const canLoadModels = isOllama || form.apiKey.trim().length > 0 || canUseSavedLlmKey;
+  const canLoadModels = form.apiKey.trim().length > 0 || canUseSavedLlmKey;
 
   const modelHint = !canLoadModels
     ? "Enter the provider API token, then refresh to load models from the live provider API."
@@ -89,13 +86,12 @@ export function AiProviderSection({
           <option value="openai">OpenAI</option>
           <option value="gemini">Gemini</option>
           <option value="anthropic">Anthropic</option>
-          <option value="ollama">Ollama</option>
         </select>
       </Field>
 
       <SecretField
         id="llm-api-token"
-        label={isOllama ? "LLM API Token (optional)" : "LLM API Token"}
+        label="LLM API Token"
         value={form.apiKey}
         onChange={(value) => update("apiKey", value)}
         placeholder="Enter LLM API token"

@@ -257,8 +257,6 @@ export function providerLabel(provider: Provider) {
       return "Gemini";
     case "anthropic":
       return "Anthropic";
-    case "ollama":
-      return "Ollama";
   }
 }
 
@@ -270,7 +268,5 @@ export function defaultBaseUrlPlaceholder(provider: Provider) {
       return "https://generativelanguage.googleapis.com/v1beta";
     case "anthropic":
       return "https://api.anthropic.com";
-    case "ollama":
-      return "http://localhost:11434";
   }
 }

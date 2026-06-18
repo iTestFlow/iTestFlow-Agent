@@ -342,7 +342,7 @@ export function ConfigurationForm({
     if (!isValidOrganizationUrl(form.organizationUrl)) return "Enter a valid organization URL.";
     if (!hasSavedAzurePat && !form.personalAccessToken.trim()) return "Enter your Azure DevOps PAT.";
     if (!form.model.trim()) return "Select an AI model.";
-    if (form.provider !== "ollama" && !canUseSavedLlmKey && !form.apiKey.trim()) {
+    if (!canUseSavedLlmKey && !form.apiKey.trim()) {
       return "Enter your AI provider API token.";
     }
     if (form.autoUpdateEnabled) {

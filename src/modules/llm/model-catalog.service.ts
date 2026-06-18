@@ -11,7 +11,7 @@ export const ListLLMModelsInputSchema = z.object({
   apiKey: z.string().min(1).optional(),
   baseUrl: z.string().optional(),
 }).superRefine((value, ctx) => {
-  if (value.provider !== "ollama" && !value.apiKey) {
+  if (!value.apiKey) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["apiKey"],
@@ -23,7 +23,7 @@ export const ListLLMModelsInputSchema = z.object({
 export type LLMModelOption = {
   id: string;
   displayName: string;
-  source: "openai" | "gemini" | "anthropic" | "ollama";
+  source: "openai" | "gemini" | "anthropic";
 };
 
 export async function listLLMModels(input: z.infer<typeof ListLLMModelsInputSchema>): Promise<LLMModelOption[]> {
@@ -34,8 +34,6 @@ export async function listLLMModels(input: z.infer<typeof ListLLMModelsInputSche
       return listGeminiModels(input);
     case "anthropic":
       return listAnthropicModels(input);
-    case "ollama":
-      return listOllamaModels(input);
   }
 }
 
@@ -135,25 +133,6 @@ async function listAnthropicModels(input: z.infer<typeof ListLLMModelsInputSchem
   } while (afterId);
 
   return uniqueModels(models);
-}
-
-async function listOllamaModels(input: z.infer<typeof ListLLMModelsInputSchema>): Promise<LLMModelOption[]> {
-  const baseUrl = (input.baseUrl ?? "http://localhost:11434").replace(/\/+$/, "");
-  const response = await fetch(`${baseUrl}/api/tags`, {
-    headers: input.apiKey ? { Authorization: `Bearer ${input.apiKey}` } : undefined,
-  });
-  if (!response.ok) throw new Error(`Ollama model fetch failed: ${await response.text()}`);
-
-  const json = (await response.json()) as {
-    models?: Array<{ name?: string; model?: string }>;
-  };
-
-  return uniqueModels(
-    (json.models ?? []).flatMap((model): LLMModelOption[] => {
-      const id = model.model ?? model.name;
-      return id ? [{ id, displayName: id, source: "ollama" }] : [];
-    }),
-  ).sort((a, b) => sortModelIds(a.id, b.id));
 }
 
 function anthropicModelsBaseUrl(baseUrl?: string) {

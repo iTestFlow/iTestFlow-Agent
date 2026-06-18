@@ -12,7 +12,7 @@ import {
   workflowTypeValues,
 } from "@/modules/analytics/analytics-config";
 
-export const LLMProviderNameSchema = z.enum(["openai", "gemini", "anthropic", "ollama"]);
+export const LLMProviderNameSchema = z.enum(["openai", "gemini", "anthropic"]);
 
 const ProjectScopeSettingsSchema = z.object({
   projectId: z.string().min(1),

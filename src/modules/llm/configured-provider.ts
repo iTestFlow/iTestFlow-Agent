@@ -30,18 +30,14 @@ export function getConfiguredProviderFromEnv(): LLMProvider | null {
       ? process.env.OPENAI_API_KEY
       : provider === "gemini"
         ? process.env.GEMINI_API_KEY
-        : provider === "anthropic"
-          ? process.env.ANTHROPIC_API_KEY
-          : undefined;
+        : process.env.ANTHROPIC_API_KEY;
 
   const model =
     provider === "openai"
       ? process.env.OPENAI_MODEL
       : provider === "gemini"
         ? process.env.GEMINI_MODEL
-        : provider === "anthropic"
-          ? process.env.ANTHROPIC_MODEL
-          : process.env.OLLAMA_MODEL;
+        : process.env.ANTHROPIC_MODEL;
 
   if (!model) return null;
 
@@ -59,9 +55,7 @@ export function getConfiguredProviderFromEnv(): LLMProvider | null {
         ? process.env.OPENAI_BASE_URL
         : provider === "gemini"
           ? process.env.GEMINI_BASE_URL
-          : provider === "anthropic"
-            ? process.env.ANTHROPIC_BASE_URL
-            : process.env.OLLAMA_BASE_URL,
+          : process.env.ANTHROPIC_BASE_URL,
     ...llmControls,
   });
 }

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { LLMRequestLogMetadata } from "./llm-request-log.service";
 
-export type LLMProviderName = "openai" | "gemini" | "anthropic" | "ollama";
+export type LLMProviderName = "openai" | "gemini" | "anthropic";
 
 export type LLMProviderConfig = {
   provider: LLMProviderName;
