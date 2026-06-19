@@ -26,6 +26,9 @@ export const ExistingTestCaseTraceabilityMatrixRowSchema = z.object({
   id: z.string(),
   sourceType: ExistingTestCaseSourceTypeSchema,
   sourceReference: z.string(),
+  sourceText: z.string().default("").transform((value) => (
+    value.length > 500 ? `${value.slice(0, 500).trimEnd()}...` : value
+  )),
   requirementText: z.string(),
   coverageStatus: ExistingTestCaseCoverageStatusSchema,
   severity: ExistingTestCaseReviewSeveritySchema,
@@ -55,6 +58,7 @@ export const ExistingTestCaseReviewFindingSchema = z.object({
     "Weak expected result",
     "Missing preconditions",
     "Missing test data",
+    "Weak test data",
     "Automation readiness",
   ]),
   severity: ExistingTestCaseReviewSeveritySchema,

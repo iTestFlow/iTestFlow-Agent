@@ -152,6 +152,7 @@ const existingTestCaseReviewOutputContract = {
       id: "TM-001",
       sourceType: "story|description|acceptanceCriteria|businessRules",
       sourceReference: "Title|Description paragraph 1|AC-1|Business rule ID",
+      sourceText: "Concise source excerpt, 240 characters or fewer; empty string if it duplicates requirementText/sourceReference. Include at most one source URL only when link-based.",
       requirementText: "One atomic testable point from the story.",
       coverageStatus: "Covered|Partially covered|Not covered|Needs review",
       severity: "High|Medium|Low",
@@ -177,7 +178,7 @@ const existingTestCaseReviewOutputContract = {
     {
       id: "F-001",
       category:
-        "Missing coverage|Duplicate|Weak steps|Weak expected result|Missing preconditions|Missing test data|Automation readiness",
+        "Missing coverage|Duplicate|Weak steps|Weak expected result|Missing preconditions|Missing test data|Weak test data|Automation readiness",
       severity: "High|Medium|Low",
       title: "Brief finding title",
       explanation: "Grounded finding based only on supplied evidence.",

@@ -23,6 +23,8 @@ export const existingTestCaseReviewPrompt: SystemPromptDefinition = {
     "Suggested additions must be Azure DevOps-compatible draft test cases and must trace back to uncovered or partially covered matrix row IDs through relatedAcceptanceCriteria or tags.",
     "Use Azure DevOps grid-compatible steps. Step 1 must be Preconditions with expectedResult exactly \"Preconditions are met\".",
     "For traceabilityMatrix.sourceType, use only story, description, acceptanceCriteria, or businessRules.",
+    "For each traceabilityMatrix row, set sourceText to a concise source excerpt of 240 characters or fewer from the story title, relevant description sentence/paragraph, acceptance criterion text, or business rule text. If the excerpt would duplicate requirementText or sourceReference, use an empty string. If the source is link-based, include a short label and at most one URL; never paste repeated URLs or long URL lists.",
+    "Keep traceabilityMatrix.requirementText as a human-readable normalized atomic testable point. Do not put raw URLs, markdown link syntax, or link lists in requirementText.",
     "Use the existing output contract fields only. Do not add unsupported fields.",
     "Return only valid JSON matching the output contract. Do not include markdown fences or any text before or after the JSON.",
   ].join("\n"),

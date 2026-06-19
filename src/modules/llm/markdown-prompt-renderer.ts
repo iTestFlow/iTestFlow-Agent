@@ -298,6 +298,8 @@ function renderExistingCoverageReviewInstructions() {
     "# Coverage Review Instructions",
     "- Decompose the story title, description, and acceptance criteria into atomic testable points.",
     "- Every meaningful story point must appear in traceabilityMatrix.",
+    "- Set traceabilityMatrix.sourceText to a concise source excerpt of 240 characters or fewer. Use an empty string when it would duplicate requirementText or sourceReference. If the source is link-based, include a short label and at most one URL.",
+    "- Keep traceabilityMatrix.requirementText human-readable and normalized. Do not put raw URLs, markdown link syntax, or link lists in requirementText.",
     "- A single acceptance criterion may produce multiple matrix rows when it contains multiple flows, roles, states, validations, integrations, errors, or edge cases.",
     "- Map linked test cases only when their steps and expected results provide real evidence.",
     "- Do not count a title-only, vague, or setup-only test case as covered.",
