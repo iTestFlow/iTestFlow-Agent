@@ -5,6 +5,8 @@ import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure
 import { completeManualExistingTestCaseReview } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
+import { isAppError } from "@/modules/shared/errors/app-error";
+import { statusForManualValidationError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import {
   failWorkflowRun,
   startWorkflowRun,
@@ -85,6 +87,9 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External traceability review failed." });
+    if (isAppError(error)) {
+      return NextResponse.json(toErrorResponse(error), { status: statusForManualValidationError(error) });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "External LLM traceability review validation failed." },
       { status: 422 },

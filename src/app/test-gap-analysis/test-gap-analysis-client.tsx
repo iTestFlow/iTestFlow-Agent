@@ -326,6 +326,7 @@ export function TestGapAnalysisClient() {
                 variant="coverage"
                 status={prep.status}
                 elapsedSeconds={prep.elapsedSeconds}
+                error={prep.error}
                 errorMessage={prep.errorMessage}
                 canCancel
                 onCancel={prep.cancel}
@@ -367,6 +368,7 @@ export function TestGapAnalysisClient() {
               variant="coverage"
               status={gen.status}
               elapsedSeconds={gen.elapsedSeconds}
+              error={gen.error}
               errorMessage={gen.errorMessage}
               canCancel
               onCancel={gen.cancel}

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TokenUsage } from "@/modules/llm/llm-types";
+import { ApiError } from "@/components/workflow/api-error";
+import type { AppErrorCode, ErrorTechnicalContext } from "@/modules/shared/errors/app-error";
 
 /* --------------------------------------------------------------------------
  * Driver hook for the AI generation progress experience.
@@ -41,6 +43,13 @@ export type UseAiGenerationOptions = {
   validateMinMs?: number;
 };
 
+export type AiGenerationError = {
+  message: string;
+  code?: AppErrorCode;
+  technicalDetails?: string;
+  technicalContext?: ErrorTechnicalContext;
+};
+
 export type AiGenerationController = {
   status: AiGenerationStatus;
   elapsedSeconds: number;
@@ -49,6 +58,7 @@ export type AiGenerationController = {
   warnings?: string[];
   /** true while a request is in flight (not idle/completed/failed/cancelled). */
   isRunning: boolean;
+  error: AiGenerationError | null;
   errorMessage: string | null;
   /**
    * Run a request through the staged status machine. Resolves with the request
@@ -79,8 +89,18 @@ const TERMINAL: ReadonlySet<AiGenerationStatus> = new Set([
   "cancelled",
 ]);
 
-function messageFrom(error: unknown): string {
-  return error instanceof Error ? error.message : "Generation failed.";
+function errorFrom(error: unknown): AiGenerationError {
+  if (error instanceof ApiError) {
+    return {
+      message: error.message,
+      code: error.code,
+      technicalDetails: error.technicalDetails,
+      technicalContext: error.technicalContext,
+    };
+  }
+  return {
+    message: error instanceof Error ? error.message : "Generation failed.",
+  };
 }
 
 function isAbortError(error: unknown): boolean {
@@ -107,7 +127,7 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | undefined>(undefined);
   const [warnings, setWarnings] = useState<string[] | undefined>(undefined);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [error, setError] = useState<AiGenerationError | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -135,7 +155,7 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
     setElapsedSeconds(0);
     setTokenUsage(undefined);
     setWarnings(undefined);
-    setErrorMessage(null);
+    setError(null);
   }, [clearStageTimeouts, stopTimer]);
 
   const start = useCallback(
@@ -149,7 +169,7 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
       abortRef.current = controller;
       const { signal } = controller;
 
-      setErrorMessage(null);
+      setError(null);
       setElapsedSeconds(0);
       setTokenUsage(undefined);
       setWarnings(undefined);
@@ -196,14 +216,14 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
         setWarnings(extractWarnings(data));
         setStatus("completed");
         return data;
-      } catch (error) {
+      } catch (caughtError) {
         clearStageTimeouts();
         stopTimer();
-        if (isAbortError(error) || signal.aborted) {
+        if (isAbortError(caughtError) || signal.aborted) {
           setStatus("cancelled");
           return undefined;
         }
-        setErrorMessage(messageFrom(error));
+        setError(errorFrom(caughtError));
         setStatus("failed");
         return undefined;
       }
@@ -236,7 +256,8 @@ export function useAiGeneration(options?: UseAiGenerationOptions): AiGenerationC
     tokenUsage,
     warnings,
     isRunning: !TERMINAL.has(status),
-    errorMessage,
+    error,
+    errorMessage: error?.message ?? null,
     start,
     cancel,
     retry,

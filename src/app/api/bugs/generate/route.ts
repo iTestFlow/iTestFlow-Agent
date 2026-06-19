@@ -7,6 +7,8 @@ import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider"
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { noLlmProviderConfiguredError } from "@/modules/shared/errors/app-error";
+import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import {
   failWorkflowRun,
   startWorkflowRun,
@@ -34,10 +36,8 @@ export async function POST(request: Request) {
   try {
     const provider = getConfiguredProviderFromEnv();
     if (!provider) {
-      return NextResponse.json(
-        { error: "No LLM provider configured. Set DEFAULT_LLM_PROVIDER and the provider API key in .env.local." },
-        { status: 503 },
-      );
+      const error = noLlmProviderConfiguredError();
+      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
     }
     analyticsRunId = startWorkflowRun({
       scope: parsed.data.scope,
@@ -92,9 +92,6 @@ export async function POST(request: Request) {
     if (analyticsRunId) {
       failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Bug report generation failed." });
     }
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Bug report generation failed." },
-      { status: 503 },
-    );
+    return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
   }
 }

@@ -9,8 +9,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Callout } from "@/components/qa/callout";
 import { ErrorState } from "@/components/qa/error-state";
 import { cn } from "@/lib/utils";
-import type { AiGenerationStatus } from "@/components/workflow/use-ai-generation";
+import { mapFriendlyError } from "@/components/workflow/ai-generation-errors";
+import type { AiGenerationError, AiGenerationStatus } from "@/components/workflow/use-ai-generation";
 import { AiGenerationMetrics } from "@/components/workflow/ai-generation-metrics";
+
+export { mapFriendlyError };
 
 /* --------------------------------------------------------------------------
  * Reusable AI generation progress panel. Renders in the same slot where the
@@ -30,6 +33,7 @@ export type AiGenerationProgressProps = {
   currentStepLabel?: string;
   /** Reserved for future streaming; unused while the backend does not stream. */
   streamedText?: string;
+  error?: AiGenerationError | null;
   errorMessage?: string | null;
   canCancel?: boolean;
   onCancel?: () => void;
@@ -78,25 +82,6 @@ function dynamicSubtitle(status: AiGenerationStatus, mode: "full" | "prep"): str
     default:
       return "Working…";
   }
-}
-
-/** Friendly, user-facing message for a raw error string. Raw text is kept as technical detail. */
-export function mapFriendlyError(raw?: string | null): string {
-  const text = (raw ?? "").toLowerCase();
-  if (!text) return "The AI response could not be completed. You can retry or adjust the input.";
-  if (text.includes("503") || text.includes("overloaded") || text.includes("unavailable") || text.includes("no llm provider")) {
-    return "The AI provider is temporarily unavailable. Please try again in a moment.";
-  }
-  if (text.includes("failed to fetch") || text.includes("networkerror") || text.includes("network error")) {
-    return "Network error. Check your connection and try again.";
-  }
-  if (text.includes("invalid json") || text.includes("non-json")) {
-    return "The server returned an unexpected response. Please try again.";
-  }
-  if (text.includes("schema") || text.includes("validation") || text.includes("400") || text.includes("422")) {
-    return "The AI returned a response that didn't match the expected format. You can retry or adjust the input.";
-  }
-  return raw ?? "The AI response could not be completed. You can retry or adjust the input.";
 }
 
 type StepState = "done" | "current" | "future";
@@ -268,6 +253,7 @@ export function AiGenerationProgress({
   description,
   elapsedSeconds,
   currentStepLabel,
+  error,
   errorMessage,
   canCancel,
   onCancel,
@@ -304,11 +290,13 @@ export function AiGenerationProgress({
   if (status === "idle" || status === "completed") return null;
 
   if (status === "failed") {
+    const resolvedError: AiGenerationError | null = error ?? (errorMessage ? { message: errorMessage } : null);
     return (
       <ErrorState
         title="Generation failed"
-        message={mapFriendlyError(errorMessage)}
-        technicalDetails={errorMessage ?? undefined}
+        message={mapFriendlyError({ code: resolvedError?.code, raw: resolvedError?.message })}
+        technicalDetails={resolvedError?.technicalDetails ?? resolvedError?.message}
+        technicalContext={resolvedError?.technicalContext}
         onRetry={onRetry}
       />
     );

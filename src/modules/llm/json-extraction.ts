@@ -1,7 +1,7 @@
 export function parseJsonWithRepair(rawOutput: string): unknown {
   const candidate = extractJsonCandidate(rawOutput);
   if (!candidate) {
-    throw new Error("No JSON content found in output.");
+    throw new JsonParseError("No JSON content found in output.", { candidate });
   }
 
   const normalized = normalizeJsonDelimiters(candidate);
@@ -23,7 +23,50 @@ export function parseJsonWithRepair(rawOutput: string): unknown {
   }
 
   const message = lastError instanceof Error ? lastError.message : "Unknown JSON parse error.";
-  throw new Error(formatJsonParseError(message, candidate));
+  const details = describeJsonParseError(message, candidate);
+  throw new JsonParseError(details.message, { ...details, candidate });
+}
+
+export class JsonParseError extends Error {
+  readonly position?: number;
+  readonly snippet?: string;
+  readonly candidate: string;
+
+  constructor(message: string, details: { position?: number; snippet?: string; candidate: string }) {
+    super(message);
+    this.name = "JsonParseError";
+    this.position = details.position;
+    this.snippet = details.snippet;
+    this.candidate = details.candidate;
+  }
+}
+
+export function describeJsonParseError(message: string, candidate: string) {
+  const positionMatch = message.match(/position\s+(\d+)/i);
+  if (!positionMatch) {
+    return {
+      message: `${message}. Paste one complete JSON object from the opening { to the final }.`,
+    };
+  }
+
+  const position = Number(positionMatch[1]);
+  if (!Number.isFinite(position)) {
+    return {
+      message: `${message}. Paste one complete JSON object from the opening { to the final }.`,
+    };
+  }
+
+  const clampedPosition = Math.max(0, Math.min(position, candidate.length));
+  const start = Math.max(0, clampedPosition - 80);
+  const end = Math.min(candidate.length, clampedPosition + 80);
+  const windowSnippet = candidate.slice(start, end).replace(/\s+/g, " ").trim();
+  const fallbackSnippet = candidate.slice(-160).replace(/\s+/g, " ").trim();
+  const snippet = windowSnippet || fallbackSnippet;
+  return {
+    message: snippet ? `${message}. Check the JSON near: ${snippet}` : message,
+    position,
+    snippet: snippet || undefined,
+  };
 }
 
 export function extractJsonCandidate(rawOutput: string): string {
@@ -329,13 +372,6 @@ function quotedTokenIsFollowedByColon(value: string, quoteIndex: number) {
   return false;
 }
 
-function formatJsonParseError(message: string, candidate: string) {
-  const positionMatch = message.match(/position\s+(\d+)/i);
-  if (!positionMatch) return `${message}. Paste one complete JSON object from the opening { to the final }.`;
-  const position = Number(positionMatch[1]);
-  if (!Number.isFinite(position)) return `${message}. Paste one complete JSON object from the opening { to the final }.`;
-  const start = Math.max(0, position - 80);
-  const end = Math.min(candidate.length, position + 80);
-  const snippet = candidate.slice(start, end).replace(/\s+/g, " ").trim();
-  return `${message}. Check the JSON near: ${snippet}`;
+export function formatJsonParseError(message: string, candidate: string) {
+  return describeJsonParseError(message, candidate).message;
 }

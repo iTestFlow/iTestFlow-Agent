@@ -16,6 +16,8 @@ import {
   TestExecutionEffortOptionsSchema,
 } from "@/modules/test-execution-effort/test-execution-effort.schema";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
+import { isAppError, noLlmProviderConfiguredError } from "@/modules/shared/errors/app-error";
+import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import {
   completeWorkflowRun,
   failWorkflowRun,
@@ -43,10 +45,8 @@ export async function POST(request: Request) {
   try {
     const provider = getConfiguredProviderFromEnv();
     if (!provider) {
-      return NextResponse.json(
-        { error: "No LLM provider configured. Set DEFAULT_LLM_PROVIDER and the provider API key in .env.local." },
-        { status: 503 },
-      );
+      const error = noLlmProviderConfiguredError();
+      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
     }
     analyticsRunId = startWorkflowRun({
       scope: parsed.data.scope,
@@ -110,8 +110,14 @@ export async function POST(request: Request) {
       warnings: result.warnings,
     });
   } catch (error) {
-    const safeError = toSafeTestExecutionEffortError(error, "Test Execution Effort generation failed.", parsed.data.storyId);
     writeGenerationFailureAudit({ scope: parsed.data.scope, action: "test_execution_effort.run", label: "Test Execution Effort generation failed.", error });
+    if (isAppError(error)) {
+      if (analyticsRunId) {
+        failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error.message });
+      }
+      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
+    }
+    const safeError = toSafeTestExecutionEffortError(error, "Test Execution Effort generation failed.", parsed.data.storyId);
     if (analyticsRunId) {
       failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: safeError.message });
     }

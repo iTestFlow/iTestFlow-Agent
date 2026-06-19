@@ -17,6 +17,7 @@ import { toneClass, type Tone } from "@/components/qa/tone";
 import { cn } from "@/lib/utils";
 import { formatEnumLabel, formatPercentage } from "@/shared/lib/format";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import { ApiError } from "@/components/workflow/api-error";
 import type {
   ApiState,
   GeneratedTestCase,
@@ -60,7 +61,7 @@ export async function postJson<T>(url: string, body: unknown, signal?: AbortSign
   });
   const text = await response.text();
   const json = parseJsonResponse(text, response.ok);
-  if (!response.ok) throw new Error(json.error ?? `Request failed: ${response.status}`);
+  if (!response.ok) throw ApiError.fromResponse(json, response.status);
   return json as T;
 }
 
