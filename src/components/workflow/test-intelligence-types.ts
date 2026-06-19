@@ -136,6 +136,7 @@ export type ExistingTraceabilityRow = {
   id: string;
   sourceType: "story" | "description" | "acceptanceCriteria" | "businessRules";
   sourceReference: string;
+  sourceText?: string;
   requirementText: string;
   coverageStatus: "Covered" | "Partially covered" | "Not covered" | "Needs review";
   severity: "High" | "Medium" | "Low";

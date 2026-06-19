@@ -119,6 +119,7 @@ function requiredOutputShape(schemaName: string) {
           id: "TM-001",
           sourceType: "story | description | acceptanceCriteria | businessRules",
           sourceReference: "Title | Description paragraph 1 | AC-1 | Business rule ID",
+          sourceText: "concise source excerpt, 240 characters or fewer; empty if duplicate; include at most one URL only when link-based",
           requirementText: "atomic testable story point",
           coverageStatus: "Covered | Partially covered | Not covered | Needs review",
           severity: "High | Medium | Low",
@@ -144,7 +145,7 @@ function requiredOutputShape(schemaName: string) {
         {
           id: "string",
           category:
-            "Missing coverage | Duplicate | Weak steps | Weak expected result | Missing preconditions | Missing test data | Automation readiness",
+            "Missing coverage | Duplicate | Weak steps | Weak expected result | Missing preconditions | Missing test data | Weak test data | Automation readiness",
           severity: "High | Medium | Low",
           title: "string",
           explanation: "string",
