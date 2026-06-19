@@ -13,6 +13,8 @@ import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.serv
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
+import { noLlmProviderConfiguredError } from "@/modules/shared/errors/app-error";
+import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import {
   failWorkflowRun,
   startWorkflowRun,
@@ -44,10 +46,8 @@ export async function POST(request: Request) {
     const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
     const provider = getConfiguredProviderFromEnv();
     if (!provider) {
-      return NextResponse.json(
-        { error: "No LLM provider configured. Set DEFAULT_LLM_PROVIDER and the provider API key in .env.local." },
-        { status: 503 },
-      );
+      const error = noLlmProviderConfiguredError();
+      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
     }
     analyticsRunId = startWorkflowRun({
       scope: parsed.data.scope,
@@ -118,9 +118,6 @@ export async function POST(request: Request) {
     if (analyticsRunId) {
       failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Test case generation failed." });
     }
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Test case generation failed." },
-      { status: 503 },
-    );
+    return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
   }
 }

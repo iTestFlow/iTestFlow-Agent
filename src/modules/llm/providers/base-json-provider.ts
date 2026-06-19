@@ -1,7 +1,8 @@
 import "server-only";
 
 import { z } from "zod";
-import { parseJsonWithRepair } from "../json-extraction";
+import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
+import { JsonParseError, parseJsonWithRepair } from "../json-extraction";
 import { addTokenUsage, hasTokenUsage } from "../token-usage";
 import {
   DEFAULT_MAX_OUTPUT_TOKEN_CAP,
@@ -56,7 +57,14 @@ export abstract class BaseJsonProvider implements LLMProvider {
     try {
       callResult = await this.callTextModel(input);
       this.recordTokenUsage(callResult.tokenUsage);
-      if (callResult.errorMessage) throw new Error(callResult.errorMessage);
+      if (callResult.errorMessage) {
+        throw this.providerError(callResult.errorMessage, {
+          schemaName: "PlainText",
+          rawOutput: callResult.rawOutput,
+          finishReason: callResult.finishReason,
+          tokenUsage: callResult.tokenUsage,
+        });
+      }
 
       this.logTextRequest(input, callResult, "Success", Date.now() - startedAt);
 
@@ -69,9 +77,15 @@ export abstract class BaseJsonProvider implements LLMProvider {
         warnings: buildTruncationWarnings(callResult.finishReason, input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS),
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown LLM text request error.";
+      const normalizedError = this.normalizeProviderThrownError(error, {
+        schemaName: "PlainText",
+        rawOutput: callResult?.rawOutput,
+        finishReason: callResult?.finishReason,
+        tokenUsage: callResult?.tokenUsage,
+      });
+      const message = normalizedError instanceof Error ? normalizedError.message : "Unknown LLM text request error.";
       this.logTextRequest(input, callResult, "Failed", Date.now() - startedAt, message);
-      throw error;
+      throw normalizedError;
     }
   }
 
@@ -90,9 +104,16 @@ export abstract class BaseJsonProvider implements LLMProvider {
     try {
       callResult = await this.callModel({ ...input, maxTokens: budget });
       this.recordTokenUsage(callResult.tokenUsage);
-      if (callResult.errorMessage) throw new Error(callResult.errorMessage);
+      if (callResult.errorMessage) {
+        throw this.providerError(callResult.errorMessage, {
+          schemaName: input.schemaName,
+          rawOutput: callResult.rawOutput,
+          finishReason: callResult.finishReason,
+          tokenUsage: callResult.tokenUsage,
+        });
+      }
 
-      const validatedOutput = this.parseAndValidate(input, callResult.rawOutput, callResult.finishReason);
+      const validatedOutput = this.parseAndValidate(input, callResult.rawOutput, callResult.finishReason, callResult.tokenUsage);
       // Parse succeeded but the model still stopped on a token limit: the JSON is valid yet may be
       // semantically cut short (e.g. fewer test cases than intended). Surface a non-blocking warning.
       const warnings = buildTruncationWarnings(callResult.finishReason, budget);
@@ -107,9 +128,15 @@ export abstract class BaseJsonProvider implements LLMProvider {
         warnings,
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown LLM request error.";
+      const normalizedError = this.normalizeProviderThrownError(error, {
+        schemaName: input.schemaName,
+        rawOutput: callResult?.rawOutput,
+        finishReason: callResult?.finishReason,
+        tokenUsage: callResult?.tokenUsage,
+      });
+      const message = normalizedError instanceof Error ? normalizedError.message : "Unknown LLM request error.";
       this.logRequest(input, callResult, "Failed", Date.now() - startedAt, message);
-      throw error;
+      throw normalizedError;
     }
   }
 
@@ -121,6 +148,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
     input: GenerateStructuredOutputInput<TSchema>,
     rawOutput: string,
     finishReason?: string,
+    tokenUsage?: TokenUsage,
   ): z.infer<TSchema> {
     let parsedJson: unknown;
 
@@ -128,15 +156,44 @@ export abstract class BaseJsonProvider implements LLMProvider {
       parsedJson = this.parseJson(rawOutput);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown JSON parse error.";
-      const truncated = isTokenLimitFinishReason(finishReason)
+      const tokenLimit = isTokenLimitFinishReason(finishReason);
+      const truncated = tokenLimit
         ? ' The provider stopped because it hit the output-token limit before completing the JSON. Increase the "Maximum output token cap" in Settings and retry.'
         : "";
-      throw new Error(`LLM output for ${input.schemaName} was not valid JSON:${truncated} ${message}`);
+      throw new AppError({
+        code: tokenLimit ? AppErrorCode.TokenLimit : AppErrorCode.InvalidJson,
+        message: `LLM output for ${input.schemaName} was not valid JSON:${truncated} ${message}`,
+        userMessage: tokenLimit
+          ? 'The AI response ran out of output space before it finished. Increase the "Maximum output token cap" in Settings and retry.'
+          : "The AI response was not valid JSON. Please retry the generation.",
+        technicalContext: {
+          provider: this.name,
+          model: this.model,
+          schemaName: input.schemaName,
+          finishReason,
+          tokenUsage,
+          parsePosition: error instanceof JsonParseError ? error.position : undefined,
+          jsonSnippet: error instanceof JsonParseError ? error.snippet : undefined,
+          rawOutputExcerpt: rawOutput,
+        },
+      });
     }
 
     const result = input.schema.safeParse(stripNullProperties(parsedJson));
     if (!result.success) {
-      throw new Error(`LLM output failed schema validation for ${input.schemaName}: ${result.error.message}`);
+      throw new AppError({
+        code: AppErrorCode.SchemaValidation,
+        message: `LLM output failed schema validation for ${input.schemaName}: ${result.error.message}`,
+        userMessage: "The AI returned a response that did not match the expected format. Please retry or adjust the input.",
+        technicalContext: {
+          provider: this.name,
+          model: this.model,
+          schemaName: input.schemaName,
+          finishReason,
+          tokenUsage,
+          rawOutputExcerpt: rawOutput,
+        },
+      });
     }
 
     return result.data;
@@ -216,6 +273,50 @@ export abstract class BaseJsonProvider implements LLMProvider {
       console.error("Failed to write LLM text request log", logError);
     }
   }
+
+  private providerError(
+    message: string,
+    context: {
+      schemaName: string;
+      rawOutput?: string;
+      finishReason?: string;
+      tokenUsage?: TokenUsage;
+    },
+  ) {
+    return new AppError({
+      code: isLikelyNetworkError(message) ? AppErrorCode.Network : AppErrorCode.ProviderUnavailable,
+      message,
+      userMessage: isLikelyNetworkError(message)
+        ? "Network error. Check your connection and try again."
+        : "The AI provider could not complete the request. Please try again in a moment or check the provider settings.",
+      technicalContext: {
+        provider: this.name,
+        model: this.model,
+        schemaName: context.schemaName,
+        finishReason: context.finishReason,
+        tokenUsage: context.tokenUsage,
+        rawOutputExcerpt: context.rawOutput,
+      },
+    });
+  }
+
+  private normalizeProviderThrownError(
+    error: unknown,
+    context: {
+      schemaName: string;
+      rawOutput?: string;
+      finishReason?: string;
+      tokenUsage?: TokenUsage;
+    },
+  ) {
+    if (error instanceof AppError) return error;
+    const message = error instanceof Error ? error.message : "Unknown LLM request error.";
+    return this.providerError(message, context);
+  }
+}
+
+function isLikelyNetworkError(message: string) {
+  return /failed to fetch|network\s*error|fetch failed|econnreset|etimedout|enotfound|eai_again/i.test(message);
 }
 
 function isTokenLimitFinishReason(finishReason?: string) {

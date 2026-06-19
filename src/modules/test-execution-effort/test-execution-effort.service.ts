@@ -5,6 +5,7 @@ import { writeAuditLog } from "@/modules/audit/audit.service";
 import { truncationAuditDetails } from "@/modules/llm/llm-warnings";
 import type { TestCase } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { parseExternalJson } from "@/modules/llm/external-structured-output";
+import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
 import { buildTestExecutionEffortMarkdownPrompt, extractWorkItemId } from "@/modules/llm/markdown-prompt-renderer";
@@ -168,11 +169,26 @@ export function completeManualTestExecutionEffort(input: {
   linkedTestCases?: TestCase[];
 }) {
   const scope = assertProjectScope(input.scope);
-  const parsedJson = parseExternalJson(input.rawOutput);
+  const schemaName = "TestExecutionEffortOutput";
+  const parsedJson = parseExternalJson(input.rawOutput, {
+    provider: "external",
+    model: "manual-external",
+    schemaName,
+  });
   const candidate = unwrapEstimateOutput(parsedJson);
   const parsedOutput = TestExecutionEffortOutputSchema.safeParse(candidate);
   if (!parsedOutput.success) {
-    throw new Error(`External LLM output failed schema validation for TestExecutionEffortOutput: ${formatZodIssues(parsedOutput.error)}`);
+    throw new AppError({
+      code: AppErrorCode.SchemaValidation,
+      message: `External LLM output failed schema validation for ${schemaName}: ${formatZodIssues(parsedOutput.error)}`,
+      userMessage: "The external LLM response did not match the expected format. Check the pasted response and try again.",
+      technicalContext: {
+        provider: "external",
+        model: "manual-external",
+        schemaName,
+        rawOutputExcerpt: input.rawOutput,
+      },
+    });
   }
   const validatedOutput = parsedOutput.data;
   if (input.linkedTestCases) {

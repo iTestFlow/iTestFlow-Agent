@@ -4,6 +4,8 @@ import { completeManualRequirementAnalysis } from "@/modules/requirement-analysi
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
+import { isAppError } from "@/modules/shared/errors/app-error";
+import { statusForManualValidationError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import {
   failWorkflowRun,
   startWorkflowRun,
@@ -86,6 +88,9 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External requirement analysis failed." });
+    if (isAppError(error)) {
+      return NextResponse.json(toErrorResponse(error), { status: statusForManualValidationError(error) });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "External LLM requirement analysis validation failed." },
       { status: 422 },

@@ -12,6 +12,8 @@ import {
   TestExecutionEffortOptionsSchema,
 } from "@/modules/test-execution-effort/test-execution-effort.schema";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
+import { isAppError } from "@/modules/shared/errors/app-error";
+import { statusForManualValidationError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import {
   completeWorkflowRun,
   failWorkflowRun,
@@ -91,6 +93,9 @@ export async function POST(request: Request) {
     const message = error instanceof Error ? error.message : "";
     if (analyticsRunId) {
       failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: message || "Manual Test Execution Effort validation failed." });
+    }
+    if (isAppError(error)) {
+      return NextResponse.json(toErrorResponse(error), { status: statusForManualValidationError(error) });
     }
     if (message.includes("External LLM output") || message.includes("Paste the external LLM JSON") || message.includes("schema validation")) {
       return NextResponse.json({ error: message }, { status: 422 });

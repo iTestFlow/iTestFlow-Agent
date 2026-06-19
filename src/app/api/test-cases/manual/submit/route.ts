@@ -4,6 +4,8 @@ import { z } from "zod";
 import { completeManualTestCaseGeneration } from "@/modules/test-case-design/application/test-case-generation.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
+import { isAppError } from "@/modules/shared/errors/app-error";
+import { statusForManualValidationError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import {
   failWorkflowRun,
   startWorkflowRun,
@@ -69,6 +71,9 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External test case generation failed." });
+    if (isAppError(error)) {
+      return NextResponse.json(toErrorResponse(error), { status: statusForManualValidationError(error) });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "External LLM test case validation failed." },
       { status: 422 },
