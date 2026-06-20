@@ -255,7 +255,7 @@ export function BulkTaskCreationClient() {
         setSelectedIterationPath(findDefaultIterationPath(nextIterations));
       })
       .catch((loadError: unknown) => {
-        if (!cancelled) setError(loadError instanceof Error ? loadError.message : "Azure DevOps iteration fetch failed.");
+        if (!cancelled) setError(loadError instanceof Error ? loadError.message : "Azure DevOps sprint fetch failed.");
       })
       .finally(() => {
         if (!cancelled) setIterationsLoading(false);
@@ -402,7 +402,7 @@ export function BulkTaskCreationClient() {
         current && nextIterations.some((iteration) => iteration.path === current) ? current : findDefaultIterationPath(nextIterations),
       );
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Azure DevOps iteration fetch failed.");
+      setError(loadError instanceof Error ? loadError.message : "Azure DevOps sprint fetch failed.");
     } finally {
       setIterationsLoading(false);
     }
@@ -1160,7 +1160,7 @@ function TargetStoriesStep({
 
           <TabsContent value="iteration" className="space-y-4">
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-end">
-              <Field label="Iteration" htmlFor="bulk-task-iteration">
+              <Field label="Sprint" htmlFor="bulk-task-iteration">
                 <select
                   id="bulk-task-iteration"
                   className="focus-ring h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
@@ -1168,7 +1168,7 @@ function TargetStoriesStep({
                   onChange={(event) => onIterationChange(event.target.value)}
                   disabled={!scope || iterationsLoading}
                 >
-                  <option value="">{iterationsLoading ? "Loading iterations..." : "Select iteration"}</option>
+                  <option value="">{iterationsLoading ? "Loading sprints..." : "Select sprint"}</option>
                   {iterations.map((iteration) => (
                     <option key={iteration.id} value={iteration.path}>
                       {iteration.path}
@@ -1410,7 +1410,7 @@ function StorySelectionTable({
               onClick={() => toggleSort("assignedTo")}
             />
           </TableHead>
-          <TableHead>Iteration</TableHead>
+          <TableHead>Sprint</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>

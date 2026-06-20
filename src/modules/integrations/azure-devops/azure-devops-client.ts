@@ -272,6 +272,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     areaPath?: string;
     iterationPath?: string;
     assignedTo?: string;
+    assignedToMe?: boolean;
     limit?: number;
   }): Promise<Requirement[]> {
     const types = input.workItemTypes?.length ? input.workItemTypes : ["Epic", "Feature", "User Story", "Bug"];
@@ -285,7 +286,8 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     const iterationPath = normalizeIterationPathForWiql(input.iterationPath);
     if (input.areaPath) where.push(`[System.AreaPath] UNDER '${escapeWiqlValue(input.areaPath)}'`);
     if (iterationPath) where.push(`[System.IterationPath] UNDER '${escapeWiqlValue(iterationPath)}'`);
-    if (input.assignedTo) where.push(`[System.AssignedTo] = '${escapeWiqlValue(input.assignedTo)}'`);
+    if (input.assignedToMe) where.push("[System.AssignedTo] = @Me");
+    else if (input.assignedTo) where.push(`[System.AssignedTo] = '${escapeWiqlValue(input.assignedTo)}'`);
 
     const wiql = {
       query: `SELECT [System.Id] FROM WorkItems WHERE ${where.join(" AND ")} ORDER BY [System.ChangedDate] DESC`,

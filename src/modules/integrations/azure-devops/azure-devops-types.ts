@@ -91,6 +91,11 @@ export type Requirement = {
   tags?: string[];
   areaPath?: string;
   iterationPath?: string;
+  originalEstimate?: number;
+  remainingWork?: number;
+  completedWork?: number;
+  dueDate?: string;
+  storyPoints?: number;
   parentLinks?: string[];
   childLinks?: string[];
   relatedLinks?: string[];
