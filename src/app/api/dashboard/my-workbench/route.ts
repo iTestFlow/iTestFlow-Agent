@@ -6,22 +6,14 @@ import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 
 export const runtime = "nodejs";
 
-const StatusGroupSchema = z.enum([
-  "To Do",
-  "Active",
-  "Blocked / Waiting",
-  "Review / Testing",
-  "Done",
-  "Other / Unmapped",
-]);
-
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   filters: z.object({
     sprintMode: z.enum(["current", "previous", "next", "all_active", "custom", "overall"]).optional(),
     iterationPath: z.string().max(512).optional().nullable(),
     workItemTypes: z.array(z.string().max(128)).max(100).optional(),
-    statusGroups: z.array(StatusGroupSchema).max(6).optional(),
+    states: z.array(z.string().max(128)).max(100).optional(),
+    parentIds: z.array(z.string().max(64)).max(100).optional(),
     priority: z.enum(["all", "1", "2", "3", "4", "none"]).optional(),
     areaPath: z.string().max(512).optional().nullable(),
     includeCompleted: z.boolean().optional(),

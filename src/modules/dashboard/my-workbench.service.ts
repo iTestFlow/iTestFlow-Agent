@@ -3,15 +3,14 @@ import "server-only";
 import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
 import type { AzureArea, AzureIteration, Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import type { MyWorkbenchAnalytics, WorkbenchFilters, WorkbenchStatusGroup } from "@/types/my-workbench-dashboard";
+import type { MyWorkbenchAnalytics, WorkbenchFilters } from "@/types/my-workbench-dashboard";
 import {
   DEFAULT_WORKBENCH_FILTERS,
   WORKBENCH_LIMITS,
-  WORKBENCH_STATUS_GROUPS,
   buildMyWorkbenchAnalyticsModel,
   buildWorkbenchMetadata,
+  isClosedState,
   isInWorkbenchSprintScope,
-  normalizeWorkbenchState,
   resolveWorkbenchIteration,
 } from "./my-workbench-metrics";
 
@@ -24,6 +23,7 @@ type MetadataCacheValue = {
   iterations: AzureIteration[];
   areas: AzureArea[];
   workItemTypes: string[];
+  states: string[];
 };
 
 const METADATA_CACHE_TTL_MS = 300_000;
@@ -51,7 +51,7 @@ export async function getMyWorkbenchAnalytics(input: MyWorkbenchAnalyticsInput):
   const selectedSprint = resolveWorkbenchIteration(filters, metadata.iterations);
   const scopedItems = assignedItems
     .filter((item) => isInWorkbenchSprintScope(item, selectedSprint, filters))
-    .filter((item) => filters.includeCompleted || normalizeWorkbenchState(item.state) !== "Done");
+    .filter((item) => filters.includeCompleted || !isClosedState(item.state));
 
   const model = buildMyWorkbenchAnalyticsModel({
     items: assignedItems,
@@ -69,7 +69,9 @@ export async function getMyWorkbenchAnalytics(input: MyWorkbenchAnalyticsInput):
     filterMetadata: buildWorkbenchMetadata({
       iterations: metadata.iterations,
       areas: metadata.areas,
+      states: metadata.states,
       scopedItems,
+      parentsById,
       today,
     }),
     cards: model.cards,
@@ -91,27 +93,17 @@ export async function getMyWorkbenchAnalytics(input: MyWorkbenchAnalyticsInput):
 
 function normalizeWorkbenchFilters(filters?: Partial<WorkbenchFilters>): WorkbenchFilters {
   const includeCompleted = filters?.includeCompleted ?? DEFAULT_WORKBENCH_FILTERS.includeCompleted;
-  const statusGroups = normalizeStatusGroups(filters?.statusGroups, includeCompleted);
   return {
     sprintMode: filters?.sprintMode ?? DEFAULT_WORKBENCH_FILTERS.sprintMode,
     iterationPath: filters?.iterationPath?.trim() || null,
     workItemTypes: unique(filters?.workItemTypes ?? DEFAULT_WORKBENCH_FILTERS.workItemTypes),
-    statusGroups,
+    states: unique(filters?.states ?? DEFAULT_WORKBENCH_FILTERS.states),
+    parentIds: unique(filters?.parentIds ?? DEFAULT_WORKBENCH_FILTERS.parentIds),
     priority: filters?.priority ?? DEFAULT_WORKBENCH_FILTERS.priority,
     areaPath: filters?.areaPath?.trim() || null,
     includeCompleted,
     includeBacklog: filters?.includeBacklog ?? DEFAULT_WORKBENCH_FILTERS.includeBacklog,
   };
-}
-
-function normalizeStatusGroups(input: WorkbenchStatusGroup[] | undefined, includeCompleted: boolean) {
-  const defaults = DEFAULT_WORKBENCH_FILTERS.statusGroups;
-  const selected = input?.length ? input : defaults;
-  const allowed = selected.filter((value): value is WorkbenchStatusGroup => WORKBENCH_STATUS_GROUPS.includes(value));
-  const withCompleted = includeCompleted && sameSet(allowed, defaults)
-    ? [...allowed, "Done" as const]
-    : allowed;
-  return unique(withCompleted);
 }
 
 async function getCachedWorkbenchMetadata(scope: ProjectScope, loader: () => Promise<MetadataCacheValue>) {
@@ -136,6 +128,7 @@ async function loadWorkbenchMetadata(
     iterations,
     areas,
     workItemTypes: workItemMetadata.workItemTypes,
+    states: workItemMetadata.states,
   };
 }
 
@@ -175,10 +168,6 @@ function buildWorkItemUrl(
 
 function unique<T extends string>(values: T[]) {
   return [...new Set(values.filter(Boolean))];
-}
-
-function sameSet<T extends string>(first: T[], second: T[]) {
-  return first.length === second.length && first.every((value) => second.includes(value));
 }
 
 function pruneAndSet<V>(

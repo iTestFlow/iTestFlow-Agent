@@ -8,21 +8,14 @@ export type WorkbenchSprintMode =
   | "custom"
   | "overall";
 
-export type WorkbenchStatusGroup =
-  | "To Do"
-  | "Active"
-  | "Blocked / Waiting"
-  | "Review / Testing"
-  | "Done"
-  | "Other / Unmapped";
-
 export type WorkbenchRiskStatus = "On Track" | "At Risk" | "Behind" | "No Estimate" | "Planned" | "Needs Estimate" | "No Sprint";
 
 export type WorkbenchFilters = {
   sprintMode: WorkbenchSprintMode;
   iterationPath: string | null;
   workItemTypes: string[];
-  statusGroups: WorkbenchStatusGroup[];
+  states: string[];
+  parentIds: string[];
   priority: "all" | "1" | "2" | "3" | "4" | "none";
   areaPath: string | null;
   includeCompleted: boolean;
@@ -39,11 +32,12 @@ export type WorkbenchFilterMetadata = {
   iterations: Array<WorkbenchFilterOption & { startDate?: string; finishDate?: string; category?: "current" | "previous" | "next" | "active" | "past" | "future" }>;
   areas: WorkbenchFilterOption[];
   workItemTypes: WorkbenchFilterOption[];
-  statusGroups: Array<WorkbenchFilterOption & { value: WorkbenchStatusGroup }>;
+  states: WorkbenchFilterOption[];
+  parents: WorkbenchFilterOption[];
 };
 
 export type WorkbenchCard = {
-  key: "focusNow" | "remainingWork" | "sprintProgress" | "blockedWaiting" | "atRisk" | "unestimatedWork";
+  key: "openWork" | "remainingWork" | "missingEstimates";
   title: string;
   value: string;
   subtitle: string;
@@ -51,14 +45,12 @@ export type WorkbenchCard = {
 };
 
 export type WorkbenchFocusBadge =
-  | "Blocked"
   | "Overdue"
   | "Due Soon"
   | "High Priority"
   | "No Estimate"
   | "Current Sprint"
-  | "At Risk"
-  | "Unmapped State";
+  | "At Risk";
 
 export type WorkbenchFocusItem = {
   id: string;
@@ -68,7 +60,6 @@ export type WorkbenchFocusItem = {
   focusBadges: WorkbenchFocusBadge[];
   type: string;
   state: string;
-  status: WorkbenchStatusGroup;
   parent: { id: string; title: string; url: string | null } | null;
   sprint: string | null;
   remainingWork: number | null;
@@ -78,7 +69,6 @@ export type WorkbenchFocusItem = {
   dueDate: string | null;
   sprintEndDate: string | null;
   tags: string[];
-  blockerSummary: string | null;
   changedDate: string | null;
 };
 
@@ -87,7 +77,6 @@ export type WorkbenchSprintRow = {
   items: number;
   remainingWork: number | null;
   completedWork: number | null;
-  blocked: number;
   unestimated: number;
   status: WorkbenchRiskStatus;
 };

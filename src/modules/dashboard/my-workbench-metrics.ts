@@ -10,23 +10,16 @@ import type {
   WorkbenchRiskStatus,
   WorkbenchSprintMode,
   WorkbenchSprintRow,
-  WorkbenchStatusGroup,
 } from "@/types/my-workbench-dashboard";
 
-export const WORKBENCH_STATUS_GROUPS: WorkbenchStatusGroup[] = [
-  "To Do",
-  "Active",
-  "Blocked / Waiting",
-  "Review / Testing",
-  "Done",
-  "Other / Unmapped",
-];
+export const NO_PARENT_FILTER_VALUE = "__no_parent__";
 
 export const DEFAULT_WORKBENCH_FILTERS: WorkbenchFilters = {
   sprintMode: "current",
   iterationPath: null,
   workItemTypes: [],
-  statusGroups: ["To Do", "Active", "Blocked / Waiting", "Review / Testing", "Other / Unmapped"],
+  states: [],
+  parentIds: [],
   priority: "all",
   areaPath: null,
   includeCompleted: false,
@@ -68,23 +61,25 @@ export function buildMyWorkbenchAnalyticsModel(input: WorkbenchBuildInput) {
   const scopedItems = input.items.filter((item) => isInWorkbenchSprintScope(item, selectedSprint, input.filters));
   const openScopedItems = input.filters.includeCompleted
     ? scopedItems
-    : scopedItems.filter((item) => normalizeWorkbenchState(item.state) !== "Done");
+    : scopedItems.filter((item) => !isClosedState(item.state));
   const completedExcluded = scopedItems.length - openScopedItems.length;
-  const filteredItems = openScopedItems.filter((item) => passesWorkbenchFilters(item, input.filters));
+  const filteredItems = openScopedItems
+    .map((item) => ({ item, parent: firstParent(item, input.parentsById) }))
+    .filter(({ item, parent }) => passesWorkbenchFilters(item, parent, input.filters));
   const currentSprintPath = findCurrentIteration(input.iterations, today)?.path ?? null;
   const focusList = filteredItems
-    .map((item) => buildFocusItem({
+    .map(({ item, parent }) => buildFocusItem({
       item,
       today,
       selectedSprint,
       currentSprintPath,
-      parent: firstParent(item, input.parentsById),
+      parent,
       url: input.buildWorkItemUrl(item.id),
     }))
     .sort(compareFocusItems);
 
-  const assignedBySprint = buildAssignedBySprint(openScopedItems, input.iterations, today);
-  const cards = buildWorkbenchCards(focusList, selectedSprint, today);
+  const assignedBySprint = buildAssignedBySprint(filteredItems.map(({ item }) => item), input.iterations, today);
+  const cards = buildWorkbenchCards(focusList);
   const tableRows = focusList.slice(0, WORKBENCH_LIMITS.tableRows);
 
   return {
@@ -109,26 +104,8 @@ export function buildMyWorkbenchAnalyticsModel(input: WorkbenchBuildInput) {
   };
 }
 
-export function normalizeWorkbenchState(state?: string | null): WorkbenchStatusGroup {
-  const value = normalizeText(state);
-  if (!value) return "Other / Unmapped";
-
-  if (hasToken(value, ["blocked", "impeded", "pending clarification", "waiting", "on hold", "hold"])) {
-    return "Blocked / Waiting";
-  }
-  if (hasToken(value, ["code review", "ready for qa", "ready for test", "ready to test", "in review", "review", "qa", "test", "testing", "uat"])) {
-    return "Review / Testing";
-  }
-  if (beginsWithToken(value, ["done", "closed", "completed", "resolved", "removed", "cancelled", "canceled"])) {
-    return "Done";
-  }
-  if (hasToken(value, ["active", "in progress", "development", "committed", "doing"])) {
-    return "Active";
-  }
-  if (hasToken(value, ["new", "to do", "todo", "proposed", "ready", "ready for dev", "approved"])) {
-    return "To Do";
-  }
-  return "Other / Unmapped";
+export function isClosedState(state?: string | null) {
+  return normalizeStateValue(state) === "closed";
 }
 
 export function resolveWorkbenchIteration(
@@ -184,9 +161,13 @@ export function isInWorkbenchSprintScope(item: Requirement, selectedSprint: Work
   return filters.includeBacklog && isBacklogItem(item);
 }
 
-export function passesWorkbenchFilters(item: Requirement, filters: WorkbenchFilters) {
+export function passesWorkbenchFilters(item: Requirement, parent: WorkbenchParent | null, filters: WorkbenchFilters) {
   if (filters.workItemTypes.length && !filters.workItemTypes.includes(item.workItemType)) return false;
-  if (filters.statusGroups.length && !filters.statusGroups.includes(normalizeWorkbenchState(item.state))) return false;
+  if (filters.states.length && !filters.states.includes(stateLabel(item.state))) return false;
+  if (filters.parentIds.length) {
+    const parentValue = parent?.id ?? NO_PARENT_FILTER_VALUE;
+    if (!filters.parentIds.includes(parentValue)) return false;
+  }
   if (filters.priority !== "all") {
     if (filters.priority === "none" && item.priority !== undefined && item.priority !== null) return false;
     if (filters.priority !== "none" && item.priority !== Number(filters.priority)) return false;
@@ -202,29 +183,25 @@ export function buildFocusItem(input: {
   parent: WorkbenchParent | null;
   url: string | null;
 }): WorkbenchFocusItem {
-  const status = normalizeWorkbenchState(input.item.state);
+  const closed = isClosedState(input.item.state);
   const sprintEndDate = sprintEndForItem(input.item, input.selectedSprint);
   const urgencyDate = datePart(input.item.dueDate) ?? sprintEndDate;
-  const overdue = Boolean(urgencyDate && urgencyDate < input.today && status !== "Done");
-  const dueSoon = Boolean(urgencyDate && !overdue && daysBetween(input.today, urgencyDate) <= 2);
-  const blocked = isBlockedWorkItem(input.item, status);
+  const overdue = Boolean(!closed && urgencyDate && urgencyDate < input.today);
+  const dueSoon = Boolean(!closed && urgencyDate && !overdue && daysBetween(input.today, urgencyDate) <= 2);
   const highPriority = Boolean(input.item.priority && input.item.priority <= 2);
   const unestimated = hasMissingEstimate(input.item);
   const currentSprint = Boolean(input.currentSprintPath && normalizePath(input.item.iterationPath) === normalizePath(input.currentSprintPath));
-  const unmapped = status === "Other / Unmapped";
-  const activeAging = status === "Active" && businessDaysBetween(datePart(input.item.updatedDate), input.today) >= 5;
-  const atRisk = isAtRisk({ item: input.item, status, overdue, dueSoon, blocked, highPriority, unestimated, activeAging, today: input.today, sprintEndDate });
-  const focusBadges = focusBadgesFor({ blocked, overdue, dueSoon, highPriority, unestimated, currentSprint, atRisk, unmapped });
+  const atRisk = isAtRisk({ item: input.item, closed, overdue, dueSoon, highPriority, unestimated, today: input.today, sprintEndDate });
+  const focusBadges = focusBadgesFor({ overdue, dueSoon, highPriority, unestimated, currentSprint, atRisk });
 
   return {
     id: input.item.id,
     title: input.item.title,
     url: input.url,
-    focusScore: focusScore({ status, blocked, overdue, dueSoon, highPriority, unestimated, currentSprint, unmapped, activeAging, atRisk, item: input.item }),
+    focusScore: focusScore({ closed, overdue, dueSoon, highPriority, unestimated, currentSprint, atRisk, item: input.item }),
     focusBadges,
     type: input.item.workItemType || "Unknown",
-    state: input.item.state ?? "Unknown",
-    status,
+    state: stateLabel(input.item.state),
     parent: input.parent,
     sprint: input.item.iterationPath ?? null,
     remainingWork: numberOrNull(input.item.remainingWork),
@@ -234,17 +211,8 @@ export function buildFocusItem(input: {
     dueDate: datePart(input.item.dueDate),
     sprintEndDate,
     tags: input.item.tags ?? [],
-    blockerSummary: blockerSummary(input.item, status),
     changedDate: datePart(input.item.updatedDate),
   };
-}
-
-export function isBlockedWorkItem(item: Requirement, status = normalizeWorkbenchState(item.state)) {
-  if (status === "Blocked / Waiting") return true;
-  const state = normalizeText(item.state);
-  const tags = (item.tags ?? []).map(normalizeText);
-  return hasToken(state, ["blocked", "impeded", "pending clarification", "waiting", "on hold"])
-    || tags.some((tag) => hasToken(tag, ["blocked", "impeded", "waiting", "on hold"]));
 }
 
 export function hasMissingEstimate(item: Requirement) {
@@ -253,72 +221,61 @@ export function hasMissingEstimate(item: Requirement) {
 
 function isAtRisk(input: {
   item: Requirement;
-  status: WorkbenchStatusGroup;
+  closed: boolean;
   overdue: boolean;
   dueSoon: boolean;
-  blocked: boolean;
   highPriority: boolean;
   unestimated: boolean;
-  activeAging: boolean;
   today: string;
   sprintEndDate: string | null;
 }) {
-  if (input.blocked || input.overdue || input.activeAging) return true;
+  if (input.closed) return false;
+  if (input.overdue) return true;
   if (input.dueSoon && (input.item.remainingWork ?? 0) >= 4) return true;
-  if (input.highPriority && input.status === "To Do") return true;
+  if (input.highPriority) return true;
   if (input.unestimated && input.sprintEndDate && input.sprintEndDate >= input.today) return true;
   if (input.sprintEndDate && daysBetween(input.today, input.sprintEndDate) <= 2 && (input.item.remainingWork ?? 0) > 0) return true;
-  return input.status === "Other / Unmapped";
+  return false;
 }
 
 function focusScore(input: {
   item: Requirement;
-  status: WorkbenchStatusGroup;
-  blocked: boolean;
+  closed: boolean;
   overdue: boolean;
   dueSoon: boolean;
   highPriority: boolean;
   unestimated: boolean;
   currentSprint: boolean;
-  unmapped: boolean;
-  activeAging: boolean;
   atRisk: boolean;
 }) {
+  if (input.closed) return 0;
   let score = 0;
-  if (input.blocked) score += 130;
   if (input.overdue) score += 90;
   if (input.dueSoon) score += 70;
   if (input.highPriority) score += 60;
   if (input.currentSprint) score += 50;
-  if (input.status === "Active" || input.status === "Review / Testing") score += 30;
   if ((input.item.remainingWork ?? 0) >= 8) score += 20;
   if (input.unestimated) score += 25;
-  if (input.unmapped) score += 25;
-  if (input.activeAging) score += 40;
   if (input.atRisk) score += 20;
   if (isBacklogItem(input.item)) score -= 10;
   return score;
 }
 
 function focusBadgesFor(input: {
-  blocked: boolean;
   overdue: boolean;
   dueSoon: boolean;
   highPriority: boolean;
   unestimated: boolean;
   currentSprint: boolean;
   atRisk: boolean;
-  unmapped: boolean;
 }) {
   const badges: WorkbenchFocusBadge[] = [];
-  if (input.blocked) badges.push("Blocked");
   if (input.overdue) badges.push("Overdue");
   if (input.dueSoon) badges.push("Due Soon");
   if (input.highPriority) badges.push("High Priority");
   if (input.unestimated) badges.push("No Estimate");
   if (input.currentSprint) badges.push("Current Sprint");
   if (input.atRisk) badges.push("At Risk");
-  if (input.unmapped) badges.push("Unmapped State");
   return badges;
 }
 
@@ -330,63 +287,33 @@ function compareFocusItems(first: WorkbenchFocusItem, second: WorkbenchFocusItem
     || first.id.localeCompare(second.id);
 }
 
-function buildWorkbenchCards(items: WorkbenchFocusItem[], selectedSprint: WorkbenchIterationSelection, today: string): WorkbenchCard[] {
-  const openItems = items.filter((item) => item.status !== "Done");
-  const blocked = openItems.filter((item) => item.focusBadges.includes("Blocked"));
-  const atRisk = openItems.filter((item) => item.focusBadges.includes("At Risk"));
+function buildWorkbenchCards(items: WorkbenchFocusItem[]): WorkbenchCard[] {
+  const openItems = items.filter((item) => !isClosedState(item.state));
   const unestimated = openItems.filter((item) => item.focusBadges.includes("No Estimate"));
-  const highPriority = openItems.filter((item) => item.focusBadges.includes("High Priority"));
-  const dueSoon = openItems.filter((item) => item.focusBadges.includes("Due Soon"));
-  const focusNow = openItems.filter((item) => item.focusBadges.some((badge) => ["Blocked", "Overdue", "Due Soon", "High Priority", "At Risk"].includes(badge)));
   const remaining = sumNumbers(openItems.map((item) => item.remainingWork));
-  const activeRemaining = sumNumbers(openItems.filter((item) => item.status === "Active" || item.status === "Review / Testing").map((item) => item.remainingWork));
-  const todoRemaining = sumNumbers(openItems.filter((item) => item.status === "To Do").map((item) => item.remainingWork));
   const completed = sumNumbers(openItems.map((item) => item.completedWork));
-  const progress = calculateProgress(completed, remaining);
-  const daysLeft = selectedSprint.finishDate ? Math.max(0, daysBetween(today, selectedSprint.finishDate)) : null;
-  const sprintStatus = sprintProgressStatus(progress, selectedSprint, today, unestimated.length);
+  const missingEstimatePercent = openItems.length ? Math.round((unestimated.length / openItems.length) * 100) : 0;
 
   return [
     {
-      key: "focusNow",
-      title: "Focus Now",
-      value: `${focusNow.length} ${focusNow.length === 1 ? "item" : "items"}`,
-      subtitle: `${highPriority.length} high priority - ${dueSoon.length} due soon - ${blocked.length} blocked`,
-      tone: focusNow.length ? "yellow" : "green",
+      key: "openWork",
+      title: "Open Work",
+      value: `${openItems.length} ${openItems.length === 1 ? "item" : "items"}`,
+      subtitle: "Selected sprint scope",
+      tone: openItems.length ? "blue" : "green",
     },
     {
       key: "remainingWork",
       title: "Remaining Work",
-      value: unestimated.length ? "Incomplete estimate" : `${formatHours(remaining)} remaining`,
-      subtitle: unestimated.length ? `${unestimated.length} ${unestimated.length === 1 ? "item has" : "items have"} no remaining hours` : `${formatHours(activeRemaining)} active - ${formatHours(todoRemaining)} not started`,
+      value: `${formatHours(remaining)} remaining`,
+      subtitle: unestimated.length ? `${unestimated.length} ${unestimated.length === 1 ? "item" : "items"} missing estimates` : `${openItems.length} open ${openItems.length === 1 ? "item" : "items"} - ${formatHours(completed)} completed`,
       tone: unestimated.length ? "yellow" : "blue",
     },
     {
-      key: "sprintProgress",
-      title: "Sprint Progress",
-      value: progress === null ? "No estimate" : `${progress}% complete`,
-      subtitle: `${formatHours(remaining)} remaining${daysLeft === null ? "" : ` - ${daysLeft} ${daysLeft === 1 ? "day" : "days"} left`} - ${sprintStatus}`,
-      tone: sprintStatus === "On Track" ? "green" : sprintStatus === "Behind" ? "red" : sprintStatus === "No Estimate" ? "neutral" : "yellow",
-    },
-    {
-      key: "blockedWaiting",
-      title: "Blocked / Waiting",
-      value: `${blocked.length} ${blocked.length === 1 ? "item" : "items"}`,
-      subtitle: blockerCardSubtitle(blocked),
-      tone: blocked.length ? "red" : "green",
-    },
-    {
-      key: "atRisk",
-      title: "At Risk",
-      value: `${atRisk.length} ${atRisk.length === 1 ? "item" : "items"}`,
-      subtitle: `${openItems.filter((item) => item.focusBadges.includes("Overdue")).length} overdue - ${openItems.filter((item) => item.focusBadges.includes("No Estimate")).length} unestimated`,
-      tone: atRisk.length ? "yellow" : "green",
-    },
-    {
-      key: "unestimatedWork",
-      title: "Unestimated Work",
+      key: "missingEstimates",
+      title: "Missing Estimates",
       value: `${unestimated.length} ${unestimated.length === 1 ? "item" : "items"}`,
-      subtitle: unestimated.length ? "Missing Remaining Work" : "Remaining Work is available",
+      subtitle: unestimated.length ? `${missingEstimatePercent}% of open work` : "Remaining Work is available",
       tone: unestimated.length ? "yellow" : "green",
     },
   ];
@@ -405,15 +332,13 @@ function buildAssignedBySprint(items: Requirement[], iterations: AzureIteration[
       const remainingWork = nullableSum(group.map((item) => item.remainingWork));
       const completedWork = nullableSum(group.map((item) => item.completedWork));
       const unestimated = group.filter(hasMissingEstimate).length;
-      const blocked = group.filter((item) => isBlockedWorkItem(item)).length;
       return {
         sprint,
         items: group.length,
         remainingWork,
         completedWork,
-        blocked,
         unestimated,
-        status: sprintStatusForGroup({ sprint, iteration, remainingWork, completedWork, blocked, unestimated, today }),
+        status: sprintStatusForGroup({ sprint, iteration, remainingWork, completedWork, unestimated, today }),
       };
     })
     .sort((first, second) => sprintRowRank(first.sprint, iterationByPath, today) - sprintRowRank(second.sprint, iterationByPath, today) || first.sprint.localeCompare(second.sprint))
@@ -421,11 +346,15 @@ function buildAssignedBySprint(items: Requirement[], iterations: AzureIteration[
 }
 
 function remainingWorkByStatus(items: WorkbenchFocusItem[]) {
-  return WORKBENCH_STATUS_GROUPS.map((status) => ({
-    name: status,
-    key: status,
-    value: round(sumNumbers(items.filter((item) => item.status === status).map((item) => item.remainingWork))),
-  })).filter((item) => item.value > 0 || item.name === "Other / Unmapped");
+  const groups = new Map<string, number>();
+  items.forEach((item) => {
+    groups.set(item.state, (groups.get(item.state) ?? 0) + sumNumbers([item.remainingWork]));
+  });
+  return [...groups.entries()]
+    .map(([name, value]) => ({ name, key: name, value: round(value) }))
+    .filter((item) => item.value > 0)
+    .sort((first, second) => second.value - first.value || first.name.localeCompare(second.name))
+    .slice(0, WORKBENCH_LIMITS.chartSlices);
 }
 
 function workItemsByType(items: WorkbenchFocusItem[]) {
@@ -479,20 +408,6 @@ function sprintEndForItem(item: Requirement, selectedSprint: WorkbenchIterationS
   return null;
 }
 
-function blockerSummary(item: Requirement, status: WorkbenchStatusGroup) {
-  if (status === "Blocked / Waiting") return item.state ? `State: ${item.state}` : "Blocked or waiting";
-  const blockedTag = (item.tags ?? []).find((tag) => normalizeText(tag).includes("blocked"));
-  if (blockedTag) return `Tag: ${blockedTag}`;
-  return null;
-}
-
-function blockerCardSubtitle(items: WorkbenchFocusItem[]) {
-  const dependencies = items.filter((item) => item.blockerSummary?.toLowerCase().includes("dependency")).length;
-  const clarification = items.filter((item) => item.blockerSummary?.toLowerCase().includes("clarification")).length;
-  if (dependencies || clarification) return `${dependencies} dependency - ${clarification} needs clarification`;
-  return items.length ? "Review blocked states and tags" : "No blocked assigned work";
-}
-
 function sprintProgressStatus(progress: number | null, selectedSprint: WorkbenchIterationSelection, today: string, missingEstimateCount: number): WorkbenchRiskStatus {
   if (progress === null || missingEstimateCount > 0) return "No Estimate";
   if (!selectedSprint.startDate || !selectedSprint.finishDate) return "Planned";
@@ -509,13 +424,11 @@ function sprintStatusForGroup(input: {
   iteration?: AzureIteration;
   remainingWork: number | null;
   completedWork: number | null;
-  blocked: number;
   unestimated: number;
   today: string;
 }): WorkbenchRiskStatus {
   if (input.sprint === "Backlog / No Sprint") return "No Sprint";
   if (input.unestimated > 0) return "Needs Estimate";
-  if (input.blocked > 0) return "At Risk";
   const start = datePart(input.iteration?.startDate);
   const finish = datePart(input.iteration?.finishDate);
   if (!start || !finish || start > input.today) return "Planned";
@@ -579,39 +492,22 @@ function daysBetween(from: string, to: string) {
   return Math.floor((new Date(`${to}T00:00:00`).getTime() - new Date(`${from}T00:00:00`).getTime()) / 86_400_000);
 }
 
-function businessDaysBetween(from: string | null, to: string) {
-  if (!from || from > to) return 0;
-  let count = 0;
-  const cursor = new Date(`${from}T00:00:00`);
-  const end = new Date(`${to}T00:00:00`);
-  while (cursor < end) {
-    const day = cursor.getDay();
-    if (day !== 0 && day !== 6) count += 1;
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return count;
-}
-
 function datePart(value?: string | null) {
   if (!value) return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : toLocalDayString(date);
 }
 
-function normalizeText(value?: string | null) {
-  return (value ?? "").trim().replace(/[_-]+/g, " ").replace(/\s+/g, " ").toLowerCase();
+function stateLabel(value?: string | null) {
+  return value?.trim() || "Unknown";
+}
+
+function normalizeStateValue(value?: string | null) {
+  return (value ?? "").trim().toLowerCase();
 }
 
 function normalizePath(value?: string | null) {
   return (value ?? "").trim().toLocaleLowerCase();
-}
-
-function hasToken(value: string, tokens: string[]) {
-  return tokens.some((token) => value.includes(token));
-}
-
-function beginsWithToken(value: string, tokens: string[]) {
-  return tokens.some((token) => value === token || value.startsWith(`${token} `) || value.startsWith(`${token} -`) || value.startsWith(`${token} (`));
 }
 
 function priorityRank(value: number | null) {
@@ -659,11 +555,18 @@ function unique(values: string[]) {
 export function buildWorkbenchMetadata(input: {
   iterations: AzureIteration[];
   areas: Array<{ path: string }>;
+  states: string[];
   scopedItems: Requirement[];
+  parentsById: Map<string, WorkbenchParent>;
   today?: Date;
 }): MyWorkbenchAnalytics["filterMetadata"] {
   const today = toLocalDayString(input.today ?? new Date());
   const current = findCurrentIteration(input.iterations, today)?.path;
+  const parentIds = unique(input.scopedItems.flatMap((item) => {
+    const parent = firstParent(item, input.parentsById);
+    return parent ? [parent.id] : [];
+  }));
+  const hasNoParentItems = input.scopedItems.some((item) => !firstParent(item, input.parentsById));
   return {
     iterations: input.iterations.map((iteration) => {
       const startDate = datePart(iteration.startDate) ?? undefined;
@@ -686,6 +589,16 @@ export function buildWorkbenchMetadata(input: {
     }),
     areas: input.areas.map((area) => ({ value: area.path, label: area.path })),
     workItemTypes: unique(input.scopedItems.map((item) => item.workItemType)).map((type) => ({ value: type, label: type })),
-    statusGroups: WORKBENCH_STATUS_GROUPS.map((status) => ({ value: status, label: status })),
+    states: unique([...input.states, ...input.scopedItems.map((item) => stateLabel(item.state))])
+      .sort((first, second) => first.localeCompare(second))
+      .map((state) => ({ value: state, label: state })),
+    parents: [
+      ...(hasNoParentItems ? [{ value: NO_PARENT_FILTER_VALUE, label: "No parent" }] : []),
+      ...parentIds
+        .map((id) => input.parentsById.get(id))
+        .filter((parent): parent is WorkbenchParent => Boolean(parent))
+        .sort((first, second) => first.title.localeCompare(second.title) || first.id.localeCompare(second.id))
+        .map((parent) => ({ value: parent.id, label: `#${parent.id} ${parent.title}`, description: parent.title })),
+    ],
   };
 }

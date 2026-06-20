@@ -6,10 +6,8 @@ import {
   Clock3,
   ExternalLink,
   Filter,
-  Gauge,
   ListChecks,
   RefreshCw,
-  ShieldAlert,
   TimerReset,
   X,
 } from "lucide-react";
@@ -52,7 +50,6 @@ import type {
   WorkbenchFocusBadge,
   WorkbenchFocusItem,
   WorkbenchRiskStatus,
-  WorkbenchStatusGroup,
 } from "@/types/my-workbench-dashboard";
 
 type WorkbenchState = {
@@ -65,13 +62,12 @@ const AUTO_REFRESH_INTERVAL_MS = 5 * 60_000;
 const STALE_THRESHOLD_MS = 2 * 60_000;
 const FILTER_SETTLE_MS = 1_500;
 
-const openStatusGroups: WorkbenchStatusGroup[] = ["To Do", "Active", "Blocked / Waiting", "Review / Testing", "Other / Unmapped"];
-
 const defaultWorkbenchFilters: WorkbenchFilters = {
   sprintMode: "current",
   iterationPath: null,
   workItemTypes: [],
-  statusGroups: openStatusGroups,
+  states: [],
+  parentIds: [],
   priority: "all",
   areaPath: null,
   includeCompleted: false,
@@ -82,14 +78,8 @@ const emptyMetadata: WorkbenchFilterMetadata = {
   iterations: [],
   areas: [],
   workItemTypes: [],
-  statusGroups: [
-    { value: "To Do", label: "To Do" },
-    { value: "Active", label: "Active" },
-    { value: "Blocked / Waiting", label: "Blocked / Waiting" },
-    { value: "Review / Testing", label: "Review / Testing" },
-    { value: "Done", label: "Done" },
-    { value: "Other / Unmapped", label: "Other / Unmapped" },
-  ],
+  states: [],
+  parents: [],
 };
 
 export function MyWorkbenchDashboardClient({ active }: { active: boolean }) {
@@ -190,7 +180,7 @@ export function MyWorkbenchDashboardClient({ active }: { active: boolean }) {
     <div className="space-y-4">
       <section className="space-y-1">
         <h2 className="text-lg font-semibold text-foreground">My Workbench</h2>
-        <p className="text-sm text-muted-foreground">Track your assigned Azure DevOps work, sprint focus, remaining hours, blockers, and priorities.</p>
+        <p className="text-sm text-muted-foreground">Track your assigned Azure DevOps work, sprint focus, remaining hours, states, and priorities.</p>
       </section>
 
       <WorkbenchFilters
@@ -224,7 +214,7 @@ export function MyWorkbenchDashboardClient({ active }: { active: boolean }) {
           <div className="grid gap-4 xl:grid-cols-2">
             <DashboardChartCard
               title="Remaining Work by Status"
-              description="Remaining hours grouped by normalized dashboard status."
+              description="Remaining hours grouped by Azure DevOps state."
               hasData={data.charts.remainingWorkByStatus.some((item) => item.value > 0)}
               emptyMessage="No estimated remaining work is available for this scope."
               summary={chartSummary(data.charts.remainingWorkByStatus)}
@@ -272,12 +262,9 @@ function WorkbenchFilters({
   const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
   const activeAdvanced = Boolean(
     value.areaPath ||
-    value.iterationPath ||
-    value.workItemTypes.length ||
     value.priority !== "all" ||
     value.includeCompleted ||
-    value.includeBacklog ||
-    !sameStringSet(value.statusGroups, openStatusGroups),
+    value.includeBacklog,
   );
 
   function patch(next: Partial<WorkbenchFilters>) {
@@ -285,12 +272,7 @@ function WorkbenchFilters({
   }
 
   function setIncludeCompleted(includeCompleted: boolean) {
-    patch({
-      includeCompleted,
-      statusGroups: includeCompleted
-        ? unique([...value.statusGroups, "Done"])
-        : value.statusGroups.filter((status) => status !== "Done"),
-    });
+    patch({ includeCompleted });
   }
 
   const selectedIterationPath = value.iterationPath ?? selectedSprint?.path ?? metadata.iterations.find((iteration) => iteration.category === "current")?.value ?? metadata.iterations[0]?.value ?? "";
@@ -298,7 +280,7 @@ function WorkbenchFilters({
 
   return (
     <section className="qa-card space-y-3 p-4">
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto] xl:items-start">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,0.85fr)_minmax(0,0.85fr)_minmax(0,1fr)_auto] xl:items-start">
         <div className="space-y-1.5">
           <Label htmlFor="workbench-iteration" className="text-sm font-semibold text-foreground">Sprint</Label>
           <select
@@ -340,6 +322,40 @@ function WorkbenchFilters({
           />
         </div>
 
+        <div className="space-y-1.5">
+          <Label className="text-sm font-semibold text-foreground">State</Label>
+          <SearchableMultiSelect
+            options={metadata.states}
+            value={value.states}
+            onValueChange={(states) => patch({ states })}
+            getOptionValue={(option) => option.value}
+            getOptionLabel={(option) => option.label}
+            disabled={disabled || !metadata.states.length}
+            placeholder="All states"
+            searchPlaceholder="Search states"
+            triggerClassName="h-10"
+            ariaLabel="Workbench states"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label className="text-sm font-semibold text-foreground">Parent</Label>
+          <SearchableMultiSelect
+            options={metadata.parents}
+            value={value.parentIds}
+            onValueChange={(parentIds) => patch({ parentIds })}
+            getOptionValue={(option) => option.value}
+            getOptionLabel={(option) => option.label}
+            getOptionSearchText={(option) => `${option.label} ${option.description ?? ""}`}
+            disabled={disabled || !metadata.parents.length}
+            placeholder="All parents"
+            searchPlaceholder="Search parents"
+            triggerClassName="h-10"
+            contentClassName="w-[460px]"
+            ariaLabel="Workbench parents"
+          />
+        </div>
+
         <Popover open={moreFiltersOpen} onOpenChange={setMoreFiltersOpen}>
           <PopoverTrigger asChild>
             <Button type="button" variant="outline" className="mt-6 h-10 justify-start gap-2 whitespace-nowrap px-3" disabled={disabled}>
@@ -358,18 +374,6 @@ function WorkbenchFilters({
                 placeholder="All areas"
                 searchPlaceholder="Search areas"
                 ariaLabel="Area Path"
-              />
-              <SearchableMultiSelect
-                options={metadata.statusGroups}
-                value={value.statusGroups}
-                onValueChange={(statusGroups) => patch({ statusGroups: statusGroups as WorkbenchStatusGroup[] })}
-                getOptionValue={(option) => option.value}
-                getOptionLabel={(option) => option.label}
-                disabled={disabled}
-                placeholder="Open / active statuses"
-                searchPlaceholder="Search statuses"
-                triggerClassName="h-10"
-                ariaLabel="State or status"
               />
               <Select value={value.priority} onValueChange={(priority) => patch({ priority: priority as WorkbenchFilters["priority"] })} disabled={disabled}>
                 <SelectTrigger aria-label="Priority"><SelectValue /></SelectTrigger>
@@ -401,7 +405,7 @@ function WorkbenchFilters({
             </div>
             {activeAdvanced ? (
               <div className="flex justify-end">
-                <Button type="button" size="sm" variant="ghost" onClick={() => onChange({ ...defaultWorkbenchFilters, sprintMode: "custom", iterationPath: selectedIterationPath || null })}>
+                <Button type="button" size="sm" variant="ghost" onClick={() => onChange({ ...value, areaPath: null, priority: "all", includeCompleted: false, includeBacklog: false })}>
                   <X className="size-4" />Clear advanced filters
                 </Button>
               </div>
@@ -505,7 +509,7 @@ function WorkbenchWarnings({ warnings }: { warnings: string[] }) {
 
 function WorkbenchCardGrid({ cards }: { cards: WorkbenchCard[] }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {cards.map((card) => (
         <MetricCard
           key={card.key}
@@ -531,11 +535,11 @@ function MyFocusListTable({ rows }: { rows: WorkbenchFocusItem[] }) {
         <TableHeader><TableRow>
           <TableHead>Focus</TableHead><TableHead>ID</TableHead><TableHead>Title</TableHead><TableHead>Type</TableHead><TableHead>State</TableHead>
           <TableHead>Parent</TableHead><TableHead>Sprint</TableHead><TableHead className="text-right">Remaining</TableHead>
-          <TableHead className="text-right">Completed</TableHead><TableHead>Priority</TableHead><TableHead>Due / Sprint End</TableHead><TableHead>Tags / Blocker</TableHead>
+          <TableHead className="text-right">Completed</TableHead><TableHead>Priority</TableHead><TableHead>Due / Sprint End</TableHead><TableHead>Tags</TableHead>
         </TableRow></TableHeader>
         <TableBody>
           {rows.map((row) => (
-            <TableRow key={row.id} className={row.focusBadges.includes("Blocked") || row.focusBadges.includes("Overdue") ? "border-l-2 border-l-destructive bg-destructive/5" : row.focusBadges.includes("At Risk") ? "border-l-2 border-l-warning bg-warning/5" : undefined}>
+            <TableRow key={row.id} className={row.focusBadges.includes("Overdue") ? "border-l-2 border-l-destructive bg-destructive/5" : row.focusBadges.includes("At Risk") ? "border-l-2 border-l-warning bg-warning/5" : undefined}>
               <TableCell className="min-w-[180px]"><FocusBadges badges={row.focusBadges} /></TableCell>
               <TableCell className="font-mono text-xs text-muted-foreground">#{row.id}</TableCell>
               <TableCell className="min-w-[300px]"><WorkbenchItemLink row={row} /></TableCell>
@@ -580,7 +584,7 @@ function AssignedWorkBySprintTable({ rows }: { rows: MyWorkbenchAnalytics["assig
       <Table className="min-w-[900px]">
         <TableHeader><TableRow>
           <TableHead>Sprint</TableHead><TableHead className="text-right">Items</TableHead><TableHead className="text-right">Remaining Work</TableHead>
-          <TableHead className="text-right">Completed Work</TableHead><TableHead className="text-right">Blocked</TableHead><TableHead className="text-right">Unestimated</TableHead><TableHead>Status</TableHead>
+          <TableHead className="text-right">Completed Work</TableHead><TableHead className="text-right">Unestimated</TableHead><TableHead>Status</TableHead>
         </TableRow></TableHeader>
         <TableBody>
           {rows.map((row) => (
@@ -589,7 +593,6 @@ function AssignedWorkBySprintTable({ rows }: { rows: MyWorkbenchAnalytics["assig
               <TableCell className="text-right tabular-nums">{row.items}</TableCell>
               <TableCell className="text-right tabular-nums">{formatHoursCell(row.remainingWork)}</TableCell>
               <TableCell className="text-right tabular-nums">{formatHoursCell(row.completedWork)}</TableCell>
-              <TableCell className="text-right tabular-nums">{row.blocked}</TableCell>
               <TableCell className="text-right tabular-nums">{row.unestimated}</TableCell>
               <TableCell><StatusChip tone={sprintTone(row.status)}>{row.status}</StatusChip></TableCell>
             </TableRow>
@@ -705,17 +708,14 @@ function FocusBadges({ badges }: { badges: WorkbenchFocusBadge[] }) {
 
 function cardIcon(key: WorkbenchCard["key"]) {
   return {
-    focusNow: BriefcaseBusiness,
+    openWork: BriefcaseBusiness,
     remainingWork: Clock3,
-    sprintProgress: Gauge,
-    blockedWaiting: ShieldAlert,
-    atRisk: AlertTriangle,
-    unestimatedWork: TimerReset,
+    missingEstimates: TimerReset,
   }[key] ?? ListChecks;
 }
 
 function focusTone(badge: WorkbenchFocusBadge) {
-  if (badge === "Blocked" || badge === "Overdue") return "error" as const;
+  if (badge === "Overdue") return "error" as const;
   if (badge === "Due Soon" || badge === "High Priority" || badge === "No Estimate" || badge === "At Risk") return "warning" as const;
   if (badge === "Current Sprint") return "info" as const;
   return "neutral" as const;
@@ -759,18 +759,9 @@ function shortDate(value: string) {
 }
 
 function tagSummary(row: WorkbenchFocusItem) {
-  const tags = row.tags.length ? row.tags.join(", ") : "No tags";
-  return row.blockerSummary ? `${row.blockerSummary} - ${tags}` : tags;
+  return row.tags.length ? row.tags.join(", ") : "No tags";
 }
 
 function chartSummary(data: Array<{ name: string; value: number }>) {
   return data.map((item) => `${item.name}: ${item.value}`).join(". ");
-}
-
-function unique<T extends string>(values: T[]) {
-  return [...new Set(values)];
-}
-
-function sameStringSet(first: string[], second: string[]) {
-  return first.length === second.length && first.every((value) => second.includes(value));
 }
