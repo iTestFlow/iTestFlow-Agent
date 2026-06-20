@@ -59,6 +59,7 @@ export interface AzureDevOpsAdapter {
     areaPath?: string;
     iterationPath?: string;
     assignedTo?: string;
+    assignedToMe?: boolean;
     limit?: number;
   }): Promise<Requirement[]>;
 

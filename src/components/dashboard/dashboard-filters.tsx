@@ -1,9 +1,11 @@
 "use client";
 
 import { Filter, X } from "lucide-react";
+import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SearchableCombobox } from "@/components/ui/searchable-combobox";
 import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -46,6 +48,7 @@ export function DashboardFilters({
   disabled?: boolean;
   onChange: (value: DashboardFilterState) => void;
 }) {
+  const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
   const effectivePlanId = value.testPlanId ?? effective?.testPlanId ?? "";
   const effectiveTypes = value.workItemTypes.length ? value.workItemTypes : effective?.workItemTypes ?? [];
   const activeAdvanced = Boolean(value.areaPath || value.iterationPath || value.assignee || value.workItemTypes.length);
@@ -89,13 +92,13 @@ export function DashboardFilters({
           ariaLabel="Test Suite"
         />
 
-        <details className="group relative">
-          <summary className="flex h-10 cursor-pointer list-none items-center justify-between rounded-md border border-input bg-background px-3 text-sm font-medium ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <span className="inline-flex items-center gap-2"><Filter className="size-4" />More filters{activeAdvanced ? " (active)" : ""}</span>
-            <span className="text-xs text-muted-foreground group-open:hidden">Open</span>
-            <span className="hidden text-xs text-muted-foreground group-open:inline">Close</span>
-          </summary>
-          <div className="absolute right-0 z-20 mt-2 w-[min(720px,calc(100vw-2rem))] space-y-3 rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-lg">
+        <Popover open={moreFiltersOpen} onOpenChange={setMoreFiltersOpen}>
+          <PopoverTrigger asChild>
+            <Button type="button" variant="outline" className="h-10 justify-start gap-2 px-3" disabled={disabled}>
+              <Filter className="size-4" />More filters{activeAdvanced ? " (active)" : ""}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-[min(720px,calc(100vw-2rem))] space-y-3 p-4">
             <div className="grid gap-3 md:grid-cols-2">
               <SearchableCombobox
                 value={value.areaPath ?? ""}
@@ -143,8 +146,8 @@ export function DashboardFilters({
                 </Button>
               </div>
             ) : null}
-          </div>
-        </details>
+          </PopoverContent>
+        </Popover>
       </div>
 
       {value.datePreset === "custom" ? (

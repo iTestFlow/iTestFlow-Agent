@@ -32,6 +32,7 @@ import type {
   DashboardTrendPoint,
 } from "@/types/dashboard";
 import { SystemDashboardsClient } from "@/components/dashboard/system-dashboard-client";
+import { MyWorkbenchDashboardClient } from "@/components/dashboard/my-workbench-dashboard-client";
 
 type DashboardState = {
   loading: boolean;
@@ -58,14 +59,18 @@ const emptyMetadata: DashboardFilterMetadata = {
 };
 
 export function DashboardsClient() {
-  const [activeDashboard, setActiveDashboard] = useState<"project" | "system">("project");
+  const [activeDashboard, setActiveDashboard] = useState<"workbench" | "project" | "system">("workbench");
 
   return (
-    <Tabs value={activeDashboard} onValueChange={(value) => setActiveDashboard(value as "project" | "system")} className="flex-col gap-4">
-      <TabsList variant="primary" className="grid h-auto w-full grid-cols-2 sm:inline-grid sm:w-fit sm:min-w-[460px]">
+    <Tabs value={activeDashboard} onValueChange={(value) => setActiveDashboard(value as "workbench" | "project" | "system")} className="flex-col gap-4">
+      <TabsList variant="primary" className="grid h-auto w-full grid-cols-3 sm:inline-grid sm:w-fit sm:min-w-[640px]">
+        <TabsTrigger value="workbench" className="h-10 px-3 py-2 duration-200">My Workbench</TabsTrigger>
         <TabsTrigger value="project" className="h-10 px-3 py-2 duration-200">Project Dashboards</TabsTrigger>
         <TabsTrigger value="system" className="h-10 px-3 py-2 duration-200">System Dashboards</TabsTrigger>
       </TabsList>
+      <TabsContent value="workbench" forceMount hidden={activeDashboard !== "workbench"} className="space-y-4">
+        <MyWorkbenchDashboardClient active={activeDashboard === "workbench"} />
+      </TabsContent>
       <TabsContent value="project" forceMount hidden={activeDashboard !== "project"} className="space-y-4">
         <ProjectDashboardsClient active={activeDashboard === "project"} />
       </TabsContent>
