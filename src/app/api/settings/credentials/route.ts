@@ -119,6 +119,7 @@ export async function PUT(request: Request) {
       userId: context.userId,
       provider: parsed.data.llm.provider,
       apiKey: parsed.data.llm.apiKey,
+      lastValidatedAt: nowIso(),
     });
     await saveUserLlmSettings({
       workspaceId: context.workspace.id,

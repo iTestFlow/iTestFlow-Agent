@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createId, nowIso, resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import {
   getUserCredentialStatus,
+  isCredentialStale,
+  markUserAzurePatExpired,
   resolveUserAzurePat,
   resolveUserLlmConfig,
   saveUserLlmSettings,
@@ -11,6 +13,28 @@ import {
 } from "@/modules/credentials/credential.service";
 
 const WS_URL = "https://dev.azure.com/cred-test-org";
+
+describe("isCredentialStale (pure)", () => {
+  const now = "2026-06-22T00:00:00.000Z";
+
+  it("treats a missing timestamp as not stale", () => {
+    expect(isCredentialStale(null, now, 60)).toBe(false);
+    expect(isCredentialStale(undefined, now, 60)).toBe(false);
+  });
+
+  it("is false for a freshly validated credential", () => {
+    expect(isCredentialStale("2026-06-21T00:00:00.000Z", now, 60)).toBe(false);
+  });
+
+  it("is false at the threshold and true beyond it", () => {
+    expect(isCredentialStale("2026-04-23T00:00:00.000Z", now, 60)).toBe(false); // exactly 60 days
+    expect(isCredentialStale("2026-04-13T00:00:00.000Z", now, 60)).toBe(true); // ~70 days
+  });
+
+  it("guards against unparseable input", () => {
+    expect(isCredentialStale("not-a-date", now, 60)).toBe(false);
+  });
+});
 
 // DB-backed (ADR-9): requires migrated PostgreSQL via DATABASE_URL; skipped otherwise.
 const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
@@ -64,5 +88,11 @@ describeDb("credential service (DB-backed)", () => {
     const serialized = JSON.stringify(status);
     expect(serialized).not.toContain("pat-secret");
     expect(serialized).not.toContain("sk-abc");
+  });
+
+  it("flips the PAT to expired on use-time rejection, idempotently", async () => {
+    await markUserAzurePatExpired(workspaceId, userId);
+    await markUserAzurePatExpired(workspaceId, userId); // idempotent
+    expect((await getUserCredentialStatus(workspaceId, userId)).azurePat.status).toBe("expired");
   });
 });

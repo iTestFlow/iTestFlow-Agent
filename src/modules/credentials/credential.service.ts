@@ -19,12 +19,39 @@ export type CredentialSummary = {
   maskedPreview: string | null;
   provider?: string | null;
   lastValidatedAt?: string | null;
+  isStale?: boolean;
 };
 
 export type UserCredentialStatus = {
   azurePat: CredentialSummary;
   llm: CredentialSummary & { model?: string | null };
 };
+
+/**
+ * Days after which a successfully-stored credential is considered stale and the
+ * user is nudged to re-validate it. Azure DevOps does not expose a PAT expiry
+ * date, so staleness (age since last validation) is our proactive expiry signal.
+ */
+export const CREDENTIAL_STALE_DAYS = Number(process.env.CREDENTIAL_STALE_DAYS ?? 60);
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Pure staleness check (unit-testable, no DB/clock dependency): true when
+ * `lastValidatedAt` is more than `days` old relative to `nowIso`. A missing
+ * timestamp is treated as not-stale (we have no basis to warn).
+ */
+export function isCredentialStale(
+  lastValidatedAt: string | null | undefined,
+  nowIso: string,
+  days = CREDENTIAL_STALE_DAYS,
+): boolean {
+  if (!lastValidatedAt) return false;
+  const validated = Date.parse(lastValidatedAt);
+  const now = Date.parse(nowIso);
+  if (Number.isNaN(validated) || Number.isNaN(now)) return false;
+  return now - validated > days * MS_PER_DAY;
+}
 
 export type ResolvedUserLlm = {
   provider: LLMProviderName;
@@ -106,6 +133,21 @@ export async function resolveUserAzurePat(workspaceId: string, userId: string): 
   return row ? decodeRow(row) : null;
 }
 
+/**
+ * Flips the user's Azure PAT to `expired` after Azure rejects it at use-time
+ * (a 401 from an interactive call). Idempotent — only writes when not already
+ * expired. Called fire-and-forget from the adapter's onUnauthorized hook, so it
+ * must never throw into the request path.
+ */
+export async function markUserAzurePatExpired(workspaceId: string, userId: string): Promise<void> {
+  await sqlRun(
+    `UPDATE user_credentials SET status = 'expired', updated_at = @now
+     WHERE workspace_id = @workspaceId AND user_id = @userId
+       AND credential_type = 'azure_pat' AND status <> 'expired'`,
+    { workspaceId, userId, now: nowIso() },
+  );
+}
+
 // ── User LLM API key + personal settings ────────────────────────────────────
 
 export async function storeUserLlmApiKey(input: {
@@ -114,6 +156,7 @@ export async function storeUserLlmApiKey(input: {
   provider: LLMProviderName;
   apiKey: string;
   status?: CredentialStatus;
+  lastValidatedAt?: string | null;
 }): Promise<void> {
   const enc = encryptSecret(input.apiKey);
   const now = nowIso();
@@ -125,7 +168,7 @@ export async function storeUserLlmApiKey(input: {
      ) VALUES (
        @id, @workspaceId, @userId, 'llm_api_key', @provider,
        @ciphertext, @iv, @tag, @keyVersion,
-       @masked, @status, NULL, @now, @now
+       @masked, @status, @lastValidatedAt, @now, @now
      )
      ON CONFLICT (workspace_id, user_id, credential_type, COALESCE(provider, '')) DO UPDATE SET
        encrypted_secret = excluded.encrypted_secret,
@@ -134,6 +177,7 @@ export async function storeUserLlmApiKey(input: {
        key_version = excluded.key_version,
        masked_preview = excluded.masked_preview,
        status = excluded.status,
+       last_validated_at = excluded.last_validated_at,
        updated_at = excluded.updated_at`,
     {
       id: createId("cred"),
@@ -146,6 +190,7 @@ export async function storeUserLlmApiKey(input: {
       keyVersion: enc.keyVersion,
       masked: maskSecret(input.apiKey),
       status: input.status ?? "configured",
+      lastValidatedAt: input.lastValidatedAt ?? null,
       now,
     },
   );
@@ -237,6 +282,7 @@ export async function resolveUserLlmConfig(workspaceId: string, userId: string):
 // ── Masked status (safe for the frontend) ───────────────────────────────────
 
 export async function getUserCredentialStatus(workspaceId: string, userId: string): Promise<UserCredentialStatus> {
+  const now = nowIso();
   const pat = await sqlGet<{ masked_preview: string | null; status: string; last_validated_at: string | null }>(
     `SELECT masked_preview, status, last_validated_at
      FROM user_credentials
@@ -263,7 +309,12 @@ export async function getUserCredentialStatus(workspaceId: string, userId: strin
 
   return {
     azurePat: pat
-      ? { status: pat.status as CredentialStatus, maskedPreview: pat.masked_preview, lastValidatedAt: pat.last_validated_at }
+      ? {
+          status: pat.status as CredentialStatus,
+          maskedPreview: pat.masked_preview,
+          lastValidatedAt: pat.last_validated_at,
+          isStale: pat.status === "configured" && isCredentialStale(pat.last_validated_at, now),
+        }
       : { status: "not_configured", maskedPreview: null },
     llm: llm
       ? {
@@ -272,6 +323,7 @@ export async function getUserCredentialStatus(workspaceId: string, userId: strin
           provider: llm.provider,
           model: llm.model,
           lastValidatedAt: llm.last_validated_at,
+          isStale: llm.status === "configured" && isCredentialStale(llm.last_validated_at, now),
         }
       : { status: "not_configured", maskedPreview: null },
   };

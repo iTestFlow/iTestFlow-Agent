@@ -21,6 +21,7 @@ type CredentialSummary = {
   status: "not_configured" | "configured" | "invalid" | "expired"
   provider?: string | null
   model?: string | null
+  isStale?: boolean
 }
 
 type CredentialStatus = {
@@ -121,6 +122,16 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           title: "Add your LLM provider, model, and API key in Settings → My Credentials.",
         }
 
+  // Proactive PAT health: only surfaced when there's a problem (expired/rejected
+  // at use-time, or stale). A healthy PAT shows nothing extra here.
+  const pat = credentials?.azurePat
+  const patWarning =
+    pat?.status === "expired" || pat?.status === "invalid"
+      ? { text: "Azure PAT: Expired", title: "Azure DevOps rejected your PAT. Re-enter it in Settings → My Credentials." }
+      : pat?.isStale
+        ? { text: "Azure PAT: Re-validate", title: "Your Azure DevOps PAT hasn't been validated in a while. Re-enter it in Settings → My Credentials." }
+        : null
+
   return (
     <header className="sticky top-0 z-30 flex min-h-16 items-center gap-3 border-b border-border bg-card/95 px-4 text-card-foreground shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/85 lg:px-6">
       <Button
@@ -139,6 +150,21 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
 
       <div className="hidden min-w-0 items-center gap-2 xl:flex">
         <ConnectivityChip {...azureStatus} />
+        {patWarning ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Link
+                href="/settings"
+                className={connectivityChipClass("warning", "max-w-[220px] cursor-pointer hover:brightness-95")}
+                aria-label={patWarning.title}
+              >
+                <span className="truncate">{patWarning.text}</span>
+                <Settings2 className="size-3.5 shrink-0" />
+              </Link>
+            </TooltipTrigger>
+            <TooltipContent sideOffset={8} className="max-w-sm text-left">{patWarning.title}</TooltipContent>
+          </Tooltip>
+        ) : null}
         <Tooltip>
           <TooltipTrigger asChild>
             <Link href="/settings" className={connectivityChipClass(llmStatus.tone, "max-w-[260px] cursor-pointer hover:brightness-95")} aria-label={llmStatus.title}>

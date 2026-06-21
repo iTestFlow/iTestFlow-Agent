@@ -8,7 +8,7 @@ import { DEFAULT_MAX_OUTPUT_TOKEN_CAP, DEFAULT_RETRY_ATTEMPTS } from "@/modules/
 import { requireSession, SessionError } from "@/modules/auth/session.service";
 import { getWorkspaceMembership } from "@/modules/workspace/workspace-access.service";
 import { getPrimaryWorkspaceForUser, getWorkspaceById, type WorkspaceRef } from "@/modules/workspace/workspace.service";
-import { resolveUserAzurePat, resolveUserLlmConfig } from "./credential.service";
+import { resolveUserAzurePat, resolveUserLlmConfig, markUserAzurePatExpired } from "./credential.service";
 
 /**
  * Per-request credential resolution for workspace features (the Phase 3 pattern,
@@ -72,6 +72,7 @@ export async function getUserAzureAdapter(
   return new AzureDevOpsRestAdapter(
     { organizationUrl: ctx.workspace.azureOrgUrl, personalAccessToken: pat },
     { azureProjectId: project.azureProjectId, azureProjectName: project.azureProjectName },
+    expirePatOnUnauthorized(ctx),
   );
 }
 
@@ -84,7 +85,23 @@ export async function getUserAzureAdapterOrgLevel(ctx: WorkflowContext): Promise
       400,
     );
   }
-  return new AzureDevOpsRestAdapter({ organizationUrl: ctx.workspace.azureOrgUrl, personalAccessToken: pat });
+  return new AzureDevOpsRestAdapter(
+    { organizationUrl: ctx.workspace.azureOrgUrl, personalAccessToken: pat },
+    undefined,
+    expirePatOnUnauthorized(ctx),
+  );
+}
+
+/**
+ * Adapter hook that flips the user's PAT to `expired` when Azure rejects it at
+ * use-time (401). Fire-and-forget — never blocks or fails the in-flight request.
+ */
+function expirePatOnUnauthorized(ctx: WorkflowContext): { onUnauthorized: () => void } {
+  return {
+    onUnauthorized: () => {
+      void markUserAzurePatExpired(ctx.workspace.id, ctx.userId).catch(() => {});
+    },
+  };
 }
 
 export async function getUserLLMProvider(ctx: WorkflowContext): Promise<LLMProvider> {

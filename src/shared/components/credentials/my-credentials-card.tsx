@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Select,
@@ -23,6 +24,7 @@ type CredentialSummary = {
   provider?: string | null
   model?: string | null
   lastValidatedAt?: string | null
+  isStale?: boolean
 }
 
 type CredentialStatusResponse = {
@@ -37,6 +39,28 @@ function StatusBadge({ status }: { status: CredentialSummary["status"] }) {
   const label = status === "not_configured" ? "Not configured" : status.charAt(0).toUpperCase() + status.slice(1)
   const variant = status === "configured" ? "default" : status === "not_configured" ? "secondary" : "destructive"
   return <Badge variant={variant}>{label}</Badge>
+}
+
+function lastValidatedLabel(value?: string | null): string | null {
+  if (!value) return null
+  const parsed = Date.parse(value)
+  if (Number.isNaN(parsed)) return null
+  const days = Math.floor((Date.now() - parsed) / (24 * 60 * 60 * 1000))
+  if (days <= 0) return "Last validated today"
+  if (days === 1) return "Last validated yesterday"
+  return `Last validated ${days} days ago`
+}
+
+/** A re-validation warning for a credential, or null when it's healthy. */
+function credentialWarning(label: string, summary?: CredentialSummary): string | null {
+  if (!summary) return null
+  if (summary.status === "expired" || summary.status === "invalid") {
+    return `Your ${label} was rejected by the provider. Re-enter it below to restore access.`
+  }
+  if (summary.isStale) {
+    return `Your ${label} hasn't been validated in a while. Re-enter it to confirm it still works.`
+  }
+  return null
 }
 
 export function MyCredentialsCard() {
@@ -128,6 +152,13 @@ export function MyCredentialsCard() {
     )
   }
 
+  const warnings = [
+    credentialWarning("Azure DevOps PAT", status?.azurePat),
+    credentialWarning("LLM API key", status?.llm),
+  ].filter((warning): warning is string => warning !== null)
+  const azurePatValidated = lastValidatedLabel(status?.azurePat.lastValidatedAt)
+  const llmValidated = lastValidatedLabel(status?.llm.lastValidatedAt)
+
   return (
     <Card>
       <CardHeader>
@@ -138,6 +169,18 @@ export function MyCredentialsCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
+        {!loading && warnings.length > 0 ? (
+          <Alert variant="destructive">
+            <AlertTitle className="text-sm">Action needed</AlertTitle>
+            <AlertDescription>
+              <ul className="list-disc space-y-1 pl-4">
+                {warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        ) : null}
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="rounded-md border p-3">
             <div className="flex items-center justify-between">
@@ -147,6 +190,9 @@ export function MyCredentialsCard() {
             <p className="mt-1 text-sm text-muted-foreground">
               {loading ? "Loading…" : status?.azurePat.maskedPreview ?? "No token stored."}
             </p>
+            {!loading && azurePatValidated ? (
+              <p className="mt-0.5 text-xs text-muted-foreground">{azurePatValidated}</p>
+            ) : null}
           </div>
           <div className="rounded-md border p-3">
             <div className="flex items-center justify-between">
@@ -160,6 +206,9 @@ export function MyCredentialsCard() {
                   ? `${status.llm.provider ?? ""} ${status.llm.model ?? ""} · ${status.llm.maskedPreview}`.trim()
                   : "No key stored."}
             </p>
+            {!loading && llmValidated ? (
+              <p className="mt-0.5 text-xs text-muted-foreground">{llmValidated}</p>
+            ) : null}
           </div>
         </div>
 

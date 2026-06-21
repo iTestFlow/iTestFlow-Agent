@@ -3,6 +3,7 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ContentShell } from "@/components/layout/content-shell"
 import { MyCredentialsCard } from "@/shared/components/credentials/my-credentials-card"
+import { WorkspaceMembersCard } from "@/shared/components/workspace/workspace-members-card"
 
 export default function SettingsPage() {
   return (
@@ -19,6 +20,7 @@ export default function SettingsPage() {
           </AlertDescription>
         </Alert>
         <MyCredentialsCard />
+        <WorkspaceMembersCard />
       </div>
     </ContentShell>
   )

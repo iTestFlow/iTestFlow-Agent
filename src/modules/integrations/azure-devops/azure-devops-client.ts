@@ -76,11 +76,17 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   private readonly organizationUrl: string;
   private readonly pat: string;
   private readonly projectScope?: AzureDevOpsProjectScope;
+  private readonly onUnauthorized?: () => void;
 
-  constructor(settings: AzureDevOpsSettings, projectScope?: AzureDevOpsProjectScope) {
+  constructor(
+    settings: AzureDevOpsSettings,
+    projectScope?: AzureDevOpsProjectScope,
+    hooks?: { onUnauthorized?: () => void },
+  ) {
     this.organizationUrl = settings.organizationUrl.replace(/\/$/, "");
     this.pat = settings.personalAccessToken;
     this.projectScope = projectScope;
+    this.onUnauthorized = hooks?.onUnauthorized;
   }
 
   /**
@@ -1003,6 +1009,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     const response = await this.request(path, init);
     const body = await response.text();
     if (!response.ok) {
+      if (response.status === 401) this.onUnauthorized?.();
       throw new Error(`Azure DevOps request failed (${response.status}): ${body}`);
     }
     if (!isJsonResponse(response)) {
@@ -1023,6 +1030,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     const response = await this.request(path, init);
     if (!response.ok) {
       const body = await response.text();
+      if (response.status === 401) this.onUnauthorized?.();
       throw new Error(`Azure DevOps request failed (${response.status}): ${body}`);
     }
   }
