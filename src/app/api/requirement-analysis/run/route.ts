@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
-import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import {
+  getUserAzureAdapter,
+  getUserLLMProvider,
+  requireWorkflowContext,
+  WorkflowAuthError,
+} from "@/modules/credentials/scoped-resolution.service";
+import { SessionError } from "@/modules/auth/session.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { runRequirementAnalysis } from "@/modules/requirement-analysis/application/requirement-analysis.service";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
@@ -17,7 +22,6 @@ import {
   updateWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
 import { requirementAnalysisChecklistOptions } from "@/modules/requirement-analysis/checklist-options";
-import { noLlmProviderConfiguredError } from "@/modules/shared/errors/app-error";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
 
 export const runtime = "nodejs";
@@ -48,16 +52,20 @@ export async function POST(request: Request) {
     }
     scope = parsed.data.scope;
 
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
-    const provider = getConfiguredProviderFromEnv();
-    if (!provider) {
-      const error = noLlmProviderConfiguredError();
-      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
-    }
+    // Auth + per-user credentials (replaces global runtime settings). The user's
+    // own encrypted Azure PAT and LLM key are used; the org comes from the
+    // workspace, never the client.
+    const ctx = await requireWorkflowContext();
+    const adapter = await getUserAzureAdapter(ctx, {
+      azureProjectId: parsed.data.scope.azureProjectId,
+      azureProjectName: parsed.data.scope.azureProjectName,
+    });
+    const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
       scope: parsed.data.scope,
       workflowType: "requirements_analysis",
       workItemId: parsed.data.targetWorkItemId,
+      userId: ctx.userId,
     });
 
     const targetRequirement = await adapter.fetchWorkItemById({
@@ -124,6 +132,12 @@ export async function POST(request: Request) {
       warnings: result.warnings,
     });
   } catch (error) {
+    if (error instanceof SessionError) {
+      return NextResponse.json({ error: error.message }, { status: 401 });
+    }
+    if (error instanceof WorkflowAuthError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     console.error("Requirement analysis failed", error);
     if (scope) writeGenerationFailureAudit({ scope, action: "requirement_analysis.run", label: "Requirement analysis failed.", error });
     if (scope && analyticsRunId) {

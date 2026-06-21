@@ -3,6 +3,7 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ContentShell } from "@/components/layout/content-shell"
 import { ConfigurationForm } from "@/shared/components/live/configuration-form"
+import { MyCredentialsCard } from "@/shared/components/credentials/my-credentials-card"
 
 export default function SettingsPage() {
   return (
@@ -11,6 +12,7 @@ export default function SettingsPage() {
       description="Manage integrations, AI generation, knowledge retrieval, automation, and value metrics for iTestFlow."
     >
       <div className="space-y-4">
+        <MyCredentialsCard />
         <Alert className="border-primary/20 bg-primary/10 py-3">
           <AlertTitle className="text-sm">Live runtime settings</AlertTitle>
           <AlertDescription className="text-muted-foreground">
