@@ -1,21 +1,15 @@
 "use client"
 
-import { CalendarClock, ChevronDown, Loader2, Menu, RefreshCw, Settings2 } from "lucide-react"
+import { Menu, RefreshCw, Settings2 } from "lucide-react"
 import Link from "next/link"
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { toast } from "sonner"
+import { useCallback, useEffect, useState } from "react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ThemeToggle } from "@/components/theme/theme-toggle"
 import { HeaderProjectSelector } from "@/shared/components/live/project-status"
-import { ModelPicker, useProviderModels } from "@/shared/components/live/model-picker"
-import { dispatchRuntimeSettingsChanged, subscribeRuntimeSettingsChanged } from "@/shared/lib/runtime-settings-events"
-import { apiErrorMessage } from "@/shared/validators/api-validation-errors"
 import { cn } from "@/lib/utils"
-import { isCronExpressionDue } from "@/modules/settings/cron-expression"
 
 type AzureProfile = {
   displayName: string
@@ -23,23 +17,15 @@ type AzureProfile = {
   imageUrl?: string
 }
 
-type RuntimeSettingsSummary = {
-  configured: boolean
-  llm?: {
-    provider?: string
-    model?: string
-    hasApiKey?: boolean
-    baseUrl?: string
-  }
-  context?: {
-    autoUpdate?: {
-      enabled: boolean
-      cronExpression: string
-      projectScope?: {
-        azureProjectName: string
-      } | null
-    }
-  }
+type CredentialSummary = {
+  status: "not_configured" | "configured" | "invalid" | "expired"
+  provider?: string | null
+  model?: string | null
+}
+
+type CredentialStatus = {
+  azurePat: CredentialSummary
+  llm: CredentialSummary
 }
 
 function initialsFromName(value?: string) {
@@ -48,7 +34,7 @@ function initialsFromName(value?: string) {
   return words.slice(0, 2).map((word) => word[0]?.toUpperCase()).join("") || "AD"
 }
 
-function providerLabel(value?: string) {
+function providerLabel(value?: string | null) {
   switch (value) {
     case "openai":
       return "OpenAI"
@@ -65,9 +51,8 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   const [profile, setProfile] = useState<AzureProfile | null>(null)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [profileLoading, setProfileLoading] = useState(true)
-  const [settingsSummary, setSettingsSummary] = useState<RuntimeSettingsSummary | null>(null)
-  const [settingsError, setSettingsError] = useState(false)
-  const [settingsLoading, setSettingsLoading] = useState(true)
+  const [credentials, setCredentials] = useState<CredentialStatus | null>(null)
+  const [credentialsLoading, setCredentialsLoading] = useState(true)
 
   const loadProfile = useCallback(async () => {
     setProfileLoading(true)
@@ -85,41 +70,31 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
     }
   }, [])
 
-  const loadSettingsSummary = useCallback(async () => {
-    setSettingsLoading(true)
+  const loadCredentials = useCallback(async () => {
+    setCredentialsLoading(true)
     try {
-      const response = await fetch("/api/settings/runtime", { cache: "no-store" })
-      const json = await response.json()
-      if (!response.ok) throw new Error(json.error ?? "Failed to fetch runtime settings.")
-      setSettingsSummary(json)
-      setSettingsError(false)
+      const response = await fetch("/api/settings/credentials", { cache: "no-store" })
+      if (!response.ok) {
+        setCredentials(null)
+        return
+      }
+      setCredentials((await response.json()) as CredentialStatus)
     } catch {
-      setSettingsSummary({ configured: false })
-      setSettingsError(true)
+      setCredentials(null)
     } finally {
-      setSettingsLoading(false)
+      setCredentialsLoading(false)
     }
   }, [])
 
   useEffect(() => {
     void loadProfile()
-    void loadSettingsSummary()
-  }, [loadProfile, loadSettingsSummary])
+    void loadCredentials()
+    const onChange = () => void loadCredentials()
+    window.addEventListener("itestflow:credentials-changed", onChange)
+    return () => window.removeEventListener("itestflow:credentials-changed", onChange)
+  }, [loadProfile, loadCredentials])
 
-  useEffect(() => {
-    return subscribeRuntimeSettingsChanged<RuntimeSettingsSummary>((detail) => {
-      if (detail) {
-        setSettingsSummary(detail)
-        setSettingsError(false)
-        setSettingsLoading(false)
-        return
-      }
-
-      void loadSettingsSummary()
-    })
-  }, [loadSettingsSummary])
-
-  const azureConfiguredError = profileError?.toLowerCase().includes("not configured")
+  const azureConfiguredError = profileError?.toLowerCase().includes("not configured") || profileError?.toLowerCase().includes("personal access token")
   const azureStatus = profile
     ? { text: "Azure: Connected", tone: "connected" as const, title: `Azure DevOps connected as ${profile.displayName}` }
     : profileError
@@ -130,28 +105,21 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         }
       : { text: "Azure: Checking", tone: "checking" as const, title: "Checking Azure DevOps connection." }
 
-  const llm = settingsSummary?.llm
-  const llmConnected = Boolean(settingsSummary?.configured && llm?.provider && llm.model && llm.hasApiKey)
+  const llm = credentials?.llm
+  const llmConnected = llm?.status === "configured"
   const llmStatus = llmConnected
     ? {
-        text: `LLM: ${providerLabel(llm?.provider)} / ${llm?.model}`,
+        text: `LLM: ${providerLabel(llm?.provider)} / ${llm?.model ?? ""}`.trim(),
         tone: "connected" as const,
-        title: `LLM configured: ${providerLabel(llm?.provider)} using ${llm?.model}`,
+        title: `LLM configured: ${providerLabel(llm?.provider)}${llm?.model ? ` using ${llm.model}` : ""}`,
       }
-    : !settingsSummary && !settingsError
-      ? {
-          text: "LLM: Checking",
-          tone: "checking" as const,
-          title: "Checking runtime LLM configuration.",
+    : credentialsLoading
+      ? { text: "LLM: Checking", tone: "checking" as const, title: "Checking your LLM credentials." }
+      : {
+          text: "LLM: Not configured",
+          tone: "missing" as const,
+          title: "Add your LLM provider, model, and API key in Settings → My Credentials.",
         }
-    : {
-        text: settingsError ? "LLM: Unavailable" : "LLM: Not configured",
-        tone: settingsError ? "warning" as const : "missing" as const,
-        title: settingsError
-          ? "Runtime settings could not be loaded."
-          : "Configure an LLM provider, model, and API key in Settings.",
-      }
-  const cronStatus = useMemo(() => getCronStatus(settingsSummary, settingsError), [settingsSummary, settingsError])
 
   return (
     <header className="sticky top-0 z-30 flex min-h-16 items-center gap-3 border-b border-border bg-card/95 px-4 text-card-foreground shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/85 lg:px-6">
@@ -171,30 +139,28 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
 
       <div className="hidden min-w-0 items-center gap-2 xl:flex">
         <ConnectivityChip {...azureStatus} />
-        <LLMModelSwitcher
-          status={llmStatus}
-          settingsSummary={settingsSummary}
-          settingsError={settingsError}
-          onSettingsSummaryChange={(summary) => {
-            setSettingsSummary(summary)
-            setSettingsError(false)
-            dispatchRuntimeSettingsChanged(summary)
-          }}
-        />
-        <ConnectivityChip {...cronStatus} className="max-w-[150px]" icon={<CalendarClock className="size-3.5 shrink-0" />} />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Link href="/settings" className={connectivityChipClass(llmStatus.tone, "max-w-[260px] cursor-pointer hover:brightness-95")} aria-label={llmStatus.title}>
+              <span className="truncate">{llmStatus.text}</span>
+              <Settings2 className="size-3.5 shrink-0" />
+            </Link>
+          </TooltipTrigger>
+          <TooltipContent sideOffset={8} className="max-w-sm text-left">{llmStatus.title}</TooltipContent>
+        </Tooltip>
         <Button
           type="button"
           variant="ghost"
           size="icon-sm"
           onClick={() => {
             void loadProfile()
-            void loadSettingsSummary()
+            void loadCredentials()
           }}
-          disabled={profileLoading || settingsLoading}
-          aria-label="Refresh Azure DevOps and LLM status"
-          title="Refresh Azure DevOps and LLM status"
+          disabled={profileLoading || credentialsLoading}
+          aria-label="Refresh Azure DevOps and credential status"
+          title="Refresh Azure DevOps and credential status"
         >
-          <RefreshCw className={cn("size-3.5", (profileLoading || settingsLoading) && "animate-spin")} />
+          <RefreshCw className={cn("size-3.5", (profileLoading || credentialsLoading) && "animate-spin")} />
         </Button>
       </div>
 
@@ -214,147 +180,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           {profile?.uniqueName ? <div className="max-w-48 truncate text-xs text-muted-foreground">{profile.uniqueName}</div> : null}
         </div>
       </div>
-
     </header>
-  )
-}
-
-function LLMModelSwitcher({
-  status,
-  settingsSummary,
-  settingsError,
-  onSettingsSummaryChange,
-}: {
-  status: {
-    text: string
-    title: string
-    tone: "connected" | "checking" | "missing" | "warning"
-  }
-  settingsSummary: RuntimeSettingsSummary | null
-  settingsError: boolean
-  onSettingsSummaryChange: (summary: RuntimeSettingsSummary) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [savingModelId, setSavingModelId] = useState<string | null>(null)
-  const { models, loading: modelsLoading, error: modelError, load, reset } = useProviderModels()
-
-  const llm = settingsSummary?.llm
-  const settingsChecking = !settingsSummary && !settingsError
-  const hasConfiguredProvider = Boolean(settingsSummary?.configured && llm?.provider && llm.model)
-  const canSwitchModel = Boolean(hasConfiguredProvider && llm?.hasApiKey && !settingsError)
-  const currentProviderLabel = providerLabel(llm?.provider)
-  const currentModel = llm?.model ?? ""
-
-  const loadModels = useCallback(() => {
-    if (!llm?.provider) return
-    void load({ provider: llm.provider })
-  }, [llm?.provider, load])
-
-  useEffect(() => {
-    if (open && canSwitchModel) loadModels()
-  }, [canSwitchModel, loadModels, open])
-
-  useEffect(() => {
-    reset()
-    setSavingModelId(null)
-  }, [llm?.provider, reset])
-
-  async function selectModel(modelId: string) {
-    if (modelId === currentModel) {
-      setOpen(false)
-      return
-    }
-
-    setSavingModelId(modelId)
-    try {
-      const response = await fetch("/api/settings/runtime", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ llm: { model: modelId } }),
-      })
-      const json = await response.json()
-      if (!response.ok) throw new Error(apiErrorMessage(json, "Could not update LLM model."))
-
-      onSettingsSummaryChange(json as RuntimeSettingsSummary)
-      toast.success(`LLM model changed to ${modelId}.`)
-      setOpen(false)
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not update LLM model.")
-    } finally {
-      setSavingModelId(null)
-    }
-  }
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(connectivityChipClass(status.tone, "max-w-[260px] cursor-pointer pr-2 hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"))}
-          aria-label={canSwitchModel ? `${status.title}. Change LLM model.` : status.title}
-          title={canSwitchModel ? `${status.title}. Change LLM model.` : status.title}
-        >
-          <span className="truncate">{status.text}</span>
-          {canSwitchModel ? <ChevronDown className="size-3.5 shrink-0" /> : null}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="end" sideOffset={8} className="w-[380px] max-w-[calc(100vw-2rem)] gap-0 p-0">
-        <div className="border-b border-border p-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-foreground">LLM model</div>
-              <div className="mt-1 truncate text-xs text-muted-foreground">
-                {hasConfiguredProvider
-                  ? `${currentProviderLabel} / ${currentModel}`
-                  : settingsChecking
-                    ? "Checking runtime configuration..."
-                    : "No LLM runtime configuration found."}
-              </div>
-            </div>
-            <Button variant="ghost" size="icon-sm" asChild aria-label="Open Settings">
-              <Link href="/settings">
-                <Settings2 className="size-3.5" />
-              </Link>
-            </Button>
-          </div>
-        </div>
-
-        {!canSwitchModel ? (
-          <div className="space-y-3 p-3 text-sm text-muted-foreground">
-            {settingsChecking ? (
-              <div className="flex items-center gap-2">
-                <Loader2 className="size-4 animate-spin text-primary" />
-                Checking runtime settings...
-              </div>
-            ) : (
-              <>
-                <p>
-                  {settingsError
-                    ? "Runtime settings could not be loaded."
-                    : hasConfiguredProvider
-                      ? "Save the selected provider API token in Settings before loading live models."
-                      : "Configure an LLM provider, model, and API token in Settings."}
-                </p>
-                <Button size="sm" asChild>
-                  <Link href="/settings">Open Settings</Link>
-                </Button>
-              </>
-            )}
-          </div>
-        ) : (
-          <ModelPicker
-            models={models}
-            loading={modelsLoading}
-            error={modelError}
-            providerLabel={currentProviderLabel}
-            currentModel={currentModel}
-            savingModelId={savingModelId}
-            onRetry={loadModels}
-            onSelect={(modelId) => void selectModel(modelId)}
-          />
-        )}
-      </PopoverContent>
-    </Popover>
   )
 }
 
@@ -363,22 +189,16 @@ function ConnectivityChip({
   title,
   tone,
   className = "",
-  icon,
 }: {
   text: string
   title: string
   tone: "connected" | "checking" | "missing" | "warning"
   className?: string
-  icon?: React.ReactNode
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span
-          className={connectivityChipClass(tone, className)}
-          aria-label={title}
-        >
-          {icon}
+        <span className={connectivityChipClass(tone, className)} aria-label={title}>
           <span className="truncate">{text}</span>
         </span>
       </TooltipTrigger>
@@ -405,64 +225,4 @@ function connectivityChipClass(
     styles,
     className,
   )
-}
-
-function getCronStatus(summary: RuntimeSettingsSummary | null, settingsError: boolean) {
-  if (!summary && !settingsError) {
-    return {
-      text: "Sync: Checking",
-      tone: "checking" as const,
-      title: "Checking automatic project context update schedule.",
-    }
-  }
-
-  if (settingsError) {
-    return {
-      text: "Sync: Unavailable",
-      tone: "warning" as const,
-      title: "Runtime settings could not be loaded, so the automatic project context update schedule is unavailable.",
-    }
-  }
-
-  const autoUpdate = summary?.context?.autoUpdate
-  if (!summary?.configured || !autoUpdate?.enabled) {
-    return {
-      text: "Sync: Off",
-      tone: "missing" as const,
-      title: "Automatic project context and knowledge base updates are disabled. Enable them in Settings.",
-    }
-  }
-
-  const nextRun = findNextCronRun(autoUpdate.cronExpression)
-  const projectName = autoUpdate.projectScope?.azureProjectName
-  const projectText = projectName ? ` for ${projectName}` : ""
-
-  return {
-    text: "Sync: On",
-    tone: "connected" as const,
-    title: nextRun
-      ? `Next automatic project context update${projectText}: ${formatDateTime(nextRun)} local server time. Cron: ${autoUpdate.cronExpression}.`
-      : `Automatic project context updates are enabled${projectText}, but the next trigger could not be calculated from cron: ${autoUpdate.cronExpression}.`,
-  }
-}
-
-function findNextCronRun(expression: string, from = new Date()) {
-  const candidate = new Date(from)
-  candidate.setSeconds(0, 0)
-  candidate.setMinutes(candidate.getMinutes() + 1)
-
-  const maxChecks = 60 * 24 * 366
-  for (let index = 0; index < maxChecks; index += 1) {
-    if (isCronExpressionDue(expression, candidate)) return new Date(candidate)
-    candidate.setMinutes(candidate.getMinutes() + 1)
-  }
-
-  return null
-}
-
-function formatDateTime(value: Date) {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(value)
 }

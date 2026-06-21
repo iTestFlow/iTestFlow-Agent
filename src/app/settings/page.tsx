@@ -2,24 +2,23 @@
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ContentShell } from "@/components/layout/content-shell"
-import { ConfigurationForm } from "@/shared/components/live/configuration-form"
 import { MyCredentialsCard } from "@/shared/components/credentials/my-credentials-card"
 
 export default function SettingsPage() {
   return (
     <ContentShell
       title="Settings"
-      description="Manage integrations, AI generation, knowledge retrieval, automation, and value metrics for iTestFlow."
+      description="Manage your private Azure DevOps and LLM credentials for iTestFlow."
     >
       <div className="space-y-4">
-        <MyCredentialsCard />
         <Alert className="border-primary/20 bg-primary/10 py-3">
-          <AlertTitle className="text-sm">Live runtime settings</AlertTitle>
+          <AlertTitle className="text-sm">Your credentials are private</AlertTitle>
           <AlertDescription className="text-muted-foreground">
-            Saved locally through the runtime settings API. Re-enter secrets only when rotating credentials.
+            Your Azure DevOps PAT and LLM API key are encrypted and used only for your own actions.
+            Workspace data (dashboards, history, Knowledge Hub) is shared with your workspace.
           </AlertDescription>
         </Alert>
-        <ConfigurationForm mode="settings" redirectTo={null} />
+        <MyCredentialsCard />
       </div>
     </ContentShell>
   )

@@ -3,6 +3,9 @@ import "server-only";
 import { cookies } from "next/headers";
 import { createHash, randomBytes } from "crypto";
 import { createId, nowIso, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { SESSION_COOKIE } from "./session-cookie";
+
+export { SESSION_COOKIE };
 
 /**
  * Server-side, stateful sessions (ADR-4). The cookie carries only an opaque,
@@ -14,7 +17,6 @@ import { createId, nowIso, sqlGet, sqlRun } from "@/modules/shared/infrastructur
  * helpers so the persistence/resolution logic is unit-testable.
  */
 
-export const SESSION_COOKIE = "itf_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 
 export type SessionUser = {

@@ -1,5 +1,5 @@
-import { ConfigurationForm } from "@/shared/components/live/configuration-form";
+import { redirect } from "next/navigation"
 
 export default function ConfigurationPage() {
-  return <ConfigurationForm />;
+  redirect("/settings")
 }

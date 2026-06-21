@@ -106,6 +106,7 @@ export function MyCredentialsCard() {
       setAzurePat("")
       setApiKey("")
       setStatus(data)
+      window.dispatchEvent(new CustomEvent("itestflow:credentials-changed"))
     } finally {
       setSaving(false)
     }

@@ -2,7 +2,6 @@ import "server-only";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { createId, enqueueBackgroundWrite, nowIso, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
-import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import type { WorkflowRunStatus } from "@/types/system-dashboard";
 import {
   defaultWorkflowBaselines,
@@ -259,8 +258,10 @@ async function failWorkflowRunImpl(input: {
 }
 
 function getWorkflowBaseline(workflowType: WorkflowType) {
-  return getEffectiveRuntimeSettings()?.dashboardValueMetrics?.manualBaselineMinutes?.[workflowType]
-    ?? defaultWorkflowBaselines[workflowType];
+  // Manual baselines come from configured defaults. (Per-workspace baseline
+  // overrides are a possible future enhancement; the legacy global runtime
+  // settings that previously held these were removed in Phase 5/3b cleanup.)
+  return defaultWorkflowBaselines[workflowType];
 }
 
 function getRun(scope: ProjectScope, runId: string) {
