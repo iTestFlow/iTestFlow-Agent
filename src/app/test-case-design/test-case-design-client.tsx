@@ -453,7 +453,7 @@ export function TestCaseDesignClient() {
           ) : null}
         </div>
       ) : (
-        <div ref={generatedCasesRef} className="space-y-6">
+        <div ref={generatedCasesRef} className="space-y-6 pb-24">
           <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="text-sm font-semibold text-foreground">

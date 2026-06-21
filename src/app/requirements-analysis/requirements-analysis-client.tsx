@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, CheckCircle2, FileSearch, ListChecks, Loader2, Play, Send, X } from "lucide-react";
+import { ArrowLeft, FileSearch, ListChecks, Loader2, Play, Send, X } from "lucide-react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generatio
 import { WorkflowContextCitations } from "@/components/workflow/workflow-context-citations";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
+import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import {
   RequirementFindingsReview,
@@ -26,7 +27,6 @@ import {
 } from "@/components/workflow/requirement-findings-review";
 import { WorkItemPreview, useWorkItemLookup, WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import {
-  ErrorBlock,
   SectionCard,
   postJson,
   projectWarning,
@@ -48,6 +48,7 @@ import {
 import { buildRequirementAnalysisComment } from "@/modules/requirement-analysis/comment/requirement-analysis-comment";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 import type { ProjectUser } from "@/types/azure-devops";
+import { cn } from "@/lib/utils";
 
 function severityRank(value: RequirementFinding["severity"]) {
   const ranks: Record<RequirementFinding["severity"], number> = {
@@ -147,6 +148,18 @@ export function RequirementsAnalysisClient() {
   }, [projectUsers, selectedMentionUserIds]);
   const checklistSelectionValid = enabledChecklistItemIds.length > 0;
   const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
+  const pushActionDescription = pushState.error ? (
+    <span className="text-destructive">{pushState.error}</span>
+  ) : pushState.data?.success ? (
+    <span className="text-success">Comment pushed to Azure DevOps.</span>
+  ) : invalidSelectedFindingCount > 0 ? (
+    <span className="text-warning-foreground dark:text-warning">
+      Resolve validation issues in the {invalidSelectedFindingCount} selected finding
+      {invalidSelectedFindingCount === 1 ? "" : "s"} before pushing.
+    </span>
+  ) : (
+    "Only selected and valid findings will be included in the Azure DevOps comment."
+  );
 
   useEffect(() => {
     setSelectedMentionUserIds([]);
@@ -526,7 +539,7 @@ export function RequirementsAnalysisClient() {
           ) : null}
         </div>
       ) : analysis.data ? (
-        <div ref={findingsCardRef} className="space-y-3">
+        <div ref={findingsCardRef} className="space-y-3 pb-24">
           <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="text-sm font-semibold text-foreground">
@@ -554,72 +567,65 @@ export function RequirementsAnalysisClient() {
           <RequirementFindingsReview
             key={findingsReviewVersion}
             findings={findings}
-            summary={analysis.data.summary}
             selectedIds={selectedFindingIds}
             onChange={changeFindings}
             onSelectedIdsChange={changeSelectedFindingIds}
-            footer={
-              <div className="space-y-4">
-                <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
-                  <RequirementMentionPicker
-                    users={projectUsers}
-                    selectedUserIds={selectedMentionUserIds}
-                    selectedUsers={selectedMentionUsers}
-                    loading={projectUsersState.loading}
-                    error={projectUsersState.error}
-                    disabled={!scope}
-                    onSelectionChange={changeMentionUsers}
-                  />
-                  <ConfirmationDialog
-                    trigger={
-                      <Button
-                        disabled={
-                          !scope ||
-                          !targetWorkItemId ||
-                          !selectedFindingList.length ||
-                          invalidSelectedFindingCount > 0 ||
-                          pushState.loading ||
-                          Boolean(pushState.data?.success)
-                        }
-                        className="w-full xl:w-auto"
-                      >
-                        {pushState.loading ? <Loader2 className="animate-spin" /> : <Send />}
-                        {pushState.data?.success ? "Comment Pushed" : pushState.loading ? "Pushing..." : "Push Comment"}
-                      </Button>
-                    }
-                    title="Push requirements analysis comment?"
-                    description={
-                      <div className="space-y-1">
-                        <p>Project: {scope?.azureProjectName ?? "Selected Azure DevOps project"}</p>
-                        <p>Target work item: {targetWorkItemId}</p>
-                        <p>Selected findings: {selectedFindingList.length}</p>
-                        <p>Mentioned members: {selectedMentionUsers.length}</p>
-                        <p className="pt-1">Only the current selected and valid findings will be included.</p>
-                      </div>
-                    }
-                    confirmLabel="Push comment"
-                    onConfirm={pushComment}
-                  />
-                </div>
-
-                {invalidSelectedFindingCount > 0 ? (
-                  <Callout tone="warning">
-                    Resolve validation issues in the {invalidSelectedFindingCount} selected finding
-                    {invalidSelectedFindingCount === 1 ? "" : "s"} before pushing the comment.
-                  </Callout>
-                ) : null}
-                {pushState.error ? <ErrorBlock message={pushState.error} /> : null}
-                {pushState.data?.success ? (
-                  <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success">
-                    <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
-                    <div>
-                      <div className="font-semibold text-foreground">Comment pushed to Azure DevOps</div>
-                      <p className="mt-1 text-success">The selected requirements findings were added to the target work item.</p>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
+          />
+          <StickyActionBar
+            title={
+              <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span>{selectedFindingList.length} selected finding{selectedFindingList.length === 1 ? "" : "s"}</span>
+                <span className="text-muted-foreground">|</span>
+                <span>{selectedMentionUsers.length} mention{selectedMentionUsers.length === 1 ? "" : "s"}</span>
+              </span>
             }
+            description={pushActionDescription}
+            actions={
+              <>
+                <RequirementMentionPicker
+                  users={projectUsers}
+                  selectedUserIds={selectedMentionUserIds}
+                  selectedUsers={selectedMentionUsers}
+                  loading={projectUsersState.loading}
+                  error={projectUsersState.error}
+                  disabled={!scope}
+                  onSelectionChange={changeMentionUsers}
+                  compact
+                  className="min-w-0 xl:w-[34rem]"
+                />
+                <ConfirmationDialog
+                  trigger={
+                    <Button
+                      disabled={
+                        !scope ||
+                        !targetWorkItemId ||
+                        !selectedFindingList.length ||
+                        invalidSelectedFindingCount > 0 ||
+                        pushState.loading ||
+                        Boolean(pushState.data?.success)
+                      }
+                      className="w-full sm:w-auto"
+                    >
+                      {pushState.loading ? <Loader2 className="animate-spin" /> : <Send />}
+                      {pushState.data?.success ? "Comment Pushed" : pushState.loading ? "Pushing..." : "Push Comment"}
+                    </Button>
+                  }
+                  title="Push requirements analysis comment?"
+                  description={
+                    <div className="space-y-1">
+                      <p>Project: {scope?.azureProjectName ?? "Selected Azure DevOps project"}</p>
+                      <p>Target work item: {targetWorkItemId}</p>
+                      <p>Selected findings: {selectedFindingList.length}</p>
+                      <p>Mentioned members: {selectedMentionUsers.length}</p>
+                      <p className="pt-1">Only the current selected and valid findings will be included.</p>
+                    </div>
+                  }
+                  confirmLabel="Push comment"
+                  onConfirm={pushComment}
+                />
+              </>
+            }
+            actionsClassName="w-full xl:w-auto"
           />
         </div>
       ) : null}
@@ -693,6 +699,8 @@ function RequirementMentionPicker({
   error,
   disabled,
   onSelectionChange,
+  compact = false,
+  className,
 }: {
   users: ProjectUser[];
   selectedUserIds: string[];
@@ -701,6 +709,8 @@ function RequirementMentionPicker({
   error: string | null;
   disabled: boolean;
   onSelectionChange: (userIds: string[]) => void;
+  compact?: boolean;
+  className?: string;
 }) {
   function setUserSelected(userId: string, selected: boolean) {
     const nextIds = selected
@@ -710,7 +720,13 @@ function RequirementMentionPicker({
   }
 
   return (
-    <div className="w-full rounded-md border border-border bg-card p-3 xl:max-w-3xl xl:flex-1">
+    <div
+      className={cn(
+        "w-full",
+        compact ? "min-w-0" : "rounded-md border border-border bg-card p-3 xl:max-w-3xl xl:flex-1",
+        className,
+      )}
+    >
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold text-foreground">Mention members</div>
