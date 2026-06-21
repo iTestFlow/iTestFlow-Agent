@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import {
+  authErrorResponse,
+  getUserLLMProvider,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { extractAndSaveProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
@@ -24,13 +28,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const provider = getConfiguredProviderFromEnv();
-    if (!provider) {
-      return NextResponse.json(
-        { error: "No LLM provider configured. Set DEFAULT_LLM_PROVIDER and the provider API key in .env.local." },
-        { status: 503 },
-      );
-    }
+    const ctx = await requireWorkflowContext();
+    const provider = await getUserLLMProvider(ctx);
 
     const snapshot = await extractAndSaveProjectKnowledgeBase({
       scope: parsed.data.scope,
@@ -40,6 +39,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json(snapshot);
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     writeGenerationFailureAudit({ scope: parsed.data.scope, action: "rag.extract_project_knowledge_base", label: "Project knowledge extraction failed.", error });
     if (isTruncatedKnowledgeBaseOutputError(error)) {
       return NextResponse.json({ error: TruncatedKnowledgeBaseOutputMessage }, { status: 422 });

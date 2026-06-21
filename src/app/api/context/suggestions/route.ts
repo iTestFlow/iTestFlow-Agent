@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
-import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  getUserLLMProvider,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { suggestContextStories } from "@/modules/context-selection/context-selection.service";
 import { requirementToRetrievalQuery, retrieveStoredProjectContext, type LlmContextSource } from "@/modules/rag/project-context-store.service";
@@ -22,14 +26,9 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
-    const provider = getConfiguredProviderFromEnv();
-    if (!provider) {
-      return NextResponse.json(
-        { error: "No LLM provider configured. Set DEFAULT_LLM_PROVIDER and the provider API key in .env.local." },
-        { status: 503 },
-      );
-    }
+    const ctx = await requireWorkflowContext();
+    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    const provider = await getUserLLMProvider(ctx);
 
     const targetRequirement = await adapter.fetchWorkItemById({
       projectId: parsed.data.scope.azureProjectId,
@@ -66,6 +65,8 @@ export async function POST(request: Request) {
       model: result.model,
     });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     writeGenerationFailureAudit({ scope: parsed.data.scope, action: "context_selection.suggest", label: "Context suggestion failed.", error });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Context suggestion failed." },

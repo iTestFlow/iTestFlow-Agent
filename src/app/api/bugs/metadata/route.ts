@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { findCurrentIterationPath } from "@/modules/bug-reporting/bug-posting.service";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 
 export const runtime = "nodejs";
@@ -17,7 +17,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const ctx = await requireWorkflowContext();
+    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const [fields, users, iterations, areas] = await Promise.all([
       adapter.fetchWorkItemTypeFields({ projectId: parsed.data.scope.azureProjectId, workItemType: "Bug" }),
       adapter.fetchProjectUsers({ projectId: parsed.data.scope.azureProjectId }),
@@ -34,6 +35,8 @@ export async function POST(request: Request) {
       defaultAreaPath: areas[0]?.path ?? null,
     });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Azure DevOps Bug metadata fetch failed." },
       { status: 503 },

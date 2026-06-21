@@ -2,8 +2,12 @@ import { NextResponse } from "next/server";
 import { countTestCategories } from "@/modules/analytics/test-category-normalization";
 import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
-import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  getUserLLMProvider,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { generateTestCases } from "@/modules/test-case-design/application/test-case-generation.service";
 import { defaultTestDesignOptions } from "@/modules/test-case-design/test-design-options";
@@ -13,7 +17,6 @@ import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.serv
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
-import { noLlmProviderConfiguredError } from "@/modules/shared/errors/app-error";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import {
   failWorkflowRun,
@@ -43,16 +46,14 @@ export async function POST(request: Request) {
   let analyticsRunId: string | undefined;
   try {
     const options = parsed.data.options ?? defaultTestDesignOptions;
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
-    const provider = getConfiguredProviderFromEnv();
-    if (!provider) {
-      const error = noLlmProviderConfiguredError();
-      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
-    }
+    const ctx = await requireWorkflowContext();
+    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
       scope: parsed.data.scope,
       workflowType: "test_case_design",
       workItemId: parsed.data.targetWorkItemId,
+      userId: ctx.userId,
     });
 
     const targetRequirement = await adapter.fetchWorkItemById({
@@ -114,6 +115,8 @@ export async function POST(request: Request) {
       warnings: result.warnings,
     });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     writeGenerationFailureAudit({ scope: parsed.data.scope, action: "test_case_generation.run", label: "Test case generation failed.", error });
     if (analyticsRunId) {
       failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Test case generation failed." });

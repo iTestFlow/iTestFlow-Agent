@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { publishApprovedTestCases } from "@/modules/integrations/azure-devops/azure-devops-test-plan.service";
 import {
   completeWorkflowRun,
@@ -85,7 +85,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const ctx = await requireWorkflowContext();
+    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const result = await publishApprovedTestCases(adapter, parsed.data.scope, {
       targetUserStoryId: parsed.data.targetWorkItemId,
       testPlanId: parsed.data.testPlanId,
@@ -124,6 +125,8 @@ export async function POST(request: Request) {
       ...result,
     });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     if (parsed.data.analyticsRunId) {
       failWorkflowRun({
         scope: parsed.data.scope,

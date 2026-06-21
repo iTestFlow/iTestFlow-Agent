@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import {
+  authErrorResponse,
+  getUserLLMProvider,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { answerContextChatbot } from "@/modules/context-chatbot/context-chatbot.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
@@ -34,16 +38,12 @@ export async function POST(request: Request) {
 
   let analyticsRunId: string | undefined;
   try {
-    const provider = getConfiguredProviderFromEnv();
-    if (!provider) {
-      return NextResponse.json(
-        { error: "No LLM provider configured. Configure a provider, model, and API key in Settings." },
-        { status: 503 },
-      );
-    }
+    const ctx = await requireWorkflowContext();
+    const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
       scope: parsed.data.scope,
       workflowType: "business_owner_assistant",
+      userId: ctx.userId,
     });
 
     const result = await answerContextChatbot({
@@ -65,6 +65,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ ...result, analyticsRunId });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     writeGenerationFailureAudit({ scope: parsed.data.scope, action: "context_chatbot.answer", label: "Context chatbot failed.", error });
     if (analyticsRunId) {
       failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Context chatbot failed." });

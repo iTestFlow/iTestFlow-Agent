@@ -2,12 +2,15 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { BugAttachmentDescriptorSchema, BugCustomFieldValueSchema, BugRelatedTestCaseContextSchema } from "@/modules/bug-reporting/schemas/bug-report.schema";
 import { generateBugReport } from "@/modules/bug-reporting/bug-reporting.service";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
-import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  getUserLLMProvider,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
-import { noLlmProviderConfiguredError } from "@/modules/shared/errors/app-error";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import {
   failWorkflowRun,
@@ -34,18 +37,16 @@ export async function POST(request: Request) {
 
   let analyticsRunId: string | undefined;
   try {
-    const provider = getConfiguredProviderFromEnv();
-    if (!provider) {
-      const error = noLlmProviderConfiguredError();
-      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
-    }
+    const ctx = await requireWorkflowContext();
+    const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
       scope: parsed.data.scope,
       workflowType: "report_bug",
       workItemId: parsed.data.parentStoryId,
+      userId: ctx.userId,
     });
 
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const parentStory = parsed.data.parentStoryId
       ? await adapter.fetchWorkItemById({
           projectId: parsed.data.scope.azureProjectId,
@@ -88,6 +89,8 @@ export async function POST(request: Request) {
       ...result.validatedOutput,
     });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     writeGenerationFailureAudit({ scope: parsed.data.scope, action: "bug_report.generate", label: "Bug report generation failed.", error });
     if (analyticsRunId) {
       failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Bug report generation failed." });

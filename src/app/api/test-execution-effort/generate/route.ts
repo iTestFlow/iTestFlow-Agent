@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
-import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  getUserLLMProvider,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
@@ -16,7 +20,7 @@ import {
   TestExecutionEffortOptionsSchema,
 } from "@/modules/test-execution-effort/test-execution-effort.schema";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
-import { isAppError, noLlmProviderConfiguredError } from "@/modules/shared/errors/app-error";
+import { isAppError } from "@/modules/shared/errors/app-error";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import {
   completeWorkflowRun,
@@ -43,18 +47,16 @@ export async function POST(request: Request) {
 
   let analyticsRunId: string | undefined;
   try {
-    const provider = getConfiguredProviderFromEnv();
-    if (!provider) {
-      const error = noLlmProviderConfiguredError();
-      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
-    }
+    const ctx = await requireWorkflowContext();
+    const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
       scope: parsed.data.scope,
       workflowType: "test_execution_effort",
       workItemId: parsed.data.storyId,
+      userId: ctx.userId,
     });
 
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const options = TestExecutionEffortOptionsSchema.parse(parsed.data);
     const data = await loadTestExecutionEffortData({
       scope: parsed.data.scope,
@@ -110,6 +112,8 @@ export async function POST(request: Request) {
       warnings: result.warnings,
     });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     writeGenerationFailureAudit({ scope: parsed.data.scope, action: "test_execution_effort.run", label: "Test Execution Effort generation failed.", error });
     if (isAppError(error)) {
       if (analyticsRunId) {

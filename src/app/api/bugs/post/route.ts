@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { postBugReportToAzureDevOps } from "@/modules/bug-reporting/bug-posting.service";
 import { FinalBugReportSchema } from "@/modules/bug-reporting/schemas/bug-report.schema";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import {
   completeWorkflowRun,
@@ -52,7 +52,8 @@ export async function POST(request: Request) {
         })),
     );
 
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const ctx = await requireWorkflowContext();
+    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const result = await postBugReportToAzureDevOps({
       adapter,
       scope: parsed.data.scope,
@@ -79,6 +80,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json(result);
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     if (analyticsContext) {
       failWorkflowRun({
         scope: analyticsContext.scope,

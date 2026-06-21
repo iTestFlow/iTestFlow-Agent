@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { fetchProjectScopedLinkedTestCases } from "@/modules/integrations/azure-devops/azure-devops-linked-test-cases.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 
@@ -21,12 +21,15 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const ctx = await requireWorkflowContext();
+    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const linkedTestCases = await fetchProjectScopedLinkedTestCases(adapter, parsed.data.scope, {
       userStoryId: parsed.data.userStoryId,
     });
     return NextResponse.json({ linkedTestCases });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Linked test case fetch failed." },
       { status: 503 },

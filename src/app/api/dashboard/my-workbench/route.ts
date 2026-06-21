@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getMyWorkbenchAnalytics } from "@/modules/dashboard/my-workbench.service";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 
 export const runtime = "nodejs";
@@ -36,14 +41,18 @@ export async function POST(request: Request) {
   }
 
   try {
+    const ctx = await requireWorkflowContext();
+    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     return NextResponse.json(
       await getMyWorkbenchAnalytics({
         scope: parsed.data.scope,
         filters: parsed.data.filters,
-      }),
+      }, adapter),
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Could not load your Azure DevOps assigned work." },
       { status: 503 },

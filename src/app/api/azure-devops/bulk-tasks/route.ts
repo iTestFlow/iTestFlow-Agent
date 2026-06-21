@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createBulkTasks } from "@/modules/integrations/azure-devops/azure-devops-bulk-task.service";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
 import {
@@ -150,7 +150,8 @@ export async function POST(request: Request) {
     workItemId: "bulk-tasks",
   });
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const ctx = await requireWorkflowContext();
+    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const result = await createBulkTasks(adapter, parsed.data.scope, {
       taskTemplates: parsed.data.taskTemplates,
       targets: parsed.data.targets,
@@ -173,6 +174,8 @@ export async function POST(request: Request) {
     }
     return NextResponse.json({ ...result, analyticsRunId });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Bulk task creation failed." });
     return NextResponse.json(
       { error: error instanceof Error ? sanitizeAzureError(error.message) : "Azure DevOps bulk task creation failed." },

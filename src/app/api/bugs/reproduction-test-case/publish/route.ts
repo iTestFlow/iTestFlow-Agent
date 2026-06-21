@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { writeAuditLog } from "@/modules/audit/audit.service";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import type { FinalApprovedTestCase } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 
@@ -66,7 +66,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const ctx = await requireWorkflowContext();
+    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const create: PublishStepResult & { azureTestCaseId?: string } = parsed.data.suggestedTestCase
       ? await adapter.createTestCase({
           projectId: parsed.data.scope.azureProjectId,
@@ -121,6 +122,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json(result);
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Reproduction test case publish failed." },
       { status: 503 },

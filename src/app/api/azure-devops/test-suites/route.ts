@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import type { TestSuite } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 
@@ -18,7 +18,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const ctx = await requireWorkflowContext();
+    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const suiteTree = await adapter.fetchTestSuiteTree({
       projectId: parsed.data.scope.azureProjectId,
       testPlanId: parsed.data.testPlanId,
@@ -29,6 +30,8 @@ export async function POST(request: Request) {
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Azure Test Suite fetch failed." },
       { status: 503 },
