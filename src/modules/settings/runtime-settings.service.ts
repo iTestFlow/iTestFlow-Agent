@@ -163,6 +163,12 @@ function summarizeEnvSettings(): RuntimeSettingsSummary {
 }
 
 function getSettingsFromEnv(): RuntimeSettings | null {
+  // ADR-7: env credentials are a single-user/dev convenience only. In hosted
+  // multi-user mode they would act as shared global credentials — the exact
+  // anti-pattern this migration removes — so they are ignored there. Hosted mode
+  // resolves credentials per user from encrypted storage (Phase 2 credential service).
+  if (process.env.APP_MODE === "hosted") return null;
+
   const provider = process.env.DEFAULT_LLM_PROVIDER;
   if (!process.env.AZURE_DEVOPS_ORG_URL || !process.env.AZURE_DEVOPS_PAT || !provider) return null;
   if (!["openai", "gemini", "anthropic"].includes(provider)) return null;
