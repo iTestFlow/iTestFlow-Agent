@@ -12,16 +12,6 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  CartesianGrid,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 import { AutoRefreshStatus } from "@/components/dashboard/auto-refresh-status";
 import { DashboardChartCard, DistributionBarChart, DonutChart } from "@/components/dashboard/dashboard-visualizations";
@@ -38,7 +28,6 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SearchableCombobox } from "@/components/ui/searchable-combobox";
 import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useActiveProject } from "@/shared/lib/use-active-project";
 import { useDashboardRefresh } from "@/shared/lib/use-dashboard-refresh";
@@ -81,6 +70,18 @@ const emptyMetadata: WorkbenchFilterMetadata = {
   states: [],
   parents: [],
 };
+
+const PRIORITY_OPTIONS = [
+  { value: "all", label: "All priorities" },
+  { value: "1", label: "Priority 1" },
+  { value: "2", label: "Priority 2" },
+  { value: "3", label: "Priority 3" },
+  { value: "4", label: "Priority 4" },
+  { value: "none", label: "No priority" },
+];
+
+const selectClass =
+  "h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50";
 
 export function MyWorkbenchDashboardClient({ active }: { active: boolean }) {
   const scope = useActiveProject();
@@ -222,24 +223,16 @@ export function MyWorkbenchDashboardClient({ active }: { active: boolean }) {
               <DistributionBarChart data={data.charts.remainingWorkByStatus} />
             </DashboardChartCard>
             <DashboardChartCard
-              title="Sprint Burn Status"
-              description="MVP fallback: ideal remaining work with the current remaining-work snapshot."
-              hasData={Boolean(data.charts.sprintBurnStatus.length)}
-              emptyMessage="Select a sprint with estimates to view burn status."
+              title="Work Items by Type"
+              description="Assigned work item mix using original Azure DevOps type names, including custom types."
+              hasData={data.charts.workItemsByType.some((item) => item.value > 0)}
+              emptyMessage="No assigned work item types are available for this scope."
+              summary={chartSummary(data.charts.workItemsByType)}
             >
-              <SprintBurnChart data={data.charts.sprintBurnStatus} />
+              <DonutChart data={data.charts.workItemsByType} centerLabel="Items" />
             </DashboardChartCard>
           </div>
           <AssignedWorkBySprintTable rows={data.assignedBySprint} />
-          <DashboardChartCard
-            title="Work Items by Type"
-            description="Assigned work item mix using original Azure DevOps type names, including custom types."
-            hasData={data.charts.workItemsByType.some((item) => item.value > 0)}
-            emptyMessage="No assigned work item types are available for this scope."
-            summary={chartSummary(data.charts.workItemsByType)}
-          >
-            <DonutChart data={data.charts.workItemsByType} centerLabel="Items" />
-          </DashboardChartCard>
         </>
       ) : null}
     </div>
@@ -282,20 +275,16 @@ function WorkbenchFilters({
     <section className="qa-card space-y-3 p-4">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,0.85fr)_minmax(0,0.85fr)_minmax(0,1fr)_auto] xl:items-start">
         <div className="space-y-1.5">
-          <Label htmlFor="workbench-iteration" className="text-sm font-semibold text-foreground">Sprint</Label>
+          <Label className="text-sm font-semibold text-foreground">Sprint</Label>
           <select
-            id="workbench-iteration"
-            className="focus-ring h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
+            className={selectClass}
             value={selectedIterationPath}
             onChange={(event) => patch({ sprintMode: "custom", iterationPath: event.target.value || null })}
             disabled={disabled || !metadata.iterations.length}
+            aria-label="Sprint"
           >
             <option value="">{metadata.iterations.length ? "Select sprint" : "Loading sprints..."}</option>
-            {metadata.iterations.map((iteration) => (
-              <option key={iteration.value} value={iteration.value}>
-                {iteration.label}
-              </option>
-            ))}
+            {metadata.iterations.map((iteration) => <option key={iteration.value} value={iteration.value}>{iteration.label}</option>)}
           </select>
           {selectedIteration ? (
             <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
@@ -375,17 +364,15 @@ function WorkbenchFilters({
                 searchPlaceholder="Search areas"
                 ariaLabel="Area Path"
               />
-              <Select value={value.priority} onValueChange={(priority) => patch({ priority: priority as WorkbenchFilters["priority"] })} disabled={disabled}>
-                <SelectTrigger aria-label="Priority"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All priorities</SelectItem>
-                  <SelectItem value="1">Priority 1</SelectItem>
-                  <SelectItem value="2">Priority 2</SelectItem>
-                  <SelectItem value="3">Priority 3</SelectItem>
-                  <SelectItem value="4">Priority 4</SelectItem>
-                  <SelectItem value="none">No priority</SelectItem>
-                </SelectContent>
-              </Select>
+              <select
+                className={selectClass}
+                value={value.priority}
+                onChange={(event) => patch({ priority: event.target.value as WorkbenchFilters["priority"] })}
+                disabled={disabled}
+                aria-label="Priority"
+              >
+                {PRIORITY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
               <div className="grid gap-2 rounded-md border border-border p-3">
                 <CheckboxRow
                   id="include-completed"
@@ -634,59 +621,6 @@ function DashboardTableCard({
   );
 }
 
-function SprintBurnChart({ data }: { data: MyWorkbenchAnalytics["charts"]["sprintBurnStatus"] }) {
-  return (
-    <div className="h-[300px]">
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 8, right: 8, left: -18, bottom: 4 }}>
-          <CartesianGrid stroke="hsl(var(--border))" vertical={false} />
-          <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }} tickLine={false} axisLine={false} />
-          <YAxis tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }} tickLine={false} axisLine={false} />
-          <Tooltip content={<WorkbenchChartTooltip suffix="h" />} />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
-          <Line type="monotone" dataKey="idealRemaining" name="Ideal remaining" stroke="hsl(var(--chart-1))" strokeWidth={2} dot={false} />
-          <Line type="monotone" dataKey="actualRemaining" name="Actual remaining" stroke="hsl(var(--warning))" strokeWidth={2} dot={{ r: 4, strokeWidth: 2, fill: "hsl(var(--card))" }} connectNulls={false} />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-type TooltipPayload = {
-  name?: string | number;
-  value?: string | number;
-  color?: string;
-  fill?: string;
-};
-
-function WorkbenchChartTooltip({
-  active,
-  payload,
-  label,
-  suffix = "",
-}: {
-  active?: boolean;
-  payload?: TooltipPayload[];
-  label?: string | number;
-  suffix?: string;
-}) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="rounded-lg border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-lg">
-      {label ? <div className="mb-1 font-semibold">{String(label)}</div> : null}
-      <div className="space-y-1">
-        {payload.map((item) => (
-          <div key={`${String(item.name)}-${String(item.value)}`} className="flex items-center gap-2">
-            <span className="size-2 rounded-full" style={{ backgroundColor: item.color ?? item.fill }} />
-            <span className="text-muted-foreground">{item.name}</span>
-            <span className="font-semibold text-foreground">{item.value}{suffix}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function WorkbenchItemLink({ row }: { row: WorkbenchFocusItem }) {
   const content = <span className="line-clamp-2">{row.title}</span>;
   return row.url ? (
@@ -751,11 +685,6 @@ function formatDateCell(value: string | null) {
   if (!value) return "Not available";
   const date = new Date(`${value}T00:00:00`);
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
-}
-
-function shortDate(value: string) {
-  const date = new Date(`${value}T00:00:00`);
-  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
 }
 
 function tagSummary(row: WorkbenchFocusItem) {

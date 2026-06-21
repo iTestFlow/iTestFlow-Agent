@@ -2,13 +2,8 @@
 
 import {
   Activity,
-  Bot,
-  CheckCircle2,
   Clock3,
-  Database,
-  Gauge,
   RefreshCw,
-  ShieldAlert,
   Sparkles,
   TestTube2,
   Workflow,
@@ -35,7 +30,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -68,14 +62,18 @@ const initialFilters: FilterState = {
   userId: null,
 };
 
-type SystemTab =
-  | "overview"
-  | "savings"
-  | "requirements"
-  | "coverage"
-  | "knowledge"
-  | "ado"
-  | "adoption";
+const SYSTEM_DATE_PRESET_OPTIONS = [
+  { value: "7d", label: "Last 7 days" },
+  { value: "14d", label: "Last 14 days" },
+  { value: "30d", label: "Last 30 days" },
+  { value: "overall", label: "All time" },
+  { value: "custom", label: "Custom range" },
+];
+
+const selectClass =
+  "h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50";
+
+type SystemTab = "value" | "adoption";
 
 export function SystemDashboardsClient({ active }: { active: boolean }) {
   const scope = useActiveProject();
@@ -84,7 +82,7 @@ export function SystemDashboardsClient({ active }: { active: boolean }) {
   const [data, setData] = useState<SystemDashboardAnalytics | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<SystemTab>("overview");
+  const [activeTab, setActiveTab] = useState<SystemTab>("value");
 
   const requestBody = useMemo(() => ({
     scope,
@@ -125,7 +123,7 @@ export function SystemDashboardsClient({ active }: { active: boolean }) {
     setLoading(Boolean(scope));
     setError(null);
     setRefreshFailed(false);
-    setActiveTab("overview");
+    setActiveTab("value");
   }, [scope, setRefreshFailed]);
 
   useEffect(() => {
@@ -207,33 +205,13 @@ export function SystemDashboardsClient({ active }: { active: boolean }) {
           <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as SystemTab)} className="flex-col gap-4">
             <div className="max-w-full overflow-x-auto pb-1">
               <TabsList variant="primary" className="h-10 min-w-max justify-start">
-                <TabsTrigger value="overview" className="h-8 px-4">Executive Overview</TabsTrigger>
-                <TabsTrigger value="savings" className="h-8 px-4">Time Savings</TabsTrigger>
-                <TabsTrigger value="requirements" className="h-8 px-4">Requirement Quality</TabsTrigger>
-                <TabsTrigger value="coverage" className="h-8 px-4">Test Design & Coverage</TabsTrigger>
-                <TabsTrigger value="knowledge" className="h-8 px-4">Knowledge Hub</TabsTrigger>
-                <TabsTrigger value="ado" className="h-8 px-4">ADO Automation</TabsTrigger>
+                <TabsTrigger value="value" className="h-8 px-4">Value</TabsTrigger>
                 <TabsTrigger value="adoption" className="h-8 px-4">Adoption</TabsTrigger>
               </TabsList>
             </div>
 
-            <TabsContent value="overview" className="space-y-4">
-              <OverviewSection data={data} />
-            </TabsContent>
-            <TabsContent value="savings" className="space-y-4">
-              <SavingsSection data={data} />
-            </TabsContent>
-            <TabsContent value="requirements" className="space-y-4">
-              <RequirementSection data={data} />
-            </TabsContent>
-            <TabsContent value="coverage" className="space-y-4">
-              <CoverageSection data={data} />
-            </TabsContent>
-            <TabsContent value="knowledge" className="space-y-4">
-              <KnowledgeSection data={data} />
-            </TabsContent>
-            <TabsContent value="ado" className="space-y-4">
-              <AdoSection data={data} />
+            <TabsContent value="value" className="space-y-4">
+              <ValueSection data={data} />
             </TabsContent>
             <TabsContent value="adoption" className="space-y-4">
               <AdoptionSection data={data} />
@@ -259,19 +237,15 @@ function SystemFilters({
   return (
     <section className="qa-card space-y-3 p-4">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        <Select
+        <select
+          className={selectClass}
           value={filters.datePreset}
-          onValueChange={(datePreset) => setFilters((current) => ({ ...current, datePreset: datePreset as SystemDashboardDatePreset }))}
+          onChange={(event) => setFilters((current) => ({ ...current, datePreset: event.target.value as SystemDashboardDatePreset }))}
           disabled={disabled}
+          aria-label="System dashboard date range"
         >
-          <SelectTrigger aria-label="System dashboard date range"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="7d">Last 7 days</SelectItem>
-            <SelectItem value="14d">Last 14 days</SelectItem>
-            <SelectItem value="30d">Last 30 days</SelectItem>
-            <SelectItem value="custom">Custom range</SelectItem>
-          </SelectContent>
-        </Select>
+          {SYSTEM_DATE_PRESET_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
         <SearchableMultiSelect
           options={data?.filterMetadata.workflows ?? workflowTypeValues.map((value) => ({ value, label: workflowLabels[value] }))}
           value={filters.workflowTypes}
@@ -280,19 +254,19 @@ function SystemFilters({
           getOptionLabel={(option) => option.label}
           placeholder="All workflows"
           ariaLabel="Workflow types"
+          triggerClassName="h-10"
           disabled={disabled}
         />
-        <Select
+        <select
+          className={selectClass}
           value={filters.userId ?? "__all__"}
-          onValueChange={(userId) => setFilters((current) => ({ ...current, userId: userId === "__all__" ? null : userId }))}
+          onChange={(event) => setFilters((current) => ({ ...current, userId: event.target.value === "__all__" ? null : event.target.value }))}
           disabled={disabled || !data?.filterMetadata.users.length}
+          aria-label="System dashboard user"
         >
-          <SelectTrigger aria-label="System dashboard user"><SelectValue placeholder="All users" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all__">All users</SelectItem>
-            {data?.filterMetadata.users.map((user) => <SelectItem key={user.value} value={user.value}>{user.label}</SelectItem>)}
-          </SelectContent>
-        </Select>
+          <option value="__all__">All users</option>
+          {data?.filterMetadata.users.map((user) => <option key={user.value} value={user.value}>{user.label}</option>)}
+        </select>
       </div>
       {filters.datePreset === "custom" ? (
         <div className="flex flex-wrap items-center gap-2">
@@ -346,148 +320,81 @@ function RefreshBar({
   );
 }
 
-function OverviewSection({ data }: { data: SystemDashboardAnalytics }) {
+function ValueSection({ data }: { data: SystemDashboardAnalytics }) {
   const overview = data.overview;
   return (
     <>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <ValueMetric title="Estimated Hours Saved" metric={overview.estimatedHoursSaved} icon={Clock3} />
         <ValueMetric title="AI Workflows Completed" metric={overview.workflowsCompleted} icon={Sparkles} />
-        <ValueMetric title="High-Risk Issues Found Early" metric={overview.highRiskIssuesFound} icon={ShieldAlert} tone="red" />
         <ValueMetric title="Test Cases Published" metric={overview.testCasesPublished} icon={TestTube2} tone="green" />
-        <ValueMetric title="AI Acceptance Rate" metric={overview.acceptanceRate} icon={CheckCircle2} formatter={(value) => `${value}%`} />
         <MetricCard
-          title="Most Valuable Workflow"
-          value={overview.mostValuableWorkflow ?? "Needs data"}
-          description={`${overview.manualActionsAvoided} manual Azure DevOps actions avoided in this scope.`}
+          title="Manual ADO Actions Automated"
+          value={String(overview.manualActionsAvoided)}
+          description="Concrete successful Azure DevOps actions automated in this scope."
           icon={Workflow}
           tone="purple"
         />
       </div>
+      <p className="text-xs leading-5 text-muted-foreground">
+        Estimated Hours Saved compares each workflow&apos;s actual run time against a fixed manual-effort baseline, counted only after the output is accepted or published. Treat it as a directional estimate; the other tiles are exact counts.
+      </p>
       <div className="grid gap-4 xl:grid-cols-2">
         <ChartCard title="Estimated Saved Hours by Workflow" empty={!hasSavingsData(data)}>
           <SavedHoursBar rows={data.workflowSavings.rows} />
         </ChartCard>
-        <ChartCard title="Estimated Saved Hours Trend" empty={!hasSavingsData(data)}>
-          <SavedHoursTrend rows={data.workflowSavings.trend} />
-        </ChartCard>
+        <WorkflowSavingsTable rows={data.workflowSavings.rows} />
       </div>
+      <ChartCard title="Estimated Saved Hours Trend" empty={!hasSavingsData(data)}>
+        <SavedHoursTrend rows={data.workflowSavings.trend} />
+      </ChartCard>
     </>
   );
 }
 
-function SavingsSection({ data }: { data: SystemDashboardAnalytics }) {
+function WorkflowSavingsTable({ rows }: { rows: SystemDashboardAnalytics["workflowSavings"]["rows"] }) {
+  const activeRows = rows.filter((row) => row.runs > 0);
   return (
-    <>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <ChartCard title="Estimated Saved Hours by Workflow" empty={!hasSavingsData(data)}>
-          <SavedHoursBar rows={data.workflowSavings.rows} />
-        </ChartCard>
-        <ChartCard title="Estimated Saved Hours Trend" empty={!hasSavingsData(data)}>
-          <SavedHoursTrend rows={data.workflowSavings.trend} />
-        </ChartCard>
-      </div>
-      <Card className="qa-card">
-        <CardHeader><CardTitle className="text-base">Workflow Time Savings</CardTitle></CardHeader>
-        <CardContent className="space-y-3 overflow-x-auto">
-          <p className="text-xs text-muted-foreground">
-            Actual time is available after generation completes. Estimated savings are counted only after output is accepted or published.
-          </p>
-          <Table>
+    <Card className="qa-card">
+      <CardHeader><CardTitle className="text-base">Workflow Time Savings</CardTitle></CardHeader>
+      <CardContent className="space-y-3 overflow-x-auto">
+        <p className="text-xs text-muted-foreground">
+          Manual baselines are configurable in Settings. Estimated savings are counted only after a workflow&apos;s output is accepted or published.
+        </p>
+        {activeRows.length ? (
+          <Table className="w-full table-fixed">
+            <colgroup>
+              <col className="w-[34%]" />
+              <col className="w-[12%]" />
+              <col className="w-[19%]" />
+              <col className="w-[18%]" />
+              <col className="w-[17%]" />
+            </colgroup>
             <TableHeader><TableRow>
-              <TableHead>Workflow</TableHead><TableHead>Runs</TableHead><TableHead>Manual Baseline</TableHead>
-              <TableHead>Actual Avg</TableHead><TableHead>Avg Saved</TableHead><TableHead>Total Saved</TableHead>
-              <TableHead>Acceptance</TableHead>
+              <TableHead>Workflow</TableHead>
+              <TableHead className="text-right">Runs</TableHead>
+              <TableHead className="text-right">Manual baseline</TableHead>
+              <TableHead className="text-right">Avg actual</TableHead>
+              <TableHead className="text-right">Total saved</TableHead>
             </TableRow></TableHeader>
             <TableBody>
-              {data.workflowSavings.rows.map((row) => (
+              {activeRows.map((row) => (
                 <TableRow key={row.workflowType}>
-                  <TableCell className="font-medium">{row.workflow}</TableCell>
-                  <TableCell>{row.runs}</TableCell>
-                  <TableCell>{minutes(row.manualBaselineMinutes)}</TableCell>
-                  <TableCell>{row.actualAverageMinutes === null ? "Needs data" : minutes(row.actualAverageMinutes)}</TableCell>
-                  <TableCell>{minutes(row.averageSavedMinutes)}</TableCell>
-                  <TableCell>{hours(row.totalSavedMinutes)}</TableCell>
-                  <TableCell>{row.acceptanceRate === null ? "Needs data" : `${row.acceptanceRate}%`}</TableCell>
+                  <TableCell className="truncate font-medium" title={row.workflow}>{row.workflow}</TableCell>
+                  <TableCell className="text-right tabular-nums">{row.runs}</TableCell>
+                  <TableCell className="text-right tabular-nums">{minutes(row.manualBaselineMinutes)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{row.actualAverageMinutes === null ? "Needs data" : minutes(row.actualAverageMinutes)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{hours(row.totalSavedMinutes)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
-        </CardContent>
-      </Card>
-    </>
+        ) : (
+          <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">No workflow runs are recorded for this scope yet.</div>
+        )}
+      </CardContent>
+    </Card>
   );
-}
-
-function RequirementSection({ data }: { data: SystemDashboardAnalytics }) {
-  const value = data.requirementQuality;
-  return (
-    <>
-      <MetricGrid items={[
-        ["Requirements Analyzed", value.requirementsAnalyzed, "Completed analysis runs.", Activity],
-        ["Average Testability Score", value.averageTestabilityScore, "Average recorded score out of 100.", Gauge],
-        ["Requirements with Critical/High Gaps", value.requirementsWithCriticalHighGaps, "Requirements with at least one high-risk finding.", ShieldAlert],
-        ["Total Gaps Found", value.totalGapsFound, "Generated requirement findings.", Sparkles],
-        ["Average Risks per Requirement", value.averageRisksPerRequirement, "Average findings generated per analyzed requirement.", Workflow],
-        ["Most Common Issue Category", value.mostCommonIssueCategory, "Most frequent normalized checklist category.", Zap],
-      ]} />
-      <DistributionCard title="Requirement Issue Categories" rows={value.issueCategories} emptyMessage="No normalized requirement findings are available yet." />
-    </>
-  );
-}
-
-function CoverageSection({ data }: { data: SystemDashboardAnalytics }) {
-  const value = data.testDesignCoverage;
-  return (
-    <>
-      <MetricGrid items={[
-        ["Test Cases Generated", value.testCasesGenerated, "Generated test design outputs.", Sparkles],
-        ["Test Cases Published", value.testCasesPublished, "Successfully published cases.", TestTube2],
-        ["Average Cases per Story", value.averageTestCasesPerStory, "Generated cases divided by unique stories.", Gauge],
-        ["Generated Cases Accepted", value.accepted, "Published or explicitly selected cases.", CheckCircle2],
-        ["Generated Cases Edited", value.edited, "Cases changed during review.", Activity],
-        ["Generated Cases Rejected", value.rejected, "Generated cases not accepted.", ShieldAlert],
-        ["Estimated Design Hours Saved", value.estimatedHoursSaved, "Estimated realized savings for design and gap analysis.", Clock3],
-        ["Stories Reviewed for Coverage", value.storiesReviewedForCoverage, "Test Gap Analysis runs.", Workflow],
-        ["Average Coverage Score", value.averageCoverageScore, "Recorded coverage score out of 100.", Gauge],
-        ["Missing Coverage Areas Found", value.missingCoverageAreas, "Uncovered traceability areas.", ShieldAlert],
-        ["Weak or Duplicate Cases", value.weakDuplicateCases, "Coverage findings classified as weak or duplicate.", Activity],
-      ]} />
-      <DistributionCard title="Coverage Category Distribution" rows={value.coverageCategories} emptyMessage="Coverage categories will appear after test design workflows are recorded." />
-    </>
-  );
-}
-
-function KnowledgeSection({ data }: { data: SystemDashboardAnalytics }) {
-  const value = data.knowledgeHub;
-  return (
-    <>
-      <MetricGrid items={[
-        ["Indexed Work Items", value.indexedWorkItems, "Active work items in local project context.", Database],
-        ["Knowledge Items", value.knowledgeItems, "Saved compiled knowledge entries.", Sparkles],
-        ["Last Knowledge Refresh", value.lastRefresh ? new Date(value.lastRefresh).toLocaleString() : null, "Latest indexed work-item update.", RefreshCw],
-        ["Failed Indexing Runs", value.failedIndexingRuns, "Failed normalized knowledge indexing runs.", ShieldAlert],
-        ["AI Runs Using Context", value.aiRunsUsingContext, "AI runs with recorded project context.", Bot],
-        ["Context Usage Rate", value.contextUsageRate === null ? null : `${value.contextUsageRate}%`, "AI runs using context divided by AI runs.", Gauge],
-        ["Stale Knowledge Warnings", value.staleKnowledgeWarnings, "Open knowledge lint warnings.", Activity],
-      ]} />
-      <DistributionCard title="Most Referenced Context Items" rows={value.mostReferencedContextItems} emptyMessage="Context references will appear after instrumented AI workflows use project knowledge." />
-    </>
-  );
-}
-
-function AdoSection({ data }: { data: SystemDashboardAnalytics }) {
-  const value = data.adoAutomation;
-  return <MetricGrid items={[
-    ["Comments Published", value.commentsPublished, "Requirement comments pushed to Azure DevOps.", CheckCircle2],
-    ["Test Cases Created", value.testCasesCreated, "Azure Test Case work items created.", TestTube2],
-    ["Work Items Linked", value.workItemsLinked, "Test cases linked automatically to stories.", Workflow],
-    ["Suite Migrations Completed", value.suiteMigrationsCompleted, "Successful suite migration operations.", Activity],
-    ["Bulk Tasks Created", value.bulkTasksCreated, "Child tasks created by bulk automation.", Zap],
-    ["Manual ADO Actions Avoided", value.manualActionsAvoided, "Concrete successful Azure DevOps actions automated.", Clock3],
-    ["ADO Publish Success Rate", value.publishSuccessRate === null ? null : `${value.publishSuccessRate}%`, "Fully successful ADO operations (partial successes are excluded).", Gauge],
-    ["Failed ADO Operations", value.failedOperations, "ADO operations where every sub-operation failed.", ShieldAlert],
-  ]} />;
 }
 
 function AdoptionSection({ data }: { data: SystemDashboardAnalytics }) {
@@ -495,10 +402,7 @@ function AdoptionSection({ data }: { data: SystemDashboardAnalytics }) {
   return <MetricGrid items={[
     ["Active Users", value.activeUsers, "Distinct recorded workflow users.", Activity],
     ["Workflow Runs", value.workflowRuns, "Recorded workflow runs in the selected period.", Sparkles],
-    ["Runs per User", value.runsPerUser, "Workflow runs divided by active users.", Workflow],
     ["Most Used Feature", value.mostUsedFeature, "Workflow with the most recorded runs.", Zap],
-    ["Rejection Rate", value.rejectionRate === null ? null : `${value.rejectionRate}%`, "Rejected outputs divided by generated outputs.", ShieldAlert],
-    ["Top Workflow by Adoption", value.topWorkflowByAdoption, "Workflow with the greatest recorded adoption.", Gauge],
   ]} />;
 }
 
@@ -593,34 +497,6 @@ function SavedHoursTrend({ rows }: { rows: SystemDashboardAnalytics["workflowSav
         </LineChart>
       </ResponsiveContainer>
     </div>
-  );
-}
-
-function DistributionCard({ title, rows, emptyMessage }: { title: string; rows: Array<{ name: string; value: number }>; emptyMessage: string }) {
-  return (
-    <Card className="qa-card">
-      <CardHeader><CardTitle className="text-base">{title}</CardTitle></CardHeader>
-      <CardContent>
-        {rows.length ? (
-          <div className="h-[320px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={rows.slice(0, 12)} layout="vertical" margin={{ left: 80, right: 20 }}>
-                <CartesianGrid stroke="hsl(var(--border))" horizontal={false} />
-                <XAxis type="number" allowDecimals={false} />
-                <YAxis type="category" dataKey="name" width={160} tick={{ fontSize: 10 }} />
-                <Tooltip
-                  content={<SystemChartTooltip />}
-                  cursor={{ fill: "hsl(var(--muted) / 0.35)" }}
-                />
-                <Bar dataKey="value" fill="hsl(var(--chart-2))" radius={[2, 6, 6, 2]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        ) : (
-          <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">{emptyMessage}</div>
-        )}
-      </CardContent>
-    </Card>
   );
 }
 

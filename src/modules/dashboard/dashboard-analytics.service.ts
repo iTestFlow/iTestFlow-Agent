@@ -6,7 +6,6 @@ import type {
   AzureTestPoint,
   AzureTestResult,
   AzureTestRun,
-  AzureWorkItemRevision,
   Requirement,
   TestSuite,
 } from "@/modules/integrations/azure-devops/azure-devops-types";
@@ -19,15 +18,10 @@ import type {
   DashboardFilterMetadata,
   DashboardFilters,
   DashboardReleaseBlocker,
+  DashboardRequirementRow,
   DashboardSectionAvailability,
-  DashboardTrendPoint,
 } from "@/types/dashboard";
 import {
-  buildBlockerDistribution,
-  buildCoverageByModule,
-  buildCoverageByPriority,
-  buildDashboardActions,
-  buildDailyTrend,
   buildExecutionRows,
   buildRequirementRows,
   calculateAgingDays,
@@ -42,11 +36,9 @@ import {
   normalizePriority,
   normalizeSeverity,
   normalizeTestOutcome,
-  riskRank,
-  trimTrailingEmptyTrend,
   type DashboardExecutionItem,
 } from "./dashboard-metrics";
-import { localDayStartIso, toLocalDayString } from "@/shared/lib/local-day";
+import { toLocalDayString } from "@/shared/lib/local-day";
 
 export type DashboardAnalyticsInput = {
   scope: ProjectScope;
@@ -125,7 +117,7 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
     assignee: input.filters?.assignee ?? null,
   };
 
-  const [pointsResult, bugsResult, requirementsResult, runsResult, revisionsResult] = await Promise.all([
+  const [pointsResult, bugsResult, requirementsResult, runsResult] = await Promise.all([
     selectedPlanId && selectedSuiteIds.length
       ? loadTestPoints(adapter, scope.azureProjectId, selectedPlanId, suites, selectedSuiteIds)
       : Promise.resolve({ ok: true, data: [] } satisfies SourceResult<PointWithSuite[]>),
@@ -152,27 +144,6 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
           limit: DASHBOARD_LIMITS.testRuns,
         }))
       : Promise.resolve({ ok: true, data: [] } satisfies SourceResult<AzureTestRun[]>),
-    capture(() => adapter.fetchWorkItemRevisions({
-      projectId: scope.azureProjectId,
-      workItemTypes: ["Bug"],
-      startDateTime: localDayStartIso(dateRange.from),
-      fields: [
-        "System.Id",
-        "System.Rev",
-        "System.WorkItemType",
-        "System.Title",
-        "System.State",
-        "System.AssignedTo",
-        "System.CreatedDate",
-        "System.ChangedDate",
-        "System.AreaPath",
-        "System.IterationPath",
-        "Microsoft.VSTS.Common.Priority",
-        "Microsoft.VSTS.Common.Severity",
-        "Microsoft.VSTS.Common.ClosedDate",
-      ],
-      limit: DASHBOARD_LIMITS.revisions,
-    })),
   ]);
 
   const runsInRange = (runsResult.ok
@@ -187,7 +158,6 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
   const bugs = bugsResult.ok ? bugsResult.data : [];
   const requirements = requirementsResult.ok ? requirementsResult.data : [];
   const testResults = resultsResult.ok ? resultsResult.data : [];
-  const revisions = revisionsResult.ok ? revisionsResult.data : [];
 
   const executionItems = points.map((point) => toExecutionItem(point, adapter, scope));
   const executionRows = buildExecutionRows(executionItems);
@@ -202,13 +172,6 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
   const openHighBugs = openBugs.filter((bug) => normalizeSeverity(bug.severity) === "High");
   const retestPending = openBugs.filter((bug) => isResolvedBugState(bug.state));
   const bugRows = buildBugRows(openBugs, requirements, adapter, scope);
-  const reopenedBugIds = findReopenedBugIds(revisions);
-  const reopenedBugRows = buildBugRows(
-    bugs.filter((bug) => reopenedBugIds.has(bug.id)),
-    requirements,
-    adapter,
-    scope,
-  );
 
   const outcomesByTestCaseId = new Map<string, ReturnType<typeof normalizeTestOutcome>[]>();
   points.forEach((point) => {
@@ -237,9 +200,6 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
   const highRiskCoverageGaps = requirementRows.filter(
     (row) => ["critical", "high"].includes(row.riskStatus) && row.coverageStatus === "not_covered",
   );
-  const executionRiskRequirements = requirementRows.filter(
-    (row) => row.coverageStatus !== "not_covered" && ["failing", "blocked", "mixed", "not_run"].includes(row.executionHealth),
-  );
 
   const latestResultsByTestCase = latestResultsByCase(testResults);
   const blockerRows = executionItems
@@ -251,10 +211,7 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
         id: item.id,
         title: item.title,
         reason: classifyBlockerReason(reasonText),
-        owner: item.owner ?? result?.owner?.displayName ?? null,
         ageDays: calculateAgingDays(item.lastRunDate ?? result?.completedDate),
-        impactedArea: item.module || null,
-        status: "Blocked",
         recommendedAction: classifyBlockerReason(reasonText) === "Unknown"
           ? "Review the latest test run or comment and classify the blocker reason."
           : `Remove the ${classifyBlockerReason(reasonText).toLowerCase()} blocker and re-run the test.`,
@@ -284,9 +241,6 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
     blockers: blockerRows,
     requirements: highRiskCoverageGaps,
   });
-  const executionTrend = buildExecutionTrend(dateRange.from, dateRange.to, testResults);
-  const bugTrend = buildBugTrend(dateRange.from, dateRange.to, bugs, revisions);
-  const trendAvailable = executionTrend.some(hasTrendValues) || bugTrend.some(hasTrendValues);
 
   const sections = buildSectionAvailability({
     selectedPlanId,
@@ -294,13 +248,7 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
     suiteResult,
     pointsResult,
     bugsResult,
-    requirementsResult,
-    runsResult,
-    resultsResult,
-    revisionsResult,
     executionTotal,
-    requirementCount: requirementRows.length,
-    trendAvailable,
   });
   const warnings = buildWarnings({
     metadata,
@@ -309,8 +257,6 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
     currentSprintResolved: filters.dateRange.preset !== "current_sprint" || Boolean(findCurrentIteration(metadata.iterations.ok ? metadata.iterations.data : [])),
     workItemsTruncated: bugs.length >= DASHBOARD_LIMITS.workItems || requirements.length >= DASHBOARD_LIMITS.workItems,
     runsTruncated: runsResult.ok && runsResult.data.length >= DASHBOARD_LIMITS.testRuns,
-    trendRunsInRange: runsInRange.length,
-    revisionsTruncated: revisions.length >= DASHBOARD_LIMITS.revisions,
     suitesTruncated,
     totalSuites: suites.length,
   });
@@ -320,59 +266,19 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
     filters,
     filterMetadata: buildFilterMetadata(metadata, suites),
     kpis: {
-      releaseReadiness: { status: readiness.status, score: readiness.score, reasons: readiness.reasons },
       testExecutionProgress: metric(executionAvailable, executionExecuted, executionTotal, executionPercentage, `${executionExecuted} of ${executionTotal} test points executed`),
       passRate: metric(executionAvailable, outcomeCounts.passed, outcomeCounts.passed + outcomeCounts.failed + outcomeCounts.blocked, passRate, `${outcomeCounts.passed} passed of ${outcomeCounts.passed + outcomeCounts.failed + outcomeCounts.blocked} evaluated outcomes`),
       openBugs: countMetric(bugsAvailable, openBugs.length, "Current bugs not in a completed or removed state"),
       openCriticalHighBugs: countMetric(bugsAvailable, openCriticalBugs.length + openHighBugs.length, `${openCriticalBugs.length} critical and ${openHighBugs.length} high severity bugs open`),
-      blockedTests: countMetric(executionAvailable, outcomeCounts.blocked, "Current Azure Test Plan points with a blocked outcome"),
       requirementsCoverage: metric(coverageAvailable, coveredRequirements, requirementRows.length, coveragePercentage, `${coveredRequirements} of ${requirementRows.length} requirements have linked test cases`),
-      retestPending: countMetric(bugsAvailable, retestPending.length, "Resolved or fixed bugs that have not reached a completed state"),
     },
-    actions: buildDashboardActions({
-      blockedTests: outcomeCounts.blocked,
-      openCriticalBugs: openCriticalBugs.length,
-      openHighBugs: openHighBugs.length,
-      highRiskCoverageGaps: highRiskCoverageGaps.length,
-      retestPending: retestPending.length,
-      passRate,
-      executionPercentage,
-    }),
     testingProgress: {
       statusDistribution: outcomeDistribution(outcomeCounts),
-      byModule: executionRows,
-      trend: executionTrend,
       table: executionRows,
     },
     bugStatus: {
       bySeverity: groupDistribution(openBugs.map((bug) => normalizeSeverity(bug.severity)), ["Critical", "High", "Medium", "Low", "Unknown"]),
-      byPriority: groupDistribution(
-        openBugs.map((bug) => {
-          const priority = normalizePriority(bug.priority);
-          return priority ? `Priority ${priority}` : "No priority";
-        }),
-        ["Priority 1", "Priority 2", "Priority 3", "Priority 4", "No priority"],
-      ),
-      byStatus: groupDistribution(openBugs.map((bug) => bug.state || "Unknown")),
-      closedCount: Math.max(0, bugs.length - openBugs.length),
-      openClosedTrend: bugTrend,
       agingBugs: bugRows.slice(0, DASHBOARD_LIMITS.tableRows),
-      reopenedBugs: reopenedBugRows.slice(0, DASHBOARD_LIMITS.tableRows),
-    },
-    coverage: {
-      coveredVsUncovered: [
-        { name: "Covered", value: coveredRequirements },
-        { name: "Uncovered", value: Math.max(0, requirementRows.length - coveredRequirements) },
-      ],
-      byModule: buildCoverageByModule(requirementRows),
-      byPriority: buildCoverageByPriority(requirementRows),
-      coverageGaps: highRiskCoverageGaps.slice(0, DASHBOARD_LIMITS.tableRows),
-      executionRiskRequirements: executionRiskRequirements
-        .sort((a, b) => riskRank(a.riskStatus) - riskRank(b.riskStatus) || (a.priority ?? 99) - (b.priority ?? 99))
-        .slice(0, DASHBOARD_LIMITS.tableRows),
-      matrix: requirementRows
-        .sort((a, b) => riskRank(a.riskStatus) - riskRank(b.riskStatus) || (a.priority ?? 99) - (b.priority ?? 99))
-        .slice(0, DASHBOARD_LIMITS.tableRows),
     },
     releaseReadiness: {
       status: readiness.status,
@@ -381,22 +287,7 @@ export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Pro
       reasons: readiness.reasons,
       blockers: releaseBlockers,
     },
-    blockers: {
-      byReason: buildBlockerDistribution(blockerRows),
-      aging: blockerRows.slice(0, DASHBOARD_LIMITS.tableRows),
-    },
-    trends: {
-      execution: executionTrend,
-      passRate: executionTrend,
-      bugs: bugTrend,
-    },
     metadata: {
-      dataCompleteness: {
-        hasTestExecutionData: executionAvailable,
-        hasBugData: bugsAvailable,
-        hasCoverageData: coverageAvailable,
-        hasTrendData: trendAvailable,
-      },
       sections,
       warnings,
     },
@@ -533,8 +424,8 @@ function buildRequirementBugCounts(bugs: Requirement[]) {
 
 function buildReleaseBlockers(input: {
   bugs: DashboardBugRow[];
-  blockers: DashboardAnalytics["blockers"]["aging"];
-  requirements: DashboardAnalytics["coverage"]["coverageGaps"];
+  blockers: Array<{ id: string; title: string; reason: string; ageDays: number | null; recommendedAction: string; url: string | null }>;
+  requirements: DashboardRequirementRow[];
 }): DashboardReleaseBlocker[] {
   return [
     ...input.bugs.map((bug): DashboardReleaseBlocker => ({
@@ -542,7 +433,6 @@ function buildReleaseBlockers(input: {
       id: bug.id,
       title: bug.title,
       severityOrPriority: bug.severity,
-      owner: bug.assignee,
       ageDays: bug.ageDays,
       recommendedAction: bug.severity === "Critical" ? "Resolve or formally waive before release." : "Triage, fix, and verify before the release decision.",
       url: bug.url,
@@ -552,7 +442,6 @@ function buildReleaseBlockers(input: {
       id: blocker.id,
       title: blocker.title,
       severityOrPriority: blocker.reason,
-      owner: blocker.owner,
       ageDays: blocker.ageDays,
       recommendedAction: blocker.recommendedAction,
       url: blocker.url,
@@ -562,95 +451,11 @@ function buildReleaseBlockers(input: {
       id: requirement.id,
       title: requirement.title,
       severityOrPriority: requirement.priority ? `Priority ${requirement.priority}` : "High risk",
-      owner: null,
       ageDays: null,
       recommendedAction: "Link or create adequate test cases and execute them.",
       url: requirement.url,
     })),
   ].slice(0, DASHBOARD_LIMITS.tableRows);
-}
-
-function buildExecutionTrend(from: string, to: string, results: AzureTestResult[]) {
-  const groups = new Map<string, AzureTestResult[]>();
-  results.forEach((result) => {
-    const date = datePart(result.completedDate ?? result.startedDate);
-    if (!date || date < from || date > to) return;
-    groups.set(date, [...(groups.get(date) ?? []), result]);
-  });
-  const points = [...groups.entries()].map(([date, group]): DashboardTrendPoint => {
-    const outcomes = group.map((result) => normalizeTestOutcome(result.outcome ?? result.state));
-    const passed = outcomes.filter((outcome) => outcome === "passed").length;
-    const failed = outcomes.filter((outcome) => outcome === "failed").length;
-    const blocked = outcomes.filter((outcome) => outcome === "blocked").length;
-    return {
-      date,
-      executed: outcomes.filter((outcome) => outcome !== "not_run").length,
-      passed,
-      failed,
-      blocked,
-      passRate: calculatePercentage(passed, passed + failed + blocked),
-    };
-  });
-  return trimTrailingEmptyTrend(buildDailyTrend(from, to, points));
-}
-
-function buildBugTrend(from: string, to: string, bugs: Requirement[], revisions: AzureWorkItemRevision[]) {
-  const points = new Map<string, DashboardTrendPoint>();
-  const eventKeys = new Set<string>();
-  const update = (date: string, key: keyof DashboardTrendPoint) => {
-    const current = points.get(date) ?? { date };
-    const value = current[key];
-    points.set(date, { ...current, [key]: typeof value === "number" ? value + 1 : 1 });
-  };
-
-  bugs.forEach((bug) => {
-    const created = datePart(bug.createdDate);
-    if (created && created >= from && created <= to) {
-      update(created, "opened");
-      if (["Critical", "High"].includes(normalizeSeverity(bug.severity))) update(created, "criticalHighOpened");
-    }
-    // Only count ClosedDate as a close event when the bug is actually in a closed state now.
-    // Azure retains ClosedDate after a reopen, so an open (reopened) bug would otherwise emit a phantom close.
-    if (!isOpenBugState(bug.state)) {
-      const closed = datePart(bug.closedDate);
-      if (closed && closed >= from && closed <= to) {
-        eventKeys.add(`${bug.id}|closed|${closed}`);
-        update(closed, "closed");
-      }
-    }
-  });
-
-  const byBug = new Map<string, AzureWorkItemRevision[]>();
-  revisions.forEach((revision) => byBug.set(revision.workItemId, [...(byBug.get(revision.workItemId) ?? []), revision]));
-  byBug.forEach((items, bugId) => {
-    const ordered = items.sort((a, b) => a.revision - b.revision);
-    for (let index = 1; index < ordered.length; index += 1) {
-      const previousOpen = isOpenBugState(ordered[index - 1].state);
-      const currentOpen = isOpenBugState(ordered[index].state);
-      const date = datePart(ordered[index].revisedDate);
-      if (!date || date < from || date > to) continue;
-      if (previousOpen && !currentOpen && !eventKeys.has(`${bugId}|closed|${date}`)) {
-        update(date, "closed");
-        eventKeys.add(`${bugId}|closed|${date}`);
-      }
-      if (!previousOpen && currentOpen) update(date, "reopened");
-    }
-  });
-
-  return trimTrailingEmptyTrend(buildDailyTrend(from, to, [...points.values()]));
-}
-
-function findReopenedBugIds(revisions: AzureWorkItemRevision[]) {
-  const result = new Set<string>();
-  const byBug = new Map<string, AzureWorkItemRevision[]>();
-  revisions.forEach((revision) => byBug.set(revision.workItemId, [...(byBug.get(revision.workItemId) ?? []), revision]));
-  byBug.forEach((items, id) => {
-    const ordered = items.sort((a, b) => a.revision - b.revision);
-    if (ordered.some((item, index) => index > 0 && !isOpenBugState(ordered[index - 1].state) && isOpenBugState(item.state))) {
-      result.add(id);
-    }
-  });
-  return result;
 }
 
 function latestResultsByCase(results: AzureTestResult[]) {
@@ -669,13 +474,7 @@ function buildSectionAvailability(input: {
   suiteResult: SourceResult<TestSuite[]>;
   pointsResult: SourceResult<PointWithSuite[]>;
   bugsResult: SourceResult<Requirement[]>;
-  requirementsResult: SourceResult<Requirement[]>;
-  runsResult: SourceResult<AzureTestRun[]>;
-  resultsResult: SourceResult<AzureTestResult[]>;
-  revisionsResult: SourceResult<AzureWorkItemRevision[]>;
   executionTotal: number;
-  requirementCount: number;
-  trendAvailable: boolean;
 }): DashboardAnalytics["metadata"]["sections"] {
   return {
     filters: availability(
@@ -692,16 +491,6 @@ function buildSectionAvailability(input: {
             ? available()
             : unavailable("No test points were returned for the selected Test Plan and suites."),
     bugs: input.bugsResult.ok ? available() : unavailable(input.bugsResult.error),
-    coverage: !input.requirementsResult.ok
-      ? unavailable(input.requirementsResult.error)
-      : input.requirementCount
-        ? available()
-        : unavailable("No requirement work items matched the selected filters."),
-    trends: input.trendAvailable
-      ? available()
-      : !input.runsResult.ok || !input.resultsResult.ok || !input.revisionsResult.ok
-        ? partial("Some Azure history sources could not be loaded.")
-        : unavailable("Trend data will appear after test runs or work-item history exists for the selected range."),
   };
 }
 
@@ -712,8 +501,6 @@ function buildWarnings(input: {
   currentSprintResolved: boolean;
   workItemsTruncated: boolean;
   runsTruncated: boolean;
-  trendRunsInRange: number;
-  revisionsTruncated: boolean;
   suitesTruncated: boolean;
   totalSuites: number;
 }) {
@@ -726,10 +513,6 @@ function buildWarnings(input: {
   }
   if (input.workItemsTruncated) warnings.push(`Work-item metrics are limited to ${DASHBOARD_LIMITS.workItems} items per type.`);
   if (input.runsTruncated) warnings.push(`Execution history is limited to the latest ${DASHBOARD_LIMITS.testRuns} runs.`);
-  if (input.trendRunsInRange > DASHBOARD_LIMITS.trendRuns) {
-    warnings.push(`Trends reflect only the most recent ${DASHBOARD_LIMITS.trendRuns} of ${input.trendRunsInRange} test runs in the selected range.`);
-  }
-  if (input.revisionsTruncated) warnings.push(`Bug history is limited to ${DASHBOARD_LIMITS.revisions} revisions.`);
   if (input.suitesTruncated) {
     warnings.push(`Execution, coverage, and blocker metrics reflect only the first ${DASHBOARD_LIMITS.suites} of ${input.totalSuites} test suites; apply a Test Suite filter for full coverage.`);
   }
@@ -884,10 +667,6 @@ function severityRank(value: string) {
   return { Critical: 0, High: 1, Medium: 2, Low: 3, Unknown: 4 }[value] ?? 5;
 }
 
-function hasTrendValues(point: DashboardTrendPoint) {
-  return Object.entries(point).some(([key, value]) => key !== "date" && typeof value === "number" && value > 0);
-}
-
 function available(): DashboardSectionAvailability {
   return { status: "available" };
 }
@@ -977,9 +756,6 @@ function pruneAndSet<V>(
 // Exposed for unit tests only — these are otherwise module-private pure helpers
 // (no I/O). Tests import this barrel rather than the heavyweight getDashboardAnalytics.
 export const __testables = {
-  buildBugTrend,
-  buildExecutionTrend,
-  findReopenedBugIds,
   latestResultsByCase,
   resolveDateRange,
   datePart,

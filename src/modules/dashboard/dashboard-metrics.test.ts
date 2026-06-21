@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildDailyTrend,
-  buildDashboardActions,
   buildExecutionRows,
   buildRequirementRows,
   calculatePercentage,
@@ -11,9 +9,7 @@ import {
   isResolvedBugState,
   normalizeSeverity,
   normalizeTestOutcome,
-  trimTrailingEmptyTrend,
 } from "./dashboard-metrics";
-import { toLocalDayString } from "@/shared/lib/local-day";
 
 describe("dashboard metric normalization", () => {
   it("normalizes Azure severity and outcome variants", () => {
@@ -61,25 +57,6 @@ describe("bug state classification", () => {
     expect(isResolvedBugState("Ready to Test")).toBe(true);
     expect(isResolvedBugState("Not Fixed")).toBe(false);
     expect(isResolvedBugState("Active")).toBe(false);
-  });
-});
-
-describe("daily trend axis (local calendar days)", () => {
-  it("produces a consecutive run of local days and aligns points by date", () => {
-    const trend = buildDailyTrend("2026-06-01", "2026-06-04", [{ date: "2026-06-03", opened: 5 }]);
-    expect(trend.map((point) => point.date)).toEqual([
-      "2026-06-01",
-      "2026-06-02",
-      "2026-06-03",
-      "2026-06-04",
-    ]);
-    expect(trend[2].opened).toBe(5);
-    expect(trend[0].opened).toBeUndefined();
-  });
-
-  it("formats a Date as its local calendar day", () => {
-    // Month is 0-indexed; this is local June 9, 2026 regardless of host timezone.
-    expect(toLocalDayString(new Date(2026, 5, 9))).toBe("2026-06-09");
   });
 });
 
@@ -141,19 +118,6 @@ describe("dashboard execution and coverage", () => {
     });
   });
 
-  it("fills missing dates so charts retain a stable time axis", () => {
-    expect(buildDailyTrend("2026-06-01", "2026-06-03", [{ date: "2026-06-02", executed: 4 }])).toEqual([
-      { date: "2026-06-01" },
-      { date: "2026-06-02", executed: 4 },
-      { date: "2026-06-03" },
-    ]);
-  });
-
-  it("trims empty future dates after the last observed value", () => {
-    const points = buildDailyTrend("2026-06-01", "2026-06-05", [{ date: "2026-06-03", executed: 4 }]);
-    expect(trimTrailingEmptyTrend(points).at(-1)?.date).toBe("2026-06-03");
-  });
-
   it("does not flag a mostly-passing module with a couple of blocked tests as critical", () => {
     const rows = buildExecutionRows([
       ...Array.from({ length: 100 }, (_, index) => ({ id: `p${index}`, title: "T", module: "Payments", outcome: "passed" as const })),
@@ -194,23 +158,6 @@ describe("dashboard execution and coverage", () => {
       linkedTestCaseIds: ["602"],
     }], new Map([["602", ["skipped", "skipped"]]]));
     expect(row).toMatchObject({ coverageStatus: "covered", executionHealth: "unknown" });
-  });
-});
-
-describe("dashboard actions", () => {
-  it("prioritizes deterministic release actions and caps the list at five", () => {
-    const actions = buildDashboardActions({
-      blockedTests: 8,
-      openCriticalBugs: 1,
-      openHighBugs: 2,
-      highRiskCoverageGaps: 5,
-      retestPending: 3,
-      passRate: 72,
-      executionPercentage: 64,
-    });
-    expect(actions).toHaveLength(5);
-    expect(actions[0].severity).toBe("critical");
-    expect(actions.map((action) => action.id)).toContain("coverage-gaps");
   });
 });
 

@@ -5,10 +5,10 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SearchableCombobox } from "@/components/ui/searchable-combobox";
 import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { DashboardDatePreset, DashboardFilterMetadata, DashboardFilters } from "@/types/dashboard";
 
 export type DashboardFilterState = {
@@ -24,7 +24,7 @@ export type DashboardFilterState = {
 };
 
 export const defaultDashboardFilters: DashboardFilterState = {
-  datePreset: "30d",
+  datePreset: "current_sprint",
   from: "",
   to: "",
   testPlanId: null,
@@ -34,6 +34,17 @@ export const defaultDashboardFilters: DashboardFilterState = {
   workItemTypes: [],
   assignee: null,
 };
+
+const DATE_PRESET_OPTIONS = [
+  { value: "7d", label: "Last 7 days" },
+  { value: "14d", label: "Last 14 days" },
+  { value: "30d", label: "Last 30 days" },
+  { value: "current_sprint", label: "Current sprint" },
+  { value: "custom", label: "Custom range" },
+];
+
+const selectClass =
+  "h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50";
 
 export function DashboardFilters({
   value,
@@ -51,7 +62,7 @@ export function DashboardFilters({
   const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
   const effectivePlanId = value.testPlanId ?? effective?.testPlanId ?? "";
   const effectiveTypes = value.workItemTypes.length ? value.workItemTypes : effective?.workItemTypes ?? [];
-  const activeAdvanced = Boolean(value.areaPath || value.iterationPath || value.assignee || value.workItemTypes.length);
+  const activeAdvanced = Boolean(value.areaPath || value.assignee || value.workItemTypes.length);
 
   function patch(next: Partial<DashboardFilterState>) {
     onChange({ ...value, ...next });
@@ -59,42 +70,64 @@ export function DashboardFilters({
 
   return (
     <section className="qa-card space-y-3 p-4">
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <Select value={value.datePreset} onValueChange={(datePreset) => patch({ datePreset: datePreset as DashboardDatePreset })} disabled={disabled}>
-          <SelectTrigger aria-label="Dashboard date range"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="7d">Last 7 days</SelectItem>
-            <SelectItem value="14d">Last 14 days</SelectItem>
-            <SelectItem value="30d">Last 30 days</SelectItem>
-            <SelectItem value="current_sprint">Current sprint</SelectItem>
-            <SelectItem value="custom">Custom range</SelectItem>
-          </SelectContent>
-        </Select>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5 xl:items-start">
+        <div className="space-y-1.5">
+          <Label className="text-sm font-semibold text-foreground">Date range</Label>
+          <select
+            className={selectClass}
+            value={value.datePreset}
+            onChange={(event) => patch({ datePreset: event.target.value as DashboardDatePreset })}
+            disabled={disabled}
+            aria-label="Dashboard date range"
+          >
+            {DATE_PRESET_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>
 
-        <SearchableCombobox
-          value={effectivePlanId}
-          options={metadata.testPlans}
-          onValueChange={(testPlanId) => patch({ testPlanId, testSuiteIds: [] })}
-          disabled={disabled || !metadata.testPlans.length}
-          placeholder="No Test Plans available"
-          searchPlaceholder="Search Test Plans"
-          ariaLabel="Test Plan"
-        />
+        <div className="space-y-1.5">
+          <Label className="text-sm font-semibold text-foreground">Sprint</Label>
+          <select
+            className={selectClass}
+            value={value.iterationPath ?? "__all__"}
+            onChange={(event) => patch({ iterationPath: event.target.value === "__all__" ? null : event.target.value })}
+            disabled={disabled}
+            aria-label="Sprint"
+          >
+            <option value="__all__">All sprints</option>
+            {metadata.iterations.map((iteration) => <option key={iteration.value} value={iteration.value}>{iteration.label}</option>)}
+          </select>
+        </div>
 
-        <SearchableCombobox
-          value={value.testSuiteIds[0] ?? ""}
-          selectedLabel={value.testSuiteIds.length ? undefined : "All suites"}
-          options={[{ value: "__all__", label: "All suites" }, ...metadata.testSuites]}
-          onValueChange={(testSuiteId) => patch({ testSuiteIds: testSuiteId === "__all__" ? [] : [testSuiteId] })}
-          disabled={disabled || !effectivePlanId || !metadata.testSuites.length}
-          placeholder="All suites"
-          searchPlaceholder="Search Test Suites"
-          ariaLabel="Test Suite"
-        />
+        <div className="space-y-1.5">
+          <Label className="text-sm font-semibold text-foreground">Test plan</Label>
+          <SearchableCombobox
+            value={effectivePlanId}
+            options={metadata.testPlans}
+            onValueChange={(testPlanId) => patch({ testPlanId, testSuiteIds: [] })}
+            disabled={disabled || !metadata.testPlans.length}
+            placeholder="No Test Plans available"
+            searchPlaceholder="Search Test Plans"
+            ariaLabel="Test Plan"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label className="text-sm font-semibold text-foreground">Test suite</Label>
+          <SearchableCombobox
+            value={value.testSuiteIds[0] ?? ""}
+            selectedLabel={value.testSuiteIds.length ? undefined : (effectivePlanId ? "All suites" : "Select a plan first")}
+            options={[{ value: "__all__", label: "All suites" }, ...metadata.testSuites]}
+            onValueChange={(testSuiteId) => patch({ testSuiteIds: testSuiteId === "__all__" ? [] : [testSuiteId] })}
+            disabled={disabled || !effectivePlanId || !metadata.testSuites.length}
+            placeholder={effectivePlanId ? "All suites" : "Select a plan first"}
+            searchPlaceholder="Search Test Suites"
+            ariaLabel="Test Suite"
+          />
+        </div>
 
         <Popover open={moreFiltersOpen} onOpenChange={setMoreFiltersOpen}>
           <PopoverTrigger asChild>
-            <Button type="button" variant="outline" className="h-10 justify-start gap-2 px-3" disabled={disabled}>
+            <Button type="button" variant="outline" className="mt-6 h-10 justify-start gap-2 px-3" disabled={disabled}>
               <Filter className="size-4" />More filters{activeAdvanced ? " (active)" : ""}
             </Button>
           </PopoverTrigger>
@@ -108,15 +141,6 @@ export function DashboardFilters({
                 disabled={disabled}
                 placeholder="All areas"
                 ariaLabel="Area Path"
-              />
-              <SearchableCombobox
-                value={value.iterationPath ?? ""}
-                selectedLabel={value.iterationPath ?? "All iterations"}
-                options={[{ value: "__all__", label: "All iterations" }, ...metadata.iterations]}
-                onValueChange={(iterationPath) => patch({ iterationPath: iterationPath === "__all__" ? null : iterationPath })}
-                disabled={disabled}
-                placeholder="All iterations"
-                ariaLabel="Iteration"
               />
               <SearchableCombobox
                 value={value.assignee ?? ""}
@@ -141,7 +165,7 @@ export function DashboardFilters({
             </div>
             {activeAdvanced ? (
               <div className="flex justify-end">
-                <Button type="button" size="sm" variant="ghost" onClick={() => patch({ areaPath: null, iterationPath: null, assignee: null, workItemTypes: [] })}>
+                <Button type="button" size="sm" variant="ghost" onClick={() => patch({ areaPath: null, assignee: null, workItemTypes: [] })}>
                   <X className="size-4" />Clear advanced filters
                 </Button>
               </div>
