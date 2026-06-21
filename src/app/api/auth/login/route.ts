@@ -8,6 +8,7 @@ import { normalizeAzureOrg } from "@/modules/auth/bootstrap.service";
 import { createSession } from "@/modules/auth/session.service";
 import { findWorkspaceByAzureOrgUrl } from "@/modules/workspace/workspace.service";
 import { storeUserAzurePat } from "@/modules/credentials/credential.service";
+import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 
 export const runtime = "nodejs";
@@ -26,6 +27,14 @@ const LoginSchema = z.object({
  * ("enabled").
  */
 export async function POST(request: Request) {
+  const rate = checkRateLimit(`login:${clientIp(request)}`, 10, 5 * 60 * 1000);
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "Too many sign-in attempts. Please wait and try again." },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } },
+    );
+  }
+
   const parsed = LoginSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid login request." }, { status: 400 });

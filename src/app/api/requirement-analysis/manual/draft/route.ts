@@ -4,7 +4,7 @@ import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "
 import { buildRequirementAnalysisPromptDraft } from "@/modules/requirement-analysis/application/requirement-analysis.service";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
-import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
+import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
@@ -46,7 +46,7 @@ export async function POST(request: Request) {
       adapter,
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: getEffectiveRuntimeSettings()?.context.retrievalTopK ?? 8,
+      retrievalTopK: getRetrievalTopK(),
     });
     const draft = buildRequirementAnalysisPromptDraft({
       scope: parsed.data.scope,

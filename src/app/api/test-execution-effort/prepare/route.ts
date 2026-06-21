@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
+import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { loadTestExecutionEffortData } from "@/modules/test-execution-effort/test-execution-effort.data-loader";
 import { buildTestExecutionEffortPreview, toSafeTestExecutionEffortError } from "@/modules/test-execution-effort/test-execution-effort.service";
 import {
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
       adapter,
       storyId: parsed.data.storyId,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: getEffectiveRuntimeSettings()?.context.retrievalTopK ?? 8,
+      retrievalTopK: getRetrievalTopK(),
     });
     const preview = buildTestExecutionEffortPreview({
       targetRequirement: data.targetRequirement,

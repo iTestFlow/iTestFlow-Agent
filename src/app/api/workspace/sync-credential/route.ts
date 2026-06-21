@@ -5,6 +5,7 @@ import { nowIso } from "@/modules/shared/infrastructure/database/db";
 import { PatAuthProvider } from "@/modules/auth/pat-auth-provider";
 import { storeWorkspaceSyncPat } from "@/modules/credentials/credential.service";
 import { resolveWorkspaceRequest, workspaceRequestError } from "@/modules/workspace/workspace-request";
+import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -17,6 +18,14 @@ const Schema = z.object({ personalAccessToken: z.string().trim().min(1, "Enter a
  * stored encrypted and never returned.
  */
 export async function POST(request: Request) {
+  const rate = checkRateLimit(`sync-cred:${clientIp(request)}`, 10, 5 * 60 * 1000);
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "Too many attempts. Please wait and try again." },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } },
+    );
+  }
+
   let context;
   try {
     context = await resolveWorkspaceRequest(["owner", "admin"]);

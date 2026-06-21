@@ -6,7 +6,7 @@ import { defaultTestDesignOptions } from "@/modules/test-case-design/test-design
 import { TestDesignOptionsRequestSchema } from "@/modules/test-case-design/test-design-options.schema";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
-import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
+import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
@@ -43,7 +43,7 @@ export async function POST(request: Request) {
       adapter,
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: getEffectiveRuntimeSettings()?.context.retrievalTopK ?? 8,
+      retrievalTopK: getRetrievalTopK(),
     });
     const draft = buildTestCaseGenerationPromptDraft({
       scope: parsed.data.scope,

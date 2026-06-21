@@ -12,7 +12,7 @@ import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-
 import { reviewExistingLinkedTestCases } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
-import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
+import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
@@ -66,7 +66,7 @@ export async function POST(request: Request) {
       provider,
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: getEffectiveRuntimeSettings()?.context.retrievalTopK ?? 8,
+      retrievalTopK: getRetrievalTopK(),
       workflowType: "existing_test_case_review",
     });
     const result = await reviewExistingLinkedTestCases({

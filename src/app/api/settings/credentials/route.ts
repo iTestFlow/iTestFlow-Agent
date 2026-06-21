@@ -11,6 +11,7 @@ import {
   storeUserAzurePat,
   storeUserLlmApiKey,
 } from "@/modules/credentials/credential.service";
+import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -71,6 +72,14 @@ const UpdateSchema = z
   });
 
 export async function PUT(request: Request) {
+  const rate = checkRateLimit(`cred-update:${clientIp(request)}`, 20, 5 * 60 * 1000);
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "Too many attempts. Please wait and try again." },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } },
+    );
+  }
+
   let context: Awaited<ReturnType<typeof resolveContext>>;
   try {
     context = await resolveContext();
