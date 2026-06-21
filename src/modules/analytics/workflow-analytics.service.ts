@@ -1,7 +1,7 @@
 import "server-only";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { createId, getDatabase, nowIso } from "@/modules/shared/infrastructure/database/db";
+import { createId, enqueueBackgroundWrite, nowIso, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
 import type { WorkflowRunStatus } from "@/types/system-dashboard";
 import {
@@ -59,12 +59,12 @@ export function startWorkflowRun(input: {
   // request even if persistence fails — analytics is best-effort and must never
   // throw into the request path (see runQuietly).
   const id = createId("workflow");
-  runQuietly("startWorkflowRun", () => {
+  enqueueBackgroundWrite("startWorkflowRun", async () => {
     const scope = assertProjectScope(input.scope);
     const now = nowIso();
     const baseline = getWorkflowBaseline(input.workflowType);
 
-    getDatabase().prepare(
+    await sqlRun(
       `INSERT INTO analytics_workflow_runs (
         id, project_id, azure_project_id, user_id, workflow_type, work_item_id, source_run_id,
         started_at, generation_started_at, status, manual_baseline_minutes, metadata_json,
@@ -74,31 +74,32 @@ export function startWorkflowRun(input: {
         @startedAt, @generationStartedAt, 'started', @manualBaselineMinutes, @metadataJson,
         @createdAt, @updatedAt
       )`,
-    ).run({
-      id,
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      userId: input.userId ?? "local-user",
-      workflowType: input.workflowType,
-      workItemId: input.workItemId ?? null,
-      sourceRunId: input.sourceRunId ?? null,
-      startedAt: now,
-      generationStartedAt: input.generationStartedAt ?? now,
-      manualBaselineMinutes: baseline,
-      metadataJson: input.metadata ? JSON.stringify(input.metadata) : null,
-      createdAt: now,
-      updatedAt: now,
-    });
+      {
+        id,
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        userId: input.userId ?? "local-user",
+        workflowType: input.workflowType,
+        workItemId: input.workItemId ?? null,
+        sourceRunId: input.sourceRunId ?? null,
+        startedAt: now,
+        generationStartedAt: input.generationStartedAt ?? now,
+        manualBaselineMinutes: baseline,
+        metadataJson: input.metadata ? JSON.stringify(input.metadata) : null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    );
   });
 
   return id;
 }
 
 export function updateWorkflowRun(input: Parameters<typeof updateWorkflowRunImpl>[0]) {
-  runQuietly("updateWorkflowRun", () => updateWorkflowRunImpl(input));
+  enqueueBackgroundWrite("updateWorkflowRun", () => updateWorkflowRunImpl(input));
 }
 
-function updateWorkflowRunImpl(input: {
+async function updateWorkflowRunImpl(input: {
   scope: ProjectScope;
   runId: string;
   patch: WorkflowRunPatch;
@@ -140,38 +141,40 @@ function updateWorkflowRunImpl(input: {
   if (!assignments.length) return;
   assignments.push("updated_at = @updatedAt");
 
-  getDatabase().prepare(
+  await sqlRun(
     `UPDATE analytics_workflow_runs
      SET ${assignments.join(", ")}
      WHERE id = @runId AND project_id = @projectId AND azure_project_id = @azureProjectId`,
-  ).run(params);
+    params,
+  );
 
   if (input.patch.generationCompletedAt) {
-    const row = getRun(scope, input.runId);
+    const row = await getRun(scope, input.runId);
     const generationDuration = row
       ? calculateElapsedMinutes(row.started_at, input.patch.generationCompletedAt)
       : null;
     if (generationDuration !== null) {
-      getDatabase().prepare(
+      await sqlRun(
         `UPDATE analytics_workflow_runs
          SET actual_duration_minutes = @actualDurationMinutes
          WHERE id = @runId AND project_id = @projectId AND azure_project_id = @azureProjectId
            AND completed_at IS NULL`,
-      ).run({
-        runId: input.runId,
-        projectId: scope.projectId,
-        azureProjectId: scope.azureProjectId,
-        actualDurationMinutes: generationDuration,
-      });
+        {
+          runId: input.runId,
+          projectId: scope.projectId,
+          azureProjectId: scope.azureProjectId,
+          actualDurationMinutes: generationDuration,
+        },
+      );
     }
   }
 }
 
 export function completeWorkflowRun(input: Parameters<typeof completeWorkflowRunImpl>[0]) {
-  runQuietly("completeWorkflowRun", () => completeWorkflowRunImpl(input));
+  enqueueBackgroundWrite("completeWorkflowRun", () => completeWorkflowRunImpl(input));
 }
 
-function completeWorkflowRunImpl(input: {
+async function completeWorkflowRunImpl(input: {
   scope: ProjectScope;
   runId: string;
   status?: "published" | "completed";
@@ -179,7 +182,7 @@ function completeWorkflowRunImpl(input: {
   patch?: WorkflowRunPatch;
 }) {
   const scope = assertProjectScope(input.scope);
-  const row = getRun(scope, input.runId);
+  const row = await getRun(scope, input.runId);
   if (!row) return;
   const completedAt = nowIso();
   const actualDurationMinutes = Math.max(
@@ -197,8 +200,8 @@ function completeWorkflowRunImpl(input: {
     ? calculateEstimatedSavings(row.manual_baseline_minutes, actualDurationMinutes)
     : 0;
 
-  updateWorkflowRunImpl({ scope, runId: input.runId, patch });
-  getDatabase().prepare(
+  await updateWorkflowRunImpl({ scope, runId: input.runId, patch });
+  await sqlRun(
     `UPDATE analytics_workflow_runs
      SET status = @status, completed_at = @completedAt,
          published_at = CASE WHEN @status = 'published' THEN @completedAt ELSE published_at END,
@@ -206,29 +209,30 @@ function completeWorkflowRunImpl(input: {
          estimated_saved_minutes = @estimatedSavedMinutes,
          updated_at = @completedAt
      WHERE id = @runId AND project_id = @projectId AND azure_project_id = @azureProjectId`,
-  ).run({
-    runId: input.runId,
-    projectId: scope.projectId,
-    azureProjectId: scope.azureProjectId,
-    status: input.status ?? "completed",
-    completedAt,
-    actualDurationMinutes,
-    estimatedSavedMinutes,
-  });
+    {
+      runId: input.runId,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      status: input.status ?? "completed",
+      completedAt,
+      actualDurationMinutes,
+      estimatedSavedMinutes,
+    },
+  );
 }
 
 export function failWorkflowRun(input: Parameters<typeof failWorkflowRunImpl>[0]) {
-  runQuietly("failWorkflowRun", () => failWorkflowRunImpl(input));
+  enqueueBackgroundWrite("failWorkflowRun", () => failWorkflowRunImpl(input));
 }
 
-function failWorkflowRunImpl(input: {
+async function failWorkflowRunImpl(input: {
   scope: ProjectScope;
   runId: string;
   error?: string;
   cancelled?: boolean;
 }) {
   const scope = assertProjectScope(input.scope);
-  const row = getRun(scope, input.runId);
+  const row = await getRun(scope, input.runId);
   if (!row) return;
   const completedAt = nowIso();
   const actualDurationMinutes = Math.max(
@@ -236,21 +240,22 @@ function failWorkflowRunImpl(input: {
     0,
   );
   const metadata = input.error ? JSON.stringify({ error: input.error }) : null;
-  getDatabase().prepare(
+  await sqlRun(
     `UPDATE analytics_workflow_runs
      SET status = @status, completed_at = @completedAt, actual_duration_minutes = @actualDurationMinutes,
          estimated_saved_minutes = 0,
          metadata_json = COALESCE(@metadataJson, metadata_json), updated_at = @completedAt
      WHERE id = @runId AND project_id = @projectId AND azure_project_id = @azureProjectId`,
-  ).run({
-    runId: input.runId,
-    projectId: scope.projectId,
-    azureProjectId: scope.azureProjectId,
-    status: input.cancelled ? "cancelled" : "failed",
-    completedAt,
-    actualDurationMinutes,
-    metadataJson: metadata,
-  });
+    {
+      runId: input.runId,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      status: input.cancelled ? "cancelled" : "failed",
+      completedAt,
+      actualDurationMinutes,
+      metadataJson: metadata,
+    },
+  );
 }
 
 function getWorkflowBaseline(workflowType: WorkflowType) {
@@ -259,16 +264,17 @@ function getWorkflowBaseline(workflowType: WorkflowType) {
 }
 
 function getRun(scope: ProjectScope, runId: string) {
-  return getDatabase().prepare(
+  return sqlGet<WorkflowRunRow>(
     `SELECT id, status, started_at, manual_baseline_minutes, items_generated, items_selected,
             items_published, actual_duration_minutes
      FROM analytics_workflow_runs
      WHERE id = @runId AND project_id = @projectId AND azure_project_id = @azureProjectId`,
-  ).get({
-    runId,
-    projectId: scope.projectId,
-    azureProjectId: scope.azureProjectId,
-  }) as WorkflowRunRow | undefined;
+    {
+      runId,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+    },
+  );
 }
 
 function identity(value: never) {
@@ -285,15 +291,4 @@ function booleanInteger(value: never) {
 
 function jsonValue(value: never) {
   return JSON.stringify(value);
-}
-
-// Analytics instrumentation is best-effort telemetry: it must never throw into the
-// request path. A persistence failure here should be logged and swallowed, never
-// allowed to turn a successful primary operation into an error response.
-function runQuietly(label: string, run: () => void) {
-  try {
-    run();
-  } catch (error) {
-    console.error(`[workflow-analytics] ${label} failed; skipping instrumentation.`, error);
-  }
 }

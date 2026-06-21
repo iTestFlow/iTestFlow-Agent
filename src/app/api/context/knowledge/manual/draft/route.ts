@@ -17,7 +17,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    return NextResponse.json(buildProjectKnowledgeManualDraft({
+    return NextResponse.json(await buildProjectKnowledgeManualDraft({
       scope: parsed.data.scope,
       mode: parsed.data.mode,
     }));

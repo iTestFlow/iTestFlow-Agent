@@ -1,7 +1,8 @@
 import "server-only";
 
+import type { PoolClient } from "pg";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { createId, getDatabase, nowIso } from "@/modules/shared/infrastructure/database/db";
+import { createId, nowIso, sqlAll, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeBase } from "./project-knowledge.schema";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 
@@ -71,14 +72,22 @@ type KnowledgeEntry = {
   metadata: Record<string, unknown>;
 };
 
-export function refreshProjectContextSearchIndex(input: { scope: ProjectScope }) {
+export async function refreshProjectContextSearchIndex(
+  input: { scope: ProjectScope },
+  client?: PoolClient,
+) {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
-  const db = getDatabase();
   const now = nowIso();
-  const rows = db
-    .prepare(
-      `
+  const rows = await sqlAll<{
+    id: string;
+    azure_work_item_id: string | null;
+    work_item_type: string | null;
+    document_name: string | null;
+    content: string;
+    metadata_json: string | null;
+  }>(
+    `
       SELECT dc.id, dc.azure_work_item_id, dc.work_item_type, dc.document_name, dc.content, dc.metadata_json
       FROM document_chunks dc
       JOIN azure_devops_work_items wi
@@ -91,114 +100,91 @@ export function refreshProjectContextSearchIndex(input: { scope: ProjectScope })
         AND COALESCE(wi.sync_status, 'active') = 'active'
       ORDER BY dc.azure_work_item_id, dc.chunk_index
     `,
-    )
-    .all({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-    }) as Array<{
-      id: string;
-      azure_work_item_id: string | null;
-      work_item_type: string | null;
-      document_name: string | null;
-      content: string;
-      metadata_json: string | null;
-    }>;
+    },
+    client,
+  );
 
-  db.prepare(
+  await sqlRun(
     `
     DELETE FROM document_chunks_fts
     WHERE project_id = @projectId
       AND azure_project_id = @azureProjectId
   `,
-  ).run({
-    projectId: scope.projectId,
-    azureProjectId: scope.azureProjectId,
-  });
-
-  const insert = db.prepare(
-    `
-    INSERT INTO document_chunks_fts (
-      project_id, azure_project_id, chunk_id, azure_work_item_id,
-      work_item_type, title, content, metadata_json
-    ) VALUES (
-      @projectId, @azureProjectId, @chunkId, @azureWorkItemId,
-      @workItemType, @title, @content, @metadataJson
-    )
-  `,
-  );
-
-  rows.forEach((row) => {
-    insert.run({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-      chunkId: row.id,
-      azureWorkItemId: row.azure_work_item_id ?? "",
-      workItemType: row.work_item_type ?? "Unknown",
-      title: row.document_name ?? "Untitled work item",
-      content: row.content,
-      metadataJson: row.metadata_json ?? JSON.stringify({ indexedAt: now }),
-    });
-  });
+    },
+    client,
+  );
+
+  for (const row of rows) {
+    await sqlRun(
+      `
+      INSERT INTO document_chunks_fts (
+        project_id, azure_project_id, chunk_id, azure_work_item_id,
+        work_item_type, title, content, metadata_json
+      ) VALUES (
+        @projectId, @azureProjectId, @chunkId, @azureWorkItemId,
+        @workItemType, @title, @content, @metadataJson
+      )
+    `,
+      {
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        chunkId: row.id,
+        azureWorkItemId: row.azure_work_item_id ?? "",
+        workItemType: row.work_item_type ?? "Unknown",
+        title: row.document_name ?? "Untitled work item",
+        content: row.content,
+        metadataJson: row.metadata_json ?? JSON.stringify({ indexedAt: now }),
+      },
+      client,
+    );
+  }
 }
 
-export function refreshProjectKnowledgeSearchIndex(input: {
-  scope: ProjectScope;
-  knowledgeBaseId: string;
-  knowledgeBase: ProjectKnowledgeBase;
-}) {
+export async function refreshProjectKnowledgeSearchIndex(
+  input: {
+    scope: ProjectScope;
+    knowledgeBaseId: string;
+    knowledgeBase: ProjectKnowledgeBase;
+  },
+  client?: PoolClient,
+) {
   const scope = assertProjectScope(input.scope);
-  const db = getDatabase();
   const now = nowIso();
   const entries = flattenProjectKnowledge(input.knowledgeBase);
 
-  db.prepare(
+  await sqlRun(
     `
     DELETE FROM project_knowledge_entries_fts
     WHERE project_id = @projectId
       AND azure_project_id = @azureProjectId
   `,
-  ).run({
-    projectId: scope.projectId,
-    azureProjectId: scope.azureProjectId,
-  });
+    {
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+    },
+    client,
+  );
 
-  db.prepare(
+  await sqlRun(
     `
     DELETE FROM project_knowledge_entries
     WHERE project_id = @projectId
       AND azure_project_id = @azureProjectId
   `,
-  ).run({
-    projectId: scope.projectId,
-    azureProjectId: scope.azureProjectId,
-  });
-
-  const insertEntry = db.prepare(
-    `
-    INSERT INTO project_knowledge_entries (
-      id, project_id, azure_project_id, azure_project_name, azure_organization_url,
-      knowledge_base_id, category, entry_key, title, content, source_work_item_ids,
-      evidence, metadata_json, created_at, updated_at
-    ) VALUES (
-      @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
-      @knowledgeBaseId, @category, @entryKey, @title, @content, @sourceWorkItemIds,
-      @evidence, @metadataJson, @createdAt, @updatedAt
-    )
-  `,
-  );
-  const insertFts = db.prepare(
-    `
-    INSERT INTO project_knowledge_entries_fts (
-      project_id, azure_project_id, entry_id, category, entry_key, title,
-      content, source_work_item_ids, evidence, metadata_json
-    ) VALUES (
-      @projectId, @azureProjectId, @entryId, @category, @entryKey, @title,
-      @content, @sourceWorkItemIds, @evidence, @metadataJson
-    )
-  `,
+    {
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+    },
+    client,
   );
 
-  entries.forEach((entry) => {
+  for (const entry of entries) {
     const id = createId("pke");
     const sourceWorkItemIds = entry.sourceWorkItemIds.join(", ");
     const metadataJson = JSON.stringify(entry.metadata);
@@ -219,29 +205,54 @@ export function refreshProjectKnowledgeSearchIndex(input: {
       createdAt: now,
       updatedAt: now,
     };
-    insertEntry.run(params);
-    insertFts.run({
-      projectId: params.projectId,
-      azureProjectId: params.azureProjectId,
-      entryId: id,
-      category: params.category,
-      entryKey: params.entryKey,
-      title: params.title,
-      content: params.content,
-      sourceWorkItemIds,
-      evidence: params.evidence,
-      metadataJson,
-    });
-  });
+    await sqlRun(
+      `
+      INSERT INTO project_knowledge_entries (
+        id, project_id, azure_project_id, azure_project_name, azure_organization_url,
+        knowledge_base_id, category, entry_key, title, content, source_work_item_ids,
+        evidence, metadata_json, created_at, updated_at
+      ) VALUES (
+        @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
+        @knowledgeBaseId, @category, @entryKey, @title, @content, @sourceWorkItemIds,
+        @evidence, @metadataJson, @createdAt, @updatedAt
+      )
+    `,
+      params,
+      client,
+    );
+    await sqlRun(
+      `
+      INSERT INTO project_knowledge_entries_fts (
+        project_id, azure_project_id, entry_id, category, entry_key, title,
+        content, source_work_item_ids, evidence, metadata_json
+      ) VALUES (
+        @projectId, @azureProjectId, @entryId, @category, @entryKey, @title,
+        @content, @sourceWorkItemIds, @evidence, @metadataJson
+      )
+    `,
+      {
+        projectId: params.projectId,
+        azureProjectId: params.azureProjectId,
+        entryId: id,
+        category: params.category,
+        entryKey: params.entryKey,
+        title: params.title,
+        content: params.content,
+        sourceWorkItemIds,
+        evidence: params.evidence,
+        metadataJson,
+      },
+      client,
+    );
+  }
 }
 
-export function ensureContextChatbotSearchIndexes(input: { scope: ProjectScope }) {
+export async function ensureContextChatbotSearchIndexes(input: { scope: ProjectScope }) {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
-  const db = getDatabase();
-  const chunkCount = countRows(
+  const chunkCount = await countRows(
     `
-    SELECT COUNT(*) AS count
+    SELECT COUNT(*)::int AS count
     FROM document_chunks dc
     JOIN azure_devops_work_items wi
       ON wi.project_id = dc.project_id
@@ -254,9 +265,9 @@ export function ensureContextChatbotSearchIndexes(input: { scope: ProjectScope }
   `,
     scope,
   );
-  const chunkFtsCount = countRows(
+  const chunkFtsCount = await countRows(
     `
-    SELECT COUNT(*) AS count
+    SELECT COUNT(*)::int AS count
     FROM document_chunks_fts
     WHERE project_id = @projectId
       AND azure_project_id = @azureProjectId
@@ -264,37 +275,36 @@ export function ensureContextChatbotSearchIndexes(input: { scope: ProjectScope }
     scope,
   );
   if (chunkCount > 0 && chunkCount !== chunkFtsCount) {
-    refreshProjectContextSearchIndex({ scope });
+    await refreshProjectContextSearchIndex({ scope });
   }
 
-  const knowledgeSnapshot = db
-    .prepare(
-      `
+  const knowledgeSnapshot = await sqlGet<KnowledgeSnapshotRow>(
+    `
       SELECT id, validated_output
       FROM project_knowledge_base
       WHERE project_id = @projectId
         AND azure_project_id = @azureProjectId
       LIMIT 1
     `,
-    )
-    .get({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-    }) as KnowledgeSnapshotRow | undefined;
+    },
+  );
   if (!knowledgeSnapshot) return;
 
-  const entryCount = countRows(
+  const entryCount = await countRows(
     `
-    SELECT COUNT(*) AS count
+    SELECT COUNT(*)::int AS count
     FROM project_knowledge_entries
     WHERE project_id = @projectId
       AND azure_project_id = @azureProjectId
   `,
     scope,
   );
-  const entryFtsCount = countRows(
+  const entryFtsCount = await countRows(
     `
-    SELECT COUNT(*) AS count
+    SELECT COUNT(*)::int AS count
     FROM project_knowledge_entries_fts
     WHERE project_id = @projectId
       AND azure_project_id = @azureProjectId
@@ -304,34 +314,34 @@ export function ensureContextChatbotSearchIndexes(input: { scope: ProjectScope }
 
   if (entryCount > 0 && entryCount === entryFtsCount) return;
   const knowledgeBase = ProjectKnowledgeBaseSchema.parse(JSON.parse(knowledgeSnapshot.validated_output));
-  refreshProjectKnowledgeSearchIndex({
+  await refreshProjectKnowledgeSearchIndex({
     scope,
     knowledgeBaseId: knowledgeSnapshot.id,
     knowledgeBase,
   });
 }
 
-export function retrieveContextChatbotEvidence(input: {
+export async function retrieveContextChatbotEvidence(input: {
   scope: ProjectScope;
   query: string;
   contextLimit?: number;
   knowledgeLimit?: number;
-}): ContextChatbotEvidence {
+}): Promise<ContextChatbotEvidence> {
   const scope = assertProjectScope(input.scope);
-  ensureContextChatbotSearchIndexes({ scope });
+  await ensureContextChatbotSearchIndexes({ scope });
 
   const ftsQuery = buildFtsQuery(input.query);
   if (!ftsQuery) {
-    return { context: [], knowledge: getFallbackKnowledge({ scope, limit: input.knowledgeLimit ?? 8 }) };
+    return { context: [], knowledge: await getFallbackKnowledge({ scope, limit: input.knowledgeLimit ?? 8 }) };
   }
 
   return {
-    context: searchContext({
+    context: await searchContext({
       scope,
       ftsQuery,
       limit: input.contextLimit ?? 10,
     }),
-    knowledge: searchKnowledge({
+    knowledge: await searchKnowledge({
       scope,
       ftsQuery,
       limit: input.knowledgeLimit ?? 10,
@@ -339,28 +349,26 @@ export function retrieveContextChatbotEvidence(input: {
   };
 }
 
-function searchContext(input: { scope: ProjectScope; ftsQuery: string; limit: number }) {
-  const db = getDatabase();
+async function searchContext(input: { scope: ProjectScope; ftsQuery: string; limit: number }) {
   try {
-    const rows = db
-      .prepare(
-        `
+    const rows = await sqlAll<ChunkFtsRow>(
+      `
         SELECT chunk_id, azure_work_item_id, work_item_type, title, content, metadata_json,
-               bm25(document_chunks_fts) AS rank
+               ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) AS rank
         FROM document_chunks_fts
-        WHERE document_chunks_fts MATCH @ftsQuery
+        WHERE tsv @@ to_tsquery('simple', @ftsQuery)
           AND project_id = @projectId
           AND azure_project_id = @azureProjectId
-        ORDER BY rank
+        ORDER BY rank DESC
         LIMIT @limit
       `,
-      )
-      .all({
+      {
         ftsQuery: input.ftsQuery,
         projectId: input.scope.projectId,
         azureProjectId: input.scope.azureProjectId,
         limit: input.limit,
-      }) as ChunkFtsRow[];
+      },
+    );
 
     return rows.map((row) => ({
       sourceType: "project_context" as const,
@@ -377,42 +385,38 @@ function searchContext(input: { scope: ProjectScope; ftsQuery: string; limit: nu
   }
 }
 
-function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; limit: number }) {
-  const db = getDatabase();
+async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; limit: number }) {
   try {
-    const rows = db
-      .prepare(
-        `
+    const rows = await sqlAll<KnowledgeFtsRow>(
+      `
         SELECT entry_id, category, entry_key, title, content, source_work_item_ids,
-               evidence, bm25(project_knowledge_entries_fts) AS rank
+               evidence, ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) AS rank
         FROM project_knowledge_entries_fts
-        WHERE project_knowledge_entries_fts MATCH @ftsQuery
+        WHERE tsv @@ to_tsquery('simple', @ftsQuery)
           AND project_id = @projectId
           AND azure_project_id = @azureProjectId
-        ORDER BY rank
+        ORDER BY rank DESC
         LIMIT @limit
       `,
-      )
-      .all({
+      {
         ftsQuery: input.ftsQuery,
         projectId: input.scope.projectId,
         azureProjectId: input.scope.azureProjectId,
         limit: input.limit,
-      }) as KnowledgeFtsRow[];
+      },
+    );
 
     const results = rows.map(toKnowledgeEvidence);
-    return results.length ? results : getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
+    return results.length ? results : await getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
   } catch (error) {
     console.error("Project chat knowledge FTS search failed", error);
     return getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
   }
 }
 
-function getFallbackKnowledge(input: { scope: ProjectScope; limit: number }) {
-  const db = getDatabase();
-  const rows = db
-    .prepare(
-      `
+async function getFallbackKnowledge(input: { scope: ProjectScope; limit: number }) {
+  const rows = await sqlAll<KnowledgeFtsRow>(
+    `
       SELECT id AS entry_id, category, entry_key, title, content, source_work_item_ids, evidence
       FROM project_knowledge_entries
       WHERE project_id = @projectId
@@ -420,12 +424,12 @@ function getFallbackKnowledge(input: { scope: ProjectScope; limit: number }) {
       ORDER BY category ASC, title ASC
       LIMIT @limit
     `,
-    )
-    .all({
+    {
       projectId: input.scope.projectId,
       azureProjectId: input.scope.azureProjectId,
       limit: input.limit,
-    }) as KnowledgeFtsRow[];
+    },
+  );
 
   return rows.map(toKnowledgeEvidence);
 }
@@ -543,16 +547,18 @@ function splitSourceIds(value: string) {
     .filter(Boolean);
 }
 
-function countRows(sql: string, scope: ProjectScope) {
-  const row = getDatabase()
-    .prepare(sql)
-    .get({
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-    }) as { count: number };
-  return row.count;
+async function countRows(sql: string, scope: ProjectScope) {
+  const row = await sqlGet<{ count: number }>(sql, {
+    projectId: scope.projectId,
+    azureProjectId: scope.azureProjectId,
+  });
+  return row?.count ?? 0;
 }
 
+// Builds a PostgreSQL to_tsquery string from free text: lowercased alphanumeric
+// terms (>2 chars, max 16) become prefix matches joined with OR, e.g.
+// "login flow" -> "login:* | flow:*". Terms are alphanumeric-only by
+// construction, so they are safe to interpolate into to_tsquery('simple', ...).
 function buildFtsQuery(value: string) {
   const terms = Array.from(
     new Set(
@@ -564,5 +570,5 @@ function buildFtsQuery(value: string) {
     ),
   ).slice(0, 16);
 
-  return terms.map((term) => `${term}*`).join(" OR ");
+  return terms.map((term) => `${term}:*`).join(" | ");
 }

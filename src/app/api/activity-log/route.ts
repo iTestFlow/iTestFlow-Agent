@@ -31,7 +31,7 @@ export async function POST(request: Request) {
 
   try {
     return NextResponse.json(
-      getActivityLog({
+      await getActivityLog({
         scope: parsed.data.scope ?? undefined,
         search: parsed.data.search,
         groups: parsed.data.groups,

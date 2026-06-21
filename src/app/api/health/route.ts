@@ -1,14 +1,25 @@
 import { NextResponse } from "next/server";
-import { getDatabase } from "@/modules/shared/infrastructure/database/db";
+import { sqlGet } from "@/modules/shared/infrastructure/database/db";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  getDatabase();
-  return NextResponse.json({
-    status: "ok",
-    mode: "local-first",
-    database: "sqlite",
-    timestamp: new Date().toISOString(),
-  });
+  try {
+    await sqlGet("SELECT 1 AS ok");
+    return NextResponse.json({
+      status: "ok",
+      database: "postgres",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        status: "error",
+        database: "postgres",
+        message: error instanceof Error ? error.message : "Database connection failed.",
+        timestamp: new Date().toISOString(),
+      },
+      { status: 503 },
+    );
+  }
 }

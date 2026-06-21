@@ -1,0 +1,65 @@
+# Local development PostgreSQL for iTestFlow.
+#
+# Docker is required ONLY for this local Postgres. The web app and worker run
+# normally via npm. Developers may instead point DATABASE_URL at a native
+# Postgres and skip Docker entirely.
+#
+#   docker compose up -d postgres          # start dev database
+#   npm run db:migrate                     # apply migrations
+#   docker compose --profile test up -d    # add disposable test database
+#   docker compose --profile tools up -d   # add pgAdmin (http://localhost:5050)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: itestflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: itestflow
+      POSTGRES_PASSWORD: itestflow
+      POSTGRES_DB: itestflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - itestflow-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U itestflow -d itestflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Disposable database for integration tests (no persistent volume).
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: itestflow-postgres-test
+    profiles: ["test"]
+    environment:
+      POSTGRES_USER: itestflow
+      POSTGRES_PASSWORD: itestflow
+      POSTGRES_DB: itestflow_test
+    ports:
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U itestflow -d itestflow_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: itestflow-pgadmin
+    profiles: ["tools"]
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@itestflow.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+
+volumes:
+  itestflow-pgdata:

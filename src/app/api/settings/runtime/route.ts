@@ -17,7 +17,7 @@ const RuntimeSettingsPatchSchema = z.object({
 });
 
 export async function GET() {
-  return NextResponse.json(withContextAutoUpdateStatus(getRuntimeSettingsSummary()));
+  return NextResponse.json(await withContextAutoUpdateStatus(getRuntimeSettingsSummary()));
 }
 
 export async function POST(request: Request) {
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
   }
 
   const summary = saveRuntimeSettings(parsed.data);
-  return NextResponse.json(withContextAutoUpdateStatus(summary));
+  return NextResponse.json(await withContextAutoUpdateStatus(summary));
 }
 
 export async function PATCH(request: Request) {
@@ -60,10 +60,10 @@ export async function PATCH(request: Request) {
     dashboardValueMetrics: settings.dashboardValueMetrics,
   });
 
-  return NextResponse.json(withContextAutoUpdateStatus(summary));
+  return NextResponse.json(await withContextAutoUpdateStatus(summary));
 }
 
-function withContextAutoUpdateStatus(summary: RuntimeSettingsSummary): RuntimeSettingsSummary {
+async function withContextAutoUpdateStatus(summary: RuntimeSettingsSummary): Promise<RuntimeSettingsSummary> {
   if (!summary.context?.autoUpdate) return summary;
 
   return {
@@ -72,7 +72,7 @@ function withContextAutoUpdateStatus(summary: RuntimeSettingsSummary): RuntimeSe
       ...summary.context,
       autoUpdate: {
         ...summary.context.autoUpdate,
-        latestRun: getLatestContextAutoUpdateRun(),
+        latestRun: await getLatestContextAutoUpdateRun(),
       },
     },
   };

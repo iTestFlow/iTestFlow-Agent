@@ -7,7 +7,7 @@ import {
 } from "@/modules/analytics/analytics-config";
 import { calculateElapsedMinutes } from "@/modules/analytics/analytics-metrics";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { getDatabase } from "@/modules/shared/infrastructure/database/db";
+import { sqlAll } from "@/modules/shared/infrastructure/database/db";
 import { localDayStartIso, toLocalDayString } from "@/shared/lib/local-day";
 import type {
   SystemDashboardAnalytics,
@@ -51,14 +51,14 @@ export type SystemDashboardInput = {
   };
 };
 
-export function getSystemDashboardAnalytics(input: SystemDashboardInput): SystemDashboardAnalytics {
+export async function getSystemDashboardAnalytics(input: SystemDashboardInput): Promise<SystemDashboardAnalytics> {
   const scope = assertProjectScope(input.scope);
   const dateRange = resolveDateRange(input.filters);
   const selectedWorkflows = input.filters?.workflowTypes?.length
     ? input.filters.workflowTypes
     : [...workflowTypeValues];
   const userId = input.filters?.userId?.trim() || null;
-  const rows = loadAnalyticsRows({
+  const rows = await loadAnalyticsRows({
     scope,
     from: dateRange.from,
     toExclusive: addDays(dateRange.to, 1),
@@ -124,7 +124,7 @@ function loadAnalyticsRows(input: {
     return `@workflow${index}`;
   });
 
-  return getDatabase().prepare(
+  return sqlAll<AnalyticsRow>(
     `SELECT id, user_id, workflow_type, work_item_id, started_at, generation_completed_at,
             completed_at, status, manual_baseline_minutes, actual_duration_minutes, estimated_saved_minutes,
             items_generated, items_selected, items_edited, items_published, items_rejected,
@@ -134,9 +134,10 @@ function loadAnalyticsRows(input: {
      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
        AND started_at >= @from AND started_at < @to
        AND workflow_type IN (${workflowParameters.join(", ")})
-       AND (@userId IS NULL OR user_id = @userId)
+       AND (@userId::text IS NULL OR user_id = @userId)
      ORDER BY started_at DESC`,
-  ).all(params) as AnalyticsRow[];
+    params,
+  );
 }
 
 function buildWorkflowSavings(rows: AnalyticsRow[]): WorkflowSavingsRow[] {

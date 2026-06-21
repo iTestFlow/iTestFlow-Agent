@@ -1,6 +1,10 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
-import { resetDatabaseForTests } from "@/modules/shared/infrastructure/database/db";
+import {
+  flushBackgroundWrites,
+  resetDatabaseForTests,
+  sqlRun,
+} from "@/modules/shared/infrastructure/database/db";
 import {
   failWorkflowRun,
   startWorkflowRun,
@@ -14,18 +18,32 @@ const scope = {
   azureOrganizationUrl: "https://dev.azure.com/demo",
 };
 
-beforeEach(() => {
-  // Each test runs against a fresh in-memory database (schema re-applied on init).
-  process.env.ITESTFLOW_DB_PATH = ":memory:";
-  resetDatabaseForTests();
-});
+// DB-backed integration test. Requires a migrated PostgreSQL reachable via DATABASE_URL
+// (e.g. `docker compose --profile test up -d postgres-test`, point DATABASE_URL at it,
+// then `npm run db:migrate`). Skipped when DATABASE_URL is unset so the default unit
+// test run requires no database (ADR-9).
+const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
-describe("system dashboard analytics (DB-backed)", () => {
-  it("does not count failed runs as estimated savings", () => {
+describeDb("system dashboard analytics (DB-backed)", () => {
+  beforeEach(async () => {
+    await sqlRun(
+      `DELETE FROM analytics_workflow_runs
+       WHERE project_id = @projectId AND azure_project_id = @azureProjectId`,
+      { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
+    );
+  });
+
+  afterAll(async () => {
+    await resetDatabaseForTests();
+  });
+
+  it("does not count failed runs as estimated savings", async () => {
     const run = startWorkflowRun({ scope, workflowType: "test_case_design" });
     failWorkflowRun({ scope, runId: run, error: "boom" });
+    // Analytics writes are enqueued on a serialized background queue; flush before reading.
+    await flushBackgroundWrites();
 
-    const analytics = getSystemDashboardAnalytics({ scope });
+    const analytics = await getSystemDashboardAnalytics({ scope });
     expect(analytics.overview.estimatedHoursSaved.value).toBe(0);
   });
 });

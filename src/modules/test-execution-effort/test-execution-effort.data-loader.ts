@@ -40,7 +40,7 @@ export async function loadTestExecutionEffortData(input: {
         selectedContextIds: input.selectedContextIds,
         retrievalTopK: input.retrievalTopK,
       });
-  const projectKnowledgeBase = getSavedProjectKnowledgeBase({ scope });
+  const projectKnowledgeBase = await getSavedProjectKnowledgeBase({ scope });
 
   return {
     targetRequirement,

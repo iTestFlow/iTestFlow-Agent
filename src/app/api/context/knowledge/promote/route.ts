@@ -25,7 +25,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    return NextResponse.json(promoteContextChatbotAnswer(parsed.data));
+    return NextResponse.json(await promoteContextChatbotAnswer(parsed.data));
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Context chatbot answer promotion failed." },

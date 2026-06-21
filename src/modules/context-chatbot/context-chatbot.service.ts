@@ -34,7 +34,7 @@ export async function answerContextChatbot(input: {
   const question = input.message.trim();
   if (!question) throw new Error("Enter a question before sending a chat message.");
 
-  const evidence = retrieveContextChatbotEvidence({
+  const evidence = await retrieveContextChatbotEvidence({
     scope,
     query: question,
     contextLimit: 10,

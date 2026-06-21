@@ -75,7 +75,7 @@ export async function POST(request: Request) {
       linkedTestCases,
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
       extraInstructions: parsed.data.extraInstructions,
     });
     const contextCitations = buildWorkflowContextCitations({

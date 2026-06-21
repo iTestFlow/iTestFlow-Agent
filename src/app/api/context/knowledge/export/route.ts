@@ -16,7 +16,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    return NextResponse.json(exportProjectKnowledgeWiki({ scope: parsed.data.scope }));
+    return NextResponse.json(await exportProjectKnowledgeWiki({ scope: parsed.data.scope }));
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Project knowledge wiki export failed." },

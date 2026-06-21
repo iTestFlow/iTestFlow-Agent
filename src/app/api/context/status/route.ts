@@ -22,7 +22,7 @@ export async function POST(request: Request) {
 
   try {
     return NextResponse.json(
-      getRecentProjectContext({
+      await getRecentProjectContext({
         scope: parsed.data.scope,
         page: parsed.data.page,
         pageSize: parsed.data.pageSize,

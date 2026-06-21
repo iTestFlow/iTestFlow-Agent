@@ -23,7 +23,7 @@ export async function POST(request: Request) {
 
   try {
     if (parsed.data.save) {
-      const snapshot = saveManualProjectKnowledgeBaseSnapshot({
+      const snapshot = await saveManualProjectKnowledgeBaseSnapshot({
         scope: parsed.data.scope,
         rawOutput: parsed.data.rawOutput,
         mode: parsed.data.mode,

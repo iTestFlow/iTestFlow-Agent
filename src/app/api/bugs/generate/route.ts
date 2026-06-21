@@ -65,7 +65,7 @@ export async function POST(request: Request) {
       selectedRelatedTestCase: parsed.data.selectedRelatedTestCase,
       customFields: parsed.data.customFields,
       attachments: parsed.data.attachments,
-      projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
     });
     updateWorkflowRun({
       scope: parsed.data.scope,

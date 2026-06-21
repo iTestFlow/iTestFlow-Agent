@@ -9,9 +9,14 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:migrate": "node-pg-migrate up",
+    "db:migrate:down": "node-pg-migrate down",
+    "db:migrate:create": "node-pg-migrate create --migration-file-language js",
+    "db:reset-dev": "node-pg-migrate down 999999 && node-pg-migrate up"
   },
   "dependencies": {
+    "pg": "^8.13.1",
     "@hookform/resolvers": "^5.2.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -33,6 +38,8 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "@types/pg": "^8.11.10",
+    "node-pg-migrate": "^7.9.1",
     "@types/react": "^19.0.4",
     "@types/react-dom": "^19.0.2",
     "autoprefixer": "^10.4.20",

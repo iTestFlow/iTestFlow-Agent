@@ -17,7 +17,7 @@ export async function POST(request: Request) {
 
   try {
     return NextResponse.json({
-      snapshot: getProjectKnowledgeBaseSnapshot({ scope: parsed.data.scope }),
+      snapshot: await getProjectKnowledgeBaseSnapshot({ scope: parsed.data.scope }),
     });
   } catch (error) {
     return NextResponse.json(

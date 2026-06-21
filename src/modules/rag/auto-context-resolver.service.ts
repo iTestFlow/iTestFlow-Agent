@@ -106,11 +106,11 @@ async function resolveWorkflowContextCore(input: {
   }
 
   const storedContext = distinctContextByWorkItem(
-    retrieveStoredProjectContext({
+    (await retrieveStoredProjectContext({
       scope,
       query: requirementToRetrievalQuery(input.targetRequirement),
       topK: retrievalTopK,
-    }).filter((item) => item.workItemId !== input.targetRequirement.id),
+    })).filter((item) => item.workItemId !== input.targetRequirement.id),
   );
   const candidates = distinctContextByWorkItem([
     ...linkedRequirementContext,
@@ -184,7 +184,7 @@ async function loadExplicitContext(input: {
   selectedContextIds: string[];
   retrievalTopK: number;
 }) {
-  const stored = retrieveStoredProjectContext({
+  const stored = await retrieveStoredProjectContext({
     scope: input.scope,
     query: input.selectedContextIds.join(" "),
     workItemIds: input.selectedContextIds,

@@ -36,11 +36,11 @@ export async function POST(request: Request) {
       workItemId: parsed.data.targetWorkItemId,
     });
     const storedContext = distinctContextByWorkItem(
-      retrieveStoredProjectContext({
+      (await retrieveStoredProjectContext({
         scope: parsed.data.scope,
         query: parsed.data.query?.trim() || requirementToRetrievalQuery(targetRequirement),
         topK: 40,
-      }).filter((item) => item.workItemId !== parsed.data.targetWorkItemId),
+      })).filter((item) => item.workItemId !== parsed.data.targetWorkItemId),
     ).slice(0, 8);
     if (!storedContext.length) {
       return NextResponse.json({

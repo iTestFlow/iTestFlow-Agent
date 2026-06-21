@@ -52,7 +52,7 @@ export async function POST(request: Request) {
       targetRequirement,
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
       enabledChecklistItemIds: parsed.data.enabledChecklistItemIds,
       extraInstructions: parsed.data.extraInstructions,
     });

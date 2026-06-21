@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createId, getDatabase, nowIso } from "@/modules/shared/infrastructure/database/db";
+import { createId, enqueueBackgroundWrite, nowIso, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import type { LLMProviderName } from "./llm-types";
 
 export type LLMRequestLogMetadata = {
@@ -32,24 +32,8 @@ export type LLMRequestLogInput = LLMRequestLogMetadata & {
 const SENSITIVE_KEY_PATTERN = /(api[_-]?key|authorization|token|pat|password|secret|x-api-key|personalAccessToken)/i;
 
 export function writeLLMRequestLog(input: LLMRequestLogInput) {
-  const db = getDatabase();
   const now = nowIso();
-
-  db.prepare(
-    `INSERT INTO llm_request_logs (
-      id, project_id, azure_project_id, azure_project_name, azure_organization_url,
-      target_work_item_id, action, provider, model_name, schema_name,
-      prompt_name, prompt_version, system_prompt, user_prompt, request_body_json,
-      response_body_json, raw_output, validated_output_json, status, error_details,
-      duration_ms, created_at, updated_at
-    ) VALUES (
-      @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
-      @targetWorkItemId, @action, @provider, @model, @schemaName,
-      @promptName, @promptVersion, @systemPrompt, @userPrompt, @requestBodyJson,
-      @responseBodyJson, @rawOutput, @validatedOutputJson, @status, @errorDetails,
-      @durationMs, @createdAt, @updatedAt
-    )`,
-  ).run({
+  const params = {
     id: createId("llmreq"),
     projectId: input.projectId ?? null,
     azureProjectId: input.azureProjectId ?? null,
@@ -73,7 +57,26 @@ export function writeLLMRequestLog(input: LLMRequestLogInput) {
     durationMs: input.durationMs,
     createdAt: now,
     updatedAt: now,
-  });
+  };
+
+  enqueueBackgroundWrite(`llm-request:${input.schemaName}`, () =>
+    sqlRun(
+      `INSERT INTO llm_request_logs (
+        id, project_id, azure_project_id, azure_project_name, azure_organization_url,
+        target_work_item_id, action, provider, model_name, schema_name,
+        prompt_name, prompt_version, system_prompt, user_prompt, request_body_json,
+        response_body_json, raw_output, validated_output_json, status, error_details,
+        duration_ms, created_at, updated_at
+      ) VALUES (
+        @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
+        @targetWorkItemId, @action, @provider, @model, @schemaName,
+        @promptName, @promptVersion, @systemPrompt, @userPrompt, @requestBodyJson,
+        @responseBodyJson, @rawOutput, @validatedOutputJson, @status, @errorDetails,
+        @durationMs, @createdAt, @updatedAt
+      )`,
+      params,
+    ),
+  );
 }
 
 export function sanitizeLLMLogPayload(value: unknown): unknown {

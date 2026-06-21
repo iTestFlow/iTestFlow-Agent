@@ -1,7 +1,9 @@
 import "server-only";
 
+import type { PoolClient } from "pg";
+
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { createId, getDatabase, nowIso } from "@/modules/shared/infrastructure/database/db";
+import { createId, enqueueBackgroundWrite, nowIso, sqlAll, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
 
 type FsModule = typeof import("fs");
@@ -86,7 +88,7 @@ type KnowledgeLintRow = {
   updated_at: string;
 };
 
-export function recordProjectKnowledgeRevision(input: {
+export async function recordProjectKnowledgeRevision(input: {
   scope: ProjectScope;
   knowledgeBaseId: string;
   knowledgeBase: ProjectKnowledgeBase;
@@ -96,33 +98,32 @@ export function recordProjectKnowledgeRevision(input: {
   sourceWorkItemCount: number;
   mode: ProjectKnowledgeCompilationMode;
   sourceChangeSummary?: Record<string, unknown>;
-}) {
+}, client?: PoolClient) {
   const scope = assertProjectScope(input.scope);
-  const db = getDatabase();
   const now = nowIso();
   const revisionId = createId("pkr");
-  const revisionNumber = nextRevisionNumber(scope);
+  const revisionNumber = await nextRevisionNumber(scope, client);
   const validatedOutput = JSON.stringify(input.knowledgeBase);
   const entries = flattenProjectKnowledge(input.knowledgeBase);
 
-  const previousActive = db
-    .prepare(
-      `
+  const previousActive = await sqlAll<{ id: string; category: string; entry_key: string; content_hash: string }>(
+    `
       SELECT id, category, entry_key, content_hash
       FROM project_knowledge_entry_versions
       WHERE project_id = @projectId
         AND azure_project_id = @azureProjectId
         AND status = 'active'
     `,
-    )
-    .all({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-    }) as Array<{ id: string; category: string; entry_key: string; content_hash: string }>;
+    },
+    client,
+  );
   const previousByKey = new Map(previousActive.map((entry) => [knowledgeVersionKey(entry.category, entry.entry_key), entry]));
   const nextKeys = new Set(entries.map((entry) => knowledgeVersionKey(entry.category, entry.entryKey)));
 
-  db.prepare(
+  await sqlRun(
     `
     INSERT INTO project_knowledge_revisions (
       id, project_id, azure_project_id, azure_project_name, azure_organization_url,
@@ -134,26 +135,27 @@ export function recordProjectKnowledgeRevision(input: {
       @sourceWorkItemCount, @sourceChangeSummaryJson, @rawOutput, @validatedOutput, @createdAt
     )
   `,
-  ).run({
-    id: revisionId,
-    projectId: scope.projectId,
-    azureProjectId: scope.azureProjectId,
-    azureProjectName: scope.azureProjectName,
-    azureOrganizationUrl: scope.azureOrganizationUrl,
-    knowledgeBaseId: input.knowledgeBaseId,
-    revisionNumber,
-    mode: input.mode,
-    provider: input.provider ?? null,
-    model: input.model ?? null,
-    sourceWorkItemCount: input.sourceWorkItemCount,
-    sourceChangeSummaryJson: JSON.stringify(input.sourceChangeSummary ?? {}),
-    rawOutput: input.rawOutput ?? null,
-    validatedOutput,
-    createdAt: now,
-  });
+    {
+      id: revisionId,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      azureProjectName: scope.azureProjectName,
+      azureOrganizationUrl: scope.azureOrganizationUrl,
+      knowledgeBaseId: input.knowledgeBaseId,
+      revisionNumber,
+      mode: input.mode,
+      provider: input.provider ?? null,
+      model: input.model ?? null,
+      sourceWorkItemCount: input.sourceWorkItemCount,
+      sourceChangeSummaryJson: JSON.stringify(input.sourceChangeSummary ?? {}),
+      rawOutput: input.rawOutput ?? null,
+      validatedOutput,
+      createdAt: now,
+    },
+    client,
+  );
 
-  const insertVersion = db.prepare(
-    `
+  const INSERT_VERSION_SQL = `
     INSERT INTO project_knowledge_entry_versions (
       id, project_id, azure_project_id, azure_project_name, azure_organization_url,
       knowledge_base_id, revision_id, category, entry_key, title, content, status,
@@ -165,28 +167,25 @@ export function recordProjectKnowledgeRevision(input: {
       @sourceWorkItemIds, @evidence, @metadataJson, @contentHash,
       NULL, @createdAt, @updatedAt
     )
-  `,
-  );
-  const supersedePrevious = db.prepare(
-    `
+  `;
+  const SUPERSEDE_PREVIOUS_SQL = `
     UPDATE project_knowledge_entry_versions
     SET status = @status,
         superseded_by_entry_version_id = @supersededBy,
         updated_at = @updatedAt
     WHERE id = @id
-  `,
-  );
+  `;
 
   let createdCount = 0;
   let updatedCount = 0;
   let confirmedCount = 0;
 
-  entries.forEach((entry) => {
+  for (const entry of entries) {
     const id = createId("pkev");
     const contentHash = stableHash([entry.category, entry.entryKey, entry.title, entry.content, entry.evidence, entry.sourceWorkItemIds].join("\n"));
     const previous = previousByKey.get(knowledgeVersionKey(entry.category, entry.entryKey));
 
-    insertVersion.run({
+    await sqlRun(INSERT_VERSION_SQL, {
       id,
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
@@ -204,11 +203,11 @@ export function recordProjectKnowledgeRevision(input: {
       contentHash,
       createdAt: now,
       updatedAt: now,
-    });
+    }, client);
 
     if (!previous) {
       createdCount += 1;
-      return;
+      continue;
     }
 
     if (previous.content_hash === contentHash) {
@@ -217,25 +216,25 @@ export function recordProjectKnowledgeRevision(input: {
       updatedCount += 1;
     }
 
-    supersedePrevious.run({
+    await sqlRun(SUPERSEDE_PREVIOUS_SQL, {
       id: previous.id,
       status: previous.content_hash === contentHash ? "confirmed" : "superseded",
       supersededBy: id,
       updatedAt: now,
-    });
-  });
+    }, client);
+  }
 
   let retiredCount = 0;
-  previousActive.forEach((entry) => {
-    if (nextKeys.has(knowledgeVersionKey(entry.category, entry.entry_key))) return;
+  for (const entry of previousActive) {
+    if (nextKeys.has(knowledgeVersionKey(entry.category, entry.entry_key))) continue;
     retiredCount += 1;
-    supersedePrevious.run({
+    await sqlRun(SUPERSEDE_PREVIOUS_SQL, {
       id: entry.id,
       status: "retired",
       supersededBy: null,
       updatedAt: now,
-    });
-  });
+    }, client);
+  }
 
   recordProjectKnowledgeLog({
     scope,
@@ -275,22 +274,9 @@ export function recordProjectKnowledgeLog(input: {
   metadata?: Record<string, unknown>;
 }) {
   const scope = assertProjectScope(input.scope);
-  const db = getDatabase();
   const now = nowIso();
-  const id = createId("pkl");
-
-  db.prepare(
-    `
-    INSERT INTO project_knowledge_log (
-      id, project_id, azure_project_id, azure_project_name, azure_organization_url,
-      event_type, severity, title, message, source_ids, metadata_json, created_at
-    ) VALUES (
-      @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
-      @eventType, @severity, @title, @message, @sourceIds, @metadataJson, @createdAt
-    )
-  `,
-  ).run({
-    id,
+  const params = {
+    id: createId("pkl"),
     projectId: scope.projectId,
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
@@ -302,17 +288,28 @@ export function recordProjectKnowledgeLog(input: {
     sourceIds: JSON.stringify(input.sourceIds ?? []),
     metadataJson: JSON.stringify(input.metadata ?? {}),
     createdAt: now,
-  });
+  };
 
-  return id;
+  enqueueBackgroundWrite(`knowledge-log:${input.eventType}`, () =>
+    sqlRun(
+      `
+      INSERT INTO project_knowledge_log (
+        id, project_id, azure_project_id, azure_project_name, azure_organization_url,
+        event_type, severity, title, message, source_ids, metadata_json, created_at
+      ) VALUES (
+        @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
+        @eventType, @severity, @title, @message, @sourceIds, @metadataJson, @createdAt
+      )
+    `,
+      params,
+    ),
+  );
 }
 
-export function getProjectKnowledgeLog(input: { scope: ProjectScope; limit?: number }): ProjectKnowledgeLogItem[] {
+export async function getProjectKnowledgeLog(input: { scope: ProjectScope; limit?: number }): Promise<ProjectKnowledgeLogItem[]> {
   const scope = assertProjectScope(input.scope);
-  const db = getDatabase();
-  const rows = db
-    .prepare(
-      `
+  const rows = await sqlAll<KnowledgeLogRow>(
+    `
       SELECT id, event_type, severity, title, message, source_ids, metadata_json, created_at
       FROM project_knowledge_log
       WHERE project_id = @projectId
@@ -320,12 +317,12 @@ export function getProjectKnowledgeLog(input: { scope: ProjectScope; limit?: num
       ORDER BY created_at DESC
       LIMIT @limit
     `,
-    )
-    .all({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
       limit: Math.min(100, Math.max(1, input.limit ?? 30)),
-    }) as KnowledgeLogRow[];
+    },
+  );
 
   return rows.map((row) => ({
     id: row.id,
@@ -339,11 +336,10 @@ export function getProjectKnowledgeLog(input: { scope: ProjectScope; limit?: num
   }));
 }
 
-export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
+export async function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
   const scope = assertProjectScope(input.scope);
-  const db = getDatabase();
   const now = nowIso();
-  const snapshot = getActiveKnowledgeSnapshot(scope);
+  const snapshot = await getActiveKnowledgeSnapshot(scope);
   const issues: Array<Omit<ProjectKnowledgeLintIssue, "id" | "createdAt" | "updatedAt" | "status">> = [];
 
   if (!snapshot) {
@@ -357,7 +353,7 @@ export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
   } else {
     const knowledgeBase = JSON.parse(snapshot.validated_output) as ProjectKnowledgeBase;
     const entries = flattenProjectKnowledge(knowledgeBase);
-    const sourceRows = loadSourceWorkItems(scope);
+    const sourceRows = await loadSourceWorkItems(scope);
     const sourceById = new Map(sourceRows.map((source) => [source.azure_work_item_id, source]));
     const activeSourceIds = new Set(sourceRows.filter((source) => source.sync_status !== "inactive").map((source) => source.azure_work_item_id));
     const moduleNameIndex = buildModuleNameIndex(knowledgeBase.modules);
@@ -452,19 +448,19 @@ export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
     });
   }
 
-  db.prepare(
+  await sqlRun(
     `
     DELETE FROM project_knowledge_lint_issues
     WHERE project_id = @projectId
       AND azure_project_id = @azureProjectId
   `,
-  ).run({
-    projectId: scope.projectId,
-    azureProjectId: scope.azureProjectId,
-  });
+    {
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+    },
+  );
 
-  const insertIssue = db.prepare(
-    `
+  const INSERT_ISSUE_SQL = `
     INSERT INTO project_knowledge_lint_issues (
       id, project_id, azure_project_id, azure_project_name, azure_organization_url,
       issue_type, severity, title, message, category, entry_key,
@@ -474,11 +470,10 @@ export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
       @issueType, @severity, @title, @message, @category, @entryKey,
       @sourceWorkItemIds, 'open', @createdAt, @updatedAt
     )
-  `,
-  );
+  `;
 
-  issues.forEach((issue) => {
-    insertIssue.run({
+  for (const issue of issues) {
+    await sqlRun(INSERT_ISSUE_SQL, {
       id: createId("pkli"),
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
@@ -494,7 +489,7 @@ export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
       createdAt: now,
       updatedAt: now,
     });
-  });
+  }
 
   recordProjectKnowledgeLog({
     scope,
@@ -510,17 +505,15 @@ export function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
   });
 
   return {
-    issues: getProjectKnowledgeLintIssues({ scope }),
+    issues: await getProjectKnowledgeLintIssues({ scope }),
     summary: summarizeIssues(issues),
   };
 }
 
-export function getProjectKnowledgeLintIssues(input: { scope: ProjectScope }): ProjectKnowledgeLintIssue[] {
+export async function getProjectKnowledgeLintIssues(input: { scope: ProjectScope }): Promise<ProjectKnowledgeLintIssue[]> {
   const scope = assertProjectScope(input.scope);
-  const db = getDatabase();
-  const rows = db
-    .prepare(
-      `
+  const rows = await sqlAll<KnowledgeLintRow>(
+    `
       SELECT id, issue_type, severity, title, message, category, entry_key,
              source_work_item_ids, status, created_at, updated_at
       FROM project_knowledge_lint_issues
@@ -530,11 +523,11 @@ export function getProjectKnowledgeLintIssues(input: { scope: ProjectScope }): P
         CASE severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
         created_at DESC
     `,
-    )
-    .all({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-    }) as KnowledgeLintRow[];
+    },
+  );
 
   return rows.map((row) => ({
     id: row.id,
@@ -551,15 +544,15 @@ export function getProjectKnowledgeLintIssues(input: { scope: ProjectScope }): P
   }));
 }
 
-export function exportProjectKnowledgeWiki(input: { scope: ProjectScope }) {
+export async function exportProjectKnowledgeWiki(input: { scope: ProjectScope }) {
   const scope = assertProjectScope(input.scope);
-  const snapshot = getActiveKnowledgeSnapshot(scope);
+  const snapshot = await getActiveKnowledgeSnapshot(scope);
   if (!snapshot) {
     throw new Error("Extract the project knowledge base before exporting the knowledge wiki.");
   }
 
   const knowledgeBase = JSON.parse(snapshot.validated_output) as ProjectKnowledgeBase;
-  const logs = getProjectKnowledgeLog({ scope, limit: 100 });
+  const logs = await getProjectKnowledgeLog({ scope, limit: 100 });
   const fs = getFs();
   const path = getPath();
   const exportRoot = path.join(
@@ -652,7 +645,7 @@ export function exportProjectKnowledgeWiki(input: { scope: ProjectScope }) {
   };
 }
 
-export function promoteContextChatbotAnswer(input: {
+export async function promoteContextChatbotAnswer(input: {
   scope: ProjectScope;
   answer: string;
   citations: Array<{
@@ -678,14 +671,13 @@ export function promoteContextChatbotAnswer(input: {
   );
   if (!sourceIds.length) throw new Error("Promoted knowledge must cite at least one source work item.");
 
-  const db = getDatabase();
   const now = nowIso();
-  const snapshot = getActiveKnowledgeSnapshot(scope);
-  const revisionId = snapshot ? latestRevisionId(scope) : createId("pkr_promoted");
+  const snapshot = await getActiveKnowledgeSnapshot(scope);
+  const revisionId = snapshot ? await latestRevisionId(scope) : createId("pkr_promoted");
   const id = createId("pkev");
   const entryKey = `chat-insight-${stableHash(answer).slice(0, 12)}`;
 
-  db.prepare(
+  await sqlRun(
     `
     INSERT INTO project_knowledge_entry_versions (
       id, project_id, azure_project_id, azure_project_name, azure_organization_url,
@@ -699,24 +691,25 @@ export function promoteContextChatbotAnswer(input: {
       NULL, @createdAt, @updatedAt
     )
   `,
-  ).run({
-    id,
-    projectId: scope.projectId,
-    azureProjectId: scope.azureProjectId,
-    azureProjectName: scope.azureProjectName,
-    azureOrganizationUrl: scope.azureOrganizationUrl,
-    knowledgeBaseId: snapshot?.id ?? "pending",
-    revisionId,
-    entryKey,
-    title: answer.split(/\s+/).slice(0, 12).join(" "),
-    content: answer,
-    sourceWorkItemIds: JSON.stringify(sourceIds),
-    evidence: input.citations.map((citation) => citation.sourceId).join(", "),
-    metadataJson: JSON.stringify({ citations: input.citations }),
-    contentHash: stableHash(answer),
-    createdAt: now,
-    updatedAt: now,
-  });
+    {
+      id,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      azureProjectName: scope.azureProjectName,
+      azureOrganizationUrl: scope.azureOrganizationUrl,
+      knowledgeBaseId: snapshot?.id ?? "pending",
+      revisionId,
+      entryKey,
+      title: answer.split(/\s+/).slice(0, 12).join(" "),
+      content: answer,
+      sourceWorkItemIds: JSON.stringify(sourceIds),
+      evidence: input.citations.map((citation) => citation.sourceId).join(", "),
+      metadataJson: JSON.stringify({ citations: input.citations }),
+      contentHash: stableHash(answer),
+      createdAt: now,
+      updatedAt: now,
+    },
+  );
 
   recordProjectKnowledgeLog({
     scope,
@@ -731,27 +724,26 @@ export function promoteContextChatbotAnswer(input: {
   return { entryVersionId: id, entryKey, sourceIds };
 }
 
-function nextRevisionNumber(scope: ProjectScope) {
-  const row = getDatabase()
-    .prepare(
-      `
+async function nextRevisionNumber(scope: ProjectScope, client?: PoolClient) {
+  const row = await sqlGet<{ revision_number: number | null }>(
+    `
       SELECT MAX(revision_number) AS revision_number
       FROM project_knowledge_revisions
       WHERE project_id = @projectId
         AND azure_project_id = @azureProjectId
     `,
-    )
-    .get({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-    }) as { revision_number: number | null };
-  return (row.revision_number ?? 0) + 1;
+    },
+    client,
+  );
+  return (row?.revision_number ?? 0) + 1;
 }
 
-function latestRevisionId(scope: ProjectScope) {
-  const row = getDatabase()
-    .prepare(
-      `
+async function latestRevisionId(scope: ProjectScope) {
+  const row = await sqlGet<{ id: string }>(
+    `
       SELECT id
       FROM project_knowledge_revisions
       WHERE project_id = @projectId
@@ -759,45 +751,43 @@ function latestRevisionId(scope: ProjectScope) {
       ORDER BY revision_number DESC
       LIMIT 1
     `,
-    )
-    .get({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-    }) as { id: string } | undefined;
+    },
+  );
   return row?.id ?? "pending";
 }
 
-function getActiveKnowledgeSnapshot(scope: ProjectScope) {
-  return getDatabase()
-    .prepare(
-      `
+async function getActiveKnowledgeSnapshot(scope: ProjectScope) {
+  return sqlGet<KnowledgeSnapshotRow>(
+    `
       SELECT id, provider, model_name, source_work_item_count, raw_output, validated_output
       FROM project_knowledge_base
       WHERE project_id = @projectId
         AND azure_project_id = @azureProjectId
       LIMIT 1
     `,
-    )
-    .get({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-    }) as KnowledgeSnapshotRow | undefined;
+    },
+  );
 }
 
 function loadSourceWorkItems(scope: ProjectScope) {
-  return getDatabase()
-    .prepare(
-      `
+  return sqlAll<SourceWorkItemRow>(
+    `
       SELECT azure_work_item_id, title, COALESCE(sync_status, 'active') AS sync_status
       FROM azure_devops_work_items
       WHERE project_id = @projectId
         AND azure_project_id = @azureProjectId
     `,
-    )
-    .all({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-    }) as SourceWorkItemRow[];
+    },
+  );
 }
 
 function addDuplicateEntryKeyIssues(

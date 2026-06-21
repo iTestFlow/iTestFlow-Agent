@@ -21,7 +21,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const snapshot = saveManualProjectKnowledgeBaseFromBatches({
+    const snapshot = await saveManualProjectKnowledgeBaseFromBatches({
       scope: parsed.data.scope,
       partialKnowledgeBases: parsed.data.partialKnowledgeBases,
       mode: parsed.data.mode,

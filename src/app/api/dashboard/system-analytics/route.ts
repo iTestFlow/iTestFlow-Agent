@@ -41,7 +41,7 @@ export async function POST(request: Request) {
 
   try {
     return NextResponse.json(
-      getSystemDashboardAnalytics({
+      await getSystemDashboardAnalytics({
         scope: parsed.data.scope,
         filters: parsed.data.filters,
       }),

@@ -23,7 +23,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    return NextResponse.json(saveGeneratedProjectKnowledgeBaseDraft(parsed.data));
+    return NextResponse.json(await saveGeneratedProjectKnowledgeBaseDraft(parsed.data));
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Project knowledge save failed." },

@@ -41,6 +41,11 @@ const globalScheduler = globalThis as typeof globalThis & {
 };
 
 export function startContextAutoUpdateScheduler() {
+  // Multi-replica safety (ADR-6): the in-process scheduler runs in every web
+  // instance, so it is opt-in. In hosted/multi-replica deployments leave this
+  // unset and let the dedicated worker (Phase 4) own scheduled sync.
+  if (process.env.ENABLE_INPROCESS_SCHEDULER !== "true") return;
+
   const state = getSchedulerState();
   if (state.started) return;
 
@@ -112,7 +117,7 @@ export async function runScheduledContextAutoUpdate(input: {
   states: string[];
 }) {
   const scope = assertProjectScope(input.scope);
-  const runId = startContextAutoUpdateRun({
+  const runId = await startContextAutoUpdateRun({
     scope,
     cronExpression: input.cronExpression,
     workItemTypes: input.workItemTypes,
@@ -155,7 +160,7 @@ export async function runScheduledContextAutoUpdate(input: {
       mode: SCHEDULED_CONTEXT_SYNC_MODE,
     });
 
-    const existingKnowledgeSnapshot = getProjectKnowledgeBaseSnapshot({ scope });
+    const existingKnowledgeSnapshot = await getProjectKnowledgeBaseSnapshot({ scope });
     if (!hasContextChanges(contextResult) && existingKnowledgeSnapshot) {
       knowledgeSnapshot = existingKnowledgeSnapshot;
       knowledgeCompileStatus = "skipped";
@@ -188,7 +193,7 @@ export async function runScheduledContextAutoUpdate(input: {
       knowledgeCompileStatus = "compiled";
     }
 
-    completeRun({
+    await completeRun({
       runId,
       status: "Success",
       contextResult,
@@ -224,7 +229,7 @@ export async function runScheduledContextAutoUpdate(input: {
     const status: Exclude<ContextAutoUpdateRunStatus, "Running"> = contextResult ? "Partial failure" : "Failed";
     const message = error instanceof Error ? error.message : "Scheduled project context update failed.";
 
-    completeRun({
+    await completeRun({
       runId,
       status,
       contextResult,
@@ -258,7 +263,7 @@ export async function runScheduledContextAutoUpdate(input: {
   }
 }
 
-function completeRun(input: {
+async function completeRun(input: {
   runId: string;
   status: Exclude<ContextAutoUpdateRunStatus, "Running">;
   contextResult: ContextIndexResult | null;
@@ -267,7 +272,7 @@ function completeRun(input: {
   knowledgeCompileSkippedReason?: string | null;
   errorDetails?: string;
 }) {
-  completeContextAutoUpdateRun({
+  await completeContextAutoUpdateRun({
     id: input.runId,
     status: input.status,
     cronTimezone: CRON_TIMEZONE_LABEL,

@@ -18,7 +18,7 @@ export async function POST(request: Request) {
 
   try {
     return NextResponse.json({
-      items: getProjectKnowledgeLog({
+      items: await getProjectKnowledgeLog({
         scope: parsed.data.scope,
         limit: parsed.data.limit,
       }),
