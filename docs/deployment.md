@@ -32,8 +32,8 @@ Set these via the hosting platform's secrets or a secret manager — **not** in 
 | `APP_MODE` | yes (`hosted`) | `hosted` ignores env credentials; `single-user` honors them (legacy/dev) |
 | `BOOTSTRAP_OWNER_EMAIL` | yes | initial owner identity, seeded at startup |
 | `BOOTSTRAP_OWNER_AZURE_ORG` | yes | initial enabled Azure DevOps org/workspace |
-| `WORKER_AUTO_SYNC` | optional | `true` makes the worker periodically enqueue due workspace syncs |
-| `WORKER_AUTO_SYNC_MS` | optional | auto-sync interval (default 15 min) |
+| `WORKER_SCHEDULER` | optional | set `false` to disable cron scheduling (default on) |
+| `WORKER_SCHEDULER_TICK_MS` | optional | how often due schedules are evaluated (default 60s) |
 | `WORKER_POLL_MS` | optional | worker idle poll interval (default 2s) |
 | `PROJECT_CONTEXT_TOP_K` | optional | RAG retrieval breadth (default 8) |
 
@@ -52,6 +52,9 @@ Set these via the hosting platform's secrets or a secret manager — **not** in 
    auto-provisioned as a `member`.
 5. An owner/admin sets the **workspace sync credential** (`POST /api/workspace/sync-credential`)
    — a service-account / admin PAT the worker uses for scheduled sync.
+6. An owner/admin optionally sets a **sync schedule** in Settings → Workspace (cron,
+   evaluated in the worker's local timezone). With no schedule, the workspace is never
+   auto-synced; "Sync now" (`POST /api/workspace/sync`) still works on demand.
 
 ## Credentials & data model
 

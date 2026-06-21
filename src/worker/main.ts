@@ -10,19 +10,22 @@
  *       npm run worker:dev    (loads .env, watch mode)
  *
  * Env:  DATABASE_URL, APP_ENCRYPTION_KEY (to decrypt the sync credential).
- *       WORKER_POLL_MS         (default 2000) — idle poll interval.
- *       WORKER_AUTO_SYNC=true  — opt-in: periodically enqueue due workspace syncs.
- *       WORKER_AUTO_SYNC_MS    (default 900000 = 15m) — auto-enqueue interval.
+ *       WORKER_POLL_MS              (default 2000) — idle poll interval.
+ *       WORKER_SCHEDULER            (default on; set "false" to disable scheduling).
+ *       WORKER_SCHEDULER_TICK_MS    (default 60000) — how often due schedules are
+ *                                   evaluated. Each workspace's cadence is its own
+ *                                   cron schedule (Settings → Workspace); a workspace
+ *                                   with no schedule is a no-op.
  */
 import { claimNextJob, completeJob, failJob } from "@/modules/jobs/job-queue.service";
 import { getJobHandler, registeredJobTypes } from "@/modules/jobs/job-handlers";
 import { registerAllJobHandlers } from "@/modules/jobs/register-handlers";
-import { enqueueDueWorkspaceSyncs } from "@/modules/jobs/workspace-sync.handler";
+import { enqueueDueScheduledSyncs } from "@/modules/jobs/sync-schedule.service";
 
 const WORKER_ID = `worker-${process.pid}`;
 const POLL_MS = Number(process.env.WORKER_POLL_MS ?? "2000");
-const AUTO_SYNC = process.env.WORKER_AUTO_SYNC === "true";
-const AUTO_SYNC_MS = Number(process.env.WORKER_AUTO_SYNC_MS ?? String(15 * 60 * 1000));
+const SCHEDULER_ENABLED = process.env.WORKER_SCHEDULER !== "false";
+const SCHEDULER_TICK_MS = Number(process.env.WORKER_SCHEDULER_TICK_MS ?? String(60 * 1000));
 
 let shuttingDown = false;
 
@@ -69,15 +72,15 @@ async function workLoop(): Promise<void> {
   }
 }
 
-async function autoSyncLoop(): Promise<void> {
+async function schedulerLoop(): Promise<void> {
   while (!shuttingDown) {
     try {
-      const count = await enqueueDueWorkspaceSyncs();
-      if (count) console.log(`[worker] auto-enqueued ${count} workspace sync job(s)`);
+      const fired = await enqueueDueScheduledSyncs();
+      if (fired) console.log(`[worker] scheduler fired ${fired} workspace schedule(s)`);
     } catch (error) {
-      console.error("[worker] auto-sync enqueue failed.", error);
+      console.error("[worker] scheduler tick failed.", error);
     }
-    await sleep(AUTO_SYNC_MS);
+    await sleep(SCHEDULER_TICK_MS);
   }
 }
 
@@ -100,10 +103,10 @@ async function main() {
   }
   registerAllJobHandlers();
   installShutdown();
-  console.log(`[worker] ${WORKER_ID} started. handlers=[${registeredJobTypes().join(", ")}] poll=${POLL_MS}ms autoSync=${AUTO_SYNC}`);
+  console.log(`[worker] ${WORKER_ID} started. handlers=[${registeredJobTypes().join(", ")}] poll=${POLL_MS}ms scheduler=${SCHEDULER_ENABLED}`);
 
   const loops = [workLoop()];
-  if (AUTO_SYNC) loops.push(autoSyncLoop());
+  if (SCHEDULER_ENABLED) loops.push(schedulerLoop());
   await Promise.all(loops);
 }
 

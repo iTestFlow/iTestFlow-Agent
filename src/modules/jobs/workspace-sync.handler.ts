@@ -79,16 +79,3 @@ export async function enqueueWorkspaceContextSync(
   }
   return enqueued;
 }
-
-/** Worker auto-mode: enqueue syncs for all workspaces that have a sync credential. */
-export async function enqueueDueWorkspaceSyncs(): Promise<number> {
-  const workspaces = await sqlAll<{ workspace_id: string }>(
-    `SELECT DISTINCT workspace_id FROM workspace_credentials WHERE credential_type = 'azure_pat'`,
-    {},
-  );
-  let total = 0;
-  for (const row of workspaces) {
-    total += await enqueueWorkspaceContextSync(row.workspace_id, null);
-  }
-  return total;
-}
