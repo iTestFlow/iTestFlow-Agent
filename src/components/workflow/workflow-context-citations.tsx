@@ -1,9 +1,9 @@
 "use client"
 
+import type { ReactNode } from "react"
 import { BookOpen, Database } from "lucide-react"
 
 import { Badge, badgeVariants } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
@@ -28,14 +28,23 @@ export function WorkflowContextCitations({
   return (
     <div className={cn("space-y-2", className)}>
       <div className="flex items-center justify-between gap-3">
-        <div className="text-xs font-medium text-muted-foreground">Context Used</div>
         {citations.length ? (
           <ContextCitationsDialog
             citations={citations}
             contextCount={contextCount}
             knowledgeCount={knowledgeCount}
+            trigger={
+              <button
+                type="button"
+                className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                Context Used
+              </button>
+            }
           />
-        ) : null}
+        ) : (
+          <div className="text-xs font-medium text-muted-foreground">Context Used</div>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
         <Badge variant="secondary" className="gap-1">
@@ -56,17 +65,17 @@ function ContextCitationsDialog({
   citations,
   contextCount,
   knowledgeCount,
+  trigger,
 }: {
   citations: WorkflowContextCitation[]
   contextCount: number
   knowledgeCount: number
+  trigger: ReactNode
 }) {
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Button variant="link" size="sm" className="h-auto px-0 py-0 text-xs">
-          View all context
-        </Button>
+        {trigger}
       </DialogTrigger>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>

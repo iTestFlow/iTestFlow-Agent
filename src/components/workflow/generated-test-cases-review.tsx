@@ -201,14 +201,6 @@ export function GeneratedTestCasesReview({
     <SectionCard
       title={title}
       description={description}
-      action={
-        allowAdd ? (
-          <Button type="button" variant="secondary" onClick={addCase}>
-            <Plus />
-            Add Test Case
-          </Button>
-        ) : null
-      }
     >
       <TestCaseSummary
         total={testCases.length}
@@ -346,6 +338,20 @@ export function GeneratedTestCasesReview({
           </div>
         )}
       </div>
+
+      {allowAdd ? (
+        <div className="border-t border-border bg-card p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm leading-6 text-muted-foreground">
+              Reviewed the generated set and need another scenario? Add a manual test case draft.
+            </p>
+            <Button type="button" variant="secondary" onClick={addCase} className="w-full sm:w-auto">
+              <Plus />
+              Add Test Case
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </SectionCard>
   );
 }
@@ -619,13 +625,6 @@ function TestCaseDetails({ testCase }: { testCase: GeneratedTestCase }) {
 
   return (
     <div className="space-y-5 p-4">
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetadataItem label="Test Case ID" value={testCase.id} />
-        <MetadataItem label="Type" value={formatEnumLabel(testCase.type)} />
-        <MetadataItem label="Priority" value={priorityLabel(testCase.priority)} />
-        <MetadataItem label="Category" value={testCase.category} />
-      </div>
-
       {testCase.description ? <DetailSection label="Description" value={testCase.description} /> : null}
       <DetailSection label="Preconditions" value={testCase.preconditions || "No preconditions supplied."} />
 
@@ -637,24 +636,10 @@ function TestCaseDetails({ testCase }: { testCase: GeneratedTestCase }) {
       {testCase.testData ? <DetailSection label="Test Data" value={testCase.testData} /> : null}
       {expectedOutcome ? <DetailSection label="Expected Outcome" value={expectedOutcome} /> : null}
 
-      {(testCase.tags?.length ?? 0) > 0 ? (
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tags (iTestFlow only)</div>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {testCase.tags?.map((tag) => <Badge key={tag} variant="secondary">{tag}</Badge>)}
-          </div>
-        </div>
-      ) : null}
-
       {traceabilityGroups.some(([, values]) => values?.length) ? (
-        <div className="grid gap-3 lg:grid-cols-3">
+        <div className="grid gap-4 lg:grid-cols-3">
           {traceabilityGroups.map(([label, values]) => values?.length ? (
-            <div key={label} className="rounded-lg border border-border bg-muted/20 p-3">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
-              <ul className="mt-2 space-y-1 text-sm leading-5 text-foreground">
-                {values.map((value) => <li key={value}>{value}</li>)}
-              </ul>
-            </div>
+            <TraceabilityChipGroup key={label} label={label} values={values} />
           ) : null)}
         </div>
       ) : null}
@@ -886,20 +871,26 @@ function EditorField({
   );
 }
 
-function MetadataItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-border bg-muted/20 p-3">
-      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="mt-1 break-words text-sm font-medium text-foreground">{value || "Not supplied"}</div>
-    </div>
-  );
-}
-
 function DetailSection({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
       <p className="mt-1 whitespace-pre-line text-sm leading-6 text-foreground">{value}</p>
+    </div>
+  );
+}
+
+function TraceabilityChipGroup({ label, values }: { label: string; values: string[] }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {values.map((value) => (
+          <Badge key={value} variant="outline" className="max-w-full rounded-full px-2.5 py-1">
+            <span className="truncate">{value}</span>
+          </Badge>
+        ))}
+      </div>
     </div>
   );
 }

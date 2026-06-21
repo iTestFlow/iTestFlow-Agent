@@ -21,16 +21,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Metric,
   SectionCard,
   ToneBadge,
   formatEnumLabel,
   severityTone,
 } from "@/components/workflow/test-intelligence-shared";
-import type {
-  RequirementFinding,
-  RequirementSummary,
-} from "@/components/workflow/test-intelligence-types";
+import type { RequirementFinding } from "@/components/workflow/test-intelligence-types";
 import { requirementAnalysisChecklistOptions } from "@/modules/requirement-analysis/checklist-options";
 import {
   requirementFindingSeverityValues,
@@ -61,14 +57,12 @@ export function validateRequirementFinding(finding: RequirementFinding): Require
 
 export function RequirementFindingsReview({
   findings,
-  summary,
   selectedIds,
   onChange,
   onSelectedIdsChange,
   footer,
 }: {
   findings: RequirementFinding[];
-  summary: RequirementSummary;
   selectedIds: string[];
   onChange: (findings: RequirementFinding[]) => void;
   onSelectedIdsChange: (ids: string[]) => void;
@@ -194,13 +188,6 @@ export function RequirementFindingsReview({
         severityCounts={stats.severityCounts}
         issueTypeCounts={stats.issueTypeCounts}
       />
-
-      <div className="grid gap-3 border-b border-border p-4 md:grid-cols-4">
-        <Metric label="Quality" value={summary.overallQuality} />
-        <Metric label="Clarity" value={summary.clarityScore} />
-        <Metric label="Completeness" value={summary.completenessScore} />
-        <Metric label="Testability" value={summary.testabilityScore} />
-      </div>
 
       <div className="space-y-3 border-b border-border p-4">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">

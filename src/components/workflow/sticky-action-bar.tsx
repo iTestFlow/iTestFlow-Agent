@@ -7,11 +7,13 @@ export function StickyActionBar({
   description,
   actions,
   className,
+  actionsClassName,
 }: {
   title?: ReactNode;
   description?: ReactNode;
   actions: ReactNode;
   className?: string;
+  actionsClassName?: string;
 }) {
   return (
     <div
@@ -25,7 +27,9 @@ export function StickyActionBar({
           {title ? <div className="text-sm font-semibold text-foreground">{title}</div> : null}
           {description ? <div className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</div> : null}
         </div>
-        <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">{actions}</div>
+        <div className={cn("flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center", actionsClassName)}>
+          {actions}
+        </div>
       </div>
     </div>
   );

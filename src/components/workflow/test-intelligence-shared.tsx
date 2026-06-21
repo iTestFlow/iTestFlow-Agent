@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { formatEnumLabel, formatPercentage } from "@/shared/lib/format";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import { ApiError } from "@/components/workflow/api-error";
+import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import type {
   ApiState,
   GeneratedTestCase,
@@ -574,110 +575,136 @@ export function PublishGeneratedCasesPanel({
     invalidCaseCount > 0 ||
     (createRequirementSuite && (!selectedTestPlanId || !selectedSuiteId)) ||
     state.loading;
+  const publishDescription = publishActionDescription({
+    scope,
+    targetWorkItemId,
+    testCases,
+    invalidCaseCount,
+    createRequirementSuite,
+    selectedTestPlanId,
+    selectedSuiteId,
+    loading: state.loading,
+    error: state.error,
+    success: Boolean(state.data && state.data.results.length > 0 && state.data.results.every((result) => result.success)),
+  });
 
   return (
-    <SectionCard
-      title="Publish Generated Test Cases"
-      description="Create Azure Test Case work items, link them to the user story, and optionally create a requirement-based suite."
-    >
-      <div className="space-y-4 p-4">
-        <label className="flex cursor-pointer items-start gap-2">
-          <Checkbox
-            checked={createRequirementSuite}
-            onCheckedChange={(checked) => {
-              onDirty?.();
-              setCreateRequirementSuite(checked === true);
-              setState({ loading: false, error: null, data: null });
-            }}
-            className="mt-0.5"
-          />
-          <span className="text-sm font-medium text-foreground">
-            Create requirement-based suite for this user story
-          </span>
-        </label>
-
-        <div className={`space-y-4 transition ${targetControlsDisabled ? "opacity-50" : "opacity-100"}`}>
-          <div className="grid gap-3 lg:grid-cols-2">
-            <SearchableCombobox
-              value={selectedTestPlanId}
-              options={testPlans.map((plan) => ({
-                value: plan.id,
-                label: plan.name,
-                description: `Test Plan ID ${plan.id}`,
-              }))}
-              onValueChange={selectPlan}
-              loading={plansLoading}
-              disabled={targetControlsDisabled}
-              placeholder="Select Azure Test Plan"
-              loadingText="Loading Azure Test Plans..."
-              searchPlaceholder="Search plans by name or ID"
-              emptyMessage="No Azure Test Plans found."
-              aria-label="Select Azure Test Plan"
-              selectedLabel={selectedPlanLabel ? `${selectedPlanLabel.id} - ${selectedPlanLabel.name}` : undefined}
-              triggerClassName="h-9"
+    <>
+      <SectionCard
+        title="Publish Generated Test Cases"
+        description="Create Azure Test Case work items, link them to the user story, and optionally create a requirement-based suite."
+      >
+        <div className="space-y-4 p-4">
+          <label className="flex cursor-pointer items-start gap-2">
+            <Checkbox
+              checked={createRequirementSuite}
+              onCheckedChange={(checked) => {
+                onDirty?.();
+                setCreateRequirementSuite(checked === true);
+                setState({ loading: false, error: null, data: null });
+              }}
+              className="mt-0.5"
             />
-            <Input
-              value={testPlanInput}
-              onChange={(event) => selectPlan(event.target.value)}
-              placeholder="Or paste Test Plan ID/link"
-              disabled={targetControlsDisabled}
-            />
-          </div>
+            <span className="text-sm font-medium text-foreground">
+              Create requirement-based suite for this user story
+            </span>
+          </label>
 
-          <div className="grid gap-3 lg:grid-cols-2">
-            <div className="flex min-w-0 items-center gap-2">
+          <div className={`space-y-4 transition ${targetControlsDisabled ? "opacity-50" : "opacity-100"}`}>
+            <div className="grid gap-3 lg:grid-cols-2">
               <SearchableCombobox
-                value={selectedSuiteId}
-                options={staticTestSuites.map((suite) => ({
-                  value: suite.id,
-                  label: suite.name,
-                  description: `${suite.id} - ${suite.path ?? suite.name}`,
-                  searchText: suite.path,
+                value={selectedTestPlanId}
+                options={testPlans.map((plan) => ({
+                  value: plan.id,
+                  label: plan.name,
+                  description: `Test Plan ID ${plan.id}`,
                 }))}
-                onValueChange={selectSuite}
-                loading={suitesLoading}
-                disabled={targetControlsDisabled || !selectedTestPlanId}
-                placeholder="Select Parent Suite"
-                loadingText="Loading parent suites..."
-                searchPlaceholder="Search static suites by name, ID, or path"
-                emptyMessage="No static parent suites found."
-                aria-label="Select Parent Suite"
-                selectedLabel={selectedSuiteLabel ? `${selectedSuiteLabel.id} - ${selectedSuiteLabel.name}` : undefined}
-                triggerClassName="h-9 min-w-0 flex-1"
+                onValueChange={selectPlan}
+                loading={plansLoading}
+                disabled={targetControlsDisabled}
+                placeholder="Select Azure Test Plan"
+                loadingText="Loading Azure Test Plans..."
+                searchPlaceholder="Search plans by name or ID"
+                emptyMessage="No Azure Test Plans found."
+                aria-label="Select Azure Test Plan"
+                selectedLabel={selectedPlanLabel ? `${selectedPlanLabel.id} - ${selectedPlanLabel.name}` : undefined}
+                triggerClassName="h-9"
               />
-              <RefreshButton
-                disabled={targetControlsDisabled || !selectedTestPlanId || suitesLoading}
-                onClick={() => void loadTestSuites(selectedTestPlanId, "refresh")}
-                loading={suitesLoading}
+              <Input
+                value={testPlanInput}
+                onChange={(event) => selectPlan(event.target.value)}
+                placeholder="Or paste Test Plan ID/link"
+                disabled={targetControlsDisabled}
               />
             </div>
-            <Input
-              value={parentSuiteInput}
-              onChange={(event) => selectSuite(event.target.value)}
-              placeholder="Or paste Parent Suite ID/link"
-              disabled={targetControlsDisabled}
-            />
+
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <SearchableCombobox
+                  value={selectedSuiteId}
+                  options={staticTestSuites.map((suite) => ({
+                    value: suite.id,
+                    label: suite.name,
+                    description: `${suite.id} - ${suite.path ?? suite.name}`,
+                    searchText: suite.path,
+                  }))}
+                  onValueChange={selectSuite}
+                  loading={suitesLoading}
+                  disabled={targetControlsDisabled || !selectedTestPlanId}
+                  placeholder="Select Parent Suite"
+                  loadingText="Loading parent suites..."
+                  searchPlaceholder="Search static suites by name, ID, or path"
+                  emptyMessage="No static parent suites found."
+                  aria-label="Select Parent Suite"
+                  selectedLabel={selectedSuiteLabel ? `${selectedSuiteLabel.id} - ${selectedSuiteLabel.name}` : undefined}
+                  triggerClassName="h-9 min-w-0 flex-1"
+                />
+                <RefreshButton
+                  disabled={targetControlsDisabled || !selectedTestPlanId || suitesLoading}
+                  onClick={() => void loadTestSuites(selectedTestPlanId, "refresh")}
+                  loading={suitesLoading}
+                />
+              </div>
+              <Input
+                value={parentSuiteInput}
+                onChange={(event) => selectSuite(event.target.value)}
+                placeholder="Or paste Parent Suite ID/link"
+                disabled={targetControlsDisabled}
+              />
+            </div>
+            {createRequirementSuite ? (
+              <div className="text-xs leading-5 text-muted-foreground">
+                Only static suites can be selected as a parent. Requirement-based and query-based suites are hidden.
+              </div>
+            ) : null}
+            {createRequirementSuite && suiteNotice ? (
+              <div className="text-xs leading-5 text-warning-foreground dark:text-warning">{suiteNotice}</div>
+            ) : null}
           </div>
-          {createRequirementSuite ? (
-            <div className="text-xs leading-5 text-muted-foreground">
-              Only static suites can be selected as a parent. Requirement-based and query-based suites are hidden.
-            </div>
+
+          {createRequirementSuite && planError ? <ErrorBlock message={planError} /> : null}
+          {createRequirementSuite && suiteError ? <ErrorBlock message={suiteError} /> : null}
+          {state.error ? <ErrorBlock message={state.error} /> : null}
+          {invalidCaseCount > 0 ? (
+            <Callout tone="warning">
+              Resolve validation issues in the {invalidCaseCount} selected test case{invalidCaseCount === 1 ? "" : "s"} before publishing.
+            </Callout>
           ) : null}
-          {createRequirementSuite && suiteNotice ? (
-            <div className="text-xs leading-5 text-warning-foreground dark:text-warning">{suiteNotice}</div>
-          ) : null}
+
+          {state.data ? <PublishResultSummary data={state.data} /> : null}
         </div>
+      </SectionCard>
 
-        {createRequirementSuite && planError ? <ErrorBlock message={planError} /> : null}
-        {createRequirementSuite && suiteError ? <ErrorBlock message={suiteError} /> : null}
-        {state.error ? <ErrorBlock message={state.error} /> : null}
-        {invalidCaseCount > 0 ? (
-          <Callout tone="warning">
-            Resolve validation issues in the {invalidCaseCount} selected test case{invalidCaseCount === 1 ? "" : "s"} before publishing.
-          </Callout>
-        ) : null}
-
-        <div className="flex justify-end">
+      <StickyActionBar
+        title={
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span>{testCases.length} selected test case{testCases.length === 1 ? "" : "s"}</span>
+            <span className="text-muted-foreground">|</span>
+            <span>Story {targetWorkItemId || "not selected"}</span>
+          </span>
+        }
+        description={publishDescription}
+        actions={
           <ConfirmationDialog
             trigger={
               <Button disabled={disabled}>
@@ -704,10 +731,52 @@ export function PublishGeneratedCasesPanel({
             confirmLabel="Publish cases"
             onConfirm={publish}
           />
-        </div>
-
-        {state.data ? <PublishResultSummary data={state.data} /> : null}
-      </div>
-    </SectionCard>
+        }
+        actionsClassName="w-full sm:w-auto"
+      />
+    </>
   );
+}
+
+function publishActionDescription({
+  scope,
+  targetWorkItemId,
+  testCases,
+  invalidCaseCount,
+  createRequirementSuite,
+  selectedTestPlanId,
+  selectedSuiteId,
+  loading,
+  error,
+  success,
+}: {
+  scope: ActiveProjectScope | null;
+  targetWorkItemId: string;
+  testCases: GeneratedTestCase[];
+  invalidCaseCount: number;
+  createRequirementSuite: boolean;
+  selectedTestPlanId: string;
+  selectedSuiteId: string;
+  loading: boolean;
+  error: string | null;
+  success: boolean;
+}) {
+  if (error) return <span className="text-destructive">{error}</span>;
+  if (success) return <span className="text-success">Selected test cases were published successfully.</span>;
+  if (loading) return "Publishing selected test cases to Azure DevOps.";
+  if (!scope) return "Select an Azure DevOps project before publishing.";
+  if (!targetWorkItemId) return "Select a target story before publishing.";
+  if (!testCases.length) return "Select at least one reviewed test case before publishing.";
+  if (invalidCaseCount > 0) {
+    return (
+      <span className="text-warning-foreground dark:text-warning">
+        Resolve validation issues in {invalidCaseCount} selected test case{invalidCaseCount === 1 ? "" : "s"} before publishing.
+      </span>
+    );
+  }
+  if (createRequirementSuite && !selectedTestPlanId) return "Select an Azure Test Plan in the publish panel before publishing.";
+  if (createRequirementSuite && !selectedSuiteId) return "Select a parent suite in the publish panel before publishing.";
+  return createRequirementSuite
+    ? "Ready to create, link, and place the selected cases in a requirement-based suite."
+    : "Ready to create and link the selected cases without creating a test suite.";
 }
