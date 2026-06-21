@@ -1,18 +1,15 @@
 "use client";
 
-import { AlertTriangle, Info, RefreshCw } from "lucide-react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { DashboardFilters, defaultDashboardFilters, type DashboardFilterState } from "@/components/dashboard/dashboard-filters";
-import { ActionRequiredPanel, DashboardKpiGrid, ReleaseReadinessCard } from "@/components/dashboard/dashboard-summary";
-import { AgingBugsTable, BlockersTable, CoverageMatrixTable, ReleaseBlockersTable, TestingProgressTable } from "@/components/dashboard/dashboard-tables";
+import { DashboardKpiGrid, ReleaseReadinessCard } from "@/components/dashboard/dashboard-summary";
+import { AgingBugsTable, ReleaseBlockersTable, TestingProgressTable } from "@/components/dashboard/dashboard-tables";
 import {
-  CoverageBarChart,
   DashboardChartCard,
   DistributionBarChart,
   DonutChart,
-  ExecutionStackedBarChart,
-  TrendLineChart,
 } from "@/components/dashboard/dashboard-visualizations";
 import { EmptyState } from "@/components/qa/empty-state";
 import { ErrorState } from "@/components/qa/error-state";
@@ -20,7 +17,6 @@ import { LoadingState } from "@/components/qa/loading-state";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AutoRefreshStatus } from "@/components/dashboard/auto-refresh-status";
 import { useActiveProject } from "@/shared/lib/use-active-project";
@@ -29,7 +25,6 @@ import type {
   DashboardAnalytics,
   DashboardFilterMetadata,
   DashboardTab,
-  DashboardTrendPoint,
 } from "@/types/dashboard";
 import { SystemDashboardsClient } from "@/components/dashboard/system-dashboard-client";
 import { MyWorkbenchDashboardClient } from "@/components/dashboard/my-workbench-dashboard-client";
@@ -39,8 +34,6 @@ type DashboardState = {
   error: string | null;
   data: DashboardAnalytics | null;
 };
-
-type BlockerView = "all" | "bugs" | "tests" | "requirements";
 
 /** Auto-refresh cadence while the Dashboards page is open and idle. */
 const AUTO_REFRESH_INTERVAL_MS = 5 * 60_000;
@@ -65,8 +58,8 @@ export function DashboardsClient() {
     <Tabs value={activeDashboard} onValueChange={(value) => setActiveDashboard(value as "workbench" | "project" | "system")} className="flex-col gap-4">
       <TabsList variant="primary" className="grid h-auto w-full grid-cols-3 sm:inline-grid sm:w-fit sm:min-w-[640px]">
         <TabsTrigger value="workbench" className="h-10 px-3 py-2 duration-200">My Workbench</TabsTrigger>
-        <TabsTrigger value="project" className="h-10 px-3 py-2 duration-200">Project Dashboards</TabsTrigger>
-        <TabsTrigger value="system" className="h-10 px-3 py-2 duration-200">System Dashboards</TabsTrigger>
+        <TabsTrigger value="project" className="h-10 px-3 py-2 duration-200">Project Insights</TabsTrigger>
+        <TabsTrigger value="system" className="h-10 px-3 py-2 duration-200">Platform Insights</TabsTrigger>
       </TabsList>
       <TabsContent value="workbench" forceMount hidden={activeDashboard !== "workbench"} className="space-y-4">
         <MyWorkbenchDashboardClient active={activeDashboard === "workbench"} />
@@ -88,7 +81,6 @@ function ProjectDashboardsClient({ active }: { active: boolean }) {
   const [filters, setFilters] = useState<DashboardFilterState>(defaultDashboardFilters);
   const [state, setState] = useState<DashboardState>({ loading: true, error: null, data: null });
   const [activeTab, setActiveTab] = useState<DashboardTab>("testing");
-  const [blockerView, setBlockerView] = useState<BlockerView>("all");
 
   const requestBody = useMemo(() => ({
     scope,
@@ -202,7 +194,6 @@ function ProjectDashboardsClient({ active }: { active: boolean }) {
   const data = state.data;
   const metadata = data?.filterMetadata ?? emptyMetadata;
   const section = data?.metadata.sections;
-  const blockerBugs = data ? data.bugStatus.agingBugs.filter((bug) => bug.severity === "Critical" || bug.severity === "High") : [];
 
   function refresh() {
     triggerRefresh(false);
@@ -240,156 +231,36 @@ function ProjectDashboardsClient({ active }: { active: boolean }) {
       {data ? (
         <>
           <ReleaseReadinessCard data={data.releaseReadiness} />
-          <ActionRequiredPanel actions={data.actions} onNavigate={navigate} />
           <DashboardKpiGrid data={data} loading={state.loading} onNavigate={navigate} />
-          <ReleaseBlockersTable rows={data.releaseReadiness.blockers} onViewAll={() => { setBlockerView("all"); navigate("blockers"); }} />
+          <ReleaseBlockersTable rows={data.releaseReadiness.blockers} onViewAll={() => navigate("blockers")} />
 
           <Tabs id="dashboard-details" value={activeTab} onValueChange={(value) => setActiveTab(value as DashboardTab)} className="w-full min-w-0 scroll-mt-20 flex-col gap-4">
             <div className="max-w-full overflow-x-auto pb-1">
               <TabsList variant="primary" className="h-10 min-w-max shrink-0 justify-start border-border/80 bg-muted/60 p-1 shadow-none">
                 <TabsTrigger value="testing" className="h-8 flex-none px-4">Testing Progress</TabsTrigger>
                 <TabsTrigger value="bugs" className="h-8 flex-none px-4">Bug Status</TabsTrigger>
-                <TabsTrigger value="coverage" className="h-8 flex-none px-4">Coverage & Risk</TabsTrigger>
                 <TabsTrigger value="blockers" className="h-8 flex-none px-4">Blockers</TabsTrigger>
-                <TabsTrigger value="trends" className="h-8 flex-none px-4">Trends</TabsTrigger>
               </TabsList>
             </div>
 
             <TabsContent value="testing" className="w-full min-w-0 space-y-4">
               {section?.testExecution.status !== "available" ? <SectionNotice message={section?.testExecution.message} /> : null}
-              <div className="grid gap-4 xl:grid-cols-2">
-                <DashboardChartCard title="Test Execution Status" description="Latest outcome for each selected Azure Test Plan point." hasData={hasValues(data.testingProgress.statusDistribution)} emptyMessage={section?.testExecution.message ?? "No test execution data is available."} summary={distributionSummary(data.testingProgress.statusDistribution)}>
-                  <DonutChart data={data.testingProgress.statusDistribution} centerLabel="Test points" />
-                </DashboardChartCard>
-                <DashboardChartCard
-                  title="Top 10 Execution Risk by Test Suite"
-                  description="Latest outcome distribution across the selected Test Suites. Full suite names are available in tooltips."
-                  hasData={Boolean(data.testingProgress.byModule.length)}
-                  emptyMessage={section?.testExecution.message ?? "No module execution data is available."}
-                >
-                  <ExecutionStackedBarChart data={data.testingProgress.byModule} />
-                </DashboardChartCard>
-              </div>
-              <DashboardChartCard title="Execution and Pass Rate Trend" description="Daily completed Azure Test Results in the selected range; values are not cumulative." hasData={hasTrend(data.testingProgress.trend, ["executed", "passRate"])} emptyMessage={section?.trends.message ?? "No test execution data was recorded in this range."} notice={sparseTrendMessage(data.testingProgress.trend, ["executed", "passRate"])}>
-                <TrendLineChart data={data.testingProgress.trend} series={[
-                  { key: "executed", label: "Executed", color: "hsl(var(--chart-1))" },
-                  { key: "passRate", label: "Pass Rate", color: "hsl(var(--success))", yAxisId: "right" },
-                ]} />
+              <DashboardChartCard title="Test Execution Status" description="Latest outcome for each selected Azure Test Plan point." hasData={hasValues(data.testingProgress.statusDistribution)} emptyMessage={section?.testExecution.message ?? "No test execution data is available."} summary={distributionSummary(data.testingProgress.statusDistribution)}>
+                <DonutChart data={data.testingProgress.statusDistribution} centerLabel="Test points" />
               </DashboardChartCard>
               <TestingProgressTable rows={data.testingProgress.table} />
             </TabsContent>
 
             <TabsContent value="bugs" className="w-full min-w-0 space-y-4">
               {section?.bugs.status !== "available" ? <SectionNotice message={section?.bugs.message} /> : null}
-              <div className="grid gap-4 xl:grid-cols-2">
-                <DashboardChartCard title="Open Bugs by Severity" hasData={hasValues(data.bugStatus.bySeverity)} emptyMessage={section?.bugs.message ?? "No open bugs matched the selected filters."} summary={distributionSummary(data.bugStatus.bySeverity)}>
-                  <DistributionBarChart data={data.bugStatus.bySeverity} />
-                </DashboardChartCard>
-                <DashboardChartCard title="Open Bugs by Priority" description="Microsoft.VSTS.Common.Priority for bugs not in a completed or removed state." hasData={hasValues(data.bugStatus.byPriority)} emptyMessage={section?.bugs.message ?? "No open bugs matched the selected filters."} summary={distributionSummary(data.bugStatus.byPriority)}>
-                  <DistributionBarChart data={data.bugStatus.byPriority} />
-                </DashboardChartCard>
-              </div>
-              <DashboardChartCard
-                title="Bugs Pending Closure by State"
-                description={`Resolved or fixed items remain here until verification and final closure. ${data.bugStatus.closedCount} completed ${data.bugStatus.closedCount === 1 ? "bug is" : "bugs are"} excluded.`}
-                hasData={hasValues(data.bugStatus.byStatus)}
-                emptyMessage={section?.bugs.message ?? "No bugs are pending closure in this view."}
-                summary={distributionSummary(bugWorkflowData(data.bugStatus.byStatus))}
-              >
-                <DonutChart data={bugWorkflowData(data.bugStatus.byStatus)} centerLabel="Pending closure" />
-              </DashboardChartCard>
-              <DashboardChartCard title="Daily Bug State Events" description="Bugs opened, completed, or reopened per day. Values are daily events, not the current backlog." hasData={hasTrend(data.bugStatus.openClosedTrend, ["opened", "closed", "reopened"])} emptyMessage={section?.trends.message ?? "No bug events were recorded in this range."} notice={sparseTrendMessage(data.bugStatus.openClosedTrend, ["opened", "closed", "reopened"])}>
-                <TrendLineChart data={data.bugStatus.openClosedTrend} series={[
-                  { key: "opened", label: "Opened", color: "hsl(var(--destructive))" },
-                  { key: "closed", label: "Completed", color: "hsl(var(--success))" },
-                  { key: "reopened", label: "Reopened", color: "hsl(var(--warning))" },
-                ]} />
+              <DashboardChartCard title="Open Bugs by Severity" hasData={hasValues(data.bugStatus.bySeverity)} emptyMessage={section?.bugs.message ?? "No open bugs matched the selected filters."} summary={distributionSummary(data.bugStatus.bySeverity)}>
+                <DistributionBarChart data={data.bugStatus.bySeverity} />
               </DashboardChartCard>
               <AgingBugsTable rows={data.bugStatus.agingBugs} />
-              <AgingBugsTable rows={data.bugStatus.reopenedBugs} title="Reopened Bugs" compactEmpty />
-            </TabsContent>
-
-            <TabsContent value="coverage" className="w-full min-w-0 space-y-4">
-              {section?.coverage.status !== "available" ? <SectionNotice message={section?.coverage.message} /> : null}
-              <div className="grid gap-4 xl:grid-cols-2">
-                <DashboardChartCard
-                  title="Requirements Coverage"
-                  description="Coverage is based on linked test cases and is independent of whether those tests pass."
-                  hasData={hasValues(data.coverage.coveredVsUncovered)}
-                  emptyMessage={section?.coverage.message ?? "No requirement coverage data is available."}
-                  summary={distributionSummary(data.coverage.coveredVsUncovered)}
-                  className={coverageBreakdown(data) ? undefined : "xl:col-span-2"}
-                >
-                  <DonutChart data={data.coverage.coveredVsUncovered} centerLabel="Requirements" />
-                </DashboardChartCard>
-                {coverageBreakdown(data) ? (
-                  <DashboardChartCard title={coverageBreakdown(data)?.title ?? "Coverage Breakdown"} description={coverageBreakdown(data)?.description} hasData emptyMessage="No coverage breakdown is available.">
-                    <CoverageBarChart data={coverageBreakdown(data)?.rows ?? []} />
-                  </DashboardChartCard>
-                ) : null}
-              </div>
-              <CoverageMatrixTable rows={data.coverage.coverageGaps} title="Coverage Gaps" />
-              <CoverageMatrixTable rows={data.coverage.executionRiskRequirements} title="Execution Risk Requirements" />
-              <CoverageMatrixTable rows={data.coverage.matrix} />
             </TabsContent>
 
             <TabsContent value="blockers" className="w-full min-w-0 space-y-4">
-              <Tabs id="blocker-views" value={blockerView} onValueChange={(value) => setBlockerView(value as BlockerView)} className="w-full min-w-0 flex-col gap-4">
-                <TabsList className="h-9 w-fit max-w-full shrink-0 justify-start gap-1 overflow-x-auto">
-                  <TabsTrigger value="all" className="group/tabs-trigger flex-none gap-1.5 px-3">All<BlockerCount value={data.releaseReadiness.blockers.length} /></TabsTrigger>
-                  <TabsTrigger value="bugs" className="group/tabs-trigger flex-none gap-1.5 px-3">Bugs<BlockerCount value={blockerBugs.length} /></TabsTrigger>
-                  <TabsTrigger value="tests" className="group/tabs-trigger flex-none gap-1.5 px-3">Blocked Tests<BlockerCount value={data.blockers.aging.length} /></TabsTrigger>
-                  <TabsTrigger value="requirements" className="group/tabs-trigger flex-none gap-1.5 px-3">Uncovered Requirements<BlockerCount value={data.coverage.coverageGaps.length} /></TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="all" className="w-full min-w-0 space-y-4">
-                  <ReleaseBlockersTable rows={data.releaseReadiness.blockers} title="All Release Blockers" maxRows={Number.POSITIVE_INFINITY} />
-                </TabsContent>
-
-                <TabsContent value="bugs" className="w-full min-w-0 space-y-4">
-                  <AgingBugsTable rows={blockerBugs} title="Blocker Bugs (Critical / High)" />
-                </TabsContent>
-
-                <TabsContent value="tests" className="w-full min-w-0 space-y-4">
-                  {isUnknownOnly(data.blockers.byReason) ? (
-                    <DataQualityInsight
-                      title="Blocker reason data is unavailable"
-                      message={`Blocked reason is unavailable for ${data.blockers.aging.length} blocked ${data.blockers.aging.length === 1 ? "test" : "tests"}. Add the reason to result comments, tags, or a custom field to improve this breakdown.`}
-                    />
-                  ) : (
-                    <DashboardChartCard title="Blockers by Reason" description="Reasons are inferred only from explicit result comments or error text." hasData={hasValues(data.blockers.byReason)} emptyMessage="No blocked tests are present in the selected execution scope." summary={distributionSummary(data.blockers.byReason)}>
-                      <DistributionBarChart data={data.blockers.byReason} />
-                    </DashboardChartCard>
-                  )}
-                  <BlockersTable rows={data.blockers.aging} />
-                </TabsContent>
-
-                <TabsContent value="requirements" className="w-full min-w-0 space-y-4">
-                  <CoverageMatrixTable rows={data.coverage.coverageGaps} title="Uncovered High-Risk Requirements" />
-                </TabsContent>
-              </Tabs>
-            </TabsContent>
-
-            <TabsContent value="trends" className="w-full min-w-0 space-y-4">
-              {section?.trends.status !== "available" ? <SectionNotice message={section?.trends.message} /> : null}
-              <DashboardChartCard title="Daily Test Execution" description="Completed test outcomes per day. Empty dates after the last recorded result are omitted." hasData={hasTrend(data.trends.execution, ["executed", "passed", "failed", "blocked"])} emptyMessage={section?.trends.message ?? "No test execution data was recorded in this range."} notice={sparseTrendMessage(data.trends.execution, ["executed", "passed", "failed", "blocked"])}>
-                <TrendLineChart data={data.trends.execution} series={[
-                  { key: "executed", label: "Executed", color: "hsl(var(--chart-1))" },
-                  { key: "passed", label: "Passed", color: "hsl(var(--success))" },
-                  { key: "failed", label: "Failed", color: "hsl(var(--destructive))" },
-                  { key: "blocked", label: "Blocked", color: "hsl(var(--warning))" },
-                ]} />
-              </DashboardChartCard>
-              <DashboardChartCard title="Daily Pass Rate" description="Pass rate for completed results on each day; this is not cumulative." hasData={hasTrend(data.trends.passRate, ["passRate"])} emptyMessage={section?.trends.message ?? "No pass-rate data was recorded in this range."} notice={sparseTrendMessage(data.trends.passRate, ["passRate"])}>
-                <TrendLineChart data={data.trends.passRate} series={[{ key: "passRate", label: "Pass Rate", color: "hsl(var(--success))", yAxisId: "right" }]} />
-              </DashboardChartCard>
-              <DashboardChartCard title="Daily Bug Events" description="Work items opened and completed per day, plus critical/high bugs opened." hasData={hasTrend(data.trends.bugs, ["opened", "closed", "criticalHighOpened"])} emptyMessage={section?.trends.message ?? "No bug events were recorded in this range."} notice={sparseTrendMessage(data.trends.bugs, ["opened", "closed", "criticalHighOpened"])}>
-                <TrendLineChart data={data.trends.bugs} series={[
-                  { key: "opened", label: "Opened", color: "hsl(var(--destructive))" },
-                  { key: "closed", label: "Completed", color: "hsl(var(--success))" },
-                  { key: "criticalHighOpened", label: "Critical / High Opened", color: "hsl(var(--warning))" },
-                ]} />
-              </DashboardChartCard>
+              <ReleaseBlockersTable rows={data.releaseReadiness.blockers} title="All Release Blockers" maxRows={Number.POSITIVE_INFINITY} />
             </TabsContent>
           </Tabs>
         </>
@@ -471,38 +342,9 @@ function DataQualityNotice({ warnings }: { warnings: string[] }) {
   );
 }
 
-function DataQualityInsight({ title, message }: { title: string; message: string }) {
-  return (
-    <Card className="qa-card border-warning/25 bg-warning/5">
-      <CardContent className="flex items-start gap-3 p-4">
-        <Info className="mt-0.5 size-4 shrink-0 text-warning" />
-        <div><div className="text-sm font-semibold text-foreground">{title}</div><p className="mt-1 text-xs leading-5 text-muted-foreground">{message}</p></div>
-      </CardContent>
-    </Card>
-  );
-}
-
 function SectionNotice({ message }: { message?: string }) {
   if (!message) return null;
   return <Alert><AlertTriangle className="size-4" /><AlertTitle>Partial data</AlertTitle><AlertDescription>{message}</AlertDescription></Alert>;
-}
-
-function BlockerCount({ value }: { value: number }) {
-  return (
-    <span className="rounded-full bg-foreground/10 px-1.5 py-0.5 text-[11px] font-semibold leading-none tabular-nums text-muted-foreground group-data-[state=active]/tabs-trigger:bg-primary/15 group-data-[state=active]/tabs-trigger:text-foreground">
-      {value}
-    </span>
-  );
-}
-
-function coverageBreakdown(data: DashboardAnalytics) {
-  if (data.coverage.byModule.length > 1) {
-    return { title: "Coverage by Module", description: "Linked-test coverage across requirement area paths.", rows: data.coverage.byModule };
-  }
-  if (data.coverage.byPriority.length > 1) {
-    return { title: "Coverage by Priority", description: "Priority is used because the selected scope contains only one module.", rows: data.coverage.byPriority };
-  }
-  return null;
 }
 
 function scopeChips(filters: DashboardFilterState, data: DashboardAnalytics | null, metadata: DashboardFilterMetadata) {
@@ -529,39 +371,12 @@ function warningImpact(warning: string) {
   return "Some dashboard metrics may be incomplete for the selected scope. Review the source configuration or narrow the filters.";
 }
 
-function isUnknownOnly(data: Array<{ name: string; value: number }>) {
-  const populated = data.filter((item) => item.value > 0);
-  return populated.length === 1 && populated[0].name.toLowerCase() === "unknown";
-}
-
 function hasValues(data: Array<{ value: number }>) {
   return data.some((item) => item.value > 0);
 }
 
-function hasTrend(data: DashboardTrendPoint[], keys: Array<keyof DashboardTrendPoint>) {
-  return data.some((point) => keys.some((key) => typeof point[key] === "number" && Number(point[key]) > 0));
-}
-
 function distributionSummary(data: Array<{ name: string; value: number }>) {
   return data.map((item) => `${item.name}: ${item.value}`).join(". ");
-}
-
-function bugWorkflowData(data: Array<{ name: string; value: number; key?: string }>) {
-  return data.map((item) => {
-    const normalized = item.name.trim().toLowerCase();
-    return normalized === "resolved" || normalized === "fixed"
-      ? { ...item, name: `${item.name} / Pending Verification` }
-      : item;
-  });
-}
-
-function sparseTrendMessage(data: DashboardTrendPoint[], keys: Array<keyof DashboardTrendPoint>) {
-  const recordedDays = data.filter((point) => keys.some((key) => {
-    const value = point[key];
-    return typeof value === "number" && (key === "passRate" || value > 0);
-  })).length;
-  if (recordedDays === 0 || recordedDays > 5 || recordedDays === data.length) return null;
-  return `Only ${recordedDays} ${recordedDays === 1 ? "day has" : "days have"} recorded results in this range.`;
 }
 
 function formatDate(value: string) {

@@ -1,11 +1,11 @@
 "use client";
 
 import { Info } from "lucide-react";
-import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import type { DashboardDistributionDatum, DashboardExecutionModuleRow, DashboardTrendPoint } from "@/types/dashboard";
+import type { DashboardDistributionDatum } from "@/types/dashboard";
 
 const semanticColors: Record<string, string> = {
   passed: "hsl(var(--success))",
@@ -136,91 +136,6 @@ export function DistributionBarChart({ data }: { data: DashboardDistributionDatu
   );
 }
 
-export function ExecutionStackedBarChart({ data }: { data: DashboardExecutionModuleRow[] }) {
-  const chartData = data.slice(0, 10);
-
-  return (
-    <div className="min-w-0" style={{ height: Math.max(320, chartData.length * 38) }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={chartData} layout="vertical" margin={{ top: 8, right: 8, left: 8, bottom: 4 }}>
-          <CartesianGrid stroke="hsl(var(--border))" horizontal={false} />
-          <XAxis type="number" allowDecimals={false} tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }} tickLine={false} axisLine={false} />
-          <YAxis dataKey="module" type="category" width={150} tickFormatter={compactModuleLabel} tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }} tickLine={false} axisLine={false} />
-          <Tooltip content={<DashboardTooltip />} cursor={{ fill: "hsl(var(--muted) / 0.45)" }} />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
-          <Bar dataKey="passed" name="Passed" stackId="status" fill="hsl(var(--success))" />
-          <Bar dataKey="failed" name="Failed" stackId="status" fill="hsl(var(--destructive))" />
-          <Bar dataKey="blocked" name="Blocked" stackId="status" fill="hsl(var(--warning))" />
-          <Bar dataKey="notRun" name="Not Run" stackId="status" fill="hsl(var(--muted-foreground))" />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-export function CoverageBarChart({ data }: { data: Array<{ module: string; percentage: number | null }> }) {
-  const normalized = data.slice(0, 12).map((item) => ({ ...item, percentage: item.percentage ?? 0 }));
-  return (
-    <div className="h-[300px]">
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={normalized} layout="vertical" margin={{ top: 4, right: 16, left: 34, bottom: 4 }}>
-          <CartesianGrid stroke="hsl(var(--border))" horizontal={false} />
-          <XAxis type="number" domain={[0, 100]} unit="%" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }} tickLine={false} axisLine={false} />
-          <YAxis dataKey="module" type="category" width={110} tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }} tickLine={false} axisLine={false} />
-          <Tooltip content={<DashboardTooltip suffix="%" />} cursor={{ fill: "hsl(var(--muted) / 0.45)" }} />
-          <Bar dataKey="percentage" name="Coverage" fill="hsl(var(--chart-1))" radius={[2, 6, 6, 2]} />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-export type TrendSeries = {
-  key: keyof DashboardTrendPoint;
-  label: string;
-  color: string;
-  yAxisId?: "left" | "right";
-};
-
-export function TrendLineChart({ data, series }: { data: DashboardTrendPoint[]; series: TrendSeries[] }) {
-  const recordedDays = data.filter((point) => series.some((item) => {
-    const value = point[item.key];
-    return typeof value === "number" && (item.key === "passRate" || value > 0);
-  })).length;
-  const showPoints = recordedDays <= 6;
-
-  return (
-    <div className="h-[300px]">
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 8, right: 8, left: -18, bottom: 4 }}>
-          <CartesianGrid stroke="hsl(var(--border))" vertical={false} />
-          <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }} tickLine={false} axisLine={false} />
-          <YAxis yAxisId="left" allowDecimals={false} tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }} tickLine={false} axisLine={false} />
-          {series.some((item) => item.yAxisId === "right") ? (
-            <YAxis yAxisId="right" orientation="right" domain={[0, 100]} unit="%" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }} tickLine={false} axisLine={false} />
-          ) : null}
-          <Tooltip content={<DashboardTooltip />} />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
-          {series.map((item) => (
-            <Line
-              key={String(item.key)}
-              yAxisId={item.yAxisId ?? "left"}
-              type="monotone"
-              dataKey={item.key}
-              name={item.label}
-              stroke={item.color}
-              strokeWidth={2}
-              dot={showPoints ? { r: 3, strokeWidth: 2, fill: "hsl(var(--card))" } : false}
-              activeDot={{ r: 5 }}
-              connectNulls={false}
-            />
-          ))}
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
 type TooltipPayload = {
   name?: string | number;
   value?: string | number;
@@ -258,15 +173,4 @@ function DashboardTooltip({
 
 function colorFor(name: string, index: number) {
   return semanticColors[name.toLowerCase()] ?? palette[index % palette.length];
-}
-
-function shortDate(value: string) {
-  const date = new Date(`${value}T00:00:00`);
-  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
-}
-
-function compactModuleLabel(value: string) {
-  const segments = value.split("/").map((segment) => segment.trim()).filter(Boolean);
-  const label = segments.at(-1) ?? value;
-  return label.length > 24 ? `${label.slice(0, 21)}...` : label;
 }

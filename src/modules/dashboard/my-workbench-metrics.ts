@@ -2,7 +2,6 @@ import type { AzureIteration, Requirement } from "@/modules/integrations/azure-d
 import { toLocalDayString } from "@/shared/lib/local-day";
 import type {
   MyWorkbenchAnalytics,
-  WorkbenchBurnPoint,
   WorkbenchCard,
   WorkbenchFilters,
   WorkbenchFocusBadge,
@@ -90,7 +89,6 @@ export function buildMyWorkbenchAnalyticsModel(input: WorkbenchBuildInput) {
     assignedBySprint,
     charts: {
       remainingWorkByStatus: remainingWorkByStatus(focusList),
-      sprintBurnStatus: buildSprintBurnStatus(focusList, selectedSprint, today),
       workItemsByType: workItemsByType(focusList),
     },
     counts: {
@@ -366,21 +364,6 @@ function workItemsByType(items: WorkbenchFocusItem[]) {
     .slice(0, WORKBENCH_LIMITS.chartSlices);
 }
 
-function buildSprintBurnStatus(items: WorkbenchFocusItem[], selectedSprint: WorkbenchIterationSelection, today: string): WorkbenchBurnPoint[] {
-  if (!selectedSprint.startDate || !selectedSprint.finishDate) return [];
-  const remaining = sumNumbers(items.map((item) => item.remainingWork));
-  const completed = sumNumbers(items.map((item) => item.completedWork));
-  const total = remaining + completed;
-  if (total <= 0) return [];
-  const days = dateRange(selectedSprint.startDate, selectedSprint.finishDate);
-  const denominator = Math.max(days.length - 1, 1);
-  return days.map((date, index) => ({
-    date,
-    idealRemaining: round(total * Math.max(0, denominator - index) / denominator),
-    ...(date === today ? { actualRemaining: round(remaining) } : {}),
-  }));
-}
-
 function buildWarnings(
   allAssigned: Requirement[],
   focusItems: WorkbenchFocusItem[],
@@ -471,17 +454,6 @@ function findDefaultIteration(iterations: AzureIteration[], today: string) {
 
 function isBacklogItem(item: Requirement) {
   return !item.iterationPath?.trim();
-}
-
-function dateRange(from: string, to: string) {
-  const result: string[] = [];
-  const cursor = new Date(`${from}T00:00:00`);
-  const end = new Date(`${to}T00:00:00`);
-  while (cursor <= end) {
-    result.push(toLocalDayString(cursor));
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return result;
 }
 
 function isDateWithin(date: string, from?: string | null, to?: string | null) {

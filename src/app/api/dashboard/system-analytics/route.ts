@@ -15,7 +15,7 @@ const CalendarDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   filters: z.object({
-    datePreset: z.enum(["7d", "14d", "30d", "custom"]).optional(),
+    datePreset: z.enum(["7d", "14d", "30d", "overall", "custom"]).optional(),
     from: CalendarDateSchema.optional(),
     to: CalendarDateSchema.optional(),
     workflowTypes: z.array(z.enum(workflowTypeValues)).max(workflowTypeValues.length).optional(),

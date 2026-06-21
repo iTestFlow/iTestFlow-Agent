@@ -5,8 +5,7 @@ export type DashboardTestOutcome = "passed" | "failed" | "blocked" | "not_run" |
 export type DashboardRiskStatus = "critical" | "high" | "medium" | "low" | "unknown";
 export type DashboardCoverageStatus = "covered" | "partially_covered" | "not_covered" | "unknown";
 export type DashboardExecutionHealth = "passing" | "failing" | "blocked" | "not_run" | "mixed" | "unknown";
-export type DashboardTab = "testing" | "bugs" | "coverage" | "blockers" | "trends";
-export type DashboardActionSeverity = "critical" | "high" | "medium" | "info";
+export type DashboardTab = "testing" | "bugs" | "blockers";
 
 export type DashboardDateRange = {
   preset: DashboardDatePreset;
@@ -50,18 +49,11 @@ export type DashboardMetric = {
 };
 
 export type DashboardKpis = {
-  releaseReadiness: {
-    status: DashboardReadinessStatus;
-    score: number | null;
-    reasons: string[];
-  };
   testExecutionProgress: DashboardMetric;
   passRate: DashboardMetric;
   openBugs: DashboardMetric;
   openCriticalHighBugs: DashboardMetric;
-  blockedTests: DashboardMetric;
   requirementsCoverage: DashboardMetric;
-  retestPending: DashboardMetric;
 };
 
 export type DashboardDistributionDatum = {
@@ -83,34 +75,12 @@ export type DashboardExecutionModuleRow = {
   status: DashboardRiskStatus;
 };
 
-export type DashboardActionItem = {
-  id: string;
-  severity: DashboardActionSeverity;
-  message: string;
-  actionLabel: string;
-  target: DashboardTab | "readiness";
-};
-
-export type DashboardTrendPoint = {
-  date: string;
-  executed?: number;
-  passed?: number;
-  failed?: number;
-  blocked?: number;
-  passRate?: number | null;
-  opened?: number;
-  closed?: number;
-  reopened?: number;
-  criticalHighOpened?: number;
-};
-
 export type DashboardBugRow = {
   id: string;
   title: string;
   severity: string;
   priority: number | null;
   status: string;
-  assignee: string | null;
   ageDays: number | null;
   linkedRequirementId: string | null;
   linkedRequirementTitle: string | null;
@@ -134,32 +104,12 @@ export type DashboardRequirementRow = {
   url: string | null;
 };
 
-export type DashboardCoverageModuleRow = {
-  module: string;
-  covered: number;
-  total: number;
-  percentage: number | null;
-};
-
 export type DashboardReleaseBlocker = {
   type: "Bug" | "Blocked Test" | "Uncovered Requirement";
   id: string;
   title: string;
   severityOrPriority: string;
-  owner: string | null;
   ageDays: number | null;
-  recommendedAction: string;
-  url: string | null;
-};
-
-export type DashboardBlockerRow = {
-  id: string;
-  title: string;
-  reason: string;
-  owner: string | null;
-  ageDays: number | null;
-  impactedArea: string | null;
-  status: string;
   recommendedAction: string;
   url: string | null;
 };
@@ -176,29 +126,13 @@ export type DashboardAnalytics = {
   filters: DashboardFilters;
   filterMetadata: DashboardFilterMetadata;
   kpis: DashboardKpis;
-  actions: DashboardActionItem[];
   testingProgress: {
     statusDistribution: DashboardDistributionDatum[];
-    byModule: DashboardExecutionModuleRow[];
-    trend: DashboardTrendPoint[];
     table: DashboardExecutionModuleRow[];
   };
   bugStatus: {
     bySeverity: DashboardDistributionDatum[];
-    byPriority: DashboardDistributionDatum[];
-    byStatus: DashboardDistributionDatum[];
-    closedCount: number;
-    openClosedTrend: DashboardTrendPoint[];
     agingBugs: DashboardBugRow[];
-    reopenedBugs: DashboardBugRow[];
-  };
-  coverage: {
-    coveredVsUncovered: DashboardDistributionDatum[];
-    byModule: DashboardCoverageModuleRow[];
-    byPriority: DashboardCoverageModuleRow[];
-    coverageGaps: DashboardRequirementRow[];
-    executionRiskRequirements: DashboardRequirementRow[];
-    matrix: DashboardRequirementRow[];
   };
   releaseReadiness: {
     status: DashboardReadinessStatus;
@@ -207,24 +141,9 @@ export type DashboardAnalytics = {
     reasons: string[];
     blockers: DashboardReleaseBlocker[];
   };
-  blockers: {
-    byReason: DashboardDistributionDatum[];
-    aging: DashboardBlockerRow[];
-  };
-  trends: {
-    execution: DashboardTrendPoint[];
-    passRate: DashboardTrendPoint[];
-    bugs: DashboardTrendPoint[];
-  };
   metadata: {
-    dataCompleteness: {
-      hasTestExecutionData: boolean;
-      hasBugData: boolean;
-      hasCoverageData: boolean;
-      hasTrendData: boolean;
-    };
     sections: Record<
-      "filters" | "testExecution" | "bugs" | "coverage" | "trends",
+      "filters" | "testExecution" | "bugs",
       DashboardSectionAvailability
     >;
     warnings: string[];

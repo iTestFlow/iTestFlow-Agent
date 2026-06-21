@@ -87,12 +87,6 @@ export type WorkbenchDistributionDatum = {
   key?: string;
 };
 
-export type WorkbenchBurnPoint = {
-  date: string;
-  idealRemaining: number;
-  actualRemaining?: number;
-};
-
 export type MyWorkbenchAnalytics = {
   generatedAt: string;
   user: AzureAuthenticatedUser;
@@ -103,7 +97,6 @@ export type MyWorkbenchAnalytics = {
   assignedBySprint: WorkbenchSprintRow[];
   charts: {
     remainingWorkByStatus: WorkbenchDistributionDatum[];
-    sprintBurnStatus: WorkbenchBurnPoint[];
     workItemsByType: WorkbenchDistributionDatum[];
   };
   metadata: {

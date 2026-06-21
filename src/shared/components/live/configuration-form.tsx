@@ -520,7 +520,7 @@ export function ConfigurationForm({
           <TabsContent value="metrics" forceMount hidden={activeSettingsTab !== "metrics"} className="space-y-4">
             <SectionCard
               title="Dashboard Value Metrics"
-              description="These values are used only to estimate time savings in stakeholder dashboards. They do not affect AI generation."
+              description="These values are used only to estimate the time savings shown in Platform Insights. They do not affect AI generation."
             >
               <DashboardValueMetricsSection form={form} update={update} />
             </SectionCard>

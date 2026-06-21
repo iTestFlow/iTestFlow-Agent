@@ -1,7 +1,4 @@
 import type {
-  DashboardBlockerRow,
-  DashboardActionItem,
-  DashboardCoverageModuleRow,
   DashboardCoverageStatus,
   DashboardExecutionHealth,
   DashboardDistributionDatum,
@@ -10,9 +7,7 @@ import type {
   DashboardRequirementRow,
   DashboardRiskStatus,
   DashboardTestOutcome,
-  DashboardTrendPoint,
 } from "@/types/dashboard";
-import { toLocalDayString } from "@/shared/lib/local-day";
 
 export const DASHBOARD_LIMITS = {
   workItems: 1000,
@@ -267,31 +262,6 @@ function requirementRisk(input: {
   return "low";
 }
 
-export function buildCoverageByModule(rows: DashboardRequirementRow[]): DashboardCoverageModuleRow[] {
-  const groups = new Map<string, DashboardRequirementRow[]>();
-  rows.forEach((row) => groups.set(row.module, [...(groups.get(row.module) ?? []), row]));
-  return [...groups.entries()]
-    .map(([moduleName, group]) => {
-      const covered = group.filter((row) => isCovered(row.coverageStatus)).length;
-      return { module: moduleName, covered, total: group.length, percentage: calculatePercentage(covered, group.length) };
-    })
-    .sort((a, b) => (a.percentage ?? -1) - (b.percentage ?? -1) || b.total - a.total);
-}
-
-export function buildCoverageByPriority(rows: DashboardRequirementRow[]): DashboardCoverageModuleRow[] {
-  const groups = new Map<string, DashboardRequirementRow[]>();
-  rows.forEach((row) => {
-    const priority = row.priority ? `Priority ${row.priority}` : "Unknown priority";
-    groups.set(priority, [...(groups.get(priority) ?? []), row]);
-  });
-  return [...groups.entries()]
-    .map(([priority, group]) => {
-      const covered = group.filter((row) => isCovered(row.coverageStatus)).length;
-      return { module: priority, covered, total: group.length, percentage: calculatePercentage(covered, group.length) };
-    })
-    .sort((a, b) => priorityRank(a.module) - priorityRank(b.module));
-}
-
 export function classifyBlockerReason(text?: string | null) {
   const value = (text ?? "").toLowerCase();
   const rules: Array<[string, string[]]> = [
@@ -304,13 +274,6 @@ export function classifyBlockerReason(text?: string | null) {
     ["Dependency", ["dependency", "dependent", "waiting for"]],
   ];
   return rules.find(([, tokens]) => tokens.some((token) => value.includes(token)))?.[0] ?? "Unknown";
-}
-
-export function buildBlockerDistribution(items: DashboardBlockerRow[]) {
-  return groupDistribution(
-    items.map((item) => item.reason),
-    ["Environment", "Test Data", "API / Integration", "Access / Permission", "Requirement Clarification", "Open Bug", "Dependency", "Unknown"],
-  );
 }
 
 export type ReadinessInput = {
@@ -403,116 +366,8 @@ export function buildReleaseRiskSummary(status: DashboardReadinessStatus, reason
   return `Release is ${label} because ${joinReasons(selected)}.`;
 }
 
-export function buildDailyTrend(
-  from: string,
-  to: string,
-  points: DashboardTrendPoint[],
-): DashboardTrendPoint[] {
-  const byDate = new Map(points.map((point) => [point.date, point]));
-  const result: DashboardTrendPoint[] = [];
-  // Iterate local calendar days (note: no trailing Z) so the axis aligns with the
-  // local-day buckets that datePart produces for each event.
-  const cursor = new Date(`${from}T00:00:00`);
-  const end = new Date(`${to}T00:00:00`);
-  while (cursor <= end) {
-    const date = toLocalDayString(cursor);
-    result.push({ date, ...(byDate.get(date) ?? {}) });
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return result;
-}
-
-export function trimTrailingEmptyTrend(points: DashboardTrendPoint[]) {
-  let lastDataIndex = -1;
-  points.forEach((point, index) => {
-    if (Object.entries(point).some(([key, value]) => key !== "date" && typeof value === "number")) {
-      lastDataIndex = index;
-    }
-  });
-  return lastDataIndex >= 0 ? points.slice(0, lastDataIndex + 1) : points;
-}
-
-export function buildDashboardActions(input: {
-  blockedTests: number;
-  openCriticalBugs: number;
-  openHighBugs: number;
-  highRiskCoverageGaps: number;
-  retestPending: number;
-  passRate: number | null;
-  executionPercentage: number | null;
-}): DashboardActionItem[] {
-  const actions: DashboardActionItem[] = [];
-  if (input.blockedTests > 0) {
-    actions.push({
-      id: "blocked-tests",
-      severity: input.blockedTests >= READINESS_THRESHOLDS.notReadyBlockedTests ? "critical" : "high",
-      message: `${input.blockedTests} blocked ${input.blockedTests === 1 ? "test requires" : "tests require"} investigation.`,
-      actionLabel: "View blockers",
-      target: "blockers",
-    });
-  }
-  const severeBugs = input.openCriticalBugs + input.openHighBugs;
-  if (severeBugs > 0) {
-    actions.push({
-      id: "severe-bugs",
-      severity: input.openCriticalBugs > 0 || input.openHighBugs >= READINESS_THRESHOLDS.notReadyHighBugs ? "critical" : "high",
-      message: `${severeBugs} critical or high-severity ${severeBugs === 1 ? "bug is" : "bugs are"} still unclosed.`,
-      actionLabel: "View bugs",
-      target: "bugs",
-    });
-  }
-  if (input.highRiskCoverageGaps > 0) {
-    actions.push({
-      id: "coverage-gaps",
-      severity: "high",
-      message: `${input.highRiskCoverageGaps} high-risk ${input.highRiskCoverageGaps === 1 ? "requirement needs" : "requirements need"} coverage review.`,
-      actionLabel: "View coverage risks",
-      target: "coverage",
-    });
-  }
-  if (input.retestPending > 0) {
-    actions.push({
-      id: "retest-pending",
-      severity: "medium",
-      message: `${input.retestPending} resolved ${input.retestPending === 1 ? "bug is" : "bugs are"} pending verification.`,
-      actionLabel: "View retest pending",
-      target: "bugs",
-    });
-  }
-  if (input.passRate !== null && input.passRate < READINESS_THRESHOLDS.minimumPassRate) {
-    actions.push({
-      id: "pass-rate",
-      severity: input.passRate < READINESS_THRESHOLDS.notReadyPassRate ? "high" : "medium",
-      message: `Pass rate is ${formatPercent(input.passRate)}, below the ${READINESS_THRESHOLDS.minimumPassRate}% target.`,
-      actionLabel: "View testing progress",
-      target: "testing",
-    });
-  }
-  if (input.executionPercentage !== null && input.executionPercentage < READINESS_THRESHOLDS.minimumExecutionCompletion) {
-    actions.push({
-      id: "execution-progress",
-      severity: "medium",
-      message: `Execution completion is ${formatPercent(input.executionPercentage)}, below the ${READINESS_THRESHOLDS.minimumExecutionCompletion}% target.`,
-      actionLabel: "View testing progress",
-      target: "testing",
-    });
-  }
-  return actions
-    .sort((a, b) => actionRank(a.severity) - actionRank(b.severity))
-    .slice(0, 5);
-}
-
 export function riskRank(value: DashboardRiskStatus) {
   return { critical: 0, high: 1, medium: 2, unknown: 3, low: 4 }[value];
-}
-
-function actionRank(value: DashboardActionItem["severity"]) {
-  return { critical: 0, high: 1, medium: 2, info: 3 }[value];
-}
-
-function priorityRank(value: string) {
-  const match = value.match(/\d+/);
-  return match ? Number(match[0]) : 99;
 }
 
 function titleCase(value: string) {
