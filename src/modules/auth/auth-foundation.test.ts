@@ -8,6 +8,7 @@ import {
   requireWorkspaceRole,
   WorkspaceAccessError,
 } from "@/modules/workspace/workspace-access.service";
+import { getWorkspaceById, getWorkspacesForUser } from "@/modules/workspace/workspace.service";
 import { persistSession, resolveSessionToken, revokeSessionToken } from "@/modules/auth/session.service";
 
 const TEST_EMAIL = "owner@itestflow.test";
@@ -64,5 +65,17 @@ describeDb("auth & workspace foundation (DB-backed)", () => {
     await revokeSessionToken(token);
     expect(await resolveSessionToken(token)).toBeNull();
     expect(await resolveSessionToken("not-a-real-token")).toBeNull();
+  });
+
+  it("looks up workspaces by id and by user (workspaceId validation primitives)", async () => {
+    const bootstrap = await ensureBootstrapOwner();
+    const { userId, workspaceId } = bootstrap!;
+
+    expect((await getWorkspaceById(workspaceId))?.id).toBe(workspaceId);
+    expect(await getWorkspaceById("ws_does_not_exist")).toBeNull();
+
+    const list = await getWorkspacesForUser(userId);
+    expect(list.map((w) => w.id)).toContain(workspaceId);
+    expect(list.find((w) => w.id === workspaceId)?.role).toBe("owner");
   });
 });

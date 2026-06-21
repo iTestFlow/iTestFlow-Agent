@@ -20,7 +20,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const ctx = await requireWorkflowContext();
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const metadata = await adapter.fetchProjectWorkItemMetadata({
       projectId: parsed.data.scope.azureProjectId,

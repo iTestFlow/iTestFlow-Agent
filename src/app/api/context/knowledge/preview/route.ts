@@ -28,7 +28,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const ctx = await requireWorkflowContext();
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const provider = await getUserLLMProvider(ctx);
 
     const draft = await previewGeneratedProjectKnowledgeBase({

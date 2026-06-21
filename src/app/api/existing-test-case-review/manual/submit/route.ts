@@ -42,7 +42,7 @@ export async function POST(request: Request) {
       rawOutput: parsed.data.rawOutput,
       targetWorkItemId: parsed.data.targetWorkItemId,
     });
-    const ctx = await requireWorkflowContext();
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const linkedTestCases = await adapter.fetchLinkedTestCases({
       projectId: parsed.data.scope.azureProjectId,

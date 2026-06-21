@@ -46,7 +46,7 @@ export async function POST(request: Request) {
   let analyticsRunId: string | undefined;
   try {
     const options = parsed.data.options ?? defaultTestDesignOptions;
-    const ctx = await requireWorkflowContext();
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({

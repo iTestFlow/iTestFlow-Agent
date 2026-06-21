@@ -7,6 +7,10 @@ export const ProjectScopeSchema = z.object({
   azureProjectId: z.string().min(1),
   azureProjectName: z.string().min(1),
   azureOrganizationUrl: z.string().url(),
+  // Optional: the client's active workspace. When present, the server validates
+  // the caller's membership in it; when absent, the user's primary workspace is
+  // used. Feature services ignore this field (they scope by project).
+  workspaceId: z.string().optional(),
 });
 
 export type ProjectScope = z.infer<typeof ProjectScopeSchema>;

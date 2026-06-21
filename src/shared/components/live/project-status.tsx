@@ -8,6 +8,7 @@ type AzureProject = {
   id: string;
   name: string;
   azureOrganizationUrl: string;
+  workspaceId?: string;
 };
 
 function organizationLabel(value?: string) {
@@ -38,6 +39,7 @@ export function HeaderProjectSelector() {
             azureProjectId: first.id,
             azureProjectName: first.name,
             azureOrganizationUrl: first.azureOrganizationUrl,
+            workspaceId: first.workspaceId ?? json.workspaceId,
           };
           writeActiveProject(scope);
           setActiveProject(scope);
@@ -83,6 +85,7 @@ export function HeaderProjectSelector() {
               azureProjectId: project.id,
               azureProjectName: project.name,
               azureOrganizationUrl: project.azureOrganizationUrl,
+              workspaceId: project.workspaceId,
             };
             writeActiveProject(scope);
             setActiveProject(scope);

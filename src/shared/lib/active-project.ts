@@ -3,6 +3,8 @@ export type ActiveProjectScope = {
   azureProjectId: string;
   azureProjectName: string;
   azureOrganizationUrl: string;
+  /** The workspace this project belongs to; sent with feature requests for server-side validation. */
+  workspaceId?: string;
 };
 
 export const activeProjectStorageKey = "itestflow.activeProject";

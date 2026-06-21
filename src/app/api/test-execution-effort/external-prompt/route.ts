@@ -33,7 +33,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const ctx = await requireWorkflowContext();
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const options = TestExecutionEffortOptionsSchema.parse(parsed.data);
     const data = await loadTestExecutionEffortData({

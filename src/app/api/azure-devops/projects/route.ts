@@ -15,9 +15,11 @@ export async function GET() {
     return NextResponse.json({
       mode: "live",
       organizationUrl: ctx.workspace.azureOrgUrl,
+      workspaceId: ctx.workspace.id,
       projects: projects.map((project) => ({
         ...project,
         azureOrganizationUrl: ctx.workspace.azureOrgUrl,
+        workspaceId: ctx.workspace.id,
       })),
     });
   } catch (error) {

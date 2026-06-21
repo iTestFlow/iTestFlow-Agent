@@ -52,7 +52,7 @@ export async function POST(request: Request) {
         })),
     );
 
-    const ctx = await requireWorkflowContext();
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const result = await postBugReportToAzureDevOps({
       adapter,

@@ -23,7 +23,7 @@ export async function POST(request: Request) {
     workItemId: parsed.data.selectedSuiteIds.join(","),
   });
   try {
-    const ctx = await requireWorkflowContext();
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const result = await executeSuiteMigration(adapter, parsed.data);
     const successfulActions = result.report.actions.filter((action) => action.status === "success").length;

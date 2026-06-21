@@ -32,7 +32,7 @@ export async function POST(request: Request) {
 
   try {
     const options = parsed.data.options ?? defaultTestDesignOptions;
-    const ctx = await requireWorkflowContext();
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const targetRequirement = await adapter.fetchWorkItemById({
       projectId: parsed.data.scope.azureProjectId,

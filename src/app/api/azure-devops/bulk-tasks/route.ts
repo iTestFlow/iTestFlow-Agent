@@ -150,7 +150,7 @@ export async function POST(request: Request) {
     workItemId: "bulk-tasks",
   });
   try {
-    const ctx = await requireWorkflowContext();
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const result = await createBulkTasks(adapter, parsed.data.scope, {
       taskTemplates: parsed.data.taskTemplates,

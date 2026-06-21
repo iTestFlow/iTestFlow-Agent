@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     workflowType: "knowledge_indexing",
   });
   try {
-    const ctx = await requireWorkflowContext();
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
     const result = await indexAzureWorkItemsAsProjectContext({
       scope: parsed.data.scope,

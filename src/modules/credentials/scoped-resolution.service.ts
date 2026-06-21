@@ -6,8 +6,8 @@ import { createLLMProvider } from "@/modules/llm/llm-provider.factory";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { DEFAULT_MAX_OUTPUT_TOKEN_CAP, DEFAULT_RETRY_ATTEMPTS } from "@/modules/llm/llm-defaults";
 import { requireSession, SessionError } from "@/modules/auth/session.service";
-import { requireWorkspaceAccess } from "@/modules/workspace/workspace-access.service";
-import { getPrimaryWorkspaceForUser, type WorkspaceRef } from "@/modules/workspace/workspace.service";
+import { getWorkspaceMembership } from "@/modules/workspace/workspace-access.service";
+import { getPrimaryWorkspaceForUser, getWorkspaceById, type WorkspaceRef } from "@/modules/workspace/workspace.service";
 import { resolveUserAzurePat, resolveUserLlmConfig } from "./credential.service";
 
 /**
@@ -36,11 +36,25 @@ export type WorkflowContext = {
   workspace: WorkspaceRef;
 };
 
-export async function requireWorkflowContext(): Promise<WorkflowContext> {
+/**
+ * Resolves the authenticated user + the target workspace and verifies membership.
+ * When the client supplies a workspaceId (via scope.workspaceId), that workspace
+ * is used and membership is validated; otherwise the user's primary workspace is
+ * used. Never trusts a client workspace the user isn't a member of.
+ */
+export async function requireWorkflowContext(workspaceId?: string | null): Promise<WorkflowContext> {
   const session = await requireSession();
-  const workspace = await getPrimaryWorkspaceForUser(session.userId);
-  if (!workspace) throw new WorkflowAuthError("No workspace membership found for this user.", 403);
-  await requireWorkspaceAccess(session.userId, workspace.id);
+  const workspace = workspaceId
+    ? await getWorkspaceById(workspaceId)
+    : await getPrimaryWorkspaceForUser(session.userId);
+  if (!workspace) {
+    throw new WorkflowAuthError(
+      workspaceId ? "Workspace not found." : "No workspace membership found for this user.",
+      workspaceId ? 404 : 403,
+    );
+  }
+  const membership = await getWorkspaceMembership(session.userId, workspace.id);
+  if (!membership) throw new WorkflowAuthError("You do not have access to this workspace.", 403);
   return { userId: session.userId, workspace };
 }
 

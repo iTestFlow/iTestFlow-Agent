@@ -55,7 +55,7 @@ export async function POST(request: Request) {
     // Auth + per-user credentials (replaces global runtime settings). The user's
     // own encrypted Azure PAT and LLM key are used; the org comes from the
     // workspace, never the client.
-    const ctx = await requireWorkflowContext();
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const adapter = await getUserAzureAdapter(ctx, {
       azureProjectId: parsed.data.scope.azureProjectId,
       azureProjectName: parsed.data.scope.azureProjectName,
