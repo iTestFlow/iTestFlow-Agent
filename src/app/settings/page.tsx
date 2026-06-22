@@ -2,27 +2,23 @@
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ContentShell } from "@/components/layout/content-shell"
-import { MyCredentialsCard } from "@/shared/components/credentials/my-credentials-card"
-import { WorkspaceMembersCard } from "@/shared/components/workspace/workspace-members-card"
-import { SyncScheduleCard } from "@/shared/components/workspace/sync-schedule-card"
+import { SettingsTabs } from "@/shared/components/settings/settings-tabs"
 
 export default function SettingsPage() {
   return (
     <ContentShell
       title="Settings"
-      description="Manage your private Azure DevOps and LLM credentials for iTestFlow."
+      description="Manage your private Azure DevOps and LLM credentials, and workspace-wide configuration."
     >
       <div className="space-y-4">
         <Alert className="border-primary/20 bg-primary/10 py-3">
           <AlertTitle className="text-sm">Your credentials are private</AlertTitle>
           <AlertDescription className="text-muted-foreground">
             Your Azure DevOps PAT and LLM API key are encrypted and used only for your own actions.
-            Workspace data (dashboards, history, Knowledge Hub) is shared with your workspace.
+            Workspace settings (members, retrieval, sync schedule) are shared and managed by owners and admins.
           </AlertDescription>
         </Alert>
-        <MyCredentialsCard />
-        <WorkspaceMembersCard />
-        <SyncScheduleCard />
+        <SettingsTabs />
       </div>
     </ContentShell>
   )

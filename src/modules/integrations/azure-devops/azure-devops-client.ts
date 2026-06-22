@@ -169,6 +169,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
         userName?: string;
         uniqueName?: string;
         imageUrl?: string;
+        properties?: Record<string, { $value?: unknown } | undefined>;
       };
     }>("_apis/connectionData?api-version=7.1-preview.1");
     const user = json.authenticatedUser;
@@ -176,6 +177,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       id: user?.id,
       displayName: user?.providerDisplayName ?? user?.customDisplayName ?? user?.displayName ?? user?.userName ?? "Azure DevOps user",
       uniqueName: user?.uniqueName ?? user?.userName,
+      emailAddress: resolveAzureEmail(user),
       imageUrl: user?.imageUrl,
     };
   }
@@ -1324,6 +1326,40 @@ function uniqueSortedValues(values: string[]) {
     if (trimmed && !unique.has(key)) unique.set(key, trimmed);
   }
   return [...unique.values()].sort((first, second) => first.localeCompare(second));
+}
+
+/**
+ * Resolves the authenticated user's email from Azure DevOps connectionData.
+ * Modern dev.azure.com orgs return an email-shaped `uniqueName`; older
+ * *.visualstudio.com orgs return a GUID there, but still carry the account email
+ * in the identity's `properties` bag (Account / Mail). Returns undefined when no
+ * email is exposed at all (PAT scope without identity email), so callers fall
+ * back to the uniqueName/id.
+ */
+function resolveAzureEmail(
+  user:
+    | {
+        uniqueName?: string;
+        userName?: string;
+        properties?: Record<string, { $value?: unknown } | undefined>;
+      }
+    | undefined,
+): string | undefined {
+  const candidates = [
+    user?.uniqueName,
+    user?.userName,
+    propertyValue(user?.properties?.Account),
+    propertyValue(user?.properties?.Mail),
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.includes("@")) return candidate.trim();
+  }
+  return undefined;
+}
+
+/** Reads the `$value` of an Azure DevOps property bag entry, when it is a string. */
+function propertyValue(prop: { $value?: unknown } | undefined): string | undefined {
+  return typeof prop?.$value === "string" ? prop.$value : undefined;
 }
 
 function flattenIterations(node: AzureClassificationNode): AzureIteration[] {

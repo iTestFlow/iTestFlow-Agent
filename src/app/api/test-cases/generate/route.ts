@@ -66,7 +66,7 @@ export async function POST(request: Request) {
       provider,
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: getRetrievalTopK(),
+      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
       workflowType: "test_case_generation",
     });
     const result = await generateTestCases({

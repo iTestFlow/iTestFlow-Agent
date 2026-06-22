@@ -36,7 +36,13 @@ Set these via the hosting platform's secrets or a secret manager — **not** in 
 | `WORKER_SCHEDULER_TICK_MS` | optional | how often due schedules are evaluated (default 60s) |
 | `WORKER_POLL_MS` | optional | worker idle poll interval (default 2s) |
 | `RATE_LIMIT_BACKEND` | optional | `memory` (default, per-process) or `postgres` (shared) — see note below |
-| `PROJECT_CONTEXT_TOP_K` | optional | RAG retrieval breadth (default 8) |
+| `PROJECT_CONTEXT_TOP_K` | optional | RAG retrieval breadth default (default 8, clamped 1–25). Per-workspace override in Settings → Workspace takes precedence. |
+
+> **Per-workspace settings:** retrieval breadth (top-K) and the LLM max output
+> token cap can be set per workspace by an owner/admin in **Settings → Workspace**.
+> A workspace value overrides the deployment default; left unset, a workspace
+> inherits `PROJECT_CONTEXT_TOP_K` (top-K) / the built-in 32000 cap. The cap snaps
+> to one of 16000 / 32000 / 64000.
 
 > **Multi-replica rate limiting:** the login/credential rate limiter defaults to an
 > in-memory counter, which is per-process. If you run **more than one web replica**, set

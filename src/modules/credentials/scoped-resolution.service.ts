@@ -8,6 +8,7 @@ import { DEFAULT_MAX_OUTPUT_TOKEN_CAP, DEFAULT_RETRY_ATTEMPTS } from "@/modules/
 import { requireSession, SessionError } from "@/modules/auth/session.service";
 import { getWorkspaceMembership } from "@/modules/workspace/workspace-access.service";
 import { getPrimaryWorkspaceForUser, getWorkspaceById, type WorkspaceRef } from "@/modules/workspace/workspace.service";
+import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import { resolveUserAzurePat, resolveUserLlmConfig, markUserAzurePatExpired } from "./credential.service";
 
 /**
@@ -112,13 +113,16 @@ export async function getUserLLMProvider(ctx: WorkflowContext): Promise<LLMProvi
       400,
     );
   }
+  // Output cap is a workspace-wide setting (Settings → Workspace), validated to an
+  // allowed option at write time; fall back to the deployment default when unset.
+  const wsSettings = await getWorkspaceSettings(ctx.workspace.id);
   return createLLMProvider({
     provider: llm.provider,
     apiKey: llm.apiKey,
     model: llm.model,
     baseUrl: llm.baseUrl,
-    maxOutputTokenCap: DEFAULT_MAX_OUTPUT_TOKEN_CAP,
-    retryAttempts: DEFAULT_RETRY_ATTEMPTS,
+    maxOutputTokenCap: wsSettings?.maxOutputTokenCap ?? DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+    retryAttempts: wsSettings?.llmRetryAttempts ?? DEFAULT_RETRY_ATTEMPTS,
   });
 }
 

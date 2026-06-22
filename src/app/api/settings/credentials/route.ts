@@ -50,7 +50,7 @@ export async function GET() {
 
   const status = await getUserCredentialStatus(context.workspace.id, context.userId);
   return NextResponse.json(
-    { workspaceId: context.workspace.id, ...status },
+    { workspaceId: context.workspace.id, azureOrgUrl: context.workspace.azureOrgUrl, ...status },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

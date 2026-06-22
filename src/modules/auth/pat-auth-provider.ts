@@ -32,7 +32,11 @@ export class PatAuthProvider implements AuthProvider {
     return {
       azureIdentityId: user.id,
       displayName: user.displayName,
-      emailOrUniqueName: user.uniqueName ?? user.id,
+      // Prefer a real email so bootstrap-by-email reconciliation works (a seeded
+      // owner is keyed by email). Falls back to uniqueName/id only when Azure
+      // exposes no email — e.g. older *.visualstudio.com orgs whose uniqueName is
+      // a GUID and whose PAT scope omits the identity email.
+      emailOrUniqueName: user.emailAddress ?? user.uniqueName ?? user.id,
     };
   }
 }

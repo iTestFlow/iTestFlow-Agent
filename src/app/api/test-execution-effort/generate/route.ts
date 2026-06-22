@@ -64,7 +64,7 @@ export async function POST(request: Request) {
       provider,
       storyId: parsed.data.storyId,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: getRetrievalTopK(),
+      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
     });
     const preview = buildTestExecutionEffortPreview({
       targetRequirement: data.targetRequirement,

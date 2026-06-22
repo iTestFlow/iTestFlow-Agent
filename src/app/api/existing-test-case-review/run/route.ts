@@ -66,7 +66,7 @@ export async function POST(request: Request) {
       provider,
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: getRetrievalTopK(),
+      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
       workflowType: "existing_test_case_review",
     });
     const result = await reviewExistingLinkedTestCases({

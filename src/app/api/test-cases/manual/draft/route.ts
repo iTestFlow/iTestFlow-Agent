@@ -43,7 +43,7 @@ export async function POST(request: Request) {
       adapter,
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: getRetrievalTopK(),
+      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
     });
     const draft = buildTestCaseGenerationPromptDraft({
       scope: parsed.data.scope,
