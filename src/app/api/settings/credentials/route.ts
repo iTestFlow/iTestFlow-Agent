@@ -72,7 +72,7 @@ const UpdateSchema = z
   });
 
 export async function PUT(request: Request) {
-  const rate = checkRateLimit(`cred-update:${clientIp(request)}`, 20, 5 * 60 * 1000);
+  const rate = await checkRateLimit(`cred-update:${clientIp(request)}`, 20, 5 * 60 * 1000);
   if (!rate.allowed) {
     return NextResponse.json(
       { error: "Too many attempts. Please wait and try again." },

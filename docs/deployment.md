@@ -35,7 +35,13 @@ Set these via the hosting platform's secrets or a secret manager — **not** in 
 | `WORKER_SCHEDULER` | optional | set `false` to disable cron scheduling (default on) |
 | `WORKER_SCHEDULER_TICK_MS` | optional | how often due schedules are evaluated (default 60s) |
 | `WORKER_POLL_MS` | optional | worker idle poll interval (default 2s) |
+| `RATE_LIMIT_BACKEND` | optional | `memory` (default, per-process) or `postgres` (shared) — see note below |
 | `PROJECT_CONTEXT_TOP_K` | optional | RAG retrieval breadth (default 8) |
+
+> **Multi-replica rate limiting:** the login/credential rate limiter defaults to an
+> in-memory counter, which is per-process. If you run **more than one web replica**, set
+> `RATE_LIMIT_BACKEND=postgres` so all replicas share one global limit (it uses the same
+> `DATABASE_URL`); otherwise each replica enforces the limit independently.
 
 > **Key rotation:** encrypted secrets store a `key_version`. To rotate, add a new key
 > behind a new version in `encryption.service.ts` and re-encrypt; the column already

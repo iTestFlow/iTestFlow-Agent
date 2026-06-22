@@ -18,7 +18,7 @@ const Schema = z.object({ personalAccessToken: z.string().trim().min(1, "Enter a
  * stored encrypted and never returned.
  */
 export async function POST(request: Request) {
-  const rate = checkRateLimit(`sync-cred:${clientIp(request)}`, 10, 5 * 60 * 1000);
+  const rate = await checkRateLimit(`sync-cred:${clientIp(request)}`, 10, 5 * 60 * 1000);
   if (!rate.allowed) {
     return NextResponse.json(
       { error: "Too many attempts. Please wait and try again." },

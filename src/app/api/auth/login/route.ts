@@ -27,7 +27,7 @@ const LoginSchema = z.object({
  * ("enabled").
  */
 export async function POST(request: Request) {
-  const rate = checkRateLimit(`login:${clientIp(request)}`, 10, 5 * 60 * 1000);
+  const rate = await checkRateLimit(`login:${clientIp(request)}`, 10, 5 * 60 * 1000);
   if (!rate.allowed) {
     return NextResponse.json(
       { error: "Too many sign-in attempts. Please wait and try again." },
