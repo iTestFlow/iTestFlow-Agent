@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { resolveWorkspaceRequest, workspaceRequestError } from "@/modules/workspace/workspace-request";
 import { getWorkspaceSettings, upsertWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
-import { DEFAULT_MAX_OUTPUT_TOKEN_CAP, DEFAULT_RETRY_ATTEMPTS, MAX_OUTPUT_TOKEN_CAP_OPTIONS, RETRY_ATTEMPT_OPTIONS } from "@/modules/llm/llm-defaults";
+import { DEFAULT_RETRY_ATTEMPTS, getMaxOutputTokenCapDefaultFromEnv, MAX_OUTPUT_TOKEN_CAP_OPTIONS, RETRY_ATTEMPT_OPTIONS } from "@/modules/llm/llm-defaults";
 import { getRetrievalTopKFromEnv, TOP_K_MAX, TOP_K_MIN } from "@/modules/rag/retrieval-config";
 
 export const runtime = "nodejs";
@@ -48,7 +48,7 @@ const Schema = z
 function defaultsPayload() {
   return {
     retrievalTopKDefault: getRetrievalTopKFromEnv(),
-    maxOutputTokenCapDefault: DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+    maxOutputTokenCapDefault: getMaxOutputTokenCapDefaultFromEnv(),
     maxOutputTokenCapOptions: MAX_OUTPUT_TOKEN_CAP_OPTIONS,
     topKMin: TOP_K_MIN,
     topKMax: TOP_K_MAX,

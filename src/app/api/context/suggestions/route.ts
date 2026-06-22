@@ -9,7 +9,9 @@ import {
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { suggestContextStories } from "@/modules/context-selection/context-selection.service";
+import { getContextSuggestionCandidatePoolSize, getContextSuggestionFinalLimit } from "@/modules/context-selection/context-suggestion-sizing";
 import { requirementToRetrievalQuery, retrieveStoredProjectContext, type LlmContextSource } from "@/modules/rag/project-context-store.service";
+import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 
 export const runtime = "nodejs";
 
@@ -34,13 +36,15 @@ export async function POST(request: Request) {
       projectId: parsed.data.scope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
+    const retrievalTopK = getContextSuggestionFinalLimit(await getRetrievalTopK(ctx.workspace.id));
+    const candidatePoolSize = getContextSuggestionCandidatePoolSize(retrievalTopK);
     const storedContext = distinctContextByWorkItem(
       (await retrieveStoredProjectContext({
         scope: parsed.data.scope,
         query: parsed.data.query?.trim() || requirementToRetrievalQuery(targetRequirement),
-        topK: 40,
+        topK: candidatePoolSize,
       })).filter((item) => item.workItemId !== parsed.data.targetWorkItemId),
-    ).slice(0, 8);
+    ).slice(0, retrievalTopK);
     if (!storedContext.length) {
       return NextResponse.json({
         targetWorkItemId: parsed.data.targetWorkItemId,
@@ -55,6 +59,7 @@ export async function POST(request: Request) {
       provider,
       targetRequirement,
       retrievedContext: storedContext,
+      maxContextItems: retrievalTopK,
     });
 
     return NextResponse.json({

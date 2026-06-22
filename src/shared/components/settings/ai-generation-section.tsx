@@ -255,7 +255,11 @@ function OutputCapCard() {
       const data = (await response.json()) as WorkspaceSettingsResponse
       setDefaults(data.defaults)
       const options = data.defaults.maxOutputTokenCapOptions ?? [16000, 32000, 64000]
-      setValue(data.settings.maxOutputTokenCap != null ? String(data.settings.maxOutputTokenCap) : String(options[0] ?? 16000))
+      setValue(
+        data.settings.maxOutputTokenCap != null
+          ? String(data.settings.maxOutputTokenCap)
+          : String(data.defaults.maxOutputTokenCapDefault ?? options[0] ?? 32000),
+      )
       setRetryAttempts(data.settings.llmRetryAttempts ?? data.defaults.retryAttemptsDefault ?? 1)
     } catch {
       toast.error("Could not load the LLM output limit.")

@@ -7,6 +7,7 @@ import { addTokenUsage, hasTokenUsage } from "../token-usage";
 import {
   DEFAULT_MAX_OUTPUT_TOKEN_CAP,
   DEFAULT_TEXT_OUTPUT_TOKENS,
+  getMaxOutputTokenCapDefaultFromEnv,
 } from "../llm-defaults";
 import { writeLLMRequestLog } from "../llm-request-log.service";
 import type {
@@ -98,7 +99,10 @@ export abstract class BaseJsonProvider implements LLMProvider {
     // tokens it actually generates, so we request the full output-token cap in a single call.
     // An explicit input.maxTokens is honored as an OPTIONAL lower ceiling for callers that
     // deliberately want to bound output length.
-    const cap = positiveIntegerOrDefault(this.config.maxOutputTokenCap, DEFAULT_MAX_OUTPUT_TOKEN_CAP);
+    const cap = positiveIntegerOrDefault(
+      this.config.maxOutputTokenCap,
+      getMaxOutputTokenCapDefaultFromEnv() || DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+    );
     const budget = Math.min(positiveIntegerOrDefault(input.maxTokens, cap), cap);
 
     try {

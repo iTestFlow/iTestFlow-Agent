@@ -12,12 +12,19 @@ import {
   getRetrievalTopK,
   getRetrievalTopKFromEnv,
 } from "@/modules/rag/retrieval-config";
+import {
+  DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+  getMaxOutputTokenCapDefaultFromEnv,
+} from "@/modules/llm/llm-defaults";
 
-describe("retrieval top-K policy (pure)", () => {
-  const original = process.env.PROJECT_CONTEXT_TOP_K;
+describe("workspace setting defaults (pure)", () => {
+  const originalProjectContextTopK = process.env.PROJECT_CONTEXT_TOP_K;
+  const originalMaxOutputTokenCap = process.env.LLM_MAX_OUTPUT_TOKEN_CAP;
   afterEach(() => {
-    if (original === undefined) delete process.env.PROJECT_CONTEXT_TOP_K;
-    else process.env.PROJECT_CONTEXT_TOP_K = original;
+    if (originalProjectContextTopK === undefined) delete process.env.PROJECT_CONTEXT_TOP_K;
+    else process.env.PROJECT_CONTEXT_TOP_K = originalProjectContextTopK;
+    if (originalMaxOutputTokenCap === undefined) delete process.env.LLM_MAX_OUTPUT_TOKEN_CAP;
+    else process.env.LLM_MAX_OUTPUT_TOKEN_CAP = originalMaxOutputTokenCap;
   });
 
   it("clamps to [1, 25] and falls back to the default on a non-finite value", () => {
@@ -34,6 +41,19 @@ describe("retrieval top-K policy (pure)", () => {
     expect(getRetrievalTopKFromEnv()).toBe(DEFAULT_TOP_K);
     process.env.PROJECT_CONTEXT_TOP_K = "999";
     expect(getRetrievalTopKFromEnv()).toBe(25);
+  });
+
+  it("reads LLM_MAX_OUTPUT_TOKEN_CAP from the environment with allowed-option defaults", () => {
+    process.env.LLM_MAX_OUTPUT_TOKEN_CAP = "64000";
+    expect(getMaxOutputTokenCapDefaultFromEnv()).toBe(64000);
+    delete process.env.LLM_MAX_OUTPUT_TOKEN_CAP;
+    expect(getMaxOutputTokenCapDefaultFromEnv()).toBe(DEFAULT_MAX_OUTPUT_TOKEN_CAP);
+    process.env.LLM_MAX_OUTPUT_TOKEN_CAP = "not-a-number";
+    expect(getMaxOutputTokenCapDefaultFromEnv()).toBe(DEFAULT_MAX_OUTPUT_TOKEN_CAP);
+    process.env.LLM_MAX_OUTPUT_TOKEN_CAP = "999";
+    expect(getMaxOutputTokenCapDefaultFromEnv()).toBe(16000);
+    process.env.LLM_MAX_OUTPUT_TOKEN_CAP = "100000";
+    expect(getMaxOutputTokenCapDefaultFromEnv()).toBe(64000);
   });
 });
 
@@ -82,7 +102,7 @@ describeDb("workspace settings (DB-backed)", () => {
       maxOutputTokenCap: 64000,
       updatedByUserId: null,
     });
-    expect(view).toEqual({ retrievalTopK: 12, maxOutputTokenCap: 64000 });
+    expect(view).toEqual({ retrievalTopK: 12, maxOutputTokenCap: 64000, llmRetryAttempts: null });
     expect(await getRetrievalTopK(workspaceId)).toBe(12);
   });
 
@@ -93,7 +113,7 @@ describeDb("workspace settings (DB-backed)", () => {
       maxOutputTokenCap: null,
       updatedByUserId: null,
     });
-    expect(await getWorkspaceSettings(workspaceId)).toEqual({ retrievalTopK: null, maxOutputTokenCap: null });
+    expect(await getWorkspaceSettings(workspaceId)).toEqual({ retrievalTopK: null, maxOutputTokenCap: null, llmRetryAttempts: null });
     process.env.PROJECT_CONTEXT_TOP_K = "20";
     expect(await getRetrievalTopK(workspaceId)).toBe(20);
     delete process.env.PROJECT_CONTEXT_TOP_K;
@@ -101,19 +121,19 @@ describeDb("workspace settings (DB-backed)", () => {
 
   it("overwrites prior values on a subsequent upsert", async () => {
     await upsertWorkspaceSettings({ workspaceId, retrievalTopK: 5, maxOutputTokenCap: 16000, updatedByUserId: null });
-    expect(await getWorkspaceSettings(workspaceId)).toEqual({ retrievalTopK: 5, maxOutputTokenCap: 16000 });
+    expect(await getWorkspaceSettings(workspaceId)).toEqual({ retrievalTopK: 5, maxOutputTokenCap: 16000, llmRetryAttempts: null });
   });
 
   it("applies partial updates without clobbering the omitted field", async () => {
     await upsertWorkspaceSettings({ workspaceId, retrievalTopK: 5, maxOutputTokenCap: 16000, updatedByUserId: null });
     // Update only the cap — top-K is preserved (settings live in separate UI tabs).
     await upsertWorkspaceSettings({ workspaceId, maxOutputTokenCap: 64000, updatedByUserId: null });
-    expect(await getWorkspaceSettings(workspaceId)).toEqual({ retrievalTopK: 5, maxOutputTokenCap: 64000 });
+    expect(await getWorkspaceSettings(workspaceId)).toEqual({ retrievalTopK: 5, maxOutputTokenCap: 64000, llmRetryAttempts: null });
     // Update only top-K — the cap is preserved.
     await upsertWorkspaceSettings({ workspaceId, retrievalTopK: 8, updatedByUserId: null });
-    expect(await getWorkspaceSettings(workspaceId)).toEqual({ retrievalTopK: 8, maxOutputTokenCap: 64000 });
+    expect(await getWorkspaceSettings(workspaceId)).toEqual({ retrievalTopK: 8, maxOutputTokenCap: 64000, llmRetryAttempts: null });
     // An explicit null still clears (inherit) — distinct from "omitted".
     await upsertWorkspaceSettings({ workspaceId, retrievalTopK: null, updatedByUserId: null });
-    expect(await getWorkspaceSettings(workspaceId)).toEqual({ retrievalTopK: null, maxOutputTokenCap: 64000 });
+    expect(await getWorkspaceSettings(workspaceId)).toEqual({ retrievalTopK: null, maxOutputTokenCap: 64000, llmRetryAttempts: null });
   });
 });

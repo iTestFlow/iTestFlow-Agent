@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { AzureDevOpsRestAdapter } from "@/modules/integrations/azure-devops/azure-devops-client";
 import { createLLMProvider } from "@/modules/llm/llm-provider.factory";
 import type { LLMProvider } from "@/modules/llm/llm-types";
-import { DEFAULT_MAX_OUTPUT_TOKEN_CAP, DEFAULT_RETRY_ATTEMPTS } from "@/modules/llm/llm-defaults";
+import { DEFAULT_RETRY_ATTEMPTS, getMaxOutputTokenCapDefaultFromEnv } from "@/modules/llm/llm-defaults";
 import { requireSession, SessionError } from "@/modules/auth/session.service";
 import { getWorkspaceMembership } from "@/modules/workspace/workspace-access.service";
 import { getPrimaryWorkspaceForUser, getWorkspaceById, type WorkspaceRef } from "@/modules/workspace/workspace.service";
@@ -121,7 +121,7 @@ export async function getUserLLMProvider(ctx: WorkflowContext): Promise<LLMProvi
     apiKey: llm.apiKey,
     model: llm.model,
     baseUrl: llm.baseUrl,
-    maxOutputTokenCap: wsSettings?.maxOutputTokenCap ?? DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+    maxOutputTokenCap: wsSettings?.maxOutputTokenCap ?? getMaxOutputTokenCapDefaultFromEnv(),
     retryAttempts: wsSettings?.llmRetryAttempts ?? DEFAULT_RETRY_ATTEMPTS,
   });
 }

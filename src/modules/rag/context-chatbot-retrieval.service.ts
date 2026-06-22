@@ -326,39 +326,54 @@ export async function retrieveContextChatbotEvidence(input: {
   query: string;
   contextLimit?: number;
   knowledgeLimit?: number;
+  maxContextChunksPerWorkItem?: number;
 }): Promise<ContextChatbotEvidence> {
   const scope = assertProjectScope(input.scope);
   await ensureContextChatbotSearchIndexes({ scope });
+  const contextLimit = input.contextLimit ?? 10;
+  const knowledgeLimit = input.knowledgeLimit ?? 10;
+  const maxContextChunksPerWorkItem = input.maxContextChunksPerWorkItem ?? 2;
 
   const ftsQuery = buildFtsQuery(input.query);
   if (!ftsQuery) {
-    return { context: [], knowledge: await getFallbackKnowledge({ scope, limit: input.knowledgeLimit ?? 8 }) };
+    return { context: [], knowledge: await getFallbackKnowledge({ scope, limit: knowledgeLimit }) };
   }
 
   return {
     context: await searchContext({
       scope,
       ftsQuery,
-      limit: input.contextLimit ?? 10,
+      limit: contextLimit,
+      maxChunksPerWorkItem: maxContextChunksPerWorkItem,
     }),
     knowledge: await searchKnowledge({
       scope,
       ftsQuery,
-      limit: input.knowledgeLimit ?? 10,
+      limit: knowledgeLimit,
     }),
   };
 }
 
-async function searchContext(input: { scope: ProjectScope; ftsQuery: string; limit: number }) {
+async function searchContext(input: { scope: ProjectScope; ftsQuery: string; limit: number; maxChunksPerWorkItem?: number }) {
+  const maxChunksPerWorkItem = positiveIntegerOrDefault(input.maxChunksPerWorkItem, input.limit);
   try {
     const rows = await sqlAll<ChunkFtsRow>(
       `
-        SELECT chunk_id, azure_work_item_id, work_item_type, title, content, metadata_json,
-               ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) AS rank
-        FROM document_chunks_fts
-        WHERE tsv @@ to_tsquery('simple', @ftsQuery)
-          AND project_id = @projectId
-          AND azure_project_id = @azureProjectId
+        WITH ranked AS (
+          SELECT chunk_id, azure_work_item_id, work_item_type, title, content, metadata_json,
+                 ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) AS rank,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY azure_work_item_id
+                   ORDER BY ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) DESC, chunk_id ASC
+                 ) AS work_item_rank
+          FROM document_chunks_fts
+          WHERE tsv @@ to_tsquery('simple', @ftsQuery)
+            AND project_id = @projectId
+            AND azure_project_id = @azureProjectId
+        )
+        SELECT chunk_id, azure_work_item_id, work_item_type, title, content, metadata_json
+        FROM ranked
+        WHERE work_item_rank <= @maxChunksPerWorkItem
         ORDER BY rank DESC
         LIMIT @limit
       `,
@@ -367,10 +382,11 @@ async function searchContext(input: { scope: ProjectScope; ftsQuery: string; lim
         projectId: input.scope.projectId,
         azureProjectId: input.scope.azureProjectId,
         limit: input.limit,
+        maxChunksPerWorkItem,
       },
     );
 
-    return rows.map((row) => ({
+    const evidence = rows.map((row) => ({
       sourceType: "project_context" as const,
       sourceId: `WI:${row.azure_work_item_id}`,
       workItemId: row.azure_work_item_id,
@@ -379,10 +395,35 @@ async function searchContext(input: { scope: ProjectScope; ftsQuery: string; lim
       content: row.content,
       metadata: parseChunkMetadata(row.metadata_json),
     }));
+    return limitContextEvidenceByWorkItem(evidence, {
+      limit: input.limit,
+      maxChunksPerWorkItem,
+    });
   } catch (error) {
     console.error("Project chat context FTS search failed", error);
     return [];
   }
+}
+
+export function limitContextEvidenceByWorkItem<TItem extends { workItemId: string }>(
+  items: TItem[],
+  input: { limit: number; maxChunksPerWorkItem?: number },
+): TItem[] {
+  const limit = positiveIntegerOrDefault(input.limit, items.length);
+  const maxChunksPerWorkItem = positiveIntegerOrDefault(input.maxChunksPerWorkItem, limit);
+  const countsByWorkItem = new Map<string, number>();
+  const selected: TItem[] = [];
+
+  for (const item of items) {
+    if (selected.length >= limit) break;
+    const key = item.workItemId || "__missing_work_item_id__";
+    const count = countsByWorkItem.get(key) ?? 0;
+    if (count >= maxChunksPerWorkItem) continue;
+    countsByWorkItem.set(key, count + 1);
+    selected.push(item);
+  }
+
+  return selected;
 }
 
 async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; limit: number }) {
@@ -545,6 +586,10 @@ function splitSourceIds(value: string) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function positiveIntegerOrDefault(value: number | undefined, fallback: number) {
+  return Number.isFinite(value) && Number(value) > 0 ? Math.trunc(Number(value)) : fallback;
 }
 
 async function countRows(sql: string, scope: ProjectScope) {

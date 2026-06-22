@@ -39,6 +39,7 @@ export async function answerContextChatbot(input: {
     query: question,
     contextLimit: 10,
     knowledgeLimit: 10,
+    maxContextChunksPerWorkItem: 2,
   });
   const citations = buildCitations(evidence.context, evidence.knowledge);
 
