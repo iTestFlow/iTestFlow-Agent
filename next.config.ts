@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // pg is a Node-only runtime dependency; never bundle it.
-  serverExternalPackages: ["pg"],
+  serverExternalPackages: ["pg", "pg-connection-string"],
 };
 
 // Run middleware on the Node.js runtime (it only checks a session cookie) so Next
