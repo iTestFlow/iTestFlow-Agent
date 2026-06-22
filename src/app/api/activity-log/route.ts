@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getActivityLog } from "@/modules/activity-log/activity-log.service";
+import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -30,9 +32,12 @@ export async function POST(request: Request) {
   }
 
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope?.workspaceId);
+    const trustedScope = parsed.data.scope ? await resolveProjectScope(ctx, parsed.data.scope) : undefined;
     return NextResponse.json(
       await getActivityLog({
-        scope: parsed.data.scope ?? undefined,
+        workspaceId: ctx.workspace.id,
+        scope: trustedScope,
         search: parsed.data.search,
         groups: parsed.data.groups,
         from: parsed.data.from,
@@ -41,6 +46,8 @@ export async function POST(request: Request) {
       }),
     );
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Activity log failed to load." },
       { status: 503 },

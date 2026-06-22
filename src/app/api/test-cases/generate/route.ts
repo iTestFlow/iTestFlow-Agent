@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { countTestCategories } from "@/modules/analytics/test-category-normalization";
 import { z } from "zod";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
   authErrorResponse,
   getUserAzureAdapter,
@@ -23,6 +23,7 @@ import {
   startWorkflowRun,
   updateWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -43,25 +44,27 @@ export async function POST(request: Request) {
     );
   }
 
+  let trustedScope: ProjectScope | undefined;
   let analyticsRunId: string | undefined;
   try {
     const options = parsed.data.options ?? defaultTestDesignOptions;
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       workflowType: "test_case_design",
       workItemId: parsed.data.targetWorkItemId,
       userId: ctx.userId,
     });
 
     const targetRequirement = await adapter.fetchWorkItemById({
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
     const autoContext = await resolveWorkflowContext({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       adapter,
       provider,
       targetRequirement,
@@ -70,12 +73,12 @@ export async function POST(request: Request) {
       workflowType: "test_case_generation",
     });
     const result = await generateTestCases({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       provider,
       targetRequirement,
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
       options,
       extraInstructions: parsed.data.extraInstructions,
     });
@@ -84,7 +87,7 @@ export async function POST(request: Request) {
       relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
     });
     updateWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       patch: {
         status: "generated",
@@ -117,9 +120,9 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "test_case_generation.run", label: "Test case generation failed.", error });
-    if (analyticsRunId) {
-      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Test case generation failed." });
+    if (trustedScope) writeGenerationFailureAudit({ scope: trustedScope, action: "test_case_generation.run", label: "Test case generation failed.", error });
+    if (trustedScope && analyticsRunId) {
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Test case generation failed." });
     }
     return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
   }

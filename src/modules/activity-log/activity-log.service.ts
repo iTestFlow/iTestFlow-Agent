@@ -6,6 +6,7 @@ import type { DashboardRecentActivity } from "@/types/dashboard";
 import type { ActivityLogActionOption, ActivityLogResult } from "@/types/activity-log";
 
 type ScopeFilter = {
+  workspaceId: string;
   projectId: string | null;
   azureProjectId: string | null;
 };
@@ -30,6 +31,7 @@ type RecentActivityRow = {
 type ActionRow = { action: string };
 
 export type ActivityLogInput = {
+  workspaceId: string;
   scope?: ProjectScope;
   search?: string;
   groups?: string[];
@@ -47,17 +49,19 @@ const ACTION_GROUP_LABELS: Record<string, string> = {
   rag: "RAG",
 };
 
-function scopeParams(scope?: ProjectScope): ScopeFilter {
-  if (!scope) return { projectId: null, azureProjectId: null };
+function scopeParams(workspaceId: string, scope?: ProjectScope): ScopeFilter {
+  if (!scope) return { workspaceId, projectId: null, azureProjectId: null };
   const validated = assertProjectScope(scope);
   return {
+    workspaceId,
     projectId: validated.projectId,
     azureProjectId: validated.azureProjectId,
   };
 }
 
 function scopeWhere() {
-  return `(@projectId::text IS NULL OR project_id = @projectId)
+  return `workspace_id = @workspaceId
+    AND (@projectId::text IS NULL OR project_id = @projectId)
     AND (@azureProjectId::text IS NULL OR azure_project_id = @azureProjectId)`;
 }
 
@@ -151,7 +155,7 @@ async function getAvailableActions(scopeFilter: ScopeFilter): Promise<ActivityLo
 }
 
 export async function getActivityLog(input: ActivityLogInput): Promise<ActivityLogResult> {
-  const scopeFilter = scopeParams(input.scope);
+  const scopeFilter = scopeParams(input.workspaceId, input.scope);
   const limit = clampLimit(input.limit);
 
   const where: string[] = [scopeWhere()];

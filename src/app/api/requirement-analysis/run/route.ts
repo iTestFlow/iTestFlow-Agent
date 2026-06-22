@@ -23,6 +23,7 @@ import {
 } from "@/modules/analytics/workflow-analytics.service";
 import { requirementAnalysisChecklistOptions } from "@/modules/requirement-analysis/checklist-options";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -50,30 +51,27 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    scope = parsed.data.scope;
-
     // Auth + per-user credentials (replaces global runtime settings). The user's
     // own encrypted Azure PAT and LLM key are used; the org comes from the
     // workspace, never the client.
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, {
-      azureProjectId: parsed.data.scope.azureProjectId,
-      azureProjectName: parsed.data.scope.azureProjectName,
-    });
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    scope = trustedScope;
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       workflowType: "requirements_analysis",
       workItemId: parsed.data.targetWorkItemId,
       userId: ctx.userId,
     });
 
     const targetRequirement = await adapter.fetchWorkItemById({
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
     const autoContext = await resolveWorkflowContext({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       adapter,
       provider,
       targetRequirement,
@@ -82,12 +80,12 @@ export async function POST(request: Request) {
       workflowType: "requirement_analysis",
     });
     const result = await runRequirementAnalysis({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       provider,
       targetRequirement,
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
       enabledChecklistItemIds: parsed.data.enabledChecklistItemIds,
       extraInstructions: parsed.data.extraInstructions,
     });
@@ -96,7 +94,7 @@ export async function POST(request: Request) {
       relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
     });
     updateWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       patch: {
         status: "generated",

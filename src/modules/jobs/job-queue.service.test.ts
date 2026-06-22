@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { getPool, resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
-import { claimNextJob, completeJob, enqueueJob, failJob } from "@/modules/jobs/job-queue.service";
+import { claimNextJob, completeJob, enqueueJob, failJob, heartbeatJob } from "@/modules/jobs/job-queue.service";
 
 const TYPE = "test_noop";
 const WS = "ws_jobtest";
@@ -38,7 +38,7 @@ describeDb("job queue (DB-backed)", () => {
     expect(job?.status).toBe("running");
     expect(job?.attempts).toBe(1);
 
-    await completeJob(id!);
+    await completeJob(id!, "w1");
     const row = await sqlGet<{ status: string }>(`SELECT status FROM jobs WHERE id = @id`, { id });
     expect(row?.status).toBe("completed");
   });
@@ -65,7 +65,7 @@ describeDb("job queue (DB-backed)", () => {
     const id = await enqueueJob({ jobType: TYPE, workspaceId: WS, maxAttempts: 2 });
 
     expect((await claimNextJob("w3"))?.id).toBe(id);
-    await failJob(id!, "boom 1");
+    await failJob(id!, "boom 1", "w3");
 
     const retried = await sqlGet<{ status: string; run_after: string; attempts: number }>(
       `SELECT status, run_after, attempts FROM jobs WHERE id = @id`,
@@ -79,7 +79,7 @@ describeDb("job queue (DB-backed)", () => {
     // Force due, exhaust the last attempt.
     await sqlRun(`UPDATE jobs SET run_after = @now WHERE id = @id`, { now: new Date().toISOString(), id });
     expect((await claimNextJob("w3c"))?.attempts).toBe(2);
-    await failJob(id!, "boom 2");
+    await failJob(id!, "boom 2", "w3c");
 
     const failed = await sqlGet<{ status: string }>(`SELECT status FROM jobs WHERE id = @id`, { id });
     expect(failed?.status).toBe("failed");
@@ -91,5 +91,53 @@ describeDb("job queue (DB-backed)", () => {
     expect(first).toBeTruthy();
     expect(second).toBeNull(); // skipped — an active job already exists
   });
-});
 
+  it("fences completion and failure to the worker that owns the lock", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS });
+    expect((await claimNextJob("owner"))?.id).toBe(id);
+
+    await expect(completeJob(id!, "other")).resolves.toBe(false);
+    let row = await sqlGet<{ status: string; locked_by: string | null }>(
+      `SELECT status, locked_by FROM jobs WHERE id = @id`,
+      { id },
+    );
+    expect(row).toMatchObject({ status: "running", locked_by: "owner" });
+
+    await expect(failJob(id!, "wrong worker", "other")).resolves.toBe(false);
+    row = await sqlGet<{ status: string; locked_by: string | null }>(
+      `SELECT status, locked_by FROM jobs WHERE id = @id`,
+      { id },
+    );
+    expect(row).toMatchObject({ status: "running", locked_by: "owner" });
+
+    await expect(completeJob(id!, "owner")).resolves.toBe(true);
+    row = await sqlGet<{ status: string; locked_by: string | null }>(
+      `SELECT status, locked_by FROM jobs WHERE id = @id`,
+      { id },
+    );
+    expect(row).toMatchObject({ status: "completed", locked_by: null });
+  });
+
+  it("requeues stale running jobs without reducing attempts", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS, maxAttempts: 3 });
+    const first = await claimNextJob("stale-worker");
+    expect(first?.id).toBe(id);
+    expect(first?.attempts).toBe(1);
+
+    const staleLockedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await sqlRun(`UPDATE jobs SET locked_at = @lockedAt WHERE id = @id`, { id, lockedAt: staleLockedAt });
+
+    const reclaimed = await claimNextJob("next-worker");
+    expect(reclaimed?.id).toBe(id);
+    expect(reclaimed?.attempts).toBe(2);
+    expect(reclaimed?.lockedBy).toBe("next-worker");
+  });
+
+  it("heartbeats only the owning worker lock", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS });
+    expect((await claimNextJob("heartbeat-owner"))?.id).toBe(id);
+
+    await expect(heartbeatJob(id!, "other")).resolves.toBe(false);
+    await expect(heartbeatJob(id!, "heartbeat-owner")).resolves.toBe(true);
+  });
+});

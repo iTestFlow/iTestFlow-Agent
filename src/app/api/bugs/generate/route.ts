@@ -9,7 +9,7 @@ import {
   requireWorkflowContext,
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import {
@@ -17,6 +17,7 @@ import {
   startWorkflowRun,
   updateWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -35,21 +36,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Bug description is required." }, { status: 400 });
   }
 
+  let trustedScope: ProjectScope | undefined;
   let analyticsRunId: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       workflowType: "report_bug",
       workItemId: parsed.data.parentStoryId,
       userId: ctx.userId,
     });
 
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const parentStory = parsed.data.parentStoryId
       ? await adapter.fetchWorkItemById({
-          projectId: parsed.data.scope.azureProjectId,
+          projectId: trustedScope.azureProjectId,
           workItemId: parsed.data.parentStoryId,
         })
       : null;
@@ -59,17 +62,17 @@ export async function POST(request: Request) {
     }
 
     const result = await generateBugReport({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       provider,
       bugDescription: parsed.data.bugDescription,
       parentStory,
       selectedRelatedTestCase: parsed.data.selectedRelatedTestCase,
       customFields: parsed.data.customFields,
       attachments: parsed.data.attachments,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
     });
     updateWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       patch: {
         status: "generated",
@@ -91,9 +94,9 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "bug_report.generate", label: "Bug report generation failed.", error });
-    if (analyticsRunId) {
-      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Bug report generation failed." });
+    if (trustedScope) writeGenerationFailureAudit({ scope: trustedScope, action: "bug_report.generate", label: "Bug report generation failed.", error });
+    if (trustedScope && analyticsRunId) {
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Bug report generation failed." });
     }
     return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
   }

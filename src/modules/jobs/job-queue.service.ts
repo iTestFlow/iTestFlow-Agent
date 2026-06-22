@@ -14,6 +14,8 @@ export type Job = {
   priority: number;
   attempts: number;
   maxAttempts: number;
+  lockedBy: string | null;
+  lockedAt: string | null;
   runAfter: string;
   errorMessage: string | null;
   createdByUserId: string | null;
@@ -31,6 +33,8 @@ type JobRow = {
   priority: number;
   attempts: number;
   max_attempts: number;
+  locked_by: string | null;
+  locked_at: string | null;
   run_after: string;
   error_message: string | null;
   created_by_user_id: string | null;
@@ -39,6 +43,12 @@ type JobRow = {
 };
 
 const MAX_BACKOFF_MS = 5 * 60 * 1000;
+const DEFAULT_STALE_LOCK_MS = 5 * 60 * 1000;
+
+function staleLockMs() {
+  const value = Number(process.env.JOB_STALE_LOCK_MS ?? String(DEFAULT_STALE_LOCK_MS));
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_STALE_LOCK_MS;
+}
 
 function mapJob(row: JobRow): Job {
   let payload: Record<string, unknown> = {};
@@ -58,12 +68,36 @@ function mapJob(row: JobRow): Job {
     priority: row.priority,
     attempts: row.attempts,
     maxAttempts: row.max_attempts,
+    lockedBy: row.locked_by,
+    lockedAt: row.locked_at,
     runAfter: row.run_after,
     errorMessage: row.error_message,
     createdByUserId: row.created_by_user_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+async function reapStaleJobsWithClient(client: Parameters<typeof sqlRun>[2], now: string): Promise<number> {
+  const cutoff = new Date(Date.now() - staleLockMs()).toISOString();
+  return sqlRun(
+    `UPDATE jobs
+     SET status = 'pending',
+         locked_by = NULL,
+         locked_at = NULL,
+         run_after = @now,
+         error_message = COALESCE(error_message, 'Recovered from stale worker lock.'),
+         updated_at = @now
+     WHERE status = 'running'
+       AND locked_at IS NOT NULL
+       AND locked_at < @cutoff`,
+    { now, cutoff },
+    client,
+  );
+}
+
+export async function reapStaleJobs(): Promise<number> {
+  return reapStaleJobsWithClient(undefined, nowIso());
 }
 
 export async function enqueueJob(input: {
@@ -114,18 +148,20 @@ export async function enqueueJob(input: {
  */
 export async function claimNextJob(workerId: string): Promise<Job | null> {
   return withTransaction(async (client) => {
+    const now = nowIso();
+    await reapStaleJobsWithClient(client, now);
+
     const row = await sqlGet<JobRow>(
       `SELECT * FROM jobs
        WHERE status = 'pending' AND run_after <= @now
        ORDER BY priority ASC, created_at ASC
        FOR UPDATE SKIP LOCKED
        LIMIT 1`,
-      { now: nowIso() },
+      { now },
       client,
     );
     if (!row) return null;
 
-    const now = nowIso();
     await sqlRun(
       `UPDATE jobs
        SET status = 'running', locked_by = @workerId, locked_at = @now,
@@ -134,49 +170,68 @@ export async function claimNextJob(workerId: string): Promise<Job | null> {
       { workerId, now, id: row.id },
       client,
     );
-    return mapJob({ ...row, status: "running", attempts: row.attempts + 1 });
+    return mapJob({ ...row, status: "running", attempts: row.attempts + 1, locked_by: workerId, locked_at: now });
   });
 }
 
-export async function completeJob(id: string): Promise<void> {
+export async function heartbeatJob(id: string, workerId: string): Promise<boolean> {
   const now = nowIso();
-  await sqlRun(
-    `UPDATE jobs SET status = 'completed', finished_at = @now, locked_by = NULL, error_message = NULL, updated_at = @now
-     WHERE id = @id`,
-    { id, now },
+  const changed = await sqlRun(
+    `UPDATE jobs
+     SET locked_at = @now, updated_at = @now
+     WHERE id = @id AND locked_by = @workerId AND status = 'running'`,
+    { id, workerId, now },
   );
+  return changed > 0;
+}
+
+export async function completeJob(id: string, workerId: string): Promise<boolean> {
+  const now = nowIso();
+  const changed = await sqlRun(
+    `UPDATE jobs
+     SET status = 'completed', finished_at = @now, locked_by = NULL, locked_at = NULL,
+         error_message = NULL, updated_at = @now
+     WHERE id = @id AND locked_by = @workerId AND status = 'running'`,
+    { id, workerId, now },
+  );
+  return changed > 0;
 }
 
 /**
  * Fail a job. Retries with exponential backoff until max_attempts is reached,
  * then marks it permanently failed. (attempts was already incremented at claim.)
  */
-export async function failJob(id: string, errorMessage: string): Promise<void> {
+export async function failJob(id: string, errorMessage: string, workerId: string): Promise<boolean> {
   const row = await sqlGet<{ attempts: number; max_attempts: number }>(
-    `SELECT attempts, max_attempts FROM jobs WHERE id = @id`,
-    { id },
+    `SELECT attempts, max_attempts
+     FROM jobs
+     WHERE id = @id AND locked_by = @workerId AND status = 'running'`,
+    { id, workerId },
   );
-  if (!row) return;
+  if (!row) return false;
   const now = nowIso();
   const message = errorMessage.slice(0, 2000);
 
   if (row.attempts >= row.max_attempts) {
-    await sqlRun(
-      `UPDATE jobs SET status = 'failed', finished_at = @now, error_message = @message, locked_by = NULL, updated_at = @now
-       WHERE id = @id`,
-      { id, now, message },
+    const changed = await sqlRun(
+      `UPDATE jobs
+       SET status = 'failed', finished_at = @now, error_message = @message,
+           locked_by = NULL, locked_at = NULL, updated_at = @now
+       WHERE id = @id AND locked_by = @workerId AND status = 'running'`,
+      { id, workerId, now, message },
     );
-    return;
+    return changed > 0;
   }
 
   const backoffMs = Math.min(2 ** row.attempts * 1000, MAX_BACKOFF_MS);
   const runAfter = new Date(Date.now() + backoffMs).toISOString();
-  await sqlRun(
+  const changed = await sqlRun(
     `UPDATE jobs SET status = 'pending', run_after = @runAfter, error_message = @message,
        locked_by = NULL, locked_at = NULL, updated_at = @now
-     WHERE id = @id`,
-    { id, runAfter, message, now },
+     WHERE id = @id AND locked_by = @workerId AND status = 'running'`,
+    { id, workerId, runAfter, message, now },
   );
+  return changed > 0;
 }
 
 export async function listJobs(workspaceId: string, limit = 50): Promise<Job[]> {

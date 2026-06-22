@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { publishApprovedTestCases } from "@/modules/integrations/azure-devops/azure-devops-test-plan.service";
 import {
   completeWorkflowRun,
   failWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -84,10 +85,12 @@ export async function POST(request: Request) {
     );
   }
 
+  let trustedScope: ProjectScope | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
-    const result = await publishApprovedTestCases(adapter, parsed.data.scope, {
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
+    const result = await publishApprovedTestCases(adapter, trustedScope, {
       targetUserStoryId: parsed.data.targetWorkItemId,
       testPlanId: parsed.data.testPlanId,
       testSuiteId: parsed.data.testSuiteId,
@@ -99,7 +102,7 @@ export async function POST(request: Request) {
     if (parsed.data.analyticsRunId) {
       if (successCount > 0) {
         completeWorkflowRun({
-          scope: parsed.data.scope,
+          scope: trustedScope,
           runId: parsed.data.analyticsRunId,
           status: "published",
           valueRealized: true,
@@ -112,7 +115,7 @@ export async function POST(request: Request) {
           },
         });
       } else {
-        failWorkflowRun({ scope: parsed.data.scope, runId: parsed.data.analyticsRunId, error: "No test cases were published successfully." });
+        failWorkflowRun({ scope: trustedScope, runId: parsed.data.analyticsRunId, error: "No test cases were published successfully." });
       }
     }
 
@@ -127,9 +130,9 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    if (parsed.data.analyticsRunId) {
+    if (trustedScope && parsed.data.analyticsRunId) {
       failWorkflowRun({
-        scope: parsed.data.scope,
+        scope: trustedScope,
         runId: parsed.data.analyticsRunId,
         error: error instanceof Error ? error.message : "Azure Test Plan publish failed.",
       });

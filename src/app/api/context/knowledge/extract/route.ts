@@ -6,8 +6,9 @@ import {
   requireWorkflowContext,
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { extractAndSaveProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -27,12 +28,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Please select an Azure DevOps project before extracting the knowledge base." }, { status: 400 });
   }
 
+  let trustedScope: ProjectScope | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const provider = await getUserLLMProvider(ctx);
 
     const snapshot = await extractAndSaveProjectKnowledgeBase({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       provider,
       mode: parsed.data.mode ?? "incremental",
     });
@@ -41,7 +44,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "rag.extract_project_knowledge_base", label: "Project knowledge extraction failed.", error });
+    if (trustedScope) writeGenerationFailureAudit({ scope: trustedScope, action: "rag.extract_project_knowledge_base", label: "Project knowledge extraction failed.", error });
     if (isTruncatedKnowledgeBaseOutputError(error)) {
       return NextResponse.json({ error: TruncatedKnowledgeBaseOutputMessage }, { status: 422 });
     }

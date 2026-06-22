@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -21,9 +22,10 @@ export async function POST(request: Request) {
 
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const metadata = await adapter.fetchProjectWorkItemMetadata({
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
     });
     return NextResponse.json(metadata);
   } catch (error) {

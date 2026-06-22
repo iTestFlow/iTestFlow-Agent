@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { ProjectKnowledgeBaseSchema } from "@/modules/rag/project-knowledge.schema";
 import { saveManualProjectKnowledgeBaseFromBatches } from "@/modules/rag/project-knowledge.service";
 
@@ -21,13 +23,17 @@ export async function POST(request: Request) {
   }
 
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const snapshot = await saveManualProjectKnowledgeBaseFromBatches({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       partialKnowledgeBases: parsed.data.partialKnowledgeBases,
       mode: parsed.data.mode,
     });
     return NextResponse.json({ knowledgeBase: snapshot.knowledgeBase, snapshot });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "External LLM knowledge base finalization failed." },
       { status: 422 },

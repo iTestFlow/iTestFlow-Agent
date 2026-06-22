@@ -7,12 +7,13 @@ import {
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { answerContextChatbot } from "@/modules/context-chatbot/context-chatbot.service";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
   completeWorkflowRun,
   failWorkflowRun,
   startWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -36,24 +37,26 @@ export async function POST(request: Request) {
     );
   }
 
+  let trustedScope: ProjectScope | undefined;
   let analyticsRunId: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       workflowType: "business_owner_assistant",
       userId: ctx.userId,
     });
 
     const result = await answerContextChatbot({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       provider,
       message: parsed.data.message,
       history: parsed.data.history,
     });
     completeWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       valueRealized: false,
       patch: {
@@ -67,9 +70,9 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "context_chatbot.answer", label: "Context chatbot failed.", error });
-    if (analyticsRunId) {
-      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Context chatbot failed." });
+    if (trustedScope) writeGenerationFailureAudit({ scope: trustedScope, action: "context_chatbot.answer", label: "Context chatbot failed.", error });
+    if (trustedScope && analyticsRunId) {
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Context chatbot failed." });
     }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Context chatbot failed." },

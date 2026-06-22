@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -17,8 +18,9 @@ export async function POST(request: Request) {
 
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
-    const iterations = await adapter.fetchIterations({ projectId: parsed.data.scope.azureProjectId });
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
+    const iterations = await adapter.fetchIterations({ projectId: trustedScope.azureProjectId });
     return NextResponse.json({ iterations });
   } catch (error) {
     const authResponse = authErrorResponse(error);

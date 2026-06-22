@@ -5,6 +5,7 @@ import { BugAttachmentDescriptorSchema, BugCustomFieldValueSchema, BugRelatedTes
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -25,10 +26,11 @@ export async function POST(request: Request) {
 
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const parentStory = parsed.data.parentStoryId
       ? await adapter.fetchWorkItemById({
-          projectId: parsed.data.scope.azureProjectId,
+          projectId: trustedScope.azureProjectId,
           workItemId: parsed.data.parentStoryId,
         })
       : null;
@@ -38,13 +40,13 @@ export async function POST(request: Request) {
     }
 
     const draft = buildBugReportPromptDraft({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       bugDescription: parsed.data.bugDescription,
       parentStory,
       selectedRelatedTestCase: parsed.data.selectedRelatedTestCase,
       customFields: parsed.data.customFields,
       attachments: parsed.data.attachments,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
     });
 
     return NextResponse.json({

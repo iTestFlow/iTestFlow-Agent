@@ -7,7 +7,7 @@ import {
   requireWorkflowContext,
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { loadTestExecutionEffortData } from "@/modules/test-execution-effort/test-execution-effort.data-loader";
 import {
@@ -27,6 +27,7 @@ import {
   failWorkflowRun,
   startWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -45,21 +46,23 @@ export async function POST(request: Request) {
     );
   }
 
+  let trustedScope: ProjectScope | undefined;
   let analyticsRunId: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       workflowType: "test_execution_effort",
       workItemId: parsed.data.storyId,
       userId: ctx.userId,
     });
 
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const options = TestExecutionEffortOptionsSchema.parse(parsed.data);
     const data = await loadTestExecutionEffortData({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       adapter,
       provider,
       storyId: parsed.data.storyId,
@@ -72,7 +75,7 @@ export async function POST(request: Request) {
       hasProjectContext: data.hasProjectContext,
     });
     const result = await generateTestExecutionEffort({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       provider,
       targetRequirement: data.targetRequirement,
       linkedTestCases: data.linkedTestCases,
@@ -86,7 +89,7 @@ export async function POST(request: Request) {
       relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
     });
     completeWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       valueRealized: false,
       patch: {
@@ -114,16 +117,16 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "test_execution_effort.run", label: "Test Execution Effort generation failed.", error });
+    if (trustedScope) writeGenerationFailureAudit({ scope: trustedScope, action: "test_execution_effort.run", label: "Test Execution Effort generation failed.", error });
     if (isAppError(error)) {
-      if (analyticsRunId) {
-        failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error.message });
+      if (trustedScope && analyticsRunId) {
+        failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error.message });
       }
       return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
     }
     const safeError = toSafeTestExecutionEffortError(error, "Test Execution Effort generation failed.", parsed.data.storyId);
-    if (analyticsRunId) {
-      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: safeError.message });
+    if (trustedScope && analyticsRunId) {
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: safeError.message });
     }
     return NextResponse.json({ error: safeError.message }, { status: safeError.status });
   }

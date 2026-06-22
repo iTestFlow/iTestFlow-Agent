@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { countTestCategories } from "@/modules/analytics/test-category-normalization";
 import { z } from "zod";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
   authErrorResponse,
   getUserAzureAdapter,
@@ -21,6 +21,7 @@ import {
   startWorkflowRun,
   updateWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -40,28 +41,30 @@ export async function POST(request: Request) {
     );
   }
 
+  let trustedScope: ProjectScope | undefined;
   let analyticsRunId: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       workflowType: "test_gap_analysis",
       workItemId: parsed.data.targetWorkItemId,
       userId: ctx.userId,
     });
 
     const targetRequirement = await adapter.fetchWorkItemById({
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
     const linkedTestCases = await adapter.fetchLinkedTestCases({
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
       userStoryId: parsed.data.targetWorkItemId,
     });
     const autoContext = await resolveWorkflowContext({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       adapter,
       provider,
       targetRequirement,
@@ -70,13 +73,13 @@ export async function POST(request: Request) {
       workflowType: "existing_test_case_review",
     });
     const result = await reviewExistingLinkedTestCases({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       provider,
       targetRequirement,
       linkedTestCases,
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
       extraInstructions: parsed.data.extraInstructions,
     });
     const contextCitations = buildWorkflowContextCitations({
@@ -86,7 +89,7 @@ export async function POST(request: Request) {
     const gapRows = result.validatedOutput.traceabilityMatrix.filter((row) => row.coverageStatus !== "Covered");
     const weakDuplicateCases = result.validatedOutput.findings.filter((finding) => finding.category === "Duplicate" || finding.category.startsWith("Weak")).length;
     updateWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       patch: {
         status: "generated",
@@ -126,9 +129,9 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "existing_test_case_review.run", label: "Test Coverage Matrix generation failed.", error });
-    if (analyticsRunId) {
-      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Test Coverage Matrix failed." });
+    if (trustedScope) writeGenerationFailureAudit({ scope: trustedScope, action: "existing_test_case_review.run", label: "Test Coverage Matrix generation failed.", error });
+    if (trustedScope && analyticsRunId) {
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Test Coverage Matrix failed." });
     }
     return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
   }

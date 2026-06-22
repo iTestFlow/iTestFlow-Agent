@@ -10,6 +10,7 @@ import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -33,24 +34,25 @@ export async function POST(request: Request) {
   try {
     const options = parsed.data.options ?? defaultTestDesignOptions;
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const targetRequirement = await adapter.fetchWorkItemById({
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
     const autoContext = await resolveWorkflowContextWithoutLLM({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       adapter,
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
       retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
     });
     const draft = buildTestCaseGenerationPromptDraft({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       targetRequirement,
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
       options,
       extraInstructions: parsed.data.extraInstructions,
     });

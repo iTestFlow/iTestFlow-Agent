@@ -3,6 +3,7 @@ import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "
 import { SuiteMigrationRequestSchema } from "@/modules/test-suite-migration/test-suite-migration.schema";
 import { buildMigrationPreview } from "@/modules/test-suite-migration/test-suite-migration.service";
 import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -14,7 +15,8 @@ export async function POST(request: Request) {
 
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const preview = await buildMigrationPreview(adapter, parsed.data);
     return NextResponse.json({ preview });
   } catch (error) {

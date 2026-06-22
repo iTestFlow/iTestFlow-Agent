@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { completeManualRequirementAnalysis } from "@/modules/requirement-analysis/application/requirement-analysis.service";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
 import { isAppError } from "@/modules/shared/errors/app-error";
@@ -39,20 +41,25 @@ export async function POST(request: Request) {
     );
   }
 
-  const analyticsRunId = startWorkflowRun({
-    scope: parsed.data.scope,
-    workflowType: "requirements_analysis",
-    workItemId: parsed.data.targetWorkItemId,
-  });
+  let trustedScope: ProjectScope | undefined;
+  let analyticsRunId: string | undefined;
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    analyticsRunId = startWorkflowRun({
+      scope: trustedScope,
+      workflowType: "requirements_analysis",
+      workItemId: parsed.data.targetWorkItemId,
+      userId: ctx.userId,
+    });
     const result = completeManualRequirementAnalysis({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       rawOutput: parsed.data.rawOutput,
       targetWorkItemId: parsed.data.targetWorkItemId,
       enabledChecklistItemIds: parsed.data.enabledChecklistItemIds,
     });
     updateWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       patch: {
         status: "generated",
@@ -87,7 +94,11 @@ export async function POST(request: Request) {
       warnings: result.warnings,
     });
   } catch (error) {
-    failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External requirement analysis failed." });
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
+    if (trustedScope && analyticsRunId) {
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External requirement analysis failed." });
+    }
     if (isAppError(error)) {
       return NextResponse.json(toErrorResponse(error), { status: statusForManualValidationError(error) });
     }

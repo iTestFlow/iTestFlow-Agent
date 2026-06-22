@@ -4,6 +4,7 @@ import { writeAuditLog } from "@/modules/audit/audit.service";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import type { FinalApprovedTestCase } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -67,10 +68,11 @@ export async function POST(request: Request) {
 
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const create: PublishStepResult & { azureTestCaseId?: string } = parsed.data.suggestedTestCase
       ? await adapter.createTestCase({
-          projectId: parsed.data.scope.azureProjectId,
+          projectId: trustedScope.azureProjectId,
           testCase: toFinalApprovedTestCase(parsed.data.suggestedTestCase, parsed.data.parentStoryId),
         })
       : { success: true, azureTestCaseId: parsed.data.selectedTestCaseId };
@@ -78,14 +80,14 @@ export async function POST(request: Request) {
     const azureTestCaseId = create.azureTestCaseId ?? parsed.data.selectedTestCaseId;
     const storyLink: PublishStepResult = parsed.data.suggestedTestCase && azureTestCaseId
       ? await adapter.linkTestCaseToUserStory({
-          projectId: parsed.data.scope.azureProjectId,
+          projectId: trustedScope.azureProjectId,
           userStoryId: parsed.data.parentStoryId,
           azureTestCaseId,
         })
       : { success: true };
     const bugLink: PublishStepResult = create.success && storyLink.success && azureTestCaseId
       ? await adapter.linkTestCaseToWorkItem({
-          projectId: parsed.data.scope.azureProjectId,
+          projectId: trustedScope.azureProjectId,
           workItemId: parsed.data.bugId,
           azureTestCaseId,
         })
@@ -102,10 +104,10 @@ export async function POST(request: Request) {
     };
 
     writeAuditLog({
-      projectId: parsed.data.scope.projectId,
-      azureProjectId: parsed.data.scope.azureProjectId,
-      azureProjectName: parsed.data.scope.azureProjectName,
-      azureOrganizationUrl: parsed.data.scope.azureOrganizationUrl,
+      projectId: trustedScope.projectId,
+      azureProjectId: trustedScope.azureProjectId,
+      azureProjectName: trustedScope.azureProjectName,
+      azureOrganizationUrl: trustedScope.azureOrganizationUrl,
       entityType: "work_item",
       entityId: parsed.data.bugId,
       action: "bug_report.link_reproduction_test_case",

@@ -2,11 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
   completeWorkflowRun,
   failWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -48,14 +49,16 @@ export async function POST(request: Request) {
     );
   }
 
+  let trustedScope: ProjectScope | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const results = [];
 
     for (const testCase of parsed.data.testCases) {
       const created = await adapter.createTestCase({
-        projectId: parsed.data.scope.azureProjectId,
+        projectId: trustedScope.azureProjectId,
         testCase,
       });
 
@@ -72,7 +75,7 @@ export async function POST(request: Request) {
       }
 
       const link = await adapter.linkTestCaseToUserStory({
-        projectId: parsed.data.scope.azureProjectId,
+        projectId: trustedScope.azureProjectId,
         userStoryId: parsed.data.targetWorkItemId,
         azureTestCaseId: created.azureTestCaseId,
       });
@@ -88,10 +91,10 @@ export async function POST(request: Request) {
     }
 
     writeAuditLog({
-      projectId: parsed.data.scope.projectId,
-      azureProjectId: parsed.data.scope.azureProjectId,
-      azureProjectName: parsed.data.scope.azureProjectName,
-      azureOrganizationUrl: parsed.data.scope.azureOrganizationUrl,
+      projectId: trustedScope.projectId,
+      azureProjectId: trustedScope.azureProjectId,
+      azureProjectName: trustedScope.azureProjectName,
+      azureOrganizationUrl: trustedScope.azureOrganizationUrl,
       entityType: "work_item",
       entityId: parsed.data.targetWorkItemId,
       action: "test_coverage_matrix.publish_suggested_additions",
@@ -103,7 +106,7 @@ export async function POST(request: Request) {
     if (parsed.data.analyticsRunId) {
       if (successCount > 0) {
         completeWorkflowRun({
-          scope: parsed.data.scope,
+          scope: trustedScope,
           runId: parsed.data.analyticsRunId,
           status: "published",
           valueRealized: true,
@@ -119,7 +122,7 @@ export async function POST(request: Request) {
           },
         });
       } else {
-        failWorkflowRun({ scope: parsed.data.scope, runId: parsed.data.analyticsRunId, error: "No suggested test cases were published successfully." });
+        failWorkflowRun({ scope: trustedScope, runId: parsed.data.analyticsRunId, error: "No suggested test cases were published successfully." });
       }
     }
 
@@ -130,9 +133,9 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    if (parsed.data.analyticsRunId) {
+    if (trustedScope && parsed.data.analyticsRunId) {
       failWorkflowRun({
-        scope: parsed.data.scope,
+        scope: trustedScope,
         runId: parsed.data.analyticsRunId,
         error: error instanceof Error ? error.message : "Suggested additions publish failed.",
       });

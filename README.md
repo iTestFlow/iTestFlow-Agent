@@ -5,10 +5,10 @@
 </p>
 
 <p align="center">
-  Local-first test intelligence for Azure DevOps, grounded in project knowledge and controlled by human review.
+Workspace-scoped test intelligence for Azure DevOps, grounded in project knowledge and controlled by human review.
 </p>
 
-iTestFlow brings requirement analysis, test design, coverage review, execution planning, defect reporting, and test-suite operations into one project-scoped QA workspace. It connects to real Azure DevOps and LLM provider APIs while keeping runtime settings, indexed context, audit history, and workflow records on the local machine.
+iTestFlow brings requirement analysis, test design, coverage review, execution planning, defect reporting, and test-suite operations into authenticated QA workspaces. It connects to real Azure DevOps and LLM provider APIs while keeping credentials, indexed context, audit history, jobs, and workflow records in PostgreSQL.
 
 ## Contents
 
@@ -28,7 +28,7 @@ iTestFlow brings requirement analysis, test design, coverage review, execution p
   <img src="public/brand/itestflow-architecture.png" alt="iTestFlow architecture and AI-powered software testing lifecycle" width="1200" />
 </p>
 
-The browser communicates only with local Next.js API routes. Server-side domain modules own workflow logic, local SQLite access, Azure DevOps calls, and LLM provider calls.
+The browser communicates only with Next.js API routes. Server-side domain modules own workflow logic, PostgreSQL access, Azure DevOps calls, LLM provider calls, workspace authorization, and project isolation.
 
 For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md).
 
@@ -64,6 +64,7 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 
 - Node.js 24 or newer
 - npm
+- PostgreSQL 16, either from `docker compose up -d postgres` or a native/server instance
 - An Azure DevOps organization URL, such as `https://dev.azure.com/YOUR_ORG`
 - An Azure DevOps Personal Access Token with the permissions needed for work items, comments, Test Plans, Test Suites, test cases, and links
 - One LLM provider: OpenAI, Gemini, or Anthropic
@@ -72,10 +73,13 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 
 ```bash
 npm install
+cp .env.example .env
+docker compose up -d postgres
+npm run db:migrate
 npm run dev -- --hostname 127.0.0.1 --port 3000
 ```
 
-Open [Initial Configuration](http://127.0.0.1:3000/setup), test both connections, and save the settings. iTestFlow then opens the [Dashboards](http://127.0.0.1:3000/dashboards) workspace.
+Set `APP_ENCRYPTION_KEY`, `SESSION_SECRET`, `BOOTSTRAP_OWNER_EMAIL`, and `BOOTSTRAP_OWNER_AZURE_ORG` in `.env` before using hosted workspace mode. Open [Initial Configuration](http://127.0.0.1:3000/setup), sign in as the bootstrap owner, add personal credentials, and select a project. iTestFlow then opens the [Dashboards](http://127.0.0.1:3000/dashboards) workspace.
 
 ## App Links
 
@@ -100,49 +104,44 @@ These links work while the local development or production server is running on 
 
 ### UI Configuration
 
-The recommended setup path is [http://127.0.0.1:3000/setup](http://127.0.0.1:3000/setup). Configure:
+The recommended setup path is [http://127.0.0.1:3000/setup](http://127.0.0.1:3000/setup). In hosted mode, each user configures private credentials from Settings:
 
 - Azure DevOps organization URL and Personal Access Token
 - LLM provider and model
 - Provider API key
 - Maximum output token cap and transient-failure retry count
 - Project-context retrieval count
-- Optional automatic context-update schedule and filters
+- Optional automatic context-update schedule and filters owned by the workspace
 
-Models are loaded from the selected provider's model-list API where supported. The top bar also displays the authenticated Azure DevOps profile and lets you choose the active project.
+Models are loaded from the selected provider's model-list API where supported. The top bar displays the authenticated Azure DevOps profile and lets you choose the active project; the server persists and verifies the project row before project-scoped API routes can use it.
 
-### Optional `.env.local` Bootstrap
+### Environment
 
-UI-saved settings take priority. Environment variables are used as bootstrap values only when saved runtime settings do not exist.
+Start from [.env.example](.env.example). Required values for normal hosted mode:
 
-Start from [.env.example](.env.example):
+```bash
+DATABASE_URL=postgresql://itestflow:itestflow@localhost:5432/itestflow
+APP_MODE=hosted
+SESSION_SECRET=replace-me
+BOOTSTRAP_OWNER_EMAIL=owner@example.com
+BOOTSTRAP_OWNER_AZURE_ORG=https://dev.azure.com/YOUR_ORG
+APP_ENCRYPTION_KEY=base64-32-byte-key
+```
+
+Generate the encryption key with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+Single-user/dev credential variables remain available for legacy local development:
 
 ```bash
 AZURE_DEVOPS_ORG_URL=https://dev.azure.com/YOUR_ORG
 AZURE_DEVOPS_PAT=YOUR_AZURE_DEVOPS_PAT
-
 DEFAULT_LLM_PROVIDER=openai
-NEXT_PUBLIC_LLM_PROVIDER_LABEL=OpenAI
 OPENAI_API_KEY=YOUR_OPENAI_KEY
 OPENAI_MODEL=YOUR_MODEL_ID
-
-LLM_MAX_OUTPUT_TOKEN_CAP=32000
-LLM_RETRY_ATTEMPTS=1
-PROJECT_CONTEXT_TOP_K=8
-```
-
-Provider-specific alternatives:
-
-```bash
-# Gemini
-DEFAULT_LLM_PROVIDER=gemini
-GEMINI_API_KEY=YOUR_GEMINI_KEY
-GEMINI_MODEL=YOUR_MODEL_ID
-
-# Anthropic
-DEFAULT_LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=YOUR_ANTHROPIC_KEY
-ANTHROPIC_MODEL=YOUR_MODEL_ID
 ```
 
 ## First-Run Workflow
@@ -158,14 +157,13 @@ ANTHROPIC_MODEL=YOUR_MODEL_ID
 
 ## Local Data and Security
 
-- Runtime settings are encrypted with AES-256-GCM in `data/runtime-settings.json`.
-- The local encryption key is stored in `data/.runtime-settings-key`.
-- Indexed context, knowledge, audit records, and workflow data are stored in `data/itestflow.sqlite`.
-- Runtime data and secrets under `data/` are ignored by git.
+- User Azure DevOps and LLM credentials are encrypted with AES-256-GCM using `APP_ENCRYPTION_KEY`.
+- Workspace data, project anchors, indexed context, knowledge, audit records, workflow analytics, and jobs are stored in PostgreSQL.
 - Azure DevOps and LLM requests are made server-side; credentials are not sent directly from browser components to external providers.
-- Project-scoped Azure DevOps operations verify the real `System.TeamProject` value before reading or writing resources.
+- Project selection is persisted server-side and project-scoped API routes resolve a trusted workspace/project scope before reading or writing.
+- Background workers heartbeat running jobs and stale worker locks are requeued automatically.
 
-Treat the `data/` directory as sensitive local application state and do not share it.
+Treat the database and environment secrets as sensitive application state.
 
 ## Development
 
@@ -174,7 +172,9 @@ The UI uses Next.js App Router, React, TypeScript, Tailwind CSS, shadcn/Radix pr
 ### Verification
 
 ```bash
+npm run db:migrate
 npm run typecheck
+npm test
 npm run build
 ```
 
@@ -187,7 +187,7 @@ npm start -- --hostname 127.0.0.1 --port 3000
 
 Open [http://127.0.0.1:3000](http://127.0.0.1:3000). The root route redirects to `/dashboards`.
 
-Docker is not required.
+Docker is required only if you use the provided local PostgreSQL service.
 
 ## Project Documentation
 

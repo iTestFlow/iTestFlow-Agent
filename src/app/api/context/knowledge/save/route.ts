@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { ProjectKnowledgeBaseSchema } from "@/modules/rag/project-knowledge.schema";
 import { saveGeneratedProjectKnowledgeBaseDraft } from "@/modules/rag/project-knowledge.service";
 
@@ -23,8 +25,12 @@ export async function POST(request: Request) {
   }
 
   try {
-    return NextResponse.json(await saveGeneratedProjectKnowledgeBaseDraft(parsed.data));
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    return NextResponse.json(await saveGeneratedProjectKnowledgeBaseDraft({ ...parsed.data, scope: trustedScope }));
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Project knowledge save failed." },
       { status: 422 },

@@ -3,7 +3,10 @@ import { z } from "zod";
 
 import { workflowTypeValues } from "@/modules/analytics/analytics-config";
 import { getSystemDashboardAnalytics } from "@/modules/analytics/system-dashboard.service";
+import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { getWorkspaceMembership } from "@/modules/workspace/workspace-access.service";
 
 export const runtime = "nodejs";
 
@@ -40,14 +43,26 @@ export async function POST(request: Request) {
   }
 
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const membership = await getWorkspaceMembership(ctx.userId, ctx.workspace.id);
+    const requestedFilters = parsed.data.filters;
+    const canViewWorkspaceUsers = membership?.role === "owner" || membership?.role === "admin";
+    const filters = {
+      ...requestedFilters,
+      userId: canViewWorkspaceUsers ? requestedFilters?.userId : ctx.userId,
+    };
+
     return NextResponse.json(
       await getSystemDashboardAnalytics({
-        scope: parsed.data.scope,
-        filters: parsed.data.filters,
+        scope: trustedScope,
+        filters,
       }),
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "System dashboard analytics failed." },
       { status: 503 },

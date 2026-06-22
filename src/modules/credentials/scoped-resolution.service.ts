@@ -9,6 +9,7 @@ import { requireSession, SessionError } from "@/modules/auth/session.service";
 import { getWorkspaceMembership } from "@/modules/workspace/workspace-access.service";
 import { getPrimaryWorkspaceForUser, getWorkspaceById, type WorkspaceRef } from "@/modules/workspace/workspace.service";
 import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
+import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { resolveUserAzurePat, resolveUserLlmConfig, markUserAzurePatExpired } from "./credential.service";
 
 /**
@@ -17,9 +18,9 @@ import { resolveUserAzurePat, resolveUserLlmConfig, markUserAzurePatExpired } fr
  * then builds an Azure DevOps adapter and LLM provider from THAT user's encrypted
  * credentials — never from global runtime settings or client-supplied secrets.
  *
- * The Azure organization URL comes from the workspace (server-side, trusted); the
- * project identity is still taken from the client's ProjectScope for now —
- * validating the project belongs to the workspace is a Phase 3 refinement once
+ * The Azure organization URL comes from the workspace (server-side, trusted).
+ * Project-scoped routes must pass a server-resolved ProjectScope from the
+ * workspace project anchor service, not raw client scope.
  * projects carry workspace_id.
  */
 
@@ -61,7 +62,7 @@ export async function requireWorkflowContext(workspaceId?: string | null): Promi
 
 export async function getUserAzureAdapter(
   ctx: WorkflowContext,
-  project: { azureProjectId: string; azureProjectName: string },
+  project: ProjectScope,
 ): Promise<AzureDevOpsRestAdapter> {
   const pat = await resolveUserAzurePat(ctx.workspace.id, ctx.userId);
   if (!pat) {

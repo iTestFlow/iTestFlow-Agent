@@ -17,13 +17,14 @@
  *                                   cron schedule (Settings → Workspace); a workspace
  *                                   with no schedule is a no-op.
  */
-import { claimNextJob, completeJob, failJob } from "@/modules/jobs/job-queue.service";
+import { claimNextJob, completeJob, failJob, heartbeatJob } from "@/modules/jobs/job-queue.service";
 import { getJobHandler, registeredJobTypes } from "@/modules/jobs/job-handlers";
 import { registerAllJobHandlers } from "@/modules/jobs/register-handlers";
 import { enqueueDueScheduledSyncs } from "@/modules/jobs/sync-schedule.service";
 
 const WORKER_ID = `worker-${process.pid}`;
 const POLL_MS = Number(process.env.WORKER_POLL_MS ?? "2000");
+const HEARTBEAT_MS = Number(process.env.WORKER_HEARTBEAT_MS ?? String(30 * 1000));
 const SCHEDULER_ENABLED = process.env.WORKER_SCHEDULER !== "false";
 const SCHEDULER_TICK_MS = Number(process.env.WORKER_SCHEDULER_TICK_MS ?? String(60 * 1000));
 
@@ -39,20 +40,40 @@ async function processNextJob(): Promise<boolean> {
 
   const handler = getJobHandler(job.jobType);
   if (!handler) {
-    await failJob(job.id, `No handler registered for job type "${job.jobType}".`);
+    await failJob(job.id, `No handler registered for job type "${job.jobType}".`, WORKER_ID);
     console.error(`[worker] no handler for ${job.jobType} (job ${job.id})`);
     return true;
   }
 
   const startedAt = Date.now();
+  const heartbeat = setInterval(() => {
+    void heartbeatJob(job.id, WORKER_ID)
+      .then((updated) => {
+        if (!updated) console.warn(`[worker] heartbeat lost ownership of ${job.jobType} ${job.id}`);
+      })
+      .catch((error) => {
+        console.error(`[worker] heartbeat failed for ${job.jobType} ${job.id}`, error);
+      });
+  }, HEARTBEAT_MS);
+  heartbeat.unref();
+
   try {
     await handler(job);
-    await completeJob(job.id);
-    console.log(`[worker] completed ${job.jobType} ${job.id} in ${Date.now() - startedAt}ms`);
+    const completed = await completeJob(job.id, WORKER_ID);
+    if (completed) {
+      console.log(`[worker] completed ${job.jobType} ${job.id} in ${Date.now() - startedAt}ms`);
+    } else {
+      console.warn(`[worker] skipped completion for ${job.jobType} ${job.id}; lock is no longer owned by ${WORKER_ID}`);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Job handler failed.";
-    await failJob(job.id, message);
+    const failed = await failJob(job.id, message, WORKER_ID);
+    if (!failed) {
+      console.warn(`[worker] skipped failure update for ${job.jobType} ${job.id}; lock is no longer owned by ${WORKER_ID}`);
+    }
     console.error(`[worker] failed ${job.jobType} ${job.id} (attempt ${job.attempts}/${job.maxAttempts}): ${message}`);
+  } finally {
+    clearInterval(heartbeat);
   }
   return true;
 }

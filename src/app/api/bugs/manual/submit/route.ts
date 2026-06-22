@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { completeManualBugReport } from "@/modules/bug-reporting/bug-reporting.service";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { isAppError } from "@/modules/shared/errors/app-error";
 import { statusForManualValidationError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import {
@@ -24,19 +26,24 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Paste the external LLM response before continuing." }, { status: 400 });
   }
 
-  const analyticsRunId = startWorkflowRun({
-    scope: parsed.data.scope,
-    workflowType: "report_bug",
-    workItemId: parsed.data.parentStoryId,
-  });
+  let trustedScope: ProjectScope | undefined;
+  let analyticsRunId: string | undefined;
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    analyticsRunId = startWorkflowRun({
+      scope: trustedScope,
+      workflowType: "report_bug",
+      workItemId: parsed.data.parentStoryId,
+      userId: ctx.userId,
+    });
     const result = completeManualBugReport({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       rawOutput: parsed.data.rawOutput,
       parentStoryId: parsed.data.parentStoryId,
     });
     updateWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       patch: {
         status: "generated",
@@ -56,7 +63,11 @@ export async function POST(request: Request) {
       ...result.validatedOutput,
     });
   } catch (error) {
-    failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External bug response validation failed." });
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
+    if (trustedScope && analyticsRunId) {
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External bug response validation failed." });
+    }
     if (isAppError(error)) {
       return NextResponse.json(toErrorResponse(error), { status: statusForManualValidationError(error) });
     }

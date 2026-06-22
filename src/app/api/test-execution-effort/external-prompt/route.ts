@@ -14,6 +14,7 @@ import {
   TestExecutionEffortOptionsSchema,
 } from "@/modules/test-execution-effort/test-execution-effort.schema";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -34,10 +35,11 @@ export async function POST(request: Request) {
 
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const options = TestExecutionEffortOptionsSchema.parse(parsed.data);
     const data = await loadTestExecutionEffortData({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       adapter,
       storyId: parsed.data.storyId,
       selectedContextIds: parsed.data.selectedContextIds,
@@ -49,7 +51,7 @@ export async function POST(request: Request) {
       hasProjectContext: data.hasProjectContext,
     });
     const draft = buildTestExecutionEffortPromptDraft({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       targetRequirement: data.targetRequirement,
       linkedTestCases: data.linkedTestCases,
       relatedWorkItems: data.relatedWorkItems,

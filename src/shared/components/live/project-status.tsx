@@ -24,6 +24,17 @@ export function HeaderProjectSelector() {
   const [activeProject, setActiveProject] = useState<ActiveProjectScope | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  async function selectProject(project: AzureProject): Promise<ActiveProjectScope> {
+    const response = await fetch("/api/azure-devops/project/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: project.workspaceId, azureProjectId: project.id }),
+    });
+    const json = await response.json();
+    if (!response.ok) throw new Error(json.error ?? "Failed to select Azure DevOps project.");
+    return json.scope as ActiveProjectScope;
+  }
+
   useEffect(() => {
     setActiveProject(readActiveProject());
     fetch("/api/azure-devops/projects", { cache: "no-store" })
@@ -34,13 +45,7 @@ export function HeaderProjectSelector() {
         const stored = readActiveProject();
         if (!stored && json.projects?.[0]) {
           const first = json.projects[0] as AzureProject;
-          const scope = {
-            projectId: first.id,
-            azureProjectId: first.id,
-            azureProjectName: first.name,
-            azureOrganizationUrl: first.azureOrganizationUrl,
-            workspaceId: first.workspaceId ?? json.workspaceId,
-          };
+          const scope = await selectProject({ ...first, workspaceId: first.workspaceId ?? json.workspaceId });
           writeActiveProject(scope);
           setActiveProject(scope);
         }
@@ -80,15 +85,12 @@ export function HeaderProjectSelector() {
           const project = projects.find((item) => item.id === event.target.value);
           if (!project) return;
           confirmAction(() => {
-            const scope = {
-              projectId: project.id,
-              azureProjectId: project.id,
-              azureProjectName: project.name,
-              azureOrganizationUrl: project.azureOrganizationUrl,
-              workspaceId: project.workspaceId,
-            };
-            writeActiveProject(scope);
-            setActiveProject(scope);
+            void selectProject(project).then((scope) => {
+              writeActiveProject(scope);
+              setActiveProject(scope);
+            }).catch((err: unknown) => {
+              setError(err instanceof Error ? err.message : "Azure DevOps project selection failed.");
+            });
           });
         }}
       >

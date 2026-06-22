@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
   authErrorResponse,
   getUserAzureAdapter,
@@ -12,6 +12,7 @@ import { suggestContextStories } from "@/modules/context-selection/context-selec
 import { getContextSuggestionCandidatePoolSize, getContextSuggestionFinalLimit } from "@/modules/context-selection/context-suggestion-sizing";
 import { requirementToRetrievalQuery, retrieveStoredProjectContext, type LlmContextSource } from "@/modules/rag/project-context-store.service";
 import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -27,20 +28,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Please select an Azure DevOps project before running this action." }, { status: 400 });
   }
 
+  let trustedScope: ProjectScope | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
-    const adapter = await getUserAzureAdapter(ctx, parsed.data.scope);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const provider = await getUserLLMProvider(ctx);
 
     const targetRequirement = await adapter.fetchWorkItemById({
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
     const retrievalTopK = getContextSuggestionFinalLimit(await getRetrievalTopK(ctx.workspace.id));
     const candidatePoolSize = getContextSuggestionCandidatePoolSize(retrievalTopK);
     const storedContext = distinctContextByWorkItem(
       (await retrieveStoredProjectContext({
-        scope: parsed.data.scope,
+        scope: trustedScope,
         query: parsed.data.query?.trim() || requirementToRetrievalQuery(targetRequirement),
         topK: candidatePoolSize,
       })).filter((item) => item.workItemId !== parsed.data.targetWorkItemId),
@@ -55,7 +58,7 @@ export async function POST(request: Request) {
       });
     }
     const result = await suggestContextStories({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       provider,
       targetRequirement,
       retrievedContext: storedContext,
@@ -72,7 +75,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "context_selection.suggest", label: "Context suggestion failed.", error });
+    if (trustedScope) writeGenerationFailureAudit({ scope: trustedScope, action: "context_selection.suggest", label: "Context suggestion failed.", error });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Context suggestion failed." },
       { status: 503 },

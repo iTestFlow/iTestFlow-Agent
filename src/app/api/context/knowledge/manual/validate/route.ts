@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import {
   saveManualProjectKnowledgeBaseSnapshot,
   validateProjectKnowledgeExternalOutput,
@@ -22,9 +24,11 @@ export async function POST(request: Request) {
   }
 
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     if (parsed.data.save) {
       const snapshot = await saveManualProjectKnowledgeBaseSnapshot({
-        scope: parsed.data.scope,
+        scope: trustedScope,
         rawOutput: parsed.data.rawOutput,
         mode: parsed.data.mode,
       });
@@ -35,6 +39,8 @@ export async function POST(request: Request) {
       knowledgeBase: validateProjectKnowledgeExternalOutput(parsed.data.rawOutput),
     });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "External LLM knowledge response validation failed." },
       { status: 422 },
