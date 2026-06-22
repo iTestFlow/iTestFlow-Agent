@@ -57,11 +57,15 @@ describeDb("workspace sync schedule (DB-backed)", () => {
       workspaceId,
       cronExpression: "0 2 * * *",
       enabled: true,
+      workItemTypes: ["User Story", "Requirement"],
+      states: ["Active", "Ready"],
       createdByUserId: null,
     });
     expect(view.enabled).toBe(true);
     expect(view.nextRunAt).not.toBeNull();
     expect(Date.parse(view.nextRunAt!)).toBeGreaterThan(Date.now());
+    expect(view.workItemTypes).toEqual(["User Story", "Requirement"]);
+    expect(view.states).toEqual(["Active", "Ready"]);
   });
 
   it("parks the schedule (null next_run_at, excluded from due) when disabled", async () => {
@@ -69,6 +73,8 @@ describeDb("workspace sync schedule (DB-backed)", () => {
       workspaceId,
       cronExpression: "0 2 * * *",
       enabled: false,
+      workItemTypes: ["Bug"],
+      states: ["New"],
       createdByUserId: null,
     });
     expect(view.enabled).toBe(false);
@@ -79,7 +85,14 @@ describeDb("workspace sync schedule (DB-backed)", () => {
 
   it("fires a due schedule, enqueues a sync job, advances next_run_at, and is idempotent", async () => {
     // Re-enable and seed an active project so enqueueWorkspaceContextSync produces a job.
-    await upsertWorkspaceSyncSchedule({ workspaceId, cronExpression: "0 2 * * *", enabled: true, createdByUserId: null });
+    await upsertWorkspaceSyncSchedule({
+      workspaceId,
+      cronExpression: "0 2 * * *",
+      enabled: true,
+      workItemTypes: ["User Story"],
+      states: ["Active"],
+      createdByUserId: null,
+    });
     const workspace = await getWorkspaceById(workspaceId);
     const now = nowIso();
     await sqlRun(
@@ -104,6 +117,14 @@ describeDb("workspace sync schedule (DB-backed)", () => {
       { id: workspaceId },
     );
     expect(job?.count).toBe(1);
+    const payloadRow = await sqlGet<{ payload_json: string }>(
+      `SELECT payload_json FROM jobs WHERE workspace_id = @id AND job_type = 'workspace_context_sync' LIMIT 1`,
+      { id: workspaceId },
+    );
+    expect(JSON.parse(payloadRow!.payload_json)).toMatchObject({
+      workItemTypes: ["User Story"],
+      states: ["Active"],
+    });
 
     // Already advanced into the future ⇒ a second tick fires nothing.
     expect(await enqueueDueScheduledSyncs()).toBe(0);

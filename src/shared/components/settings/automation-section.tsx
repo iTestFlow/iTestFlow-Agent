@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
+import { ContextFilterSelector } from "@/components/domain/context-filter-selector"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -14,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults"
 import {
   buildDailyCron,
   buildMonthlyCron,
@@ -24,13 +26,22 @@ import {
   toTimeInputValue,
   WEEKDAY_NAMES,
 } from "@/shared/lib/cron-schedule"
+import { useActiveProject } from "@/shared/lib/use-active-project"
+import { useProjectWorkItemMetadata } from "@/shared/lib/use-project-work-item-metadata"
 import { isValidCronExpression } from "@/modules/settings/cron-expression"
 import { OwnerOnlyNotice } from "./owner-only-notice"
 import { SectionCard, StatusBadge } from "./section-card"
 
 type ScheduleResponse = {
   workspaceId: string
-  schedule: { cronExpression: string; enabled: boolean; nextRunAt: string | null; lastEnqueuedAt: string | null } | null
+  schedule: {
+    cronExpression: string
+    enabled: boolean
+    nextRunAt: string | null
+    lastEnqueuedAt: string | null
+    workItemTypes: string[]
+    states: string[]
+  } | null
 }
 
 type Frequency = "daily" | "weekly" | "monthly" | "custom"
@@ -51,6 +62,17 @@ export function AutomationSection() {
   const [nextRunAt, setNextRunAt] = useState<string | null>(null)
   const [lastEnqueuedAt, setLastEnqueuedAt] = useState<string | null>(null)
   const [hasSaved, setHasSaved] = useState(false)
+  const [workItemTypes, setWorkItemTypes] = useState<string[]>(DEFAULT_CONTEXT_WORK_ITEM_TYPES)
+  const [states, setStates] = useState<string[]>(DEFAULT_CONTEXT_STATES)
+
+  const activeProject = useActiveProject()
+  const activeScope = activeProject ?? null
+  const {
+    metadata: workItemMetadata,
+    loading: metadataLoading,
+    error: metadataError,
+    retry: retryMetadata,
+  } = useProjectWorkItemMetadata(activeScope)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -70,6 +92,8 @@ export function AutomationSection() {
         setEnabled(data.schedule.enabled)
         setNextRunAt(data.schedule.nextRunAt)
         setLastEnqueuedAt(data.schedule.lastEnqueuedAt)
+        setWorkItemTypes(data.schedule.workItemTypes.length ? data.schedule.workItemTypes : DEFAULT_CONTEXT_WORK_ITEM_TYPES)
+        setStates(data.schedule.states.length ? data.schedule.states : DEFAULT_CONTEXT_STATES)
         const parsed = parseSchedule(data.schedule.cronExpression)
         if (parsed) {
           setFrequency(parsed.mode)
@@ -101,10 +125,24 @@ export function AutomationSection() {
   }, [frequency, time, dayOfWeek, dayOfMonth, customCron])
 
   const cronValid = isValidCronExpression(cronExpression)
+  const canSave = cronValid && workItemTypes.length > 0 && states.length > 0
+
+  const workItemTypeOptions = useMemo(
+    () => uniqueStrings([...(workItemMetadata?.workItemTypes ?? []), ...DEFAULT_CONTEXT_WORK_ITEM_TYPES, ...workItemTypes]),
+    [workItemMetadata?.workItemTypes, workItemTypes],
+  )
+  const stateOptions = useMemo(
+    () => uniqueStrings([...(workItemMetadata?.states ?? []), ...DEFAULT_CONTEXT_STATES, ...states]),
+    [workItemMetadata?.states, states],
+  )
 
   async function onSave() {
     if (!cronValid) {
       toast.error("Enter a valid 5-field cron expression.")
+      return
+    }
+    if (!workItemTypes.length || !states.length) {
+      toast.error("Select at least one work item type and state.")
       return
     }
     setSaving(true)
@@ -112,7 +150,7 @@ export function AutomationSection() {
       const response = await fetch("/api/workspace/sync-schedule", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cronExpression, enabled }),
+        body: JSON.stringify({ cronExpression, enabled, workItemTypes, states }),
       })
       const data = (await response.json().catch(() => ({}))) as ScheduleResponse & { error?: string }
       if (!response.ok) {
@@ -123,6 +161,7 @@ export function AutomationSection() {
       setHasSaved(true)
       setNextRunAt(data.schedule?.nextRunAt ?? null)
       setLastEnqueuedAt(data.schedule?.lastEnqueuedAt ?? null)
+      window.dispatchEvent(new CustomEvent("itestflow:sync-schedule-changed"))
     } finally {
       setSaving(false)
     }
@@ -143,6 +182,9 @@ export function AutomationSection() {
       setEnabled(true)
       setFrequency("daily")
       setTime(DEFAULT_TIME)
+      setWorkItemTypes(DEFAULT_CONTEXT_WORK_ITEM_TYPES)
+      setStates(DEFAULT_CONTEXT_STATES)
+      window.dispatchEvent(new CustomEvent("itestflow:sync-schedule-changed"))
     } finally {
       setSaving(false)
     }
@@ -169,7 +211,36 @@ export function AutomationSection() {
               <div className="text-sm font-medium">Enable scheduled sync</div>
               <p className="text-xs text-muted-foreground">Turn off to pause without losing the schedule.</p>
             </div>
-            <Switch checked={enabled} onCheckedChange={setEnabled} disabled={loading} aria-label="Enable scheduled sync" />
+            <Checkbox checked={enabled} onCheckedChange={(checked) => setEnabled(checked === true)} disabled={loading} aria-label="Enable scheduled sync" />
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <ContextFilterSelector
+              title="Work item types"
+              description="Scheduled sync includes Azure DevOps work items with these types."
+              options={workItemTypeOptions}
+              selectedValues={workItemTypes}
+              loading={metadataLoading && Boolean(activeScope)}
+              error={activeScope ? metadataError : null}
+              disabled={!enabled}
+              searchPlaceholder="Search work item types"
+              emptyMessage="No work item types were returned for this project."
+              onRetry={retryMetadata}
+              onChange={setWorkItemTypes}
+            />
+            <ContextFilterSelector
+              title="States"
+              description="Scheduled sync includes source work items in these states."
+              options={stateOptions}
+              selectedValues={states}
+              loading={metadataLoading && Boolean(activeScope)}
+              error={activeScope ? metadataError : null}
+              disabled={!enabled}
+              searchPlaceholder="Search states"
+              emptyMessage="No work item states were returned for this project."
+              onRetry={retryMetadata}
+              onChange={setStates}
+            />
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -247,6 +318,9 @@ export function AutomationSection() {
             <p className={cronValid ? "text-foreground" : "text-destructive"}>
               {cronValid ? describeCron(cronExpression) : "Invalid cron expression."}
             </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Sync filters: {workItemTypes.length} work item {workItemTypes.length === 1 ? "type" : "types"}, {states.length} {states.length === 1 ? "state" : "states"}.
+            </p>
             {enabled && nextRunAt ? (
               <p className="mt-1 text-xs text-muted-foreground">Next run: {new Date(nextRunAt).toLocaleString()}</p>
             ) : null}
@@ -256,7 +330,7 @@ export function AutomationSection() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Button type="button" onClick={() => void onSave()} disabled={saving || loading || !cronValid}>
+            <Button type="button" onClick={() => void onSave()} disabled={saving || loading || !canSave}>
               {saving ? "Saving…" : "Save schedule"}
             </Button>
             {hasSaved ? (
@@ -269,4 +343,18 @@ export function AutomationSection() {
       )}
     </SectionCard>
   )
+}
+
+function uniqueStrings(values: string[]) {
+  const seen = new Set<string>()
+  const unique: string[] = []
+  for (const value of values) {
+    const trimmed = value.trim()
+    if (!trimmed) continue
+    const key = trimmed.toLocaleLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    unique.push(trimmed)
+  }
+  return unique
 }

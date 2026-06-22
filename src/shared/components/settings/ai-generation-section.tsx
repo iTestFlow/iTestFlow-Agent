@@ -82,6 +82,9 @@ function AiProviderCard() {
 
   useEffect(() => {
     void load()
+    const onChange = () => void load()
+    window.addEventListener("itestflow:credentials-changed", onChange)
+    return () => window.removeEventListener("itestflow:credentials-changed", onChange)
   }, [load])
 
   // Reset the loaded model list when the provider changes.

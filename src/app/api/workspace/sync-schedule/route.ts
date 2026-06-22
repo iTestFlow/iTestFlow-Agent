@@ -8,12 +8,15 @@ import {
   ScheduleError,
   upsertWorkspaceSyncSchedule,
 } from "@/modules/jobs/sync-schedule.service";
+import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
 
 export const runtime = "nodejs";
 
 const Schema = z.object({
   cronExpression: z.string().trim().min(1, "Enter a cron expression.").max(100),
   enabled: z.boolean().default(true),
+  workItemTypes: z.array(z.string().trim().min(1).max(128)).min(1).max(100).default(DEFAULT_CONTEXT_WORK_ITEM_TYPES),
+  states: z.array(z.string().trim().min(1).max(128)).min(1).max(100).default(DEFAULT_CONTEXT_STATES),
 });
 
 /**
@@ -58,6 +61,8 @@ export async function PUT(request: Request) {
       workspaceId: context.workspace.id,
       cronExpression: parsed.data.cronExpression,
       enabled: parsed.data.enabled,
+      workItemTypes: parsed.data.workItemTypes,
+      states: parsed.data.states,
       createdByUserId: context.userId,
     });
     return NextResponse.json({ workspaceId: context.workspace.id, schedule });

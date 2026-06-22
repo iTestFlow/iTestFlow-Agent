@@ -245,6 +245,41 @@ export async function saveUserLlmSettings(input: {
   );
 }
 
+export async function updateUserLlmModel(input: {
+  workspaceId: string;
+  userId: string;
+  provider: LLMProviderName;
+  model: string;
+}): Promise<void> {
+  const now = nowIso();
+  await sqlRun(
+    `UPDATE user_llm_settings SET is_default = 0, updated_at = @now
+     WHERE workspace_id = @workspaceId AND user_id = @userId`,
+    { workspaceId: input.workspaceId, userId: input.userId, now },
+  );
+  const updated = await sqlRun(
+    `UPDATE user_llm_settings
+     SET model = @model, is_default = 1, updated_at = @now
+     WHERE workspace_id = @workspaceId AND user_id = @userId AND provider = @provider`,
+    {
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      provider: input.provider,
+      model: input.model,
+      now,
+    },
+  );
+  if (!updated) {
+    await saveUserLlmSettings({
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      provider: input.provider,
+      model: input.model,
+      isDefault: true,
+    });
+  }
+}
+
 /**
  * Resolves the caller's default LLM provider/model + decrypted API key for that
  * provider, or null when not fully configured. This is the per-user replacement

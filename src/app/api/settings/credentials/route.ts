@@ -7,9 +7,11 @@ import { getPrimaryWorkspaceForUser } from "@/modules/workspace/workspace.servic
 import { PatAuthProvider } from "@/modules/auth/pat-auth-provider";
 import {
   getUserCredentialStatus,
+  resolveUserLlmConfig,
   saveUserLlmSettings,
   storeUserAzurePat,
   storeUserLlmApiKey,
+  updateUserLlmModel,
 } from "@/modules/credentials/credential.service";
 import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
 
@@ -71,6 +73,13 @@ const UpdateSchema = z
     message: "Provide an Azure DevOps PAT and/or LLM credentials to update.",
   });
 
+const ModelUpdateSchema = z.object({
+  llm: z.object({
+    provider: z.enum(["openai", "gemini", "anthropic"]),
+    model: z.string().trim().min(1, "Select an LLM model."),
+  }),
+});
+
 export async function PUT(request: Request) {
   const rate = await checkRateLimit(`cred-update:${clientIp(request)}`, 20, 5 * 60 * 1000);
   if (!rate.allowed) {
@@ -130,6 +139,46 @@ export async function PUT(request: Request) {
       isDefault: true,
     });
   }
+
+  const status = await getUserCredentialStatus(context.workspace.id, context.userId);
+  return NextResponse.json({ workspaceId: context.workspace.id, ...status });
+}
+
+export async function PATCH(request: Request) {
+  const rate = await checkRateLimit(`cred-model-update:${clientIp(request)}`, 60, 5 * 60 * 1000);
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "Too many attempts. Please wait and try again." },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } },
+    );
+  }
+
+  let context: Awaited<ReturnType<typeof resolveContext>>;
+  try {
+    context = await resolveContext();
+  } catch (error) {
+    return errorResponse(error);
+  }
+
+  const parsed = ModelUpdateSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid model payload." }, { status: 400 });
+  }
+
+  const current = await resolveUserLlmConfig(context.workspace.id, context.userId);
+  if (!current || current.provider !== parsed.data.llm.provider) {
+    return NextResponse.json(
+      { error: "Save an API key for this LLM provider before changing the model." },
+      { status: 400 },
+    );
+  }
+
+  await updateUserLlmModel({
+    workspaceId: context.workspace.id,
+    userId: context.userId,
+    provider: parsed.data.llm.provider,
+    model: parsed.data.llm.model,
+  });
 
   const status = await getUserCredentialStatus(context.workspace.id, context.userId);
   return NextResponse.json({ workspaceId: context.workspace.id, ...status });

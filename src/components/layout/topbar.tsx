@@ -1,11 +1,21 @@
 "use client"
 
-import { Menu, RefreshCw, Settings2 } from "lucide-react"
+import { Check, ChevronDown, Loader2, Menu, RefreshCw, Settings2 } from "lucide-react"
 import Link from "next/link"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { toast } from "sonner"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ThemeToggle } from "@/components/theme/theme-toggle"
 import { HeaderProjectSelector } from "@/shared/components/live/project-status"
@@ -29,6 +39,15 @@ type CredentialStatus = {
   llm: CredentialSummary
 }
 
+type SyncScheduleStatus = {
+  enabled: boolean
+  nextRunAt: string | null
+  lastEnqueuedAt: string | null
+}
+
+type Provider = "openai" | "gemini" | "anthropic"
+type ModelOption = { id: string; displayName: string }
+
 function initialsFromName(value?: string) {
   if (!value) return "AD"
   const words = value.trim().split(/\s+/).filter(Boolean)
@@ -48,12 +67,23 @@ function providerLabel(value?: string | null) {
   }
 }
 
+function isProvider(value?: string | null): value is Provider {
+  return value === "openai" || value === "gemini" || value === "anthropic"
+}
+
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString()
+}
+
 export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   const [profile, setProfile] = useState<AzureProfile | null>(null)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [profileLoading, setProfileLoading] = useState(true)
   const [credentials, setCredentials] = useState<CredentialStatus | null>(null)
   const [credentialsLoading, setCredentialsLoading] = useState(true)
+  const [syncSchedule, setSyncSchedule] = useState<SyncScheduleStatus | null>(null)
+  const [syncScheduleLoading, setSyncScheduleLoading] = useState(true)
+  const [syncScheduleVisible, setSyncScheduleVisible] = useState(true)
 
   const loadProfile = useCallback(async () => {
     setProfileLoading(true)
@@ -87,13 +117,44 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
     }
   }, [])
 
+  const loadSyncSchedule = useCallback(async () => {
+    setSyncScheduleLoading(true)
+    try {
+      const response = await fetch("/api/workspace/sync-schedule/status", { cache: "no-store" })
+      if (response.status === 401 || response.status === 403) {
+        setSyncSchedule(null)
+        setSyncScheduleVisible(false)
+        return
+      }
+      if (!response.ok) {
+        setSyncSchedule(null)
+        setSyncScheduleVisible(true)
+        return
+      }
+      const data = (await response.json()) as { schedule: SyncScheduleStatus | null }
+      setSyncSchedule(data.schedule)
+      setSyncScheduleVisible(true)
+    } catch {
+      setSyncSchedule(null)
+      setSyncScheduleVisible(true)
+    } finally {
+      setSyncScheduleLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     void loadProfile()
     void loadCredentials()
-    const onChange = () => void loadCredentials()
-    window.addEventListener("itestflow:credentials-changed", onChange)
-    return () => window.removeEventListener("itestflow:credentials-changed", onChange)
-  }, [loadProfile, loadCredentials])
+    void loadSyncSchedule()
+    const onCredentialsChange = () => void loadCredentials()
+    const onSyncScheduleChange = () => void loadSyncSchedule()
+    window.addEventListener("itestflow:credentials-changed", onCredentialsChange)
+    window.addEventListener("itestflow:sync-schedule-changed", onSyncScheduleChange)
+    return () => {
+      window.removeEventListener("itestflow:credentials-changed", onCredentialsChange)
+      window.removeEventListener("itestflow:sync-schedule-changed", onSyncScheduleChange)
+    }
+  }, [loadProfile, loadCredentials, loadSyncSchedule])
 
   const azureConfiguredError = profileError?.toLowerCase().includes("not configured") || profileError?.toLowerCase().includes("personal access token")
   const azureStatus = profile
@@ -121,6 +182,26 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           tone: "missing" as const,
           title: "Add your LLM provider, model, and API key in Settings → My Credentials.",
         }
+
+  const syncStatus = syncScheduleLoading
+    ? { text: "Sync: Checking", tone: "checking" as const, title: "Checking scheduled knowledge sync." }
+    : !syncSchedule
+      ? { text: "Sync: No schedule", tone: "missing" as const, title: "No scheduled knowledge sync is configured." }
+      : syncSchedule.enabled
+        ? {
+            text: "Sync: Enabled",
+            tone: syncSchedule.nextRunAt ? "connected" as const : "warning" as const,
+            title: syncSchedule.nextRunAt
+              ? `Scheduled knowledge sync is enabled. Next sync: ${formatDateTime(syncSchedule.nextRunAt)}.`
+              : "Scheduled knowledge sync is enabled, but the next sync time is not available.",
+          }
+        : {
+            text: "Sync: Disabled",
+            tone: "warning" as const,
+            title: syncSchedule.lastEnqueuedAt
+              ? `Scheduled knowledge sync is disabled. Last enqueued: ${formatDateTime(syncSchedule.lastEnqueuedAt)}.`
+              : "Scheduled knowledge sync is disabled.",
+          }
 
   // Proactive PAT health: only surfaced when there's a problem (expired/rejected
   // at use-time, or stale). A healthy PAT shows nothing extra here.
@@ -165,15 +246,14 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
             <TooltipContent sideOffset={8} className="max-w-sm text-left">{patWarning.title}</TooltipContent>
           </Tooltip>
         ) : null}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Link href="/settings" className={connectivityChipClass(llmStatus.tone, "max-w-[260px] cursor-pointer hover:brightness-95")} aria-label={llmStatus.title}>
-              <span className="truncate">{llmStatus.text}</span>
-              <Settings2 className="size-3.5 shrink-0" />
-            </Link>
-          </TooltipTrigger>
-          <TooltipContent sideOffset={8} className="max-w-sm text-left">{llmStatus.title}</TooltipContent>
-        </Tooltip>
+        <LlmModelChip
+          status={llmStatus}
+          provider={isProvider(llm?.provider) ? llm.provider : null}
+          model={llm?.model ?? ""}
+          disabled={credentialsLoading}
+          onChanged={loadCredentials}
+        />
+        {syncScheduleVisible ? <ConnectivityChip {...syncStatus} className="max-w-[170px]" /> : null}
         <Button
           type="button"
           variant="ghost"
@@ -181,12 +261,13 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           onClick={() => {
             void loadProfile()
             void loadCredentials()
+            void loadSyncSchedule()
           }}
-          disabled={profileLoading || credentialsLoading}
-          aria-label="Refresh Azure DevOps and credential status"
-          title="Refresh Azure DevOps and credential status"
+          disabled={profileLoading || credentialsLoading || syncScheduleLoading}
+          aria-label="Refresh Azure DevOps, credential, and sync status"
+          title="Refresh Azure DevOps, credential, and sync status"
         >
-          <RefreshCw className={cn("size-3.5", (profileLoading || credentialsLoading) && "animate-spin")} />
+          <RefreshCw className={cn("size-3.5", (profileLoading || credentialsLoading || syncScheduleLoading) && "animate-spin")} />
         </Button>
       </div>
 
@@ -232,6 +313,188 @@ function ConnectivityChip({
         {title}
       </TooltipContent>
     </Tooltip>
+  )
+}
+
+function LlmModelChip({
+  status,
+  provider,
+  model,
+  disabled,
+  onChanged,
+}: {
+  status: { text: string; title: string; tone: "connected" | "checking" | "missing" | "warning" }
+  provider: Provider | null
+  model: string
+  disabled: boolean
+  onChanged: () => void
+}) {
+  const configured = status.tone === "connected" && provider
+  const [open, setOpen] = useState(false)
+  const [models, setModels] = useState<ModelOption[]>([])
+  const [search, setSearch] = useState("")
+  const [loadingModels, setLoadingModels] = useState(false)
+  const [modelsFetched, setModelsFetched] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [savingModel, setSavingModel] = useState<string | null>(null)
+
+  useEffect(() => {
+    setModels([])
+    setModelsFetched(false)
+    setError(null)
+    setSearch("")
+  }, [provider])
+
+  const filteredModels = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase()
+    if (!needle) return models
+    return models.filter((entry) => `${entry.id} ${entry.displayName}`.toLocaleLowerCase().includes(needle))
+  }, [models, search])
+
+  async function fetchModels() {
+    if (!provider || loadingModels) return
+    setLoadingModels(true)
+    setError(null)
+    try {
+      const response = await fetch("/api/settings/llm-models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider }),
+      })
+      const data = (await response.json().catch(() => ({}))) as { models?: ModelOption[]; error?: string }
+      if (!response.ok) {
+        setError(data.error ?? "Could not fetch models.")
+        return
+      }
+      setModels(data.models ?? [])
+      setModelsFetched(true)
+    } finally {
+      setLoadingModels(false)
+    }
+  }
+
+  async function saveModel(nextModel: string) {
+    if (!provider || !nextModel || nextModel === model) {
+      setOpen(false)
+      return
+    }
+    setSavingModel(nextModel)
+    try {
+      const response = await fetch("/api/settings/credentials", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ llm: { provider, model: nextModel } }),
+      })
+      const data = (await response.json().catch(() => ({}))) as { error?: string }
+      if (!response.ok) {
+        toast.error(data.error ?? "Could not update the LLM model.")
+        return
+      }
+      toast.success(`LLM model switched to ${nextModel}.`)
+      window.dispatchEvent(new CustomEvent("itestflow:credentials-changed"))
+      onChanged()
+      setOpen(false)
+    } finally {
+      setSavingModel(null)
+    }
+  }
+
+  if (!configured) {
+    return (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Link href="/settings" className={connectivityChipClass(status.tone, "max-w-[260px] cursor-pointer hover:brightness-95")} aria-label={status.title}>
+              <span className="truncate">{status.text}</span>
+            </Link>
+          </TooltipTrigger>
+          <TooltipContent sideOffset={8} className="max-w-sm text-left">{status.title}</TooltipContent>
+        </Tooltip>
+    )
+  }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen)
+        if (nextOpen && !modelsFetched && !loadingModels) void fetchModels()
+        if (!nextOpen) setSearch("")
+      }}
+    >
+      <div className={connectivityChipClass(status.tone, "max-w-[260px] overflow-hidden")}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left hover:brightness-95 disabled:pointer-events-none disabled:opacity-60"
+            disabled={disabled}
+            aria-label={`${status.title}. Change LLM model.`}
+            title={`${status.title}. Click to change model.`}
+          >
+            <span className="truncate">{status.text}</span>
+            {loadingModels || savingModel ? (
+              <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            ) : (
+              <ChevronDown className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-180")} />
+            )}
+          </button>
+        </PopoverTrigger>
+      </div>
+      <PopoverContent align="end" className="w-[min(520px,calc(100vw-2rem))] p-0">
+        <Command shouldFilter={false}>
+          <CommandInput value={search} onValueChange={setSearch} placeholder="Search models..." />
+          <CommandList className="max-h-80">
+            {loadingModels ? (
+              <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                Loading models...
+              </div>
+            ) : null}
+            {!loadingModels && error ? (
+              <div className="space-y-3 px-3 py-4 text-sm">
+                <div className="text-destructive">{error}</div>
+                <div className="flex items-center gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => void fetchModels()}>
+                    Retry
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" asChild>
+                    <Link href="/settings">Open settings</Link>
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+            {!loadingModels && !error ? (
+              <>
+                <CommandEmpty>{modelsFetched ? "No models found." : "Open the list to load models."}</CommandEmpty>
+                <CommandGroup heading={`${providerLabel(provider)} models`}>
+                  {filteredModels.map((entry) => {
+                    const selected = entry.id === model
+                    const saving = savingModel === entry.id
+                    return (
+                      <CommandItem
+                        key={entry.id}
+                        value={entry.id}
+                        data-checked={selected}
+                        onSelect={() => void saveModel(entry.id)}
+                        disabled={Boolean(savingModel)}
+                        className="items-start gap-2"
+                      >
+                        <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+                          {saving ? <Loader2 className="size-4 animate-spin" /> : selected ? <Check className="size-4" /> : null}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-medium">{entry.displayName}</span>
+                          {entry.displayName !== entry.id ? <span className="mt-0.5 block truncate text-xs text-muted-foreground">{entry.id}</span> : null}
+                        </span>
+                      </CommandItem>
+                    )
+                  })}
+                </CommandGroup>
+              </>
+            ) : null}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   )
 }
 

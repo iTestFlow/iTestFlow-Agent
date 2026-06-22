@@ -61,6 +61,7 @@ export async function runWorkspaceContextSync(job: Job): Promise<void> {
 export async function enqueueWorkspaceContextSync(
   workspaceId: string,
   createdByUserId: string | null,
+  filters?: { workItemTypes?: string[]; states?: string[] },
 ): Promise<number> {
   const projects = await sqlAll<{ id: string }>(
     `SELECT id FROM projects WHERE workspace_id = @workspaceId AND status = 'active'`,
@@ -71,7 +72,11 @@ export async function enqueueWorkspaceContextSync(
     const id = await enqueueJob({
       jobType: WORKSPACE_CONTEXT_SYNC,
       workspaceId,
-      payload: { projectId: project.id },
+      payload: {
+        projectId: project.id,
+        ...(filters?.workItemTypes?.length ? { workItemTypes: filters.workItemTypes } : {}),
+        ...(filters?.states?.length ? { states: filters.states } : {}),
+      },
       dedupeKey: `context_sync:${project.id}`,
       createdByUserId,
     });
