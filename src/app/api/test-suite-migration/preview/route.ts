@@ -17,7 +17,7 @@ export async function POST(request: Request) {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
-    const preview = await buildMigrationPreview(adapter, parsed.data);
+    const preview = await buildMigrationPreview(adapter, { ...parsed.data, scope: trustedScope });
     return NextResponse.json({ preview });
   } catch (error) {
     const authResponse = authErrorResponse(error);

@@ -11,7 +11,8 @@ import type { WorkspaceRole } from "./workspace-access.service";
  *
  * Every mutation is guarded server-side — the UI mirrors the rules only for
  * affordance, never as the source of truth:
- *  - admins may not modify/remove an `owner`, nor grant `owner` (only owners can);
+ *  - admins may manage `member`s only; only owners may manage admins/owners or
+ *    grant the admin/owner roles;
  *  - the last remaining `owner` can never be demoted or removed (lockout guard).
  */
 
@@ -86,20 +87,15 @@ async function requireTarget(workspaceId: string, membershipId: string): Promise
   return row;
 }
 
-async function activeOwnerCount(workspaceId: string): Promise<number> {
-  const row = await sqlGet<{ count: number }>(
-    `SELECT COUNT(*)::int AS count FROM workspace_members
-     WHERE workspace_id = @workspaceId AND role = 'owner' AND status = 'active'`,
-    { workspaceId },
-  );
-  return row?.count ?? 0;
-}
-
-/** Admins may not touch owners or grant the owner role; only owners can. */
+/**
+ * Privileged-role management is owner-only. A non-owner (admin) may manage `member`s
+ * but may not modify/remove another admin or an owner, and may not grant admin/owner.
+ */
 function assertActorMayManage(actor: MemberActor, targetRole: WorkspaceRole, nextRole?: WorkspaceRole): void {
   if (actor.role === "owner") return;
-  if (targetRole === "owner" || nextRole === "owner") {
-    throw new MemberActionError("Only an owner can manage owners or grant the owner role.", 403);
+  const privileged = (role?: WorkspaceRole) => role === "owner" || role === "admin";
+  if (privileged(targetRole) || privileged(nextRole)) {
+    throw new MemberActionError("Only an owner can manage admins or owners.", 403);
   }
 }
 
@@ -114,16 +110,26 @@ export async function updateMemberRole(input: {
 
   if (target.role === input.newRole) return;
 
-  // Never strand a workspace without an owner.
-  if (target.role === "owner" && input.newRole !== "owner" && (await activeOwnerCount(input.workspaceId)) <= 1) {
-    throw new MemberActionError("Cannot demote the last owner of the workspace.", 409);
-  }
-
-  await sqlRun(
-    `UPDATE workspace_members SET role = @newRole, updated_at = @now
-     WHERE id = @membershipId AND workspace_id = @workspaceId`,
+  // Never strand a workspace without an owner. The owner count and the role change
+  // happen in ONE statement: the CTE locks every active owner row (FOR UPDATE), so
+  // two concurrent demotions of different owners serialize — the second re-reads the
+  // post-commit count and is blocked when it would remove the final owner. A 0-row
+  // result means the lockout guard fired (the membership was validated above).
+  const changed = await sqlRun(
+    `WITH active_owners AS (
+       SELECT id FROM workspace_members
+       WHERE workspace_id = @workspaceId AND role = 'owner' AND status = 'active'
+       FOR UPDATE
+     )
+     UPDATE workspace_members m
+        SET role = @newRole, updated_at = @now
+      WHERE m.id = @membershipId AND m.workspace_id = @workspaceId
+        AND (m.role <> 'owner' OR @newRole = 'owner' OR (SELECT COUNT(*) FROM active_owners) > 1)`,
     { newRole: input.newRole, membershipId: input.membershipId, workspaceId: input.workspaceId, now: nowIso() },
   );
+  if (changed === 0) {
+    throw new MemberActionError("Cannot demote the last owner of the workspace.", 409);
+  }
 }
 
 export async function removeMember(input: {
@@ -134,12 +140,20 @@ export async function removeMember(input: {
   const target = await requireTarget(input.workspaceId, input.membershipId);
   assertActorMayManage(input.actor, target.role);
 
-  if (target.role === "owner" && (await activeOwnerCount(input.workspaceId)) <= 1) {
-    throw new MemberActionError("Cannot remove the last owner of the workspace.", 409);
-  }
-
-  await sqlRun(
-    `DELETE FROM workspace_members WHERE id = @membershipId AND workspace_id = @workspaceId`,
+  // Atomic last-owner guard (see updateMemberRole): lock active owners, then delete
+  // only if the target is not an owner or another owner remains.
+  const changed = await sqlRun(
+    `WITH active_owners AS (
+       SELECT id FROM workspace_members
+       WHERE workspace_id = @workspaceId AND role = 'owner' AND status = 'active'
+       FOR UPDATE
+     )
+     DELETE FROM workspace_members m
+      WHERE m.id = @membershipId AND m.workspace_id = @workspaceId
+        AND (m.role <> 'owner' OR (SELECT COUNT(*) FROM active_owners) > 1)`,
     { membershipId: input.membershipId, workspaceId: input.workspaceId },
   );
+  if (changed === 0) {
+    throw new MemberActionError("Cannot remove the last owner of the workspace.", 409);
+  }
 }

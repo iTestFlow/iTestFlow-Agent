@@ -140,8 +140,8 @@ exports.up = (pgm) => {
              %s,
              ''active'',
              w.id,
-             NOW()::text,
-             NOW()::text
+             to_char(now() AT TIME ZONE ''UTC'', ''YYYY-MM-DD"T"HH24:MI:SS.MS"Z"''),
+             to_char(now() AT TIME ZONE ''UTC'', ''YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'')
            FROM %I t
            JOIN workspaces w ON w.azure_org_url = t.azure_organization_url
            WHERE t.azure_project_id IS NOT NULL
@@ -163,7 +163,7 @@ exports.up = (pgm) => {
 
     UPDATE projects p
        SET workspace_id = w.id,
-           updated_at = NOW()::text
+           updated_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
       FROM workspaces w
      WHERE p.workspace_id IS NULL
        AND w.azure_org_url = p.azure_organization_url;
@@ -191,10 +191,10 @@ exports.up = (pgm) => {
   pgm.sql(`
     ALTER TABLE selected_azure_project
       ADD CONSTRAINT selected_azure_project_project_id_fkey
-      FOREIGN KEY (project_id) REFERENCES projects(id);
+      FOREIGN KEY (project_id) REFERENCES projects(id) NOT VALID;
     ALTER TABLE project_settings
       ADD CONSTRAINT project_settings_project_id_fkey
-      FOREIGN KEY (project_id) REFERENCES projects(id);
+      FOREIGN KEY (project_id) REFERENCES projects(id) NOT VALID;
   `);
 };
 

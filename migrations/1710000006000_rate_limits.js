@@ -7,8 +7,11 @@
  * (the in-memory limiter counts per-process). Keys are pre-auth and IP-based
  * (e.g. "login:<ip>"), so the table is global, not workspace-scoped. The key is
  * the primary key and each row is overwritten in place every window, so the table
- * never grows past the number of distinct keys. reset_at_ms is a ms epoch (bigint);
- * other timestamps stay ISO text, consistent with the rest of the schema.
+ * holds at most one row per distinct key (IP). Because a public endpoint sees
+ * unboundedly many distinct IPs over time, expired windows are swept by
+ * cleanupExpiredRateLimits() (opportunistically from the limiter, and available to
+ * a worker/cron). reset_at_ms is a ms epoch (bigint); other timestamps stay ISO
+ * text, consistent with the rest of the schema.
  */
 
 exports.shorthands = undefined;

@@ -38,7 +38,7 @@ describeDb("system dashboard analytics (DB-backed)", () => {
   });
 
   it("does not count failed runs as estimated savings", async () => {
-    const run = startWorkflowRun({ scope, workflowType: "test_case_design" });
+    const run = startWorkflowRun({ scope, workflowType: "test_case_design", userId: "user_test" });
     failWorkflowRun({ scope, runId: run, error: "boom" });
     // Analytics writes are enqueued on a serialized background queue; flush before reading.
     await flushBackgroundWrites();

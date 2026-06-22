@@ -109,6 +109,35 @@ describeDb("workspace member management (DB-backed)", () => {
     ).rejects.toBeInstanceOf(MemberActionError);
   });
 
+  it("forbids an admin from managing a peer admin; only an owner can (403)", async () => {
+    const carolId = await addMember(workspaceId, "carol", "admin");
+    const daveId = await addMember(workspaceId, "dave", "admin");
+    const dave = (await listWorkspaceMembers(workspaceId)).find((m) => m.userId === daveId)!;
+
+    // An admin may not demote a peer admin...
+    await expect(
+      updateMemberRole({
+        workspaceId,
+        membershipId: dave.membershipId,
+        newRole: "member",
+        actor: { userId: carolId, role: "admin" },
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    // ...nor remove one.
+    await expect(
+      removeMember({ workspaceId, membershipId: dave.membershipId, actor: { userId: carolId, role: "admin" } }),
+    ).rejects.toMatchObject({ status: 403 });
+
+    // An owner can.
+    await updateMemberRole({
+      workspaceId,
+      membershipId: dave.membershipId,
+      newRole: "member",
+      actor: { userId: ownerUserId, role: "owner" },
+    });
+    expect((await listWorkspaceMembers(workspaceId)).find((m) => m.membershipId === dave.membershipId)?.role).toBe("member");
+  });
+
   it("never demotes or removes the last owner (409)", async () => {
     const owner = (await listWorkspaceMembers(workspaceId)).find((m) => m.role === "owner")!;
     await expect(

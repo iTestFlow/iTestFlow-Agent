@@ -31,7 +31,7 @@ export async function POST(request: Request) {
       userId: ctx.userId,
     });
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
-    const result = await executeSuiteMigration(adapter, parsed.data);
+    const result = await executeSuiteMigration(adapter, { ...parsed.data, scope: trustedScope });
     const successfulActions = result.report.actions.filter((action) => action.status === "success").length;
     if (successfulActions > 0) {
       completeWorkflowRun({

@@ -24,9 +24,8 @@ Set these via the hosting platform's secrets or a secret manager, not through th
 | --- | --- | --- |
 | `DATABASE_URL` | yes | PostgreSQL connection string |
 | `DATABASE_POOL_MAX` | optional | Max PostgreSQL connections per process, default `10` |
-| `APP_MODE` | yes | Use `hosted` for multi-user workspace deployments. `single-user` is legacy/dev only |
 | `APP_ENCRYPTION_KEY` | yes | Base64-encoded 32-byte key used to encrypt stored PATs and LLM keys |
-| `SESSION_SECRET` | recommended | Reserved for cookie HMAC hardening and future session hardening |
+| `SESSION_SECRET` | optional | Reserved for cookie HMAC hardening; stateful sessions do not require it today |
 | `BOOTSTRAP_OWNER_EMAIL` | yes for first workspace seed | Initial owner identity, seeded idempotently at startup |
 | `BOOTSTRAP_OWNER_AZURE_ORG` | yes for first workspace seed | Initial enabled Azure DevOps organization/workspace |
 | `CREDENTIAL_STALE_DAYS` | optional | Age threshold for credential freshness warnings, default from app code |
@@ -35,10 +34,10 @@ Set these via the hosting platform's secrets or a secret manager, not through th
 | `WORKER_POLL_MS` | optional | Worker idle poll interval, default `2000` |
 | `WORKER_HEARTBEAT_MS` | optional | Active-job heartbeat interval, default `30000` |
 | `JOB_STALE_LOCK_MS` | optional | Stale lock recovery threshold, default `300000` |
-| `RATE_LIMIT_BACKEND` | optional | Empty or `memory` for per-process limits; `postgres` for shared multi-replica limits |
+| `RATE_LIMIT_BACKEND` | optional | `postgres` (shared multi-replica) or `memory` (per-process). Defaults to `postgres` when `NODE_ENV=production`, else `memory` |
+| `RATE_LIMIT_TRUSTED_PROXY_HOPS` | optional | Reverse proxies in front of the app; login throttling reads the client IP this many hops from the right of `X-Forwarded-For`. Default `0` |
 | `PROJECT_CONTEXT_TOP_K` | optional | Default RAG retrieval breadth, default `8`, clamped by app code |
 | `LLM_MAX_OUTPUT_TOKEN_CAP` | optional | Deployment default output-token cap. Workspace settings can override allowed caps |
-| `LLM_RETRY_ATTEMPTS` | optional | Deployment default transient LLM retry count |
 
 Generate an encryption key with:
 

@@ -133,6 +133,38 @@ describeDb("job queue (DB-backed)", () => {
     expect(reclaimed?.lockedBy).toBe("next-worker");
   });
 
+  it("fails a stale running job once retries are exhausted instead of requeueing forever", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS, maxAttempts: 1 });
+    const claimed = await claimNextJob("doomed-worker");
+    expect(claimed?.id).toBe(id);
+    expect(claimed?.attempts).toBe(1); // already at max_attempts
+
+    // Worker dies without heartbeating; its lock goes stale.
+    const staleLockedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await sqlRun(`UPDATE jobs SET locked_at = @lockedAt WHERE id = @id`, { id, lockedAt: staleLockedAt });
+
+    // The next claim cycle reaps it: exhausted -> failed, not requeued.
+    expect(await claimNextJob("rescuer")).toBeNull();
+    const row = await sqlGet<{ status: string; locked_by: string | null }>(
+      `SELECT status, locked_by FROM jobs WHERE id = @id`,
+      { id },
+    );
+    expect(row).toMatchObject({ status: "failed", locked_by: null });
+  });
+
+  it("leaves a fresh (non-stale) running lock untouched", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS });
+    expect((await claimNextJob("busy-worker"))?.id).toBe(id);
+
+    // Another worker's claim cycle runs the reaper but must not touch a fresh lock.
+    expect(await claimNextJob("intruder")).toBeNull();
+    const row = await sqlGet<{ status: string; locked_by: string | null }>(
+      `SELECT status, locked_by FROM jobs WHERE id = @id`,
+      { id },
+    );
+    expect(row).toMatchObject({ status: "running", locked_by: "busy-worker" });
+  });
+
   it("heartbeats only the owning worker lock", async () => {
     const id = await enqueueJob({ jobType: TYPE, workspaceId: WS });
     expect((await claimNextJob("heartbeat-owner"))?.id).toBe(id);

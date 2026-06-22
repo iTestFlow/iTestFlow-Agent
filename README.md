@@ -79,7 +79,7 @@ npm run db:migrate
 npm run dev -- --hostname 127.0.0.1 --port 3000
 ```
 
-Set `APP_ENCRYPTION_KEY`, `SESSION_SECRET`, `BOOTSTRAP_OWNER_EMAIL`, and `BOOTSTRAP_OWNER_AZURE_ORG` in `.env` before using hosted workspace mode. Start at [Login](http://127.0.0.1:3000/login), sign in with an Azure DevOps PAT for the enabled organization, add personal LLM credentials in Settings if needed, and select a project from the top bar. iTestFlow then opens the [Dashboards](http://127.0.0.1:3000/dashboards) workspace.
+Set `APP_ENCRYPTION_KEY`, `BOOTSTRAP_OWNER_EMAIL`, and `BOOTSTRAP_OWNER_AZURE_ORG` in `.env` before using hosted workspace mode (`SESSION_SECRET` is optional/reserved). Start at [Login](http://127.0.0.1:3000/login), sign in with an Azure DevOps PAT for the enabled organization, add personal LLM credentials in Settings if needed, and select a project from the top bar. iTestFlow then opens the [Dashboards](http://127.0.0.1:3000/dashboards) workspace.
 
 Run the background worker in a second terminal when testing scheduled sync or workspace jobs:
 
@@ -127,11 +127,10 @@ Start from [.env.example](.env.example). Required values for normal hosted mode:
 
 ```bash
 DATABASE_URL=postgresql://itestflow:itestflow@localhost:5432/itestflow
-APP_MODE=hosted
-SESSION_SECRET=replace-me
 BOOTSTRAP_OWNER_EMAIL=owner@example.com
 BOOTSTRAP_OWNER_AZURE_ORG=https://dev.azure.com/YOUR_ORG
 APP_ENCRYPTION_KEY=base64-32-byte-key
+# Optional: SESSION_SECRET (reserved for cookie HMAC hardening)
 ```
 
 Generate the encryption key with:

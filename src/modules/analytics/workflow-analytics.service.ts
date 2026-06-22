@@ -50,7 +50,7 @@ export function startWorkflowRun(input: {
   workflowType: WorkflowType;
   workItemId?: string;
   sourceRunId?: string;
-  userId?: string;
+  userId: string;
   generationStartedAt?: string;
   metadata?: Record<string, unknown>;
 }) {
@@ -77,7 +77,7 @@ export function startWorkflowRun(input: {
         id,
         projectId: scope.projectId,
         azureProjectId: scope.azureProjectId,
-        userId: input.userId ?? "local-user",
+        userId: input.userId,
         workflowType: input.workflowType,
         workItemId: input.workItemId ?? null,
         sourceRunId: input.sourceRunId ?? null,

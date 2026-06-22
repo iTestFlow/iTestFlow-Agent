@@ -49,4 +49,25 @@ describe("API route guards", () => {
 
     expect(missingResolver).toEqual([]);
   });
+
+  // INV-2: the RAW client scope (`parsed.data.scope`) may only be used to (a) read the
+  // workspace hint and (b) feed resolveProjectScope. It must never flow into an adapter
+  // or feature service — those take the resolved, server-trusted scope. We strip the
+  // allowed uses and assert nothing references the raw client scope afterward.
+  it("never passes the raw client scope into an adapter or feature service", () => {
+    const offenders = routeFiles()
+      .map((path) => ({ path, text: readFileSync(path, "utf8") }))
+      .filter(({ text }) => text.includes("ProjectScopeSchema"))
+      .filter(({ text }) => {
+        const stripped = text
+          .replace(/resolveProjectScope\([^)]*\)/g, "") // the trusted resolver call (consumes the raw scope)
+          .replace(/parsed\.data\.scope\??\.\w+/g, "") // workspace-hint access: parsed.data.scope(?.)workspaceId
+          .replace(/parsed\.data\.scope\s*(\?(?!\.)|&&|\|\|)/g, ""); // truthiness guards: scope ?  / &&  / ||
+        return stripped.includes("parsed.data.scope");
+      })
+      .map(({ path }) => apiRelative(path));
+
+    // A non-empty list means a route forwards untrusted client scope downstream.
+    expect(offenders).toEqual([]);
+  });
 });

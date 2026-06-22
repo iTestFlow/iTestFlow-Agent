@@ -24,13 +24,12 @@ describe("rate limiter (in-memory)", () => {
   });
 
   it("resets after the window elapses", async () => {
-    expect((await checkRateLimit("c", 1, 1)).allowed).toBe(true);
-    expect((await checkRateLimit("c", 1, 1)).allowed).toBe(false);
-    const start = Date.now();
-    while (Date.now() - start < 5) {
-      /* spin past the 1ms window */
-    }
-    expect((await checkRateLimit("c", 1, 1)).allowed).toBe(true);
+    // A real (not sub-millisecond) window: the first two calls land in the same
+    // window deterministically, then we wait past it to see the counter reset.
+    expect((await checkRateLimit("c", 1, 120)).allowed).toBe(true);
+    expect((await checkRateLimit("c", 1, 120)).allowed).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    expect((await checkRateLimit("c", 1, 120)).allowed).toBe(true);
   });
 });
 

@@ -78,9 +78,23 @@ function mapJob(row: JobRow): Job {
   };
 }
 
+/**
+ * Reclaim jobs whose worker died without releasing the lock. Two atomic branches,
+ * each a single race-safe statement (no select-then-update):
+ *
+ *  - stale AND retries remaining  -> back to 'pending' for another worker.
+ *  - stale AND retries exhausted  -> 'failed', so a poison-pill job (one that keeps
+ *    killing its worker mid-run) cannot loop forever being requeued.
+ *
+ * `attempts` is incremented at claim and is NOT decremented here: the worker
+ * heartbeat (heartbeatJob) keeps a healthy long-running job's lock fresh, so a job
+ * only goes stale when its worker is genuinely lost — which legitimately consumes
+ * one attempt and also bounds poison-pill retries. `running -> pending` keeps the
+ * uq_jobs_active_dedupe slot; `running -> failed` frees it (both intended).
+ */
 async function reapStaleJobsWithClient(client: Parameters<typeof sqlRun>[2], now: string): Promise<number> {
   const cutoff = new Date(Date.now() - staleLockMs()).toISOString();
-  return sqlRun(
+  const requeued = await sqlRun(
     `UPDATE jobs
      SET status = 'pending',
          locked_by = NULL,
@@ -90,10 +104,27 @@ async function reapStaleJobsWithClient(client: Parameters<typeof sqlRun>[2], now
          updated_at = @now
      WHERE status = 'running'
        AND locked_at IS NOT NULL
-       AND locked_at < @cutoff`,
+       AND locked_at < @cutoff
+       AND attempts < max_attempts`,
     { now, cutoff },
     client,
   );
+  const failed = await sqlRun(
+    `UPDATE jobs
+     SET status = 'failed',
+         finished_at = @now,
+         locked_by = NULL,
+         locked_at = NULL,
+         error_message = COALESCE(NULLIF(error_message, ''), 'Stale worker lock reclaimed; retries exhausted.'),
+         updated_at = @now
+     WHERE status = 'running'
+       AND locked_at IS NOT NULL
+       AND locked_at < @cutoff
+       AND attempts >= max_attempts`,
+    { now, cutoff },
+    client,
+  );
+  return requeued + failed;
 }
 
 export async function reapStaleJobs(): Promise<number> {

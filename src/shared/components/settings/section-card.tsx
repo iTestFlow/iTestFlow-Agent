@@ -191,17 +191,6 @@ export function StatusBadge({
   )
 }
 
-export function providerLabel(provider: Provider) {
-  switch (provider) {
-    case "openai":
-      return "OpenAI"
-    case "gemini":
-      return "Gemini"
-    case "anthropic":
-      return "Anthropic"
-  }
-}
-
 export function defaultBaseUrlPlaceholder(provider: Provider) {
   switch (provider) {
     case "openai":

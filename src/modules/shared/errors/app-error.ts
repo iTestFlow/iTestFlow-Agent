@@ -63,7 +63,7 @@ export function isAppErrorCode(value: unknown): value is AppErrorCode {
 export function noLlmProviderConfiguredError() {
   return new AppError({
     code: AppErrorCode.NoProvider,
-    message: "No LLM provider configured. Set DEFAULT_LLM_PROVIDER and the provider API key in .env.local.",
+    message: "No LLM provider configured. Add an LLM provider and API key in Settings → My Credentials.",
     userMessage: "No LLM provider is configured. Configure a provider, model, and API key in Settings.",
   });
 }

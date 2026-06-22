@@ -63,6 +63,10 @@ export async function POST(request: Request) {
   }
 
   const userId = await provisionUserFromIdentity(identity);
+  // Policy: open self-provisioning — any user who can authenticate a PAT against an
+  // already-enabled org joins as `member`. The enabled Azure org is the trust
+  // boundary (owners enable the org; org membership grants workspace membership).
+  // This is a deliberate product decision; tighten here if invite-only is required.
   await ensureWorkspaceMembership(workspace.id, userId, "member");
   await storeUserAzurePat({
     workspaceId: workspace.id,
@@ -74,6 +78,7 @@ export async function POST(request: Request) {
   await createSession({ userId, userAgent: request.headers.get("user-agent") });
 
   writeAuditLog({
+    workspaceId: workspace.id,
     action: "USER_LOGIN",
     status: "Success",
     actor: userId,
