@@ -18,7 +18,7 @@ iTestFlow brings requirement analysis, test design, coverage review, execution p
 - [App Links](#app-links)
 - [Configuration](#configuration)
 - [First-Run Workflow](#first-run-workflow)
-- [Local Data and Security](#local-data-and-security)
+- [Data and Security](#data-and-security)
 - [Development](#development)
 - [Project Documentation](#project-documentation)
 
@@ -79,7 +79,13 @@ npm run db:migrate
 npm run dev -- --hostname 127.0.0.1 --port 3000
 ```
 
-Set `APP_ENCRYPTION_KEY`, `SESSION_SECRET`, `BOOTSTRAP_OWNER_EMAIL`, and `BOOTSTRAP_OWNER_AZURE_ORG` in `.env` before using hosted workspace mode. Open [Initial Configuration](http://127.0.0.1:3000/setup), sign in as the bootstrap owner, add personal credentials, and select a project. iTestFlow then opens the [Dashboards](http://127.0.0.1:3000/dashboards) workspace.
+Set `APP_ENCRYPTION_KEY`, `SESSION_SECRET`, `BOOTSTRAP_OWNER_EMAIL`, and `BOOTSTRAP_OWNER_AZURE_ORG` in `.env` before using hosted workspace mode. Start at [Login](http://127.0.0.1:3000/login), sign in with an Azure DevOps PAT for the enabled organization, add personal LLM credentials in Settings if needed, and select a project from the top bar. iTestFlow then opens the [Dashboards](http://127.0.0.1:3000/dashboards) workspace.
+
+Run the background worker in a second terminal when testing scheduled sync or workspace jobs:
+
+```bash
+npm run worker:dev
+```
 
 ## App Links
 
@@ -104,7 +110,7 @@ These links work while the local development or production server is running on 
 
 ### UI Configuration
 
-The recommended setup path is [http://127.0.0.1:3000/setup](http://127.0.0.1:3000/setup). In hosted mode, each user configures private credentials from Settings:
+The recommended setup path is [http://127.0.0.1:3000/login](http://127.0.0.1:3000/login), followed by [Settings](http://127.0.0.1:3000/settings). In hosted mode, each user configures private credentials from Settings:
 
 - Azure DevOps organization URL and Personal Access Token
 - LLM provider and model
@@ -146,16 +152,18 @@ OPENAI_MODEL=YOUR_MODEL_ID
 
 ## First-Run Workflow
 
-1. Configure and test Azure DevOps and LLM connections from `/setup`.
-2. Select the active Azure DevOps project in the top bar.
-3. Open `/knowledge-hub`, choose work-item filters, and index project context.
-4. Build the compiled knowledge base if you want richer grounding and assistant answers.
-5. Enter a real Azure DevOps work-item ID in Requirements Analysis, Test Case Design, Test Gap Analysis, or Test Execution Effort.
-6. Review and edit every AI-generated result.
-7. Publish only approved comments, test cases, suggested additions, bugs, or tasks.
-8. Use Dashboards and Activity Log to review outcomes and trace recent actions.
+1. Start PostgreSQL, apply migrations, and run the web app.
+2. Sign in from `/login` with a PAT for the bootstrapped Azure DevOps organization.
+3. Add or verify private Azure DevOps and LLM credentials from `/settings`.
+4. Select the active Azure DevOps project in the top bar.
+5. Open `/knowledge-hub`, choose work-item filters, and index project context.
+6. Build the compiled knowledge base if you want richer grounding and assistant answers.
+7. Enter a real Azure DevOps work-item ID in Requirements Analysis, Test Case Design, Test Gap Analysis, or Test Execution Effort.
+8. Review and edit every AI-generated result.
+9. Publish only approved comments, test cases, suggested additions, bugs, or tasks.
+10. Use Dashboards and Activity Log to review outcomes and trace recent actions.
 
-## Local Data and Security
+## Data and Security
 
 - User Azure DevOps and LLM credentials are encrypted with AES-256-GCM using `APP_ENCRYPTION_KEY`.
 - Workspace data, project anchors, indexed context, knowledge, audit records, workflow analytics, and jobs are stored in PostgreSQL.
@@ -185,6 +193,12 @@ npm run build
 npm start -- --hostname 127.0.0.1 --port 3000
 ```
 
+Run the worker as a separate process:
+
+```bash
+npm run worker
+```
+
 Open [http://127.0.0.1:3000](http://127.0.0.1:3000). The root route redirects to `/dashboards`.
 
 Docker is required only if you use the provided local PostgreSQL service.
@@ -192,5 +206,8 @@ Docker is required only if you use the provided local PostgreSQL service.
 ## Project Documentation
 
 - [Project Architecture](PROJECT_ARCHITECTURE.md) - routes, modules, integrations, storage, and architecture decisions
+- [Deployment Guide](docs/deployment.md) - private hosted runtime, environment, workers, backups, and migrations
 - [Knowledge Wiki and RAG Enhancement](docs/knowledge-wiki-rag-enhancement.md) - compiled knowledge and wiki design
 - [Environment Variable Template](.env.example) - supported bootstrap configuration
+
+The `docs/` directory is still useful for durable reference material such as deployment and RAG/knowledge design. Historical plan documents can be removed once their accepted decisions are represented in the architecture and deployment docs.

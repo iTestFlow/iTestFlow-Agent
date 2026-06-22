@@ -1,127 +1,195 @@
-# iTestFlow — Private Hosted Deployment Guide
+# iTestFlow Private Hosted Deployment Guide
 
-iTestFlow runs as a **privately hosted, multi-user workspace** app. Each company hosts
-its own instance and shares the URL only with internal users. This guide covers the
-runtime topology, configuration, and operations. For the migration design and phase
-history see [multi-user-migration-plan.md](multi-user-migration-plan.md).
+iTestFlow runs as a privately hosted, multi-user workspace application. Each company hosts its own instance and shares the URL only with internal users. This guide covers the production topology, required configuration, first-run flow, operations, and local development.
+
+For source layout and module boundaries, see [Project Architecture](../PROJECT_ARCHITECTURE.md).
 
 ## Services
 
-A deployment runs three processes:
+A deployment runs three service types:
 
 | Service | Command | Purpose |
-|---|---|---|
-| **web** | `npm run build` then `npm run start` | Next.js app + API (Node runtime) |
-| **worker** | `npm run worker` | Background jobs: scheduled Azure DevOps sync, indexing |
-| **postgres** | managed or self-hosted | All application data + job queue |
+| --- | --- | --- |
+| web | `npm run build` then `npm run start` | Next.js app, pages, and API routes |
+| worker | `npm run worker` | Background jobs, scheduled Azure DevOps sync, indexing, and job recovery |
+| postgres | managed or self-hosted PostgreSQL 16+ | All durable application data and job queue state |
 
-The web app and worker are independent processes that share PostgreSQL. You may run
-multiple web replicas and/or multiple workers — the job queue claims work with
-`FOR UPDATE SKIP LOCKED`, so no job is processed twice.
+The web app and worker are independent Node processes that share PostgreSQL. Multiple web replicas and multiple workers are supported. Workers claim jobs with `FOR UPDATE SKIP LOCKED`, heartbeat active work, and requeue stale locks, so a job is not intentionally processed by more than one live worker.
 
-## Required environment variables
+## Required Environment Variables
 
-Set these via the hosting platform's secrets or a secret manager — **not** in the UI
-(the app needs them before it can start). See [.env.example](../.env.example).
+Set these via the hosting platform's secrets or a secret manager, not through the UI. See [.env.example](../.env.example).
 
 | Variable | Required | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `DATABASE_URL` | yes | PostgreSQL connection string |
-| `APP_ENCRYPTION_KEY` | yes | base64-encoded 32-byte key; encrypts stored PATs/LLM keys. Store **outside** the database. Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` |
-| `SESSION_SECRET` | recommended | reserved for cookie HMAC hardening |
-| `APP_MODE` | yes (`hosted`) | `hosted` ignores env credentials; `single-user` honors them (legacy/dev) |
-| `BOOTSTRAP_OWNER_EMAIL` | yes | initial owner identity, seeded at startup |
-| `BOOTSTRAP_OWNER_AZURE_ORG` | yes | initial enabled Azure DevOps org/workspace |
-| `WORKER_SCHEDULER` | optional | set `false` to disable cron scheduling (default on) |
-| `WORKER_SCHEDULER_TICK_MS` | optional | how often due schedules are evaluated (default 60s) |
-| `WORKER_POLL_MS` | optional | worker idle poll interval (default 2s) |
-| `RATE_LIMIT_BACKEND` | optional | `memory` (default, per-process) or `postgres` (shared) — see note below |
-| `PROJECT_CONTEXT_TOP_K` | optional | RAG retrieval breadth default (default 8, clamped 1–25). Per-workspace override in Settings → Workspace takes precedence. |
+| `DATABASE_POOL_MAX` | optional | Max PostgreSQL connections per process, default `10` |
+| `APP_MODE` | yes | Use `hosted` for multi-user workspace deployments. `single-user` is legacy/dev only |
+| `APP_ENCRYPTION_KEY` | yes | Base64-encoded 32-byte key used to encrypt stored PATs and LLM keys |
+| `SESSION_SECRET` | recommended | Reserved for cookie HMAC hardening and future session hardening |
+| `BOOTSTRAP_OWNER_EMAIL` | yes for first workspace seed | Initial owner identity, seeded idempotently at startup |
+| `BOOTSTRAP_OWNER_AZURE_ORG` | yes for first workspace seed | Initial enabled Azure DevOps organization/workspace |
+| `CREDENTIAL_STALE_DAYS` | optional | Age threshold for credential freshness warnings, default from app code |
+| `WORKER_SCHEDULER` | optional | Set `false` to disable worker cron scheduling, default enabled |
+| `WORKER_SCHEDULER_TICK_MS` | optional | How often due schedules are evaluated, default `60000` |
+| `WORKER_POLL_MS` | optional | Worker idle poll interval, default `2000` |
+| `WORKER_HEARTBEAT_MS` | optional | Active-job heartbeat interval, default `30000` |
+| `JOB_STALE_LOCK_MS` | optional | Stale lock recovery threshold, default `300000` |
+| `RATE_LIMIT_BACKEND` | optional | Empty or `memory` for per-process limits; `postgres` for shared multi-replica limits |
+| `PROJECT_CONTEXT_TOP_K` | optional | Default RAG retrieval breadth, default `8`, clamped by app code |
+| `LLM_MAX_OUTPUT_TOKEN_CAP` | optional | Deployment default output-token cap. Workspace settings can override allowed caps |
+| `LLM_RETRY_ATTEMPTS` | optional | Deployment default transient LLM retry count |
 
-> **Per-workspace settings:** retrieval breadth (top-K) and the LLM max output
-> token cap can be set per workspace by an owner/admin in **Settings → Workspace**.
-> A workspace value overrides the deployment default; left unset, a workspace
-> inherits `PROJECT_CONTEXT_TOP_K` (top-K) / the built-in 32000 cap. The cap snaps
-> to one of 16000 / 32000 / 64000.
+Generate an encryption key with:
 
-> **Multi-replica rate limiting:** the login/credential rate limiter defaults to an
-> in-memory counter, which is per-process. If you run **more than one web replica**, set
-> `RATE_LIMIT_BACKEND=postgres` so all replicas share one global limit (it uses the same
-> `DATABASE_URL`); otherwise each replica enforces the limit independently.
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
 
-> **Key rotation:** encrypted secrets store a `key_version`. To rotate, add a new key
-> behind a new version in `encryption.service.ts` and re-encrypt; the column already
-> records which key version each secret used.
+Store `APP_ENCRYPTION_KEY` outside the database. Without the same key, encrypted PATs and LLM keys cannot be decrypted after restore.
 
-## First-run / bootstrap
+## Per-User And Workspace Settings
+
+Each user stores private credentials in Settings:
+
+- Azure DevOps PAT
+- LLM provider
+- LLM model
+- LLM API key
+- Optional provider base URL where supported
+
+Owners/admins manage workspace-level settings:
+
+- Workspace members and roles
+- Context retrieval top-K override
+- LLM max output token cap
+- LLM retry attempts
+- Workspace sync credential
+- Workspace sync schedule and filters
+
+Interactive actions use the current user's Azure DevOps PAT and LLM key. Scheduled sync uses the workspace sync credential because no user is present.
+
+## First Run
 
 1. Provision PostgreSQL and set `DATABASE_URL`.
-2. Run migrations: `npm run db:migrate`.
-3. Set `BOOTSTRAP_OWNER_EMAIL` + `BOOTSTRAP_OWNER_AZURE_ORG` and start the web app —
-   it idempotently seeds the owner user + workspace on startup.
-4. The owner signs in at `/login` with the org + an Azure DevOps PAT (validated against
-   Azure DevOps; stored encrypted). Any valid PAT holder in an enabled org is
-   auto-provisioned as a `member`.
-5. An owner/admin sets the **workspace sync credential** (`POST /api/workspace/sync-credential`)
-   — a service-account / admin PAT the worker uses for scheduled sync.
-6. An owner/admin optionally sets a **sync schedule** in Settings → Workspace (cron,
-   evaluated in the worker's local timezone). With no schedule, the workspace is never
-   auto-synced; "Sync now" (`POST /api/workspace/sync`) still works on demand.
+2. Set `APP_MODE=hosted`, `APP_ENCRYPTION_KEY`, `BOOTSTRAP_OWNER_EMAIL`, and `BOOTSTRAP_OWNER_AZURE_ORG`.
+3. Run migrations as a deploy/release step:
 
-## Credentials & data model
+   ```bash
+   npm run db:migrate
+   ```
 
-- **Private per user (encrypted):** Azure DevOps PAT, LLM API key, LLM provider/model.
-  Interactive actions (analysis, test design, bug reports, publishing) use the
-  current user's PAT/LLM key — the Azure DevOps audit trail reflects the real user.
-- **Shared per workspace:** synced Azure project data, Knowledge Hub, dashboards,
-  history, activity/audit logs, analysis/test runs. Every shared row carries
-  `workspace_id`.
-- **Workspace sync credential:** used by the worker for scheduled sync (no logged-in
-  user), separate from any individual's PAT.
-- Secrets are **never** returned to the frontend (masked preview + status only) and
-  are redacted from logs.
+4. Build and start the web service:
 
-## Production checklist
+   ```bash
+   npm run build
+   npm run start
+   ```
 
-- [ ] HTTPS enabled (cookies are `Secure` in production).
-- [ ] `APP_MODE=hosted` so env credentials cannot act as shared globals.
-- [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, `BOOTSTRAP_OWNER_*` set via secrets.
-- [ ] Migrations run on deploy (`npm run db:migrate`).
-- [ ] web and worker both running; worker has `DATABASE_URL` + `APP_ENCRYPTION_KEY`.
-- [ ] PostgreSQL automated backups enabled (see below).
-- [ ] Reverse proxy forwards `X-Forwarded-For` (rate limiting keys on client IP).
+5. Start at least one worker:
 
-## Backups & restore
+   ```bash
+   npm run worker
+   ```
 
-All durable state is in PostgreSQL — back it up (managed automated backups, or
-`pg_dump`). No application state lives on the filesystem (temporary files/exports only).
+6. The bootstrap process idempotently seeds the owner user, workspace, and owner membership on startup.
+7. The owner signs in at `/login` with the enabled Azure DevOps organization and a valid PAT.
+8. The owner adds private LLM credentials from `/settings`.
+9. The owner selects an active Azure DevOps project from the top bar. The server verifies and stores the project anchor before project-scoped routes can use it.
+10. An owner/admin sets the workspace sync credential and, optionally, a sync schedule in Settings.
+
+The app startup instrumentation also attempts pending migrations and bootstrap seeding. Keep the explicit migration step anyway so schema failures are caught before serving traffic.
+
+## Credentials And Data Model
+
+- Private per user/workspace: Azure DevOps PAT, LLM provider/model/base URL, and LLM API key.
+- Shared per workspace: project anchors, synced project context, compiled knowledge, dashboards, workflow analytics, activity logs, audit logs, jobs, workspace settings, and member records.
+- Workspace sync credential: encrypted service/admin PAT used by the worker for scheduled sync.
+- Sessions: opaque cookie token in the browser, SHA-256 token hash in PostgreSQL.
+- Secrets are never returned to the frontend in plain text and should be redacted from logs.
+
+## Production Checklist
+
+- [ ] HTTPS is enabled.
+- [ ] `APP_MODE=hosted`.
+- [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, and bootstrap variables are set through secrets.
+- [ ] `npm run db:migrate` runs before the new web/worker version receives traffic.
+- [ ] At least one web process is running.
+- [ ] At least one worker process is running with `DATABASE_URL` and `APP_ENCRYPTION_KEY`.
+- [ ] PostgreSQL automated backups are enabled and restore has been tested.
+- [ ] Reverse proxy forwards client IP headers if rate limiting should key by real client IP.
+- [ ] `RATE_LIMIT_BACKEND=postgres` is set when running more than one web replica.
+- [ ] Worker logs are monitored for repeated job failures or stale-lock recovery.
+- [ ] `APP_ENCRYPTION_KEY` is backed up in a secure secret store separate from PostgreSQL backups.
+
+## Multi-Replica Notes
+
+Use `RATE_LIMIT_BACKEND=postgres` with multiple web replicas so login and credential rate limits are shared. The default memory backend is per-process and is acceptable only for one web replica or local development.
+
+Workers can scale horizontally. Keep job handlers idempotent where possible because failed or stale jobs can be retried.
+
+## Backups And Restore
+
+All durable application state lives in PostgreSQL. Back it up with managed automated backups or `pg_dump`.
 
 ```bash
 # Backup
 pg_dump "$DATABASE_URL" -Fc -f itestflow-$(date +%F).dump
-# Restore (into a fresh database)
+
+# Restore into a fresh database
 pg_restore --clean --if-exists -d "$DATABASE_URL" itestflow-YYYY-MM-DD.dump
 ```
 
-## Local development
+After restore:
+
+1. Confirm the restored environment has the same `APP_ENCRYPTION_KEY`.
+2. Run `npm run db:migrate`.
+3. Start the web service and worker.
+4. Sign in and verify workspace/project selection, credential status, dashboard reads, and a small Knowledge Hub status read.
+
+## Local Development
 
 ```bash
-docker compose up -d postgres     # Postgres only (Docker not required for the app)
+cp .env.example .env
+docker compose up -d postgres
 npm run db:migrate
-npm run dev                        # web app
-npm run worker:dev                 # worker (separate terminal; loads .env)
+npm run dev -- --hostname 127.0.0.1 --port 3000
+npm run worker:dev
 ```
 
-Developers may skip Docker by pointing `DATABASE_URL` at a native PostgreSQL.
-Integration tests run against PostgreSQL when `DATABASE_URL` is set; otherwise the
-DB-backed suites are skipped and only pure-logic unit tests run.
+Developers may skip Docker by pointing `DATABASE_URL` at a native PostgreSQL instance. Docker is required only for the provided local PostgreSQL service, disposable test database, or pgAdmin profile.
+
+Optional local services:
+
+```bash
+docker compose --profile test up -d
+docker compose --profile tools up -d
+```
 
 ## Migrations
 
-`node-pg-migrate` (`migrations/`), same SQL locally and hosted.
+Migrations use `node-pg-migrate` and live in `migrations/`.
 
 ```bash
-npm run db:migrate            # apply
-npm run db:migrate:down       # revert one
-npm run db:reset-dev          # revert all then re-apply (dev only)
+npm run db:migrate
+npm run db:migrate:down
+npm run db:reset-dev
 ```
+
+Use `npm run db:reset-dev` only against disposable development databases.
+
+## Verification
+
+Recommended pre-release checks:
+
+```bash
+npm run typecheck
+npm test
+npm run build
+```
+
+For changes touching migrations, jobs, auth, credentials, workspace settings, or project isolation, also run the affected integration tests against PostgreSQL.
+
+## Docs Cleanup Guidance
+
+Keep `docs/deployment.md` and `docs/knowledge-wiki-rag-enhancement.md` as durable references. Historical plan files such as `multi-user-migration-plan.md` and `remediation-plan-v2-isolation-guards-jobs.md` can be deleted or archived after the team confirms there are no open decisions left in them. Their final architecture decisions should live in [Project Architecture](../PROJECT_ARCHITECTURE.md), not in plan documents.

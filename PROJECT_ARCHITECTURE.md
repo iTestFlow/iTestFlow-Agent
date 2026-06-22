@@ -1,30 +1,34 @@
 # Project Architecture
 
-This document is the living architecture map for iTestFlow. Update it whenever a change adds, removes, or meaningfully reshapes a route, workflow, module boundary, integration, persistent data model, or major UI surface.
+This document is the living architecture map for iTestFlow. Update it whenever a change adds, removes, or meaningfully reshapes a route, workflow, module boundary, integration, persistent data model, worker behavior, or major UI surface.
 
 ## Architecture Overview
 
-iTestFlow is organized as a local Next.js application with thin API routes, server-side domain modules, local encrypted configuration, local SQLite storage, and outbound calls to Azure DevOps and the selected LLM provider. The browser never calls Azure DevOps or LLM APIs directly.
+iTestFlow is a privately hosted, workspace-scoped Next.js application for Azure DevOps testing workflows. The browser talks only to Next.js pages and API routes. Server-side modules own authentication, workspace authorization, project isolation, PostgreSQL access, Azure DevOps integration, LLM provider calls, RAG/knowledge workflows, audit logging, and background jobs.
 
 ```mermaid
 flowchart LR
-  User["User"]
+  User["Authenticated user"]
   UI["Next.js App Router UI"]
-  API["Local API Routes"]
-  Modules["Domain Services"]
-  DB["Local SQLite + Encrypted Settings"]
+  API["Next.js API routes"]
+  Modules["Server domain modules"]
+  PG["PostgreSQL"]
+  Worker["Background worker"]
   ADO["Azure DevOps REST API"]
-  LLM["LLM Provider API"]
+  LLM["LLM provider API"]
 
   User --> UI
   UI --> API
   API --> Modules
-  Modules --> DB
+  Modules --> PG
   Modules --> ADO
   Modules --> LLM
+  Worker --> PG
+  Worker --> ADO
+  PG --> Modules
+  PG --> Worker
   ADO --> Modules
   LLM --> Modules
-  DB --> Modules
   Modules --> API
   API --> UI
 ```
@@ -32,48 +36,51 @@ flowchart LR
 Primary dependency direction:
 
 - UI routes and components call local API routes.
-- API routes validate requests, resolve configuration, and delegate to modules.
-- Domain modules own workflow logic, SQL access, Azure DevOps adapter calls, and LLM calls.
+- API routes validate input, resolve authenticated workspace/project context, and delegate to modules.
+- Domain modules own workflow logic, SQL access, Azure DevOps adapter calls, LLM calls, and audit/activity records.
 - Integration adapters isolate external API details from workflow services.
-- Local storage supports runtime settings, audit logs, indexed context, and workflow records.
+- PostgreSQL stores all durable application data, including users, sessions, workspaces, credentials metadata, encrypted secrets, project anchors, indexed context, compiled knowledge, jobs, audit logs, and workflow analytics.
+- The worker process claims jobs from PostgreSQL and performs scheduled/on-demand workspace sync outside the web request path.
 
 ## Product Shape
 
-iTestFlow is a local-first QA command center for Azure DevOps testing workflows. It helps a user:
+iTestFlow helps QA, product, and delivery teams:
 
-- Configure Azure DevOps and LLM provider credentials locally.
-- Select one Azure DevOps project as the active scope.
-- Fetch and index filtered project context for RAG-assisted retrieval.
-- Analyze one real Azure DevOps requirement at a time.
-- Generate and edit test cases for a selected work item.
-- Build a Test Coverage Matrix from existing linked Azure DevOps test cases.
-- Estimate manual Test Execution Effort for linked Azure DevOps test cases on a selected story.
-- Publish approved comments and test cases back to Azure DevOps.
-- Audit local workflow activity.
+- Sign in with an Azure DevOps organization and Personal Access Token.
+- Work inside an enabled workspace tied to one Azure DevOps organization.
+- Select an active Azure DevOps project whose server-side project anchor is validated before scoped reads or writes.
+- Store each user's Azure DevOps PAT and LLM API key encrypted and private to that user/workspace.
+- Index filtered Azure DevOps work items into project context.
+- Compile durable project knowledge with revisions, health checks, citations, and Markdown export.
+- Ask grounded questions through the Business Owner Assistant.
+- Analyze requirements, design test cases, review gaps, estimate execution effort, report bugs, migrate suites, and bulk-create tasks.
+- Publish only reviewed artifacts back to Azure DevOps.
+- Review dashboards, activity history, audit logs, jobs, and workspace-level settings.
 
-The app intentionally avoids loading every Azure DevOps work item into a standalone page. Work items are fetched either by specific ID for a workflow or through filtered Project Context indexing.
+The app intentionally avoids becoming a general Azure DevOps work-item browser. Work items are loaded for concrete workflows or through filtered Knowledge Hub/context sync.
 
 ## Runtime Stack
 
-- Framework: Next.js App Router with React and TypeScript.
-- Styling: Tailwind CSS with shadcn/Radix UI primitives and lucide-react icons.
-- Local persistence: SQLite schema and helper access under `src/modules/shared/infrastructure/database`.
-- Runtime configuration: encrypted local settings under `data/`, with optional `.env.local` bootstrap.
-- External systems: Azure DevOps REST APIs and LLM providers.
+- Framework: Next.js App Router, React, and TypeScript.
+- UI: Tailwind CSS, shadcn/Radix primitives, lucide-react icons, Sonner toasts, and Recharts.
+- Database: PostgreSQL via `pg`, with migrations in `migrations/` managed by `node-pg-migrate`.
+- Background work: `npm run worker`, using the `jobs` table with `FOR UPDATE SKIP LOCKED`, heartbeats, and stale-lock recovery.
+- Authentication: opaque session cookie backed by hashed session tokens in PostgreSQL.
+- External systems: Azure DevOps REST APIs and OpenAI, Gemini, or Anthropic LLM provider APIs.
 
 ## Source Layout
 
 `src/app`
-: Next.js routes and API endpoints. Page routes own screen-level composition. API routes adapt HTTP requests into module service calls.
+: Next.js page routes and API endpoints. Page routes own screen-level composition. API routes should remain thin adapters around module services.
 
 `src/components`
-: Current UI system. `layout` owns the active app shell, topbar, sidebar, and content wrappers. `domain` owns workflow-specific UI. `qa` owns reusable QA-focused display primitives. `ui` contains shadcn/Radix-style base components.
+: Current UI system. `layout` owns the app shell, topbar, sidebar, and content wrappers. `dashboard`, `domain`, and `qa` own workflow-oriented UI. `ui` contains shadcn/Radix-style base components.
 
 `src/modules`
-: Server-side application, integration, and domain services. Keep business logic here instead of in route handlers or React components.
+: Server-side application, domain, security, integration, analytics, RAG, auth, workspace, credential, job, and workflow services. Keep business logic here instead of in route handlers or React components.
 
 `src/shared`
-: Older shared UI and browser helpers still used by parts of the app. Prefer `src/components` and `src/lib` for new active UI work unless refactoring an existing shared component.
+: Shared browser helpers and legacy shared components still used by parts of the app. Prefer `src/components` and `src/lib` for new active UI work unless refactoring an existing shared component.
 
 `src/types`
 : Client-facing shared TypeScript shapes.
@@ -81,83 +88,142 @@ The app intentionally avoids loading every Azure DevOps work item into a standal
 `src/lib`
 : Small frontend constants and utilities.
 
+`migrations`
+: PostgreSQL schema migrations. The app startup instrumentation applies pending migrations idempotently, but production deployments should still run migrations as an explicit release step.
+
+`docs`
+: Durable deployment and design reference docs. Historical implementation plans can be archived or deleted once their decisions have been folded into this architecture document and deployment guide.
+
 ## App Shell And Navigation
 
-The active shell is `src/components/layout/app-shell.tsx`. It wraps every route except setup pages and renders:
+The active shell is `src/components/layout/app-shell.tsx`. It wraps the authenticated app and renders:
 
-- `src/components/layout/sidebar.tsx` for primary navigation.
-- `src/components/layout/topbar.tsx` for project selection and Azure DevOps profile state.
+- `src/components/layout/sidebar.tsx` for primary workflow navigation.
+- `src/components/layout/topbar.tsx` for active project selection and Azure DevOps profile state.
 
-Navigation should point only to durable workflow surfaces. Avoid adding broad integration landing pages unless they are required for a real user task.
+The root route redirects to `/dashboards`. `/setup` and `/configuration` redirect to `/settings`. `/login` is public; authenticated page navigations are protected by `src/middleware.ts`. API routes validate sessions server-side and return JSON errors instead of redirects.
+
+Durable page routes:
+
+- `/dashboards`
+- `/knowledge-hub`
+- `/business-owner-assistant`
+- `/requirements-analysis`
+- `/test-case-design`
+- `/test-gap-analysis`
+- `/test-execution-effort`
+- `/report-bug`
+- `/suite-migration`
+- `/bulk-task-creation`
+- `/settings`
+- `/activity-log`
+- `/test-cases/new`
+
+## Auth, Workspace, And Project Scope
+
+Authentication is PAT-backed:
+
+- `POST /api/auth/login` validates the submitted PAT against the selected Azure DevOps organization.
+- Enabled organizations map to rows in `workspaces`.
+- Successful login provisions or updates the user, ensures workspace membership, stores the user's PAT encrypted, and creates an opaque session cookie.
+- Session tokens are hashed in PostgreSQL; the raw token exists only in the browser cookie.
+
+Workspace resolution is centralized in `src/modules/credentials/scoped-resolution.service.ts` and `src/modules/workspace`.
+
+Project isolation is mandatory:
+
+- The browser can submit a candidate `ProjectScope`, but route handlers must resolve a trusted scope for the authenticated workspace.
+- `src/modules/projects/workspace-projects.service.ts` owns project anchors and trusted project resolution.
+- Project-scoped Azure DevOps adapters must be created with the trusted scope so by-ID work item reads/writes are checked against the item's real `System.TeamProject`.
+- Feature rows include workspace/project ownership columns and must never rely on client-supplied Azure project fields for authorization decisions.
 
 ## Core Workflows
 
-Setup and settings:
+Settings and workspace administration:
 
-- `/setup` handles initial runtime configuration.
-- `/settings` lets the user review and update saved runtime settings.
-- API routes under `/api/settings/*` validate connections, save settings, and list provider models.
+- `/settings` manages private user credentials and workspace-wide options.
+- `/api/settings/credentials` stores encrypted Azure DevOps and LLM credentials for the current user/workspace.
+- `/api/settings/llm-models` lists provider models where supported.
+- `/api/workspace/*` manages members, workspace settings, sync credentials, sync schedules, sync requests, and job status.
 
-Project scoping:
+Authentication:
 
-- The header selector loads Azure DevOps projects through `/api/azure-devops/projects`.
-- Active project scope is stored client-side by `src/shared/lib/active-project.ts`.
-- Server actions validate scope through `src/modules/projects/project-isolation.guard.ts`.
+- `/login` signs users into enabled Azure DevOps organizations.
+- `/api/auth/login` validates PATs, stores encrypted credentials, and creates sessions.
+- `/api/auth/session` reports the current authentication state.
 
-Dashboard analytics:
+Project selection:
 
-- `/dashboards` renders project-scoped QA leadership analytics from live Azure DevOps Test Plans, Test Points, Test Runs, Test Results, work items, work-item links, and reporting revisions.
-- `/api/dashboard/analytics` accepts validated date, plan, suite, area, iteration, requirement-type, and assignee filters. It returns KPIs, execution, defect, coverage, blocker, readiness, trend, filter-metadata, and section-completeness contracts.
-- Current open defects and latest Test Point outcomes remain in readiness regardless of the selected history range. The range filters Test Run/Result and work-item revision events.
-- Dashboard aggregation isolates source failures and returns partial sections with data-quality warnings. Short-lived in-memory caching limits repeated Azure reads; Refresh bypasses that cache.
-- Readiness thresholds and normalization rules live in `src/modules/dashboard/dashboard-metrics.ts`; UI components under `src/components/dashboard` use theme-aware Recharts visualizations and reusable tables.
+- `/api/azure-devops/projects` lists projects through a user org-level Azure DevOps adapter.
+- `/api/azure-devops/project/select` verifies selection and persists a workspace project anchor.
+- The topbar uses the selected anchor as the active project scope for project-scoped workflows.
 
-Project Context:
+Dashboards:
 
-- `/context` fetches and indexes filtered Azure DevOps work items.
-- `/api/context/index` calls `indexAzureWorkItemsAsProjectContext`.
-- `/api/context/status` reads locally indexed context status.
-- `/api/context/suggestions` retrieves and ranks context for a target work item.
-- Context sync defaults to incremental content-hash updates; full rebuild remains available for recovery.
-- RAG storage, chunking, compiled knowledge, knowledge health, and Markdown wiki export live in `src/modules/rag`.
+- `/dashboards` renders project-scoped QA leadership analytics.
+- `/api/dashboard/analytics`, `/api/dashboard/my-workbench`, and `/api/dashboard/system-analytics` aggregate Azure DevOps test results, defects, coverage, blockers, readiness, workflow history, and user/workbench metrics.
+- Dashboard services live under `src/modules/dashboard` and `src/modules/analytics`.
+
+Knowledge Hub and RAG:
+
+- `/knowledge-hub` indexes filtered Azure DevOps work items, compiles project knowledge, reports knowledge health, and exports a Markdown wiki.
+- `/api/context/index`, `/api/context/status`, and `/api/context/suggestions` manage project context indexing and retrieval.
+- `/api/context/knowledge/*` manages extraction, preview, save, lint, log, promotion, manual drafting/finalization/validation/consolidation, status, and export.
+- RAG storage, compiled knowledge, retrieval, linting, and citations live under `src/modules/rag`.
 - The compiled knowledge design is documented in `docs/knowledge-wiki-rag-enhancement.md`.
 
-Requirement Analysis:
+Business Owner Assistant:
 
-- UI routes live under `/requirements/*`.
-- `/api/requirement-analysis/run` fetches target work item data and selected context, then calls the requirement analysis service.
-- `/api/requirement-analysis/comment` pushes reviewed comments back to Azure DevOps.
-- Prompts, schemas, and service logic live under `src/modules/requirement-analysis`.
+- `/business-owner-assistant` asks project questions against retrieved context and compiled knowledge.
+- `/api/context-chatbot/message` returns grounded answers with citations.
+
+Requirements Analysis:
+
+- `/requirements-analysis` analyzes a real Azure DevOps requirement.
+- `/api/requirement-analysis/run`, `/comment`, and `/manual/*` fetch target data, resolve context, call or validate LLM output, and publish reviewed comments.
+- Service, schema, comment, and prompt logic live under `src/modules/requirement-analysis`.
 
 Test Case Design:
 
-- UI routes live under `/test-cases/*`.
-- `/api/test-cases/generate` generates test cases from one selected Azure DevOps work item and chosen context.
-- `/api/publish/test-cases` publishes approved test cases to Azure Test Plans.
-- Prompt, schema, and generation logic live under `src/modules/test-case-design`.
+- `/test-case-design` and `/test-cases/new` generate editable test cases.
+- `/api/test-cases/generate`, `/api/test-cases/manual/*`, and `/api/publish/test-cases` prepare, validate, and publish reviewed Azure Test Case work items.
+- Service, schema, and generation logic live under `src/modules/test-case-design`.
 
-Test Coverage Matrix:
+Test Gap Analysis:
 
-- UI routes live under `/test-coverage-matrix`, `/existing-test-case-review*`, and `/test-cases/existing-review`.
-- `/api/existing-test-case-review/run` fetches linked test cases from Azure DevOps and runs the review service.
-- `/api/test-coverage-matrix/suggested-additions/publish` creates suggested Azure Test Case work items and links them to the user story.
+- `/test-gap-analysis` compares requirement details to linked Azure DevOps test cases and creates selected additions.
+- `/api/existing-test-case-review/*` runs automatic/manual review.
+- `/api/test-coverage-matrix/suggested-additions/publish` creates selected Azure Test Case additions and links them to the user story.
 - Service, prompt, and schema code live under `src/modules/existing-test-case-review`.
 
 Test Execution Effort:
 
-- `/test-execution-effort` estimates realistic manual QA execution effort for linked Azure DevOps test cases on one selected story or requirement work item.
-- `/api/test-execution-effort/prepare`, `/generate`, `/external-prompt`, and `/manual/submit` fetch project-scoped story/test case data, resolve project context, build prompts, call or validate LLM output, and return structured estimates.
+- `/test-execution-effort` estimates realistic manual QA execution effort for linked test cases.
+- `/api/test-execution-effort/prepare`, `/generate`, `/external-prompt`, and `/manual/submit` fetch scoped data, build prompts, call or validate LLM output, and return structured estimates.
 - Service, prompt, schema, and data-loading code live under `src/modules/test-execution-effort`.
 
-Test Suite Migration:
+Bug Reporting:
 
-- `/test-suite-migration` lets a user preview and run same-project Azure Test Suite copy/move operations.
+- `/report-bug` converts QA notes into reviewed Azure DevOps Bug work items.
+- `/api/bugs/generate`, `/metadata`, `/post`, `/manual/*`, and `/reproduction-test-case/publish` generate, validate, and publish bug reports and optional reproduction test cases.
+- Service and schemas live under `src/modules/bug-reporting`.
+
+Suite Migration:
+
+- `/suite-migration` previews and runs same-project Azure Test Suite copy/move operations.
 - `/api/test-suite-migration/tree`, `/preview`, and `/execute` load suite trees, build dry-run plans, and execute confirmed migrations.
-- `src/modules/test-suite-migration` owns selection normalization, recursive hierarchy planning, test point outcome mapping, guarded move deletion, and migration reporting.
+- `src/modules/test-suite-migration` owns selection normalization, recursive hierarchy planning, outcome mapping, guarded move deletion, and migration reporting.
 
-Audit:
+Bulk Task Creation:
 
-- `/audit-logs` reads local audit activity through `/api/audit-logs`.
+- `/bulk-task-creation` creates multiple Azure DevOps Tasks under selected User Stories.
+- `/api/azure-devops/bulk-tasks` owns the write path through the Azure DevOps bulk task service.
+
+Activity and audit:
+
+- `/activity-log` and `/api/activity-log` show workflow activity for the authenticated workspace/project scope.
+- Audit rows are stored in PostgreSQL and surfaced through activity-log workflows.
+- Audit and activity services live under `src/modules/audit` and `src/modules/activity-log`.
 
 ## Integration Boundaries
 
@@ -166,30 +232,51 @@ Azure DevOps:
 - Adapter interface: `src/modules/integrations/azure-devops/azure-devops-adapter.ts`.
 - REST implementation: `src/modules/integrations/azure-devops/azure-devops-client.ts`.
 - Mapping: `src/modules/integrations/azure-devops/azure-devops-mapper.ts`.
-- Workflow-specific services handle comments, linked test cases, test plan publishing, and test suite migration.
-- Project isolation: Azure DevOps resolves work items by global ID and ignores the project segment in by-ID URLs, so the URL provides no isolation. Project-scoped work must construct the adapter with `getProjectScopedAzureDevOpsAdapter(scope)` (`configured-azure-devops.ts`), which binds the active project; the client then validates every by-ID read/write/batch and test-plan/suite operation against the work item's real `System.TeamProject` and rejects cross-project access as not-found-in-project. Use the unbound `getConfiguredAzureDevOpsAdapter()` only for org-level calls (project list, profile, connection test).
+- Workflow-specific services handle comments, linked test cases, test plan publishing, suite migration, bulk task creation, metadata, and user/project reads.
+- Use org-level adapters only for org-wide reads such as profile, project list, and connection validation.
+- Use project-scoped adapters for project data and writes.
 
 LLM providers:
 
 - Provider factory: `src/modules/llm/llm-provider.factory.ts`.
-- Configured provider resolution: `src/modules/llm/configured-provider.ts`.
-- Provider implementations live under `src/modules/llm/providers`.
-- Structured output repair lives in `src/modules/llm/output-repair.service.ts`.
+- Provider implementations: `src/modules/llm/providers`.
+- Prompt registry and prompt renderers: `src/modules/llm/prompts`, `manual-prompt.ts`, and `markdown-prompt-renderer.ts`.
+- JSON extraction, structured output handling, retry behavior, token caps, provider base URLs, and warnings live under `src/modules/llm`.
+- Per-user provider credentials are resolved through `src/modules/credentials`.
 
 Database:
 
-- Schema lives in `src/modules/shared/infrastructure/database/schema.sql`.
-- Database helper functions live in `src/modules/shared/infrastructure/database/db.ts`.
-- Feature services should own their SQL access close to the behavior they support.
+- PostgreSQL helper functions live in `src/modules/shared/infrastructure/database/db.ts`.
+- Use `sqlAll`, `sqlGet`, `sqlRun`, and `withTransaction` instead of opening ad hoc database clients.
+- Use named parameters (`@name`) in SQL strings; the helper translates them to PostgreSQL positional placeholders.
+- Fire-and-forget audit/analytics writes should use the background write queue when they must not fail the request path.
+
+## Background Jobs
+
+The worker entrypoint is `src/worker/main.ts`.
+
+- Run production workers with `npm run worker`.
+- Run local watched workers with `npm run worker:dev`.
+- Job handlers are registered in `src/modules/jobs/register-handlers.ts`.
+- The queue is implemented in `src/modules/jobs/job-queue.service.ts`.
+- Scheduled workspace sync is implemented in `src/modules/jobs/sync-schedule.service.ts` and `workspace-sync.handler.ts`.
+- Workers claim jobs with row locks, heartbeat active jobs, and mark stale locks retryable according to environment settings.
+
+Multiple worker processes may run against the same database. A job should be written to tolerate retries because failed or stale jobs can be requeued.
 
 ## Current Architecture Decisions
 
-- Azure DevOps is an integration, not a standalone bulk work item browser.
-- Workflows operate on a selected project and usually one target work item ID.
-- All Azure DevOps work item access is strictly project-scoped. Because Azure ignores the project segment for by-ID operations, isolation is enforced in the adapter (bound via `getProjectScopedAzureDevOpsAdapter`) by validating each item's real `System.TeamProject`, not by the URL. Local SQLite reads/writes filter on `project_id` + `azure_project_id`.
-- Project Context is the only place that intentionally fetches multiple work items, and it does so with filters.
+- iTestFlow is a hosted workspace app, not a single-user local settings file app.
+- PostgreSQL is the only durable data store.
+- All browser-to-provider access flows through server-side API routes.
+- User Azure DevOps and LLM credentials are private per user/workspace and encrypted before persistence.
+- Shared project context, compiled knowledge, dashboards, jobs, audit logs, and workflow history are workspace scoped.
+- Azure DevOps is an integration, not a standalone bulk work-item browser.
+- Project Context/Knowledge Hub is the only place that intentionally fetches many work items, and it does so with filters.
+- Workflows usually operate on one selected project and one target work item ID.
+- All project-scoped Azure DevOps access must be resolved through trusted workspace/project scope before reading or writing.
 - Server route handlers should stay thin and delegate validation, integration calls, and business rules to modules.
-- UI components should not call Azure DevOps directly except through local API routes.
+- UI components should not call Azure DevOps or LLM providers directly.
 - New navigation items should represent user workflows, not technical resources.
 
 ## Maintenance Rules
@@ -198,8 +285,9 @@ Update this document when you:
 
 - Add, remove, or rename a page route or API route.
 - Add a new domain module under `src/modules`.
-- Change where project scope, settings, audit logs, or indexed context are stored.
+- Change how sessions, credentials, workspace settings, project scope, audit logs, jobs, or indexed context are stored.
 - Add or remove an Azure DevOps or LLM integration capability.
+- Change worker behavior, job types, lock/retry behavior, or scheduler behavior.
 - Move active UI ownership between `src/components` and `src/shared`.
 - Make an architecture decision that future development should follow.
 
