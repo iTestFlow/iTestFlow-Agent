@@ -1,6 +1,6 @@
 "use client"
 
-import { Check, ChevronDown, Eye, EyeOff, KeyRound, Loader2, LogOut, Menu, RefreshCw, Settings2 } from "lucide-react"
+import { Check, ChevronDown, Eye, EyeOff, KeyRound, Loader2, LogOut, Menu, RefreshCw, Settings2, UserRound } from "lucide-react"
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
@@ -78,12 +78,6 @@ type SyncScheduleStatus = {
 
 type Provider = "openai" | "gemini" | "anthropic"
 type ModelOption = { id: string; displayName: string }
-
-function initialsFromName(value?: string) {
-  if (!value) return "AD"
-  const words = value.trim().split(/\s+/).filter(Boolean)
-  return words.slice(0, 2).map((word) => word[0]?.toUpperCase()).join("") || "AD"
-}
 
 function providerLabel(value?: string | null) {
   switch (value) {
@@ -411,8 +405,8 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           >
             <Avatar className="size-7">
               {profile?.imageUrl ? <AvatarImage src={profile.imageUrl} alt="" /> : null}
-              <AvatarFallback className="bg-primary/10 text-xs font-semibold text-primary">
-                {initialsFromName(profile?.displayName)}
+              <AvatarFallback className="bg-primary/10 text-primary">
+                <UserRound className="size-4" aria-hidden="true" />
               </AvatarFallback>
             </Avatar>
             <div className="hidden min-w-0 sm:block">
