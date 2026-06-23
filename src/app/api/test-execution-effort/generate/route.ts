@@ -47,9 +47,11 @@ export async function POST(request: Request) {
   }
 
   let trustedScope: ProjectScope | undefined;
+  let actor: string | undefined;
   let analyticsRunId: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    actor = ctx.userId;
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
@@ -64,6 +66,7 @@ export async function POST(request: Request) {
     const data = await loadTestExecutionEffortData({
       scope: trustedScope,
       adapter,
+      actor: ctx.userId,
       provider,
       storyId: parsed.data.storyId,
       selectedContextIds: parsed.data.selectedContextIds,
@@ -76,6 +79,7 @@ export async function POST(request: Request) {
     });
     const result = await generateTestExecutionEffort({
       scope: trustedScope,
+      actor: ctx.userId,
       provider,
       targetRequirement: data.targetRequirement,
       linkedTestCases: data.linkedTestCases,
@@ -117,7 +121,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    if (trustedScope) writeGenerationFailureAudit({ scope: trustedScope, action: "test_execution_effort.run", label: "Test Execution Effort generation failed.", error });
+    if (trustedScope && actor) writeGenerationFailureAudit({ scope: trustedScope, actor, action: "test_execution_effort.run", label: "Test Execution Effort generation failed.", error });
     if (isAppError(error)) {
       if (trustedScope && analyticsRunId) {
         failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error.message });

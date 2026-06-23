@@ -19,6 +19,7 @@ import {
 
 export async function generateBugReport(input: {
   scope: ProjectScope;
+  actor: string;
   provider: LLMProvider;
   bugDescription: string;
   parentStory?: Requirement | null;
@@ -51,6 +52,7 @@ export async function generateBugReport(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "bug_report.generate",
     status: "Success",
     message: "Generated a validated Azure DevOps bug report draft.",
@@ -104,6 +106,7 @@ export function buildBugReportPromptDraft(input: {
 
 export function completeManualBugReport(input: {
   scope: ProjectScope;
+  actor: string;
   rawOutput: string;
   parentStoryId?: string;
 }) {
@@ -119,6 +122,7 @@ export function completeManualBugReport(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "bug_report.manual_complete",
     status: "Success",
     message: "Generated a validated Azure DevOps bug report draft from external LLM output.",

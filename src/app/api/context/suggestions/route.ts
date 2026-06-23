@@ -29,8 +29,10 @@ export async function POST(request: Request) {
   }
 
   let trustedScope: ProjectScope | undefined;
+  let actor: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    actor = ctx.userId;
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const provider = await getUserLLMProvider(ctx);
@@ -59,6 +61,7 @@ export async function POST(request: Request) {
     }
     const result = await suggestContextStories({
       scope: trustedScope,
+      actor: ctx.userId,
       provider,
       targetRequirement,
       retrievedContext: storedContext,
@@ -75,7 +78,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    if (trustedScope) writeGenerationFailureAudit({ scope: trustedScope, action: "context_selection.suggest", label: "Context suggestion failed.", error });
+    if (trustedScope && actor) writeGenerationFailureAudit({ scope: trustedScope, actor, action: "context_selection.suggest", label: "Context suggestion failed.", error });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Context suggestion failed." },
       { status: 503 },

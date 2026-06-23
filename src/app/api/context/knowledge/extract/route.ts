@@ -29,13 +29,16 @@ export async function POST(request: Request) {
   }
 
   let trustedScope: ProjectScope | undefined;
+  let actor: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    actor = ctx.userId;
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const provider = await getUserLLMProvider(ctx);
 
     const snapshot = await extractAndSaveProjectKnowledgeBase({
       scope: trustedScope,
+      actor: ctx.userId,
       provider,
       mode: parsed.data.mode ?? "incremental",
     });
@@ -44,7 +47,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    if (trustedScope) writeGenerationFailureAudit({ scope: trustedScope, action: "rag.extract_project_knowledge_base", label: "Project knowledge extraction failed.", error });
+    if (trustedScope && actor) writeGenerationFailureAudit({ scope: trustedScope, actor, action: "rag.extract_project_knowledge_base", label: "Project knowledge extraction failed.", error });
     if (isTruncatedKnowledgeBaseOutputError(error)) {
       return NextResponse.json({ error: TruncatedKnowledgeBaseOutputMessage }, { status: 422 });
     }

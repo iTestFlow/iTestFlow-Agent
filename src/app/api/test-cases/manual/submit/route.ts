@@ -45,6 +45,7 @@ export async function POST(request: Request) {
     });
     const result = completeManualTestCaseGeneration({
       scope: trustedScope,
+      actor: ctx.userId,
       rawOutput: parsed.data.rawOutput,
       targetWorkItemId: parsed.data.targetWorkItemId,
     });

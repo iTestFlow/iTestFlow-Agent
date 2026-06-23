@@ -27,6 +27,7 @@ export async function POST(request: Request) {
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const snapshot = await saveManualProjectKnowledgeBaseFromBatches({
       scope: trustedScope,
+      actor: ctx.userId,
       partialKnowledgeBases: parsed.data.partialKnowledgeBases,
       mode: parsed.data.mode,
     });

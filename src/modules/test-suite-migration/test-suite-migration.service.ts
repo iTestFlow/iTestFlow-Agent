@@ -52,7 +52,7 @@ export async function buildMigrationPreview(adapter: AzureDevOpsAdapter, request
   return (await buildMigrationPlan(adapter, request)).preview;
 }
 
-export async function executeSuiteMigration(adapter: AzureDevOpsAdapter, request: TestSuiteMigrationRequest): Promise<MigrationResult> {
+export async function executeSuiteMigration(adapter: AzureDevOpsAdapter, request: TestSuiteMigrationRequest & { actor: string }): Promise<MigrationResult> {
   const plan = await buildMigrationPlan(adapter, request);
   const blockingErrors = plan.preview.errors.filter((error) => error.code !== "point-read-failed");
   if (blockingErrors.length) {
@@ -293,6 +293,7 @@ export async function executeSuiteMigration(adapter: AzureDevOpsAdapter, request
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: request.actor,
     entityType: "test_suite",
     entityId: plan.preview.selectedRoots.map((root) => root.id).join(","),
     action: "azure_devops.test_suite_migration",

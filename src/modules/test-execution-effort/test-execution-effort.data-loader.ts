@@ -9,6 +9,7 @@ import { resolveWorkflowContext, resolveWorkflowContextWithoutLLM } from "@/modu
 export async function loadTestExecutionEffortData(input: {
   scope: ProjectScope;
   adapter: AzureDevOpsAdapter;
+  actor?: string;
   provider?: LLMProvider;
   storyId: string;
   selectedContextIds?: string[];
@@ -24,15 +25,20 @@ export async function loadTestExecutionEffortData(input: {
     userStoryId: input.storyId,
   });
   const context = input.provider
-    ? await resolveWorkflowContext({
+    ? await (() => {
+      const actor = input.actor;
+      if (!actor) throw new Error("Audit actor is required for Test Execution Effort generation.");
+      return resolveWorkflowContext({
         scope,
+        actor,
         adapter: input.adapter,
         provider: input.provider,
         targetRequirement,
         selectedContextIds: input.selectedContextIds,
         retrievalTopK: input.retrievalTopK,
         workflowType: "test_execution_effort",
-      })
+      });
+    })()
     : await resolveWorkflowContextWithoutLLM({
         scope,
         adapter: input.adapter,

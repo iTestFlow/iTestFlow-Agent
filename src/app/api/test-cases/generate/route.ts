@@ -45,10 +45,12 @@ export async function POST(request: Request) {
   }
 
   let trustedScope: ProjectScope | undefined;
+  let actor: string | undefined;
   let analyticsRunId: string | undefined;
   try {
     const options = parsed.data.options ?? defaultTestDesignOptions;
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    actor = ctx.userId;
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const provider = await getUserLLMProvider(ctx);
@@ -65,6 +67,7 @@ export async function POST(request: Request) {
     });
     const autoContext = await resolveWorkflowContext({
       scope: trustedScope,
+      actor: ctx.userId,
       adapter,
       provider,
       targetRequirement,
@@ -74,6 +77,7 @@ export async function POST(request: Request) {
     });
     const result = await generateTestCases({
       scope: trustedScope,
+      actor: ctx.userId,
       provider,
       targetRequirement,
       relatedWorkItems: autoContext.relatedWorkItems,
@@ -120,7 +124,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    if (trustedScope) writeGenerationFailureAudit({ scope: trustedScope, action: "test_case_generation.run", label: "Test case generation failed.", error });
+    if (trustedScope && actor) writeGenerationFailureAudit({ scope: trustedScope, actor, action: "test_case_generation.run", label: "Test case generation failed.", error });
     if (trustedScope && analyticsRunId) {
       failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Test case generation failed." });
     }

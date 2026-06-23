@@ -139,16 +139,6 @@ Generate the encryption key with:
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
-Single-user/dev credential variables remain available for legacy local development:
-
-```bash
-AZURE_DEVOPS_ORG_URL=https://dev.azure.com/YOUR_ORG
-AZURE_DEVOPS_PAT=YOUR_AZURE_DEVOPS_PAT
-DEFAULT_LLM_PROVIDER=openai
-OPENAI_API_KEY=YOUR_OPENAI_KEY
-OPENAI_MODEL=YOUR_MODEL_ID
-```
-
 ## First-Run Workflow
 
 1. Start PostgreSQL, apply migrations, and run the web app.

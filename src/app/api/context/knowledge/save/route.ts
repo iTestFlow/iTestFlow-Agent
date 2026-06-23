@@ -27,7 +27,7 @@ export async function POST(request: Request) {
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
-    return NextResponse.json(await saveGeneratedProjectKnowledgeBaseDraft({ ...parsed.data, scope: trustedScope }));
+    return NextResponse.json(await saveGeneratedProjectKnowledgeBaseDraft({ ...parsed.data, scope: trustedScope, actor: ctx.userId }));
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;

@@ -13,6 +13,7 @@ import { TestCaseGenerationOutputSchema } from "../schemas/test-case.schema";
 
 export async function generateTestCases(input: {
   scope: ProjectScope;
+  actor: string;
   provider: LLMProvider;
   targetRequirement: unknown;
   relatedWorkItems?: unknown[];
@@ -53,6 +54,7 @@ export async function generateTestCases(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "test_case_generation.run",
     status: "Success",
     message: `Generated ${result.validatedOutput.testCases.length} validated test cases.`,
@@ -115,6 +117,7 @@ export function buildTestCaseGenerationPromptDraft(input: {
 
 export function completeManualTestCaseGeneration(input: {
   scope: ProjectScope;
+  actor: string;
   rawOutput: string;
   targetWorkItemId?: string;
 }) {
@@ -130,6 +133,7 @@ export function completeManualTestCaseGeneration(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "test_case_generation.manual_complete",
     status: "Success",
     message: `Generated ${validatedOutput.testCases.length} validated test cases from external LLM output.`,

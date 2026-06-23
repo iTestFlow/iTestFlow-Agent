@@ -158,6 +158,7 @@ export async function POST(request: Request) {
     });
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const result = await createBulkTasks(adapter, trustedScope, {
+      actor: ctx.userId,
       taskTemplates: parsed.data.taskTemplates,
       targets: parsed.data.targets,
     });

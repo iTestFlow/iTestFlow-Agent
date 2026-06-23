@@ -40,6 +40,7 @@ export type AutoContextResolution = {
 
 export async function resolveWorkflowContext(input: {
   scope: ProjectScope;
+  actor: string;
   adapter: AzureDevOpsAdapter;
   provider: LLMProvider;
   targetRequirement: Requirement;
@@ -67,6 +68,7 @@ async function resolveWorkflowContextCore(input: {
   scope: ProjectScope;
   adapter: AzureDevOpsAdapter;
   provider?: LLMProvider;
+  actor?: string;
   targetRequirement: Requirement;
   selectedContextIds?: string[];
   retrievalTopK: number;
@@ -125,9 +127,9 @@ async function resolveWorkflowContextCore(input: {
       retrievalTopK,
     };
   }
-
   const llmSelected = await selectContextWithLLM({
     scope,
+    actor: input.actor,
     provider: input.provider,
     targetRequirement: input.targetRequirement,
     candidates,
@@ -208,16 +210,19 @@ async function loadExplicitContext(input: {
 async function selectContextWithLLM(input: {
   scope: ProjectScope;
   provider?: LLMProvider;
+  actor?: string;
   targetRequirement: Requirement;
   candidates: LlmContextSource[];
   maxContextItems: number;
   workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review" | "test_execution_effort";
 }) {
   if (!input.provider) return [];
+  if (!input.actor) throw new Error("Audit actor is required for LLM context selection.");
 
   try {
     const result = await suggestContextStories({
       scope: input.scope,
+      actor: input.actor,
       provider: input.provider,
       targetRequirement: input.targetRequirement,
       retrievedContext: input.candidates,

@@ -41,6 +41,7 @@ export async function POST(request: Request) {
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const result = await indexAzureWorkItemsAsProjectContext({
       scope: trustedScope,
+      actor: ctx.userId,
       adapter,
       workItemTypes: parsed.data.workItemTypes,
       states: parsed.data.states,

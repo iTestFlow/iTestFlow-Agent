@@ -13,6 +13,7 @@ export async function createBulkTasks(
   adapter: AzureDevOpsAdapter,
   scopeInput: ProjectScope,
   input: {
+    actor: string;
     taskTemplates: BulkTaskTemplate[];
     targets: BulkTaskTarget[];
   },
@@ -69,6 +70,7 @@ export async function createBulkTasks(
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     entityType: "work_item",
     entityId: "bulk-tasks",
     action: "azure_devops.bulk_create_tasks",

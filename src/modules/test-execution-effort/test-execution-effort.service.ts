@@ -40,6 +40,7 @@ type RequirementLike = {
 
 export async function generateTestExecutionEffort(input: {
   scope: ProjectScope;
+  actor: string;
   provider: LLMProvider;
   targetRequirement: unknown;
   linkedTestCases: TestCase[];
@@ -83,6 +84,7 @@ export async function generateTestExecutionEffort(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "test_execution_effort.run",
     status: "Success",
     message: `Generated a manual execution effort estimate for ${input.linkedTestCases.length} linked test cases.`,
@@ -164,6 +166,7 @@ export function buildTestExecutionEffortPrompt(input: {
 
 export function completeManualTestExecutionEffort(input: {
   scope: ProjectScope;
+  actor: string;
   rawOutput: string;
   targetWorkItemId?: string;
   linkedTestCases?: TestCase[];
@@ -200,6 +203,7 @@ export function completeManualTestExecutionEffort(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "test_execution_effort.manual_complete",
     status: "Success",
     message: "Test Execution Effort completed from validated external LLM output.",

@@ -9,6 +9,7 @@ import { ContextSuggestionOutputSchema } from "./context-selection.schema";
 
 export async function suggestContextStories(input: {
   scope: ProjectScope;
+  actor: string;
   provider: LLMProvider;
   targetRequirement: unknown;
   retrievedContext: unknown[];
@@ -46,6 +47,7 @@ export async function suggestContextStories(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "context_selection.suggest",
     status: "Success",
     message: `Suggested ${result.validatedOutput.suggestedItems.length} context stories.`,

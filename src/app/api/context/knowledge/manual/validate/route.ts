@@ -29,6 +29,7 @@ export async function POST(request: Request) {
     if (parsed.data.save) {
       const snapshot = await saveManualProjectKnowledgeBaseSnapshot({
         scope: trustedScope,
+        actor: ctx.userId,
         rawOutput: parsed.data.rawOutput,
         mode: parsed.data.mode,
       });

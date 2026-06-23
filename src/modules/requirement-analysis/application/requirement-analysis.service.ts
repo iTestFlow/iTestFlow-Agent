@@ -17,6 +17,7 @@ import { RequirementAnalysisOutputSchema, type RequirementAnalysisOutput } from 
 
 export async function runRequirementAnalysis(input: {
   scope: ProjectScope;
+  actor: string;
   provider: LLMProvider;
   targetRequirement: unknown;
   relatedWorkItems?: unknown[];
@@ -58,6 +59,7 @@ export async function runRequirementAnalysis(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "requirement_analysis.run",
     status: "Success",
     message: "Requirement analysis completed with validated structured output.",
@@ -123,6 +125,7 @@ export function buildRequirementAnalysisPromptDraft(input: {
 
 export function completeManualRequirementAnalysis(input: {
   scope: ProjectScope;
+  actor: string;
   rawOutput: string;
   targetWorkItemId?: string;
   enabledChecklistItemIds: RequirementAnalysisChecklistItemId[];
@@ -141,6 +144,7 @@ export function completeManualRequirementAnalysis(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "requirement_analysis.manual_complete",
     status: "Success",
     message: "Requirement analysis completed from validated external LLM output.",

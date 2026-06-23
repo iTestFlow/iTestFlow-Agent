@@ -359,7 +359,7 @@ function WorkflowSavingsTable({ rows }: { rows: SystemDashboardAnalytics["workfl
       <CardHeader><CardTitle className="text-base">Workflow Time Savings</CardTitle></CardHeader>
       <CardContent className="space-y-3 overflow-x-auto">
         <p className="text-xs text-muted-foreground">
-          Manual baselines are configurable in Settings. Estimated savings are counted only after a workflow&apos;s output is accepted or published.
+          Manual baselines use fixed workflow defaults. Estimated savings are counted only after a workflow&apos;s output is accepted or published.
         </p>
         {activeRows.length ? (
           <Table className="w-full table-fixed">

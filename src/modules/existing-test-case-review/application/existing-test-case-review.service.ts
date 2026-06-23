@@ -12,6 +12,7 @@ import { ExistingTestCaseReviewOutputSchema } from "../schemas/existing-test-cas
 
 export async function reviewExistingLinkedTestCases(input: {
   scope: ProjectScope;
+  actor: string;
   provider: LLMProvider;
   targetRequirement: unknown;
   linkedTestCases: unknown[];
@@ -52,6 +53,7 @@ export async function reviewExistingLinkedTestCases(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "existing_test_case_review.run",
     status: "Success",
     message: `Built a Test Coverage Matrix from ${input.linkedTestCases.length} linked Azure DevOps test cases.`,
@@ -110,6 +112,7 @@ export function buildExistingTestCaseReviewPromptDraft(input: {
 
 export function completeManualExistingTestCaseReview(input: {
   scope: ProjectScope;
+  actor: string;
   rawOutput: string;
   targetWorkItemId?: string;
 }) {
@@ -125,6 +128,7 @@ export function completeManualExistingTestCaseReview(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "existing_test_case_review.manual_complete",
     status: "Success",
     message: "Test Coverage Matrix completed from validated external LLM output.",

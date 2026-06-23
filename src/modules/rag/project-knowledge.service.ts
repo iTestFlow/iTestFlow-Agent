@@ -126,6 +126,7 @@ export type ProjectKnowledgeGeneratedDraft = {
 
 export async function extractAndSaveProjectKnowledgeBase(input: {
   scope: ProjectScope;
+  actor: string;
   provider: LLMProvider;
   mode?: ProjectKnowledgeCompileMode;
 }) {
@@ -191,6 +192,7 @@ export async function extractAndSaveProjectKnowledgeBase(input: {
       azureProjectId: scope.azureProjectId,
       azureProjectName: scope.azureProjectName,
       azureOrganizationUrl: scope.azureOrganizationUrl,
+      actor: input.actor,
       action: "rag.extract_project_knowledge_base",
       status: "Success",
       message: "Updated project knowledge base locally for retired source work items.",
@@ -248,6 +250,7 @@ export async function extractAndSaveProjectKnowledgeBase(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "rag.extract_project_knowledge_base",
     status: "Success",
     message: "Extracted and saved project knowledge base from indexed context.",
@@ -366,6 +369,7 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
 
 export async function saveGeneratedProjectKnowledgeBaseDraft(input: {
   scope: ProjectScope;
+  actor: string;
   provider: string;
   model: string;
   rawOutput: string;
@@ -409,6 +413,7 @@ export async function saveGeneratedProjectKnowledgeBaseDraft(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "rag.extract_project_knowledge_base.generated_save",
     status: "Success",
     message: "Saved generated project knowledge base after preview.",
@@ -540,6 +545,7 @@ export function validateProjectKnowledgeExternalOutput(rawOutput: string) {
 
 export async function saveManualProjectKnowledgeBaseSnapshot(input: {
   scope: ProjectScope;
+  actor: string;
   rawOutput: string;
   mode?: ProjectKnowledgeCompileMode;
 }) {
@@ -574,6 +580,7 @@ export async function saveManualProjectKnowledgeBaseSnapshot(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "rag.extract_project_knowledge_base.manual_complete",
     status: "Success",
     message: "Extracted and saved project knowledge base from validated external LLM output.",
@@ -596,6 +603,7 @@ export async function saveManualProjectKnowledgeBaseSnapshot(input: {
 
 export async function saveManualProjectKnowledgeBaseFromBatches(input: {
   scope: ProjectScope;
+  actor: string;
   partialKnowledgeBases: ProjectKnowledgeBase[];
   mode?: ProjectKnowledgeCompileMode;
 }) {
@@ -639,6 +647,7 @@ export async function saveManualProjectKnowledgeBaseFromBatches(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "rag.extract_project_knowledge_base.manual_batch_complete",
     status: "Success",
     message: "Extracted and saved project knowledge base from locally consolidated external LLM batch output.",

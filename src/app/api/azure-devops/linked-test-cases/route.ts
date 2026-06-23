@@ -26,6 +26,7 @@ export async function POST(request: Request) {
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const linkedTestCases = await fetchProjectScopedLinkedTestCases(adapter, trustedScope, {
+      actor: ctx.userId,
       userStoryId: parsed.data.userStoryId,
     });
     return NextResponse.json({ linkedTestCases });

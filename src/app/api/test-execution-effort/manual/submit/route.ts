@@ -61,6 +61,7 @@ export async function POST(request: Request) {
     });
     const result = completeManualTestExecutionEffort({
       scope: trustedScope,
+      actor: ctx.userId,
       rawOutput: parsed.data.rawOutput,
       targetWorkItemId: parsed.data.storyId,
       linkedTestCases,

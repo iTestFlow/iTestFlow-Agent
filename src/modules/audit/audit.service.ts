@@ -14,7 +14,7 @@ export type AuditLogInput = {
   entityId?: string;
   action: string;
   status: AuditStatus;
-  actor?: string;
+  actor: string;
   message: string;
   details?: unknown;
 };
@@ -35,7 +35,7 @@ export function writeAuditLog(input: AuditLogInput) {
     entityId: input.entityId ?? null,
     action: input.action,
     status: input.status,
-    actor: input.actor ?? "local-user",
+    actor: input.actor,
     message: input.message,
     detailsJson: input.details ? JSON.stringify(input.details) : null,
     createdAt: now,

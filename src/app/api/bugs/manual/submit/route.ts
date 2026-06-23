@@ -39,6 +39,7 @@ export async function POST(request: Request) {
     });
     const result = completeManualBugReport({
       scope: trustedScope,
+      actor: ctx.userId,
       rawOutput: parsed.data.rawOutput,
       parentStoryId: parsed.data.parentStoryId,
     });

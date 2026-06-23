@@ -45,7 +45,7 @@ Generate an encryption key with:
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
-Store `APP_ENCRYPTION_KEY` outside the database. Without the same key, encrypted PATs and LLM keys cannot be decrypted after restore.
+Store `APP_ENCRYPTION_KEY` outside the database. Without the same key, encrypted PATs and LLM keys cannot be decrypted after restore. Do not replace `APP_ENCRYPTION_KEY` in place for an existing database; add a versioned key path and re-encrypt stored secrets before retiring the old key.
 
 ## Per-User And Workspace Settings
 
@@ -71,7 +71,7 @@ Interactive actions use the current user's Azure DevOps PAT and LLM key. Schedul
 ## First Run
 
 1. Provision PostgreSQL and set `DATABASE_URL`.
-2. Set `APP_MODE=hosted`, `APP_ENCRYPTION_KEY`, `BOOTSTRAP_OWNER_EMAIL`, and `BOOTSTRAP_OWNER_AZURE_ORG`.
+2. Set `APP_ENCRYPTION_KEY`, `BOOTSTRAP_OWNER_EMAIL`, and `BOOTSTRAP_OWNER_AZURE_ORG`.
 3. Run migrations as a deploy/release step:
 
    ```bash
@@ -110,7 +110,6 @@ The app startup instrumentation also attempts pending migrations and bootstrap s
 ## Production Checklist
 
 - [ ] HTTPS is enabled.
-- [ ] `APP_MODE=hosted`.
 - [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, and bootstrap variables are set through secrets.
 - [ ] `npm run db:migrate` runs before the new web/worker version receives traffic.
 - [ ] At least one web process is running.
@@ -126,6 +125,8 @@ The app startup instrumentation also attempts pending migrations and bootstrap s
 Use `RATE_LIMIT_BACKEND=postgres` with multiple web replicas so login and credential rate limits are shared. The default memory backend is per-process and is acceptable only for one web replica or local development.
 
 Workers can scale horizontally. Keep job handlers idempotent where possible because failed or stale jobs can be retried.
+
+Before redeploying workers, drain or gracefully stop the old worker pool so in-flight sync jobs can finish. If a worker is terminated mid-job, the replacement worker recovers it through stale-lock requeue after `JOB_STALE_LOCK_MS` (5 minutes by default), so scheduled sync can appear delayed during that window.
 
 ## Backups And Restore
 
@@ -145,6 +146,8 @@ After restore:
 2. Run `npm run db:migrate`.
 3. Start the web service and worker.
 4. Sign in and verify workspace/project selection, credential status, dashboard reads, and a small Knowledge Hub status read.
+
+Rollback past migration `1710000007000_project_anchor_backfill` is backup-based. That migration canonicalizes project IDs and cannot reconstruct prior IDs through `db:migrate:down`; restore a pre-migration PostgreSQL backup instead.
 
 ## Local Development
 

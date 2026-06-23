@@ -31,6 +31,7 @@ export type PostBugResult = {
 export async function postBugReportToAzureDevOps(input: {
   adapter: AzureDevOpsAdapter;
   scope: ProjectScope;
+  actor: string;
   report: unknown;
   parentStoryId?: string;
   assignedTo?: string;
@@ -67,6 +68,7 @@ export async function postBugReportToAzureDevOps(input: {
       azureProjectId: scope.azureProjectId,
       azureProjectName: scope.azureProjectName,
       azureOrganizationUrl: scope.azureOrganizationUrl,
+      actor: input.actor,
       entityType: "work_item",
       entityId: input.parentStoryId,
       action: "azure_devops.create_bug",
@@ -90,6 +92,7 @@ export async function postBugReportToAzureDevOps(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     entityType: "work_item",
     entityId: created.azureBugId,
     action: "azure_devops.create_bug",

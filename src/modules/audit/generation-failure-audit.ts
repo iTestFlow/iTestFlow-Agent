@@ -10,6 +10,7 @@ import { writeAuditLog } from "./audit.service";
 // error response. Truncation failures get a flag and an actionable message so they stand out.
 export function writeGenerationFailureAudit(input: {
   scope: ProjectScope;
+  actor: string;
   action: string;
   /** Human-readable label for the failed operation, e.g. "Test case generation failed." */
   label: string;
@@ -36,6 +37,7 @@ export function writeGenerationFailureAudit(input: {
       azureProjectId: scope.azureProjectId,
       azureProjectName: scope.azureProjectName,
       azureOrganizationUrl: scope.azureOrganizationUrl,
+      actor: input.actor,
       action: input.action,
       status: "Failed",
       message,

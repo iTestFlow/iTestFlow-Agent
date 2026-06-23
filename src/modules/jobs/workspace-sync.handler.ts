@@ -54,7 +54,7 @@ export async function runWorkspaceContextSync(job: Job): Promise<void> {
       ? (job.payload.states as string[])
       : DEFAULT_CONTEXT_STATES;
 
-  await indexAzureWorkItemsAsProjectContext({ scope, adapter, workItemTypes, states, mode: "incremental" });
+  await indexAzureWorkItemsAsProjectContext({ scope, actor: "system:worker", adapter, workItemTypes, states, mode: "incremental" });
 }
 
 /** Enqueue a context sync for every active project in a workspace (deduped). */

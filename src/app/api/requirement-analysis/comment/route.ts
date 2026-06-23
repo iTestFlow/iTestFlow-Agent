@@ -40,6 +40,7 @@ export async function POST(request: Request) {
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const result = await pushApprovedRequirementComment(adapter, trustedScope, {
+      actor: ctx.userId,
       workItemId: parsed.data.targetWorkItemId,
       commentBody: parsed.data.commentBody,
       mentionedUsers: parsed.data.mentionedUsers,

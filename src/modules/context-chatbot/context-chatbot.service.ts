@@ -26,6 +26,7 @@ export type ContextChatbotCitation = {
 
 export async function answerContextChatbot(input: {
   scope: ProjectScope;
+  actor: string;
   provider: LLMProvider;
   message: string;
   history?: ContextChatbotHistoryMessage[];
@@ -84,6 +85,7 @@ export async function answerContextChatbot(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "context_chatbot.answer",
     status: "Success",
     message: "Answered context chatbot question using local project context and knowledge.",

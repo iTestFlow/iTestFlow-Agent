@@ -38,9 +38,11 @@ export async function POST(request: Request) {
   }
 
   let trustedScope: ProjectScope | undefined;
+  let actor: string | undefined;
   let analyticsRunId: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    actor = ctx.userId;
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
@@ -51,6 +53,7 @@ export async function POST(request: Request) {
 
     const result = await answerContextChatbot({
       scope: trustedScope,
+      actor: ctx.userId,
       provider,
       message: parsed.data.message,
       history: parsed.data.history,
@@ -70,7 +73,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    if (trustedScope) writeGenerationFailureAudit({ scope: trustedScope, action: "context_chatbot.answer", label: "Context chatbot failed.", error });
+    if (trustedScope && actor) writeGenerationFailureAudit({ scope: trustedScope, actor, action: "context_chatbot.answer", label: "Context chatbot failed.", error });
     if (trustedScope && analyticsRunId) {
       failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Context chatbot failed." });
     }

@@ -7,7 +7,7 @@ import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
 export async function fetchProjectScopedLinkedTestCases(
   adapter: AzureDevOpsAdapter,
   scopeInput: ProjectScope,
-  input: { userStoryId: string },
+  input: { actor: string; userStoryId: string },
 ) {
   const scope = assertProjectScope(scopeInput);
   const linkedTestCases = await adapter.fetchLinkedTestCases({
@@ -20,6 +20,7 @@ export async function fetchProjectScopedLinkedTestCases(
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     entityType: "work_item",
     entityId: input.userStoryId,
     action: "azure_devops.fetch_linked_test_cases",

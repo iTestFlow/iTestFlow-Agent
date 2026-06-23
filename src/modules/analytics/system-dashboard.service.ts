@@ -88,7 +88,7 @@ export async function getSystemDashboardAnalytics(input: SystemDashboardInput): 
       estimatedHoursSaved: metric(
         round(totalSavedMinutes / 60, 1),
         true,
-        "Estimated from configured manual baselines minus actual elapsed workflow time.",
+        "Estimated from fixed workflow baselines minus actual elapsed workflow time.",
       ),
       workflowsCompleted: metric(completedRows.length, true, "Completed or published iTestFlow workflow runs."),
       testCasesPublished: metric(testCasesPublished, true, "Generated test cases successfully published to Azure DevOps."),
@@ -240,5 +240,5 @@ function distinct<T>(values: T[]) {
 }
 
 function userLabel(value: string) {
-  return value === "local-user" ? "Local user" : value;
+  return value;
 }

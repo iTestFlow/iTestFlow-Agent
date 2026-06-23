@@ -815,7 +815,7 @@ exports.up = (pgm) => {
       id text PRIMARY KEY,
       project_id text NOT NULL,
       azure_project_id text NOT NULL,
-      user_id text NOT NULL DEFAULT 'local-user',
+      user_id text NOT NULL,
       workflow_type text NOT NULL,
       work_item_id text,
       source_run_id text,

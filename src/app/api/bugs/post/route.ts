@@ -57,6 +57,7 @@ export async function POST(request: Request) {
     const result = await postBugReportToAzureDevOps({
       adapter,
       scope: trustedScope,
+      actor: ctx.userId,
       report: parsed.data.report,
       parentStoryId: parsed.data.parentStoryId,
       assignedTo: parsed.data.assignedTo,

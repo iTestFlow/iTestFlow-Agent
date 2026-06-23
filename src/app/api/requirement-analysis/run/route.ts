@@ -40,6 +40,7 @@ const RequestSchema = z.object({
 
 export async function POST(request: Request) {
   let scope: ProjectScope | undefined;
+  let actor: string | undefined;
   let analyticsRunId: string | undefined;
   try {
     const parsed = RequestSchema.safeParse(await request.json());
@@ -55,6 +56,7 @@ export async function POST(request: Request) {
     // own encrypted Azure PAT and LLM key are used; the org comes from the
     // workspace, never the client.
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    actor = ctx.userId;
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     scope = trustedScope;
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
@@ -72,6 +74,7 @@ export async function POST(request: Request) {
     });
     const autoContext = await resolveWorkflowContext({
       scope: trustedScope,
+      actor: ctx.userId,
       adapter,
       provider,
       targetRequirement,
@@ -81,6 +84,7 @@ export async function POST(request: Request) {
     });
     const result = await runRequirementAnalysis({
       scope: trustedScope,
+      actor: ctx.userId,
       provider,
       targetRequirement,
       relatedWorkItems: autoContext.relatedWorkItems,
@@ -137,7 +141,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
     console.error("Requirement analysis failed", error);
-    if (scope) writeGenerationFailureAudit({ scope, action: "requirement_analysis.run", label: "Requirement analysis failed.", error });
+    if (scope && actor) writeGenerationFailureAudit({ scope, actor, action: "requirement_analysis.run", label: "Requirement analysis failed.", error });
     if (scope && analyticsRunId) {
       failWorkflowRun({ scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Requirement analysis failed." });
     }

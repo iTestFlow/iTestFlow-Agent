@@ -19,6 +19,7 @@ import { flushBackgroundWrites, resetDatabaseForTests, sqlGet } from "@/modules/
 import { cleanupFixtures, createTestSession, describeDb, seedMembership, seedProject, seedUser, seedWorkspace } from "@/test/db";
 import { POST as workItemDetailsPost } from "@/app/api/azure-devops/work-item-details/route";
 import { POST as requirementRunPost } from "@/app/api/requirement-analysis/run/route";
+import { POST as requirementManualSubmitPost } from "@/app/api/requirement-analysis/manual/submit/route";
 
 const WS_A = "ws_iso_a";
 const WS_B = "ws_iso_b";
@@ -45,6 +46,44 @@ async function countByProject(table: "analytics_workflow_runs" | "audit_logs", a
   );
   return row?.count ?? 0;
 }
+
+async function countAnalyticsByUser(azureProjectId: string, userId: string) {
+  const row = await sqlGet<{ count: number }>(
+    `SELECT COUNT(*)::int AS count FROM analytics_workflow_runs
+      WHERE azure_project_id = @azureProjectId AND user_id = @userId`,
+    { azureProjectId, userId },
+  );
+  return row?.count ?? 0;
+}
+
+async function countAuditByActor(azureProjectId: string, actor: string) {
+  const row = await sqlGet<{ count: number }>(
+    `SELECT COUNT(*)::int AS count FROM audit_logs
+      WHERE azure_project_id = @azureProjectId AND actor = @actor`,
+    { azureProjectId, actor },
+  );
+  return row?.count ?? 0;
+}
+
+const validRequirementAnalysisOutput = JSON.stringify({
+  findings: [],
+  summary: {
+    totalFindings: 0,
+    criticalCount: 0,
+    highCount: 0,
+    mediumCount: 0,
+    lowCount: 0,
+    infoCount: 0,
+    overallQuality: "good",
+    completenessScore: 100,
+    clarityScore: 100,
+    testabilityScore: 100,
+    summaryText: "No issues found.",
+  },
+  recommendations: [],
+  questionsForProductOwner: [],
+  contextUsed: [],
+});
 
 describeDb("API isolation & pre-auth side effects (DB-backed, route-level)", () => {
   beforeAll(async () => {
@@ -118,5 +157,29 @@ describeDb("API isolation & pre-auth side effects (DB-backed, route-level)", () 
     await flushBackgroundWrites();
     expect(await countByProject("analytics_workflow_runs", PROJECT_A)).toBe(0);
     expect(await countByProject("audit_logs", PROJECT_A)).toBe(0);
+  });
+
+  it("writes analytics/audit rows with the authenticated user id", async () => {
+    cookieState.token = await createTestSession(USER);
+    const res = await post(requirementManualSubmitPost, {
+      scope: {
+        projectId: PROJECT_A,
+        azureProjectId: PROJECT_A,
+        azureProjectName: "A Project",
+        azureOrganizationUrl: ORG_A,
+        workspaceId: WS_A,
+      },
+      targetWorkItemId: "1",
+      enabledChecklistItemIds: ["completeness_testability"],
+      rawOutput: validRequirementAnalysisOutput,
+      contextCitations: [],
+    });
+    expect(res.status).toBe(200);
+
+    await flushBackgroundWrites();
+    expect(await countAnalyticsByUser(PROJECT_A, USER)).toBe(1);
+    expect(await countAuditByActor(PROJECT_A, USER)).toBe(1);
+    expect(await countAnalyticsByUser(PROJECT_A, "local-user")).toBe(0);
+    expect(await countAuditByActor(PROJECT_A, "local-user")).toBe(0);
   });
 });

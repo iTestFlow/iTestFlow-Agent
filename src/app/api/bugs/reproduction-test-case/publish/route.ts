@@ -108,6 +108,7 @@ export async function POST(request: Request) {
       azureProjectId: trustedScope.azureProjectId,
       azureProjectName: trustedScope.azureProjectName,
       azureOrganizationUrl: trustedScope.azureOrganizationUrl,
+      actor: ctx.userId,
       entityType: "work_item",
       entityId: parsed.data.bugId,
       action: "bug_report.link_reproduction_test_case",

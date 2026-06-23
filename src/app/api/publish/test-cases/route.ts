@@ -91,6 +91,7 @@ export async function POST(request: Request) {
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const result = await publishApprovedTestCases(adapter, trustedScope, {
+      actor: ctx.userId,
       targetUserStoryId: parsed.data.targetWorkItemId,
       testPlanId: parsed.data.testPlanId,
       testSuiteId: parsed.data.testSuiteId,

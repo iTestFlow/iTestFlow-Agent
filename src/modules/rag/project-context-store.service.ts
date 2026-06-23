@@ -142,6 +142,7 @@ const INSERT_CHUNK_SQL = `
 
 export async function indexAzureWorkItemsAsProjectContext(input: {
   scope: ProjectScope;
+  actor: string;
   adapter: AzureDevOpsAdapter;
   workItemTypes: string[];
   states: string[];
@@ -320,6 +321,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "rag.index_azure_work_items",
     status: "Success",
     message: `Synced ${workItems.length} Azure DevOps work items into project context.`,
