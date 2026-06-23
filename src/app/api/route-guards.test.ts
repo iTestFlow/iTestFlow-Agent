@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const API_ROOT = join(process.cwd(), "src", "app", "api");
 const PUBLIC_ROUTES = new Set([
   "auth/login/route.ts",
+  "auth/logout/route.ts",
   "auth/session/route.ts",
   "health/route.ts",
 ]);

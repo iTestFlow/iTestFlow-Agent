@@ -1,6 +1,6 @@
 "use client"
 
-import { Check, ChevronDown, Loader2, Menu, RefreshCw, Settings2 } from "lucide-react"
+import { Check, ChevronDown, Loader2, LogOut, Menu, RefreshCw, Settings2 } from "lucide-react"
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
@@ -15,6 +15,14 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ThemeToggle } from "@/components/theme/theme-toggle"
@@ -37,6 +45,17 @@ type CredentialSummary = {
 type CredentialStatus = {
   azurePat: CredentialSummary
   llm: CredentialSummary
+}
+
+type WorkspaceRole = "owner" | "admin" | "member"
+
+type SessionSummary = {
+  authenticated: boolean
+  userId?: string
+  membership?: {
+    workspaceId: string
+    role: WorkspaceRole
+  } | null
 }
 
 type SyncScheduleStatus = {
@@ -71,6 +90,17 @@ function isProvider(value?: string | null): value is Provider {
   return value === "openai" || value === "gemini" || value === "anthropic"
 }
 
+function roleLabel(role: WorkspaceRole) {
+  switch (role) {
+    case "owner":
+      return "Owner"
+    case "admin":
+      return "Admin"
+    case "member":
+      return "Member"
+  }
+}
+
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString()
 }
@@ -84,6 +114,9 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   const [syncSchedule, setSyncSchedule] = useState<SyncScheduleStatus | null>(null)
   const [syncScheduleLoading, setSyncScheduleLoading] = useState(true)
   const [syncScheduleVisible, setSyncScheduleVisible] = useState(true)
+  const [workspaceRole, setWorkspaceRole] = useState<WorkspaceRole | null>(null)
+  const [workspaceRoleLoading, setWorkspaceRoleLoading] = useState(true)
+  const [loggingOut, setLoggingOut] = useState(false)
 
   const loadProfile = useCallback(async () => {
     setProfileLoading(true)
@@ -98,6 +131,23 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
       setProfileError(error instanceof Error ? error.message : "Azure DevOps user unavailable.")
     } finally {
       setProfileLoading(false)
+    }
+  }, [])
+
+  const loadSession = useCallback(async () => {
+    setWorkspaceRoleLoading(true)
+    try {
+      const response = await fetch("/api/auth/session", { cache: "no-store" })
+      if (!response.ok) {
+        setWorkspaceRole(null)
+        return
+      }
+      const data = (await response.json()) as SessionSummary
+      setWorkspaceRole(data.authenticated ? data.membership?.role ?? null : null)
+    } catch {
+      setWorkspaceRole(null)
+    } finally {
+      setWorkspaceRoleLoading(false)
     }
   }, [])
 
@@ -142,8 +192,25 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
     }
   }, [])
 
+  const handleLogout = useCallback(async () => {
+    if (loggingOut) return
+    setLoggingOut(true)
+    try {
+      const response = await fetch("/api/auth/logout", { method: "POST", cache: "no-store" })
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string }
+        throw new Error(data.error ?? "Could not log out.")
+      }
+      window.location.assign("/login")
+    } catch (error) {
+      setLoggingOut(false)
+      toast.error(error instanceof Error ? error.message : "Could not log out.")
+    }
+  }, [loggingOut])
+
   useEffect(() => {
     void loadProfile()
+    void loadSession()
     void loadCredentials()
     void loadSyncSchedule()
     const onCredentialsChange = () => void loadCredentials()
@@ -154,7 +221,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
       window.removeEventListener("itestflow:credentials-changed", onCredentialsChange)
       window.removeEventListener("itestflow:sync-schedule-changed", onSyncScheduleChange)
     }
-  }, [loadProfile, loadCredentials, loadSyncSchedule])
+  }, [loadProfile, loadSession, loadCredentials, loadSyncSchedule])
 
   const azureConfiguredError = profileError?.toLowerCase().includes("not configured") || profileError?.toLowerCase().includes("personal access token")
   const azureStatus = profile
@@ -260,33 +327,74 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           size="icon-sm"
           onClick={() => {
             void loadProfile()
+            void loadSession()
             void loadCredentials()
             void loadSyncSchedule()
           }}
-          disabled={profileLoading || credentialsLoading || syncScheduleLoading}
-          aria-label="Refresh Azure DevOps, credential, and sync status"
-          title="Refresh Azure DevOps, credential, and sync status"
+          disabled={profileLoading || workspaceRoleLoading || credentialsLoading || syncScheduleLoading}
+          aria-label="Refresh Azure DevOps, role, credential, and sync status"
+          title="Refresh Azure DevOps, role, credential, and sync status"
         >
-          <RefreshCw className={cn("size-3.5", (profileLoading || credentialsLoading || syncScheduleLoading) && "animate-spin")} />
+          <RefreshCw className={cn("size-3.5", (profileLoading || workspaceRoleLoading || credentialsLoading || syncScheduleLoading) && "animate-spin")} />
         </Button>
       </div>
 
       <ThemeToggle />
 
-      <div className="hidden shrink-0 items-center gap-2 rounded-lg border border-border bg-background/70 px-2 py-1.5 sm:flex">
-        <Avatar className="size-7">
-          {profile?.imageUrl ? <AvatarImage src={profile.imageUrl} alt="" /> : null}
-          <AvatarFallback className="bg-primary/10 text-xs font-semibold text-primary">
-            {initialsFromName(profile?.displayName)}
-          </AvatarFallback>
-        </Avatar>
-        <div className="hidden min-w-0 sm:block">
-          <div className="max-w-48 truncate text-sm font-medium text-foreground">
-            {profile?.displayName ?? (profileError ? "Azure DevOps user unavailable" : "Loading Azure DevOps user")}
-          </div>
-          {profile?.uniqueName ? <div className="max-w-48 truncate text-xs text-muted-foreground">{profile.uniqueName}</div> : null}
-        </div>
-      </div>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="flex shrink-0 items-center gap-2 rounded-lg border border-border bg-background/70 px-2 py-1.5 text-left transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={`Open account menu${profile?.displayName ? ` for ${profile.displayName}` : ""}`}
+          >
+            <Avatar className="size-7">
+              {profile?.imageUrl ? <AvatarImage src={profile.imageUrl} alt="" /> : null}
+              <AvatarFallback className="bg-primary/10 text-xs font-semibold text-primary">
+                {initialsFromName(profile?.displayName)}
+              </AvatarFallback>
+            </Avatar>
+            <div className="hidden min-w-0 sm:block">
+              <div className="flex max-w-56 items-center gap-1.5">
+                <span className="min-w-0 truncate text-sm font-medium">
+                  {profile?.displayName ?? (profileError ? "Azure DevOps user unavailable" : "Loading Azure DevOps user")}
+                </span>
+                <RoleBadge role={workspaceRole} className="hidden md:inline-flex" />
+              </div>
+              {profile?.uniqueName ? <div className="max-w-48 truncate text-xs text-muted-foreground">{profile.uniqueName}</div> : null}
+            </div>
+            <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-64">
+          <DropdownMenuLabel className="space-y-1">
+            <span className="block truncate text-sm font-medium text-foreground">
+              {profile?.displayName ?? (profileError ? "Azure DevOps user unavailable" : "Loading Azure DevOps user")}
+            </span>
+            {profile?.uniqueName ? <span className="block truncate font-normal">{profile.uniqueName}</span> : null}
+            {workspaceRole ? (
+              <span className="flex items-center gap-1.5 font-normal">
+                <span className="text-muted-foreground">Role:</span>
+                <RoleBadge role={workspaceRole} />
+              </span>
+            ) : workspaceRoleLoading ? (
+              <span className="block truncate font-normal text-muted-foreground">Role: Checking</span>
+            ) : null}
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            variant="destructive"
+            disabled={loggingOut}
+            onSelect={(event) => {
+              event.preventDefault()
+              void handleLogout()
+            }}
+          >
+            {loggingOut ? <Loader2 className="size-4 animate-spin" /> : <LogOut className="size-4" />}
+            Log out
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </header>
   )
 }
@@ -313,6 +421,29 @@ function ConnectivityChip({
         {title}
       </TooltipContent>
     </Tooltip>
+  )
+}
+
+function RoleBadge({ role, className = "" }: { role: WorkspaceRole | null; className?: string }) {
+  if (!role) return null
+
+  const styles = {
+    owner: "border-primary/30 bg-primary/10 text-primary",
+    admin: "border-info/30 bg-info/10 text-info",
+    member: "border-border bg-muted text-muted-foreground",
+  }[role]
+
+  return (
+    <span
+      className={cn(
+        "inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-[6px] border px-1.5 text-[11px] font-medium leading-none",
+        styles,
+        className,
+      )}
+      title={`Workspace role: ${roleLabel(role)}`}
+    >
+      {roleLabel(role)}
+    </span>
   )
 }
 
