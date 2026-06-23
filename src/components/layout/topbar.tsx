@@ -1,6 +1,6 @@
 "use client"
 
-import { Check, ChevronDown, Loader2, LogOut, Menu, RefreshCw, Settings2 } from "lucide-react"
+import { Check, ChevronDown, Eye, EyeOff, KeyRound, Loader2, LogOut, Menu, RefreshCw, Settings2 } from "lucide-react"
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
@@ -23,6 +23,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ThemeToggle } from "@/components/theme/theme-toggle"
@@ -37,6 +47,8 @@ type AzureProfile = {
 
 type CredentialSummary = {
   status: "not_configured" | "configured" | "invalid" | "expired"
+  maskedPreview?: string | null
+  lastValidatedAt?: string | null
   provider?: string | null
   model?: string | null
   isStale?: boolean
@@ -117,6 +129,10 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   const [workspaceRole, setWorkspaceRole] = useState<WorkspaceRole | null>(null)
   const [workspaceRoleLoading, setWorkspaceRoleLoading] = useState(true)
   const [loggingOut, setLoggingOut] = useState(false)
+  const [patDialogOpen, setPatDialogOpen] = useState(false)
+  const [patInput, setPatInput] = useState("")
+  const [patReveal, setPatReveal] = useState(false)
+  const [patSaving, setPatSaving] = useState(false)
 
   const loadProfile = useCallback(async () => {
     setProfileLoading(true)
@@ -207,6 +223,51 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
       toast.error(error instanceof Error ? error.message : "Could not log out.")
     }
   }, [loggingOut])
+
+  const handlePatDialogOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (patSaving) return
+      setPatDialogOpen(nextOpen)
+      if (nextOpen && !credentials && !credentialsLoading) void loadCredentials()
+      if (!nextOpen) {
+        setPatInput("")
+        setPatReveal(false)
+      }
+    },
+    [credentials, credentialsLoading, loadCredentials, patSaving],
+  )
+
+  const handleReplacePat = useCallback(async () => {
+    const nextPat = patInput.trim()
+    if (!nextPat) {
+      toast.error("Enter your new Azure DevOps PAT.")
+      return
+    }
+
+    setPatSaving(true)
+    try {
+      const response = await fetch("/api/settings/credentials", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ azurePat: nextPat }),
+      })
+      const data = (await response.json().catch(() => ({}))) as CredentialStatus & { error?: string }
+      if (!response.ok) {
+        toast.error(data.error ?? "Could not replace your PAT.")
+        return
+      }
+
+      toast.success("Azure DevOps PAT replaced.")
+      setCredentials({ azurePat: data.azurePat, llm: data.llm })
+      setPatInput("")
+      setPatReveal(false)
+      setPatDialogOpen(false)
+      window.dispatchEvent(new CustomEvent("itestflow:credentials-changed"))
+      void loadProfile()
+    } finally {
+      setPatSaving(false)
+    }
+  }, [loadProfile, patInput])
 
   useEffect(() => {
     void loadProfile()
@@ -382,6 +443,21 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
             ) : null}
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
+          <DropdownMenuItem asChild>
+            <Link href="/settings">
+              <Settings2 className="size-4" />
+              Settings
+            </Link>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              handlePatDialogOpenChange(true)
+            }}
+          >
+            <KeyRound className="size-4" />
+            Replace access token
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           <DropdownMenuItem
             variant="destructive"
             disabled={loggingOut}
@@ -395,8 +471,165 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <ReplacePatDialog
+        open={patDialogOpen}
+        onOpenChange={handlePatDialogOpenChange}
+        azurePat={credentials?.azurePat ?? null}
+        credentialsLoading={credentialsLoading}
+        patInput={patInput}
+        onPatInputChange={setPatInput}
+        reveal={patReveal}
+        onRevealChange={setPatReveal}
+        saving={patSaving}
+        onSubmit={handleReplacePat}
+      />
     </header>
   )
+}
+
+function ReplacePatDialog({
+  open,
+  onOpenChange,
+  azurePat,
+  credentialsLoading,
+  patInput,
+  onPatInputChange,
+  reveal,
+  onRevealChange,
+  saving,
+  onSubmit,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  azurePat: CredentialSummary | null
+  credentialsLoading: boolean
+  patInput: string
+  onPatInputChange: (value: string) => void
+  reveal: boolean
+  onRevealChange: (value: boolean) => void
+  saving: boolean
+  onSubmit: () => void
+}) {
+  const status = patDialogStatus(azurePat, credentialsLoading)
+  const preview = azurePat?.maskedPreview ?? (status.key === "missing" ? "No saved token" : "Saved token hidden")
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            onSubmit()
+          }}
+          className="contents"
+        >
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <KeyRound className="size-4 text-primary" />
+              Replace access token
+            </DialogTitle>
+            <DialogDescription>
+              Validate a new Azure DevOps PAT and replace the saved token.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="rounded-lg border border-border bg-muted/40 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-medium text-muted-foreground">Current token</span>
+              <span className={cn("rounded-[6px] border px-2 py-0.5 text-xs font-medium", status.className)}>
+                {status.label}
+              </span>
+            </div>
+            <div className="mt-2 truncate font-mono text-sm text-foreground">{preview}</div>
+            {azurePat?.lastValidatedAt ? (
+              <div className="mt-1 text-xs text-muted-foreground">
+                Last validated {formatDateTime(azurePat.lastValidatedAt)}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="profile-azure-pat">New personal access token</Label>
+            <div className="relative">
+              <Input
+                id="profile-azure-pat"
+                className="h-10 pr-10"
+                type={reveal ? "text" : "password"}
+                value={patInput}
+                onChange={(event) => onPatInputChange(event.target.value)}
+                placeholder="Enter Azure DevOps PAT"
+                autoComplete="off"
+                disabled={saving}
+              />
+              <button
+                type="button"
+                onClick={() => onRevealChange(!reveal)}
+                className="absolute inset-y-0 right-2 flex items-center text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                aria-label={reveal ? "Hide personal access token" : "Show personal access token"}
+                disabled={saving}
+              >
+                {reveal ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </button>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={saving || !patInput.trim()}>
+              {saving ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+              Validate and replace
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function patDialogStatus(summary: CredentialSummary | null, loading: boolean) {
+  if (loading) {
+    return {
+      key: "checking",
+      label: "Checking",
+      className: "border-border bg-background text-muted-foreground",
+    }
+  }
+  if (!summary || summary.status === "not_configured") {
+    return {
+      key: "missing",
+      label: "Not configured",
+      className: "border-border bg-background text-muted-foreground",
+    }
+  }
+  if (summary.status === "invalid") {
+    return {
+      key: "invalid",
+      label: "Invalid",
+      className: "border-destructive/30 bg-destructive/10 text-destructive",
+    }
+  }
+  if (summary.status === "expired") {
+    return {
+      key: "expired",
+      label: "Expired",
+      className: "border-destructive/30 bg-destructive/10 text-destructive",
+    }
+  }
+  if (summary.isStale) {
+    return {
+      key: "stale",
+      label: "Re-validate",
+      className: "border-warning/40 bg-warning/15 text-warning-foreground dark:text-warning",
+    }
+  }
+  return {
+    key: "configured",
+    label: "Configured",
+    className: "border-success/30 bg-success/10 text-success",
+  }
 }
 
 function ConnectivityChip({

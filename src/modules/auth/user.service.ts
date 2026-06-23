@@ -4,6 +4,50 @@ import { createId, nowIso, sqlGet, sqlRun } from "@/modules/shared/infrastructur
 import type { AuthenticatedIdentity } from "./auth-provider";
 import type { WorkspaceRole } from "@/modules/workspace/workspace-access.service";
 
+export type StoredUserIdentity = {
+  id: string;
+  azureIdentityId: string | null;
+  emailOrUniqueName: string | null;
+};
+
+function normalizeIdentityValue(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toLocaleLowerCase();
+  return normalized ? normalized : null;
+}
+
+export function authenticatedIdentityMatchesStoredUser(
+  identity: AuthenticatedIdentity,
+  user: StoredUserIdentity,
+): boolean {
+  const storedAzureIdentityId = normalizeIdentityValue(user.azureIdentityId);
+  if (storedAzureIdentityId) {
+    return storedAzureIdentityId === normalizeIdentityValue(identity.azureIdentityId);
+  }
+
+  return normalizeIdentityValue(user.emailOrUniqueName) === normalizeIdentityValue(identity.emailOrUniqueName);
+}
+
+export async function getStoredUserIdentity(userId: string): Promise<StoredUserIdentity | null> {
+  const row = await sqlGet<{
+    id: string;
+    azure_identity_id: string | null;
+    email_or_unique_name: string | null;
+  }>(
+    `SELECT id, azure_identity_id, email_or_unique_name
+     FROM users
+     WHERE id = @userId
+     LIMIT 1`,
+    { userId },
+  );
+  return row
+    ? {
+        id: row.id,
+        azureIdentityId: row.azure_identity_id,
+        emailOrUniqueName: row.email_or_unique_name,
+      }
+    : null;
+}
+
 /**
  * User provisioning from an authenticated identity. Reconciles against both
  * unique keys (azure_identity_id and email_or_unique_name) so a bootstrapped

@@ -3,6 +3,10 @@ import { z } from "zod";
 
 import { nowIso } from "@/modules/shared/infrastructure/database/db";
 import { requireSession, SessionError } from "@/modules/auth/session.service";
+import {
+  authenticatedIdentityMatchesStoredUser,
+  getStoredUserIdentity,
+} from "@/modules/auth/user.service";
 import { getPrimaryWorkspaceForUser } from "@/modules/workspace/workspace.service";
 import { PatAuthProvider } from "@/modules/auth/pat-auth-provider";
 import {
@@ -102,8 +106,9 @@ export async function PUT(request: Request) {
   }
 
   if (parsed.data.azurePat) {
+    let identity;
     try {
-      await new PatAuthProvider().authenticate({
+      identity = await new PatAuthProvider().authenticate({
         organizationUrl: context.workspace.azureOrgUrl,
         personalAccessToken: parsed.data.azurePat,
       });
@@ -111,6 +116,13 @@ export async function PUT(request: Request) {
       return NextResponse.json(
         { error: error instanceof Error ? error.message : "Azure DevOps PAT validation failed." },
         { status: 422 },
+      );
+    }
+    const storedIdentity = await getStoredUserIdentity(context.userId);
+    if (!storedIdentity || !authenticatedIdentityMatchesStoredUser(identity, storedIdentity)) {
+      return NextResponse.json(
+        { error: "This PAT belongs to a different Azure DevOps account. Use a PAT from your signed-in account." },
+        { status: 403 },
       );
     }
     await storeUserAzurePat({
