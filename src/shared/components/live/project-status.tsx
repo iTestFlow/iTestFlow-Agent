@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
-import { readActiveProject, writeActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import {
+  projectSelectionNeedingRefresh,
+  readActiveProject,
+  writeActiveProject,
+  type ActiveProjectScope,
+} from "@/shared/lib/active-project";
 
 type AzureProject = {
   id: string;
@@ -41,11 +46,12 @@ export function HeaderProjectSelector() {
       .then(async (response) => {
         const json = await response.json();
         if (!response.ok) throw new Error(json.error ?? "Failed to fetch Azure DevOps projects.");
-        setProjects(json.projects ?? []);
+        const loadedProjects = (json.projects ?? []) as AzureProject[];
+        setProjects(loadedProjects);
         const stored = readActiveProject();
-        if (!stored && json.projects?.[0]) {
-          const first = json.projects[0] as AzureProject;
-          const scope = await selectProject({ ...first, workspaceId: first.workspaceId ?? json.workspaceId });
+        const projectToRefresh = projectSelectionNeedingRefresh(stored, loadedProjects, json.workspaceId);
+        if (projectToRefresh) {
+          const scope = await selectProject(projectToRefresh);
           writeActiveProject(scope);
           setActiveProject(scope);
         }
