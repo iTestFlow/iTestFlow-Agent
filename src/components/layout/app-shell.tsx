@@ -16,7 +16,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const [mobileOpen, setMobileOpen] = useState(false)
 
-  if (pathname === "/setup" || pathname.startsWith("/setup/")) {
+  // Standalone, chrome-free routes: the setup wizard and the login entry point
+  // (unauthenticated — the sidebar/topbar nav would just bounce through the auth gate).
+  const isBareRoute =
+    pathname === "/setup" ||
+    pathname.startsWith("/setup/") ||
+    pathname === "/login" ||
+    pathname.startsWith("/login/")
+
+  if (isBareRoute) {
     return <main className="min-h-screen bg-background text-foreground">{children}</main>
   }
 

@@ -23,6 +23,8 @@ export function middleware(request: NextRequest) {
   const loginUrl = request.nextUrl.clone();
   loginUrl.pathname = "/login";
   loginUrl.search = "";
+  // Remember where the user was headed so /login can return them after sign-in.
+  if (pathname && pathname !== "/") loginUrl.searchParams.set("next", pathname);
   return NextResponse.redirect(loginUrl);
 }
 

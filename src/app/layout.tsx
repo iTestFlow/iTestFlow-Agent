@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/layout/app-shell";
 import { Toaster } from "@/components/ui/sonner";
+import { SessionExpiryRedirect } from "@/components/auth/session-expiry-redirect";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Inter } from "next/font/google";
@@ -29,6 +30,7 @@ export default function RootLayout({
         <ThemeProvider>
           <TooltipProvider>
             <UnsavedChangesProvider>
+              <SessionExpiryRedirect />
               <AppShell>{children}</AppShell>
               <Toaster richColors closeButton />
             </UnsavedChangesProvider>
