@@ -314,17 +314,17 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   const syncStatus = syncScheduleLoading
     ? { text: "Sync: Checking", tone: "checking" as const, title: "Checking scheduled knowledge sync." }
     : !syncSchedule
-      ? { text: "Sync: No schedule", tone: "missing" as const, title: "No scheduled knowledge sync is configured." }
+      ? { text: "Sync: Off", tone: "missing" as const, title: "No scheduled knowledge sync is configured." }
       : syncSchedule.enabled
         ? {
-            text: "Sync: Enabled",
+            text: "Sync: On",
             tone: syncSchedule.nextRunAt ? "connected" as const : "warning" as const,
             title: syncSchedule.nextRunAt
               ? `Scheduled knowledge sync is enabled. Next sync: ${formatDateTime(syncSchedule.nextRunAt)}.`
               : "Scheduled knowledge sync is enabled, but the next sync time is not available.",
           }
         : {
-            text: "Sync: Disabled",
+            text: "Sync: Off",
             tone: "warning" as const,
             title: syncSchedule.lastEnqueuedAt
               ? `Scheduled knowledge sync is disabled. Last enqueued: ${formatDateTime(syncSchedule.lastEnqueuedAt)}.`
