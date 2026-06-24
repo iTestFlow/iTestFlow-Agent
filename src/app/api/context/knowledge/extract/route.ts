@@ -4,6 +4,7 @@ import {
   authErrorResponse,
   getUserLLMProvider,
   requireWorkflowContext,
+  requireWorkflowRole,
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
@@ -32,6 +33,7 @@ export async function POST(request: Request) {
   let actor: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can build project knowledge.");
     actor = ctx.userId;
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const provider = await getUserLLMProvider(ctx);

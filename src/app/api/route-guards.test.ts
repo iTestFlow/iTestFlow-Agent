@@ -19,6 +19,27 @@ const AUTH_MARKERS = [
   "requireWorkspaceRole",
 ];
 
+const KNOWLEDGE_BUILD_ROUTES = [
+  "context/index/route.ts",
+  "context/knowledge/extract/route.ts",
+  "context/knowledge/manual/consolidation/route.ts",
+  "context/knowledge/manual/draft/route.ts",
+  "context/knowledge/manual/finalize/route.ts",
+  "context/knowledge/manual/validate/route.ts",
+  "context/knowledge/preview/route.ts",
+  "context/knowledge/promote/route.ts",
+  "context/knowledge/save/route.ts",
+];
+
+const WORKSPACE_ADMIN_ROUTES = [
+  "workspace/members/route.ts",
+  "workspace/members/[membershipId]/route.ts",
+  "workspace/settings/route.ts",
+  "workspace/sync/route.ts",
+  "workspace/sync-credential/route.ts",
+  "workspace/sync-schedule/route.ts",
+];
+
 function routeFiles(dir = API_ROOT): string[] {
   return readdirSync(dir).flatMap((entry) => {
     const path = join(dir, entry);
@@ -70,5 +91,23 @@ describe("API route guards", () => {
 
     // A non-empty list means a route forwards untrusted client scope downstream.
     expect(offenders).toEqual([]);
+  });
+
+  it("keeps knowledge build routes limited to owner/admin roles", () => {
+    const missingRoleGuard = KNOWLEDGE_BUILD_ROUTES
+      .map((route) => ({ route, text: readFileSync(join(API_ROOT, route), "utf8") }))
+      .filter(({ text }) => !text.includes("requireWorkflowRole") || !text.includes(`["owner", "admin"]`))
+      .map(({ route }) => route);
+
+    expect(missingRoleGuard).toEqual([]);
+  });
+
+  it("keeps workspace administration routes limited to owner/admin roles", () => {
+    const missingRoleGuard = WORKSPACE_ADMIN_ROUTES
+      .map((route) => ({ route, text: readFileSync(join(API_ROOT, route), "utf8") }))
+      .filter(({ text }) => !text.includes(`resolveWorkspaceRequest(["owner", "admin"])`))
+      .map(({ route }) => route);
+
+    expect(missingRoleGuard).toEqual([]);
   });
 });

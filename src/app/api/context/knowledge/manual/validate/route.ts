@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import {
+  authErrorResponse,
+  requireWorkflowContext,
+  requireWorkflowRole,
+} from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import {
@@ -25,6 +29,7 @@ export async function POST(request: Request) {
 
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can build project knowledge.");
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     if (parsed.data.save) {
       const snapshot = await saveManualProjectKnowledgeBaseSnapshot({

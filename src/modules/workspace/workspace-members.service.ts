@@ -13,7 +13,7 @@ import type { WorkspaceRole } from "./workspace-access.service";
  * affordance, never as the source of truth:
  *  - admins may manage `member`s only; only owners may manage admins/owners or
  *    grant the admin/owner roles;
- *  - the last remaining `owner` can never be demoted or removed (lockout guard).
+ *  - the last remaining `owner` or `admin` can never be demoted or removed.
  */
 
 export type WorkspaceMemberView = {
@@ -120,15 +120,24 @@ export async function updateMemberRole(input: {
        SELECT id FROM workspace_members
        WHERE workspace_id = @workspaceId AND role = 'owner' AND status = 'active'
        FOR UPDATE
+     ),
+     active_admins AS (
+       SELECT id FROM workspace_members
+       WHERE workspace_id = @workspaceId AND role = 'admin' AND status = 'active'
+       FOR UPDATE
      )
      UPDATE workspace_members m
         SET role = @newRole, updated_at = @now
       WHERE m.id = @membershipId AND m.workspace_id = @workspaceId
-        AND (m.role <> 'owner' OR @newRole = 'owner' OR (SELECT COUNT(*) FROM active_owners) > 1)`,
+        AND (m.role <> 'owner' OR @newRole = 'owner' OR (SELECT COUNT(*) FROM active_owners) > 1)
+        AND (m.role <> 'admin' OR @newRole = 'admin' OR (SELECT COUNT(*) FROM active_admins) > 1)`,
     { newRole: input.newRole, membershipId: input.membershipId, workspaceId: input.workspaceId, now: nowIso() },
   );
   if (changed === 0) {
-    throw new MemberActionError("Cannot demote the last owner of the workspace.", 409);
+    const message = target.role === "admin"
+      ? "Cannot demote the last admin of the workspace."
+      : "Cannot demote the last owner of the workspace.";
+    throw new MemberActionError(message, 409);
   }
 }
 
@@ -147,13 +156,22 @@ export async function removeMember(input: {
        SELECT id FROM workspace_members
        WHERE workspace_id = @workspaceId AND role = 'owner' AND status = 'active'
        FOR UPDATE
+     ),
+     active_admins AS (
+       SELECT id FROM workspace_members
+       WHERE workspace_id = @workspaceId AND role = 'admin' AND status = 'active'
+       FOR UPDATE
      )
      DELETE FROM workspace_members m
       WHERE m.id = @membershipId AND m.workspace_id = @workspaceId
-        AND (m.role <> 'owner' OR (SELECT COUNT(*) FROM active_owners) > 1)`,
+        AND (m.role <> 'owner' OR (SELECT COUNT(*) FROM active_owners) > 1)
+        AND (m.role <> 'admin' OR (SELECT COUNT(*) FROM active_admins) > 1)`,
     { membershipId: input.membershipId, workspaceId: input.workspaceId },
   );
   if (changed === 0) {
-    throw new MemberActionError("Cannot remove the last owner of the workspace.", 409);
+    const message = target.role === "admin"
+      ? "Cannot remove the last admin of the workspace."
+      : "Cannot remove the last owner of the workspace.";
+    throw new MemberActionError(message, 409);
   }
 }

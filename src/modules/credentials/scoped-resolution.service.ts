@@ -6,7 +6,7 @@ import { createLLMProvider } from "@/modules/llm/llm-provider.factory";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { DEFAULT_RETRY_ATTEMPTS, getMaxOutputTokenCapDefaultFromEnv } from "@/modules/llm/llm-defaults";
 import { requireSession, SessionError } from "@/modules/auth/session.service";
-import { getWorkspaceMembership } from "@/modules/workspace/workspace-access.service";
+import { getWorkspaceMembership, type WorkspaceRole } from "@/modules/workspace/workspace-access.service";
 import { getPrimaryWorkspaceForUser, getWorkspaceById, type WorkspaceRef } from "@/modules/workspace/workspace.service";
 import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
@@ -58,6 +58,17 @@ export async function requireWorkflowContext(workspaceId?: string | null): Promi
   const membership = await getWorkspaceMembership(session.userId, workspace.id);
   if (!membership) throw new WorkflowAuthError("You do not have access to this workspace.", 403);
   return { userId: session.userId, workspace };
+}
+
+export async function requireWorkflowRole(
+  ctx: WorkflowContext,
+  roles: WorkspaceRole[],
+  message = "Your workspace role is not permitted to perform this action.",
+): Promise<void> {
+  const membership = await getWorkspaceMembership(ctx.userId, ctx.workspace.id);
+  if (!membership || !roles.includes(membership.role)) {
+    throw new WorkflowAuthError(message, 403);
+  }
 }
 
 export async function getUserAzureAdapter(

@@ -15,6 +15,7 @@ import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-cit
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
 type ChatRole = "user" | "assistant";
+type WorkspaceRole = "owner" | "admin" | "member";
 
 type ChatMessage = {
   id: string;
@@ -63,7 +64,7 @@ function parseJsonResponse(text: string, ok: boolean) {
   }
 }
 
-export function BusinessOwnerAssistantClient() {
+export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole: WorkspaceRole | null }) {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -75,6 +76,7 @@ export function BusinessOwnerAssistantClient() {
   useUnsavedChangesGuard({ dirty: hasUnfinishedWork, busy: loading || Boolean(promotingMessageId) });
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const canPromoteKnowledge = workspaceRole === "owner" || workspaceRole === "admin";
 
   useEffect(() => {
     setScope(readActiveProject());
@@ -194,7 +196,7 @@ export function BusinessOwnerAssistantClient() {
   }
 
   async function promoteAnswer(message: ChatMessage) {
-    if (!scope || !message.citations?.length) return;
+    if (!canPromoteKnowledge || !scope || !message.citations?.length) return;
     setPromotingMessageId(message.id);
     setError(null);
     try {
@@ -257,6 +259,7 @@ export function BusinessOwnerAssistantClient() {
               key={message.id}
               message={message}
               promoting={promotingMessageId === message.id}
+              canPromoteKnowledge={canPromoteKnowledge}
               onPromote={() => promoteAnswer(message)}
             />
           ))}
@@ -307,14 +310,16 @@ export function BusinessOwnerAssistantClient() {
 function ChatBubble({
   message,
   promoting,
+  canPromoteKnowledge,
   onPromote,
 }: {
   message: ChatMessage;
   promoting: boolean;
+  canPromoteKnowledge: boolean;
   onPromote: () => void;
 }) {
   const isUser = message.role === "user";
-  const canPromote = !isUser && !message.welcome && Boolean(message.citations?.length);
+  const canPromote = canPromoteKnowledge && !isUser && !message.welcome && Boolean(message.citations?.length);
   return (
     <div className={cn("flex gap-3", isUser && "justify-end")}>
       {!isUser ? (

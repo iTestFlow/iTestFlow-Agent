@@ -253,6 +253,7 @@ type KnowledgeManualValidationResult = {
 type BuildMode = "auto" | "manual"
 type BuildStep = "index" | "prepare" | "preview"
 type TopTab = "hub" | "build"
+type WorkspaceRole = "owner" | "admin" | "member"
 type HubView = "explorer" | "context"
 
 const KNOWLEDGE_CATEGORIES = [
@@ -321,7 +322,7 @@ function parseJsonResponse(text: string, ok: boolean) {
   }
 }
 
-export function KnowledgeHubClient() {
+export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: WorkspaceRole | null }) {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null)
   const [activeTab, setActiveTab] = useState<TopTab>("hub")
   const [hubView, setHubView] = useState<HubView>("explorer")
@@ -387,6 +388,7 @@ export function KnowledgeHubClient() {
     error: workItemMetadataError,
     retry: retryWorkItemMetadata,
   } = useProjectWorkItemMetadata(scope)
+  const canBuildKnowledge = workspaceRole === "owner" || workspaceRole === "admin"
 
   const refreshKnowledgeLog = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
     if (!activeScope) return
@@ -464,6 +466,10 @@ export function KnowledgeHubClient() {
     window.addEventListener("itestflow:active-project-changed", onChange)
     return () => window.removeEventListener("itestflow:active-project-changed", onChange)
   }, [])
+
+  useEffect(() => {
+    if (!canBuildKnowledge && activeTab === "build") setActiveTab("hub")
+  }, [activeTab, canBuildKnowledge])
 
   useEffect(() => {
     if (!filterProjectKey) {
@@ -889,30 +895,51 @@ export function KnowledgeHubClient() {
     && states.length > 0
     && !buildLoading
   const canPrepareKnowledge = Boolean(scope) && Boolean(result) && !buildLoading
+  const emptyKnowledgeMessage = canBuildKnowledge
+    ? "No knowledge base has been saved yet. Use Build Knowledge to compile source-backed project knowledge."
+    : "No knowledge base has been saved yet."
+  const emptyContextMessage = canBuildKnowledge
+    ? "No project context has been indexed yet. Use Build Knowledge to prepare context from Azure DevOps work items."
+    : "No project context has been indexed yet."
 
   return (
     <div className="space-y-4">
       {!scope ? (
         <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/15 p-3 text-sm text-warning-foreground dark:text-warning">
           <AlertTriangle className="size-4" />
-          Select an Azure DevOps project before building project knowledge.
+          {canBuildKnowledge
+            ? "Select an Azure DevOps project before building project knowledge."
+            : "Select an Azure DevOps project before viewing project knowledge."}
         </div>
       ) : null}
 
-      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TopTab)} className="flex-col gap-4">
-        <TabsList variant="primary" className="grid h-auto w-full grid-cols-2 sm:inline-grid sm:w-fit sm:min-w-[460px]">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => {
+          const nextTab = value as TopTab
+          if (nextTab === "build" && !canBuildKnowledge) return
+          setActiveTab(nextTab)
+        }}
+        className="flex-col gap-4"
+      >
+        <TabsList
+          variant="primary"
+          className={`grid h-auto w-full sm:inline-grid sm:w-fit ${canBuildKnowledge ? "grid-cols-2 sm:min-w-[460px]" : "grid-cols-1 sm:min-w-[220px]"}`}
+        >
           <TabsTrigger
             value="hub"
             className="h-10 px-3 py-2 duration-200"
           >
             Knowledge Hub
           </TabsTrigger>
-          <TabsTrigger
-            value="build"
-            className="h-10 px-3 py-2 duration-200"
-          >
-            Build Knowledge
-          </TabsTrigger>
+          {canBuildKnowledge ? (
+            <TabsTrigger
+              value="build"
+              className="h-10 px-3 py-2 duration-200"
+            >
+              Build Knowledge
+            </TabsTrigger>
+          ) : null}
         </TabsList>
 
         <TabsContent value="hub" className="space-y-4">
@@ -966,7 +993,7 @@ export function KnowledgeHubClient() {
                     <KnowledgeExplorer knowledgeBase={knowledgeSnapshot.knowledgeBase} />
                   ) : (
                     <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
-                      No knowledge base has been saved yet. Use Build Knowledge to compile source-backed project knowledge.
+                      {emptyKnowledgeMessage}
                     </div>
                   )}
                 </TabsContent>
@@ -983,7 +1010,7 @@ export function KnowledgeHubClient() {
                     sortDirection={sortDirection}
                     search={contextSearch}
                     loading={statusLoading}
-                    emptyMessage="No project context has been indexed yet. Use Build Knowledge to prepare context from Azure DevOps work items."
+                    emptyMessage={emptyContextMessage}
                     onSearchChange={setContextSearch}
                     onSortChange={changeSort}
                     onPageChange={changePage}
@@ -994,6 +1021,7 @@ export function KnowledgeHubClient() {
           </Card>
         </TabsContent>
 
+        {canBuildKnowledge ? (
         <TabsContent value="build" className="space-y-4">
           <Card className="qa-card">
             <CardHeader>
@@ -1234,6 +1262,7 @@ export function KnowledgeHubClient() {
             </CardContent>
           </Card>
         </TabsContent>
+        ) : null}
       </Tabs>
     </div>
   )

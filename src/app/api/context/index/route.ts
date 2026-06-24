@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  requireWorkflowContext,
+  requireWorkflowRole,
+} from "@/modules/credentials/scoped-resolution.service";
 import { indexAzureWorkItemsAsProjectContext } from "@/modules/rag/project-context-store.service";
 import {
   completeWorkflowRun,
@@ -32,6 +37,7 @@ export async function POST(request: Request) {
   let analyticsRunId: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can build project knowledge.");
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     analyticsRunId = startWorkflowRun({
       scope: trustedScope,
