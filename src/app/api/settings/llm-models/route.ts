@@ -34,15 +34,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 });
   }
 
-  const { provider, apiKey: incomingKey, baseUrl } = parsed.data;
+  const { provider, apiKey: incomingKey, baseUrl: incomingBaseUrl } = parsed.data;
 
-  // Resolve API key: prefer the one the user just typed; fall back to the saved one.
+  // Resolve provider config: prefer form values; fall back to the saved key/base URL together.
   let apiKey = incomingKey?.trim() || undefined;
+  let baseUrl = incomingBaseUrl?.trim() || undefined;
   if (!apiKey) {
     const workspace = await getPrimaryWorkspaceForUser(session.userId);
     if (workspace) {
       const saved = await resolveUserLlmConfig(workspace.id, session.userId);
-      if (saved?.provider === provider) apiKey = saved.apiKey;
+      if (saved?.provider === provider) {
+        apiKey = saved.apiKey;
+        baseUrl = saved.baseUrl;
+      }
     }
   }
 
@@ -54,7 +58,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const models = await listLLMModels({ provider, apiKey, baseUrl: baseUrl || undefined });
+    const models = await listLLMModels({ provider, apiKey, baseUrl });
     return NextResponse.json({ models });
   } catch (error) {
     return NextResponse.json(
