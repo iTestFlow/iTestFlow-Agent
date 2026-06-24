@@ -7,7 +7,6 @@ import {
   BookOpen,
   ChevronLeft,
   ChevronRight,
-  Copy,
   Database,
   Download,
   History,
@@ -24,6 +23,7 @@ import { ContextFilterSelector } from "@/components/domain/context-filter-select
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle"
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress"
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics"
+import { ManualLLMFields } from "@/components/workflow/manual-llm-panel"
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper"
 import { useAiGeneration } from "@/components/workflow/use-ai-generation"
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
@@ -38,7 +38,6 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Textarea } from "@/components/ui/textarea"
 import {
   DEFAULT_CONTEXT_STATES,
   DEFAULT_CONTEXT_WORK_ITEM_TYPES,
@@ -50,8 +49,6 @@ import {
   selectAvailableDefaults,
   useProjectWorkItemMetadata,
 } from "@/shared/lib/use-project-work-item-metadata"
-
-const COPY_FEEDBACK_MS = 3000
 
 type IndexResult = {
   mode: "incremental" | "rebuild"
@@ -356,7 +353,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [manualKnowledgeValidatedBatches, setManualKnowledgeValidatedBatches] = useState<Record<number, ProjectKnowledgeBase>>({})
   const [manualKnowledgeValidationLoading, setManualKnowledgeValidationLoading] = useState(false)
   const [manualKnowledgeSaveLoading, setManualKnowledgeSaveLoading] = useState(false)
-  const [promptCopied, setPromptCopied] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(25)
   const [totalPages, setTotalPages] = useState(1)
@@ -495,7 +491,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setManualKnowledgeCurrentBatch(1)
     setManualKnowledgeBatchResponses({})
     setManualKnowledgeValidatedBatches({})
-    setPromptCopied(false)
     setKnowledgeError(null)
     setKnowledgeLint(null)
     setKnowledgeLog([])
@@ -563,16 +558,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     return () => window.clearTimeout(timeoutId)
   }, [contextSearch, loadStatus, scope, sortBy, sortDirection])
 
-  useEffect(() => {
-    if (!promptCopied) return
-    const timeoutId = window.setTimeout(() => setPromptCopied(false), COPY_FEEDBACK_MS)
-    return () => window.clearTimeout(timeoutId)
-  }, [promptCopied])
-
-  useEffect(() => {
-    setPromptCopied(false)
-  }, [manualKnowledgeCurrentBatch])
-
   function scrollBuildSection(ref: RefObject<HTMLDivElement | null>) {
     window.requestAnimationFrame(() => {
       ref.current?.scrollIntoView({ behavior: "smooth", block: "start" })
@@ -593,7 +578,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setManualKnowledgeCurrentBatch(1)
     setManualKnowledgeBatchResponses({})
     setManualKnowledgeValidatedBatches({})
-    setPromptCopied(false)
   }
 
   function resetBuildState() {
@@ -1203,7 +1187,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                           allValidated={manualKnowledgeAllBatchesValidated}
                           validationLoading={manualKnowledgeValidationLoading}
                           saveLoading={manualKnowledgeSaveLoading}
-                          copied={promptCopied}
                           validatedBatches={manualKnowledgeValidatedBatches}
                           batchRef={manualBatchRef}
                           showPrompt
@@ -1214,10 +1197,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                               ...current,
                               [batchIndex]: value,
                             }))
-                          }}
-                          onCopy={(prompt) => {
-                            void navigator.clipboard.writeText(prompt)
-                            setPromptCopied(true)
                           }}
                           onValidate={validateManualKnowledgeBatch}
                           onSave={saveManualKnowledgeBatches}
@@ -1236,7 +1215,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                         allValidated={manualKnowledgeAllBatchesValidated}
                         validationLoading={manualKnowledgeValidationLoading}
                         saveLoading={manualKnowledgeSaveLoading}
-                        copied={promptCopied}
                         validatedBatches={manualKnowledgeValidatedBatches}
                         batchRef={manualBatchRef}
                         showPrompt={false}
@@ -1247,10 +1225,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                             ...current,
                             [batchIndex]: value,
                           }))
-                        }}
-                        onCopy={(prompt) => {
-                          void navigator.clipboard.writeText(prompt)
-                          setPromptCopied(true)
                         }}
                         onValidate={validateManualKnowledgeBatch}
                         onSave={saveManualKnowledgeBatches}
@@ -1566,13 +1540,11 @@ function ExternalPromptPanel({
   allValidated,
   validationLoading,
   saveLoading,
-  copied,
   validatedBatches,
   batchRef,
   showPrompt = true,
   showPreview = true,
   onResponseChange,
-  onCopy,
   onValidate,
   onSave,
 }: {
@@ -1583,13 +1555,11 @@ function ExternalPromptPanel({
   allValidated: boolean
   validationLoading: boolean
   saveLoading: boolean
-  copied: boolean
   validatedBatches: Record<number, ProjectKnowledgeBase>
   batchRef: RefObject<HTMLDivElement | null>
   showPrompt?: boolean
   showPreview?: boolean
   onResponseChange: (batchIndex: number, value: string) => void
-  onCopy: (prompt: string) => void
   onValidate: () => void
   onSave: () => void
 }) {
@@ -1628,27 +1598,27 @@ function ExternalPromptPanel({
   return (
     <div className="space-y-4">
       {showPrompt ? (
-      <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="font-semibold text-foreground">
-              {draft.mode === "incremental" ? "Compile Knowledge Prompt" : "Full Recompile Prompt"}
+        <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="font-semibold text-foreground">
+                {draft.mode === "incremental" ? "Compile Knowledge Prompt" : "Full Recompile Prompt"}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {draft.sourceWorkItemCount} of {draft.totalSourceWorkItemCount} active work items in prompt input.
+                {draft.mode === "incremental"
+                  ? ` ${draft.changedSourceWorkItemCount} changed, ${draft.retiredSourceWorkItemCount} retired.`
+                  : null}
+              </div>
             </div>
-            <div className="text-xs text-muted-foreground">
-              {draft.sourceWorkItemCount} of {draft.totalSourceWorkItemCount} active work items in prompt input.
-              {draft.mode === "incremental"
-                ? ` ${draft.changedSourceWorkItemCount} changed, ${draft.retiredSourceWorkItemCount} retired.`
-                : null}
-            </div>
+            <Badge variant="outline">{draft.batchCount} {draft.batchCount === 1 ? "batch" : "batches"}</Badge>
           </div>
-          <Badge variant="outline">{draft.batchCount} {draft.batchCount === 1 ? "batch" : "batches"}</Badge>
+          {draft.fallbackReason ? (
+            <div className="mt-3 rounded-md border border-warning/40 bg-warning/15 p-3 text-xs text-warning-foreground dark:text-warning">
+              {draft.fallbackReason}
+            </div>
+          ) : null}
         </div>
-        {draft.fallbackReason ? (
-          <div className="mt-3 rounded-md border border-warning/40 bg-warning/15 p-3 text-xs text-warning-foreground dark:text-warning">
-            {draft.fallbackReason}
-          </div>
-        ) : null}
-      </div>
       ) : null}
 
       {showPrompt && currentBatch ? (
@@ -1662,30 +1632,21 @@ function ExternalPromptPanel({
                 {currentBatch.workItemCount} work items in this prompt. {validatedCount} validated.
               </div>
             </div>
-            <Button variant="outline" onClick={() => onCopy(currentBatch.prompt)} disabled={copied}>
-              <Copy className="size-4" />
-              {copied ? "Copied" : "Copy Prompt"}
-            </Button>
           </div>
-          <Textarea value={currentBatch.prompt} readOnly className="min-h-[320px] font-mono text-xs" />
-          <div className="space-y-2">
-            <Label className="text-sm font-semibold text-foreground">External LLM Response</Label>
-            <Textarea
-              value={responses[currentBatch.batchIndex] ?? ""}
-              onChange={(event) => onResponseChange(currentBatch.batchIndex, event.target.value)}
-              className="min-h-[220px] font-mono text-xs"
-              placeholder="Paste the JSON response for this batch."
-            />
-          </div>
-          <div className="flex justify-end">
-            <Button
-              onClick={onValidate}
-              disabled={!responses[currentBatch.batchIndex]?.trim() || validationLoading}
-            >
-              {validationLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-              {validationLoading ? "Validating..." : "Validate Batch"}
-            </Button>
-          </div>
+          <ManualLLMFields
+            key={currentBatch.batchIndex}
+            prompt={currentBatch.prompt}
+            response={responses[currentBatch.batchIndex] ?? ""}
+            onResponseChange={(value) => onResponseChange(currentBatch.batchIndex, value)}
+            onSubmit={onValidate}
+            submitting={validationLoading}
+            submitLabel="Validate Batch"
+            submittingLabel="Validating..."
+            responseLabel="External LLM Response"
+            responsePlaceholder="Paste the JSON response for this batch."
+            promptMinHeightClass="min-h-[320px]"
+            responseMinHeightClass="min-h-[220px]"
+          />
         </div>
       ) : null}
 
