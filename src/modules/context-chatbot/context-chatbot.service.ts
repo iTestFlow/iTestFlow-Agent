@@ -4,15 +4,15 @@ import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
+  CONTEXT_CHATBOT_HISTORY_CONTENT_LIMIT,
+  CONTEXT_CHATBOT_PROMPT_HISTORY_LIMIT,
+  type ContextChatbotHistoryMessage,
+} from "@/modules/context-chatbot/context-chatbot-history";
+import {
   retrieveContextChatbotEvidence,
   type ContextChatbotContextEvidence,
   type ContextChatbotKnowledgeEvidence,
 } from "@/modules/rag/context-chatbot-retrieval.service";
-
-export type ContextChatbotHistoryMessage = {
-  role: "user" | "assistant";
-  content: string;
-};
 
 export type ContextChatbotCitation = {
   sourceType: "project_context" | "project_knowledge";
@@ -155,10 +155,10 @@ function buildUserPrompt(input: {
 
 function renderHistory(history: ContextChatbotHistoryMessage[]) {
   const recent = history
-    .slice(-8)
+    .slice(-CONTEXT_CHATBOT_PROMPT_HISTORY_LIMIT)
     .map((message) => ({
       role: message.role,
-      content: message.content.trim().slice(0, 1200),
+      content: message.content.trim().slice(0, CONTEXT_CHATBOT_HISTORY_CONTENT_LIMIT),
     }))
     .filter((message) => message.content);
 

@@ -4,7 +4,7 @@
   "private": true,
   "description": "Local-first test intelligence command center for Azure DevOps testing workflows.",
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/next-dev.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

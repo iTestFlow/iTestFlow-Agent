@@ -7,6 +7,10 @@ import {
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { answerContextChatbot } from "@/modules/context-chatbot/context-chatbot.service";
+import {
+  CONTEXT_CHATBOT_HISTORY_REQUEST_LIMIT,
+  normalizeContextChatbotHistory,
+} from "@/modules/context-chatbot/context-chatbot-history";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
   completeWorkflowRun,
@@ -19,13 +23,19 @@ export const runtime = "nodejs";
 
 const HistoryMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
-  content: z.string().min(1).max(6000),
+  content: z.string(),
 });
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   message: z.string().trim().min(1).max(4000),
-  history: z.array(HistoryMessageSchema).max(20).default([]),
+  history: z
+    .preprocess(
+      (value) => (Array.isArray(value) ? value.slice(-CONTEXT_CHATBOT_HISTORY_REQUEST_LIMIT) : value),
+      z.array(HistoryMessageSchema),
+    )
+    .default([])
+    .transform((history) => normalizeContextChatbotHistory(history)),
 });
 
 export async function POST(request: Request) {

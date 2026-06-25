@@ -11,6 +11,7 @@ import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-
 import { Callout } from "@/components/qa/callout";
 import { ContextCitationBadges } from "@/components/workflow/workflow-context-citations";
 import { cn } from "@/lib/utils";
+import { normalizeContextChatbotHistory } from "@/modules/context-chatbot/context-chatbot-history";
 import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-citations";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 
@@ -119,14 +120,14 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
   }, [input]);
 
   const history = useMemo(
-    () =>
+    () => normalizeContextChatbotHistory(
       messages
-        .filter((message) => !message.welcome)
+        .filter((message) => !message.welcome && (message.role === "user" || message.metadata))
         .map((message) => ({
           role: message.role,
           content: message.content,
-        }))
-        .slice(-10),
+        })),
+    ),
     [messages],
   );
 
