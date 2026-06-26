@@ -32,7 +32,6 @@ const KNOWLEDGE_BUILD_ROUTES = [
 ];
 
 const WORKSPACE_ADMIN_ROUTES = [
-  "workspace/members/route.ts",
   "workspace/members/[membershipId]/route.ts",
   "workspace/settings/route.ts",
   "workspace/sync/route.ts",
@@ -109,5 +108,12 @@ describe("API route guards", () => {
       .map(({ route }) => route);
 
     expect(missingRoleGuard).toEqual([]);
+  });
+
+  it("keeps the workspace member roster visible to active workspace members", () => {
+    const text = readFileSync(join(API_ROOT, "workspace/members/route.ts"), "utf8");
+
+    expect(text).toContain("resolveWorkspaceRequest()");
+    expect(text).not.toContain(`resolveWorkspaceRequest(["owner", "admin"])`);
   });
 });

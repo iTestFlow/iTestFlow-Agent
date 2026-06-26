@@ -8,12 +8,13 @@ export const runtime = "nodejs";
 
 /**
  * Lists the workspace's active members and the caller's own role so the UI can
- * decide which controls to show (owner/admin only). Members never see this list.
+ * decide which controls to show. Any active member can view the roster; mutation
+ * routes remain owner/admin-only.
  */
 export async function GET() {
   let context;
   try {
-    context = await resolveWorkspaceRequest(["owner", "admin"]);
+    context = await resolveWorkspaceRequest();
   } catch (error) {
     const response = workspaceRequestError(error);
     if (response) return response;

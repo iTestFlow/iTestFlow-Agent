@@ -5,7 +5,8 @@ import type { WorkspaceRole } from "./workspace-access.service";
 
 /**
  * Workspace membership management (owner/admin only). Lets an owner/admin curate
- * who is in a workspace and at what role. Members self-provision as `member` on
+ * who is in a workspace and at what role. Any active member may view the roster,
+ * but members cannot mutate memberships. Members self-provision as `member` on
  * first PAT login (see ensureWorkspaceMembership); this is the curation layer on
  * top of that.
  *
@@ -94,6 +95,9 @@ async function requireTarget(workspaceId: string, membershipId: string): Promise
 function assertActorMayManage(actor: MemberActor, targetRole: WorkspaceRole, nextRole?: WorkspaceRole): void {
   if (actor.role === "owner") return;
   const privileged = (role?: WorkspaceRole) => role === "owner" || role === "admin";
+  if (actor.role !== "admin") {
+    throw new MemberActionError("Only an owner or admin can manage workspace members.", 403);
+  }
   if (privileged(targetRole) || privileged(nextRole)) {
     throw new MemberActionError("Only an owner can manage admins or owners.", 403);
   }

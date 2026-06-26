@@ -46,7 +46,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import { OwnerOnlyNotice } from "./owner-only-notice"
 import { SectionCard } from "./section-card"
 
 type Role = "owner" | "admin" | "member"
@@ -108,7 +107,7 @@ const ROLE_SUMMARIES: Array<{ role: Role; title: string; description: string }> 
   {
     role: "member",
     title: "Member",
-    description: "Can use testing workflows and dashboards but cannot manage shared workspace configuration.",
+    description: "Can use testing workflows, dashboards, and view the member roster without changing it.",
   },
 ]
 
@@ -171,7 +170,7 @@ const ROLE_PERMISSION_GROUPS: PermissionGroup[] = [
         capability: "View workspace member roster",
         owner: "viewOnly",
         admin: "viewOnly",
-        member: "notAllowed",
+        member: "viewOnly",
       },
       {
         capability: "Promote members to admin or owner",
@@ -270,7 +269,7 @@ function assignableRoles(actorRole: Role | null): Role[] {
 
 export function MembersSection() {
   const [data, setData] = useState<MembersResponse | null>(null)
-  const [forbidden, setForbidden] = useState(false)
+  const [accessDenied, setAccessDenied] = useState(false)
   const [loading, setLoading] = useState(true)
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [permissionMatrixValue, setPermissionMatrixValue] = useState("")
@@ -280,7 +279,7 @@ export function MembersSection() {
     try {
       const response = await fetch("/api/workspace/members", { cache: "no-store" })
       if (response.status === 401 || response.status === 403) {
-        setForbidden(true)
+        setAccessDenied(true)
         setData(null)
         return
       }
@@ -289,7 +288,7 @@ export function MembersSection() {
         toast.error(body.error ?? "Could not load workspace members.")
         return
       }
-      setForbidden(false)
+      setAccessDenied(false)
       setData((await response.json()) as MembersResponse)
     } catch {
       toast.error("Could not load workspace members.")
@@ -316,11 +315,12 @@ export function MembersSection() {
     : null
 
   const actorRole = data?.currentUserRole ?? null
+  const canManageWorkspaceMembers = actorRole === "owner" || actorRole === "admin"
 
   function canManage(member: Member): boolean {
-    if (!actorRole) return false
     if (actorRole === "owner") return true
-    return member.role !== "owner" && member.role !== "admin"
+    if (actorRole === "admin") return member.role !== "owner" && member.role !== "admin"
+    return false
   }
 
   function isLastOwner(member: Member): boolean {
@@ -372,10 +372,16 @@ export function MembersSection() {
     <TooltipProvider delayDuration={150}>
       <SectionCard
         title="Workspace Members"
-        description="Manage who can access this workspace and assign roles. People join by signing in with their own Azure DevOps PAT."
+        description={
+          data && !canManageWorkspaceMembers
+            ? "See who can access this workspace. Role changes and removals are limited to owners and admins."
+            : "Manage who can access this workspace and assign roles. People join by signing in with their own Azure DevOps PAT."
+        }
       >
-        {forbidden ? (
-          <OwnerOnlyNotice />
+        {accessDenied ? (
+          <Callout tone="warning" title="Workspace roster unavailable">
+            Only active workspace members can view this roster.
+          </Callout>
         ) : loading && !data ? (
           <p className="text-sm text-muted-foreground">Loading members...</p>
         ) : data ? (
@@ -390,6 +396,12 @@ export function MembersSection() {
             {ownerWarning ? (
               <Callout tone="warning" title="Only owner protection">
                 {ownerWarning}
+              </Callout>
+            ) : null}
+
+            {!canManageWorkspaceMembers ? (
+              <Callout tone="info" title="View-only roster">
+                You can see workspace members here, but only owners and admins can change roles or remove people.
               </Callout>
             ) : null}
 
@@ -496,6 +508,8 @@ function MemberRosterTable({
     )
   }
 
+  const canTakeActions = actorRole === "owner" || actorRole === "admin"
+
   return (
     <div className="overflow-x-auto rounded-md border border-border">
       <Table>
@@ -504,7 +518,9 @@ function MemberRosterTable({
             <TableHead className="min-w-[260px] px-4">Member</TableHead>
             <TableHead className="min-w-[150px]">Role</TableHead>
             <TableHead className="min-w-[140px]">Last sign-in</TableHead>
-            <TableHead className="min-w-[130px] pr-4 text-right">Actions</TableHead>
+            {canTakeActions ? (
+              <TableHead className="min-w-[130px] pr-4 text-right">Actions</TableHead>
+            ) : null}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -558,15 +574,17 @@ function MemberRosterTable({
                 <TableCell className="py-3 text-sm text-muted-foreground">
                   {formatMemberDate(member.lastLoginAt)}
                 </TableCell>
-                <TableCell className="py-3 pr-4 text-right">
-                  {protectedMessage ? (
-                    <ProtectedAction message={protectedMessage} />
-                  ) : canRemove ? (
-                    <RemoveMemberAction member={member} busy={busy} onRemove={onRemove} />
-                  ) : (
-                    <span className="text-xs text-muted-foreground">-</span>
-                  )}
-                </TableCell>
+                {canTakeActions ? (
+                  <TableCell className="py-3 pr-4 text-right">
+                    {protectedMessage ? (
+                      <ProtectedAction message={protectedMessage} />
+                    ) : canRemove ? (
+                      <RemoveMemberAction member={member} busy={busy} onRemove={onRemove} />
+                    ) : (
+                      <span className="text-xs text-muted-foreground">-</span>
+                    )}
+                  </TableCell>
+                ) : null}
               </TableRow>
             )
           })}

@@ -151,6 +151,25 @@ describeDb("workspace member management (DB-backed)", () => {
     expect((await listWorkspaceMembers(workspaceId)).find((m) => m.membershipId === dave.membershipId)?.role).toBe("member");
   });
 
+  it("forbids a member from managing another ordinary member (403)", async () => {
+    const actorId = await addMember(workspaceId, "ordinary-actor", "member");
+    const targetId = await addMember(workspaceId, "ordinary-target", "member");
+    const target = (await listWorkspaceMembers(workspaceId)).find((m) => m.userId === targetId)!;
+
+    await expect(
+      updateMemberRole({
+        workspaceId,
+        membershipId: target.membershipId,
+        newRole: "member",
+        actor: { userId: actorId, role: "member" },
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+
+    await expect(
+      removeMember({ workspaceId, membershipId: target.membershipId, actor: { userId: actorId, role: "member" } }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
   it("never demotes or removes the last owner (409)", async () => {
     const owner = (await listWorkspaceMembers(workspaceId)).find((m) => m.role === "owner")!;
     await expect(
