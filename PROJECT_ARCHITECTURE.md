@@ -47,9 +47,11 @@ Primary dependency direction:
 iTestFlow helps QA, product, and delivery teams:
 
 - Sign in with an Azure DevOps organization and Personal Access Token.
-- Work inside an enabled workspace tied to one Azure DevOps organization.
-- Select an active Azure DevOps project whose server-side project anchor is validated before scoped reads or writes.
+- **Single-org mode**: Work inside one workspace tied to the configured Azure DevOps organization.
+- **Multi-org mode**: Select an organization at login; each organization has its own workspace with dedicated owners and members.
+- Each session is org-scoped: the active workspace is stored in the session and determines all workspace-level reads and writes.
 - Store each user's Azure DevOps PAT and LLM API key encrypted and private to that user/workspace.
+- Select an active Azure DevOps project whose server-side project anchor is validated before scoped reads or writes.
 - Index filtered Azure DevOps work items into project context.
 - Compile durable project knowledge with revisions, health checks, citations, and Markdown export.
 - Ask grounded questions through the Business Owner Assistant.
@@ -91,6 +93,9 @@ The app intentionally avoids becoming a general Azure DevOps work-item browser. 
 `migrations`
 : PostgreSQL schema migrations. The app startup instrumentation applies pending migrations idempotently, but production deployments should still run migrations as an explicit release step.
 
+`src/scripts`
+: Standalone Node scripts invoked via `npm run` (e.g., `manage-org.ts` for org enable/disable). Not part of the Next.js app or worker.
+
 `docs`
 : Durable deployment and design reference docs. Historical implementation plans can be archived or deleted once their decisions have been folded into this architecture document and deployment guide.
 
@@ -121,14 +126,22 @@ Durable page routes:
 
 ## Auth, Workspace, And Project Scope
 
-Authentication is PAT-backed:
+Authentication is PAT-backed and org-scoped:
 
-- `POST /api/auth/login` validates the submitted PAT against the selected Azure DevOps organization.
-- Enabled organizations map to rows in `workspaces`.
+- `GET /api/auth/organizations` lists enabled Azure DevOps organizations (workspace selection UI).
+- `POST /api/auth/login` accepts a selected organization, validates the submitted PAT against that org, and stores the org as the session's `activeWorkspaceId`.
+- Each enabled organization maps to a row in `workspaces` with a designated owner and optional team members.
+- In **single-org mode**, one org with one owner is seeded at startup via `BOOTSTRAP_OWNER_EMAIL` and `BOOTSTRAP_OWNER_AZURE_ORG`.
+- In **multi-org mode**, multiple orgs are seeded via `BOOTSTRAP_AZURE_ORGS` (comma-separated `orgUrl|ownerEmail` entries), each with its own owner. Login shows an org selector; the user picks or types an org, signs in with a PAT for that org, and the session becomes bound to that org.
 - Successful login provisions or updates the user, ensures workspace membership, stores the user's PAT encrypted, and creates an opaque session cookie.
 - Session tokens are hashed in PostgreSQL; the raw token exists only in the browser cookie.
+- The session table now tracks `active_workspace_id`, making workspace resolution org-scoped.
 
-Workspace resolution is centralized in `src/modules/credentials/scoped-resolution.service.ts` and `src/modules/workspace`.
+Workspace resolution is centralized in `src/modules/credentials/scoped-resolution.service.ts`, `src/modules/workspace`, and `src/modules/auth/session.service.ts`:
+
+- All workspace-scoped API routes use the authenticated session's `activeWorkspaceId` as the primary workspace reference.
+- `resolveActiveWorkspaceForUser` checks that the user is still a member of the active org.
+- Org enable/disable is reversible: `npm run org:disable -- <orgUrl>` and `npm run org:enable -- <orgUrl>` soft-disable/enable workspaces without deleting any data.
 
 Project isolation is mandatory:
 
@@ -148,8 +161,9 @@ Settings and workspace administration:
 
 Authentication:
 
-- `/login` signs users into enabled Azure DevOps organizations.
-- `/api/auth/login` validates PATs, stores encrypted credentials, and creates sessions.
+- `/login` signs users into enabled Azure DevOps organizations; the org selector is populated by `GET /api/auth/organizations`.
+- `/api/auth/organizations` lists enabled orgs for the login picker.
+- `/api/auth/login` validates PATs for the selected org, stores encrypted credentials, and creates a session with `active_workspace_id`.
 - `/api/auth/session` reports the current authentication state.
 
 Project selection:
@@ -267,6 +281,7 @@ Multiple worker processes may run against the same database. A job should be wri
 ## Current Architecture Decisions
 
 - iTestFlow is a hosted workspace app, not a single-user local settings file app.
+- Multi-org is a first-class deployment mode: each Azure DevOps organization has its own workspace, owner, and member list. Session-scoped `active_workspace_id` drives all workspace resolution.
 - PostgreSQL is the only durable data store.
 - All browser-to-provider access flows through server-side API routes.
 - User Azure DevOps and LLM credentials are private per user/workspace and encrypted before persistence.

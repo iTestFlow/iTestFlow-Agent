@@ -20,14 +20,29 @@ The web app and worker are independent Node processes that share PostgreSQL. Mul
 
 Set these via the hosting platform's secrets or a secret manager, not through the UI. See [.env.example](../.env.example).
 
+iTestFlow supports two bootstrap modes:
+
+### Single-Org Mode
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `BOOTSTRAP_OWNER_EMAIL` | yes | Initial owner identity, seeded idempotently at startup |
+| `BOOTSTRAP_OWNER_AZURE_ORG` | yes | Initial enabled Azure DevOps organization/workspace URL |
+
+### Multi-Org Mode
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `BOOTSTRAP_AZURE_ORGS` | yes | Comma-separated `orgUrl\|ownerEmail` entries. Each org has its own owner. Omit `\|email` to inherit `BOOTSTRAP_OWNER_EMAIL`. When set, takes precedence over `BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG`. |
+
+### Common Variables (Both Modes)
+
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | yes | PostgreSQL connection string |
 | `DATABASE_POOL_MAX` | optional | Max PostgreSQL connections per process, default `10` |
 | `APP_ENCRYPTION_KEY` | yes | Base64-encoded 32-byte key used to encrypt stored PATs and LLM keys |
 | `SESSION_SECRET` | optional | Reserved for cookie HMAC hardening; stateful sessions do not require it today |
-| `BOOTSTRAP_OWNER_EMAIL` | yes for first workspace seed | Initial owner identity, seeded idempotently at startup |
-| `BOOTSTRAP_OWNER_AZURE_ORG` | yes for first workspace seed | Initial enabled Azure DevOps organization/workspace |
 | `CREDENTIAL_STALE_DAYS` | optional | Age threshold for credential freshness warnings, default from app code |
 | `WORKER_SCHEDULER` | optional | Set `false` to disable worker cron scheduling, default enabled |
 | `WORKER_SCHEDULER_TICK_MS` | optional | How often due schedules are evaluated, default `60000` |
@@ -70,6 +85,8 @@ Interactive actions use the current user's Azure DevOps PAT and LLM key. Schedul
 
 ## First Run
 
+### Single-Org Setup
+
 1. Provision PostgreSQL and set `DATABASE_URL`.
 2. Set `APP_ENCRYPTION_KEY`, `BOOTSTRAP_OWNER_EMAIL`, and `BOOTSTRAP_OWNER_AZURE_ORG`.
 3. Run migrations as a deploy/release step:
@@ -99,6 +116,58 @@ Interactive actions use the current user's Azure DevOps PAT and LLM key. Schedul
 
 The app startup instrumentation also attempts pending migrations and bootstrap seeding. Keep the explicit migration step anyway so schema failures are caught before serving traffic.
 
+### Multi-Org Setup
+
+1. Provision PostgreSQL and set `DATABASE_URL`.
+2. Set `APP_ENCRYPTION_KEY` and `BOOTSTRAP_AZURE_ORGS` with comma-separated `orgUrl|ownerEmail` entries:
+
+   ```
+   BOOTSTRAP_AZURE_ORGS=https://dev.azure.com/org-a|admin@company.com, https://dev.azure.com/org-b|owner-b@company.com
+   ```
+
+3. Run migrations as a deploy/release step:
+
+   ```bash
+   npm run db:migrate
+   ```
+
+4. Build and start the web service:
+
+   ```bash
+   npm run build
+   npm run start
+   ```
+
+5. Start at least one worker:
+
+   ```bash
+   npm run worker
+   ```
+
+6. The bootstrap process idempotently seeds each organization, its owner user, and owner membership on startup.
+7. Each org owner signs in at `/login`, selects their organization from the list (or enters it by URL), and authenticates with a PAT.
+8. Each owner adds private LLM credentials from `/settings`.
+9. Each owner selects an active Azure DevOps project from the top bar. The server verifies and stores the project anchor before project-scoped routes can use it.
+10. Each org admin sets workspace sync credentials and, optionally, sync schedules in Settings.
+
+The same startup-instrumentation note applies: keep the explicit `npm run db:migrate` step in the deploy pipeline so schema failures surface before serving traffic.
+
+### Managing Organizations
+
+Once an org is seeded, it cannot be removed via environment variable changes. To temporarily disable an org without losing data:
+
+```bash
+npm run org:disable -- <orgUrlOrName>
+```
+
+To re-enable a previously disabled org:
+
+```bash
+npm run org:enable -- <orgUrlOrName>
+```
+
+These operations are reversible and preserve all workspace data, user records, project anchors, indexed context, and activity history.
+
 ## Credentials And Data Model
 
 - Private per user/workspace: Azure DevOps PAT, LLM provider/model/base URL, and LLM API key.
@@ -110,7 +179,7 @@ The app startup instrumentation also attempts pending migrations and bootstrap s
 ## Production Checklist
 
 - [ ] HTTPS is enabled.
-- [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, and bootstrap variables are set through secrets.
+- [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, and bootstrap variables (`BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG` or `BOOTSTRAP_AZURE_ORGS`) are set through secrets.
 - [ ] `npm run db:migrate` runs before the new web/worker version receives traffic.
 - [ ] At least one web process is running.
 - [ ] At least one worker process is running with `DATABASE_URL` and `APP_ENCRYPTION_KEY`.
@@ -119,6 +188,7 @@ The app startup instrumentation also attempts pending migrations and bootstrap s
 - [ ] `RATE_LIMIT_BACKEND=postgres` is set when running more than one web replica.
 - [ ] Worker logs are monitored for repeated job failures or stale-lock recovery.
 - [ ] `APP_ENCRYPTION_KEY` is backed up in a secure secret store separate from PostgreSQL backups.
+- [ ] For multi-org deployments, verify that each org's owner can sign in and that org enable/disable scripts are accessible if needed.
 
 ## Multi-Replica Notes
 

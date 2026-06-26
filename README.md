@@ -30,6 +30,8 @@ iTestFlow brings requirement analysis, test design, coverage review, execution p
 
 The browser communicates only with Next.js API routes. Server-side domain modules own workflow logic, PostgreSQL access, Azure DevOps calls, LLM provider calls, workspace authorization, and project isolation.
 
+**Multi-org Support**: iTestFlow supports both single-org and multi-org deployments. In multi-org mode, each Azure DevOps organization has its own owner and workspace isolation. Users sign in, select an org from the login screen, and the session becomes org-scoped. Each org is independently manageable and can be enabled/disabled without data loss.
+
 For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md).
 
 ## Capabilities
@@ -79,7 +81,19 @@ npm run db:migrate
 npm run dev -- --hostname 127.0.0.1 --port 3000
 ```
 
-Set `APP_ENCRYPTION_KEY`, `BOOTSTRAP_OWNER_EMAIL`, and `BOOTSTRAP_OWNER_AZURE_ORG` in `.env` before using hosted workspace mode (`SESSION_SECRET` is optional/reserved). Start at [Login](http://127.0.0.1:3000/login), sign in with an Azure DevOps PAT for the enabled organization, add personal LLM credentials in Settings if needed, and select a project from the top bar. iTestFlow then opens the [Dashboards](http://127.0.0.1:3000/dashboards) workspace.
+**Single-Org Mode** (default): Set `APP_ENCRYPTION_KEY`, `BOOTSTRAP_OWNER_EMAIL`, and `BOOTSTRAP_OWNER_AZURE_ORG` in `.env`.
+
+**Multi-Org Mode**: Set `APP_ENCRYPTION_KEY` and `BOOTSTRAP_AZURE_ORGS` (comma-separated `orgUrl|ownerEmail` entries). Each org has its own owner. When set, `BOOTSTRAP_AZURE_ORGS` takes precedence over `BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG`. Example:
+```
+BOOTSTRAP_AZURE_ORGS=https://dev.azure.com/org-a|admin@company.com, https://dev.azure.com/org-b|owner-b@company.com
+```
+
+After starting:
+1. Visit [Login](http://127.0.0.1:3000/login) and select an organization (or enter one by URL).
+2. Sign in with a PAT for that organization.
+3. Add personal LLM credentials in Settings if needed.
+4. Select a project from the top bar.
+5. Open [Dashboards](http://127.0.0.1:3000/dashboards).
 
 Run the background worker in a second terminal when testing scheduled sync or workspace jobs:
 
@@ -123,14 +137,21 @@ Models are loaded from the selected provider's model-list API where supported. T
 
 ### Environment
 
-Start from [.env.example](.env.example). Required values for normal hosted mode:
+Start from [.env.example](.env.example). For single-org mode:
 
 ```bash
 DATABASE_URL=postgresql://itestflow:itestflow@localhost:5432/itestflow
 BOOTSTRAP_OWNER_EMAIL=owner@example.com
 BOOTSTRAP_OWNER_AZURE_ORG=https://dev.azure.com/YOUR_ORG
 APP_ENCRYPTION_KEY=base64-32-byte-key
-# Optional: SESSION_SECRET (reserved for cookie HMAC hardening)
+```
+
+For multi-org mode, use `BOOTSTRAP_AZURE_ORGS` instead:
+
+```bash
+DATABASE_URL=postgresql://itestflow:itestflow@localhost:5432/itestflow
+BOOTSTRAP_AZURE_ORGS=https://dev.azure.com/org-a|admin@company.com, https://dev.azure.com/org-b|owner-b@company.com
+APP_ENCRYPTION_KEY=base64-32-byte-key
 ```
 
 Generate the encryption key with:
@@ -139,7 +160,15 @@ Generate the encryption key with:
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
+**Note**: Bootstrap is additive. To disable an org without losing data, use:
+```bash
+npm run org:disable -- <orgUrlOrName>
+npm run org:enable -- <orgUrlOrName>  # to re-enable later
+```
+
 ## First-Run Workflow
+
+### Single-Org Mode
 
 1. Start PostgreSQL, apply migrations, and run the web app.
 2. Sign in from `/login` with a PAT for the bootstrapped Azure DevOps organization.
@@ -151,6 +180,17 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 8. Review and edit every AI-generated result.
 9. Publish only approved comments, test cases, suggested additions, bugs, or tasks.
 10. Use Dashboards and Activity Log to review outcomes and trace recent actions.
+
+### Multi-Org Mode
+
+1. Start PostgreSQL, apply migrations, and run the web app.
+2. Each org member visits `/login`, **selects their organization from the list** (or enters it by URL).
+3. Signs in with a valid PAT for that organization.
+4. Adds or verifies private Azure DevOps and LLM credentials from `/settings`.
+5. Selects the active Azure DevOps project in the top bar.
+6. Proceeds with Knowledge Hub, context indexing, and workflows as above.
+
+**Note**: Org selection happens at login and becomes the session's active workspace. Users can sign out and sign in to a different org if they have credentials for multiple orgs.
 
 ## Data and Security
 
