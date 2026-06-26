@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { createId, nowIso, resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
 import {
   getWorkspaceMembership,
@@ -41,6 +41,36 @@ describeDb("auth & workspace foundation (DB-backed)", () => {
     expect(second).toEqual(first);
 
     const membership = await getWorkspaceMembership(first!.userId, first!.workspaceId);
+    expect(membership?.role).toBe("owner");
+  });
+
+  it("promotes an existing bootstrap member to owner", async () => {
+    await sqlRun(`DELETE FROM workspaces WHERE azure_org_url = @url`, { url: TEST_ORG_URL });
+    await sqlRun(`DELETE FROM users WHERE email_or_unique_name = @email`, { email: TEST_EMAIL });
+
+    const now = nowIso();
+    const workspaceId = createId("ws");
+    const userId = createId("user");
+    await sqlRun(
+      `INSERT INTO workspaces (id, name, azure_org_name, azure_org_url, status, created_at, updated_at)
+       VALUES (@id, @name, @orgName, @orgUrl, 'active', @now, @now)`,
+      { id: workspaceId, name: TEST_ORG, orgName: TEST_ORG, orgUrl: TEST_ORG_URL, now },
+    );
+    await sqlRun(
+      `INSERT INTO users (id, display_name, email_or_unique_name, status, created_at)
+       VALUES (@id, @displayName, @email, 'active', @now)`,
+      { id: userId, displayName: TEST_EMAIL, email: TEST_EMAIL, now },
+    );
+    await sqlRun(
+      `INSERT INTO workspace_members (id, workspace_id, user_id, role, status, created_at, updated_at)
+       VALUES (@id, @workspaceId, @userId, 'member', 'active', @now, @now)`,
+      { id: createId("wm"), workspaceId, userId, now },
+    );
+
+    const bootstrap = await ensureBootstrapOwner();
+
+    expect(bootstrap).toEqual({ workspaceId, userId });
+    const membership = await getWorkspaceMembership(userId, workspaceId);
     expect(membership?.role).toBe("owner");
   });
 
