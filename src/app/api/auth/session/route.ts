@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getOptionalSession } from "@/modules/auth/session.service";
 import { getWorkspaceMembership, type WorkspaceRole } from "@/modules/workspace/workspace-access.service";
-import { getWorkspacesForUser } from "@/modules/workspace/workspace.service";
+import { resolveActiveWorkspaceForUser } from "@/modules/workspace/workspace.service";
 
 export const runtime = "nodejs";
 
@@ -24,8 +24,8 @@ export async function GET(request: Request) {
     const scopedMembership = await getWorkspaceMembership(session.userId, workspaceId);
     membership = scopedMembership ? { workspaceId: scopedMembership.workspaceId, role: scopedMembership.role } : null;
   } else {
-    const primaryWorkspace = (await getWorkspacesForUser(session.userId))[0] ?? null;
-    membership = primaryWorkspace ? { workspaceId: primaryWorkspace.id, role: primaryWorkspace.role } : null;
+    const activeWorkspace = await resolveActiveWorkspaceForUser(session.userId, session.activeWorkspaceId);
+    membership = activeWorkspace ? { workspaceId: activeWorkspace.id, role: activeWorkspace.role } : null;
   }
 
   return NextResponse.json(

@@ -7,7 +7,7 @@ import {
   authenticatedIdentityMatchesStoredUser,
   getStoredUserIdentity,
 } from "@/modules/auth/user.service";
-import { getPrimaryWorkspaceForUser } from "@/modules/workspace/workspace.service";
+import { resolveActiveWorkspaceForUser } from "@/modules/workspace/workspace.service";
 import { PatAuthProvider } from "@/modules/auth/pat-auth-provider";
 import {
   getUserCredentialStatus,
@@ -29,7 +29,7 @@ export const runtime = "nodejs";
  */
 async function resolveContext() {
   const session = await requireSession();
-  const workspace = await getPrimaryWorkspaceForUser(session.userId);
+  const workspace = await resolveActiveWorkspaceForUser(session.userId, session.activeWorkspaceId);
   if (!workspace) {
     const error = new Error("No workspace membership found for this user.");
     error.name = "NoWorkspaceError";

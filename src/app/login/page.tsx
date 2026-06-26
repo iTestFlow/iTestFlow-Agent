@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Image from "next/image"
 import { useRouter } from "next/navigation"
 import {
@@ -17,6 +17,19 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+
+type OrganizationOption = {
+  name: string
+  azureOrgName: string
+  azureOrgUrl: string
+}
 
 const azurePatHelpUrl =
   "https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate?view=azure-devops"
@@ -104,9 +117,41 @@ export default function LoginPage() {
   const [personalAccessToken, setPersonalAccessToken] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [showPersonalAccessToken, setShowPersonalAccessToken] = useState(false)
+  const [organizations, setOrganizations] = useState<OrganizationOption[]>([])
+  const [orgsLoading, setOrgsLoading] = useState(true)
+  // When the org list can't be loaded (fetch error) or is empty (fresh deploy
+  // before bootstrap), fall back to a free-text field so sign-in is never blocked.
+  const [orgsFallback, setOrgsFallback] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const response = await fetch("/api/auth/organizations", { cache: "no-store" })
+        const data = (await response.json().catch(() => ({}))) as { organizations?: OrganizationOption[] }
+        if (cancelled) return
+        const list = response.ok && Array.isArray(data.organizations) ? data.organizations : []
+        setOrganizations(list)
+        setOrgsFallback(list.length === 0)
+        // Preselect when the deployment enables exactly one org.
+        if (list.length === 1) setOrganization(list[0].azureOrgUrl)
+      } catch {
+        if (!cancelled) setOrgsFallback(true)
+      } finally {
+        if (!cancelled) setOrgsLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault()
+    if (!organization.trim()) {
+      toast.error("Select your Azure DevOps organization.")
+      return
+    }
     setSubmitting(true)
     try {
       const response = await fetch("/api/auth/login", {
@@ -153,28 +198,66 @@ export default function LoginPage() {
             <form className="space-y-5" onSubmit={onSubmit}>
               <div className="space-y-2">
                 <Label htmlFor="organization">Azure DevOps organization</Label>
-                <div className="relative">
-                  <Building2
-                    className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-primary"
-                    aria-hidden="true"
-                  />
-                  <Input
-                    id="organization"
-                    className="h-10 bg-background/80 pl-11 pr-3 placeholder:text-[13px] sm:placeholder:text-sm"
-                    placeholder="contoso or https://dev.azure.com/contoso"
-                    value={organization}
-                    onChange={(event) => setOrganization(event.target.value)}
-                    autoCapitalize="none"
-                    autoComplete="organization"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    aria-describedby="organization-help"
-                    required
-                  />
-                </div>
-                <p id="organization-help" className="text-xs leading-5 text-muted-foreground">
-                  Enter your organization name or full Azure DevOps URL.
-                </p>
+                {orgsFallback ? (
+                  <>
+                    <div className="relative">
+                      <Building2
+                        className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-primary"
+                        aria-hidden="true"
+                      />
+                      <Input
+                        id="organization"
+                        className="h-10 bg-background/80 pl-11 pr-3 placeholder:text-[13px] sm:placeholder:text-sm"
+                        placeholder="contoso or https://dev.azure.com/contoso"
+                        value={organization}
+                        onChange={(event) => setOrganization(event.target.value)}
+                        autoCapitalize="none"
+                        autoComplete="organization"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        aria-describedby="organization-help"
+                        required
+                      />
+                    </div>
+                    <p id="organization-help" className="text-xs leading-5 text-muted-foreground">
+                      Enter your organization name or full Azure DevOps URL.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="relative">
+                      <Building2
+                        className="pointer-events-none absolute left-4 top-1/2 z-10 size-5 -translate-y-1/2 text-primary"
+                        aria-hidden="true"
+                      />
+                      <Select
+                        value={organization}
+                        onValueChange={setOrganization}
+                        disabled={orgsLoading || submitting}
+                      >
+                        <SelectTrigger
+                          id="organization"
+                          className="h-10 w-full bg-background/80 pl-11 pr-3"
+                          aria-describedby="organization-help"
+                        >
+                          <SelectValue
+                            placeholder={orgsLoading ? "Loading organizations…" : "Select your organization"}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {organizations.map((org) => (
+                            <SelectItem key={org.azureOrgUrl} value={org.azureOrgUrl}>
+                              {org.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <p id="organization-help" className="text-xs leading-5 text-muted-foreground">
+                      Choose the organization you want to sign in to.
+                    </p>
+                  </>
+                )}
               </div>
 
               <div className="space-y-2">

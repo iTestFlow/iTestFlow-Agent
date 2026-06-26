@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { requireSession, SessionError } from "@/modules/auth/session.service";
-import { getPrimaryWorkspaceForUser } from "@/modules/workspace/workspace.service";
+import { resolveActiveWorkspaceForUser } from "@/modules/workspace/workspace.service";
 import { resolveUserLlmConfig } from "@/modules/credentials/credential.service";
 import { listLLMModels, LLMProviderNameSchema } from "@/modules/llm/model-catalog.service";
 
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
   let apiKey = incomingKey?.trim() || undefined;
   let baseUrl = incomingBaseUrl?.trim() || undefined;
   if (!apiKey) {
-    const workspace = await getPrimaryWorkspaceForUser(session.userId);
+    const workspace = await resolveActiveWorkspaceForUser(session.userId, session.activeWorkspaceId);
     if (workspace) {
       const saved = await resolveUserLlmConfig(workspace.id, session.userId);
       if (saved?.provider === provider) {

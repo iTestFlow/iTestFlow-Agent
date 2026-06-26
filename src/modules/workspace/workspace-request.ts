@@ -3,7 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 
 import { requireSession, SessionError } from "@/modules/auth/session.service";
-import { getPrimaryWorkspaceForUser, type WorkspaceRef } from "./workspace.service";
+import { resolveActiveWorkspaceForUser, type WorkspaceRef } from "./workspace.service";
 import {
   requireWorkspaceAccess,
   requireWorkspaceRole,
@@ -20,7 +20,7 @@ export type WorkspaceRequestContext = { userId: string; workspace: WorkspaceRef 
  */
 export async function resolveWorkspaceRequest(roles?: WorkspaceRole[]): Promise<WorkspaceRequestContext> {
   const session = await requireSession();
-  const workspace = await getPrimaryWorkspaceForUser(session.userId);
+  const workspace = await resolveActiveWorkspaceForUser(session.userId, session.activeWorkspaceId);
   if (!workspace) throw new WorkspaceAccessError("No workspace membership found for this user.");
   if (roles && roles.length) {
     await requireWorkspaceRole(session.userId, workspace.id, roles);

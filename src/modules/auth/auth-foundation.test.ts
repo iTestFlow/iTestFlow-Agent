@@ -23,6 +23,7 @@ describeDb("auth & workspace foundation (DB-backed)", () => {
   beforeAll(async () => {
     process.env.BOOTSTRAP_OWNER_EMAIL = TEST_EMAIL;
     process.env.BOOTSTRAP_OWNER_AZURE_ORG = TEST_ORG;
+    delete process.env.BOOTSTRAP_AZURE_ORGS; // exercise the legacy single-org path exactly
     // Start from a clean slate in case a prior run left rows.
     await sqlRun(`DELETE FROM workspaces WHERE azure_org_url = @url`, { url: TEST_ORG_URL });
     await sqlRun(`DELETE FROM users WHERE email_or_unique_name = @email`, { email: TEST_EMAIL });

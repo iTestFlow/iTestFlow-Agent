@@ -75,7 +75,7 @@ export async function POST(request: Request) {
     status: "configured",
     lastValidatedAt: nowIso(),
   });
-  await createSession({ userId, userAgent: request.headers.get("user-agent") });
+  await createSession({ userId, workspaceId: workspace.id, userAgent: request.headers.get("user-agent") });
 
   writeAuditLog({
     workspaceId: workspace.id,

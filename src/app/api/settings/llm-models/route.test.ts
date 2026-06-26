@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/modules/auth/session.service", () => ({
-  requireSession: vi.fn(async () => ({ userId: "user_1" })),
+  requireSession: vi.fn(async () => ({ userId: "user_1", activeWorkspaceId: null })),
   SessionError: class SessionError extends Error {},
 }));
 
 vi.mock("@/modules/workspace/workspace.service", () => ({
-  getPrimaryWorkspaceForUser: vi.fn(async () => ({ id: "ws_1" })),
+  resolveActiveWorkspaceForUser: vi.fn(async () => ({ id: "ws_1" })),
 }));
 
 vi.mock("@/modules/credentials/credential.service", () => ({

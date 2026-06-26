@@ -22,6 +22,12 @@ const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 export type SessionUser = {
   sessionId: string;
   userId: string;
+  /**
+   * The workspace selected at login (multi-org). NULL for sessions created before
+   * this column existed or without an explicit org; resolution then falls back to
+   * the user's primary/oldest membership.
+   */
+  activeWorkspaceId: string | null;
 };
 
 export class SessionError extends Error {
@@ -34,6 +40,7 @@ export class SessionError extends Error {
 type SessionRow = {
   id: string;
   user_id: string;
+  active_workspace_id: string | null;
   expires_at: string;
   revoked_at: string | null;
 };
@@ -49,6 +56,7 @@ function hashToken(token: string) {
  */
 export async function persistSession(input: {
   userId: string;
+  workspaceId?: string | null;
   ip?: string | null;
   userAgent?: string | null;
   ttlMs?: number;
@@ -59,11 +67,12 @@ export async function persistSession(input: {
   const expiresAt = new Date(Date.now() + (input.ttlMs ?? SESSION_TTL_MS)).toISOString();
 
   await sqlRun(
-    `INSERT INTO sessions (id, user_id, hashed_token, ip, user_agent, created_at, last_seen_at, expires_at)
-     VALUES (@id, @userId, @hashedToken, @ip, @userAgent, @createdAt, @lastSeenAt, @expiresAt)`,
+    `INSERT INTO sessions (id, user_id, active_workspace_id, hashed_token, ip, user_agent, created_at, last_seen_at, expires_at)
+     VALUES (@id, @userId, @activeWorkspaceId, @hashedToken, @ip, @userAgent, @createdAt, @lastSeenAt, @expiresAt)`,
     {
       id: sessionId,
       userId: input.userId,
+      activeWorkspaceId: input.workspaceId ?? null,
       hashedToken: hashToken(token),
       ip: input.ip ?? null,
       userAgent: input.userAgent ?? null,
@@ -80,12 +89,12 @@ export async function persistSession(input: {
 export async function resolveSessionToken(token: string): Promise<SessionUser | null> {
   if (!token) return null;
   const row = await sqlGet<SessionRow>(
-    `SELECT id, user_id, expires_at, revoked_at FROM sessions WHERE hashed_token = @hashedToken LIMIT 1`,
+    `SELECT id, user_id, active_workspace_id, expires_at, revoked_at FROM sessions WHERE hashed_token = @hashedToken LIMIT 1`,
     { hashedToken: hashToken(token) },
   );
   if (!row || row.revoked_at) return null;
   if (new Date(row.expires_at).getTime() < Date.now()) return null;
-  return { sessionId: row.id, userId: row.user_id };
+  return { sessionId: row.id, userId: row.user_id, activeWorkspaceId: row.active_workspace_id };
 }
 
 /** DB-only: revoke a session by its raw token (idempotent). */
@@ -108,7 +117,12 @@ function sessionCookieOptions() {
 }
 
 /** Request-scoped: create a session and set the opaque session cookie. */
-export async function createSession(input: { userId: string; ip?: string | null; userAgent?: string | null }) {
+export async function createSession(input: {
+  userId: string;
+  workspaceId?: string | null;
+  ip?: string | null;
+  userAgent?: string | null;
+}) {
   const { sessionId, token } = await persistSession(input);
   const store = await cookies();
   store.set(SESSION_COOKIE, token, sessionCookieOptions());

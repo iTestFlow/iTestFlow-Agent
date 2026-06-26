@@ -1,13 +1,13 @@
 import { ContentShell } from "@/components/layout/content-shell";
 import { getOptionalSession } from "@/modules/auth/session.service";
 import type { WorkspaceRole } from "@/modules/workspace/workspace-access.service";
-import { getWorkspacesForUser } from "@/modules/workspace/workspace.service";
+import { resolveActiveWorkspaceForUser } from "@/modules/workspace/workspace.service";
 import { BusinessOwnerAssistantClient } from "./business-owner-assistant-client";
 
 async function getWorkspaceRole(): Promise<WorkspaceRole | null> {
   const session = await getOptionalSession();
   if (!session) return null;
-  const workspace = (await getWorkspacesForUser(session.userId))[0] ?? null;
+  const workspace = await resolveActiveWorkspaceForUser(session.userId, session.activeWorkspaceId);
   return workspace?.role ?? null;
 }
 

@@ -7,7 +7,7 @@ import type { LLMProvider } from "@/modules/llm/llm-types";
 import { DEFAULT_RETRY_ATTEMPTS, getMaxOutputTokenCapDefaultFromEnv } from "@/modules/llm/llm-defaults";
 import { requireSession, SessionError } from "@/modules/auth/session.service";
 import { getWorkspaceMembership, type WorkspaceRole } from "@/modules/workspace/workspace-access.service";
-import { getPrimaryWorkspaceForUser, getWorkspaceById, type WorkspaceRef } from "@/modules/workspace/workspace.service";
+import { getWorkspaceById, resolveActiveWorkspaceForUser, type WorkspaceRef } from "@/modules/workspace/workspace.service";
 import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { resolveUserAzurePat, resolveUserLlmConfig, markUserAzurePatExpired } from "./credential.service";
@@ -48,7 +48,7 @@ export async function requireWorkflowContext(workspaceId?: string | null): Promi
   const session = await requireSession();
   const workspace = workspaceId
     ? await getWorkspaceById(workspaceId)
-    : await getPrimaryWorkspaceForUser(session.userId);
+    : await resolveActiveWorkspaceForUser(session.userId, session.activeWorkspaceId);
   if (!workspace) {
     throw new WorkflowAuthError(
       workspaceId ? "Workspace not found." : "No workspace membership found for this user.",
