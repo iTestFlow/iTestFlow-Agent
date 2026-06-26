@@ -202,7 +202,7 @@ export function SystemDashboardsClient({ active }: { active: boolean }) {
               {data.warnings[0]}
             </div>
           ) : null}
-          <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as SystemTab)} className="flex-col gap-4">
+          <Tabs id="system-dashboard-details" value={activeTab} onValueChange={(value) => setActiveTab(value as SystemTab)} className="flex-col gap-4">
             <div className="max-w-full overflow-x-auto pb-1">
               <TabsList variant="primary" className="h-10 min-w-max justify-start">
                 <TabsTrigger value="value" className="h-8 px-4">Value</TabsTrigger>
