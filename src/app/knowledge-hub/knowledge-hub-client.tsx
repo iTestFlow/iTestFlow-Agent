@@ -23,6 +23,7 @@ import { ContextFilterSelector } from "@/components/domain/context-filter-select
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle"
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress"
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics"
+import { ApiError } from "@/components/workflow/api-error"
 import { ManualLLMFields } from "@/components/workflow/manual-llm-panel"
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper"
 import { useAiGeneration } from "@/components/workflow/use-ai-generation"
@@ -303,20 +304,41 @@ async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Pr
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal,
+    cache: "no-store",
   })
   const text = await response.text()
-  const json = parseJsonResponse(text, response.ok)
-  if (!response.ok) throw new Error(json.error ?? `Request failed: ${response.status}`)
+  const json = parseJsonResponse(text, response)
+  if (!response.ok) throw ApiError.fromResponse(json, response.status)
   return json as T
 }
 
-function parseJsonResponse(text: string, ok: boolean) {
+function parseJsonResponse(text: string, response: Response) {
   try {
     return JSON.parse(text)
   } catch {
-    if (ok) throw new Error("The server returned an invalid JSON response.")
-    return { error: "The server returned a non-JSON response. Check the server logs or runtime configuration." }
+    const technicalDetails = nonJsonResponseDetails(response, text)
+    if (response.ok) {
+      throw new ApiError("The server returned an invalid JSON response.", {
+        status: response.status,
+        technicalDetails,
+      })
+    }
+    return {
+      error: "The server returned a non-JSON response. Check the server logs or runtime configuration.",
+      technicalDetails,
+    }
   }
+}
+
+function nonJsonResponseDetails(response: Response, text: string) {
+  const body = text.trim()
+  const bodyExcerpt = body ? body.slice(0, 1200) : "(empty response body)"
+  return [
+    `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
+    `Content-Type: ${response.headers.get("content-type") ?? "(none)"}`,
+    `Response URL: ${response.url || "(unknown)"}`,
+    `Body excerpt:\n${bodyExcerpt}`,
+  ].join("\n")
 }
 
 export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: WorkspaceRole | null }) {

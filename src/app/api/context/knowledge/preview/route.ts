@@ -10,8 +10,11 @@ import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { previewGeneratedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { isAppError } from "@/modules/shared/errors/app-error";
+import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
@@ -24,7 +27,14 @@ const TruncatedKnowledgeBaseOutputMessage =
   "The model ran out of output tokens before completing the knowledge-base JSON. No data was saved. Please retry extraction; if it still fails, increase max tokens or index a narrower context.";
 
 export async function POST(request: Request) {
-  const parsed = RequestSchema.safeParse(await request.json());
+  let requestBody: unknown;
+  try {
+    requestBody = await request.json();
+  } catch {
+    return NextResponse.json({ error: "The request body must be valid JSON." }, { status: 400 });
+  }
+
+  const parsed = RequestSchema.safeParse(requestBody);
   if (!parsed.success) {
     return NextResponse.json({ error: "Please select an Azure DevOps project before previewing the knowledge base." }, { status: 400 });
   }
@@ -51,6 +61,10 @@ export async function POST(request: Request) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
     if (trustedScope && actor) writeGenerationFailureAudit({ scope: trustedScope, actor, action: "rag.preview_project_knowledge_base", label: "Project knowledge preview failed.", error });
+    if (isAppError(error)) {
+      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
+    }
+
     if (isTruncatedKnowledgeBaseOutputError(error)) {
       return NextResponse.json({ error: TruncatedKnowledgeBaseOutputMessage }, { status: 422 });
     }
