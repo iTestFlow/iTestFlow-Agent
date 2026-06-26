@@ -25,7 +25,7 @@ iTestFlow brings requirement analysis, test design, coverage review, execution p
 ## Architecture
 
 <p align="center">
-  <img src="public/brand/itestflow-architecture.png" alt="iTestFlow architecture and AI-powered software testing lifecycle" width="1200" />
+  <img src="public/brand/itestflow-architecture-hosted.png" alt="iTestFlow hosted multi-user workspace architecture and AI-powered software testing lifecycle" width="1200" />
 </p>
 
 The browser communicates only with Next.js API routes. Server-side domain modules own workflow logic, PostgreSQL access, Azure DevOps calls, LLM provider calls, workspace authorization, and project isolation.
