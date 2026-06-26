@@ -526,6 +526,7 @@ export function TestExecutionEffortClient() {
                 variant="advice"
                 status={prep.status}
                 elapsedSeconds={prep.elapsedSeconds}
+                error={prep.error}
                 errorMessage={prep.errorMessage}
                 canCancel
                 onCancel={prep.cancel}
@@ -558,6 +559,7 @@ export function TestExecutionEffortClient() {
               variant="advice"
               status={gen.status}
               elapsedSeconds={gen.elapsedSeconds}
+              error={gen.error}
               errorMessage={gen.errorMessage}
               canCancel
               onCancel={gen.cancel}

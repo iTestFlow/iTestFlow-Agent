@@ -21,4 +21,10 @@ describe("mapFriendlyError", () => {
     expect(friendly).not.toBe(raw);
     expect(friendly).not.toContain("ExistingTestCaseReviewOutput");
   });
+
+  it("preserves actionable network messages from the server", () => {
+    const raw = "The LLM provider connection was dropped after 10m 15s. Try a smaller run or check the provider/proxy timeout.";
+
+    expect(mapFriendlyError({ code: AppErrorCode.Network, raw })).toBe(raw);
+  });
 });

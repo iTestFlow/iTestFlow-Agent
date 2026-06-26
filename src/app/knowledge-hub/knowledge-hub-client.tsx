@@ -1088,6 +1088,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                           title="Building project knowledge"
                           status={gen.status}
                           elapsedSeconds={gen.elapsedSeconds}
+                          error={gen.error}
                           errorMessage={gen.errorMessage}
                           canCancel
                           onCancel={gen.cancel}

@@ -72,6 +72,9 @@ function TechnicalContextRows({ context }: { context: ErrorTechnicalContext }) {
     { label: "Schema", value: context.schemaName },
     { label: "Finish reason", value: context.finishReason },
     { label: "Tokens", value: context.tokenUsage ? formatTokenUsage(context.tokenUsage) : undefined },
+    { label: "Duration", value: context.durationMs !== undefined ? formatDurationMs(context.durationMs) : undefined },
+    { label: "Retry attempts", value: context.retryAttempts?.toString() },
+    { label: "Upstream cause", value: context.upstreamCause },
     { label: "Parse position", value: context.parsePosition?.toString() },
   ].filter((row): row is { label: string; value: string } => Boolean(row.value))
 
@@ -108,6 +111,9 @@ function buildCopyDetails(context: ErrorTechnicalContext | undefined, detailsTex
   if (context?.schemaName) lines.push(`Schema: ${context.schemaName}`)
   if (context?.finishReason) lines.push(`Finish reason: ${context.finishReason}`)
   if (context?.tokenUsage) lines.push(`Tokens: ${formatTokenUsage(context.tokenUsage)}`)
+  if (context?.durationMs !== undefined) lines.push(`Duration: ${formatDurationMs(context.durationMs)}`)
+  if (context?.retryAttempts !== undefined) lines.push(`Retry attempts: ${context.retryAttempts}`)
+  if (context?.upstreamCause) lines.push(`Upstream cause: ${context.upstreamCause}`)
   if (context?.parsePosition !== undefined) lines.push(`Parse position: ${context.parsePosition}`)
   if (context?.jsonSnippet) lines.push(`JSON snippet:\n${context.jsonSnippet}`)
   if (context?.rawOutputExcerpt) lines.push(`Raw output excerpt:\n${context.rawOutputExcerpt}`)
@@ -121,4 +127,12 @@ function formatTokenUsage(tokenUsage: NonNullable<ErrorTechnicalContext["tokenUs
     tokenUsage.output !== undefined ? `output=${tokenUsage.output}` : undefined,
     tokenUsage.total !== undefined ? `total=${tokenUsage.total}` : undefined,
   ].filter(Boolean).join(", ")
+}
+
+function formatDurationMs(durationMs: number) {
+  if (durationMs < 1000) return `${durationMs} ms`
+  const totalSeconds = Math.round(durationMs / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`
 }

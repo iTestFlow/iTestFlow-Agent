@@ -16,6 +16,9 @@ export type ErrorTechnicalContext = {
   schemaName?: string;
   finishReason?: string;
   tokenUsage?: TokenUsage;
+  durationMs?: number;
+  retryAttempts?: number;
+  upstreamCause?: string;
   parsePosition?: number;
   jsonSnippet?: string;
   rawOutputExcerpt?: string;
@@ -76,6 +79,9 @@ function normalizeTechnicalContext(context?: ErrorTechnicalContext): ErrorTechni
     schemaName: context.schemaName,
     finishReason: context.finishReason,
     tokenUsage: normalizeTokenUsage(context.tokenUsage),
+    durationMs: normalizeNumber(context.durationMs),
+    retryAttempts: normalizeNumber(context.retryAttempts),
+    upstreamCause: capString(context.upstreamCause, MAX_JSON_SNIPPET_CHARS),
     parsePosition: normalizeNumber(context.parsePosition),
     jsonSnippet: capString(context.jsonSnippet, MAX_JSON_SNIPPET_CHARS),
     rawOutputExcerpt: capString(context.rawOutputExcerpt, MAX_RAW_OUTPUT_EXCERPT_CHARS),

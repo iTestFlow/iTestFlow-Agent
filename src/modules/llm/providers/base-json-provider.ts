@@ -6,6 +6,7 @@ import { JsonParseError, parseJsonWithRepair } from "../json-extraction";
 import { addTokenUsage, hasTokenUsage } from "../token-usage";
 import {
   DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+  DEFAULT_RETRY_ATTEMPTS,
   DEFAULT_TEXT_OUTPUT_TOKENS,
   getMaxOutputTokenCapDefaultFromEnv,
 } from "../llm-defaults";
@@ -28,6 +29,15 @@ export type LLMProviderCallResult = {
   errorMessage?: string;
   finishReason?: string;
   tokenUsage?: TokenUsage;
+};
+
+type ProviderErrorContext = {
+  schemaName: string;
+  rawOutput?: string;
+  finishReason?: string;
+  tokenUsage?: TokenUsage;
+  durationMs?: number;
+  upstreamCause?: string;
 };
 
 export abstract class BaseJsonProvider implements LLMProvider {
@@ -64,6 +74,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
           rawOutput: callResult.rawOutput,
           finishReason: callResult.finishReason,
           tokenUsage: callResult.tokenUsage,
+          durationMs: Date.now() - startedAt,
         });
       }
 
@@ -78,14 +89,16 @@ export abstract class BaseJsonProvider implements LLMProvider {
         warnings: buildTruncationWarnings(callResult.finishReason, input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS),
       };
     } catch (error) {
+      const durationMs = Date.now() - startedAt;
       const normalizedError = this.normalizeProviderThrownError(error, {
         schemaName: "PlainText",
         rawOutput: callResult?.rawOutput,
         finishReason: callResult?.finishReason,
         tokenUsage: callResult?.tokenUsage,
+        durationMs,
       });
       const message = normalizedError instanceof Error ? normalizedError.message : "Unknown LLM text request error.";
-      this.logTextRequest(input, callResult, "Failed", Date.now() - startedAt, message);
+      this.logTextRequest(input, callResult, "Failed", durationMs, message);
       throw normalizedError;
     }
   }
@@ -114,6 +127,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
           rawOutput: callResult.rawOutput,
           finishReason: callResult.finishReason,
           tokenUsage: callResult.tokenUsage,
+          durationMs: Date.now() - startedAt,
         });
       }
 
@@ -132,14 +146,16 @@ export abstract class BaseJsonProvider implements LLMProvider {
         warnings,
       };
     } catch (error) {
+      const durationMs = Date.now() - startedAt;
       const normalizedError = this.normalizeProviderThrownError(error, {
         schemaName: input.schemaName,
         rawOutput: callResult?.rawOutput,
         finishReason: callResult?.finishReason,
         tokenUsage: callResult?.tokenUsage,
+        durationMs,
       });
       const message = normalizedError instanceof Error ? normalizedError.message : "Unknown LLM request error.";
-      this.logRequest(input, callResult, "Failed", Date.now() - startedAt, message);
+      this.logRequest(input, callResult, "Failed", durationMs, message);
       throw normalizedError;
     }
   }
@@ -280,18 +296,15 @@ export abstract class BaseJsonProvider implements LLMProvider {
 
   private providerError(
     message: string,
-    context: {
-      schemaName: string;
-      rawOutput?: string;
-      finishReason?: string;
-      tokenUsage?: TokenUsage;
-    },
+    context: ProviderErrorContext,
   ) {
+    const renderedMessage = renderMessageWithCause(message, context.upstreamCause);
+    const networkError = isLikelyNetworkError(renderedMessage);
     return new AppError({
-      code: isLikelyNetworkError(message) ? AppErrorCode.Network : AppErrorCode.ProviderUnavailable,
-      message,
-      userMessage: isLikelyNetworkError(message)
-        ? "Network error. Check your connection and try again."
+      code: networkError ? AppErrorCode.Network : AppErrorCode.ProviderUnavailable,
+      message: renderedMessage,
+      userMessage: networkError
+        ? networkUserMessage(context.durationMs)
         : "The AI provider could not complete the request. Please try again in a moment or check the provider settings.",
       technicalContext: {
         provider: this.name,
@@ -299,6 +312,9 @@ export abstract class BaseJsonProvider implements LLMProvider {
         schemaName: context.schemaName,
         finishReason: context.finishReason,
         tokenUsage: context.tokenUsage,
+        durationMs: context.durationMs,
+        retryAttempts: this.config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS,
+        upstreamCause: context.upstreamCause,
         rawOutputExcerpt: context.rawOutput,
       },
     });
@@ -306,21 +322,72 @@ export abstract class BaseJsonProvider implements LLMProvider {
 
   private normalizeProviderThrownError(
     error: unknown,
-    context: {
-      schemaName: string;
-      rawOutput?: string;
-      finishReason?: string;
-      tokenUsage?: TokenUsage;
-    },
+    context: ProviderErrorContext,
   ) {
     if (error instanceof AppError) return error;
-    const message = error instanceof Error ? error.message : "Unknown LLM request error.";
-    return this.providerError(message, context);
+    const details = describeThrownError(error);
+    return this.providerError(details.message, { ...context, upstreamCause: details.cause });
   }
 }
 
 function isLikelyNetworkError(message: string) {
-  return /failed to fetch|network\s*error|fetch failed|econnreset|etimedout|enotfound|eai_again/i.test(message);
+  return /failed to fetch|network\s*error|fetch failed|econnreset|etimedout|enotfound|eai_again|headers timeout|body timeout|socket|terminated/i.test(message);
+}
+
+function networkUserMessage(durationMs?: number) {
+  if (durationMs !== undefined && durationMs >= 5 * 60 * 1000) {
+    return `The LLM provider connection was dropped after ${formatDurationMs(durationMs)}. Try a smaller run or check the provider/proxy timeout.`;
+  }
+  return "Network error. Check your connection and try again.";
+}
+
+function describeThrownError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return { message: "Unknown LLM request error.", cause: undefined };
+  }
+  return {
+    message: error.message,
+    cause: describeCause((error as Error & { cause?: unknown }).cause),
+  };
+}
+
+function describeCause(cause: unknown): string | undefined {
+  if (!cause) return undefined;
+  if (typeof cause === "string") return cause;
+  if (cause instanceof Error) {
+    const code = stringProperty(cause, "code");
+    const name = cause.name && cause.name !== "Error" ? cause.name : undefined;
+    return [cause.message, name ? `name=${name}` : undefined, code ? `code=${code}` : undefined]
+      .filter(Boolean)
+      .join("; ");
+  }
+  if (typeof cause === "object") {
+    const message = stringProperty(cause, "message");
+    const code = stringProperty(cause, "code");
+    const name = stringProperty(cause, "name");
+    const details = [message, name ? `name=${name}` : undefined, code ? `code=${code}` : undefined]
+      .filter(Boolean)
+      .join("; ");
+    return details || undefined;
+  }
+  return String(cause);
+}
+
+function stringProperty(value: object, key: string) {
+  const property = (value as Record<string, unknown>)[key];
+  return typeof property === "string" && property.trim() ? property.trim() : undefined;
+}
+
+function renderMessageWithCause(message: string, cause?: string) {
+  if (!cause || message.includes(cause)) return message;
+  return `${message}; cause: ${cause}`;
+}
+
+function formatDurationMs(durationMs: number) {
+  const totalSeconds = Math.round(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${totalSeconds}s`;
 }
 
 function isTokenLimitFinishReason(finishReason?: string) {
