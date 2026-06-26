@@ -10,7 +10,7 @@ import { assertProjectScope, type ProjectScope } from "@/modules/projects/projec
 import { sqlAll } from "@/modules/shared/infrastructure/database/db";
 import { localDayStartIso, toLocalDayString } from "@/shared/lib/local-day";
 import type {
-  SystemDashboardAnalytics,
+  SystemDashboardAnalyticsPayload,
   SystemDashboardDatePreset,
   WorkflowSavingsRow,
 } from "@/types/system-dashboard";
@@ -18,6 +18,8 @@ import type {
 type AnalyticsRow = {
   id: string;
   user_id: string;
+  user_display_name: string | null;
+  user_email_or_unique_name: string | null;
   workflow_type: WorkflowType;
   work_item_id: string | null;
   started_at: string;
@@ -40,6 +42,12 @@ type AnalyticsRow = {
   metadata_json: string | null;
 };
 
+type AnalyticsUserRow = {
+  user_id: string;
+  user_display_name: string | null;
+  user_email_or_unique_name: string | null;
+};
+
 export type SystemDashboardInput = {
   scope: ProjectScope;
   filters?: {
@@ -49,22 +57,35 @@ export type SystemDashboardInput = {
     workflowTypes?: WorkflowType[];
     userId?: string | null;
   };
+  userOptionsUserId?: string | null;
 };
 
-export async function getSystemDashboardAnalytics(input: SystemDashboardInput): Promise<SystemDashboardAnalytics> {
+export async function getSystemDashboardAnalytics(input: SystemDashboardInput): Promise<SystemDashboardAnalyticsPayload> {
   const scope = assertProjectScope(input.scope);
   const dateRange = resolveDateRange(input.filters);
   const selectedWorkflows = input.filters?.workflowTypes?.length
     ? input.filters.workflowTypes
     : [...workflowTypeValues];
   const userId = input.filters?.userId?.trim() || null;
-  const rows = await loadAnalyticsRows({
+  const userOptionsUserId = input.userOptionsUserId === undefined
+    ? userId
+    : input.userOptionsUserId?.trim() || null;
+  const queryScope = {
     scope,
     from: dateRange.from,
     toExclusive: addDays(dateRange.to, 1),
     workflowTypes: selectedWorkflows,
-    userId,
-  });
+  };
+  const [rows, userOptionRows] = await Promise.all([
+    loadAnalyticsRows({
+      ...queryScope,
+      userId,
+    }),
+    loadAnalyticsUserRows({
+      ...queryScope,
+      userId: userOptionsUserId,
+    }),
+  ]);
   const completedRows = rows.filter((row) => row.status === "completed" || row.status === "published");
   const totalSavedMinutes = sum(rows, "estimated_saved_minutes");
   const testCasesPublished = rows
@@ -82,7 +103,7 @@ export async function getSystemDashboardAnalytics(input: SystemDashboardInput): 
     },
     filterMetadata: {
       workflows: workflowTypeValues.map((value) => ({ value, label: workflowLabels[value] })),
-      users: distinct(rows.map((row) => row.user_id)).map((value) => ({ value, label: userLabel(value) })),
+      users: buildUserOptions(userOptionRows),
     },
     overview: {
       estimatedHoursSaved: metric(
@@ -105,13 +126,15 @@ export async function getSystemDashboardAnalytics(input: SystemDashboardInput): 
   };
 }
 
-function loadAnalyticsRows(input: {
+type AnalyticsQueryInput = {
   scope: ProjectScope;
   from: string;
   toExclusive: string;
   workflowTypes: WorkflowType[];
   userId: string | null;
-}) {
+};
+
+function buildAnalyticsQueryParams(input: AnalyticsQueryInput) {
   const params: Record<string, unknown> = {
     projectId: input.scope.projectId,
     azureProjectId: input.scope.azureProjectId,
@@ -124,18 +147,49 @@ function loadAnalyticsRows(input: {
     return `@workflow${index}`;
   });
 
+  return { params, workflowParameters };
+}
+
+function loadAnalyticsRows(input: AnalyticsQueryInput) {
+  const { params, workflowParameters } = buildAnalyticsQueryParams(input);
+
   return sqlAll<AnalyticsRow>(
-    `SELECT id, user_id, workflow_type, work_item_id, started_at, generation_completed_at,
-            completed_at, status, manual_baseline_minutes, actual_duration_minutes, estimated_saved_minutes,
-            items_generated, items_selected, items_edited, items_published, items_rejected,
-            high_risk_items_found, medium_risk_items_found, low_risk_items_found,
-            manual_actions_avoided, used_knowledge_context, metadata_json
-     FROM analytics_workflow_runs
-     WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-       AND started_at >= @from AND started_at < @to
-       AND workflow_type IN (${workflowParameters.join(", ")})
-       AND (@userId::text IS NULL OR user_id = @userId)
-     ORDER BY started_at DESC`,
+    `SELECT r.id, r.user_id, u.display_name AS user_display_name, u.email_or_unique_name AS user_email_or_unique_name,
+            r.workflow_type, r.work_item_id, r.started_at, r.generation_completed_at,
+            r.completed_at, r.status, r.manual_baseline_minutes, r.actual_duration_minutes, r.estimated_saved_minutes,
+            r.items_generated, r.items_selected, r.items_edited, r.items_published, r.items_rejected,
+            r.high_risk_items_found, r.medium_risk_items_found, r.low_risk_items_found,
+            r.manual_actions_avoided, r.used_knowledge_context, r.metadata_json
+     FROM analytics_workflow_runs r
+     LEFT JOIN users u ON u.id = r.user_id
+     WHERE r.project_id = @projectId AND r.azure_project_id = @azureProjectId
+       AND r.started_at >= @from AND r.started_at < @to
+       AND r.workflow_type IN (${workflowParameters.join(", ")})
+       AND (@userId::text IS NULL OR r.user_id = @userId)
+     ORDER BY r.started_at DESC`,
+    params,
+  );
+}
+
+function loadAnalyticsUserRows(input: AnalyticsQueryInput) {
+  const { params, workflowParameters } = buildAnalyticsQueryParams(input);
+
+  return sqlAll<AnalyticsUserRow>(
+    `SELECT r.user_id,
+            MAX(u.display_name) AS user_display_name,
+            MAX(u.email_or_unique_name) AS user_email_or_unique_name
+     FROM analytics_workflow_runs r
+     LEFT JOIN users u ON u.id = r.user_id
+     WHERE r.project_id = @projectId AND r.azure_project_id = @azureProjectId
+       AND r.started_at >= @from AND r.started_at < @to
+       AND r.workflow_type IN (${workflowParameters.join(", ")})
+       AND (@userId::text IS NULL OR r.user_id = @userId)
+     GROUP BY r.user_id
+     ORDER BY COALESCE(
+       NULLIF(TRIM(MAX(u.display_name)), ''),
+       NULLIF(TRIM(MAX(u.email_or_unique_name)), ''),
+       r.user_id
+     )`,
     params,
   );
 }
@@ -183,7 +237,7 @@ function buildSavingsTrend(rows: AnalyticsRow[]) {
     }));
 }
 
-function buildAdoption(rows: AnalyticsRow[]): SystemDashboardAnalytics["adoption"] {
+function buildAdoption(rows: AnalyticsRow[]): SystemDashboardAnalyticsPayload["adoption"] {
   const users = distinct(rows.map((row) => row.user_id));
   const byWorkflow = new Map<WorkflowType, number>();
   rows.forEach((row) => byWorkflow.set(row.workflow_type, (byWorkflow.get(row.workflow_type) ?? 0) + 1));
@@ -239,6 +293,49 @@ function distinct<T>(values: T[]) {
   return [...new Set(values)];
 }
 
-function userLabel(value: string) {
-  return value;
+function buildUserOptions(rows: AnalyticsUserRow[]) {
+  const users = new Map<string, { value: string; label: string }>();
+  for (const row of rows) {
+    if (users.has(row.user_id)) continue;
+    users.set(row.user_id, {
+      value: row.user_id,
+      label: formatSystemDashboardUserLabel({
+        id: row.user_id,
+        displayName: row.user_display_name,
+        emailOrUniqueName: row.user_email_or_unique_name,
+      }),
+    });
+  }
+  return [...users.values()].sort((left, right) => left.label.localeCompare(right.label));
+}
+
+export function formatSystemDashboardUserLabel(user: {
+  id: string;
+  displayName?: string | null;
+  emailOrUniqueName?: string | null;
+}) {
+  return user.displayName?.trim() || user.emailOrUniqueName?.trim() || user.id;
+}
+
+export async function getSystemDashboardUserLabel(workspaceId: string, userId: string) {
+  const row = await sqlAll<{
+    id: string;
+    display_name: string | null;
+    email_or_unique_name: string | null;
+  }>(
+    `SELECT u.id, u.display_name, u.email_or_unique_name
+     FROM users u
+     JOIN workspace_members m ON m.user_id = u.id
+     WHERE m.workspace_id = @workspaceId AND m.status = 'active' AND u.id = @userId
+     LIMIT 1`,
+    { workspaceId, userId },
+  );
+  const user = row[0];
+  return user
+    ? formatSystemDashboardUserLabel({
+        id: user.id,
+        displayName: user.display_name,
+        emailOrUniqueName: user.email_or_unique_name,
+      })
+    : userId;
 }

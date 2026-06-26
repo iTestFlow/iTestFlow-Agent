@@ -27,6 +27,16 @@ export type SystemDashboardMetric = {
   supportingText: string;
 };
 
+export type SystemDashboardPermissions = {
+  canViewWorkspaceUsers: boolean;
+};
+
+export type SystemDashboardEffectiveScope = {
+  mode: "mine" | "team" | "user";
+  label: string;
+  userId: string | null;
+};
+
 export type WorkflowSavingsRow = {
   workflowType: WorkflowType;
   workflow: string;
@@ -36,7 +46,7 @@ export type WorkflowSavingsRow = {
   totalSavedMinutes: number;
 };
 
-export type SystemDashboardAnalytics = {
+export type SystemDashboardAnalyticsPayload = {
   generatedAt: string;
   filters: SystemDashboardFilters;
   filterMetadata: {
@@ -59,4 +69,9 @@ export type SystemDashboardAnalytics = {
     mostUsedFeature: string | null;
   };
   warnings: string[];
+};
+
+export type SystemDashboardAnalytics = SystemDashboardAnalyticsPayload & {
+  permissions: SystemDashboardPermissions;
+  effectiveScope: SystemDashboardEffectiveScope;
 };

@@ -186,6 +186,7 @@ export function SystemDashboardsClient({ active }: { active: boolean }) {
       <SystemFilters filters={filters} setFilters={handleFiltersChange} data={data} disabled={loading && !data} />
       <RefreshBar
         projectName={scope.azureProjectName}
+        scopeLabel={data?.effectiveScope.label}
         generatedAt={data?.generatedAt}
         nextRefreshAt={nextRefreshAt}
         refreshing={fetching}
@@ -234,6 +235,9 @@ function SystemFilters({
   data: SystemDashboardAnalytics | null;
   disabled: boolean;
 }) {
+  const canViewWorkspaceUsers = data?.permissions.canViewWorkspaceUsers ?? true;
+  const userOptions = data?.filterMetadata.users ?? [];
+
   return (
     <section className="qa-card space-y-3 p-4">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -257,17 +261,33 @@ function SystemFilters({
           triggerClassName="h-10"
           disabled={disabled}
         />
-        <select
-          className={selectClass}
-          value={filters.userId ?? "__all__"}
-          onChange={(event) => setFilters((current) => ({ ...current, userId: event.target.value === "__all__" ? null : event.target.value }))}
-          disabled={disabled || !data?.filterMetadata.users.length}
-          aria-label="System dashboard user"
-        >
-          <option value="__all__">All users</option>
-          {data?.filterMetadata.users.map((user) => <option key={user.value} value={user.value}>{user.label}</option>)}
-        </select>
+        {canViewWorkspaceUsers ? (
+          <select
+            className={selectClass}
+            value={filters.userId ?? "__all__"}
+            onChange={(event) => setFilters((current) => ({ ...current, userId: event.target.value === "__all__" ? null : event.target.value }))}
+            disabled={disabled || !userOptions.length}
+            aria-label="System dashboard user"
+          >
+            <option value="__all__">All users</option>
+            {userOptions.map((user) => <option key={user.value} value={user.value}>{user.label}</option>)}
+          </select>
+        ) : (
+          <select
+            className={selectClass}
+            value="__mine__"
+            disabled
+            aria-label="System dashboard user scope"
+          >
+            <option value="__mine__">My activity only</option>
+          </select>
+        )}
       </div>
+      {!canViewWorkspaceUsers ? (
+        <p className="text-xs leading-5 text-muted-foreground">
+          Members can only view their own workflow analytics. Owners and admins can view all workspace users.
+        </p>
+      ) : null}
       {filters.datePreset === "custom" ? (
         <div className="flex flex-wrap items-center gap-2">
           <Input type="date" value={filters.from} onChange={(event) => setFilters((current) => ({ ...current, from: event.target.value }))} className="w-[170px]" />
@@ -281,6 +301,7 @@ function SystemFilters({
 
 function RefreshBar({
   projectName,
+  scopeLabel,
   generatedAt,
   nextRefreshAt,
   refreshing,
@@ -289,6 +310,7 @@ function RefreshBar({
   onRefresh,
 }: {
   projectName: string;
+  scopeLabel?: string;
   generatedAt?: string;
   nextRefreshAt: number | null;
   refreshing: boolean;
@@ -301,7 +323,7 @@ function RefreshBar({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="text-xs font-medium uppercase text-muted-foreground">iTestFlow Value Scope</div>
-          <div className="mt-0.5 text-sm font-semibold">{projectName}</div>
+          <div className="mt-0.5 text-sm font-semibold">{scopeLabel ? `${projectName} · ${scopeLabel}` : projectName}</div>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <AutoRefreshStatus
