@@ -92,7 +92,7 @@ export async function getSystemDashboardAnalytics(input: SystemDashboardInput): 
     .filter((row) => row.workflow_type === "test_case_design" || row.workflow_type === "test_gap_analysis")
     .reduce((total, row) => total + row.items_published, 0);
   const workflowSavings = buildWorkflowSavings(rows);
-  const adoption = buildAdoption(rows);
+  const adoption = buildSystemDashboardAdoption(rows);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -237,14 +237,18 @@ function buildSavingsTrend(rows: AnalyticsRow[]) {
     }));
 }
 
-function buildAdoption(rows: AnalyticsRow[]): SystemDashboardAnalyticsPayload["adoption"] {
+export function buildSystemDashboardAdoption(
+  rows: Array<{ user_id: string; workflow_type: WorkflowType; started_at: string }>,
+): SystemDashboardAnalyticsPayload["adoption"] {
   const users = distinct(rows.map((row) => row.user_id));
+  const activeDays = distinct(rows.map((row) => toLocalDayString(new Date(row.started_at))));
   const byWorkflow = new Map<WorkflowType, number>();
   rows.forEach((row) => byWorkflow.set(row.workflow_type, (byWorkflow.get(row.workflow_type) ?? 0) + 1));
   const top = [...byWorkflow.entries()].sort((left, right) => right[1] - left[1])[0];
 
   return {
     activeUsers: users.length,
+    activeDays: activeDays.length,
     workflowRuns: rows.length,
     mostUsedFeature: top ? workflowLabels[top[0]] : null,
   };

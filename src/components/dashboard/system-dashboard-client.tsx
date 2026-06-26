@@ -41,6 +41,7 @@ import type {
   SystemDashboardAnalytics,
   SystemDashboardDatePreset,
 } from "@/types/system-dashboard";
+import { adoptionActivityMetric } from "@/components/dashboard/system-dashboard-adoption-metrics";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
 const STALE_THRESHOLD_MS = 2 * 60_000;
@@ -422,7 +423,7 @@ function WorkflowSavingsTable({ rows }: { rows: SystemDashboardAnalytics["workfl
 function AdoptionSection({ data }: { data: SystemDashboardAnalytics }) {
   const value = data.adoption;
   return <MetricGrid items={[
-    ["Active Users", value.activeUsers, "Distinct recorded workflow users.", Activity],
+    adoptionActivityMetric(data),
     ["Workflow Runs", value.workflowRuns, "Recorded workflow runs in the selected period.", Sparkles],
     ["Most Used Feature", value.mostUsedFeature, "Workflow with the most recorded runs.", Zap],
   ]} />;

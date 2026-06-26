@@ -65,6 +65,7 @@ export type SystemDashboardAnalyticsPayload = {
   };
   adoption: {
     activeUsers: number;
+    activeDays: number;
     workflowRuns: number;
     mostUsedFeature: string | null;
   };

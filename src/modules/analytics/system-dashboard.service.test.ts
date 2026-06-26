@@ -9,7 +9,11 @@ import {
   failWorkflowRun,
   startWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
-import { formatSystemDashboardUserLabel, getSystemDashboardAnalytics } from "@/modules/analytics/system-dashboard.service";
+import {
+  buildSystemDashboardAdoption,
+  formatSystemDashboardUserLabel,
+  getSystemDashboardAnalytics,
+} from "@/modules/analytics/system-dashboard.service";
 
 const scope = {
   projectId: "project-1",
@@ -41,6 +45,40 @@ describe("system dashboard user labels", () => {
       displayName: " ",
       emailOrUniqueName: "abdelrahman@example.com",
     })).toBe("abdelrahman@example.com");
+  });
+});
+
+describe("system dashboard adoption metrics", () => {
+  it("counts distinct users and distinct active local days", () => {
+    const adoption = buildSystemDashboardAdoption([
+      { user_id: "user_a", workflow_type: "requirements_analysis", started_at: "2026-06-01T12:00:00.000Z" },
+      { user_id: "user_b", workflow_type: "test_case_design", started_at: "2026-06-02T12:00:00.000Z" },
+      { user_id: "user_a", workflow_type: "test_case_design", started_at: "2026-06-02T14:00:00.000Z" },
+    ]);
+
+    expect(adoption.activeUsers).toBe(2);
+    expect(adoption.activeDays).toBe(2);
+    expect(adoption.workflowRuns).toBe(3);
+  });
+
+  it("counts multiple same-day runs for one user as one active day", () => {
+    const adoption = buildSystemDashboardAdoption([
+      { user_id: "user_a", workflow_type: "requirements_analysis", started_at: "2026-06-01T09:00:00.000Z" },
+      { user_id: "user_a", workflow_type: "test_case_design", started_at: "2026-06-01T15:00:00.000Z" },
+    ]);
+
+    expect(adoption.activeUsers).toBe(1);
+    expect(adoption.activeDays).toBe(1);
+    expect(adoption.workflowRuns).toBe(2);
+  });
+
+  it("returns zero active days when there are no analytics rows", () => {
+    const adoption = buildSystemDashboardAdoption([]);
+
+    expect(adoption.activeUsers).toBe(0);
+    expect(adoption.activeDays).toBe(0);
+    expect(adoption.workflowRuns).toBe(0);
+    expect(adoption.mostUsedFeature).toBeNull();
   });
 });
 
