@@ -60,6 +60,14 @@ type AzureTeamMember = {
   };
 };
 
+type AzureGraphUser = {
+  descriptor?: string;
+  displayName?: string;
+  principalName?: string;
+  mailAddress?: string;
+  originId?: string;
+};
+
 /**
  * Identity of the active Azure DevOps project. When an adapter is constructed
  * with a bound scope, every by-ID work item read/write and test-plan/suite
@@ -74,6 +82,7 @@ export type AzureDevOpsProjectScope = {
 
 export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   private readonly organizationUrl: string;
+  private readonly graphBaseUrl: string;
   private readonly pat: string;
   private readonly projectScope?: AzureDevOpsProjectScope;
   private readonly onUnauthorized?: () => void;
@@ -84,6 +93,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     hooks?: { onUnauthorized?: () => void },
   ) {
     this.organizationUrl = settings.organizationUrl.replace(/\/$/, "");
+    this.graphBaseUrl = azureGraphBaseUrl(this.organizationUrl);
     this.pat = settings.personalAccessToken;
     this.projectScope = projectScope;
     this.onUnauthorized = hooks?.onUnauthorized;
@@ -208,32 +218,71 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
   }
 
   async fetchProjectUsers(input: { projectId: string }): Promise<AzureProjectUser[]> {
-    const teams = await this.requestJson<{ value?: AzureTeam[] }>(
-      `_apis/projects/${encodeURIComponent(input.projectId)}/teams?api-version=7.1`,
-    );
     const users = new Map<string, AzureProjectUser>();
+    let graphError: unknown;
+    let teamError: unknown;
+
+    try {
+      await this.addGraphProjectUsers(input.projectId, users);
+    } catch (error) {
+      graphError = error;
+    }
+
+    try {
+      await this.addTeamProjectUsers(input.projectId, users);
+    } catch (error) {
+      teamError = error;
+    }
+
+    if (!users.size && teamError) throw teamError;
+    if (!users.size && graphError) throw graphError;
+    return [...users.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }
+
+  private async addGraphProjectUsers(projectId: string, users: Map<string, AzureProjectUser>): Promise<void> {
+    const descriptor = await this.fetchGraphDescriptor(projectId);
+    if (!descriptor) return;
+
+    let continuationToken: string | undefined;
+    do {
+      const query = new URLSearchParams({
+        scopeDescriptor: descriptor,
+        "api-version": "7.1-preview.1",
+      });
+      if (continuationToken) query.set("continuationToken", continuationToken);
+
+      const { json, headers } = await this.requestJsonWithHeaders<{ value?: AzureGraphUser[] }>(
+        `${this.graphBaseUrl}/_apis/graph/users?${query.toString()}`,
+      );
+      for (const item of json.value ?? []) {
+        mergeProjectUser(users, graphUserToProjectUser(item));
+      }
+      continuationToken = headers.get("x-ms-continuationtoken") ?? undefined;
+    } while (continuationToken);
+  }
+
+  private async fetchGraphDescriptor(storageKey: string): Promise<string | undefined> {
+    const response = await this.requestJson<{ value?: string }>(
+      `${this.graphBaseUrl}/_apis/graph/descriptors/${encodeURIComponent(storageKey)}?api-version=7.1-preview.1`,
+    );
+    return response.value?.trim() || undefined;
+  }
+
+  private async addTeamProjectUsers(projectId: string, users: Map<string, AzureProjectUser>): Promise<void> {
+    const teams = await this.requestJson<{ value?: AzureTeam[] }>(
+      `_apis/projects/${encodeURIComponent(projectId)}/teams?api-version=7.1`,
+    );
 
     for (const team of teams.value ?? []) {
       if (!team.id) continue;
       const members = await this.requestJson<{ value?: AzureTeamMember[] }>(
-        `_apis/projects/${encodeURIComponent(input.projectId)}/teams/${encodeURIComponent(team.id)}/members?api-version=7.1`,
+        `_apis/projects/${encodeURIComponent(projectId)}/teams/${encodeURIComponent(team.id)}/members?api-version=7.1`,
       );
 
       for (const member of members.value ?? []) {
-        const identity = member.identity;
-        const displayName = identity?.displayName?.trim();
-        if (!identity?.id || !displayName) continue;
-        const user = {
-          id: identity.id,
-          displayName,
-          uniqueName: identity.uniqueName,
-          imageUrl: identity.imageUrl,
-        };
-        users.set(user.uniqueName ?? user.id, user);
+        mergeProjectUser(users, teamMemberToProjectUser(member), { preferId: true });
       }
     }
-
-    return [...users.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
   }
 
   async fetchProjectWorkItemMetadata(input: { projectId: string; includeStates?: boolean }): Promise<AzureProjectWorkItemMetadata> {
@@ -1039,12 +1088,13 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
 
   private async request(path: string, init?: RequestInit & { contentType?: string }) {
     const token = Buffer.from(`:${this.pat}`).toString("base64");
+    const url = isAbsoluteUrl(path) ? path : `${this.organizationUrl}/${path}`;
     let response: Response | undefined;
     let lastError: unknown;
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        response = await fetch(`${this.organizationUrl}/${path}`, {
+        response = await fetch(url, {
           ...init,
           headers: {
             Authorization: `Basic ${token}`,
@@ -1071,6 +1121,10 @@ function isJsonResponse(response: Response) {
   return response.headers.get("content-type")?.toLowerCase().includes("application/json") ?? false;
 }
 
+function isAbsoluteUrl(value: string) {
+  return /^https?:\/\//i.test(value);
+}
+
 function isTransientStatus(status: number) {
   return status === 408 || status === 429 || status >= 500;
 }
@@ -1083,6 +1137,71 @@ function retryDelayMs(response: Response, attempt: number) {
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function azureGraphBaseUrl(organizationUrl: string) {
+  try {
+    const url = new URL(organizationUrl);
+    const host = url.hostname.toLocaleLowerCase();
+    if (host === "dev.azure.com") {
+      const organization = url.pathname.split("/").filter(Boolean)[0];
+      if (organization) return `${url.protocol}//vssps.dev.azure.com/${encodeURIComponent(decodeURIComponent(organization))}`;
+    }
+    if (host.endsWith(".visualstudio.com")) {
+      const organization = url.hostname.slice(0, -".visualstudio.com".length);
+      if (organization) return `${url.protocol}//${organization}.vssps.visualstudio.com`;
+    }
+  } catch {
+    // Keep the normal organization URL; the caller will fall back to team members if Graph is unavailable.
+  }
+  return organizationUrl;
+}
+
+function teamMemberToProjectUser(member: AzureTeamMember): AzureProjectUser | undefined {
+  const identity = member.identity;
+  const displayName = identity?.displayName?.trim();
+  if (!identity?.id || !displayName) return undefined;
+  return {
+    id: identity.id,
+    displayName,
+    uniqueName: identity.uniqueName,
+    imageUrl: identity.imageUrl,
+  };
+}
+
+function graphUserToProjectUser(user: AzureGraphUser): AzureProjectUser | undefined {
+  const displayName = user.displayName?.trim();
+  const id = user.originId?.trim() || user.descriptor?.trim();
+  if (!id || !displayName) return undefined;
+  return {
+    id,
+    displayName,
+    uniqueName: user.principalName?.trim() || user.mailAddress?.trim() || undefined,
+  };
+}
+
+function mergeProjectUser(
+  users: Map<string, AzureProjectUser>,
+  user: AzureProjectUser | undefined,
+  options: { preferId?: boolean } = {},
+) {
+  if (!user) return;
+  const key = projectUserKey(user);
+  const existing = users.get(key);
+  if (!existing) {
+    users.set(key, user);
+    return;
+  }
+  users.set(key, {
+    id: options.preferId ? user.id : existing.id,
+    displayName: existing.displayName || user.displayName,
+    uniqueName: existing.uniqueName ?? user.uniqueName,
+    imageUrl: existing.imageUrl ?? user.imageUrl,
+  });
+}
+
+function projectUserKey(user: AzureProjectUser) {
+  return (user.uniqueName ?? user.id).trim().toLocaleLowerCase();
 }
 
 function extractArrayPayload(value: Array<JsonValue> | { value?: Array<JsonValue> }) {
