@@ -7,15 +7,17 @@ import { ConnectionsSection } from "./connections-section"
 import { AiGenerationSection } from "./ai-generation-section"
 import { KnowledgeContextSection } from "./knowledge-context-section"
 import { AutomationSection } from "./automation-section"
+import { DashboardValueMetricsSection } from "./dashboard-value-metrics-section"
 import { MembersSection } from "./members-section"
 
-type SettingsTab = "connections" | "ai" | "context" | "automation" | "members"
+type SettingsTab = "connections" | "ai" | "context" | "automation" | "value-metrics" | "members"
 
 const TABS: { value: SettingsTab; label: string }[] = [
   { value: "connections", label: "Connections" },
   { value: "ai", label: "AI & Generation" },
   { value: "context", label: "Knowledge & Context" },
   { value: "automation", label: "Automation" },
+  { value: "value-metrics", label: "Value Metrics" },
   { value: "members", label: "Members" },
 ]
 
@@ -45,6 +47,9 @@ export function SettingsTabs() {
       </TabsContent>
       <TabsContent value="automation" className="space-y-4">
         <AutomationSection />
+      </TabsContent>
+      <TabsContent value="value-metrics" className="space-y-4">
+        <DashboardValueMetricsSection />
       </TabsContent>
       <TabsContent value="members" className="space-y-4">
         <MembersSection />

@@ -5,6 +5,13 @@ import { resolveWorkspaceRequest, workspaceRequestError } from "@/modules/worksp
 import { getWorkspaceSettings, upsertWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import { DEFAULT_RETRY_ATTEMPTS, getMaxOutputTokenCapDefaultFromEnv, MAX_OUTPUT_TOKEN_CAP_OPTIONS, RETRY_ATTEMPT_OPTIONS } from "@/modules/llm/llm-defaults";
 import { getRetrievalTopKFromEnv, TOP_K_MAX, TOP_K_MIN } from "@/modules/rag/retrieval-config";
+import {
+  defaultReviewBaselines,
+  defaultWorkflowBaselines,
+  PUBLISH_WORKFLOW_TYPES,
+  workflowLabels,
+  workflowTypeValues,
+} from "@/modules/analytics/analytics-config";
 
 export const runtime = "nodejs";
 
@@ -16,6 +23,12 @@ export const runtime = "nodejs";
  */
 const allowedCaps = MAX_OUTPUT_TOKEN_CAP_OPTIONS as readonly number[];
 const allowedRetries = RETRY_ATTEMPT_OPTIONS as readonly number[];
+
+// Partial per-workflow map of minutes; null clears all overrides (inherit defaults).
+const baselineMapSchema = z
+  .record(z.enum(workflowTypeValues), z.number().int().min(0).max(100_000))
+  .nullable()
+  .optional();
 
 const Schema = z
   .object({
@@ -36,12 +49,16 @@ const Schema = z
       })
       .nullable()
       .optional(),
+    manualBaselineMinutes: baselineMapSchema,
+    reviewBaselineMinutes: baselineMapSchema,
   })
   .refine(
     (value) =>
       value.retrievalTopK !== undefined ||
       value.maxOutputTokenCap !== undefined ||
-      value.llmRetryAttempts !== undefined,
+      value.llmRetryAttempts !== undefined ||
+      value.manualBaselineMinutes !== undefined ||
+      value.reviewBaselineMinutes !== undefined,
     { message: "Provide a setting to update." },
   );
 
@@ -54,6 +71,11 @@ function defaultsPayload() {
     topKMax: TOP_K_MAX,
     retryAttemptsDefault: DEFAULT_RETRY_ATTEMPTS,
     retryAttemptsOptions: RETRY_ATTEMPT_OPTIONS,
+    workflowTypes: workflowTypeValues,
+    workflowLabels,
+    manualBaselineDefaults: defaultWorkflowBaselines,
+    reviewBaselineDefaults: defaultReviewBaselines,
+    perItemReviewTypes: PUBLISH_WORKFLOW_TYPES,
   };
 }
 
@@ -71,7 +93,13 @@ export async function GET() {
   return NextResponse.json(
     {
       workspaceId: context.workspace.id,
-      settings: settings ?? { retrievalTopK: null, maxOutputTokenCap: null, llmRetryAttempts: null },
+      settings: settings ?? {
+        retrievalTopK: null,
+        maxOutputTokenCap: null,
+        llmRetryAttempts: null,
+        manualBaselineMinutes: null,
+        reviewBaselineMinutes: null,
+      },
       defaults: defaultsPayload(),
     },
     { headers: { "Cache-Control": "no-store" } },
@@ -101,6 +129,8 @@ export async function PUT(request: Request) {
     retrievalTopK: parsed.data.retrievalTopK,
     maxOutputTokenCap: parsed.data.maxOutputTokenCap,
     llmRetryAttempts: parsed.data.llmRetryAttempts,
+    manualBaselineMinutes: parsed.data.manualBaselineMinutes,
+    reviewBaselineMinutes: parsed.data.reviewBaselineMinutes,
     updatedByUserId: context.userId,
   });
 

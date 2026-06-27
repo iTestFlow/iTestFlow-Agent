@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  calculateCycleSaved,
   calculateElapsedMinutes,
   calculateEstimatedSavings,
+  calculateLaborSaved,
   calculateRate,
   isRealizedValue,
 } from "./analytics-metrics";
@@ -14,6 +16,26 @@ describe("stakeholder value calculations", () => {
 
   it("never reports negative estimated savings", () => {
     expect(calculateEstimatedSavings(30, 45)).toBe(0);
+  });
+
+  it("labor saved subtracts review effort from the manual baseline", () => {
+    expect(calculateLaborSaved(90, 15)).toBe(75);
+  });
+
+  it("labor saved is floored at zero when review exceeds the manual baseline", () => {
+    expect(calculateLaborSaved(20, 30)).toBe(0);
+  });
+
+  it("cycle-time saved also subtracts LLM generation time", () => {
+    expect(calculateCycleSaved(90, 10, 15)).toBe(65);
+  });
+
+  it("cycle-time saved collapses to labor saved when LLM time is unknown", () => {
+    expect(calculateCycleSaved(90, null, 15)).toBe(calculateLaborSaved(90, 15));
+  });
+
+  it("cycle-time saved is floored at zero", () => {
+    expect(calculateCycleSaved(20, 10, 15)).toBe(0);
   });
 
   it("calculates elapsed workflow minutes from stored timestamps", () => {

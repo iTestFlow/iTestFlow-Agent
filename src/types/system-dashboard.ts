@@ -42,8 +42,12 @@ export type WorkflowSavingsRow = {
   workflow: string;
   runs: number;
   manualBaselineMinutes: number;
+  reviewMinutes: number;
+  llmMinutes: number | null;
   actualAverageMinutes: number | null;
-  totalSavedMinutes: number;
+  laborSavedMinutes: number;
+  cycleSavedMinutes: number;
+  reviewExceedsManual: boolean;
 };
 
 export type SystemDashboardAnalyticsPayload = {
@@ -54,14 +58,15 @@ export type SystemDashboardAnalyticsPayload = {
     users: Array<{ value: string; label: string }>;
   };
   overview: {
-    estimatedHoursSaved: SystemDashboardMetric;
+    laborHoursSaved: SystemDashboardMetric;
+    cycleHoursSaved: SystemDashboardMetric;
     workflowsCompleted: SystemDashboardMetric;
     testCasesPublished: SystemDashboardMetric;
     manualActionsAvoided: number;
   };
   workflowSavings: {
     rows: WorkflowSavingsRow[];
-    trend: Array<{ date: string; savedHours: number }>;
+    trend: Array<{ date: string; savedHours: number; cycleHours: number }>;
   };
   adoption: {
     activeUsers: number;

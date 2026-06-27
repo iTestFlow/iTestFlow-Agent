@@ -347,8 +347,9 @@ function ValueSection({ data }: { data: SystemDashboardAnalytics }) {
   const overview = data.overview;
   return (
     <>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <ValueMetric title="Estimated Hours Saved" metric={overview.estimatedHoursSaved} icon={Clock3} />
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <ValueMetric title="Net Hours Saved (after review)" metric={overview.laborHoursSaved} icon={Clock3} />
+        <ValueMetric title="Cycle-time Hours Saved" metric={overview.cycleHoursSaved} icon={Clock3} tone="neutral" />
         <ValueMetric title="AI Workflows Completed" metric={overview.workflowsCompleted} icon={Sparkles} />
         <ValueMetric title="Test Cases Published" metric={overview.testCasesPublished} icon={TestTube2} tone="green" />
         <MetricCard
@@ -360,15 +361,15 @@ function ValueSection({ data }: { data: SystemDashboardAnalytics }) {
         />
       </div>
       <p className="text-xs leading-5 text-muted-foreground">
-        Estimated Hours Saved compares each workflow&apos;s actual run time against a fixed manual-effort baseline, counted only after the output is accepted or published. Treat it as a directional estimate; the other tiles are exact counts.
+        <strong>Net Hours Saved</strong> is the human time freed up: each workflow&apos;s fixed manual-effort baseline minus the estimated effort to review the AI output, counted only after the output is accepted or published. <strong>Cycle-time Hours Saved</strong> also subtracts the model&apos;s generation time, reflecting end-to-end turnaround. Both are directional estimates; the other tiles are exact counts.
       </p>
       <div className="grid gap-4 xl:grid-cols-2">
-        <ChartCard title="Estimated Saved Hours by Workflow" empty={!hasSavingsData(data)}>
+        <ChartCard title="Saved Hours by Workflow" empty={!hasSavingsData(data)}>
           <SavedHoursBar rows={data.workflowSavings.rows} />
         </ChartCard>
         <WorkflowSavingsTable rows={data.workflowSavings.rows} />
       </div>
-      <ChartCard title="Estimated Saved Hours Trend" empty={!hasSavingsData(data)}>
+      <ChartCard title="Saved Hours Trend" empty={!hasSavingsData(data)}>
         <SavedHoursTrend rows={data.workflowSavings.trend} />
       </ChartCard>
     </>
@@ -382,32 +383,34 @@ function WorkflowSavingsTable({ rows }: { rows: SystemDashboardAnalytics["workfl
       <CardHeader><CardTitle className="text-base">Workflow Time Savings</CardTitle></CardHeader>
       <CardContent className="space-y-3 overflow-x-auto">
         <p className="text-xs text-muted-foreground">
-          Manual baselines use fixed workflow defaults. Estimated savings are counted only after a workflow&apos;s output is accepted or published.
+          Manual = fully-manual baseline; Review = estimated effort to review the AI output; LLM = model generation time. Net saved (= manual − review) and cycle saved (= manual − LLM − review) are counted only after a workflow&apos;s output is accepted or published.
         </p>
         {activeRows.length ? (
-          <Table className="w-full table-fixed">
-            <colgroup>
-              <col className="w-[34%]" />
-              <col className="w-[12%]" />
-              <col className="w-[19%]" />
-              <col className="w-[18%]" />
-              <col className="w-[17%]" />
-            </colgroup>
+          <Table className="w-full min-w-[44rem]">
             <TableHeader><TableRow>
               <TableHead>Workflow</TableHead>
               <TableHead className="text-right">Runs</TableHead>
-              <TableHead className="text-right">Manual baseline</TableHead>
-              <TableHead className="text-right">Avg actual</TableHead>
-              <TableHead className="text-right">Total saved</TableHead>
+              <TableHead className="text-right">Manual</TableHead>
+              <TableHead className="text-right">Review</TableHead>
+              <TableHead className="text-right">LLM</TableHead>
+              <TableHead className="text-right">Net saved</TableHead>
+              <TableHead className="text-right">Cycle saved</TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {activeRows.map((row) => (
                 <TableRow key={row.workflowType}>
-                  <TableCell className="truncate font-medium" title={row.workflow}>{row.workflow}</TableCell>
+                  <TableCell className="font-medium" title={row.workflow}>
+                    {row.workflow}
+                    {row.reviewExceedsManual ? (
+                      <span className="ml-2 text-xs text-warning" title="Review effort meets or exceeds the manual baseline — the AI is not saving time here.">⚠</span>
+                    ) : null}
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">{row.runs}</TableCell>
                   <TableCell className="text-right tabular-nums">{minutes(row.manualBaselineMinutes)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{row.actualAverageMinutes === null ? "Needs data" : minutes(row.actualAverageMinutes)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{hours(row.totalSavedMinutes)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{minutes(row.reviewMinutes)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{row.llmMinutes === null ? "—" : minutes(row.llmMinutes)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{hours(row.laborSavedMinutes)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{hours(row.cycleSavedMinutes)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -482,10 +485,11 @@ function ChartCard({ title, empty, children }: { title: string; empty: boolean; 
 
 function SavedHoursBar({ rows }: { rows: SystemDashboardAnalytics["workflowSavings"]["rows"] }) {
   const values = rows
-    .filter((row) => row.totalSavedMinutes > 0)
+    .filter((row) => row.laborSavedMinutes > 0 || row.cycleSavedMinutes > 0)
     .map((row) => ({
       name: row.workflow,
-      realizedHours: round(row.totalSavedMinutes / 60),
+      laborHours: round(row.laborSavedMinutes / 60),
+      cycleHours: round(row.cycleSavedMinutes / 60),
     }));
   return (
     <div className="h-[300px]">
@@ -499,7 +503,8 @@ function SavedHoursBar({ rows }: { rows: SystemDashboardAnalytics["workflowSavin
             cursor={{ fill: "hsl(var(--muted) / 0.35)" }}
           />
           <Legend />
-          <Bar dataKey="realizedHours" name="Realized estimated hours" fill="hsl(var(--chart-1))" radius={[2, 6, 6, 2]} />
+          <Bar dataKey="laborHours" name="Net hours (after review)" fill="hsl(var(--chart-1))" radius={[2, 6, 6, 2]} />
+          <Bar dataKey="cycleHours" name="Cycle-time hours" fill="hsl(var(--chart-2))" radius={[2, 6, 6, 2]} />
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -516,7 +521,8 @@ function SavedHoursTrend({ rows }: { rows: SystemDashboardAnalytics["workflowSav
           <YAxis tick={{ fontSize: 11 }} />
           <Tooltip content={<SystemChartTooltip suffix=" hr" />} />
           <Legend />
-          <Line type="monotone" dataKey="savedHours" name="Realized estimated hours" stroke="hsl(var(--chart-1))" strokeWidth={2} />
+          <Line type="monotone" dataKey="savedHours" name="Net hours (after review)" stroke="hsl(var(--chart-1))" strokeWidth={2} />
+          <Line type="monotone" dataKey="cycleHours" name="Cycle-time hours" stroke="hsl(var(--chart-2))" strokeWidth={2} />
         </LineChart>
       </ResponsiveContainer>
     </div>
@@ -582,5 +588,5 @@ function round(value: number) {
 }
 
 function hasSavingsData(data: SystemDashboardAnalytics) {
-  return data.workflowSavings.rows.some((row) => row.totalSavedMinutes > 0);
+  return data.workflowSavings.rows.some((row) => row.laborSavedMinutes > 0 || row.cycleSavedMinutes > 0);
 }

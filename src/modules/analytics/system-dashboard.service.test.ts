@@ -106,7 +106,8 @@ describeDb("system dashboard analytics (DB-backed)", () => {
     await flushBackgroundWrites();
 
     const analytics = await getSystemDashboardAnalytics({ scope });
-    expect(analytics.overview.estimatedHoursSaved.value).toBe(0);
+    expect(analytics.overview.laborHoursSaved.value).toBe(0);
+    expect(analytics.overview.cycleHoursSaved.value).toBe(0);
   });
 
   it("keeps all visible user options when analytics are filtered to one user", async () => {

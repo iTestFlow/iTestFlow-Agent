@@ -29,6 +29,9 @@ type AnalyticsRow = {
   manual_baseline_minutes: number;
   actual_duration_minutes: number | null;
   estimated_saved_minutes: number;
+  review_minutes: number | null;
+  generation_minutes: number | null;
+  cycle_saved_minutes: number | null;
   items_generated: number;
   items_selected: number;
   items_edited: number;
@@ -87,7 +90,8 @@ export async function getSystemDashboardAnalytics(input: SystemDashboardInput): 
     }),
   ]);
   const completedRows = rows.filter((row) => row.status === "completed" || row.status === "published");
-  const totalSavedMinutes = sum(rows, "estimated_saved_minutes");
+  const laborSavedMinutes = sum(rows, "estimated_saved_minutes");
+  const cycleSavedMinutes = sum(rows, "cycle_saved_minutes");
   const testCasesPublished = rows
     .filter((row) => row.workflow_type === "test_case_design" || row.workflow_type === "test_gap_analysis")
     .reduce((total, row) => total + row.items_published, 0);
@@ -106,10 +110,15 @@ export async function getSystemDashboardAnalytics(input: SystemDashboardInput): 
       users: buildUserOptions(userOptionRows),
     },
     overview: {
-      estimatedHoursSaved: metric(
-        round(totalSavedMinutes / 60, 1),
+      laborHoursSaved: metric(
+        round(laborSavedMinutes / 60, 1),
         true,
-        "Estimated from fixed workflow baselines minus actual elapsed workflow time.",
+        "Human time freed up: manual-effort baseline minus the estimated review effort on the AI output (excludes model time). Counted only after the output is accepted or published.",
+      ),
+      cycleHoursSaved: metric(
+        round(cycleSavedMinutes / 60, 1),
+        true,
+        "End-to-end turnaround saved: manual baseline minus (LLM generation time + review effort).",
       ),
       workflowsCompleted: metric(completedRows.length, true, "Completed or published iTestFlow workflow runs."),
       testCasesPublished: metric(testCasesPublished, true, "Generated test cases successfully published to Azure DevOps."),
@@ -157,6 +166,7 @@ function loadAnalyticsRows(input: AnalyticsQueryInput) {
     `SELECT r.id, r.user_id, u.display_name AS user_display_name, u.email_or_unique_name AS user_email_or_unique_name,
             r.workflow_type, r.work_item_id, r.started_at, r.generation_completed_at,
             r.completed_at, r.status, r.manual_baseline_minutes, r.actual_duration_minutes, r.estimated_saved_minutes,
+            r.review_minutes, r.generation_minutes, r.cycle_saved_minutes,
             r.items_generated, r.items_selected, r.items_edited, r.items_published, r.items_rejected,
             r.high_risk_items_found, r.medium_risk_items_found, r.low_risk_items_found,
             r.manual_actions_avoided, r.used_knowledge_context, r.metadata_json
@@ -200,13 +210,25 @@ function buildWorkflowSavings(rows: AnalyticsRow[]): WorkflowSavingsRow[] {
     const durations = workflowRows
       .map(effectiveDurationMinutes)
       .filter((value): value is number => value !== null);
+    const reviewValues = workflowRows
+      .map((row) => row.review_minutes)
+      .filter((value): value is number => value !== null);
+    const llmValues = workflowRows
+      .map((row) => row.generation_minutes)
+      .filter((value): value is number => value !== null);
+    const manualBaselineMinutes = round(average(workflowRows.map((row) => row.manual_baseline_minutes)) ?? 0, 1);
+    const reviewMinutes = round(average(reviewValues) ?? 0, 1);
     return {
       workflowType,
       workflow: workflowLabels[workflowType],
       runs: workflowRows.length,
-      manualBaselineMinutes: round(average(workflowRows.map((row) => row.manual_baseline_minutes)) ?? 0, 1),
+      manualBaselineMinutes,
+      reviewMinutes,
+      llmMinutes: llmValues.length ? round(average(llmValues) ?? 0, 1) : null,
       actualAverageMinutes: durations.length ? round(average(durations) ?? 0, 1) : null,
-      totalSavedMinutes: round(sum(workflowRows, "estimated_saved_minutes"), 1),
+      laborSavedMinutes: round(sum(workflowRows, "estimated_saved_minutes"), 1),
+      cycleSavedMinutes: round(sum(workflowRows, "cycle_saved_minutes"), 1),
+      reviewExceedsManual: reviewValues.length > 0 && reviewMinutes > manualBaselineMinutes,
     };
   });
 }
@@ -222,11 +244,12 @@ function average(values: number[]) {
 }
 
 function buildSavingsTrend(rows: AnalyticsRow[]) {
-  const grouped = new Map<string, { savedHours: number }>();
+  const grouped = new Map<string, { savedHours: number; cycleHours: number }>();
   for (const row of rows) {
     const date = toLocalDayString(new Date(row.started_at));
-    const current = grouped.get(date) ?? { savedHours: 0 };
+    const current = grouped.get(date) ?? { savedHours: 0, cycleHours: 0 };
     current.savedHours += row.estimated_saved_minutes / 60;
+    current.cycleHours += Number(row.cycle_saved_minutes ?? 0) / 60;
     grouped.set(date, current);
   }
   return [...grouped.entries()]
@@ -234,6 +257,7 @@ function buildSavingsTrend(rows: AnalyticsRow[]) {
     .map(([date, values]) => ({
       date,
       savedHours: round(values.savedHours, 1),
+      cycleHours: round(values.cycleHours, 1),
     }));
 }
 

@@ -48,3 +48,28 @@ export const defaultWorkflowBaselines: Record<WorkflowType, number> = {
   knowledge_indexing: 30,
   business_owner_assistant: 30,
 };
+
+// Workflows whose review effort scales with the number of items the human checks
+// (they have an explicit generate→select/publish step), so their review baseline
+// is interpreted as minutes-PER-ITEM. All other (conversational/estimation) workflows
+// use a flat minutes-PER-RUN review baseline. Mirrors PUBLISH_WORKFLOW_TYPES.
+export function isPerItemReview(workflowType: WorkflowType): boolean {
+  return PUBLISH_WORKFLOW_TYPES.includes(workflowType);
+}
+
+// Estimated human review/edit effort of the AI output (R). Per-item workflows
+// (see isPerItemReview) express minutes-per-item; the rest express minutes-per-run.
+// Admin-tunable per workspace via Settings → Value Metrics.
+export const defaultReviewBaselines: Record<WorkflowType, number> = {
+  // per-item (minutes to review one generated item)
+  requirements_analysis: 4,
+  test_case_design: 3,
+  test_gap_analysis: 4,
+  report_bug: 3,
+  suite_migration: 2,
+  bulk_task_creation: 2,
+  // per-run (flat minutes to review the run's output)
+  test_execution_effort: 5,
+  knowledge_indexing: 2,
+  business_owner_assistant: 3,
+};

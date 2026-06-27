@@ -2,21 +2,25 @@ import "server-only";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { createId, enqueueBackgroundWrite, nowIso, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { resolveReviewBaseline, resolveWorkflowBaseline } from "@/modules/workspace/workspace-settings.service";
 import type { WorkflowRunStatus } from "@/types/system-dashboard";
 import {
-  defaultWorkflowBaselines,
   type WorkflowType,
 } from "./analytics-config";
 import {
+  calculateCycleSaved,
   calculateElapsedMinutes,
-  calculateEstimatedSavings,
+  calculateLaborSaved,
   isRealizedValue,
 } from "./analytics-metrics";
 
 type WorkflowRunRow = {
   id: string;
   status: WorkflowRunStatus;
+  workflow_type: WorkflowType;
   started_at: string;
+  generation_started_at: string | null;
+  generation_completed_at: string | null;
   manual_baseline_minutes: number;
   items_generated: number;
   items_selected: number;
@@ -61,7 +65,7 @@ export function startWorkflowRun(input: {
   enqueueBackgroundWrite("startWorkflowRun", async () => {
     const scope = assertProjectScope(input.scope);
     const now = nowIso();
-    const baseline = getWorkflowBaseline(input.workflowType);
+    const baseline = await resolveWorkflowBaseline(scope.workspaceId, input.workflowType);
 
     await sqlRun(
       `INSERT INTO analytics_workflow_runs (
@@ -191,12 +195,26 @@ async function completeWorkflowRunImpl(input: {
   const patch = input.patch ?? {};
   const itemsSelected = patch.itemsSelected ?? row.items_selected;
   const itemsPublished = patch.itemsPublished ?? row.items_published;
+  const itemsGenerated = patch.itemsGenerated ?? row.items_generated;
   const realized = input.valueRealized ?? isRealizedValue({
     itemsPublished,
     itemsSelected,
   });
-  const estimatedSavedMinutes = realized
-    ? calculateEstimatedSavings(row.manual_baseline_minutes, actualDurationMinutes)
+
+  // Human-effort breakdown for the two dashboard savings metrics:
+  //   M = manual baseline (snapshotted at start), R = configured review estimate,
+  //   LLM = generation time. Labor saved = M − R; cycle-time saved = M − (LLM + R).
+  const manualBaselineMinutes = row.manual_baseline_minutes;
+  const reviewMinutes = await resolveReviewBaseline(scope.workspaceId, row.workflow_type, itemsGenerated);
+  const generationStartedAt = patch.generationStartedAt ?? row.generation_started_at;
+  const generationCompletedAt = patch.generationCompletedAt ?? row.generation_completed_at;
+  const generationMinutes =
+    generationStartedAt && generationCompletedAt
+      ? calculateElapsedMinutes(generationStartedAt, generationCompletedAt)
+      : null;
+  const laborSavedMinutes = realized ? calculateLaborSaved(manualBaselineMinutes, reviewMinutes) : 0;
+  const cycleSavedMinutes = realized
+    ? calculateCycleSaved(manualBaselineMinutes, generationMinutes, reviewMinutes)
     : 0;
 
   await updateWorkflowRunImpl({ scope, runId: input.runId, patch });
@@ -205,7 +223,10 @@ async function completeWorkflowRunImpl(input: {
      SET status = @status, completed_at = @completedAt,
          published_at = CASE WHEN @status = 'published' THEN @completedAt ELSE published_at END,
          actual_duration_minutes = @actualDurationMinutes,
+         review_minutes = @reviewMinutes::double precision,
+         generation_minutes = @generationMinutes::double precision,
          estimated_saved_minutes = @estimatedSavedMinutes,
+         cycle_saved_minutes = @cycleSavedMinutes::double precision,
          updated_at = @completedAt
      WHERE id = @runId AND project_id = @projectId AND azure_project_id = @azureProjectId`,
     {
@@ -215,7 +236,10 @@ async function completeWorkflowRunImpl(input: {
       status: input.status ?? "completed",
       completedAt,
       actualDurationMinutes,
-      estimatedSavedMinutes,
+      reviewMinutes,
+      generationMinutes,
+      estimatedSavedMinutes: laborSavedMinutes,
+      cycleSavedMinutes,
     },
   );
 }
@@ -242,7 +266,7 @@ async function failWorkflowRunImpl(input: {
   await sqlRun(
     `UPDATE analytics_workflow_runs
      SET status = @status, completed_at = @completedAt, actual_duration_minutes = @actualDurationMinutes,
-         estimated_saved_minutes = 0,
+         estimated_saved_minutes = 0, cycle_saved_minutes = 0,
          metadata_json = COALESCE(@metadataJson, metadata_json), updated_at = @completedAt
      WHERE id = @runId AND project_id = @projectId AND azure_project_id = @azureProjectId`,
     {
@@ -257,16 +281,10 @@ async function failWorkflowRunImpl(input: {
   );
 }
 
-function getWorkflowBaseline(workflowType: WorkflowType) {
-  // Manual baselines come from configured defaults. (Per-workspace baseline
-  // overrides are a possible future enhancement; the legacy global runtime
-  // settings that previously held these were removed in Phase 5/3b cleanup.)
-  return defaultWorkflowBaselines[workflowType];
-}
-
 function getRun(scope: ProjectScope, runId: string) {
   return sqlGet<WorkflowRunRow>(
-    `SELECT id, status, started_at, manual_baseline_minutes, items_generated, items_selected,
+    `SELECT id, status, workflow_type, started_at, generation_started_at, generation_completed_at,
+            manual_baseline_minutes, items_generated, items_selected,
             items_published, actual_duration_minutes
      FROM analytics_workflow_runs
      WHERE id = @runId AND project_id = @projectId AND azure_project_id = @azureProjectId`,
