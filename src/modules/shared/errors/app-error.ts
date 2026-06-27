@@ -16,6 +16,9 @@ export type ErrorTechnicalContext = {
   schemaName?: string;
   finishReason?: string;
   tokenUsage?: TokenUsage;
+  durationMs?: number;
+  retryAttempts?: number;
+  upstreamCause?: string;
   parsePosition?: number;
   jsonSnippet?: string;
   rawOutputExcerpt?: string;
@@ -63,7 +66,7 @@ export function isAppErrorCode(value: unknown): value is AppErrorCode {
 export function noLlmProviderConfiguredError() {
   return new AppError({
     code: AppErrorCode.NoProvider,
-    message: "No LLM provider configured. Set DEFAULT_LLM_PROVIDER and the provider API key in .env.local.",
+    message: "No LLM provider configured. Add an LLM provider and API key in Settings → My Credentials.",
     userMessage: "No LLM provider is configured. Configure a provider, model, and API key in Settings.",
   });
 }
@@ -76,6 +79,9 @@ function normalizeTechnicalContext(context?: ErrorTechnicalContext): ErrorTechni
     schemaName: context.schemaName,
     finishReason: context.finishReason,
     tokenUsage: normalizeTokenUsage(context.tokenUsage),
+    durationMs: normalizeNumber(context.durationMs),
+    retryAttempts: normalizeNumber(context.retryAttempts),
+    upstreamCause: capString(context.upstreamCause, MAX_JSON_SNIPPET_CHARS),
     parsePosition: normalizeNumber(context.parsePosition),
     jsonSnippet: capString(context.jsonSnippet, MAX_JSON_SNIPPET_CHARS),
     rawOutputExcerpt: capString(context.rawOutputExcerpt, MAX_RAW_OUTPUT_EXCERPT_CHARS),

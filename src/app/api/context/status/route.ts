@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { getRecentProjectContext } from "@/modules/rag/project-context-store.service";
 
 export const runtime = "nodejs";
@@ -21,9 +23,11 @@ export async function POST(request: Request) {
   }
 
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     return NextResponse.json(
-      getRecentProjectContext({
-        scope: parsed.data.scope,
+      await getRecentProjectContext({
+        scope: trustedScope,
         page: parsed.data.page,
         pageSize: parsed.data.pageSize,
         sortBy: parsed.data.sortBy,
@@ -32,6 +36,8 @@ export async function POST(request: Request) {
       }),
     );
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Project context status failed." },
       { status: 503 },

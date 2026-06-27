@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { buildBugReportPromptDraft } from "@/modules/bug-reporting/bug-reporting.service";
 import { BugAttachmentDescriptorSchema, BugCustomFieldValueSchema, BugRelatedTestCaseContextSchema } from "@/modules/bug-reporting/schemas/bug-report.schema";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -24,10 +25,12 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const parentStory = parsed.data.parentStoryId
       ? await adapter.fetchWorkItemById({
-          projectId: parsed.data.scope.azureProjectId,
+          projectId: trustedScope.azureProjectId,
           workItemId: parsed.data.parentStoryId,
         })
       : null;
@@ -37,13 +40,13 @@ export async function POST(request: Request) {
     }
 
     const draft = buildBugReportPromptDraft({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       bugDescription: parsed.data.bugDescription,
       parentStory,
       selectedRelatedTestCase: parsed.data.selectedRelatedTestCase,
       customFields: parsed.data.customFields,
       attachments: parsed.data.attachments,
-      projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
     });
 
     return NextResponse.json({
@@ -51,6 +54,8 @@ export async function POST(request: Request) {
       ...draft,
     });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "External LLM bug prompt preparation failed." },
       { status: 503 },

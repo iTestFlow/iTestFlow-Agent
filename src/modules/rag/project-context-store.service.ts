@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createId, getDatabase, nowIso } from "@/modules/shared/infrastructure/database/db";
+import { createId, nowIso, sqlAll, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
@@ -52,8 +52,97 @@ type RecentContextRow = {
 export type ProjectContextSortBy = "lastIndexedAt" | "type" | "state";
 export type ProjectContextSortDirection = "asc" | "desc";
 
+const UPSERT_WORK_ITEM_SQL = `
+  INSERT INTO azure_devops_work_items (
+    id, project_id, azure_project_id, azure_project_name, azure_organization_url,
+    azure_work_item_id, work_item_type, title, description, acceptance_criteria,
+    state, assigned_to, priority, tags, area_path, iteration_path, raw_json,
+    created_date, updated_date, last_synced_at, content_hash, sync_status,
+    current_index_run_id, created_at, updated_at
+  ) VALUES (
+    @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
+    @azureWorkItemId, @workItemType, @title, @description, @acceptanceCriteria,
+    @state, @assignedTo, @priority, @tags, @areaPath, @iterationPath, @rawJson,
+    @createdDate, @updatedDate, @lastSyncedAt, @contentHash, 'active',
+    @currentIndexRunId, @createdAt, @updatedAt
+  )
+  ON CONFLICT(project_id, azure_work_item_id) DO UPDATE SET
+    azure_project_id = excluded.azure_project_id,
+    azure_project_name = excluded.azure_project_name,
+    azure_organization_url = excluded.azure_organization_url,
+    work_item_type = excluded.work_item_type,
+    title = excluded.title,
+    description = excluded.description,
+    acceptance_criteria = excluded.acceptance_criteria,
+    state = excluded.state,
+    assigned_to = excluded.assigned_to,
+    priority = excluded.priority,
+    tags = excluded.tags,
+    area_path = excluded.area_path,
+    iteration_path = excluded.iteration_path,
+    raw_json = excluded.raw_json,
+    created_date = excluded.created_date,
+    updated_date = excluded.updated_date,
+    last_synced_at = excluded.last_synced_at,
+    content_hash = excluded.content_hash,
+    sync_status = 'active',
+    current_index_run_id = excluded.current_index_run_id,
+    updated_at = excluded.updated_at
+`;
+const MARK_UNCHANGED_WORK_ITEM_SQL = `
+  UPDATE azure_devops_work_items
+  SET last_synced_at = @lastSyncedAt,
+      sync_status = 'active',
+      current_index_run_id = @currentIndexRunId,
+      updated_at = @updatedAt
+  WHERE project_id = @projectId
+    AND azure_project_id = @azureProjectId
+    AND azure_work_item_id = @azureWorkItemId
+`;
+const MARK_INACTIVE_WORK_ITEM_SQL = `
+  UPDATE azure_devops_work_items
+  SET sync_status = 'inactive',
+      current_index_run_id = @currentIndexRunId,
+      last_synced_at = @lastSyncedAt,
+      updated_at = @updatedAt
+  WHERE project_id = @projectId
+    AND azure_project_id = @azureProjectId
+    AND azure_work_item_id = @azureWorkItemId
+    AND COALESCE(sync_status, 'active') != 'inactive'
+`;
+const DELETE_WORK_ITEM_CHUNKS_SQL = `
+  DELETE FROM document_chunks
+  WHERE project_id = @projectId
+    AND azure_project_id = @azureProjectId
+    AND source_type = 'azure_work_item'
+    AND azure_work_item_id = @azureWorkItemId
+`;
+const DELETE_PROJECT_CHUNKS_SQL = `
+  DELETE FROM document_chunks
+  WHERE project_id = @projectId
+    AND azure_project_id = @azureProjectId
+    AND source_type = 'azure_work_item'
+`;
+const DELETE_PROJECT_WORK_ITEMS_SQL = `
+  DELETE FROM azure_devops_work_items
+  WHERE project_id = @projectId
+    AND azure_project_id = @azureProjectId
+`;
+const INSERT_CHUNK_SQL = `
+  INSERT INTO document_chunks (
+    id, project_id, azure_project_id, azure_project_name, source_type,
+    azure_work_item_id, work_item_type, document_name, document_type,
+    chunk_index, content, metadata_json, created_at, updated_at
+  ) VALUES (
+    @id, @projectId, @azureProjectId, @azureProjectName, 'azure_work_item',
+    @azureWorkItemId, @workItemType, @documentName, 'azure_work_item',
+    @chunkIndex, @content, @metadataJson, @createdAt, @updatedAt
+  )
+`;
+
 export async function indexAzureWorkItemsAsProjectContext(input: {
   scope: ProjectScope;
+  actor: string;
   adapter: AzureDevOpsAdapter;
   workItemTypes: string[];
   states: string[];
@@ -70,7 +159,6 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
     states: input.states,
   });
 
-  const db = getDatabase();
   const now = nowIso();
   const indexRunId = createId("ctxrun");
   const mode = input.mode ?? "incremental";
@@ -82,120 +170,30 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
   let indexedChunkCount = 0;
   let skippedEmptyCount = 0;
   const fetchedIds = new Set(workItems.map((item) => item.id));
-  const existingRows = db
-    .prepare(
-      `
+  const existingRows = await sqlAll<{ azure_work_item_id: string; content_hash: string | null; sync_status: string | null }>(
+    `
       SELECT azure_work_item_id, content_hash, sync_status
       FROM azure_devops_work_items
       WHERE project_id = @projectId
         AND azure_project_id = @azureProjectId
     `,
-    )
-    .all({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-    }) as Array<{ azure_work_item_id: string; content_hash: string | null; sync_status: string | null }>;
+    },
+  );
   const existingById = new Map(existingRows.map((row) => [row.azure_work_item_id, row]));
 
-  const upsertWorkItem = db.prepare(`
-    INSERT INTO azure_devops_work_items (
-      id, project_id, azure_project_id, azure_project_name, azure_organization_url,
-      azure_work_item_id, work_item_type, title, description, acceptance_criteria,
-      state, assigned_to, priority, tags, area_path, iteration_path, raw_json,
-      created_date, updated_date, last_synced_at, content_hash, sync_status,
-      current_index_run_id, created_at, updated_at
-    ) VALUES (
-      @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
-      @azureWorkItemId, @workItemType, @title, @description, @acceptanceCriteria,
-      @state, @assignedTo, @priority, @tags, @areaPath, @iterationPath, @rawJson,
-      @createdDate, @updatedDate, @lastSyncedAt, @contentHash, 'active',
-      @currentIndexRunId, @createdAt, @updatedAt
-    )
-    ON CONFLICT(project_id, azure_work_item_id) DO UPDATE SET
-      azure_project_id = excluded.azure_project_id,
-      azure_project_name = excluded.azure_project_name,
-      azure_organization_url = excluded.azure_organization_url,
-      work_item_type = excluded.work_item_type,
-      title = excluded.title,
-      description = excluded.description,
-      acceptance_criteria = excluded.acceptance_criteria,
-      state = excluded.state,
-      assigned_to = excluded.assigned_to,
-      priority = excluded.priority,
-      tags = excluded.tags,
-      area_path = excluded.area_path,
-      iteration_path = excluded.iteration_path,
-      raw_json = excluded.raw_json,
-      created_date = excluded.created_date,
-      updated_date = excluded.updated_date,
-      last_synced_at = excluded.last_synced_at,
-      content_hash = excluded.content_hash,
-      sync_status = 'active',
-      current_index_run_id = excluded.current_index_run_id,
-      updated_at = excluded.updated_at
-  `);
-  const markUnchangedWorkItem = db.prepare(`
-    UPDATE azure_devops_work_items
-    SET last_synced_at = @lastSyncedAt,
-        sync_status = 'active',
-        current_index_run_id = @currentIndexRunId,
-        updated_at = @updatedAt
-    WHERE project_id = @projectId
-      AND azure_project_id = @azureProjectId
-      AND azure_work_item_id = @azureWorkItemId
-  `);
-  const markInactiveWorkItems = db.prepare(`
-    UPDATE azure_devops_work_items
-    SET sync_status = 'inactive',
-        current_index_run_id = @currentIndexRunId,
-        last_synced_at = @lastSyncedAt,
-        updated_at = @updatedAt
-    WHERE project_id = @projectId
-      AND azure_project_id = @azureProjectId
-      AND azure_work_item_id = @azureWorkItemId
-      AND COALESCE(sync_status, 'active') != 'inactive'
-  `);
-  const deleteChunks = db.prepare(`
-    DELETE FROM document_chunks
-    WHERE project_id = @projectId
-      AND azure_project_id = @azureProjectId
-      AND source_type = 'azure_work_item'
-      AND azure_work_item_id = @azureWorkItemId
-  `);
-  const deleteProjectChunks = db.prepare(`
-    DELETE FROM document_chunks
-    WHERE project_id = @projectId
-      AND azure_project_id = @azureProjectId
-      AND source_type = 'azure_work_item'
-  `);
-  const deleteProjectWorkItems = db.prepare(`
-    DELETE FROM azure_devops_work_items
-    WHERE project_id = @projectId
-      AND azure_project_id = @azureProjectId
-  `);
-  const insertChunk = db.prepare(`
-    INSERT INTO document_chunks (
-      id, project_id, azure_project_id, azure_project_name, source_type,
-      azure_work_item_id, work_item_type, document_name, document_type,
-      chunk_index, content, metadata_json, created_at, updated_at
-    ) VALUES (
-      @id, @projectId, @azureProjectId, @azureProjectName, 'azure_work_item',
-      @azureWorkItemId, @workItemType, @documentName, 'azure_work_item',
-      @chunkIndex, @content, @metadataJson, @createdAt, @updatedAt
-    )
-  `);
-
-  try {
-    db.exec("BEGIN");
+  await withTransaction(async (client) => {
     if (mode === "rebuild") {
-      deleteProjectChunks.run({
+      await sqlRun(DELETE_PROJECT_CHUNKS_SQL, {
         projectId: scope.projectId,
         azureProjectId: scope.azureProjectId,
-      });
-      deleteProjectWorkItems.run({
+      }, client);
+      await sqlRun(DELETE_PROJECT_WORK_ITEMS_SQL, {
         projectId: scope.projectId,
         azureProjectId: scope.azureProjectId,
-      });
+      }, client);
       existingById.clear();
     }
 
@@ -206,18 +204,18 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
 
       if (mode === "incremental" && existing?.content_hash === contentHash && existing.sync_status !== "inactive") {
         unchangedCount += 1;
-        markUnchangedWorkItem.run({
+        await sqlRun(MARK_UNCHANGED_WORK_ITEM_SQL, {
           projectId: scope.projectId,
           azureProjectId: scope.azureProjectId,
           azureWorkItemId: item.id,
           currentIndexRunId: indexRunId,
           lastSyncedAt: now,
           updatedAt: now,
-        });
+        }, client);
         continue;
       }
 
-      upsertWorkItem.run({
+      await sqlRun(UPSERT_WORK_ITEM_SQL, {
         id: createId("awi"),
         projectId: scope.projectId,
         azureProjectId: scope.azureProjectId,
@@ -242,13 +240,13 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
         currentIndexRunId: indexRunId,
         createdAt: now,
         updatedAt: now,
-      });
+      }, client);
 
-      deleteChunks.run({
+      await sqlRun(DELETE_WORK_ITEM_CHUNKS_SQL, {
         projectId: scope.projectId,
         azureProjectId: scope.azureProjectId,
         azureWorkItemId: item.id,
-      });
+      }, client);
       if (existing) {
         updatedCount += 1;
       } else {
@@ -269,8 +267,8 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
         text,
       });
 
-      chunks.forEach((chunk, index) => {
-        insertChunk.run({
+      for (const [index, chunk] of chunks.entries()) {
+        await sqlRun(INSERT_CHUNK_SQL, {
           id: `azure_work_item_${scope.projectId}_${item.id}_${index}`,
           projectId: scope.projectId,
           azureProjectId: scope.azureProjectId,
@@ -294,40 +292,36 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
           }),
           createdAt: now,
           updatedAt: now,
-        });
-      });
+        }, client);
+      }
 
       indexedWorkItemCount += 1;
       indexedChunkCount += chunks.length;
     }
 
     if (mode === "incremental") {
-      existingRows.forEach((row) => {
-        if (fetchedIds.has(row.azure_work_item_id)) return;
-        const result = markInactiveWorkItems.run({
+      for (const row of existingRows) {
+        if (fetchedIds.has(row.azure_work_item_id)) continue;
+        inactiveCount += await sqlRun(MARK_INACTIVE_WORK_ITEM_SQL, {
           projectId: scope.projectId,
           azureProjectId: scope.azureProjectId,
           azureWorkItemId: row.azure_work_item_id,
           currentIndexRunId: indexRunId,
           lastSyncedAt: now,
           updatedAt: now,
-        }) as { changes?: number };
-        inactiveCount += result.changes ?? 0;
-      });
+        }, client);
+      }
     }
 
-    refreshProjectContextSearchIndex({ scope });
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+    await refreshProjectContextSearchIndex({ scope }, client);
+  });
 
   writeAuditLog({
     projectId: scope.projectId,
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "rag.index_azure_work_items",
     status: "Success",
     message: `Synced ${workItems.length} Azure DevOps work items into project context.`,
@@ -385,7 +379,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
   };
 }
 
-export function getRecentProjectContext(input: {
+export async function getRecentProjectContext(input: {
   scope: ProjectScope;
   page?: number;
   pageSize?: number;
@@ -419,29 +413,26 @@ export function getRecentProjectContext(input: {
       `
     : "";
   const queryParams = query ? { queryLike: `%${escapeSqlLike(query)}%` } : {};
-  const db = getDatabase();
-  const total = db
-    .prepare(
-      `
-      SELECT COUNT(*) AS total
+  const total = await sqlAll<{ total: number }>(
+    `
+      SELECT COUNT(*)::int AS total
       FROM azure_devops_work_items wi
       WHERE wi.project_id = @projectId
         AND wi.azure_project_id = @azureProjectId
         AND COALESCE(wi.sync_status, 'active') = 'active'
         ${searchWhere}
     `,
-    )
-    .get({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
       ...queryParams,
-    }) as { total: number };
-  const totalCount = total.total;
+    },
+  );
+  const totalCount = total[0]?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const safePage = Math.min(page, totalPages);
-  const rows = db
-    .prepare(
-      `
+  const rows = await sqlAll<RecentContextRow>(
+    `
       SELECT
         wi.azure_work_item_id,
         wi.work_item_type,
@@ -450,7 +441,7 @@ export function getRecentProjectContext(input: {
         COALESCE(wi.sync_status, 'active') AS sync_status,
         wi.updated_date,
         wi.last_synced_at,
-        COUNT(dc.id) AS chunk_count
+        COUNT(dc.id)::int AS chunk_count
       FROM azure_devops_work_items wi
       LEFT JOIN document_chunks dc
         ON dc.project_id = wi.project_id
@@ -461,18 +452,19 @@ export function getRecentProjectContext(input: {
         AND wi.azure_project_id = @azureProjectId
         AND COALESCE(wi.sync_status, 'active') = 'active'
         ${searchWhere}
-      GROUP BY wi.azure_work_item_id
+      GROUP BY wi.azure_work_item_id, wi.work_item_type, wi.title, wi.state,
+               wi.sync_status, wi.updated_date, wi.last_synced_at
       ORDER BY ${orderBy}
       LIMIT @limit OFFSET @offset
     `,
-    )
-    .all({
+    {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
       limit: pageSize,
       offset: (safePage - 1) * pageSize,
       ...queryParams,
-    }) as RecentContextRow[];
+    },
+  );
 
   return {
     items: rows.map((row) => ({
@@ -495,21 +487,19 @@ export function getRecentProjectContext(input: {
   };
 }
 
-export function retrieveStoredProjectContext(input: {
+export async function retrieveStoredProjectContext(input: {
   scope: ProjectScope;
   query: string;
   topK?: number;
   workItemIds?: string[];
-}): LlmContextSource[] {
+}): Promise<LlmContextSource[]> {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
-  const db = getDatabase();
   const topK = input.topK ?? 8;
 
   const rows = input.workItemIds?.length
-    ? db
-        .prepare(
-          `
+    ? await sqlAll<ContextChunkRow>(
+        `
           SELECT id, azure_work_item_id, work_item_type, document_name, content, metadata_json
           FROM document_chunks
           WHERE project_id = @projectId
@@ -527,16 +517,15 @@ export function retrieveStoredProjectContext(input: {
           ORDER BY azure_work_item_id, chunk_index
           LIMIT @limit
         `,
-        )
-        .all({
+        {
           projectId: scope.projectId,
           azureProjectId: scope.azureProjectId,
           limit: Math.max(topK, input.workItemIds.length * 3),
           ...Object.fromEntries(input.workItemIds.map((id, index) => [`id${index}`, id])),
-        })
-    : db
-        .prepare(
-          `
+        },
+      )
+    : await sqlAll<ContextChunkRow>(
+        `
           SELECT id, azure_work_item_id, work_item_type, document_name, content, metadata_json
           FROM document_chunks
           WHERE project_id = @projectId
@@ -551,14 +540,14 @@ export function retrieveStoredProjectContext(input: {
                 AND COALESCE(wi.sync_status, 'active') = 'active'
             )
         `,
-        )
-        .all({
+        {
           projectId: scope.projectId,
           azureProjectId: scope.azureProjectId,
-        });
+        },
+      );
 
   const terms = tokenize(input.query);
-  return (rows as ContextChunkRow[])
+  return rows
     .map((row) => toLlmContextSource(row, scoreContent(row.content, terms)))
     .filter((source) => input.workItemIds?.length || source.relevanceScore > 0)
     .sort((a, b) => b.relevanceScore - a.relevanceScore)

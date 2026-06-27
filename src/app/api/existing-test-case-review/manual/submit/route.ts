@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { countTestCategories } from "@/modules/analytics/test-category-normalization";
 import { z } from "zod";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { completeManualExistingTestCaseReview } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
 import { isAppError } from "@/modules/shared/errors/app-error";
 import { statusForManualValidationError, toErrorResponse } from "@/modules/shared/errors/error-response";
@@ -12,6 +12,7 @@ import {
   startWorkflowRun,
   updateWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -31,26 +32,32 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Paste the external LLM response before continuing." }, { status: 400 });
   }
 
-  const analyticsRunId = startWorkflowRun({
-    scope: parsed.data.scope,
-    workflowType: "test_gap_analysis",
-    workItemId: parsed.data.targetWorkItemId,
-  });
+  let trustedScope: ProjectScope | undefined;
+  let analyticsRunId: string | undefined;
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    analyticsRunId = startWorkflowRun({
+      scope: trustedScope,
+      workflowType: "test_gap_analysis",
+      workItemId: parsed.data.targetWorkItemId,
+      userId: ctx.userId,
+    });
     const result = completeManualExistingTestCaseReview({
-      scope: parsed.data.scope,
+      scope: trustedScope,
+      actor: ctx.userId,
       rawOutput: parsed.data.rawOutput,
       targetWorkItemId: parsed.data.targetWorkItemId,
     });
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const linkedTestCases = await adapter.fetchLinkedTestCases({
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
       userStoryId: parsed.data.targetWorkItemId,
     });
     const gapRows = result.validatedOutput.traceabilityMatrix.filter((row) => row.coverageStatus !== "Covered");
     const weakDuplicateCases = result.validatedOutput.findings.filter((finding) => finding.category === "Duplicate" || finding.category.startsWith("Weak")).length;
     updateWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       patch: {
         status: "generated",
@@ -86,7 +93,11 @@ export async function POST(request: Request) {
       ...result.validatedOutput,
     });
   } catch (error) {
-    failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External traceability review failed." });
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
+    if (trustedScope && analyticsRunId) {
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External traceability review failed." });
+    }
     if (isAppError(error)) {
       return NextResponse.json(toErrorResponse(error), { status: statusForManualValidationError(error) });
     }

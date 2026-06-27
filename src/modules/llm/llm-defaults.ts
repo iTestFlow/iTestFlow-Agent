@@ -27,6 +27,12 @@ export function normalizeLLMControlSettings(input: {
   };
 }
 
+export function getMaxOutputTokenCapDefaultFromEnv(): number {
+  return normalizeLLMControlSettings({
+    maxOutputTokenCap: process.env.LLM_MAX_OUTPUT_TOKEN_CAP,
+  }).maxOutputTokenCap;
+}
+
 function nearestAllowedValue(
   value: unknown,
   options: readonly number[],

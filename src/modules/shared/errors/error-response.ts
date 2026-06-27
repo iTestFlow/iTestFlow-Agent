@@ -87,6 +87,9 @@ function renderTechnicalDetails(input: {
   if (context?.schemaName) lines.push(`Schema: ${context.schemaName}`);
   if (context?.finishReason) lines.push(`Finish reason: ${context.finishReason}`);
   if (context?.tokenUsage) lines.push(`Tokens: ${formatTokenUsage(context.tokenUsage)}`);
+  if (context?.durationMs !== undefined) lines.push(`Duration: ${formatDurationMs(context.durationMs)}`);
+  if (context?.retryAttempts !== undefined) lines.push(`Retry attempts: ${context.retryAttempts}`);
+  if (context?.upstreamCause) lines.push(`Upstream cause: ${context.upstreamCause}`);
   if (context?.parsePosition !== undefined) lines.push(`Parse position: ${context.parsePosition}`);
   if (context?.jsonSnippet) lines.push(`JSON snippet: ${context.jsonSnippet}`);
   if (context?.rawOutputExcerpt) lines.push(`${RAW_OUTPUT_LABEL}: ${context.rawOutputExcerpt}`);
@@ -104,4 +107,12 @@ function formatTokenUsage(tokenUsage: NonNullable<ErrorTechnicalContext["tokenUs
     tokenUsage.total !== undefined ? `total=${tokenUsage.total}` : undefined,
   ].filter(Boolean);
   return segments.length ? segments.join(", ") : "unknown";
+}
+
+function formatDurationMs(durationMs: number) {
+  if (durationMs < 1000) return `${durationMs} ms`;
+  const totalSeconds = Math.round(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }

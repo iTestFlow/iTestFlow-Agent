@@ -26,6 +26,7 @@ export function SearchableCombobox({
   value,
   options,
   onValueChange,
+  onOpen,
   loading = false,
   disabled = false,
   placeholder = "Select an option",
@@ -41,6 +42,7 @@ export function SearchableCombobox({
   value: string;
   options: SearchableComboboxOption[];
   onValueChange: (value: string) => void;
+  onOpen?: () => void;
   loading?: boolean;
   disabled?: boolean;
   placeholder?: string;
@@ -75,6 +77,7 @@ export function SearchableCombobox({
   function handleOpenChange(nextOpen: boolean) {
     setOpen(nextOpen);
     if (!nextOpen) setSearch("");
+    if (nextOpen) onOpen?.();
   }
 
   return (

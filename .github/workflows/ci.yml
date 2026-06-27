@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - multi-user-self-hosted
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: itestflow
+          POSTGRES_PASSWORD: itestflow
+          POSTGRES_DB: itestflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U itestflow -d itestflow"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://itestflow:itestflow@localhost:5432/itestflow
+      APP_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      SESSION_SECRET: ci-session-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run db:migrate
+      - run: npm run typecheck
+      - run: node -e "if (!process.env.DATABASE_URL) { console.error('DATABASE_URL must be set so DB-backed tests do not silently skip.'); process.exit(1); }"
+      - run: npm test
+      - run: npm run build

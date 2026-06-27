@@ -6,21 +6,31 @@ import { Tabs as TabsPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 
+const TabsIdContext = React.createContext<string | null>(null)
+
+function makeTabId(baseId: string, value: string, part: "trigger" | "content") {
+  return `${baseId}-${part}-${value.replace(/[^A-Za-z0-9_-]/g, "-")}`
+}
+
 function Tabs({
   className,
   orientation = "horizontal",
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.Root>) {
+  const baseId = typeof props.id === "string" && props.id.length > 0 ? props.id : null
+
   return (
-    <TabsPrimitive.Root
-      data-slot="tabs"
-      data-orientation={orientation}
-      className={cn(
-        "group/tabs flex gap-2 data-horizontal:flex-col",
-        className
-      )}
-      {...props}
-    />
+    <TabsIdContext.Provider value={baseId}>
+      <TabsPrimitive.Root
+        data-slot="tabs"
+        data-orientation={orientation}
+        className={cn(
+          "group/tabs flex gap-2 data-horizontal:flex-col",
+          className
+        )}
+        {...props}
+      />
+    </TabsIdContext.Provider>
   )
 }
 
@@ -60,6 +70,15 @@ function TabsTrigger({
   className,
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
+  const baseId = React.useContext(TabsIdContext)
+  const value = String(props.value)
+  const stableIds = baseId
+    ? {
+        id: props.id ?? makeTabId(baseId, value, "trigger"),
+        "aria-controls": props["aria-controls"] ?? makeTabId(baseId, value, "content"),
+      }
+    : undefined
+
   return (
     <TabsPrimitive.Trigger
       data-slot="tabs-trigger"
@@ -71,6 +90,7 @@ function TabsTrigger({
         "after:absolute after:bg-foreground after:opacity-0 after:transition-opacity group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-[-5px] group-data-horizontal/tabs:after:h-0.5 group-data-vertical/tabs:after:inset-y-0 group-data-vertical/tabs:after:-right-1 group-data-vertical/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-[state=active]:after:opacity-100",
         className
       )}
+      {...stableIds}
       {...props}
     />
   )
@@ -80,10 +100,20 @@ function TabsContent({
   className,
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.Content>) {
+  const baseId = React.useContext(TabsIdContext)
+  const value = String(props.value)
+  const stableIds = baseId
+    ? {
+        id: props.id ?? makeTabId(baseId, value, "content"),
+        "aria-labelledby": props["aria-labelledby"] ?? makeTabId(baseId, value, "trigger"),
+      }
+    : undefined
+
   return (
     <TabsPrimitive.Content
       data-slot="tabs-content"
       className={cn("flex-1 text-sm outline-none", className)}
+      {...stableIds}
       {...props}
     />
   )

@@ -1,5 +1,8 @@
+import type { Metadata } from "next"
 import { ContentShell } from "@/components/layout/content-shell";
 import { TestExecutionEffortClient } from "./test-execution-effort-client";
+
+export const metadata: Metadata = { title: "Test Execution Effort" }
 
 export default function TestExecutionEffortPage() {
   return (

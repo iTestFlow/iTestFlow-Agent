@@ -487,6 +487,7 @@ export function RequirementsAnalysisClient() {
                 variant="analysis"
                 status={prep.status}
                 elapsedSeconds={prep.elapsedSeconds}
+                error={prep.error}
                 errorMessage={prep.errorMessage}
                 canCancel
                 onCancel={prep.cancel}
@@ -528,6 +529,7 @@ export function RequirementsAnalysisClient() {
               variant="analysis"
               status={gen.status}
               elapsedSeconds={gen.elapsedSeconds}
+              error={gen.error}
               errorMessage={gen.errorMessage}
               canCancel
               onCancel={gen.cancel}
@@ -727,7 +729,10 @@ function RequirementMentionPicker({
         className,
       )}
     >
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+      <div className={cn(
+        "flex flex-col gap-3 lg:flex-row lg:justify-between",
+        compact ? "lg:items-center" : "lg:items-start",
+      )}>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold text-foreground">Mention members</div>
           <div className="mt-2 flex min-h-8 flex-wrap items-center gap-2">
@@ -761,7 +766,7 @@ function RequirementMentionPicker({
           placeholder="Mention members"
           ariaLabel="Mention members"
           triggerVariant="secondary"
-          triggerClassName="h-8 w-full lg:w-auto"
+          triggerClassName={cn("w-full lg:w-auto", compact ? "h-10" : "h-8")}
           contentClassName="w-[360px]"
           align="end"
         />

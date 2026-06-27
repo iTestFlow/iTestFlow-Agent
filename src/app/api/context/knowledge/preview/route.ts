@@ -1,11 +1,20 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import {
+  authErrorResponse,
+  getUserLLMProvider,
+  requireWorkflowContext,
+  requireWorkflowRole,
+} from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { previewGeneratedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { isAppError } from "@/modules/shared/errors/app-error";
+import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
@@ -18,22 +27,29 @@ const TruncatedKnowledgeBaseOutputMessage =
   "The model ran out of output tokens before completing the knowledge-base JSON. No data was saved. Please retry extraction; if it still fails, increase max tokens or index a narrower context.";
 
 export async function POST(request: Request) {
-  const parsed = RequestSchema.safeParse(await request.json());
+  let requestBody: unknown;
+  try {
+    requestBody = await request.json();
+  } catch {
+    return NextResponse.json({ error: "The request body must be valid JSON." }, { status: 400 });
+  }
+
+  const parsed = RequestSchema.safeParse(requestBody);
   if (!parsed.success) {
     return NextResponse.json({ error: "Please select an Azure DevOps project before previewing the knowledge base." }, { status: 400 });
   }
 
+  let trustedScope: ProjectScope | undefined;
+  let actor: string | undefined;
   try {
-    const provider = getConfiguredProviderFromEnv();
-    if (!provider) {
-      return NextResponse.json(
-        { error: "No LLM provider configured. Set DEFAULT_LLM_PROVIDER and the provider API key in .env.local." },
-        { status: 503 },
-      );
-    }
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can build project knowledge.");
+    actor = ctx.userId;
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const provider = await getUserLLMProvider(ctx);
 
     const draft = await previewGeneratedProjectKnowledgeBase({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       provider,
       mode: parsed.data.mode ?? "incremental",
     });
@@ -42,7 +58,13 @@ export async function POST(request: Request) {
       tokenUsage: provider.getTokenUsage() ?? (draft.provider === "local" ? { input: 0, output: 0, total: 0 } : undefined),
     });
   } catch (error) {
-    writeGenerationFailureAudit({ scope: parsed.data.scope, action: "rag.preview_project_knowledge_base", label: "Project knowledge preview failed.", error });
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
+    if (trustedScope && actor) writeGenerationFailureAudit({ scope: trustedScope, actor, action: "rag.preview_project_knowledge_base", label: "Project knowledge preview failed.", error });
+    if (isAppError(error)) {
+      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
+    }
+
     if (isTruncatedKnowledgeBaseOutputError(error)) {
       return NextResponse.json({ error: TruncatedKnowledgeBaseOutputMessage }, { status: 422 });
     }

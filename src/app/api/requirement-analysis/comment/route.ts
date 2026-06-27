@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { pushApprovedRequirementComment } from "@/modules/integrations/azure-devops/azure-devops-comment.service";
 import {
   completeWorkflowRun,
   failWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -33,9 +34,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "A selected project, target story, selected findings, and comment body are required." }, { status: 400 });
   }
 
+  let trustedScope: ProjectScope | undefined;
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
-    const result = await pushApprovedRequirementComment(adapter, parsed.data.scope, {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
+    const result = await pushApprovedRequirementComment(adapter, trustedScope, {
+      actor: ctx.userId,
       workItemId: parsed.data.targetWorkItemId,
       commentBody: parsed.data.commentBody,
       mentionedUsers: parsed.data.mentionedUsers,
@@ -43,7 +48,7 @@ export async function POST(request: Request) {
     if (parsed.data.analyticsRunId) {
       if (result.success) {
         completeWorkflowRun({
-          scope: parsed.data.scope,
+          scope: trustedScope,
           runId: parsed.data.analyticsRunId,
           status: "published",
           valueRealized: true,
@@ -56,15 +61,17 @@ export async function POST(request: Request) {
           },
         });
       } else {
-        failWorkflowRun({ scope: parsed.data.scope, runId: parsed.data.analyticsRunId, error: "Requirement comment publish failed." });
+        failWorkflowRun({ scope: trustedScope, runId: parsed.data.analyticsRunId, error: "Requirement comment publish failed." });
       }
     }
 
     return NextResponse.json(result, { status: result.success ? 200 : 502 });
   } catch (error) {
-    if (parsed.data.analyticsRunId) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
+    if (trustedScope && parsed.data.analyticsRunId) {
       failWorkflowRun({
-        scope: parsed.data.scope,
+        scope: trustedScope,
         runId: parsed.data.analyticsRunId,
         error: error instanceof Error ? error.message : "Azure DevOps comment push failed.",
       });

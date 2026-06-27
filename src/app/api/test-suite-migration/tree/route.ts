@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { SuiteTreeRequestSchema } from "@/modules/test-suite-migration/test-suite-migration.schema";
 import { loadMigrationSuiteTree } from "@/modules/test-suite-migration/test-suite-migration.service";
 import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -13,9 +14,11 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const suiteTree = await loadMigrationSuiteTree(adapter, {
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
       testPlanId: parsed.data.testPlanId,
     });
     return NextResponse.json(
@@ -23,6 +26,8 @@ export async function POST(request: Request) {
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? sanitizeAzureError(error.message) : "Azure Test Suite tree fetch failed." },
       { status: 503 },

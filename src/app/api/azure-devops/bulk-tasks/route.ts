@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createBulkTasks } from "@/modules/integrations/azure-devops/azure-devops-bulk-task.service";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
 import {
   completeWorkflowRun,
   failWorkflowRun,
   startWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -144,20 +145,26 @@ export async function POST(request: Request) {
     );
   }
 
-  const analyticsRunId = startWorkflowRun({
-    scope: parsed.data.scope,
-    workflowType: "bulk_task_creation",
-    workItemId: "bulk-tasks",
-  });
+  let trustedScope: ProjectScope | undefined;
+  let analyticsRunId: string | undefined;
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
-    const result = await createBulkTasks(adapter, parsed.data.scope, {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    analyticsRunId = startWorkflowRun({
+      scope: trustedScope,
+      workflowType: "bulk_task_creation",
+      workItemId: "bulk-tasks",
+      userId: ctx.userId,
+    });
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
+    const result = await createBulkTasks(adapter, trustedScope, {
+      actor: ctx.userId,
       taskTemplates: parsed.data.taskTemplates,
       targets: parsed.data.targets,
     });
     if (result.created.length > 0) {
       completeWorkflowRun({
-        scope: parsed.data.scope,
+        scope: trustedScope,
         runId: analyticsRunId,
         valueRealized: true,
         patch: {
@@ -169,11 +176,15 @@ export async function POST(request: Request) {
         },
       });
     } else {
-      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: "No bulk tasks were created." });
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: "No bulk tasks were created." });
     }
     return NextResponse.json({ ...result, analyticsRunId });
   } catch (error) {
-    failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Bulk task creation failed." });
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
+    if (trustedScope && analyticsRunId) {
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Bulk task creation failed." });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? sanitizeAzureError(error.message) : "Azure DevOps bulk task creation failed." },
       { status: 503 },

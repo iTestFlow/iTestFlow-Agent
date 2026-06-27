@@ -1,26 +1,11 @@
 import "server-only";
 
-import { getDatabase } from "@/modules/shared/infrastructure/database/db";
-
-let ensured = false;
-
+/**
+ * Historically this lazily added columns to azure_devops_work_items on first use
+ * (content_hash, sync_status, current_index_run_id) for older node:sqlite
+ * databases. Those columns are now part of the initial PostgreSQL migration, so
+ * this is a no-op retained for call-site compatibility.
+ */
 export function ensureProjectContextSyncSchema() {
-  if (ensured) return;
-
-  const db = getDatabase();
-  const columns = new Set(
-    (db.prepare("PRAGMA table_info(azure_devops_work_items)").all() as Array<{ name: string }>).map((column) => column.name),
-  );
-
-  if (!columns.has("content_hash")) {
-    db.exec("ALTER TABLE azure_devops_work_items ADD COLUMN content_hash TEXT");
-  }
-  if (!columns.has("sync_status")) {
-    db.exec("ALTER TABLE azure_devops_work_items ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'active'");
-  }
-  if (!columns.has("current_index_run_id")) {
-    db.exec("ALTER TABLE azure_devops_work_items ADD COLUMN current_index_run_id TEXT");
-  }
-
-  ensured = true;
+  // No-op: schema is owned by migrations.
 }

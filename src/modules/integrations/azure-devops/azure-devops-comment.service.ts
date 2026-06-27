@@ -13,7 +13,7 @@ type MentionedUser = {
 export async function pushApprovedRequirementComment(
   adapter: AzureDevOpsAdapter,
   scopeInput: ProjectScope,
-  input: { workItemId: string; commentBody: string; mentionedUsers?: MentionedUser[] },
+  input: { actor: string; workItemId: string; commentBody: string; mentionedUsers?: MentionedUser[] },
 ) {
   const scope = assertProjectScope(scopeInput);
   const mentionedUsers = input.mentionedUsers ?? [];
@@ -28,6 +28,7 @@ export async function pushApprovedRequirementComment(
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     entityType: "work_item",
     entityId: input.workItemId,
     action: "azure_devops.push_requirement_comment",

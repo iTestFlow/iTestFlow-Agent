@@ -844,6 +844,7 @@ Actual: the button stays inactive / no request is triggered.`}
                 variant="generic"
                 status={prep.status}
                 elapsedSeconds={prep.elapsedSeconds}
+                error={prep.error}
                 errorMessage={prep.errorMessage}
                 canCancel
                 onCancel={prep.cancel}
@@ -860,6 +861,7 @@ Actual: the button stays inactive / no request is triggered.`}
               variant="generic"
               status={gen.status}
               elapsedSeconds={gen.elapsedSeconds}
+              error={gen.error}
               errorMessage={gen.errorMessage}
               canCancel
               onCancel={gen.cancel}

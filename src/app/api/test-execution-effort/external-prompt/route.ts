@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
+import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { loadTestExecutionEffortData } from "@/modules/test-execution-effort/test-execution-effort.data-loader";
 import {
   buildTestExecutionEffortPreview,
@@ -14,6 +14,7 @@ import {
   TestExecutionEffortOptionsSchema,
 } from "@/modules/test-execution-effort/test-execution-effort.schema";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -33,14 +34,16 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const options = TestExecutionEffortOptionsSchema.parse(parsed.data);
     const data = await loadTestExecutionEffortData({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       adapter,
       storyId: parsed.data.storyId,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: getEffectiveRuntimeSettings()?.context.retrievalTopK ?? 8,
+      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
     });
     const preview = buildTestExecutionEffortPreview({
       targetRequirement: data.targetRequirement,
@@ -48,7 +51,7 @@ export async function POST(request: Request) {
       hasProjectContext: data.hasProjectContext,
     });
     const draft = buildTestExecutionEffortPromptDraft({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       targetRequirement: data.targetRequirement,
       linkedTestCases: data.linkedTestCases,
       relatedWorkItems: data.relatedWorkItems,
@@ -71,6 +74,8 @@ export async function POST(request: Request) {
       ...draft,
     });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     const safeError = toSafeTestExecutionEffortError(error, "External LLM Test Execution Effort prompt preparation failed.", parsed.data.storyId);
     return NextResponse.json({ error: safeError.message }, { status: safeError.status });
   }

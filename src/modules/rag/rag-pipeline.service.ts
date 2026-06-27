@@ -32,6 +32,7 @@ export function chunkText(input: {
 
 export async function indexProjectContext(input: {
   scope: ProjectScope;
+  actor: string;
   vectorStore: VectorStore;
   chunks: RagChunk[];
 }) {
@@ -45,6 +46,7 @@ export async function indexProjectContext(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "rag.index_project_context",
     status: "Success",
     message: `Indexed ${input.chunks.length} project-scoped chunks.`,

@@ -1,11 +1,12 @@
 import "server-only";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { getDatabase } from "@/modules/shared/infrastructure/database/db";
+import { sqlAll } from "@/modules/shared/infrastructure/database/db";
 import type { DashboardRecentActivity } from "@/types/dashboard";
 import type { ActivityLogActionOption, ActivityLogResult } from "@/types/activity-log";
 
 type ScopeFilter = {
+  workspaceId: string;
   projectId: string | null;
   azureProjectId: string | null;
 };
@@ -30,6 +31,7 @@ type RecentActivityRow = {
 type ActionRow = { action: string };
 
 export type ActivityLogInput = {
+  workspaceId: string;
   scope?: ProjectScope;
   search?: string;
   groups?: string[];
@@ -47,18 +49,20 @@ const ACTION_GROUP_LABELS: Record<string, string> = {
   rag: "RAG",
 };
 
-function scopeParams(scope?: ProjectScope): ScopeFilter {
-  if (!scope) return { projectId: null, azureProjectId: null };
+function scopeParams(workspaceId: string, scope?: ProjectScope): ScopeFilter {
+  if (!scope) return { workspaceId, projectId: null, azureProjectId: null };
   const validated = assertProjectScope(scope);
   return {
+    workspaceId,
     projectId: validated.projectId,
     azureProjectId: validated.azureProjectId,
   };
 }
 
 function scopeWhere() {
-  return `(@projectId IS NULL OR project_id = @projectId)
-    AND (@azureProjectId IS NULL OR azure_project_id = @azureProjectId)`;
+  return `workspace_id = @workspaceId
+    AND (@projectId::text IS NULL OR project_id = @projectId)
+    AND (@azureProjectId::text IS NULL OR azure_project_id = @azureProjectId)`;
 }
 
 function clampLimit(value: number | undefined) {
@@ -133,10 +137,11 @@ function mapRow(row: RecentActivityRow): DashboardRecentActivity {
 
 // Distinct action groups present in the scope (ignores search/group/date filters so the
 // dropdown never loses options while the user is filtering).
-function getAvailableActions(scopeFilter: ScopeFilter): ActivityLogActionOption[] {
-  const rows = getDatabase()
-    .prepare(`SELECT DISTINCT action FROM audit_logs WHERE ${scopeWhere()}`)
-    .all(scopeFilter) as ActionRow[];
+async function getAvailableActions(scopeFilter: ScopeFilter): Promise<ActivityLogActionOption[]> {
+  const rows = await sqlAll<ActionRow>(
+    `SELECT DISTINCT action FROM audit_logs WHERE ${scopeWhere()}`,
+    scopeFilter,
+  );
 
   const groups = new Set<string>();
   for (const row of rows) {
@@ -149,9 +154,8 @@ function getAvailableActions(scopeFilter: ScopeFilter): ActivityLogActionOption[
     .map((value) => ({ value, label: formatActionGroupLabel(value) }));
 }
 
-export function getActivityLog(input: ActivityLogInput): ActivityLogResult {
-  const db = getDatabase();
-  const scopeFilter = scopeParams(input.scope);
+export async function getActivityLog(input: ActivityLogInput): Promise<ActivityLogResult> {
+  const scopeFilter = scopeParams(input.workspaceId, input.scope);
   const limit = clampLimit(input.limit);
 
   const where: string[] = [scopeWhere()];
@@ -163,9 +167,9 @@ export function getActivityLog(input: ActivityLogInput): ActivityLogResult {
     where.push(
       `(message LIKE @q ESCAPE '\\'
         OR action LIKE @q ESCAPE '\\'
-        OR IFNULL(entity_id, '') LIKE @q ESCAPE '\\'
-        OR IFNULL(entity_type, '') LIKE @q ESCAPE '\\'
-        OR IFNULL(actor, '') LIKE @q ESCAPE '\\')`,
+        OR COALESCE(entity_id, '') LIKE @q ESCAPE '\\'
+        OR COALESCE(entity_type, '') LIKE @q ESCAPE '\\'
+        OR COALESCE(actor, '') LIKE @q ESCAPE '\\')`,
     );
   }
 
@@ -190,16 +194,15 @@ export function getActivityLog(input: ActivityLogInput): ActivityLogResult {
 
   params.queryLimit = limit + 1;
 
-  const rows = db
-    .prepare(
-      `SELECT id, project_id, azure_project_id, azure_project_name, azure_organization_url,
-              entity_type, entity_id, action, status, actor, message, details_json, created_at, updated_at
-       FROM audit_logs
-       WHERE ${where.join(" AND ")}
-       ORDER BY created_at DESC
-       LIMIT @queryLimit`,
-    )
-    .all(params) as RecentActivityRow[];
+  const rows = await sqlAll<RecentActivityRow>(
+    `SELECT id, project_id, azure_project_id, azure_project_name, azure_organization_url,
+            entity_type, entity_id, action, status, actor, message, details_json, created_at, updated_at
+     FROM audit_logs
+     WHERE ${where.join(" AND ")}
+     ORDER BY created_at DESC
+     LIMIT @queryLimit`,
+    params,
+  );
 
   const visible = rows.slice(0, limit);
 
@@ -207,6 +210,6 @@ export function getActivityLog(input: ActivityLogInput): ActivityLogResult {
     generatedAt: new Date().toISOString(),
     items: visible.map(mapRow),
     hasMore: rows.length > limit,
-    availableActions: getAvailableActions(scopeFilter),
+    availableActions: await getAvailableActions(scopeFilter),
   };
 }

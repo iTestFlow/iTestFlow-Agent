@@ -1,21 +1,43 @@
 "use client"
 
-import { CalendarClock, ChevronDown, Loader2, Menu, RefreshCw, Settings2 } from "lucide-react"
+import { Check, ChevronDown, Eye, EyeOff, KeyRound, Loader2, LogOut, Menu, RefreshCw, Settings2, UserRound } from "lucide-react"
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ThemeToggle } from "@/components/theme/theme-toggle"
 import { HeaderProjectSelector } from "@/shared/components/live/project-status"
-import { ModelPicker, useProviderModels } from "@/shared/components/live/model-picker"
-import { dispatchRuntimeSettingsChanged, subscribeRuntimeSettingsChanged } from "@/shared/lib/runtime-settings-events"
-import { apiErrorMessage } from "@/shared/validators/api-validation-errors"
 import { cn } from "@/lib/utils"
-import { isCronExpressionDue } from "@/modules/settings/cron-expression"
 
 type AzureProfile = {
   displayName: string
@@ -23,32 +45,41 @@ type AzureProfile = {
   imageUrl?: string
 }
 
-type RuntimeSettingsSummary = {
-  configured: boolean
-  llm?: {
-    provider?: string
-    model?: string
-    hasApiKey?: boolean
-    baseUrl?: string
-  }
-  context?: {
-    autoUpdate?: {
-      enabled: boolean
-      cronExpression: string
-      projectScope?: {
-        azureProjectName: string
-      } | null
-    }
-  }
+type CredentialSummary = {
+  status: "not_configured" | "configured" | "invalid" | "expired"
+  maskedPreview?: string | null
+  lastValidatedAt?: string | null
+  provider?: string | null
+  model?: string | null
+  isStale?: boolean
 }
 
-function initialsFromName(value?: string) {
-  if (!value) return "AD"
-  const words = value.trim().split(/\s+/).filter(Boolean)
-  return words.slice(0, 2).map((word) => word[0]?.toUpperCase()).join("") || "AD"
+type CredentialStatus = {
+  azurePat: CredentialSummary
+  llm: CredentialSummary
 }
 
-function providerLabel(value?: string) {
+type WorkspaceRole = "owner" | "admin" | "member"
+
+type SessionSummary = {
+  authenticated: boolean
+  userId?: string
+  membership?: {
+    workspaceId: string
+    role: WorkspaceRole
+  } | null
+}
+
+type SyncScheduleStatus = {
+  enabled: boolean
+  nextRunAt: string | null
+  lastEnqueuedAt: string | null
+}
+
+type Provider = "openai" | "gemini" | "anthropic"
+type ModelOption = { id: string; displayName: string }
+
+function providerLabel(value?: string | null) {
   switch (value) {
     case "openai":
       return "OpenAI"
@@ -61,13 +92,41 @@ function providerLabel(value?: string) {
   }
 }
 
+function isProvider(value?: string | null): value is Provider {
+  return value === "openai" || value === "gemini" || value === "anthropic"
+}
+
+function roleLabel(role: WorkspaceRole) {
+  switch (role) {
+    case "owner":
+      return "Owner"
+    case "admin":
+      return "Admin"
+    case "member":
+      return "Member"
+  }
+}
+
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString()
+}
+
 export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   const [profile, setProfile] = useState<AzureProfile | null>(null)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [profileLoading, setProfileLoading] = useState(true)
-  const [settingsSummary, setSettingsSummary] = useState<RuntimeSettingsSummary | null>(null)
-  const [settingsError, setSettingsError] = useState(false)
-  const [settingsLoading, setSettingsLoading] = useState(true)
+  const [credentials, setCredentials] = useState<CredentialStatus | null>(null)
+  const [credentialsLoading, setCredentialsLoading] = useState(true)
+  const [syncSchedule, setSyncSchedule] = useState<SyncScheduleStatus | null>(null)
+  const [syncScheduleLoading, setSyncScheduleLoading] = useState(true)
+  const [syncScheduleVisible, setSyncScheduleVisible] = useState(true)
+  const [workspaceRole, setWorkspaceRole] = useState<WorkspaceRole | null>(null)
+  const [workspaceRoleLoading, setWorkspaceRoleLoading] = useState(true)
+  const [loggingOut, setLoggingOut] = useState(false)
+  const [patDialogOpen, setPatDialogOpen] = useState(false)
+  const [patInput, setPatInput] = useState("")
+  const [patReveal, setPatReveal] = useState(false)
+  const [patSaving, setPatSaving] = useState(false)
 
   const loadProfile = useCallback(async () => {
     setProfileLoading(true)
@@ -85,41 +144,141 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
     }
   }, [])
 
-  const loadSettingsSummary = useCallback(async () => {
-    setSettingsLoading(true)
+  const loadSession = useCallback(async () => {
+    setWorkspaceRoleLoading(true)
     try {
-      const response = await fetch("/api/settings/runtime", { cache: "no-store" })
-      const json = await response.json()
-      if (!response.ok) throw new Error(json.error ?? "Failed to fetch runtime settings.")
-      setSettingsSummary(json)
-      setSettingsError(false)
+      const response = await fetch("/api/auth/session", { cache: "no-store" })
+      if (!response.ok) {
+        setWorkspaceRole(null)
+        return
+      }
+      const data = (await response.json()) as SessionSummary
+      setWorkspaceRole(data.authenticated ? data.membership?.role ?? null : null)
     } catch {
-      setSettingsSummary({ configured: false })
-      setSettingsError(true)
+      setWorkspaceRole(null)
     } finally {
-      setSettingsLoading(false)
+      setWorkspaceRoleLoading(false)
     }
   }, [])
 
-  useEffect(() => {
-    void loadProfile()
-    void loadSettingsSummary()
-  }, [loadProfile, loadSettingsSummary])
+  const loadCredentials = useCallback(async () => {
+    setCredentialsLoading(true)
+    try {
+      const response = await fetch("/api/settings/credentials", { cache: "no-store" })
+      if (!response.ok) {
+        setCredentials(null)
+        return
+      }
+      setCredentials((await response.json()) as CredentialStatus)
+    } catch {
+      setCredentials(null)
+    } finally {
+      setCredentialsLoading(false)
+    }
+  }, [])
 
-  useEffect(() => {
-    return subscribeRuntimeSettingsChanged<RuntimeSettingsSummary>((detail) => {
-      if (detail) {
-        setSettingsSummary(detail)
-        setSettingsError(false)
-        setSettingsLoading(false)
+  const loadSyncSchedule = useCallback(async () => {
+    setSyncScheduleLoading(true)
+    try {
+      const response = await fetch("/api/workspace/sync-schedule/status", { cache: "no-store" })
+      if (response.status === 401 || response.status === 403) {
+        setSyncSchedule(null)
+        setSyncScheduleVisible(false)
+        return
+      }
+      if (!response.ok) {
+        setSyncSchedule(null)
+        setSyncScheduleVisible(true)
+        return
+      }
+      const data = (await response.json()) as { schedule: SyncScheduleStatus | null }
+      setSyncSchedule(data.schedule)
+      setSyncScheduleVisible(true)
+    } catch {
+      setSyncSchedule(null)
+      setSyncScheduleVisible(true)
+    } finally {
+      setSyncScheduleLoading(false)
+    }
+  }, [])
+
+  const handleLogout = useCallback(async () => {
+    if (loggingOut) return
+    setLoggingOut(true)
+    try {
+      const response = await fetch("/api/auth/logout", { method: "POST", cache: "no-store" })
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string }
+        throw new Error(data.error ?? "Could not log out.")
+      }
+      window.location.assign("/login")
+    } catch (error) {
+      setLoggingOut(false)
+      toast.error(error instanceof Error ? error.message : "Could not log out.")
+    }
+  }, [loggingOut])
+
+  const handlePatDialogOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (patSaving) return
+      setPatDialogOpen(nextOpen)
+      if (nextOpen && !credentials && !credentialsLoading) void loadCredentials()
+      if (!nextOpen) {
+        setPatInput("")
+        setPatReveal(false)
+      }
+    },
+    [credentials, credentialsLoading, loadCredentials, patSaving],
+  )
+
+  const handleReplacePat = useCallback(async () => {
+    const nextPat = patInput.trim()
+    if (!nextPat) {
+      toast.error("Enter your new Azure DevOps PAT.")
+      return
+    }
+
+    setPatSaving(true)
+    try {
+      const response = await fetch("/api/settings/credentials", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ azurePat: nextPat }),
+      })
+      const data = (await response.json().catch(() => ({}))) as CredentialStatus & { error?: string }
+      if (!response.ok) {
+        toast.error(data.error ?? "Could not replace your PAT.")
         return
       }
 
-      void loadSettingsSummary()
-    })
-  }, [loadSettingsSummary])
+      toast.success("Azure DevOps PAT replaced.")
+      setCredentials({ azurePat: data.azurePat, llm: data.llm })
+      setPatInput("")
+      setPatReveal(false)
+      setPatDialogOpen(false)
+      window.dispatchEvent(new CustomEvent("itestflow:credentials-changed"))
+      void loadProfile()
+    } finally {
+      setPatSaving(false)
+    }
+  }, [loadProfile, patInput])
 
-  const azureConfiguredError = profileError?.toLowerCase().includes("not configured")
+  useEffect(() => {
+    void loadProfile()
+    void loadSession()
+    void loadCredentials()
+    void loadSyncSchedule()
+    const onCredentialsChange = () => void loadCredentials()
+    const onSyncScheduleChange = () => void loadSyncSchedule()
+    window.addEventListener("itestflow:credentials-changed", onCredentialsChange)
+    window.addEventListener("itestflow:sync-schedule-changed", onSyncScheduleChange)
+    return () => {
+      window.removeEventListener("itestflow:credentials-changed", onCredentialsChange)
+      window.removeEventListener("itestflow:sync-schedule-changed", onSyncScheduleChange)
+    }
+  }, [loadProfile, loadSession, loadCredentials, loadSyncSchedule])
+
+  const azureConfiguredError = profileError?.toLowerCase().includes("not configured") || profileError?.toLowerCase().includes("personal access token")
   const azureStatus = profile
     ? { text: "Azure: Connected", tone: "connected" as const, title: `Azure DevOps connected as ${profile.displayName}` }
     : profileError
@@ -130,28 +289,51 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         }
       : { text: "Azure: Checking", tone: "checking" as const, title: "Checking Azure DevOps connection." }
 
-  const llm = settingsSummary?.llm
-  const llmConnected = Boolean(settingsSummary?.configured && llm?.provider && llm.model && llm.hasApiKey)
+  const llm = credentials?.llm
+  const llmConnected = llm?.status === "configured"
   const llmStatus = llmConnected
     ? {
-        text: `LLM: ${providerLabel(llm?.provider)} / ${llm?.model}`,
+        text: `LLM: ${providerLabel(llm?.provider)} / ${llm?.model ?? ""}`.trim(),
         tone: "connected" as const,
-        title: `LLM configured: ${providerLabel(llm?.provider)} using ${llm?.model}`,
+        title: `LLM configured: ${providerLabel(llm?.provider)}${llm?.model ? ` using ${llm.model}` : ""}`,
       }
-    : !settingsSummary && !settingsError
-      ? {
-          text: "LLM: Checking",
-          tone: "checking" as const,
-          title: "Checking runtime LLM configuration.",
+    : credentialsLoading
+      ? { text: "LLM: Checking", tone: "checking" as const, title: "Checking your LLM credentials." }
+      : {
+          text: "LLM: Not configured",
+          tone: "missing" as const,
+          title: "Add your LLM provider, model, and API key in Settings → My Credentials.",
         }
-    : {
-        text: settingsError ? "LLM: Unavailable" : "LLM: Not configured",
-        tone: settingsError ? "warning" as const : "missing" as const,
-        title: settingsError
-          ? "Runtime settings could not be loaded."
-          : "Configure an LLM provider, model, and API key in Settings.",
-      }
-  const cronStatus = useMemo(() => getCronStatus(settingsSummary, settingsError), [settingsSummary, settingsError])
+
+  const syncStatus = syncScheduleLoading
+    ? { text: "Sync: Checking", tone: "checking" as const, title: "Checking scheduled knowledge sync." }
+    : !syncSchedule
+      ? { text: "Sync: Off", tone: "missing" as const, title: "No scheduled knowledge sync is configured." }
+      : syncSchedule.enabled
+        ? {
+            text: "Sync: On",
+            tone: syncSchedule.nextRunAt ? "connected" as const : "warning" as const,
+            title: syncSchedule.nextRunAt
+              ? `Scheduled knowledge sync is enabled. Next sync: ${formatDateTime(syncSchedule.nextRunAt)}.`
+              : "Scheduled knowledge sync is enabled, but the next sync time is not available.",
+          }
+        : {
+            text: "Sync: Off",
+            tone: "warning" as const,
+            title: syncSchedule.lastEnqueuedAt
+              ? `Scheduled knowledge sync is disabled. Last enqueued: ${formatDateTime(syncSchedule.lastEnqueuedAt)}.`
+              : "Scheduled knowledge sync is disabled.",
+          }
+
+  // Proactive PAT health: only surfaced when there's a problem (expired/rejected
+  // at use-time, or stale). A healthy PAT shows nothing extra here.
+  const pat = credentials?.azurePat
+  const patWarning =
+    pat?.status === "expired" || pat?.status === "invalid"
+      ? { text: "Azure PAT: Expired", title: "Azure DevOps rejected your PAT. Re-enter it in Settings → My Credentials." }
+      : pat?.isStale
+        ? { text: "Azure PAT: Re-validate", title: "Your Azure DevOps PAT hasn't been validated in a while. Re-enter it in Settings → My Credentials." }
+        : null
 
   return (
     <header className="sticky top-0 z-30 flex min-h-16 items-center gap-3 border-b border-border bg-card/95 px-4 text-card-foreground shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/85 lg:px-6">
@@ -171,191 +353,277 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
 
       <div className="hidden min-w-0 items-center gap-2 xl:flex">
         <ConnectivityChip {...azureStatus} />
-        <LLMModelSwitcher
+        {patWarning ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Link
+                href="/settings"
+                className={connectivityChipClass("warning", "max-w-[220px] cursor-pointer hover:brightness-95")}
+                aria-label={patWarning.title}
+              >
+                <span className="truncate">{patWarning.text}</span>
+                <Settings2 className="size-3.5 shrink-0" />
+              </Link>
+            </TooltipTrigger>
+            <TooltipContent sideOffset={8} className="max-w-sm text-left">{patWarning.title}</TooltipContent>
+          </Tooltip>
+        ) : null}
+        <LlmModelChip
           status={llmStatus}
-          settingsSummary={settingsSummary}
-          settingsError={settingsError}
-          onSettingsSummaryChange={(summary) => {
-            setSettingsSummary(summary)
-            setSettingsError(false)
-            dispatchRuntimeSettingsChanged(summary)
-          }}
+          provider={isProvider(llm?.provider) ? llm.provider : null}
+          model={llm?.model ?? ""}
+          disabled={credentialsLoading}
+          onChanged={loadCredentials}
         />
-        <ConnectivityChip {...cronStatus} className="max-w-[150px]" icon={<CalendarClock className="size-3.5 shrink-0" />} />
+        {syncScheduleVisible ? <ConnectivityChip {...syncStatus} className="max-w-[170px]" /> : null}
         <Button
           type="button"
           variant="ghost"
           size="icon-sm"
           onClick={() => {
             void loadProfile()
-            void loadSettingsSummary()
+            void loadSession()
+            void loadCredentials()
+            void loadSyncSchedule()
           }}
-          disabled={profileLoading || settingsLoading}
-          aria-label="Refresh Azure DevOps and LLM status"
-          title="Refresh Azure DevOps and LLM status"
+          disabled={profileLoading || workspaceRoleLoading || credentialsLoading || syncScheduleLoading}
+          aria-label="Refresh Azure DevOps, role, credential, and sync status"
+          title="Refresh Azure DevOps, role, credential, and sync status"
         >
-          <RefreshCw className={cn("size-3.5", (profileLoading || settingsLoading) && "animate-spin")} />
+          <RefreshCw className={cn("size-3.5", (profileLoading || workspaceRoleLoading || credentialsLoading || syncScheduleLoading) && "animate-spin")} />
         </Button>
       </div>
 
       <ThemeToggle />
 
-      <div className="hidden shrink-0 items-center gap-2 rounded-lg border border-border bg-background/70 px-2 py-1.5 sm:flex">
-        <Avatar className="size-7">
-          {profile?.imageUrl ? <AvatarImage src={profile.imageUrl} alt="" /> : null}
-          <AvatarFallback className="bg-primary/10 text-xs font-semibold text-primary">
-            {initialsFromName(profile?.displayName)}
-          </AvatarFallback>
-        </Avatar>
-        <div className="hidden min-w-0 sm:block">
-          <div className="max-w-48 truncate text-sm font-medium text-foreground">
-            {profile?.displayName ?? (profileError ? "Azure DevOps user unavailable" : "Loading Azure DevOps user")}
-          </div>
-          {profile?.uniqueName ? <div className="max-w-48 truncate text-xs text-muted-foreground">{profile.uniqueName}</div> : null}
-        </div>
-      </div>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="flex shrink-0 items-center gap-2 rounded-lg border border-border bg-background/70 px-2 py-1.5 text-left transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={`Open account menu${profile?.displayName ? ` for ${profile.displayName}` : ""}`}
+          >
+            <Avatar className="size-7">
+              {profile?.imageUrl ? <AvatarImage src={profile.imageUrl} alt="" /> : null}
+              <AvatarFallback className="bg-primary/10 text-primary">
+                <UserRound className="size-4" aria-hidden="true" />
+              </AvatarFallback>
+            </Avatar>
+            <div className="hidden min-w-0 sm:block">
+              <div className="flex max-w-56 items-center gap-1.5">
+                <span className="min-w-0 truncate text-sm font-medium">
+                  {profile?.displayName ?? (profileError ? "Azure DevOps user unavailable" : "Loading Azure DevOps user")}
+                </span>
+                <RoleBadge role={workspaceRole} className="hidden md:inline-flex" />
+              </div>
+              {profile?.uniqueName ? <div className="max-w-48 truncate text-xs text-muted-foreground">{profile.uniqueName}</div> : null}
+            </div>
+            <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-64">
+          <DropdownMenuLabel className="space-y-1">
+            <span className="block truncate text-sm font-medium text-foreground">
+              {profile?.displayName ?? (profileError ? "Azure DevOps user unavailable" : "Loading Azure DevOps user")}
+            </span>
+            {profile?.uniqueName ? <span className="block truncate font-normal">{profile.uniqueName}</span> : null}
+            {workspaceRole ? (
+              <span className="flex items-center gap-1.5 font-normal">
+                <span className="text-muted-foreground">Role:</span>
+                <RoleBadge role={workspaceRole} />
+              </span>
+            ) : workspaceRoleLoading ? (
+              <span className="block truncate font-normal text-muted-foreground">Role: Checking</span>
+            ) : null}
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem asChild>
+            <Link href="/settings">
+              <Settings2 className="size-4" />
+              Settings
+            </Link>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              handlePatDialogOpenChange(true)
+            }}
+          >
+            <KeyRound className="size-4" />
+            Replace access token
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            variant="destructive"
+            disabled={loggingOut}
+            onSelect={(event) => {
+              event.preventDefault()
+              void handleLogout()
+            }}
+          >
+            {loggingOut ? <Loader2 className="size-4 animate-spin" /> : <LogOut className="size-4" />}
+            Log out
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
+      <ReplacePatDialog
+        open={patDialogOpen}
+        onOpenChange={handlePatDialogOpenChange}
+        azurePat={credentials?.azurePat ?? null}
+        credentialsLoading={credentialsLoading}
+        patInput={patInput}
+        onPatInputChange={setPatInput}
+        reveal={patReveal}
+        onRevealChange={setPatReveal}
+        saving={patSaving}
+        onSubmit={handleReplacePat}
+      />
     </header>
   )
 }
 
-function LLMModelSwitcher({
-  status,
-  settingsSummary,
-  settingsError,
-  onSettingsSummaryChange,
+function ReplacePatDialog({
+  open,
+  onOpenChange,
+  azurePat,
+  credentialsLoading,
+  patInput,
+  onPatInputChange,
+  reveal,
+  onRevealChange,
+  saving,
+  onSubmit,
 }: {
-  status: {
-    text: string
-    title: string
-    tone: "connected" | "checking" | "missing" | "warning"
-  }
-  settingsSummary: RuntimeSettingsSummary | null
-  settingsError: boolean
-  onSettingsSummaryChange: (summary: RuntimeSettingsSummary) => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  azurePat: CredentialSummary | null
+  credentialsLoading: boolean
+  patInput: string
+  onPatInputChange: (value: string) => void
+  reveal: boolean
+  onRevealChange: (value: boolean) => void
+  saving: boolean
+  onSubmit: () => void
 }) {
-  const [open, setOpen] = useState(false)
-  const [savingModelId, setSavingModelId] = useState<string | null>(null)
-  const { models, loading: modelsLoading, error: modelError, load, reset } = useProviderModels()
-
-  const llm = settingsSummary?.llm
-  const settingsChecking = !settingsSummary && !settingsError
-  const hasConfiguredProvider = Boolean(settingsSummary?.configured && llm?.provider && llm.model)
-  const canSwitchModel = Boolean(hasConfiguredProvider && llm?.hasApiKey && !settingsError)
-  const currentProviderLabel = providerLabel(llm?.provider)
-  const currentModel = llm?.model ?? ""
-
-  const loadModels = useCallback(() => {
-    if (!llm?.provider) return
-    void load({ provider: llm.provider })
-  }, [llm?.provider, load])
-
-  useEffect(() => {
-    if (open && canSwitchModel) loadModels()
-  }, [canSwitchModel, loadModels, open])
-
-  useEffect(() => {
-    reset()
-    setSavingModelId(null)
-  }, [llm?.provider, reset])
-
-  async function selectModel(modelId: string) {
-    if (modelId === currentModel) {
-      setOpen(false)
-      return
-    }
-
-    setSavingModelId(modelId)
-    try {
-      const response = await fetch("/api/settings/runtime", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ llm: { model: modelId } }),
-      })
-      const json = await response.json()
-      if (!response.ok) throw new Error(apiErrorMessage(json, "Could not update LLM model."))
-
-      onSettingsSummaryChange(json as RuntimeSettingsSummary)
-      toast.success(`LLM model changed to ${modelId}.`)
-      setOpen(false)
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not update LLM model.")
-    } finally {
-      setSavingModelId(null)
-    }
-  }
+  const status = patDialogStatus(azurePat, credentialsLoading)
+  const preview = azurePat?.maskedPreview ?? (status.key === "missing" ? "No saved token" : "Saved token hidden")
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(connectivityChipClass(status.tone, "max-w-[260px] cursor-pointer pr-2 hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"))}
-          aria-label={canSwitchModel ? `${status.title}. Change LLM model.` : status.title}
-          title={canSwitchModel ? `${status.title}. Change LLM model.` : status.title}
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            onSubmit()
+          }}
+          className="contents"
         >
-          <span className="truncate">{status.text}</span>
-          {canSwitchModel ? <ChevronDown className="size-3.5 shrink-0" /> : null}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="end" sideOffset={8} className="w-[380px] max-w-[calc(100vw-2rem)] gap-0 p-0">
-        <div className="border-b border-border p-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-foreground">LLM model</div>
-              <div className="mt-1 truncate text-xs text-muted-foreground">
-                {hasConfiguredProvider
-                  ? `${currentProviderLabel} / ${currentModel}`
-                  : settingsChecking
-                    ? "Checking runtime configuration..."
-                    : "No LLM runtime configuration found."}
-              </div>
-            </div>
-            <Button variant="ghost" size="icon-sm" asChild aria-label="Open Settings">
-              <Link href="/settings">
-                <Settings2 className="size-3.5" />
-              </Link>
-            </Button>
-          </div>
-        </div>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <KeyRound className="size-4 text-primary" />
+              Replace access token
+            </DialogTitle>
+            <DialogDescription>
+              Validate a new Azure DevOps PAT and replace the saved token.
+            </DialogDescription>
+          </DialogHeader>
 
-        {!canSwitchModel ? (
-          <div className="space-y-3 p-3 text-sm text-muted-foreground">
-            {settingsChecking ? (
-              <div className="flex items-center gap-2">
-                <Loader2 className="size-4 animate-spin text-primary" />
-                Checking runtime settings...
+          <div className="rounded-lg border border-border bg-muted/40 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-medium text-muted-foreground">Current token</span>
+              <span className={cn("rounded-[6px] border px-2 py-0.5 text-xs font-medium", status.className)}>
+                {status.label}
+              </span>
+            </div>
+            <div className="mt-2 truncate font-mono text-sm text-foreground">{preview}</div>
+            {azurePat?.lastValidatedAt ? (
+              <div className="mt-1 text-xs text-muted-foreground">
+                Last validated {formatDateTime(azurePat.lastValidatedAt)}
               </div>
-            ) : (
-              <>
-                <p>
-                  {settingsError
-                    ? "Runtime settings could not be loaded."
-                    : hasConfiguredProvider
-                      ? "Save the selected provider API token in Settings before loading live models."
-                      : "Configure an LLM provider, model, and API token in Settings."}
-                </p>
-                <Button size="sm" asChild>
-                  <Link href="/settings">Open Settings</Link>
-                </Button>
-              </>
-            )}
+            ) : null}
           </div>
-        ) : (
-          <ModelPicker
-            models={models}
-            loading={modelsLoading}
-            error={modelError}
-            providerLabel={currentProviderLabel}
-            currentModel={currentModel}
-            savingModelId={savingModelId}
-            onRetry={loadModels}
-            onSelect={(modelId) => void selectModel(modelId)}
-          />
-        )}
-      </PopoverContent>
-    </Popover>
+
+          <div className="space-y-2">
+            <Label htmlFor="profile-azure-pat">New personal access token</Label>
+            <div className="relative">
+              <Input
+                id="profile-azure-pat"
+                className="h-10 pr-10"
+                type={reveal ? "text" : "password"}
+                value={patInput}
+                onChange={(event) => onPatInputChange(event.target.value)}
+                placeholder="Enter Azure DevOps PAT"
+                autoComplete="off"
+                disabled={saving}
+              />
+              <button
+                type="button"
+                onClick={() => onRevealChange(!reveal)}
+                className="absolute inset-y-0 right-2 flex items-center text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                aria-label={reveal ? "Hide personal access token" : "Show personal access token"}
+                disabled={saving}
+              >
+                {reveal ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </button>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={saving || !patInput.trim()}>
+              {saving ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+              Validate and replace
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
+}
+
+function patDialogStatus(summary: CredentialSummary | null, loading: boolean) {
+  if (loading) {
+    return {
+      key: "checking",
+      label: "Checking",
+      className: "border-border bg-background text-muted-foreground",
+    }
+  }
+  if (!summary || summary.status === "not_configured") {
+    return {
+      key: "missing",
+      label: "Not configured",
+      className: "border-border bg-background text-muted-foreground",
+    }
+  }
+  if (summary.status === "invalid") {
+    return {
+      key: "invalid",
+      label: "Invalid",
+      className: "border-destructive/30 bg-destructive/10 text-destructive",
+    }
+  }
+  if (summary.status === "expired") {
+    return {
+      key: "expired",
+      label: "Expired",
+      className: "border-destructive/30 bg-destructive/10 text-destructive",
+    }
+  }
+  if (summary.isStale) {
+    return {
+      key: "stale",
+      label: "Re-validate",
+      className: "border-warning/40 bg-warning/15 text-warning-foreground dark:text-warning",
+    }
+  }
+  return {
+    key: "configured",
+    label: "Configured",
+    className: "border-success/30 bg-success/10 text-success",
+  }
 }
 
 function ConnectivityChip({
@@ -363,22 +631,16 @@ function ConnectivityChip({
   title,
   tone,
   className = "",
-  icon,
 }: {
   text: string
   title: string
   tone: "connected" | "checking" | "missing" | "warning"
   className?: string
-  icon?: React.ReactNode
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span
-          className={connectivityChipClass(tone, className)}
-          aria-label={title}
-        >
-          {icon}
+        <span className={connectivityChipClass(tone, className)} aria-label={title}>
           <span className="truncate">{text}</span>
         </span>
       </TooltipTrigger>
@@ -386,6 +648,211 @@ function ConnectivityChip({
         {title}
       </TooltipContent>
     </Tooltip>
+  )
+}
+
+function RoleBadge({ role, className = "" }: { role: WorkspaceRole | null; className?: string }) {
+  if (!role) return null
+
+  const styles = {
+    owner: "border-primary/30 bg-primary/10 text-primary",
+    admin: "border-info/30 bg-info/10 text-info",
+    member: "border-border bg-muted text-muted-foreground",
+  }[role]
+
+  return (
+    <span
+      className={cn(
+        "inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-[6px] border px-1.5 text-[11px] font-medium leading-none",
+        styles,
+        className,
+      )}
+      title={`Workspace role: ${roleLabel(role)}`}
+    >
+      {roleLabel(role)}
+    </span>
+  )
+}
+
+function LlmModelChip({
+  status,
+  provider,
+  model,
+  disabled,
+  onChanged,
+}: {
+  status: { text: string; title: string; tone: "connected" | "checking" | "missing" | "warning" }
+  provider: Provider | null
+  model: string
+  disabled: boolean
+  onChanged: () => void
+}) {
+  const configured = status.tone === "connected" && provider
+  const [open, setOpen] = useState(false)
+  const [models, setModels] = useState<ModelOption[]>([])
+  const [search, setSearch] = useState("")
+  const [loadingModels, setLoadingModels] = useState(false)
+  const [modelsFetched, setModelsFetched] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [savingModel, setSavingModel] = useState<string | null>(null)
+
+  useEffect(() => {
+    setModels([])
+    setModelsFetched(false)
+    setError(null)
+    setSearch("")
+  }, [provider])
+
+  const filteredModels = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase()
+    if (!needle) return models
+    return models.filter((entry) => `${entry.id} ${entry.displayName}`.toLocaleLowerCase().includes(needle))
+  }, [models, search])
+
+  async function fetchModels() {
+    if (!provider || loadingModels) return
+    setLoadingModels(true)
+    setError(null)
+    try {
+      const response = await fetch("/api/settings/llm-models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider }),
+      })
+      const data = (await response.json().catch(() => ({}))) as { models?: ModelOption[]; error?: string }
+      if (!response.ok) {
+        setError(data.error ?? "Could not fetch models.")
+        return
+      }
+      setModels(data.models ?? [])
+      setModelsFetched(true)
+    } finally {
+      setLoadingModels(false)
+    }
+  }
+
+  async function saveModel(nextModel: string) {
+    if (!provider || !nextModel || nextModel === model) {
+      setOpen(false)
+      return
+    }
+    setSavingModel(nextModel)
+    try {
+      const response = await fetch("/api/settings/credentials", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ llm: { provider, model: nextModel } }),
+      })
+      const data = (await response.json().catch(() => ({}))) as { error?: string }
+      if (!response.ok) {
+        toast.error(data.error ?? "Could not update the LLM model.")
+        return
+      }
+      toast.success(`LLM model switched to ${nextModel}.`)
+      window.dispatchEvent(new CustomEvent("itestflow:credentials-changed"))
+      onChanged()
+      setOpen(false)
+    } finally {
+      setSavingModel(null)
+    }
+  }
+
+  if (!configured) {
+    return (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Link href="/settings" className={connectivityChipClass(status.tone, "max-w-[260px] cursor-pointer hover:brightness-95")} aria-label={status.title}>
+              <span className="truncate">{status.text}</span>
+            </Link>
+          </TooltipTrigger>
+          <TooltipContent sideOffset={8} className="max-w-sm text-left">{status.title}</TooltipContent>
+        </Tooltip>
+    )
+  }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen)
+        if (nextOpen && !modelsFetched && !loadingModels) void fetchModels()
+        if (!nextOpen) setSearch("")
+      }}
+    >
+      <div className={connectivityChipClass(status.tone, "max-w-[260px] overflow-hidden")}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left hover:brightness-95 disabled:pointer-events-none disabled:opacity-60"
+            disabled={disabled}
+            aria-label={`${status.title}. Change LLM model.`}
+            title={`${status.title}. Click to change model.`}
+          >
+            <span className="truncate">{status.text}</span>
+            {loadingModels || savingModel ? (
+              <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            ) : (
+              <ChevronDown className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-180")} />
+            )}
+          </button>
+        </PopoverTrigger>
+      </div>
+      <PopoverContent align="end" className="w-[min(520px,calc(100vw-2rem))] p-0">
+        <Command shouldFilter={false}>
+          <CommandInput value={search} onValueChange={setSearch} placeholder="Search models..." />
+          <CommandList className="max-h-80">
+            {loadingModels ? (
+              <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                Loading models...
+              </div>
+            ) : null}
+            {!loadingModels && error ? (
+              <div className="space-y-3 px-3 py-4 text-sm">
+                <div className="text-destructive">{error}</div>
+                <div className="flex items-center gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => void fetchModels()}>
+                    Retry
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" asChild>
+                    <Link href="/settings">Open settings</Link>
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+            {!loadingModels && !error ? (
+              <>
+                <CommandEmpty>{modelsFetched ? "No models found." : "Open the list to load models."}</CommandEmpty>
+                <CommandGroup heading={`${providerLabel(provider)} models`}>
+                  {filteredModels.map((entry) => {
+                    const selected = entry.id === model
+                    const saving = savingModel === entry.id
+                    return (
+                      <CommandItem
+                        key={entry.id}
+                        value={entry.id}
+                        data-checked={selected}
+                        onSelect={() => void saveModel(entry.id)}
+                        disabled={Boolean(savingModel)}
+                        className="items-start gap-2"
+                      >
+                        <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+                          {saving ? <Loader2 className="size-4 animate-spin" /> : selected ? <Check className="size-4" /> : null}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-medium">{entry.displayName}</span>
+                          {entry.displayName !== entry.id ? <span className="mt-0.5 block truncate text-xs text-muted-foreground">{entry.id}</span> : null}
+                        </span>
+                      </CommandItem>
+                    )
+                  })}
+                </CommandGroup>
+              </>
+            ) : null}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -405,64 +872,4 @@ function connectivityChipClass(
     styles,
     className,
   )
-}
-
-function getCronStatus(summary: RuntimeSettingsSummary | null, settingsError: boolean) {
-  if (!summary && !settingsError) {
-    return {
-      text: "Sync: Checking",
-      tone: "checking" as const,
-      title: "Checking automatic project context update schedule.",
-    }
-  }
-
-  if (settingsError) {
-    return {
-      text: "Sync: Unavailable",
-      tone: "warning" as const,
-      title: "Runtime settings could not be loaded, so the automatic project context update schedule is unavailable.",
-    }
-  }
-
-  const autoUpdate = summary?.context?.autoUpdate
-  if (!summary?.configured || !autoUpdate?.enabled) {
-    return {
-      text: "Sync: Off",
-      tone: "missing" as const,
-      title: "Automatic project context and knowledge base updates are disabled. Enable them in Settings.",
-    }
-  }
-
-  const nextRun = findNextCronRun(autoUpdate.cronExpression)
-  const projectName = autoUpdate.projectScope?.azureProjectName
-  const projectText = projectName ? ` for ${projectName}` : ""
-
-  return {
-    text: "Sync: On",
-    tone: "connected" as const,
-    title: nextRun
-      ? `Next automatic project context update${projectText}: ${formatDateTime(nextRun)} local server time. Cron: ${autoUpdate.cronExpression}.`
-      : `Automatic project context updates are enabled${projectText}, but the next trigger could not be calculated from cron: ${autoUpdate.cronExpression}.`,
-  }
-}
-
-function findNextCronRun(expression: string, from = new Date()) {
-  const candidate = new Date(from)
-  candidate.setSeconds(0, 0)
-  candidate.setMinutes(candidate.getMinutes() + 1)
-
-  const maxChecks = 60 * 24 * 366
-  for (let index = 0; index < maxChecks; index += 1) {
-    if (isCronExpressionDue(expression, candidate)) return new Date(candidate)
-    candidate.setMinutes(candidate.getMinutes() + 1)
-  }
-
-  return null
-}
-
-function formatDateTime(value: Date) {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(value)
 }

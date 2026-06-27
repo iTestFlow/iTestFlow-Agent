@@ -7,7 +7,6 @@ import {
   BookOpen,
   ChevronLeft,
   ChevronRight,
-  Copy,
   Database,
   Download,
   History,
@@ -24,6 +23,8 @@ import { ContextFilterSelector } from "@/components/domain/context-filter-select
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle"
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress"
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics"
+import { ApiError } from "@/components/workflow/api-error"
+import { ManualLLMFields } from "@/components/workflow/manual-llm-panel"
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper"
 import { useAiGeneration } from "@/components/workflow/use-ai-generation"
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
@@ -38,7 +39,6 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Textarea } from "@/components/ui/textarea"
 import {
   DEFAULT_CONTEXT_STATES,
   DEFAULT_CONTEXT_WORK_ITEM_TYPES,
@@ -50,8 +50,6 @@ import {
   selectAvailableDefaults,
   useProjectWorkItemMetadata,
 } from "@/shared/lib/use-project-work-item-metadata"
-
-const COPY_FEEDBACK_MS = 3000
 
 type IndexResult = {
   mode: "incremental" | "rebuild"
@@ -253,6 +251,7 @@ type KnowledgeManualValidationResult = {
 type BuildMode = "auto" | "manual"
 type BuildStep = "index" | "prepare" | "preview"
 type TopTab = "hub" | "build"
+type WorkspaceRole = "owner" | "admin" | "member"
 type HubView = "explorer" | "context"
 
 const KNOWLEDGE_CATEGORIES = [
@@ -305,23 +304,44 @@ async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Pr
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal,
+    cache: "no-store",
   })
   const text = await response.text()
-  const json = parseJsonResponse(text, response.ok)
-  if (!response.ok) throw new Error(json.error ?? `Request failed: ${response.status}`)
+  const json = parseJsonResponse(text, response)
+  if (!response.ok) throw ApiError.fromResponse(json, response.status)
   return json as T
 }
 
-function parseJsonResponse(text: string, ok: boolean) {
+function parseJsonResponse(text: string, response: Response) {
   try {
     return JSON.parse(text)
   } catch {
-    if (ok) throw new Error("The server returned an invalid JSON response.")
-    return { error: "The server returned a non-JSON response. Check the server logs or runtime configuration." }
+    const technicalDetails = nonJsonResponseDetails(response, text)
+    if (response.ok) {
+      throw new ApiError("The server returned an invalid JSON response.", {
+        status: response.status,
+        technicalDetails,
+      })
+    }
+    return {
+      error: "The server returned a non-JSON response. Check the server logs or runtime configuration.",
+      technicalDetails,
+    }
   }
 }
 
-export function KnowledgeHubClient() {
+function nonJsonResponseDetails(response: Response, text: string) {
+  const body = text.trim()
+  const bodyExcerpt = body ? body.slice(0, 1200) : "(empty response body)"
+  return [
+    `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
+    `Content-Type: ${response.headers.get("content-type") ?? "(none)"}`,
+    `Response URL: ${response.url || "(unknown)"}`,
+    `Body excerpt:\n${bodyExcerpt}`,
+  ].join("\n")
+}
+
+export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: WorkspaceRole | null }) {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null)
   const [activeTab, setActiveTab] = useState<TopTab>("hub")
   const [hubView, setHubView] = useState<HubView>("explorer")
@@ -355,7 +375,6 @@ export function KnowledgeHubClient() {
   const [manualKnowledgeValidatedBatches, setManualKnowledgeValidatedBatches] = useState<Record<number, ProjectKnowledgeBase>>({})
   const [manualKnowledgeValidationLoading, setManualKnowledgeValidationLoading] = useState(false)
   const [manualKnowledgeSaveLoading, setManualKnowledgeSaveLoading] = useState(false)
-  const [promptCopied, setPromptCopied] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(25)
   const [totalPages, setTotalPages] = useState(1)
@@ -387,6 +406,7 @@ export function KnowledgeHubClient() {
     error: workItemMetadataError,
     retry: retryWorkItemMetadata,
   } = useProjectWorkItemMetadata(scope)
+  const canBuildKnowledge = workspaceRole === "owner" || workspaceRole === "admin"
 
   const refreshKnowledgeLog = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
     if (!activeScope) return
@@ -466,6 +486,10 @@ export function KnowledgeHubClient() {
   }, [])
 
   useEffect(() => {
+    if (!canBuildKnowledge && activeTab === "build") setActiveTab("hub")
+  }, [activeTab, canBuildKnowledge])
+
+  useEffect(() => {
     if (!filterProjectKey) {
       initializedFilterProjectRef.current = null
       return
@@ -489,7 +513,6 @@ export function KnowledgeHubClient() {
     setManualKnowledgeCurrentBatch(1)
     setManualKnowledgeBatchResponses({})
     setManualKnowledgeValidatedBatches({})
-    setPromptCopied(false)
     setKnowledgeError(null)
     setKnowledgeLint(null)
     setKnowledgeLog([])
@@ -557,16 +580,6 @@ export function KnowledgeHubClient() {
     return () => window.clearTimeout(timeoutId)
   }, [contextSearch, loadStatus, scope, sortBy, sortDirection])
 
-  useEffect(() => {
-    if (!promptCopied) return
-    const timeoutId = window.setTimeout(() => setPromptCopied(false), COPY_FEEDBACK_MS)
-    return () => window.clearTimeout(timeoutId)
-  }, [promptCopied])
-
-  useEffect(() => {
-    setPromptCopied(false)
-  }, [manualKnowledgeCurrentBatch])
-
   function scrollBuildSection(ref: RefObject<HTMLDivElement | null>) {
     window.requestAnimationFrame(() => {
       ref.current?.scrollIntoView({ behavior: "smooth", block: "start" })
@@ -587,7 +600,6 @@ export function KnowledgeHubClient() {
     setManualKnowledgeCurrentBatch(1)
     setManualKnowledgeBatchResponses({})
     setManualKnowledgeValidatedBatches({})
-    setPromptCopied(false)
   }
 
   function resetBuildState() {
@@ -889,30 +901,51 @@ export function KnowledgeHubClient() {
     && states.length > 0
     && !buildLoading
   const canPrepareKnowledge = Boolean(scope) && Boolean(result) && !buildLoading
+  const emptyKnowledgeMessage = canBuildKnowledge
+    ? "No knowledge base has been saved yet. Use Build Knowledge to compile source-backed project knowledge."
+    : "No knowledge base has been saved yet."
+  const emptyContextMessage = canBuildKnowledge
+    ? "No project context has been indexed yet. Use Build Knowledge to prepare context from Azure DevOps work items."
+    : "No project context has been indexed yet."
 
   return (
     <div className="space-y-4">
       {!scope ? (
         <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/15 p-3 text-sm text-warning-foreground dark:text-warning">
           <AlertTriangle className="size-4" />
-          Select an Azure DevOps project before building project knowledge.
+          {canBuildKnowledge
+            ? "Select an Azure DevOps project before building project knowledge."
+            : "Select an Azure DevOps project before viewing project knowledge."}
         </div>
       ) : null}
 
-      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TopTab)} className="flex-col gap-4">
-        <TabsList variant="primary" className="grid h-auto w-full grid-cols-2 sm:inline-grid sm:w-fit sm:min-w-[460px]">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => {
+          const nextTab = value as TopTab
+          if (nextTab === "build" && !canBuildKnowledge) return
+          setActiveTab(nextTab)
+        }}
+        className="flex-col gap-4"
+      >
+        <TabsList
+          variant="primary"
+          className={`grid h-auto w-full sm:inline-grid sm:w-fit ${canBuildKnowledge ? "grid-cols-2 sm:min-w-[460px]" : "grid-cols-1 sm:min-w-[220px]"}`}
+        >
           <TabsTrigger
             value="hub"
             className="h-10 px-3 py-2 duration-200"
           >
             Knowledge Hub
           </TabsTrigger>
-          <TabsTrigger
-            value="build"
-            className="h-10 px-3 py-2 duration-200"
-          >
-            Build Knowledge
-          </TabsTrigger>
+          {canBuildKnowledge ? (
+            <TabsTrigger
+              value="build"
+              className="h-10 px-3 py-2 duration-200"
+            >
+              Build Knowledge
+            </TabsTrigger>
+          ) : null}
         </TabsList>
 
         <TabsContent value="hub" className="space-y-4">
@@ -966,7 +999,7 @@ export function KnowledgeHubClient() {
                     <KnowledgeExplorer knowledgeBase={knowledgeSnapshot.knowledgeBase} />
                   ) : (
                     <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
-                      No knowledge base has been saved yet. Use Build Knowledge to compile source-backed project knowledge.
+                      {emptyKnowledgeMessage}
                     </div>
                   )}
                 </TabsContent>
@@ -983,7 +1016,7 @@ export function KnowledgeHubClient() {
                     sortDirection={sortDirection}
                     search={contextSearch}
                     loading={statusLoading}
-                    emptyMessage="No project context has been indexed yet. Use Build Knowledge to prepare context from Azure DevOps work items."
+                    emptyMessage={emptyContextMessage}
                     onSearchChange={setContextSearch}
                     onSortChange={changeSort}
                     onPageChange={changePage}
@@ -994,6 +1027,7 @@ export function KnowledgeHubClient() {
           </Card>
         </TabsContent>
 
+        {canBuildKnowledge ? (
         <TabsContent value="build" className="space-y-4">
           <Card className="qa-card">
             <CardHeader>
@@ -1076,6 +1110,7 @@ export function KnowledgeHubClient() {
                           title="Building project knowledge"
                           status={gen.status}
                           elapsedSeconds={gen.elapsedSeconds}
+                          error={gen.error}
                           errorMessage={gen.errorMessage}
                           canCancel
                           onCancel={gen.cancel}
@@ -1175,7 +1210,6 @@ export function KnowledgeHubClient() {
                           allValidated={manualKnowledgeAllBatchesValidated}
                           validationLoading={manualKnowledgeValidationLoading}
                           saveLoading={manualKnowledgeSaveLoading}
-                          copied={promptCopied}
                           validatedBatches={manualKnowledgeValidatedBatches}
                           batchRef={manualBatchRef}
                           showPrompt
@@ -1186,10 +1220,6 @@ export function KnowledgeHubClient() {
                               ...current,
                               [batchIndex]: value,
                             }))
-                          }}
-                          onCopy={(prompt) => {
-                            void navigator.clipboard.writeText(prompt)
-                            setPromptCopied(true)
                           }}
                           onValidate={validateManualKnowledgeBatch}
                           onSave={saveManualKnowledgeBatches}
@@ -1208,7 +1238,6 @@ export function KnowledgeHubClient() {
                         allValidated={manualKnowledgeAllBatchesValidated}
                         validationLoading={manualKnowledgeValidationLoading}
                         saveLoading={manualKnowledgeSaveLoading}
-                        copied={promptCopied}
                         validatedBatches={manualKnowledgeValidatedBatches}
                         batchRef={manualBatchRef}
                         showPrompt={false}
@@ -1220,10 +1249,6 @@ export function KnowledgeHubClient() {
                             [batchIndex]: value,
                           }))
                         }}
-                        onCopy={(prompt) => {
-                          void navigator.clipboard.writeText(prompt)
-                          setPromptCopied(true)
-                        }}
                         onValidate={validateManualKnowledgeBatch}
                         onSave={saveManualKnowledgeBatches}
                       />
@@ -1234,6 +1259,7 @@ export function KnowledgeHubClient() {
             </CardContent>
           </Card>
         </TabsContent>
+        ) : null}
       </Tabs>
     </div>
   )
@@ -1537,13 +1563,11 @@ function ExternalPromptPanel({
   allValidated,
   validationLoading,
   saveLoading,
-  copied,
   validatedBatches,
   batchRef,
   showPrompt = true,
   showPreview = true,
   onResponseChange,
-  onCopy,
   onValidate,
   onSave,
 }: {
@@ -1554,13 +1578,11 @@ function ExternalPromptPanel({
   allValidated: boolean
   validationLoading: boolean
   saveLoading: boolean
-  copied: boolean
   validatedBatches: Record<number, ProjectKnowledgeBase>
   batchRef: RefObject<HTMLDivElement | null>
   showPrompt?: boolean
   showPreview?: boolean
   onResponseChange: (batchIndex: number, value: string) => void
-  onCopy: (prompt: string) => void
   onValidate: () => void
   onSave: () => void
 }) {
@@ -1599,27 +1621,27 @@ function ExternalPromptPanel({
   return (
     <div className="space-y-4">
       {showPrompt ? (
-      <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="font-semibold text-foreground">
-              {draft.mode === "incremental" ? "Compile Knowledge Prompt" : "Full Recompile Prompt"}
+        <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="font-semibold text-foreground">
+                {draft.mode === "incremental" ? "Compile Knowledge Prompt" : "Full Recompile Prompt"}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {draft.sourceWorkItemCount} of {draft.totalSourceWorkItemCount} active work items in prompt input.
+                {draft.mode === "incremental"
+                  ? ` ${draft.changedSourceWorkItemCount} changed, ${draft.retiredSourceWorkItemCount} retired.`
+                  : null}
+              </div>
             </div>
-            <div className="text-xs text-muted-foreground">
-              {draft.sourceWorkItemCount} of {draft.totalSourceWorkItemCount} active work items in prompt input.
-              {draft.mode === "incremental"
-                ? ` ${draft.changedSourceWorkItemCount} changed, ${draft.retiredSourceWorkItemCount} retired.`
-                : null}
-            </div>
+            <Badge variant="outline">{draft.batchCount} {draft.batchCount === 1 ? "batch" : "batches"}</Badge>
           </div>
-          <Badge variant="outline">{draft.batchCount} {draft.batchCount === 1 ? "batch" : "batches"}</Badge>
+          {draft.fallbackReason ? (
+            <div className="mt-3 rounded-md border border-warning/40 bg-warning/15 p-3 text-xs text-warning-foreground dark:text-warning">
+              {draft.fallbackReason}
+            </div>
+          ) : null}
         </div>
-        {draft.fallbackReason ? (
-          <div className="mt-3 rounded-md border border-warning/40 bg-warning/15 p-3 text-xs text-warning-foreground dark:text-warning">
-            {draft.fallbackReason}
-          </div>
-        ) : null}
-      </div>
       ) : null}
 
       {showPrompt && currentBatch ? (
@@ -1633,30 +1655,21 @@ function ExternalPromptPanel({
                 {currentBatch.workItemCount} work items in this prompt. {validatedCount} validated.
               </div>
             </div>
-            <Button variant="outline" onClick={() => onCopy(currentBatch.prompt)} disabled={copied}>
-              <Copy className="size-4" />
-              {copied ? "Copied" : "Copy Prompt"}
-            </Button>
           </div>
-          <Textarea value={currentBatch.prompt} readOnly className="min-h-[320px] font-mono text-xs" />
-          <div className="space-y-2">
-            <Label className="text-sm font-semibold text-foreground">External LLM Response</Label>
-            <Textarea
-              value={responses[currentBatch.batchIndex] ?? ""}
-              onChange={(event) => onResponseChange(currentBatch.batchIndex, event.target.value)}
-              className="min-h-[220px] font-mono text-xs"
-              placeholder="Paste the JSON response for this batch."
-            />
-          </div>
-          <div className="flex justify-end">
-            <Button
-              onClick={onValidate}
-              disabled={!responses[currentBatch.batchIndex]?.trim() || validationLoading}
-            >
-              {validationLoading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-              {validationLoading ? "Validating..." : "Validate Batch"}
-            </Button>
-          </div>
+          <ManualLLMFields
+            key={currentBatch.batchIndex}
+            prompt={currentBatch.prompt}
+            response={responses[currentBatch.batchIndex] ?? ""}
+            onResponseChange={(value) => onResponseChange(currentBatch.batchIndex, value)}
+            onSubmit={onValidate}
+            submitting={validationLoading}
+            submitLabel="Validate Batch"
+            submittingLabel="Validating..."
+            responseLabel="External LLM Response"
+            responsePlaceholder="Paste the JSON response for this batch."
+            promptMinHeightClass="min-h-[320px]"
+            responseMinHeightClass="min-h-[220px]"
+          />
         </div>
       ) : null}
 

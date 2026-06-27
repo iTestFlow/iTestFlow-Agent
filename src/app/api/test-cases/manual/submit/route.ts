@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { countTestCategories } from "@/modules/analytics/test-category-normalization";
 import { z } from "zod";
 import { completeManualTestCaseGeneration } from "@/modules/test-case-design/application/test-case-generation.service";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
 import { isAppError } from "@/modules/shared/errors/app-error";
 import { statusForManualValidationError, toErrorResponse } from "@/modules/shared/errors/error-response";
@@ -30,19 +32,25 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Paste the external LLM response before continuing." }, { status: 400 });
   }
 
-  const analyticsRunId = startWorkflowRun({
-    scope: parsed.data.scope,
-    workflowType: "test_case_design",
-    workItemId: parsed.data.targetWorkItemId,
-  });
+  let trustedScope: ProjectScope | undefined;
+  let analyticsRunId: string | undefined;
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    analyticsRunId = startWorkflowRun({
+      scope: trustedScope,
+      workflowType: "test_case_design",
+      workItemId: parsed.data.targetWorkItemId,
+      userId: ctx.userId,
+    });
     const result = completeManualTestCaseGeneration({
-      scope: parsed.data.scope,
+      scope: trustedScope,
+      actor: ctx.userId,
       rawOutput: parsed.data.rawOutput,
       targetWorkItemId: parsed.data.targetWorkItemId,
     });
     updateWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       patch: {
         status: "generated",
@@ -70,7 +78,11 @@ export async function POST(request: Request) {
       ...result.validatedOutput,
     });
   } catch (error) {
-    failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External test case generation failed." });
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
+    if (trustedScope && analyticsRunId) {
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External test case generation failed." });
+    }
     if (isAppError(error)) {
       return NextResponse.json(toErrorResponse(error), { status: statusForManualValidationError(error) });
     }

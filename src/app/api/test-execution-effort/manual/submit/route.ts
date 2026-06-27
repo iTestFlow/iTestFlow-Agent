@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
   buildTestExecutionEffortPreview,
   completeManualTestExecutionEffort,
@@ -19,6 +19,7 @@ import {
   failWorkflowRun,
   startWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -38,24 +39,29 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Paste the external LLM response before continuing." }, { status: 400 });
   }
 
+  let trustedScope: ProjectScope | undefined;
   let analyticsRunId: string | undefined;
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     analyticsRunId = startWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       workflowType: "test_execution_effort",
       workItemId: parsed.data.storyId,
+      userId: ctx.userId,
     });
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const targetRequirement = await adapter.fetchWorkItemById({
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.storyId,
     });
     const linkedTestCases = await adapter.fetchLinkedTestCases({
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
       userStoryId: parsed.data.storyId,
     });
     const result = completeManualTestExecutionEffort({
-      scope: parsed.data.scope,
+      scope: trustedScope,
+      actor: ctx.userId,
       rawOutput: parsed.data.rawOutput,
       targetWorkItemId: parsed.data.storyId,
       linkedTestCases,
@@ -66,7 +72,7 @@ export async function POST(request: Request) {
       hasProjectContext: Boolean(parsed.data.resolvedContextUsed),
     });
     completeWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       valueRealized: false,
       patch: {
@@ -90,9 +96,11 @@ export async function POST(request: Request) {
       estimate: result.validatedOutput,
     });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     const message = error instanceof Error ? error.message : "";
-    if (analyticsRunId) {
-      failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: message || "Manual Test Execution Effort validation failed." });
+    if (trustedScope && analyticsRunId) {
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: message || "Manual Test Execution Effort validation failed." });
     }
     if (isAppError(error)) {
       return NextResponse.json(toErrorResponse(error), { status: statusForManualValidationError(error) });

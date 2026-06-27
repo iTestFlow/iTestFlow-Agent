@@ -16,5 +16,10 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // DB-backed integration tests (gated on DATABASE_URL) share a single Postgres
+    // database and use global queries (e.g. the job queue's claimNextJob scans all
+    // workspaces). Run test files serially so one file's rows can't leak into
+    // another's assertions. Pure unit tests are unaffected (the suite is ~seconds).
+    fileParallelism: false,
   },
 });

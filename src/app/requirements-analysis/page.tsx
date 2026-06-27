@@ -1,5 +1,8 @@
+import type { Metadata } from "next"
 import { ContentShell } from "@/components/layout/content-shell"
 import { RequirementsAnalysisClient } from "./requirements-analysis-client"
+
+export const metadata: Metadata = { title: "Requirements Analysis" }
 
 export default function RequirementsAnalysisPage() {
   return (

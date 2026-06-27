@@ -2,7 +2,13 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getDashboardAnalytics } from "@/modules/dashboard/dashboard-analytics.service";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -58,15 +64,20 @@ export async function POST(request: Request) {
   }
 
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     return NextResponse.json(
       await getDashboardAnalytics({
-        scope: parsed.data.scope,
+        scope: trustedScope,
         filters: parsed.data.filters,
         bypassCache: parsed.data.bypassCache,
-      }),
+      }, adapter),
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Dashboard analytics failed." },
       { status: 503 },

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema, ProjectIsolationError, workItemNotInProjectMessage } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -17,13 +18,17 @@ export async function POST(request: Request) {
   }
 
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const workItem = await adapter.fetchWorkItemById({
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.workItemId,
     });
     return NextResponse.json({ workItem });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     // A work item that belongs to another project, does not exist, or the account
     // cannot read are intentionally indistinguishable: one message, 404.
     if (error instanceof ProjectIsolationError || isWorkItemNotFound(error)) {

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createId, getDatabase, nowIso } from "@/modules/shared/infrastructure/database/db";
+import { createId, nowIso, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 
 export type ContextAutoUpdateRunStatus = "Running" | "Success" | "Failed" | "Partial failure";
@@ -66,7 +66,7 @@ type ContextAutoUpdateRunRow = {
   error_details: string | null;
 };
 
-export function startContextAutoUpdateRun(input: {
+export async function startContextAutoUpdateRun(input: {
   scope: ProjectScope;
   cronExpression: string;
   cronTimezone: string;
@@ -75,12 +75,10 @@ export function startContextAutoUpdateRun(input: {
   contextSyncMode: string;
   knowledgeCompileMode: string;
 }) {
-  const db = getDatabase();
-  ensureContextAutoUpdateRunColumns(db);
   const now = nowIso();
   const id = createId("cau");
 
-  db.prepare(
+  await sqlRun(
     `
     INSERT INTO context_auto_update_runs (
       id, project_id, azure_project_id, azure_project_name, azure_organization_url,
@@ -100,27 +98,28 @@ export function startContextAutoUpdateRun(input: {
       @createdAt, @updatedAt
     )
   `,
-  ).run({
-    id,
-    projectId: input.scope.projectId,
-    azureProjectId: input.scope.azureProjectId,
-    azureProjectName: input.scope.azureProjectName,
-    azureOrganizationUrl: input.scope.azureOrganizationUrl,
-    cronExpression: input.cronExpression,
-    cronTimezone: input.cronTimezone,
-    workItemTypes: JSON.stringify(input.workItemTypes),
-    states: JSON.stringify(input.states),
-    contextSyncMode: input.contextSyncMode,
-    knowledgeCompileMode: input.knowledgeCompileMode,
-    startedAt: now,
-    createdAt: now,
-    updatedAt: now,
-  });
+    {
+      id,
+      projectId: input.scope.projectId,
+      azureProjectId: input.scope.azureProjectId,
+      azureProjectName: input.scope.azureProjectName,
+      azureOrganizationUrl: input.scope.azureOrganizationUrl,
+      cronExpression: input.cronExpression,
+      cronTimezone: input.cronTimezone,
+      workItemTypes: JSON.stringify(input.workItemTypes),
+      states: JSON.stringify(input.states),
+      contextSyncMode: input.contextSyncMode,
+      knowledgeCompileMode: input.knowledgeCompileMode,
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    },
+  );
 
   return id;
 }
 
-export function completeContextAutoUpdateRun(input: {
+export async function completeContextAutoUpdateRun(input: {
   id: string;
   status: Exclude<ContextAutoUpdateRunStatus, "Running">;
   cronTimezone?: string;
@@ -140,10 +139,8 @@ export function completeContextAutoUpdateRun(input: {
   knowledgeCompileSkippedReason?: string | null;
   errorDetails?: string | null;
 }) {
-  const db = getDatabase();
-  ensureContextAutoUpdateRunColumns(db);
   const now = nowIso();
-  db.prepare(
+  await sqlRun(
     `
     UPDATE context_auto_update_runs
     SET status = @status,
@@ -167,34 +164,33 @@ export function completeContextAutoUpdateRun(input: {
         updated_at = @updatedAt
     WHERE id = @id
   `,
-  ).run({
-    id: input.id,
-    status: input.status,
-    completedAt: now,
-    cronTimezone: input.cronTimezone ?? "server local time",
-    contextSyncMode: input.contextSyncMode ?? null,
-    contextFetchedCount: input.contextFetchedCount ?? 0,
-    contextIndexedWorkItemCount: input.contextIndexedWorkItemCount ?? 0,
-    contextIndexedChunkCount: input.contextIndexedChunkCount ?? 0,
-    contextCreatedCount: input.contextCreatedCount ?? 0,
-    contextUpdatedCount: input.contextUpdatedCount ?? 0,
-    contextUnchangedCount: input.contextUnchangedCount ?? 0,
-    contextInactiveCount: input.contextInactiveCount ?? 0,
-    contextSkippedEmptyCount: input.contextSkippedEmptyCount ?? 0,
-    knowledgeBaseId: input.knowledgeBaseId ?? null,
-    knowledgeSourceWorkItemCount: input.knowledgeSourceWorkItemCount ?? 0,
-    knowledgeCompileMode: input.knowledgeCompileMode ?? null,
-    knowledgeCompileStatus: input.knowledgeCompileStatus ?? "failed",
-    knowledgeCompileSkippedReason: input.knowledgeCompileSkippedReason ?? null,
-    errorDetails: input.errorDetails ?? null,
-    updatedAt: now,
-  });
+    {
+      id: input.id,
+      status: input.status,
+      completedAt: now,
+      cronTimezone: input.cronTimezone ?? "server local time",
+      contextSyncMode: input.contextSyncMode ?? null,
+      contextFetchedCount: input.contextFetchedCount ?? 0,
+      contextIndexedWorkItemCount: input.contextIndexedWorkItemCount ?? 0,
+      contextIndexedChunkCount: input.contextIndexedChunkCount ?? 0,
+      contextCreatedCount: input.contextCreatedCount ?? 0,
+      contextUpdatedCount: input.contextUpdatedCount ?? 0,
+      contextUnchangedCount: input.contextUnchangedCount ?? 0,
+      contextInactiveCount: input.contextInactiveCount ?? 0,
+      contextSkippedEmptyCount: input.contextSkippedEmptyCount ?? 0,
+      knowledgeBaseId: input.knowledgeBaseId ?? null,
+      knowledgeSourceWorkItemCount: input.knowledgeSourceWorkItemCount ?? 0,
+      knowledgeCompileMode: input.knowledgeCompileMode ?? null,
+      knowledgeCompileStatus: input.knowledgeCompileStatus ?? "failed",
+      knowledgeCompileSkippedReason: input.knowledgeCompileSkippedReason ?? null,
+      errorDetails: input.errorDetails ?? null,
+      updatedAt: now,
+    },
+  );
 }
 
-export function getLatestContextAutoUpdateRun() {
-  const db = getDatabase();
-  ensureContextAutoUpdateRunColumns(db);
-  const row = db.prepare(
+export async function getLatestContextAutoUpdateRun() {
+  const row = await sqlGet<ContextAutoUpdateRunRow>(
     `
     SELECT id, project_id, azure_project_id, azure_project_name, azure_organization_url,
            cron_expression, cron_timezone, context_work_item_types, context_states, status, started_at, completed_at,
@@ -209,7 +205,7 @@ export function getLatestContextAutoUpdateRun() {
     ORDER BY started_at DESC
     LIMIT 1
   `,
-  ).get() as ContextAutoUpdateRunRow | undefined;
+  );
 
   return row ? toContextAutoUpdateRunSummary(row) : null;
 }
@@ -244,49 +240,6 @@ function toContextAutoUpdateRunSummary(row: ContextAutoUpdateRunRow): ContextAut
     knowledgeCompileSkippedReason: row.knowledge_compile_skipped_reason,
     errorDetails: row.error_details,
   };
-}
-
-function ensureContextAutoUpdateRunColumns(db: ReturnType<typeof getDatabase>) {
-  const columns = new Set(
-    (db.prepare("PRAGMA table_info(context_auto_update_runs)").all() as Array<{ name: string }>).map((column) => column.name),
-  );
-
-  if (!columns.has("cron_timezone")) {
-    db.exec("ALTER TABLE context_auto_update_runs ADD COLUMN cron_timezone TEXT NOT NULL DEFAULT 'server local time'");
-  }
-  if (!columns.has("context_work_item_types")) {
-    db.exec("ALTER TABLE context_auto_update_runs ADD COLUMN context_work_item_types TEXT NOT NULL DEFAULT '[]'");
-  }
-  if (!columns.has("context_states")) {
-    db.exec("ALTER TABLE context_auto_update_runs ADD COLUMN context_states TEXT NOT NULL DEFAULT '[]'");
-  }
-  if (!columns.has("context_sync_mode")) {
-    db.exec("ALTER TABLE context_auto_update_runs ADD COLUMN context_sync_mode TEXT");
-  }
-  if (!columns.has("context_created_count")) {
-    db.exec("ALTER TABLE context_auto_update_runs ADD COLUMN context_created_count INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!columns.has("context_updated_count")) {
-    db.exec("ALTER TABLE context_auto_update_runs ADD COLUMN context_updated_count INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!columns.has("context_unchanged_count")) {
-    db.exec("ALTER TABLE context_auto_update_runs ADD COLUMN context_unchanged_count INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!columns.has("context_inactive_count")) {
-    db.exec("ALTER TABLE context_auto_update_runs ADD COLUMN context_inactive_count INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!columns.has("context_skipped_empty_count")) {
-    db.exec("ALTER TABLE context_auto_update_runs ADD COLUMN context_skipped_empty_count INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!columns.has("knowledge_compile_mode")) {
-    db.exec("ALTER TABLE context_auto_update_runs ADD COLUMN knowledge_compile_mode TEXT");
-  }
-  if (!columns.has("knowledge_compile_status")) {
-    db.exec("ALTER TABLE context_auto_update_runs ADD COLUMN knowledge_compile_status TEXT NOT NULL DEFAULT 'pending'");
-  }
-  if (!columns.has("knowledge_compile_skipped_reason")) {
-    db.exec("ALTER TABLE context_auto_update_runs ADD COLUMN knowledge_compile_skipped_reason TEXT");
-  }
 }
 
 function parseStringArray(value: string | null) {

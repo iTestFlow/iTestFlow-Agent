@@ -2,8 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { workflowTypeValues } from "@/modules/analytics/analytics-config";
-import { getSystemDashboardAnalytics } from "@/modules/analytics/system-dashboard.service";
+import { buildSystemDashboardEffectiveScope, resolveSystemDashboardAccess } from "@/modules/analytics/system-dashboard-scope";
+import { getSystemDashboardAnalytics, getSystemDashboardUserLabel } from "@/modules/analytics/system-dashboard.service";
+import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { getWorkspaceMembership } from "@/modules/workspace/workspace-access.service";
 
 export const runtime = "nodejs";
 
@@ -40,14 +44,43 @@ export async function POST(request: Request) {
   }
 
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const membership = await getWorkspaceMembership(ctx.userId, ctx.workspace.id);
+    const requestedFilters = parsed.data.filters;
+    const access = resolveSystemDashboardAccess({
+      role: membership?.role,
+      requestedUserId: requestedFilters?.userId,
+      currentUserId: ctx.userId,
+    });
+    const filters = {
+      ...requestedFilters,
+      userId: access.userId,
+    };
+    const userLabel = access.userId && access.userId !== ctx.userId
+      ? await getSystemDashboardUserLabel(ctx.workspace.id, access.userId)
+      : null;
+    const analytics = await getSystemDashboardAnalytics({
+      scope: trustedScope,
+      filters,
+      userOptionsUserId: access.permissions.canViewWorkspaceUsers ? null : ctx.userId,
+    });
+
     return NextResponse.json(
-      getSystemDashboardAnalytics({
-        scope: parsed.data.scope,
-        filters: parsed.data.filters,
-      }),
+      {
+        ...analytics,
+        permissions: access.permissions,
+        effectiveScope: buildSystemDashboardEffectiveScope({
+          userId: access.userId,
+          currentUserId: ctx.userId,
+          userLabel,
+        }),
+      },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "System dashboard analytics failed." },
       { status: 503 },

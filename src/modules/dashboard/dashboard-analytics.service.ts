@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import type { AzureDevOpsRestAdapter } from "@/modules/integrations/azure-devops/azure-devops-client";
 import type {
   AzureIteration,
   AzureTestPoint,
@@ -71,13 +71,12 @@ const DEFAULT_REQUIREMENT_TYPES = ["User Story", "Product Backlog Item", "Requir
 const analyticsCache = new Map<string, { expiresAt: number; value: DashboardAnalytics }>();
 const metadataCache = new Map<string, { expiresAt: number; value: Awaited<ReturnType<typeof loadBaseMetadata>> }>();
 
-export async function getDashboardAnalytics(input: DashboardAnalyticsInput): Promise<DashboardAnalytics> {
+export async function getDashboardAnalytics(input: DashboardAnalyticsInput, adapter: AzureDevOpsRestAdapter): Promise<DashboardAnalytics> {
   const scope = assertProjectScope(input.scope);
   const cacheKey = buildCacheKey(scope, input.filters);
   const cached = analyticsCache.get(cacheKey);
   if (!input.bypassCache && cached && cached.expiresAt > Date.now()) return cached.value;
 
-  const adapter = getProjectScopedAzureDevOpsAdapter(scope);
   const metadata = await getCachedMetadata(scope, input.bypassCache, () => loadBaseMetadata(adapter, scope));
   const dateRange = resolveDateRange(input.filters, metadata.iterations.ok ? metadata.iterations.data : []);
   const availableRequirementTypes = metadata.workItemTypes.ok
@@ -311,7 +310,7 @@ async function getCachedMetadata(
 }
 
 async function loadBaseMetadata(
-  adapter: ReturnType<typeof getProjectScopedAzureDevOpsAdapter>,
+  adapter: AzureDevOpsRestAdapter,
   scope: ProjectScope,
 ) {
   const [plans, areas, iterations, users, workItemMetadata] = await Promise.all([
@@ -333,7 +332,7 @@ async function loadBaseMetadata(
 }
 
 async function loadTestPoints(
-  adapter: ReturnType<typeof getProjectScopedAzureDevOpsAdapter>,
+  adapter: AzureDevOpsRestAdapter,
   projectId: string,
   testPlanId: string,
   suites: SuiteWithPath[],
@@ -354,7 +353,7 @@ async function loadTestPoints(
 }
 
 async function loadTestResults(
-  adapter: ReturnType<typeof getProjectScopedAzureDevOpsAdapter>,
+  adapter: AzureDevOpsRestAdapter,
   projectId: string,
   runs: AzureTestRun[],
 ): Promise<SourceResult<AzureTestResult[]>> {
@@ -370,7 +369,7 @@ async function loadTestResults(
 
 function toExecutionItem(
   point: PointWithSuite,
-  adapter: ReturnType<typeof getProjectScopedAzureDevOpsAdapter>,
+  adapter: AzureDevOpsRestAdapter,
   scope: ProjectScope,
 ): DashboardExecutionItem {
   return {
@@ -388,7 +387,7 @@ function toExecutionItem(
 function buildBugRows(
   bugs: Requirement[],
   requirements: Requirement[],
-  adapter: ReturnType<typeof getProjectScopedAzureDevOpsAdapter>,
+  adapter: AzureDevOpsRestAdapter,
   scope: ProjectScope,
 ): DashboardBugRow[] {
   const requirementsById = new Map(requirements.map((requirement) => [requirement.id, requirement]));
@@ -627,7 +626,7 @@ function outcomeDistribution(counts: ReturnType<typeof countOutcomes>): Dashboar
 }
 
 function buildWorkItemUrl(
-  adapter: ReturnType<typeof getProjectScopedAzureDevOpsAdapter>,
+  adapter: AzureDevOpsRestAdapter,
   scope: ProjectScope,
   id: string,
 ) {

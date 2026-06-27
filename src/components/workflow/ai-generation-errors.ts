@@ -16,6 +16,7 @@ export function mapFriendlyError(input?: { code?: AppErrorCode; raw?: string | n
     case AppErrorCode.NoProvider:
       return "No LLM provider is configured. Configure a provider, model, and API key in Settings.";
     case AppErrorCode.Network:
+      if (raw && !/^network error\./i.test(raw.trim())) return raw;
       return "Network error. Check your connection and try again.";
     case AppErrorCode.Unknown:
       return "The AI response could not be completed. You can retry or adjust the input.";

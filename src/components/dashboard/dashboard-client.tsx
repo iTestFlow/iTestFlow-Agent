@@ -55,7 +55,7 @@ export function DashboardsClient() {
   const [activeDashboard, setActiveDashboard] = useState<"workbench" | "project" | "system">("workbench");
 
   return (
-    <Tabs value={activeDashboard} onValueChange={(value) => setActiveDashboard(value as "workbench" | "project" | "system")} className="flex-col gap-4">
+    <Tabs id="dashboard-sections" value={activeDashboard} onValueChange={(value) => setActiveDashboard(value as "workbench" | "project" | "system")} className="flex-col gap-4">
       <TabsList variant="primary" className="grid h-auto w-full grid-cols-3 sm:inline-grid sm:w-fit sm:min-w-[640px]">
         <TabsTrigger value="workbench" className="h-10 px-3 py-2 duration-200">My Workbench</TabsTrigger>
         <TabsTrigger value="project" className="h-10 px-3 py-2 duration-200">Project Insights</TabsTrigger>

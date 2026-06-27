@@ -401,6 +401,7 @@ export function TestCaseDesignClient() {
                 variant="test-design"
                 status={prep.status}
                 elapsedSeconds={prep.elapsedSeconds}
+                error={prep.error}
                 errorMessage={prep.errorMessage}
                 canCancel
                 onCancel={prep.cancel}
@@ -442,6 +443,7 @@ export function TestCaseDesignClient() {
               variant="test-design"
               status={gen.status}
               elapsedSeconds={gen.elapsedSeconds}
+              error={gen.error}
               errorMessage={gen.errorMessage}
               canCancel
               onCancel={gen.cancel}

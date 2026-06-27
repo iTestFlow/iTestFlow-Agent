@@ -1,5 +1,8 @@
+import type { Metadata } from "next"
 import { ContentShell } from "@/components/layout/content-shell"
 import { ActivityLogClient } from "@/components/activity-log/activity-log-client"
+
+export const metadata: Metadata = { title: "Activity Log" }
 
 export default function ActivityLogPage() {
   return (

@@ -27,16 +27,30 @@ export type SystemDashboardMetric = {
   supportingText: string;
 };
 
+export type SystemDashboardPermissions = {
+  canViewWorkspaceUsers: boolean;
+};
+
+export type SystemDashboardEffectiveScope = {
+  mode: "mine" | "team" | "user";
+  label: string;
+  userId: string | null;
+};
+
 export type WorkflowSavingsRow = {
   workflowType: WorkflowType;
   workflow: string;
   runs: number;
   manualBaselineMinutes: number;
+  reviewMinutes: number;
+  llmMinutes: number | null;
   actualAverageMinutes: number | null;
-  totalSavedMinutes: number;
+  laborSavedMinutes: number;
+  cycleSavedMinutes: number;
+  reviewExceedsManual: boolean;
 };
 
-export type SystemDashboardAnalytics = {
+export type SystemDashboardAnalyticsPayload = {
   generatedAt: string;
   filters: SystemDashboardFilters;
   filterMetadata: {
@@ -44,19 +58,26 @@ export type SystemDashboardAnalytics = {
     users: Array<{ value: string; label: string }>;
   };
   overview: {
-    estimatedHoursSaved: SystemDashboardMetric;
+    laborHoursSaved: SystemDashboardMetric;
+    cycleHoursSaved: SystemDashboardMetric;
     workflowsCompleted: SystemDashboardMetric;
     testCasesPublished: SystemDashboardMetric;
     manualActionsAvoided: number;
   };
   workflowSavings: {
     rows: WorkflowSavingsRow[];
-    trend: Array<{ date: string; savedHours: number }>;
+    trend: Array<{ date: string; savedHours: number; cycleHours: number }>;
   };
   adoption: {
     activeUsers: number;
+    activeDays: number;
     workflowRuns: number;
     mostUsedFeature: string | null;
   };
   warnings: string[];
+};
+
+export type SystemDashboardAnalytics = SystemDashboardAnalyticsPayload & {
+  permissions: SystemDashboardPermissions;
+  effectiveScope: SystemDashboardEffectiveScope;
 };

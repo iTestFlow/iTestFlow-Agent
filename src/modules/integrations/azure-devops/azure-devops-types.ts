@@ -10,6 +10,7 @@ export type AzureAuthenticatedUser = {
   id?: string;
   displayName: string;
   uniqueName?: string;
+  emailAddress?: string;
   imageUrl?: string;
 };
 

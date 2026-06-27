@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { getProjectKnowledgeLog } from "@/modules/rag/project-knowledge-compiled.service";
 
 export const runtime = "nodejs";
@@ -17,13 +19,17 @@ export async function POST(request: Request) {
   }
 
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     return NextResponse.json({
-      items: getProjectKnowledgeLog({
-        scope: parsed.data.scope,
+      items: await getProjectKnowledgeLog({
+        scope: trustedScope,
         limit: parsed.data.limit,
       }),
     });
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Project knowledge log failed." },
       { status: 503 },

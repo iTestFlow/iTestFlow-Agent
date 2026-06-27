@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import {
+  authErrorResponse,
+  requireWorkflowContext,
+  requireWorkflowRole,
+} from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { promoteContextChatbotAnswer } from "@/modules/rag/project-knowledge-compiled.service";
 
 export const runtime = "nodejs";
@@ -25,8 +31,13 @@ export async function POST(request: Request) {
   }
 
   try {
-    return NextResponse.json(promoteContextChatbotAnswer(parsed.data));
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can promote answers to project knowledge.");
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    return NextResponse.json(await promoteContextChatbotAnswer({ ...parsed.data, scope: trustedScope }));
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Context chatbot answer promotion failed." },
       { status: 422 },

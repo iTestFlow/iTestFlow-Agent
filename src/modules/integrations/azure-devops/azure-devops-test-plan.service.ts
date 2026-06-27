@@ -22,6 +22,7 @@ export async function publishApprovedTestCases(
   adapter: AzureDevOpsAdapter,
   scopeInput: ProjectScope,
   input: {
+    actor: string;
     targetUserStoryId: string;
     testPlanId?: string;
     suiteMode: PublishSuiteMode;
@@ -132,6 +133,7 @@ export async function publishApprovedTestCases(
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     entityType: "work_item",
     entityId: input.targetUserStoryId,
     action: "azure_devops.publish_test_cases",

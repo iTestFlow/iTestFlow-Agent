@@ -1,13 +1,18 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
-import { getConfiguredProviderFromEnv } from "@/modules/llm/configured-provider";
+import {
+  getUserAzureAdapter,
+  getUserLLMProvider,
+  requireWorkflowContext,
+  WorkflowAuthError,
+} from "@/modules/credentials/scoped-resolution.service";
+import { SessionError } from "@/modules/auth/session.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { runRequirementAnalysis } from "@/modules/requirement-analysis/application/requirement-analysis.service";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
-import { getEffectiveRuntimeSettings } from "@/modules/settings/runtime-settings.service";
+import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
@@ -17,8 +22,8 @@ import {
   updateWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
 import { requirementAnalysisChecklistOptions } from "@/modules/requirement-analysis/checklist-options";
-import { noLlmProviderConfiguredError } from "@/modules/shared/errors/app-error";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -35,6 +40,7 @@ const RequestSchema = z.object({
 
 export async function POST(request: Request) {
   let scope: ProjectScope | undefined;
+  let actor: string | undefined;
   let analyticsRunId: string | undefined;
   try {
     const parsed = RequestSchema.safeParse(await request.json());
@@ -46,40 +52,44 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    scope = parsed.data.scope;
-
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
-    const provider = getConfiguredProviderFromEnv();
-    if (!provider) {
-      const error = noLlmProviderConfiguredError();
-      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
-    }
+    // Auth + per-user credentials (replaces global runtime settings). The user's
+    // own encrypted Azure PAT and LLM key are used; the org comes from the
+    // workspace, never the client.
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    actor = ctx.userId;
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    scope = trustedScope;
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
+    const provider = await getUserLLMProvider(ctx);
     analyticsRunId = startWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       workflowType: "requirements_analysis",
       workItemId: parsed.data.targetWorkItemId,
+      userId: ctx.userId,
     });
 
     const targetRequirement = await adapter.fetchWorkItemById({
-      projectId: parsed.data.scope.azureProjectId,
+      projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
     const autoContext = await resolveWorkflowContext({
-      scope: parsed.data.scope,
+      scope: trustedScope,
+      actor: ctx.userId,
       adapter,
       provider,
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: getEffectiveRuntimeSettings()?.context.retrievalTopK ?? 8,
+      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
       workflowType: "requirement_analysis",
     });
     const result = await runRequirementAnalysis({
-      scope: parsed.data.scope,
+      scope: trustedScope,
+      actor: ctx.userId,
       provider,
       targetRequirement,
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: getSavedProjectKnowledgeBase({ scope: parsed.data.scope }),
+      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
       enabledChecklistItemIds: parsed.data.enabledChecklistItemIds,
       extraInstructions: parsed.data.extraInstructions,
     });
@@ -88,7 +98,7 @@ export async function POST(request: Request) {
       relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
     });
     updateWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       patch: {
         status: "generated",
@@ -124,8 +134,14 @@ export async function POST(request: Request) {
       warnings: result.warnings,
     });
   } catch (error) {
+    if (error instanceof SessionError) {
+      return NextResponse.json({ error: error.message }, { status: 401 });
+    }
+    if (error instanceof WorkflowAuthError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     console.error("Requirement analysis failed", error);
-    if (scope) writeGenerationFailureAudit({ scope, action: "requirement_analysis.run", label: "Requirement analysis failed.", error });
+    if (scope && actor) writeGenerationFailureAudit({ scope, actor, action: "requirement_analysis.run", label: "Requirement analysis failed.", error });
     if (scope && analyticsRunId) {
       failWorkflowRun({ scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Requirement analysis failed." });
     }

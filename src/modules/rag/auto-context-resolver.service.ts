@@ -40,6 +40,7 @@ export type AutoContextResolution = {
 
 export async function resolveWorkflowContext(input: {
   scope: ProjectScope;
+  actor: string;
   adapter: AzureDevOpsAdapter;
   provider: LLMProvider;
   targetRequirement: Requirement;
@@ -67,6 +68,7 @@ async function resolveWorkflowContextCore(input: {
   scope: ProjectScope;
   adapter: AzureDevOpsAdapter;
   provider?: LLMProvider;
+  actor?: string;
   targetRequirement: Requirement;
   selectedContextIds?: string[];
   retrievalTopK: number;
@@ -106,11 +108,11 @@ async function resolveWorkflowContextCore(input: {
   }
 
   const storedContext = distinctContextByWorkItem(
-    retrieveStoredProjectContext({
+    (await retrieveStoredProjectContext({
       scope,
       query: requirementToRetrievalQuery(input.targetRequirement),
       topK: retrievalTopK,
-    }).filter((item) => item.workItemId !== input.targetRequirement.id),
+    })).filter((item) => item.workItemId !== input.targetRequirement.id),
   );
   const candidates = distinctContextByWorkItem([
     ...linkedRequirementContext,
@@ -125,9 +127,9 @@ async function resolveWorkflowContextCore(input: {
       retrievalTopK,
     };
   }
-
   const llmSelected = await selectContextWithLLM({
     scope,
+    actor: input.actor,
     provider: input.provider,
     targetRequirement: input.targetRequirement,
     candidates,
@@ -184,7 +186,7 @@ async function loadExplicitContext(input: {
   selectedContextIds: string[];
   retrievalTopK: number;
 }) {
-  const stored = retrieveStoredProjectContext({
+  const stored = await retrieveStoredProjectContext({
     scope: input.scope,
     query: input.selectedContextIds.join(" "),
     workItemIds: input.selectedContextIds,
@@ -208,16 +210,19 @@ async function loadExplicitContext(input: {
 async function selectContextWithLLM(input: {
   scope: ProjectScope;
   provider?: LLMProvider;
+  actor?: string;
   targetRequirement: Requirement;
   candidates: LlmContextSource[];
   maxContextItems: number;
   workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review" | "test_execution_effort";
 }) {
   if (!input.provider) return [];
+  if (!input.actor) throw new Error("Audit actor is required for LLM context selection.");
 
   try {
     const result = await suggestContextStories({
       scope: input.scope,
+      actor: input.actor,
       provider: input.provider,
       targetRequirement: input.targetRequirement,
       retrievedContext: input.candidates,

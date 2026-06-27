@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import {
+  authErrorResponse,
+  requireWorkflowContext,
+  requireWorkflowRole,
+} from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { ProjectKnowledgeBaseSchema } from "@/modules/rag/project-knowledge.schema";
 import { buildProjectKnowledgeManualConsolidationPrompt } from "@/modules/rag/project-knowledge.service";
 
@@ -18,11 +24,16 @@ export async function POST(request: Request) {
   }
 
   try {
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can build project knowledge.");
+    const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     return NextResponse.json(buildProjectKnowledgeManualConsolidationPrompt({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       partialKnowledgeBases: parsed.data.partialKnowledgeBases,
     }));
   } catch (error) {
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "External LLM knowledge consolidation prompt preparation failed." },
       { status: 503 },

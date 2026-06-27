@@ -4,15 +4,15 @@ import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
+  CONTEXT_CHATBOT_HISTORY_CONTENT_LIMIT,
+  CONTEXT_CHATBOT_PROMPT_HISTORY_LIMIT,
+  type ContextChatbotHistoryMessage,
+} from "@/modules/context-chatbot/context-chatbot-history";
+import {
   retrieveContextChatbotEvidence,
   type ContextChatbotContextEvidence,
   type ContextChatbotKnowledgeEvidence,
 } from "@/modules/rag/context-chatbot-retrieval.service";
-
-export type ContextChatbotHistoryMessage = {
-  role: "user" | "assistant";
-  content: string;
-};
 
 export type ContextChatbotCitation = {
   sourceType: "project_context" | "project_knowledge";
@@ -26,6 +26,7 @@ export type ContextChatbotCitation = {
 
 export async function answerContextChatbot(input: {
   scope: ProjectScope;
+  actor: string;
   provider: LLMProvider;
   message: string;
   history?: ContextChatbotHistoryMessage[];
@@ -34,11 +35,12 @@ export async function answerContextChatbot(input: {
   const question = input.message.trim();
   if (!question) throw new Error("Enter a question before sending a chat message.");
 
-  const evidence = retrieveContextChatbotEvidence({
+  const evidence = await retrieveContextChatbotEvidence({
     scope,
     query: question,
     contextLimit: 10,
     knowledgeLimit: 10,
+    maxContextChunksPerWorkItem: 2,
   });
   const citations = buildCitations(evidence.context, evidence.knowledge);
 
@@ -83,6 +85,7 @@ export async function answerContextChatbot(input: {
     azureProjectId: scope.azureProjectId,
     azureProjectName: scope.azureProjectName,
     azureOrganizationUrl: scope.azureOrganizationUrl,
+    actor: input.actor,
     action: "context_chatbot.answer",
     status: "Success",
     message: "Answered context chatbot question using local project context and knowledge.",
@@ -152,10 +155,10 @@ function buildUserPrompt(input: {
 
 function renderHistory(history: ContextChatbotHistoryMessage[]) {
   const recent = history
-    .slice(-8)
+    .slice(-CONTEXT_CHATBOT_PROMPT_HISTORY_LIMIT)
     .map((message) => ({
       role: message.role,
-      content: message.content.trim().slice(0, 1200),
+      content: message.content.trim().slice(0, CONTEXT_CHATBOT_HISTORY_CONTENT_LIMIT),
     }))
     .filter((message) => message.content);
 

@@ -1,13 +1,19 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getProjectScopedAzureDevOpsAdapter } from "@/modules/integrations/azure-devops/configured-azure-devops";
+import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  requireWorkflowContext,
+  requireWorkflowRole,
+} from "@/modules/credentials/scoped-resolution.service";
 import { indexAzureWorkItemsAsProjectContext } from "@/modules/rag/project-context-store.service";
 import {
   completeWorkflowRun,
   failWorkflowRun,
   startWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
+import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
 
@@ -27,21 +33,28 @@ export async function POST(request: Request) {
     );
   }
 
-  const analyticsRunId = startWorkflowRun({
-    scope: parsed.data.scope,
-    workflowType: "knowledge_indexing",
-  });
+  let trustedScope: ProjectScope | undefined;
+  let analyticsRunId: string | undefined;
   try {
-    const adapter = getProjectScopedAzureDevOpsAdapter(parsed.data.scope);
+    const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can build project knowledge.");
+    trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    analyticsRunId = startWorkflowRun({
+      scope: trustedScope,
+      workflowType: "knowledge_indexing",
+      userId: ctx.userId,
+    });
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const result = await indexAzureWorkItemsAsProjectContext({
-      scope: parsed.data.scope,
+      scope: trustedScope,
+      actor: ctx.userId,
       adapter,
       workItemTypes: parsed.data.workItemTypes,
       states: parsed.data.states,
       mode: parsed.data.mode ?? "incremental",
     });
     completeWorkflowRun({
-      scope: parsed.data.scope,
+      scope: trustedScope,
       runId: analyticsRunId,
       valueRealized: true,
       patch: {
@@ -59,7 +72,11 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ source: "live", analyticsRunId, ...result });
   } catch (error) {
-    failWorkflowRun({ scope: parsed.data.scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Project context indexing failed." });
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
+    if (trustedScope && analyticsRunId) {
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Project context indexing failed." });
+    }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Project context indexing failed." },
       { status: 503 },
