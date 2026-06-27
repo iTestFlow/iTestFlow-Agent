@@ -268,11 +268,12 @@ function DrawIcon([System.Drawing.Graphics]$G, [string]$Kind, [float]$X, [float]
       $G.DrawRectangle($pen, $X + $Size * 0.13, $Y + $Size * 0.42, $Size * 0.74, $Size * 0.36)
     }
     "book" {
-      $G.DrawArc($pen, $X + $Size * 0.10, $Y + $Size * 0.24, $Size * 0.38, $Size * 0.52, 200, 140)
-      $G.DrawArc($pen, $X + $Size * 0.52, $Y + $Size * 0.24, $Size * 0.38, $Size * 0.52, 200, 140)
-      $G.DrawLine($pen, $cx, $Y + $Size * 0.28, $cx, $Y + $Size * 0.82)
-      $G.DrawLine($thin, $X + $Size * 0.20, $Y + $Size * 0.35, $X + $Size * 0.42, $Y + $Size * 0.42)
-      $G.DrawLine($thin, $X + $Size * 0.58, $Y + $Size * 0.42, $X + $Size * 0.80, $Y + $Size * 0.35)
+      $G.FillRectangle($fill, $X + $Size * 0.18, $Y + $Size * 0.13, $Size * 0.13, $Size * 0.74)
+      $G.DrawRectangle($pen, $X + $Size * 0.18, $Y + $Size * 0.13, $Size * 0.62, $Size * 0.74)
+      $G.DrawLine($pen, $X + $Size * 0.31, $Y + $Size * 0.13, $X + $Size * 0.31, $Y + $Size * 0.87)
+      $G.DrawLine($thin, $X + $Size * 0.39, $Y + $Size * 0.34, $X + $Size * 0.72, $Y + $Size * 0.34)
+      $G.DrawLine($thin, $X + $Size * 0.39, $Y + $Size * 0.50, $X + $Size * 0.72, $Y + $Size * 0.50)
+      $G.DrawLine($thin, $X + $Size * 0.39, $Y + $Size * 0.66, $X + $Size * 0.72, $Y + $Size * 0.66)
     }
     "bug" {
       $G.DrawEllipse($pen, $X + $Size * 0.30, $Y + $Size * 0.25, $Size * 0.40, $Size * 0.50)
@@ -308,6 +309,23 @@ function DrawIcon([System.Drawing.Graphics]$G, [string]$Kind, [float]$X, [float]
       $G.DrawLine($thin, $cx, $Y + $Size * 0.24, $cx, $Y + $Size * 0.78)
       $G.DrawEllipse($thin, $X + $Size * 0.28, $Y + $Size * 0.35, $Size * 0.13, $Size * 0.13)
       $G.DrawEllipse($thin, $X + $Size * 0.60, $Y + $Size * 0.43, $Size * 0.13, $Size * 0.13)
+    }
+    "chip" {
+      $G.DrawRectangle($pen, $X + $Size * 0.27, $Y + $Size * 0.27, $Size * 0.46, $Size * 0.46)
+      $G.FillRectangle($fill, $X + $Size * 0.37, $Y + $Size * 0.37, $Size * 0.26, $Size * 0.26)
+      $G.DrawRectangle($thin, $X + $Size * 0.37, $Y + $Size * 0.37, $Size * 0.26, $Size * 0.26)
+      foreach ($t in @(0.37, 0.50, 0.63)) {
+        $G.DrawLine($thin, $X + $Size * $t, $Y + $Size * 0.27, $X + $Size * $t, $Y + $Size * 0.14)
+        $G.DrawLine($thin, $X + $Size * $t, $Y + $Size * 0.73, $X + $Size * $t, $Y + $Size * 0.86)
+        $G.DrawLine($thin, $X + $Size * 0.27, $Y + $Size * $t, $X + $Size * 0.14, $Y + $Size * $t)
+        $G.DrawLine($thin, $X + $Size * 0.73, $Y + $Size * $t, $X + $Size * 0.86, $Y + $Size * $t)
+      }
+    }
+    "brief" {
+      $G.DrawRectangle($pen, $X + $Size * 0.13, $Y + $Size * 0.35, $Size * 0.74, $Size * 0.48)
+      $G.DrawArc($pen, $X + $Size * 0.32, $Y + $Size * 0.17, $Size * 0.36, $Size * 0.28, 180, 180)
+      $G.DrawLine($thin, $X + $Size * 0.13, $Y + $Size * 0.57, $X + $Size * 0.87, $Y + $Size * 0.57)
+      $G.DrawRectangle($thin, $X + $Size * 0.41, $Y + $Size * 0.50, $Size * 0.18, $Size * 0.14)
     }
     "db" {
       $G.DrawEllipse($pen, $X + $Size * 0.18, $Y + $Size * 0.15, $Size * 0.64, $Size * 0.22)
@@ -409,9 +427,9 @@ function DrawSideItem(
   DrawCard $G $X $Y $Width $Height "#ffffff" "#8bb0df" 7
   $iconY = $Y + (($Height - 44) / 2)
   DrawIcon $G $Item.Icon ($X + 15) $iconY 44 $Accent
-  DrawText $G $Item.Title ($X + 86) ($Y + 8) ($Width - 100) 38 $TitleFont "#061747"
+  DrawText $G $Item.Title ($X + 86) ($Y + 7) ($Width - 100) ($Height - 26) $TitleFont "#061747"
   if ($Item.Sub) {
-    DrawText $G $Item.Sub ($X + 86) ($Y + $Height - 19) ($Width - 100) 16 $SubFont "#335075"
+    DrawText $G $Item.Sub ($X + 86) ($Y + $Height - 17) ($Width - 100) 15 $SubFont "#335075"
   }
 }
 
@@ -498,6 +516,7 @@ $fontWorkflowSmall = FontEx 10.8 ([System.Drawing.FontStyle]::Regular)
 $fontGov = FontEx 13.3 ([System.Drawing.FontStyle]::Bold)
 $fontMetric = FontEx 12.8 ([System.Drawing.FontStyle]::Bold)
 $fontBenefit = FontEx 13.5 ([System.Drawing.FontStyle]::Bold)
+$fontArrowLabel = FontEx 9.5 ([System.Drawing.FontStyle]::Italic)
 
 $brandLogoPath = Join-Path $repoRoot "public/brand/itestflow-logo-full.png"
 $brandIconPath = Join-Path $repoRoot "public/brand/itestflow-icon.png"
@@ -512,7 +531,7 @@ $rightX = 1230
 $rightW = 270
 $sideHeaderY = 72
 $itemY = 120
-$itemH = 70
+$itemH = 76
 $gap = 9
 
 DrawHeaderPill $g $leftX $sideHeaderY $leftW 38 "#092060" "#0f2e79" "INPUTS & CONTEXT" $fontHeader
@@ -535,7 +554,7 @@ $rightItems = @(
   @{ Title = "Hosted Next.js`nApp + API"; Sub = "Authenticated web surface"; Icon = "doc" },
   @{ Title = "Azure DevOps`nBoards"; Sub = "Requirements and tasks"; Icon = "board" },
   @{ Title = "Azure Test`nPlans"; Sub = "Cases, suites, outcomes"; Icon = "list" },
-  @{ Title = "LLM Provider`nAPIs"; Sub = "OpenAI, Gemini, Anthropic"; Icon = "brain" },
+  @{ Title = "LLM Provider`nAPIs"; Sub = "OpenAI, Gemini, Anthropic"; Icon = "chip" },
   @{ Title = "PostgreSQL`nWorkspace Data"; Sub = "Users, sessions, jobs, audit"; Icon = "db" },
   @{ Title = "Worker &`nJob Queue"; Sub = "Scheduled sync and indexing"; Icon = "gear" },
   @{ Title = "Encrypted`nCredentials"; Sub = "Per-user and workspace secrets"; Icon = "lock" }
@@ -599,7 +618,7 @@ DrawArrow $g 765 ($coreY + $coreH) 765 405 "#061747" 2.2 $false
 
 $workX = 325
 $workY = 413
-$workW = 882
+$workW = 894
 $workH = 218
 DrawCard $g $workX $workY $workW $workH "#f7fbff" "#7db0ff" 10
 DrawHeaderPill $g 578 397 368 34 "#1769ff" "#1159e8" "SPECIALIZED QA WORKFLOWS" $fontHeaderLarge
@@ -629,7 +648,7 @@ DrawHeaderPill $g 584 649 370 31 "#2b36c9" "#4a3fd6" "WORKSPACE KNOWLEDGE & GOVE
 
 $govItems = @(
   @{ Title = "Knowledge`nHub"; Icon = "book" },
-  @{ Title = "Business Owner`nAssistant"; Icon = "people" },
+  @{ Title = "Business Owner`nAssistant"; Icon = "brief" },
   @{ Title = "Project Context`nIndex"; Icon = "db" },
   @{ Title = "Audit`nTrail"; Icon = "doc" },
   @{ Title = "Trusted Project`nAnchors"; Icon = "target" },
@@ -706,6 +725,24 @@ for ($i = 0; $i -lt $insights.Count; $i++) {
 
 DrawArrow $g ($outX + $outW + 8) 855 ($insX - 8) 855 "#e48300" 2.2 $false
 DrawArrow $g ($rightX + 130) 618 ($rightX + 130) 792 "#058b8f" 2.0 $false
+
+# --- Arrow labels ---
+# Inputs → Core: carry context into AI core
+DrawText $g "context" 314 230 70 13 $fontArrowLabel "#274464" ([System.Drawing.StringAlignment]::Center) ([System.Drawing.StringAlignment]::Center)
+# Core ↔ Azure DevOps Boards
+DrawText $g "reads reqs" 1152 178 68 12 $fontArrowLabel "#274464" ([System.Drawing.StringAlignment]::Center) ([System.Drawing.StringAlignment]::Center)
+# Core ↔ Azure Test Plans
+DrawText $g "publishes" 1152 258 68 12 $fontArrowLabel "#274464" ([System.Drawing.StringAlignment]::Center) ([System.Drawing.StringAlignment]::Center)
+# Core ↔ LLM Provider APIs
+DrawText $g "AI reasoning" 1152 339 68 12 $fontArrowLabel "#274464" ([System.Drawing.StringAlignment]::Center) ([System.Drawing.StringAlignment]::Center)
+# Core → Specialized QA Workflows
+DrawText $g "dispatches" 770 384 78 12 $fontArrowLabel "#274464"
+# Governance ↑ Workflows: knowledge grounds each workflow
+DrawText $g "knowledge anchors" 682 639 168 12 $fontArrowLabel "#2b36c9" ([System.Drawing.StringAlignment]::Center) ([System.Drawing.StringAlignment]::Center)
+# Reviewed Outputs → Insights & Feedback
+DrawText $g "reviewed" 756 840 76 12 $fontArrowLabel "#b86000" ([System.Drawing.StringAlignment]::Center) ([System.Drawing.StringAlignment]::Center)
+# Platform data → Insights (audit trail)
+DrawText $g "audit & data" 1365 700 112 13 $fontArrowLabel "#058b8f"
 
 $benefitX = 31
 $benefitY = 942
