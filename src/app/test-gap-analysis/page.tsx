@@ -1,5 +1,8 @@
+import type { Metadata } from "next"
 import { ContentShell } from "@/components/layout/content-shell";
 import { TestGapAnalysisClient } from "./test-gap-analysis-client";
+
+export const metadata: Metadata = { title: "Test Gap Analysis" }
 
 export default function TestGapAnalysisPage() {
   return (

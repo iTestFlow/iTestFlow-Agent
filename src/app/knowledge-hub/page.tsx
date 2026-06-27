@@ -1,5 +1,8 @@
+import type { Metadata } from "next"
 import { ContentShell } from "@/components/layout/content-shell"
 import { getOptionalSession } from "@/modules/auth/session.service"
+
+export const metadata: Metadata = { title: "Knowledge Hub" }
 import type { WorkspaceRole } from "@/modules/workspace/workspace-access.service"
 import { resolveActiveWorkspaceForUser } from "@/modules/workspace/workspace.service"
 import { KnowledgeHubClient } from "./knowledge-hub-client"

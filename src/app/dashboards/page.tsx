@@ -1,4 +1,7 @@
+import type { Metadata } from "next"
 import { ContentShell } from "@/components/layout/content-shell"
+
+export const metadata: Metadata = { title: "Dashboards" }
 import { DashboardsClient } from "@/components/dashboard/dashboard-client"
 
 export default function DashboardsPage() {

@@ -1,5 +1,8 @@
+import type { Metadata } from "next"
 import { ContentShell } from "@/components/layout/content-shell";
 import { BulkTaskCreationClient } from "./bulk-task-creation-client";
+
+export const metadata: Metadata = { title: "Bulk Task Creation" }
 
 export default function BulkTaskCreationPage() {
   return (

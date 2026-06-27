@@ -12,7 +12,10 @@ import { UnsavedChangesProvider } from "@/components/navigation/unsaved-changes-
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: "iTestFlow",
+  title: {
+    default: "iTestFlow",
+    template: "%s | iTestFlow",
+  },
   description: "Local-first test intelligence command center for Azure DevOps testing workflows.",
   icons: {
     icon: [{ url: "/brand/itestflow-icon.png", type: "image/png" }],

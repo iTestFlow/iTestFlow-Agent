@@ -1,8 +1,9 @@
-"use client"
-
+import type { Metadata } from "next"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ContentShell } from "@/components/layout/content-shell"
 import { SettingsTabs } from "@/shared/components/settings/settings-tabs"
+
+export const metadata: Metadata = { title: "Settings" }
 
 export default function SettingsPage() {
   return (

@@ -1,5 +1,8 @@
+import type { Metadata } from "next"
 import { ContentShell } from "@/components/layout/content-shell";
 import { SuiteMigrationClient } from "./suite-migration-client";
+
+export const metadata: Metadata = { title: "Suite Migration" }
 
 export default function SuiteMigrationPage() {
   return (
