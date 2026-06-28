@@ -15,6 +15,7 @@ import { AiGenerationProgress } from "@/components/workflow/ai-generation-progre
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
 import { WorkflowContextCitations } from "@/components/workflow/workflow-context-citations";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
+import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import {
@@ -62,8 +63,13 @@ export function TestCaseDesignClient() {
   const [state, setState] = useState<ApiState<TestCaseGenerationRunResult>>({ loading: false, error: null, data: null });
   const gen = useAiGeneration();
   const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
+  const loadingGame = useLlmLoadingGameSession<TestCaseGenerationRunResult>((data) => {
+    applyGeneratedCases(data);
+    scrollToNextStep(generatedCasesRef);
+  });
   const cancelGeneration = gen.cancel;
   const cancelPreparation = prep.cancel;
+  const endLoadingGameSession = loadingGame.endSession;
   const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
@@ -82,6 +88,7 @@ export function TestCaseDesignClient() {
   useEffect(() => {
     cancelGeneration();
     cancelPreparation();
+    endLoadingGameSession();
     setActiveStep("generate");
     setTargetWorkItemId("");
     setHasUnfinishedWork(false);
@@ -91,7 +98,7 @@ export function TestCaseDesignClient() {
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
-  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation]);
+  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
   const selectedTargetRangeOption = useMemo(
     () =>
       targetTestCaseRangeOptions.find((option) => option.id === testDesignSettings.targetTestCaseRange) ??
@@ -124,6 +131,7 @@ export function TestCaseDesignClient() {
   function changeTargetWorkItemId(value: string) {
     gen.cancel();
     prep.cancel();
+    loadingGame.endSession();
     setActiveStep("generate");
     setHasUnfinishedWork(true);
     setTargetWorkItemId(value);
@@ -138,6 +146,7 @@ export function TestCaseDesignClient() {
   function changeExtraInstructions(value: string) {
     gen.cancel();
     prep.cancel();
+    loadingGame.endSession();
     setActiveStep("generate");
     setHasUnfinishedWork(true);
     setExtraInstructions(value);
@@ -152,6 +161,7 @@ export function TestCaseDesignClient() {
   function resetManualDraftForTestDesignOptionsChange() {
     gen.cancel();
     prep.cancel();
+    loadingGame.endSession();
     setActiveStep("generate");
     setState({ loading: false, error: null, data: null });
     setTestCases([]);
@@ -232,6 +242,7 @@ export function TestCaseDesignClient() {
   async function generate() {
     if (!scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
     if (gen.isRunning) return;
+    loadingGame.startSession();
     setState({ loading: true, error: null, data: null });
     setTestCases([]);
     setSelectedTestCaseIds([]);
@@ -251,9 +262,9 @@ export function TestCaseDesignClient() {
       ),
     );
     if (data) {
-      applyGeneratedCases(data);
-      scrollToNextStep(generatedCasesRef);
+      loadingGame.completeSession(data);
     } else {
+      loadingGame.endSession();
       setState({ loading: false, error: null, data: null });
     }
   }
@@ -438,7 +449,7 @@ export function TestCaseDesignClient() {
             ) : null}
           </div>
 
-          {gen.status !== "idle" && gen.status !== "completed" ? (
+          {gen.status !== "idle" && (gen.status !== "completed" || loadingGame.shouldKeepPanelMounted) ? (
             <AiGenerationProgress
               variant="test-design"
               status={gen.status}
@@ -451,6 +462,7 @@ export function TestCaseDesignClient() {
                 gen.retry();
                 void generate();
               }}
+              loadingGame={loadingGame.panel}
             />
           ) : null}
         </div>

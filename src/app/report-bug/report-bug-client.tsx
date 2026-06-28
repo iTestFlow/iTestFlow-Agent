@@ -24,6 +24,7 @@ import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { SectionCard, scrollToNextStep } from "@/components/workflow/test-intelligence-shared";
 import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
+import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import type { GeneratedTestCase } from "@/components/workflow/test-intelligence-types";
@@ -187,8 +188,10 @@ export function ReportBugClient() {
   const [customFieldRows, setCustomFieldRows] = useState<CustomFieldRow[]>([]);
   const gen = useAiGeneration();
   const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
+  const loadingGame = useLlmLoadingGameSession<GeneratedBugReport>((data) => applyGeneratedReport(data));
   const resetGeneration = gen.reset;
   const resetPreparation = prep.reset;
+  const endLoadingGameSession = loadingGame.endSession;
   const [analyticsRunId, setAnalyticsRunId] = useState<string | undefined>();
   const [manualDraft, setManualDraft] = useState<ManualPromptDraft | null>(null);
   const [manualResponse, setManualResponse] = useState("");
@@ -228,6 +231,7 @@ export function ReportBugClient() {
       generationRequestVersionRef.current += 1;
       resetGeneration();
       resetPreparation();
+      endLoadingGameSession();
       setScope(custom.detail ?? readActiveProject());
       setActiveStep("describe");
       setParentStoryId("");
@@ -248,7 +252,7 @@ export function ReportBugClient() {
     };
     window.addEventListener("itestflow:active-project-changed", onChange);
     return () => window.removeEventListener("itestflow:active-project-changed", onChange);
-  }, [resetGeneration, resetPreparation]);
+  }, [resetGeneration, resetPreparation, endLoadingGameSession]);
 
   useEffect(() => {
     if (!scope) {
@@ -311,6 +315,7 @@ export function ReportBugClient() {
     generationRequestVersionRef.current += 1;
     gen.reset();
     prep.reset();
+    loadingGame.endSession();
     resetManual();
     setActiveStep("describe");
     setAnalyticsRunId(undefined);
@@ -398,12 +403,15 @@ export function ReportBugClient() {
     if (!scope || !bugDescription.trim() || parentStoryInvalid) return;
     if (gen.isRunning) return;
     invalidateGeneratedReport();
+    loadingGame.startSession();
     setPostState({ loading: false, error: null, data: null });
     const data = await gen.start((signal) =>
       postJson<GeneratedBugReport>("/api/bugs/generate", buildGenerationPayload(scope), signal),
     );
     if (data) {
-      applyGeneratedReport(data);
+      loadingGame.completeSession(data);
+    } else {
+      loadingGame.endSession();
     }
   }
 
@@ -856,7 +864,7 @@ Actual: the button stays inactive / no request is triggered.`}
             ) : null}
           </div>
 
-          {gen.status !== "idle" && gen.status !== "completed" ? (
+          {gen.status !== "idle" && (gen.status !== "completed" || loadingGame.shouldKeepPanelMounted) ? (
             <AiGenerationProgress
               variant="generic"
               status={gen.status}
@@ -869,6 +877,7 @@ Actual: the button stays inactive / no request is triggered.`}
                 gen.retry();
                 void generate();
               }}
+              loadingGame={loadingGame.panel}
             />
           ) : null}
 

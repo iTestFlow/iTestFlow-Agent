@@ -21,6 +21,7 @@ import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generatio
 import { WorkflowContextCitations } from "@/components/workflow/workflow-context-citations";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
+import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session";
 import { isRequirementLikeType, scrollToNextStep } from "@/components/workflow/test-intelligence-shared";
 import { WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
@@ -194,8 +195,18 @@ export function TestExecutionEffortClient() {
   const [error, setError] = useState<string | null>(null);
   const gen = useAiGeneration();
   const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
+  const loadingGame = useLlmLoadingGameSession<GenerateResponse>((data) => {
+    setPreview(data);
+    setEstimateResult(data);
+    setExternalDraft(null);
+    setExternalResponse("");
+    setHasUnfinishedWork(false);
+    setActiveStep("review");
+    scrollToNextStep(reviewRef);
+  });
   const cancelGeneration = gen.cancel;
   const cancelPreparation = prep.cancel;
+  const endLoadingGameSession = loadingGame.endSession;
   const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
   useUnsavedChangesGuard({
     dirty: hasUnfinishedWork,
@@ -205,6 +216,7 @@ export function TestExecutionEffortClient() {
   useEffect(() => {
     cancelGeneration();
     cancelPreparation();
+    endLoadingGameSession();
     setActiveStep("configure");
     setStoryId("");
     setHasUnfinishedWork(false);
@@ -214,7 +226,7 @@ export function TestExecutionEffortClient() {
     setExternalDraft(null);
     setExternalResponse("");
     setError(null);
-  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation]);
+  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
 
   const requestPayload = useMemo(() => ({
     scope,
@@ -225,6 +237,7 @@ export function TestExecutionEffortClient() {
   function clearOutputs() {
     gen.cancel();
     prep.cancel();
+    loadingGame.endSession();
     setActiveStep("configure");
     setPreview(null);
     setEstimateResult(null);
@@ -278,6 +291,7 @@ export function TestExecutionEffortClient() {
   async function generateEstimate() {
     if (!canSubmit()) return;
     if (gen.isRunning) return;
+    loadingGame.startSession();
     setError(null);
     setPreview(null);
     setEstimateResult(null);
@@ -287,13 +301,9 @@ export function TestExecutionEffortClient() {
       postJson<GenerateResponse>("/api/test-execution-effort/generate", requestPayload, signal),
     );
     if (data) {
-      setPreview(data);
-      setEstimateResult(data);
-      setExternalDraft(null);
-      setExternalResponse("");
-      setHasUnfinishedWork(false);
-      setActiveStep("review");
-      scrollToNextStep(reviewRef);
+      loadingGame.completeSession(data);
+    } else {
+      loadingGame.endSession();
     }
   }
 
@@ -554,7 +564,7 @@ export function TestExecutionEffortClient() {
             ) : null}
           </div>
 
-          {gen.status !== "idle" && gen.status !== "completed" ? (
+          {gen.status !== "idle" && (gen.status !== "completed" || loadingGame.shouldKeepPanelMounted) ? (
             <AiGenerationProgress
               variant="advice"
               status={gen.status}
@@ -567,6 +577,7 @@ export function TestExecutionEffortClient() {
                 gen.retry();
                 void generateEstimate();
               }}
+              loadingGame={loadingGame.panel}
             />
           ) : null}
         </div>

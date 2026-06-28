@@ -15,6 +15,7 @@ import { AiGenerationProgress } from "@/components/workflow/ai-generation-progre
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
 import { WorkflowContextCitations } from "@/components/workflow/workflow-context-citations";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
+import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import {
@@ -64,8 +65,13 @@ export function TestGapAnalysisClient() {
   const [state, setState] = useState<ApiState<ExistingReviewResult>>({ loading: false, error: null, data: null });
   const gen = useAiGeneration();
   const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
+  const loadingGame = useLlmLoadingGameSession<ExistingReviewResult>((data) => {
+    applyReviewResult(data);
+    scrollToNextStep(resultsRef);
+  });
   const cancelGeneration = gen.cancel;
   const cancelPreparation = prep.cancel;
+  const endLoadingGameSession = loadingGame.endSession;
   const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
@@ -81,6 +87,7 @@ export function TestGapAnalysisClient() {
   useEffect(() => {
     cancelGeneration();
     cancelPreparation();
+    endLoadingGameSession();
     setActiveStep("analyze");
     setTargetWorkItemId("");
     setHasUnfinishedWork(false);
@@ -90,7 +97,7 @@ export function TestGapAnalysisClient() {
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
-  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation]);
+  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
   const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
   const suggestedAdditions = useMemo(() => state.data?.suggestedAdditions ?? [], [state.data?.suggestedAdditions]);
   const selectedSuggestedAdditions = useMemo(() => {
@@ -110,6 +117,7 @@ export function TestGapAnalysisClient() {
   function changeTargetWorkItemId(value: string) {
     gen.cancel();
     prep.cancel();
+    loadingGame.endSession();
     setActiveStep("analyze");
     setHasUnfinishedWork(true);
     setTargetWorkItemId(value);
@@ -124,6 +132,7 @@ export function TestGapAnalysisClient() {
   function changeExtraInstructions(value: string) {
     gen.cancel();
     prep.cancel();
+    loadingGame.endSession();
     setActiveStep("analyze");
     setHasUnfinishedWork(true);
     setExtraInstructions(value);
@@ -173,6 +182,7 @@ export function TestGapAnalysisClient() {
   async function review() {
     if (!scope || !targetWorkItemId || !extraInstructionsValid) return;
     if (gen.isRunning) return;
+    loadingGame.startSession();
     setState({ loading: true, error: null, data: null });
     setSelectedSuggestedIds([]);
     setManualDraft({ loading: false, error: null, data: null });
@@ -186,9 +196,9 @@ export function TestGapAnalysisClient() {
       ),
     );
     if (data) {
-      applyReviewResult(data);
-      scrollToNextStep(resultsRef);
+      loadingGame.completeSession(data);
     } else {
+      loadingGame.endSession();
       setState({ loading: false, error: null, data: null });
     }
   }
@@ -363,7 +373,7 @@ export function TestGapAnalysisClient() {
             ) : null}
           </div>
 
-          {gen.status !== "idle" && gen.status !== "completed" ? (
+          {gen.status !== "idle" && (gen.status !== "completed" || loadingGame.shouldKeepPanelMounted) ? (
             <AiGenerationProgress
               variant="coverage"
               status={gen.status}
@@ -376,6 +386,7 @@ export function TestGapAnalysisClient() {
                 gen.retry();
                 void review();
               }}
+              loadingGame={loadingGame.panel}
             />
           ) : null}
         </div>

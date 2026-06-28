@@ -18,6 +18,7 @@ import { AiGenerationProgress } from "@/components/workflow/ai-generation-progre
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics";
 import { WorkflowContextCitations } from "@/components/workflow/workflow-context-citations";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
+import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
 import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
@@ -84,8 +85,13 @@ export function RequirementsAnalysisClient() {
   });
   const gen = useAiGeneration();
   const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
+  const loadingGame = useLlmLoadingGameSession<RequirementAnalysisRunResult>((data) => {
+    applyAnalysisResult(data);
+    scrollToNextStep(findingsCardRef);
+  });
   const cancelGeneration = gen.cancel;
   const cancelPreparation = prep.cancel;
+  const endLoadingGameSession = loadingGame.endSession;
   const [manualDraft, setManualDraft] = useState<ApiState<ManualPromptDraft>>({ loading: false, error: null, data: null });
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
@@ -110,6 +116,7 @@ export function RequirementsAnalysisClient() {
   useEffect(() => {
     cancelGeneration();
     cancelPreparation();
+    endLoadingGameSession();
     setActiveStep("analyze");
     setTargetWorkItemId("");
     setHasUnfinishedWork(false);
@@ -121,7 +128,7 @@ export function RequirementsAnalysisClient() {
     setManualSubmitError(null);
     setPushState({ loading: false, error: null, data: null });
     setSelectedMentionUserIds([]);
-  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation]);
+  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
   const sortedFindingList = useMemo(
     () => [...findings].sort((left, right) => severityRank(left.severity) - severityRank(right.severity)),
     [findings],
@@ -189,6 +196,7 @@ export function RequirementsAnalysisClient() {
   function changeTargetWorkItemId(value: string) {
     gen.cancel();
     prep.cancel();
+    loadingGame.endSession();
     setActiveStep("analyze");
     setHasUnfinishedWork(true);
     setTargetWorkItemId(value);
@@ -206,6 +214,7 @@ export function RequirementsAnalysisClient() {
   function changeExtraInstructions(value: string) {
     gen.cancel();
     prep.cancel();
+    loadingGame.endSession();
     setActiveStep("analyze");
     setHasUnfinishedWork(true);
     setExtraInstructions(value);
@@ -220,6 +229,7 @@ export function RequirementsAnalysisClient() {
   function resetManualDraftForChecklistChange() {
     gen.cancel();
     prep.cancel();
+    loadingGame.endSession();
     setActiveStep("analyze");
     setAnalysis({ loading: false, error: null, data: null });
     setFindings([]);
@@ -269,6 +279,7 @@ export function RequirementsAnalysisClient() {
   async function runAnalysis() {
     if (!scope || !targetWorkItemId || !checklistSelectionValid || !extraInstructionsValid) return;
     if (gen.isRunning) return;
+    loadingGame.startSession();
     setAnalysis({ loading: true, error: null, data: null });
     setFindings([]);
     setSelectedFindingIds([]);
@@ -283,10 +294,10 @@ export function RequirementsAnalysisClient() {
       ),
     );
     if (data) {
-      applyAnalysisResult(data);
-      scrollToNextStep(findingsCardRef);
+      loadingGame.completeSession(data);
     } else {
       // cancelled or failed: the progress panel owns the message.
+      loadingGame.endSession();
       setAnalysis({ loading: false, error: null, data: null });
     }
   }
@@ -524,7 +535,7 @@ export function RequirementsAnalysisClient() {
             ) : null}
           </div>
 
-          {gen.status !== "idle" && gen.status !== "completed" ? (
+          {gen.status !== "idle" && (gen.status !== "completed" || loadingGame.shouldKeepPanelMounted) ? (
             <AiGenerationProgress
               variant="analysis"
               status={gen.status}
@@ -537,6 +548,7 @@ export function RequirementsAnalysisClient() {
                 gen.retry();
                 void runAnalysis();
               }}
+              loadingGame={loadingGame.panel}
             />
           ) : null}
         </div>
