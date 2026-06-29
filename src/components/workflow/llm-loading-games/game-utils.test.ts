@@ -26,7 +26,7 @@ describe("fair random selection", () => {
     let previous: (typeof items)[number] | null = null;
     const draws: Array<(typeof items)[number]> = [];
 
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < items.length; index += 1) {
       const draw: { value: (typeof items)[number]; remaining: Array<(typeof items)[number]> } =
         drawFromShuffleBag(items, bag, previous, () => 0.75);
       draws.push(draw.value);
@@ -34,7 +34,7 @@ describe("fair random selection", () => {
       previous = draw.value;
     }
 
-    expect(new Set(draws.slice(0, 6))).toEqual(new Set(items));
+    expect(new Set(draws.slice(0, items.length))).toEqual(new Set(items));
     expect(draws.every((value, index) => index === 0 || value !== draws[index - 1])).toBe(true);
   });
 
@@ -89,6 +89,7 @@ describe("Zip path puzzles", () => {
     const transformed = createZipPuzzleForRound("corner", 7);
 
     expect(compact.size).toBe(4);
+    expect(extended.size).toBe(6);
     expect(isZipSolution(compact.solution, compact)).toBe(true);
     expect(Object.keys(extended.checkpoints)).toHaveLength(6);
     expect(isZipSolution(extended.solution, extended)).toBe(true);
@@ -102,9 +103,9 @@ describe("Zip path puzzles", () => {
     const started = advanceZipPath([], puzzle.checkpoints[1], puzzle);
     expect(started.invalid).toBe(false);
     expect(advanceZipPath(started.path, 2, puzzle).invalid).toBe(true);
-    expect(areAdjacent(0, 1, 5)).toBe(true);
-    expect(areAdjacent(0, 5, 5)).toBe(true);
-    expect(areAdjacent(0, 6, 5)).toBe(false);
+    expect(areAdjacent(0, 1, puzzle.size)).toBe(true);
+    expect(areAdjacent(0, puzzle.size, puzzle.size)).toBe(true);
+    expect(areAdjacent(0, puzzle.size + 1, puzzle.size)).toBe(false);
   });
 
   it("supports one-tile backtracking without duplicating cells", () => {

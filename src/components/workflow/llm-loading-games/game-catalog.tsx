@@ -11,6 +11,7 @@ import { MemoryMatchGame } from "./MemoryMatchGame";
 import { OddTileGame } from "./OddTileGame";
 import { PatternSequenceGame } from "./PatternSequenceGame";
 import { PipeConnectGame } from "./PipeConnectGame";
+import { SnakeTrailGame } from "./SnakeTrailGame";
 import { ZipPathGame } from "./ZipPathGame";
 
 export type LoadingGameDefinition = LoadingGameMetadata & {
@@ -24,6 +25,7 @@ const GAME_COMPONENTS: Record<LoadingGameName, ComponentType<MiniGameProps>> = {
   lights: LightsOutGame,
   odd: OddTileGame,
   sequence: PatternSequenceGame,
+  snake: SnakeTrailGame,
 };
 
 export const LOADING_GAME_CATALOG = Object.fromEntries(

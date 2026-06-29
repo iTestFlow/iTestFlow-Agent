@@ -363,7 +363,6 @@ export function AiGenerationProgress({
                 ? "Your generated response is available whenever you are ready."
                 : "Please keep this page open while the response is being generated. Large stories or rich project context may take longer."}
             </p>
-            {gameOpen ? null : <VariantSkeleton variant={variant} />}
             {loadingGame ? (
               <LlmLoadingGameShell
                 isLoading={active}
@@ -371,6 +370,7 @@ export function AiGenerationProgress({
                 controller={loadingGame}
               />
             ) : null}
+            {gameOpen ? null : <VariantSkeleton variant={variant} />}
           </>
         ) : null}
 

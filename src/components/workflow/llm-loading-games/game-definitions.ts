@@ -20,12 +20,13 @@ export const LOADING_GAME_NAMES: LoadingGameName[] = [
   "lights",
   "odd",
   "sequence",
+  "snake",
 ];
 
 export const LOADING_GAME_DEFINITIONS: Record<LoadingGameName, LoadingGameMetadata> = {
   zip: {
     title: "Zip Path",
-    instructions: "Draw one continuous route through every tile.",
+    instructions: "Draw one continuous route through every tile on a challenging 6×6 board.",
     variantCount: 8,
     modifiers: [
       { id: "compact", label: "Quick Grid", description: "A compact 4×4 route for a faster round." },
@@ -93,6 +94,18 @@ export const LOADING_GAME_DEFINITIONS: Record<LoadingGameName, LoadingGameMetada
       { id: "spatial", label: "Spatial Grid", description: "Recall five steps across a 3×3 grid." },
       { id: "reverse", label: "Reverse Recall", description: "Enter the pattern in reverse order." },
       { id: "growing", label: "Growing Pattern", description: "Complete three rounds that grow from three to five steps." },
+    ],
+  },
+  snake: {
+    title: "Snake Trail",
+    instructions: "Guide the trail one tile at a time and collect every target.",
+    variantCount: 8,
+    modifiers: [
+      { id: "compact", label: "Compact Trail", description: "Collect five targets on a compact 6×6 grid." },
+      { id: "wrap", label: "Wrapped Walls", description: "Leaving one edge continues from the opposite edge." },
+      { id: "obstacles", label: "Obstacle Course", description: "Navigate around a few fixed blocked tiles." },
+      { id: "ordered", label: "Ordered Targets", description: "Collect the numbered targets in order." },
+      { id: "long", label: "Long Trail", description: "Collect eight targets as the trail grows." },
     ],
   },
 };

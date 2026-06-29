@@ -1,16 +1,22 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  advanceSnake,
   createMemoryDeck,
   createOddTilePuzzle,
   createPatternSequence,
+  createSnakeGameState,
   createSolvableLightsPuzzle,
   expectedPatternInput,
   isPatternInputCorrect,
   lightToggleIndices,
   oddTileCount,
+  snakeFreeCellsConnected,
+  snakeNextCell,
   toggleLights,
   type OddTileModifier,
+  type SnakeGameState,
+  type SnakeModifier,
 } from "./extra-game-utils";
 
 describe("Memory Match", () => {
@@ -76,5 +82,64 @@ describe("Pattern Sequence", () => {
     expect(isPatternInputCorrect(sequence, sequence, false)).toBe(true);
     expect(isPatternInputCorrect(sequence, [2, 3, 1, 0], true)).toBe(true);
     expect(isPatternInputCorrect(sequence, sequence, true)).toBe(false);
+  });
+});
+
+describe("Snake Trail", () => {
+  it.each(["compact", "wrap", "obstacles", "ordered", "long"] as SnakeModifier[])(
+    "creates a valid %s board for every variant",
+    (modifier) => {
+      for (let variant = 0; variant < 8; variant += 1) {
+        const game = createSnakeGameState(modifier, variant);
+        const occupied = [...game.snake, ...game.obstacles, ...game.targets];
+        expect(new Set(occupied).size).toBe(occupied.length);
+        expect(occupied.every((cell) => cell >= 0 && cell < game.size * game.size)).toBe(true);
+        expect(snakeFreeCellsConnected(game.size, game.obstacles)).toBe(true);
+        expect(game.targets).toHaveLength(modifier === "compact" ? 5 : modifier === "long" ? 8 : 7);
+      }
+    },
+  );
+
+  it("wraps only when the round allows it", () => {
+    expect(snakeNextCell(0, 6, "W", false)).toBeNull();
+    expect(snakeNextCell(0, 6, "W", true)).toBe(5);
+    expect(snakeNextCell(0, 6, "N", true)).toBe(30);
+  });
+
+  it("grows on collection and reports the final target as a win", () => {
+    const state: SnakeGameState = {
+      size: 4,
+      snake: [5, 4, 0],
+      targets: [6, 7],
+      targetIndex: 0,
+      obstacles: [],
+      wrap: false,
+      ordered: false,
+    };
+    const collected = advanceSnake(state, "E");
+    expect(collected.event).toBe("collected");
+    expect(collected.state.snake).toHaveLength(4);
+    expect(collected.state.targetIndex).toBe(1);
+
+    const won = advanceSnake(collected.state, "E");
+    expect(won.event).toBe("won");
+    expect(won.state.snake).toHaveLength(5);
+    expect(won.state.targetIndex).toBe(2);
+  });
+
+  it("soft-blocks walls, the trail, obstacles, and out-of-order targets", () => {
+    const base: SnakeGameState = {
+      size: 4,
+      snake: [5, 6, 10, 9],
+      targets: [0, 7],
+      targetIndex: 0,
+      obstacles: [1],
+      wrap: false,
+      ordered: true,
+    };
+    expect(advanceSnake({ ...base, snake: [0, 4, 8] }, "W")).toMatchObject({ event: "blocked", reason: "wall" });
+    expect(advanceSnake(base, "E")).toMatchObject({ event: "blocked", reason: "self" });
+    expect(advanceSnake({ ...base, snake: [0, 4, 8] }, "E")).toMatchObject({ event: "blocked", reason: "obstacle" });
+    expect(advanceSnake({ ...base, snake: [6, 5, 4] }, "E")).toMatchObject({ event: "blocked", reason: "order" });
   });
 });

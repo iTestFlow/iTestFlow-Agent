@@ -59,7 +59,7 @@ export function ZipPathGame({
 
   function continuePath(cellIndex: number) {
     if (!dragging || disabled) return;
-    if (!moveTo(cellIndex)) setDragging(false);
+    moveTo(cellIndex);
   }
 
   function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
@@ -73,7 +73,7 @@ export function ZipPathGame({
   return (
     <div className={cn("space-y-2", className)}>
       <p className="text-xs text-muted-foreground">
-        Start at {startCheckpoint}, continue {modifierId === "reverse" ? "downward" : "upward"} to {finalCheckpoint}, and fill every tile.
+        Start at the highlighted {startCheckpoint}, then drag or select neighboring tiles {modifierId === "reverse" ? "downward" : "upward"} to {finalCheckpoint} and fill the board.
       </p>
       <div
         className="relative mx-auto grid aspect-square w-full max-w-[288px] touch-none select-none overflow-hidden rounded-xl border border-border bg-background"
@@ -108,6 +108,7 @@ export function ZipPathGame({
                 "relative z-10 flex aspect-square items-center justify-center border-b border-r border-border/70 text-xs font-semibold outline-none transition-colors focus-visible:z-30 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                 filled ? "bg-primary/12 text-primary" : "bg-card hover:bg-muted/70",
                 endpoint && "bg-primary/20 ring-2 ring-inset ring-primary/50",
+                path.length === 0 && checkpoint === startCheckpoint && "bg-success/15 ring-2 ring-inset ring-success/60",
                 modifierId === "guided" && checkpoint === nextCheckpoint && "bg-info/15 ring-2 ring-inset ring-info/50",
                 wonRef.current && filled && "bg-success/15 text-success",
               )}
@@ -146,7 +147,11 @@ export function ZipPathGame({
         </svg>
       </div>
       <p className="min-h-4 text-center text-[11px] text-muted-foreground" aria-live="polite">
-        {invalidMove ? "That tile cannot be added there. Continue from the current endpoint." : `${path.length} of ${cellCount} tiles filled`}
+        {invalidMove
+          ? path.length === 0
+            ? `Begin at the highlighted checkpoint ${startCheckpoint}.`
+            : "Choose a tile directly beside the highlighted endpoint."
+          : `${path.length} of ${cellCount} tiles filled`}
       </p>
     </div>
   );

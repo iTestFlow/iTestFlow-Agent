@@ -6,7 +6,14 @@ export type MiniGameProps = {
   modifierId?: string;
 };
 
-export type LoadingGameName = "zip" | "pipe" | "memory" | "lights" | "odd" | "sequence";
+export type LoadingGameName =
+  | "zip"
+  | "pipe"
+  | "memory"
+  | "lights"
+  | "odd"
+  | "sequence"
+  | "snake";
 export type LoadingGameChoice = LoadingGameName | "random";
 
 export type ZipPuzzle = {
@@ -24,19 +31,40 @@ export type ZipMoveResult = {
 
 export const ZIP_PUZZLES: ZipPuzzle[] = [
   {
-    size: 5,
-    checkpoints: { 1: 0, 2: 9, 3: 10, 4: 19, 5: 24 },
-    solution: [0, 1, 2, 3, 4, 9, 8, 7, 6, 5, 10, 11, 12, 13, 14, 19, 18, 17, 16, 15, 20, 21, 22, 23, 24],
+    size: 6,
+    checkpoints: { 1: 0, 2: 9, 3: 17, 4: 26, 5: 30 },
+    solution: [
+      0, 1, 2, 3, 4, 5,
+      11, 10, 9, 8, 7, 6,
+      12, 13, 14, 15, 16, 17,
+      23, 22, 21, 20, 19, 18,
+      24, 25, 26, 27, 28, 29,
+      35, 34, 33, 32, 31, 30,
+    ],
   },
   {
-    size: 5,
-    checkpoints: { 1: 0, 2: 21, 3: 2, 4: 23, 5: 24 },
-    solution: [0, 5, 10, 15, 20, 21, 16, 11, 6, 1, 2, 7, 12, 17, 22, 23, 18, 13, 8, 3, 4, 9, 14, 19, 24],
+    size: 6,
+    checkpoints: { 1: 0, 2: 29, 3: 12, 4: 26, 5: 20 },
+    solution: [
+      0, 1, 2, 3, 4, 5,
+      11, 17, 23, 29, 35, 34,
+      33, 32, 31, 30, 24, 18,
+      12, 6, 7, 8, 9, 10,
+      16, 22, 28, 27, 26, 25,
+      19, 13, 14, 15, 21, 20,
+    ],
   },
   {
-    size: 5,
-    checkpoints: { 1: 20, 2: 1, 3: 22, 4: 3, 5: 4 },
-    solution: [20, 15, 10, 5, 0, 1, 6, 11, 16, 21, 22, 17, 12, 7, 2, 3, 8, 13, 18, 23, 24, 19, 14, 9, 4],
+    size: 6,
+    checkpoints: { 1: 0, 2: 29, 3: 26, 4: 6, 5: 18 },
+    solution: [
+      0, 1, 2, 3, 4, 5,
+      11, 17, 23, 29, 35, 34,
+      33, 32, 31, 30, 24, 25,
+      26, 27, 28, 22, 16, 10,
+      9, 8, 7, 6, 12, 13,
+      14, 15, 21, 20, 19, 18,
+    ],
   },
 ];
 
