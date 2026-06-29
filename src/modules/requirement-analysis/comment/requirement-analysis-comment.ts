@@ -1,5 +1,5 @@
 import { requirementAnalysisChecklistOptions } from "@/modules/requirement-analysis/checklist-options";
-import { formatEnumLabel, formatPercentage } from "@/shared/lib/format";
+import { formatEnumLabel } from "@/shared/lib/format";
 import type {
   RequirementFinding,
   RequirementSummary,
@@ -44,6 +44,17 @@ const MAX_TOP_ACTIONS = 5;
 function severitySortRank(severity: Severity): number {
   const ranks: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
   return ranks[severity] ?? 5;
+}
+
+function severityIcon(severity: Severity): string {
+  const icons: Record<Severity, string> = {
+    critical: "🔴",
+    high: "🟠",
+    medium: "🟡",
+    low: "🟢",
+    info: "🔵",
+  };
+  return icons[severity];
 }
 
 function countBySeverity(findings: RequirementFinding[]) {
@@ -281,9 +292,12 @@ function deriveActionImpact(finding: RequirementFinding): string {
 }
 
 function actionPriority(severity: Severity): string {
-  if (severity === "critical" || severity === "high") return "P1";
-  if (severity === "medium") return "P2";
-  return "P3";
+  let priority: string;
+  if (severity === "critical" || severity === "high") priority = "P1";
+  else if (severity === "medium") priority = "P2";
+  else priority = "P3";
+
+  return `${severityIcon(severity)} ${priority} · ${formatEnumLabel(severity)}`;
 }
 
 /* ----------------------------- section builders --------------------------- */
@@ -297,7 +311,7 @@ export function buildRequirementReadinessDecision(findings: RequirementFinding[]
   let nextStep: string;
 
   if (blocking > 0) {
-    status = "⚠️ Needs Refinement Before Implementation / Test Design";
+    status = "⛔ Needs Refinement Before Implementation / Test Design";
     reason = `${blocking} High/Critical finding${blocking === 1 ? "" : "s"} may cause conflicting implementation, non-deterministic validation, or incomplete test coverage.`;
     nextStep = "Product Owner / Business Analyst should clarify the blocking findings before development or test design continues.";
   } else if (counts.medium > 0) {
@@ -315,7 +329,7 @@ export function buildRequirementReadinessDecision(findings: RequirementFinding[]
   }
 
   return [
-    "## Requirement Readiness Decision",
+    "## 🚦 Requirement Readiness Decision",
     hardBreakLines(
       `**Status:** ${status}`,
       `**Reason:** ${reason}`,
@@ -326,47 +340,21 @@ export function buildRequirementReadinessDecision(findings: RequirementFinding[]
 
 export function buildExecutiveSummary(summary: RequirementSummary, findings: RequirementFinding[]): string {
   const counts = countBySeverity(findings);
-  const rows: Array<[string, string]> = [
-    ["Quality", formatEnumLabel(summary.overallQuality)],
-    ["Clarity", formatPercentage(summary.clarityScore)],
-    ["Completeness", formatPercentage(summary.completenessScore)],
-    ["Testability", formatPercentage(summary.testabilityScore)],
-    ["Total Findings", String(counts.total)],
-  ];
-  if (counts.critical > 0) rows.push(["Critical Findings", String(counts.critical)]);
-  rows.push(["High Findings", String(counts.high)]);
-  rows.push(["Medium Findings", String(counts.medium)]);
-  rows.push(["Low Findings", String(counts.low)]);
-  if (counts.info > 0) rows.push(["Info Findings", String(counts.info)]);
-
-  const table = mdTable(["Metric", "Value"], ["---", "---:"], rows.map(([metric, value]) => [metric, value]));
+  const table = mdTable(
+    ["Total", "🔴 Critical", "🟠 High", "🟡 Medium", "🟢 Low", "🔵 Info"],
+    ["---:", "---:", "---:", "---:", "---:", "---:"],
+    [[
+      String(counts.total),
+      String(counts.critical),
+      String(counts.high),
+      String(counts.medium),
+      String(counts.low),
+      String(counts.info),
+    ]],
+  );
   const summaryText = summary.summaryText.trim();
 
-  return ["## Executive Summary", table, ...(summaryText ? [summaryText] : [])].join("\n\n");
-}
-
-export function buildDeliveryImpactSummary(findings: RequirementFinding[]): string {
-  let blocking = 0;
-  let beforeUat = 0;
-  let improvement = 0;
-  for (const finding of findings) {
-    const impact = deriveDeliveryImpact(finding.severity);
-    if (impact === "Blocking / Must Clarify") blocking += 1;
-    else if (impact === "Should Clarify Before UAT") beforeUat += 1;
-    else improvement += 1;
-  }
-
-  const table = mdTable(
-    ["Delivery Impact", "Count", "Meaning"],
-    ["---", "---:", "---"],
-    [
-      ["Blocking / Must Clarify", String(blocking), "Should be clarified before implementation or test design"],
-      ["Should Clarify Before UAT", String(beforeUat), "Recommended to clarify before UAT, regression, or final QA sign-off"],
-      ["Improvement / Supportability", String(improvement), "Useful for maintainability, support, or future test coverage"],
-    ],
-  );
-
-  return ["## Delivery Impact Summary", table].join("\n\n");
+  return ["## 📊 Executive Summary", table, ...(summaryText ? [summaryText] : [])].join("\n\n");
 }
 
 export function buildTopRequiredActions(findings: RequirementFinding[]): string | null {
@@ -397,7 +385,7 @@ export function buildTopRequiredActions(findings: RequirementFinding[]): string 
     ? `\n\n_Showing the top ${shown.length} of ${actionable.length} required actions; the remaining ${overflow} are listed under Detailed Findings._`
     : "";
 
-  return ["## Top Required Actions", `${table}${note}`].join("\n\n");
+  return ["## 🎯 Top Required Actions", `${table}${note}`].join("\n\n");
 }
 
 export function formatDetailedFinding(finding: RequirementFinding, index: number): string {
@@ -415,7 +403,7 @@ export function formatDetailedFinding(finding: RequirementFinding, index: number
   );
 
   return [
-    `### ${index + 1}. [${severityLabel}] ${title}`,
+    `### ${index + 1}. ${severityIcon(finding.severity)} ${severityLabel} — ${title}`,
     meta,
     `**Finding:**  \n${orNotSpecified(finding.description)}`,
     `**Risk:**  \n${risk}`,
@@ -427,7 +415,7 @@ export function formatDetailedFinding(finding: RequirementFinding, index: number
 
 function buildDetailedFindings(findings: RequirementFinding[]): string {
   const blocks = findings.map((finding, index) => formatDetailedFinding(finding, index));
-  return ["## Detailed Findings", blocks.join("\n\n---\n\n")].join("\n\n");
+  return ["## 🔎 Detailed Findings", blocks.join("\n\n---\n\n")].join("\n\n");
 }
 
 /* ------------------------------- entry point ------------------------------ */
@@ -445,13 +433,12 @@ export function buildRequirementAnalysisComment(input: {
   const { workItemId, summary, findings } = input;
 
   const sections: string[] = [
-    `# iTestFlow Requirement Analysis for ${workItemId}`,
+    `# 🧪 iTestFlow Requirement Analysis for ${workItemId}`,
     buildRequirementReadinessDecision(findings),
     buildExecutiveSummary(summary, findings),
   ];
 
   if (findings.length > 0) {
-    sections.push(buildDeliveryImpactSummary(findings));
     const topActions = buildTopRequiredActions(findings);
     if (topActions) sections.push(topActions);
     sections.push(buildDetailedFindings(findings));
