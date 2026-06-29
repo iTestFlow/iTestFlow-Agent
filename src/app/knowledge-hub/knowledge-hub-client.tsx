@@ -27,6 +27,7 @@ import { ApiError } from "@/components/workflow/api-error"
 import { ManualLLMFields } from "@/components/workflow/manual-llm-panel"
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper"
 import { useAiGeneration } from "@/components/workflow/use-ai-generation"
+import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session"
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -379,6 +380,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [pageSize] = useState(25)
   const [totalPages, setTotalPages] = useState(1)
   const gen = useAiGeneration()
+  const cancelKnowledgeGeneration = gen.cancel
   const [sortBy, setSortBy] = useState<ContextSortBy>("lastIndexedAt")
   const [sortDirection, setSortDirection] = useState<ContextSortDirection>("desc")
   const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false)
@@ -399,6 +401,13 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const manualPreviewStepRef = useRef<HTMLDivElement | null>(null)
   const manualBatchRef = useRef<HTMLDivElement | null>(null)
   const initializedFilterProjectRef = useRef<string | null>(null)
+  const loadingGame = useLlmLoadingGameSession<KnowledgeGeneratedDraft>((draft) => {
+    setGeneratedDraft(draft)
+    if (draft.alreadyCurrent) setHasUnfinishedWork(false)
+    setBuildStep(draft.alreadyCurrent ? "prepare" : "preview")
+    scrollBuildSection(draft.alreadyCurrent ? autoPrepareStepRef : autoPreviewStepRef)
+  })
+  const endLoadingGameSession = loadingGame.endSession
   const filterProjectKey = projectScopeKey(scope)
   const {
     metadata: workItemMetadata,
@@ -478,12 +487,14 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setScope(readActiveProject())
     const onChange = (event: Event) => {
       const custom = event as CustomEvent<ActiveProjectScope>
+      cancelKnowledgeGeneration()
+      endLoadingGameSession()
       setScope(custom.detail ?? readActiveProject())
       setHasUnfinishedWork(false)
     }
     window.addEventListener("itestflow:active-project-changed", onChange)
     return () => window.removeEventListener("itestflow:active-project-changed", onChange)
-  }, [])
+  }, [cancelKnowledgeGeneration, endLoadingGameSession])
 
   useEffect(() => {
     if (!canBuildKnowledge && activeTab === "build") setActiveTab("hub")
@@ -603,6 +614,8 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   }
 
   function resetBuildState() {
+    gen.cancel()
+    loadingGame.endSession()
     setBuildStep("index")
     setBuildError(null)
     setResult(null)
@@ -629,6 +642,8 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   }
 
   function changeCompileMode(nextMode: KnowledgeCompileMode) {
+    gen.cancel()
+    loadingGame.endSession()
     setHasUnfinishedWork(true)
     setCompileMode(nextMode)
     setBuildError(null)
@@ -678,6 +693,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     }
     if (gen.isRunning) return
 
+    loadingGame.startSession()
     setHasUnfinishedWork(true)
     setBuildError(null)
     setGeneratedDraft(null)
@@ -686,11 +702,11 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     const draft = await gen.start((signal) =>
       postJson<KnowledgeGeneratedDraft>("/api/context/knowledge/preview", { scope, mode: compileMode }, signal),
     )
-    if (!draft) return // cancelled or failed: the progress panel owns the message
-    setGeneratedDraft(draft)
-    if (draft.alreadyCurrent) setHasUnfinishedWork(false)
-    setBuildStep(draft.alreadyCurrent ? "prepare" : "preview")
-    scrollBuildSection(draft.alreadyCurrent ? autoPrepareStepRef : autoPreviewStepRef)
+    if (!draft) {
+      loadingGame.endSession()
+      return // cancelled or failed: the progress panel owns the message
+    }
+    loadingGame.completeSession(draft)
   }
 
   async function prepareExternalKnowledge() {
@@ -1104,7 +1120,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                         actionLabel={buildLoading || gen.isRunning ? "Preparing..." : "Prepare Knowledge Preview"}
                       />
 
-                      {gen.status !== "idle" && gen.status !== "completed" ? (
+                      {gen.status !== "idle" && (gen.status !== "completed" || loadingGame.shouldKeepPanelMounted) ? (
                         <AiGenerationProgress
                           variant="generic"
                           title="Building project knowledge"
@@ -1118,6 +1134,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                             gen.retry()
                             void prepareAutoKnowledge()
                           }}
+                          loadingGame={loadingGame.panel}
                         />
                       ) : null}
 

@@ -12,6 +12,8 @@ import { cn } from "@/lib/utils";
 import { mapFriendlyError } from "@/components/workflow/ai-generation-errors";
 import type { AiGenerationError, AiGenerationStatus } from "@/components/workflow/use-ai-generation";
 import { AiGenerationMetrics } from "@/components/workflow/ai-generation-metrics";
+import { LlmLoadingGameShell } from "@/components/workflow/llm-loading-games/LlmLoadingGameShell";
+import type { LlmLoadingGamePanelController } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session";
 
 export { mapFriendlyError };
 
@@ -41,6 +43,8 @@ export type AiGenerationProgressProps = {
   variant?: AiGenerationVariant;
   /** "full" = generation; "prep" = short External-LLM prompt preparation. */
   mode?: "full" | "prep";
+  /** Optional waiting-game controller. Only rendered for full AI generation. */
+  loadingGame?: LlmLoadingGamePanelController;
 };
 
 const DEFAULT_TITLE = "Generating with AI";
@@ -260,6 +264,7 @@ export function AiGenerationProgress({
   onRetry,
   variant = "generic",
   mode = "full",
+  loadingGame,
 }: AiGenerationProgressProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const scrolledForRunRef = useRef(false);
@@ -287,7 +292,7 @@ export function AiGenerationProgress({
     }
   }, [status]);
 
-  if (status === "idle" || status === "completed") return null;
+  if (status === "idle" || (status === "completed" && !loadingGame?.isGameOpen)) return null;
 
   if (status === "failed") {
     const resolvedError: AiGenerationError | null = error ?? (errorMessage ? { message: errorMessage } : null);
@@ -322,11 +327,13 @@ export function AiGenerationProgress({
 
   const steps = mode === "prep" ? PREP_STEPS : FULL_STEPS;
   const resolvedTitle = title ?? (mode === "prep" ? PREP_TITLE : DEFAULT_TITLE);
-  const subtitle = description ?? dynamicSubtitle(status, mode);
+  const subtitle = status === "completed" ? "Response is ready." : (description ?? dynamicSubtitle(status, mode));
+  const active = ACTIVE_GENERATION_STATUSES.has(status);
+  const gameOpen = mode === "full" && Boolean(loadingGame?.isGameOpen);
 
   return (
     <div ref={panelRef} className="scroll-mt-4">
-      <PanelShell active>
+      <PanelShell active={active}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex min-w-0 items-start gap-2">
             <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
@@ -352,14 +359,22 @@ export function AiGenerationProgress({
         {mode === "full" ? (
           <>
             <p className="text-xs text-muted-foreground">
-              Please keep this page open while the response is being generated. Large stories or rich project context may
-              take longer.
+              {status === "completed"
+                ? "Your generated response is available whenever you are ready."
+                : "Please keep this page open while the response is being generated. Large stories or rich project context may take longer."}
             </p>
-            <VariantSkeleton variant={variant} />
+            {loadingGame ? (
+              <LlmLoadingGameShell
+                isLoading={active}
+                isReady={status === "completed"}
+                controller={loadingGame}
+              />
+            ) : null}
+            {gameOpen ? null : <VariantSkeleton variant={variant} />}
           </>
         ) : null}
 
-        {canCancel && onCancel ? (
+        {active && canCancel && onCancel ? (
           <div className="flex justify-end">
             <Button variant="outline" size="sm" onClick={onCancel}>
               <X className="size-3.5" aria-hidden="true" />
