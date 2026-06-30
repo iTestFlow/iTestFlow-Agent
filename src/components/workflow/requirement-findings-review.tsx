@@ -22,9 +22,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
   SectionCard,
+  SeverityBadge,
   ToneBadge,
   formatEnumLabel,
-  severityTone,
 } from "@/components/workflow/test-intelligence-shared";
 import type { RequirementFinding } from "@/components/workflow/test-intelligence-types";
 import { requirementAnalysisChecklistOptions } from "@/modules/requirement-analysis/checklist-options";
@@ -387,7 +387,7 @@ function RequirementFindingReviewCard({
                 {finding.title || "Untitled finding"}
               </h3>
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                <ToneBadge tone={severityTone(finding.severity)}>{formatEnumLabel(finding.severity)}</ToneBadge>
+                <SeverityBadge severity={finding.severity} />
                 <Badge variant="outline">{formatEnumLabel(finding.issueType)}</Badge>
                 <Badge variant="secondary">{formatEnumLabel(finding.riskLevel)} risk</Badge>
                 <Badge variant="outline">{checklistTitle(finding)}</Badge>

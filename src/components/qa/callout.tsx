@@ -27,6 +27,7 @@ export function Callout({
   icon,
   action,
   className,
+  role,
 }: {
   tone?: CalloutTone
   title?: ReactNode
@@ -34,11 +35,17 @@ export function Callout({
   icon?: LucideIcon
   action?: ReactNode
   className?: string
+  /**
+   * Optional live-region role. `status` announces politely, `alert` assertively
+   * (both carry an implicit aria-live), so callers no longer need a wrapper div.
+   * Omit for static informational callouts.
+   */
+  role?: "status" | "alert"
 }) {
   const Icon = icon ?? defaultIcon[tone]
 
   return (
-    <div className={cn("flex gap-3 rounded-lg border p-3", toneClass[tone], className)}>
+    <div role={role} className={cn("flex gap-3 rounded-lg border p-3", toneClass[tone], className)}>
       <Icon className={cn("mt-0.5 size-4 shrink-0", toneTextClass[tone])} aria-hidden="true" />
       <div className="min-w-0 flex-1 space-y-1">
         {title ? <div className="text-sm font-semibold text-foreground">{title}</div> : null}

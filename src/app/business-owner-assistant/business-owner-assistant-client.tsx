@@ -284,11 +284,7 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
       </ScrollArea>
 
       <div className="border-t border-border p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
-        {error ? (
-          <div role="alert" aria-live="assertive" className="mb-3">
-            <Callout tone="error">{error}</Callout>
-          </div>
-        ) : null}
+        {error ? <Callout tone="error" role="alert" className="mb-3">{error}</Callout> : null}
         <div className="flex items-end gap-2">
           <Textarea
             ref={textareaRef}

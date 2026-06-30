@@ -512,7 +512,7 @@ export function RequirementsAnalysisClient() {
 
             {mode === "manual" && (manualDraft.data || manualSubmitError) ? (
               <div className="space-y-4">
-                {manualSubmitError ? <div role="alert"><Callout tone="error">{manualSubmitError}</Callout></div> : null}
+                {manualSubmitError ? <Callout tone="error" role="alert">{manualSubmitError}</Callout> : null}
                 {manualDraft.data ? (
                   <ManualLLMPanel
                     prompt={manualDraft.data.prompt}
@@ -587,11 +587,9 @@ export function RequirementsAnalysisClient() {
             onSelectedIdsChange={changeSelectedFindingIds}
           />
           {pushState.error ? (
-            <div role="alert">
-              <Callout tone="error">{pushState.error}</Callout>
-            </div>
+            <Callout tone="error" role="alert">{pushState.error}</Callout>
           ) : pushState.data?.success ? (
-            <Callout tone="success" title="Comment pushed">Your comment was posted to Azure DevOps.</Callout>
+            <Callout tone="success" role="status" title="Comment pushed">Your comment was posted to Azure DevOps.</Callout>
           ) : null}
           <StickyActionBar
             title={
@@ -716,11 +714,9 @@ function RequirementChecklistSelector({
       </div>
 
       {noneSelected ? (
-        <div role="status" aria-live="polite" className="mt-3">
-          <Callout tone="warning">
-            Select at least one checklist item to run analysis or prepare the external LLM prompt.
-          </Callout>
-        </div>
+        <Callout tone="warning" role="status" className="mt-3">
+          Select at least one checklist item to run analysis or prepare the external LLM prompt.
+        </Callout>
       ) : null}
     </div>
   );

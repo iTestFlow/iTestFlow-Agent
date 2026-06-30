@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ClipboardList, ListChecks, Play } from "lucide-react";
+import { ArrowLeft, ChevronDown, ClipboardList, ListChecks, Loader2, Play } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -50,6 +50,7 @@ import {
   type TestDesignOptions,
 } from "@/modules/test-case-design/test-design-options";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
+import { cn } from "@/lib/utils";
 
 export function TestCaseDesignClient() {
   const scope = useActiveProject();
@@ -323,7 +324,7 @@ export function TestCaseDesignClient() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="dashboard-stack">
       {projectWarning(scope)}
       <WorkflowStepper
         steps={[
@@ -348,7 +349,7 @@ export function TestCaseDesignClient() {
       />
 
       {activeStep === "generate" ? (
-        <div className="space-y-6">
+        <div className="dashboard-stack">
           <SectionCard
             title="Generate Test Cases from Azure DevOps Requirement"
             description="Project context is selected automatically for this run."
@@ -380,12 +381,12 @@ export function TestCaseDesignClient() {
                 </div>
                 {mode === "auto" ? (
                   <Button onClick={generate} disabled={!scope || !targetWorkItemId || gen.isRunning || !testDesignOptionsValid || !extraInstructionsValid}>
-                    <Play className="h-4 w-4" />
+                    {gen.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                     {gen.isRunning ? "Generating..." : "Generate"}
                   </Button>
                 ) : (
                   <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !testDesignOptionsValid || !extraInstructionsValid}>
-                    <Play className="h-4 w-4" />
+                    {prep.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                     {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
                   </Button>
                 )}
@@ -425,7 +426,7 @@ export function TestCaseDesignClient() {
 
             {mode === "manual" && (manualDraft.data || manualSubmitError) ? (
               <div className="space-y-4">
-                {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
+                {manualSubmitError ? <Callout tone="error" role="alert">{manualSubmitError}</Callout> : null}
                 {manualDraft.data ? (
                   <ManualLLMPanel
                     prompt={manualDraft.data.prompt}
@@ -467,13 +468,13 @@ export function TestCaseDesignClient() {
           ) : null}
         </div>
       ) : (
-        <div ref={generatedCasesRef} className="space-y-6 pb-24">
-          <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="text-sm font-semibold text-foreground">
-                Reviewing generated test cases for #{targetWorkItemId}
+        <div ref={generatedCasesRef} className="dashboard-stack pb-24">
+          <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div role="heading" aria-level={2} className="text-sm font-semibold text-foreground">
+                Reviewing generated test cases for <span className="font-mono font-semibold text-primary">#{targetWorkItemId}</span>
                 {workItemLookup.data?.title ? (
-                  <span className="font-normal text-muted-foreground"> — {workItemLookup.data.title}</span>
+                  <span className="block truncate font-normal text-muted-foreground"> — {workItemLookup.data.title}</span>
                 ) : null}
               </div>
               <div className="text-xs text-muted-foreground">Generated content stays available while you revisit the inputs.</div>
@@ -485,7 +486,7 @@ export function TestCaseDesignClient() {
           </div>
           {state.data ? (
             <>
-              <div className="space-y-2">
+              <div className="space-y-4">
                 {mode === "auto" && gen.status === "completed" ? (
                   <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
                 ) : null}
@@ -552,10 +553,11 @@ function TestDesignOptionsSelector({
       <div className="grid gap-4 lg:grid-cols-[minmax(240px,320px)_1fr]">
         <div className="space-y-3">
           <div>
-            <div className="text-sm font-semibold text-foreground">Target Test Case Range</div>
-            <div className="mt-2">
+            <div id="test-design-target-range-label" className="text-sm font-semibold text-foreground">Target Test Case Range</div>
+            <div className="relative mt-2">
               <select
-                className="focus-ring h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                aria-labelledby="test-design-target-range-label"
+                className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui"
                 value={settings.targetTestCaseRange}
                 onChange={(event) => onTargetRangeChange(event.target.value as TargetTestCaseRangeId)}
               >
@@ -565,6 +567,7 @@ function TestDesignOptionsSelector({
                   </option>
                 ))}
               </select>
+              <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             </div>
           </div>
 
@@ -578,6 +581,7 @@ function TestDesignOptionsSelector({
                   max={maxCustomTestCaseRange}
                   value={settings.customMinCases ?? ""}
                   onChange={(event) => onCustomRangeChange("customMinCases", event.target.value)}
+                  aria-invalid={!customRangeValid}
                   className="mt-1"
                 />
               </label>
@@ -589,6 +593,7 @@ function TestDesignOptionsSelector({
                   max={maxCustomTestCaseRange}
                   value={settings.customMaxCases ?? ""}
                   onChange={(event) => onCustomRangeChange("customMaxCases", event.target.value)}
+                  aria-invalid={!customRangeValid}
                   className="mt-1"
                 />
               </label>
@@ -596,17 +601,17 @@ function TestDesignOptionsSelector({
           ) : null}
 
           {!customRangeValid ? (
-            <div className="rounded-md border border-warning/40 bg-warning/15 px-3 py-2 text-sm text-foreground">
+            <Callout tone="warning" role="status">
               Custom range must be between 1 and {maxCustomTestCaseRange}, with minimum not greater than maximum.
-            </div>
+            </Callout>
           ) : null}
         </div>
 
-        <div>
-          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="text-sm font-semibold text-foreground">Coverage Focus Rules</div>
-              <div className="text-xs text-muted-foreground">
+              <div id="coverage-focus-group-label" className="text-sm font-semibold text-foreground">Coverage Focus Rules</div>
+              <div id="coverage-focus-count" className="text-xs tabular-nums text-muted-foreground">
                 {settings.coverageFocusIds.length} of {allCoverageFocusIds.length} selected
               </div>
             </div>
@@ -620,13 +625,16 @@ function TestDesignOptionsSelector({
             </div>
           </div>
 
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          <div role="group" aria-labelledby="coverage-focus-group-label" aria-describedby="coverage-focus-count" className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {coverageFocusOptions.map((focusItem) => {
               const checked = selectedFocusIdSet.has(focusItem.id);
               return (
                 <label
                   key={focusItem.id}
-                  className="flex min-h-12 cursor-pointer items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground transition hover:border-primary/30 hover:bg-accent"
+                  className={cn(
+                    "flex min-h-12 cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm text-foreground transition-colors duration-ui hover:border-primary/30 hover:bg-accent",
+                    checked ? "border-primary/40 bg-primary/5" : "border-border bg-card",
+                  )}
                 >
                   <Checkbox checked={checked} onCheckedChange={(value) => onCoverageFocusToggle(focusItem.id, value === true)} aria-label={focusItem.title} />
                   <span className="leading-5">{focusItem.title}</span>
@@ -636,9 +644,9 @@ function TestDesignOptionsSelector({
           </div>
 
           {!coverageFocusSelectionValid ? (
-            <div className="mt-3 rounded-md border border-warning/40 bg-warning/15 px-3 py-2 text-sm text-foreground">
+            <Callout tone="warning" role="status">
               Select at least one Coverage Focus item to generate or prepare the external LLM prompt.
-            </div>
+            </Callout>
           ) : null}
         </div>
       </div>

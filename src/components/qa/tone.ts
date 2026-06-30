@@ -46,3 +46,18 @@ export const toneTextClass: Record<Tone, string> = {
   error: "text-destructive",
   draft: "text-[hsl(var(--chart-3))]",
 }
+
+/**
+ * Filled treatment: solid background + on-tone foreground + transparent border.
+ * Use sparingly for the single most important item in a set (e.g. a `critical`
+ * severity) so it stands apart from the tinted `toneClass` items around it.
+ */
+export const toneSolidClass: Record<Tone, string> = {
+  neutral: "border-transparent bg-secondary text-secondary-foreground",
+  primary: "border-transparent bg-primary text-primary-foreground",
+  info: "border-transparent bg-primary text-primary-foreground",
+  success: "border-transparent bg-success text-success-foreground",
+  warning: "border-transparent bg-warning text-warning-foreground",
+  error: "border-transparent bg-destructive text-destructive-foreground",
+  draft: "border-transparent bg-[hsl(var(--chart-3))] text-white",
+}
