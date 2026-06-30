@@ -65,7 +65,9 @@ jobs:
         shell: bash
         run: |
           test -s reports/unit.xml
+          test -s reports/unit.json
           test -s reports/integration.xml
+          test -s reports/integration.json
 
       - name: Publish Vitest test report
         id: publish_test_report
@@ -80,11 +82,8 @@ jobs:
             Unit & coverage
             PostgreSQL integration
           group_reports: true
-          detailed_summary: true
-          flaky_summary: true
-          group_suite: true
-          include_passed: true
-          include_skipped: true
+          detailed_summary: false
+          flaky_summary: false
           include_time_in_summary: true
           resolve_ignore_classname: true
           job_summary: true
@@ -96,6 +95,12 @@ jobs:
           require_tests: true
           annotate_only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
 
+      - name: Publish test file and failure details
+        id: publish_test_details
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        run: node --import tsx scripts/render-vitest-summary.ts
+
       - name: Enforce test and reporting results
         if: ${{ always() && !cancelled() }}
         shell: bash
@@ -104,6 +109,7 @@ jobs:
           INTEGRATION_TESTS_OUTCOME: ${{ steps.integration_tests.outcome }}
           REPORT_VALIDATION_OUTCOME: ${{ steps.validate_test_reports.outcome }}
           REPORT_PUBLISH_OUTCOME: ${{ steps.publish_test_report.outcome }}
+          DETAILS_PUBLISH_OUTCOME: ${{ steps.publish_test_details.outcome }}
         run: |
           failed=0
 
@@ -111,7 +117,8 @@ jobs:
             "Unit & coverage tests:$UNIT_TESTS_OUTCOME" \
             "PostgreSQL integration tests:$INTEGRATION_TESTS_OUTCOME" \
             "Test report validation:$REPORT_VALIDATION_OUTCOME" \
-            "Test report publishing:$REPORT_PUBLISH_OUTCOME"
+            "Test report publishing:$REPORT_PUBLISH_OUTCOME" \
+            "Test detail publishing:$DETAILS_PUBLISH_OUTCOME"
           do
             name="${result%%:*}"
             outcome="${result##*:}"

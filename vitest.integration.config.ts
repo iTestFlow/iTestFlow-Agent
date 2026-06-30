@@ -9,11 +9,18 @@ export default mergeConfig(baseConfig, {
     // in GitHub Actions. Local runs retain Vitest's normal default reporter.
     reporters:
       process.env.GITHUB_ACTIONS === "true"
-        ? ["default", ["junit", { suiteName: "PostgreSQL integration" }]]
+        ? [
+            "default",
+            ["junit", { suiteName: "PostgreSQL integration" }],
+            "json",
+          ]
         : undefined,
     outputFile:
       process.env.GITHUB_ACTIONS === "true"
-        ? { junit: "./reports/integration.xml" }
+        ? {
+            junit: "./reports/integration.xml",
+            json: "./reports/integration.json",
+          }
         : undefined,
     // DB-backed integration tests (gated on DATABASE_URL) share a single Postgres
     // database and use global queries (e.g. the job queue's claimNextJob scans all
