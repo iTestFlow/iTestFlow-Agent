@@ -216,6 +216,11 @@ td {
   .dashboard-empty-state {
     @apply flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-muted/20 px-6 text-center;
   }
+
+  .knowledge-entry {
+    content-visibility: auto;
+    contain-intrinsic-size: 0 220px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
