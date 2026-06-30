@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { EmptyBlock, SectionCard } from "@/components/workflow/test-intelligence-shared";
 import type { ExistingLinkedTestCase } from "@/components/workflow/test-intelligence-types";
 
@@ -11,6 +12,7 @@ import type { ExistingLinkedTestCase } from "@/components/workflow/test-intellig
 
 export function ExistingLinkedTestCasesList({ linkedTestCases }: { linkedTestCases: ExistingLinkedTestCase[] }) {
   const [open, setOpen] = useState(false);
+  const listId = useId();
 
   return (
     <SectionCard
@@ -21,15 +23,16 @@ export function ExistingLinkedTestCasesList({ linkedTestCases }: { linkedTestCas
           variant="secondary"
           className="h-8 px-3"
           aria-expanded={open}
+          aria-controls={listId}
           onClick={() => setOpen((current) => !current)}
         >
-          <ChevronDown className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`} />
+          <ChevronDown className={cn("h-4 w-4 transition-transform duration-200 motion-reduce:transition-none", open && "rotate-180")} aria-hidden="true" />
           {open ? "Hide" : "Show"}
         </Button>
       }
     >
       {open && linkedTestCases.length ? (
-        <div className="divide-y divide-border">
+        <div id={listId} className="divide-y divide-border">
           {linkedTestCases.map((testCase) => (
             <div key={testCase.id} className="grid gap-3 p-4 md:grid-cols-[140px_1fr_120px]">
               <span className="font-mono text-xs text-primary">{testCase.id}</span>
@@ -42,7 +45,9 @@ export function ExistingLinkedTestCasesList({ linkedTestCases }: { linkedTestCas
           ))}
         </div>
       ) : open ? (
-        <EmptyBlock message="No TestedBy / Tests linked Azure DevOps test cases were found for this story." />
+        <div id={listId}>
+          <EmptyBlock message="No TestedBy / Tests linked Azure DevOps test cases were found for this story." />
+        </div>
       ) : null}
     </SectionCard>
   );

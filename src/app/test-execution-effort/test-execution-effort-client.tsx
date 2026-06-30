@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AlertCircle, ArrowLeft, Calculator, CheckCircle2, ClipboardCheck, Play, Sparkles } from "lucide-react";
+import { AlertCircle, ArrowLeft, Calculator, CheckCircle2, ClipboardCheck, Loader2, Play, Sparkles } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,9 +10,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { StatCard } from "@/components/qa/stat-card";
+import { Callout } from "@/components/qa/callout";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
@@ -374,7 +375,7 @@ export function TestExecutionEffortClient() {
   const actionDisabled = busy || !scope || !storyId.trim();
 
   return (
-    <div className="space-y-5">
+    <div className="dashboard-stack">
       {!scope ? (
         <Alert>
           <AlertCircle className="size-4" />
@@ -406,11 +407,11 @@ export function TestExecutionEffortClient() {
       />
 
       {activeStep === "configure" ? (
-        <div className="space-y-5">
-          <Card>
+        <div className="dashboard-stack">
+          <Card role="region" aria-labelledby="tee-inputs-title">
             <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="space-y-0.5">
-                <CardTitle className="text-base">Estimate Inputs</CardTitle>
+                <CardTitle id="tee-inputs-title" className="text-base">Estimate Inputs</CardTitle>
                 <CardDescription>Load the story, linked Azure DevOps test cases, and project context before estimating manual execution effort.</CardDescription>
               </div>
               <GenerationModeToggle
@@ -421,7 +422,7 @@ export function TestExecutionEffortClient() {
                 }}
               />
             </CardHeader>
-            <CardContent className="space-y-5 pt-5">
+            <CardContent className="space-y-4">
               <div className="grid items-end gap-4 lg:grid-cols-[240px_auto]">
                 <div className="space-y-2">
                   <Label htmlFor="test-execution-effort-work-item-id" className="text-sm font-semibold text-foreground">
@@ -444,13 +445,13 @@ export function TestExecutionEffortClient() {
                   />
                 </div>
                 {mode === "auto" ? (
-                  <Button onClick={generateEstimate} disabled={actionDisabled || gen.isRunning}>
-                    <Play className="size-4" />
+                  <Button onClick={generateEstimate} disabled={actionDisabled || gen.isRunning} aria-busy={gen.isRunning}>
+                    {gen.isRunning ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
                     {gen.isRunning ? "Generating..." : "Generate"}
                   </Button>
                 ) : (
-                  <Button onClick={prepareExternalPrompt} disabled={actionDisabled || prep.isRunning}>
-                    <Play className="size-4" />
+                  <Button onClick={prepareExternalPrompt} disabled={actionDisabled || prep.isRunning} aria-busy={prep.isRunning}>
+                    {prep.isRunning ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
                     {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
                   </Button>
                 )}
@@ -467,7 +468,7 @@ export function TestExecutionEffortClient() {
               <div className="grid gap-4 lg:grid-cols-2">
                 <Field label="Tester Seniority">
                   <Select value={options.testerSeniority} onValueChange={(value) => updateOption("testerSeniority", value as TesterSeniority)}>
-                    <SelectTrigger className="h-8 w-full">
+                    <SelectTrigger aria-label="Tester Seniority" className="h-8 w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -480,7 +481,7 @@ export function TestExecutionEffortClient() {
                 </Field>
                 <Field label="Execution Type">
                   <Select value={options.executionType} onValueChange={(value) => updateOption("executionType", value as ExecutionType)}>
-                    <SelectTrigger className="h-8 w-full">
+                    <SelectTrigger aria-label="Execution Type" className="h-8 w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -522,7 +523,7 @@ export function TestExecutionEffortClient() {
           {error ? (
             <Alert variant="destructive">
               <AlertCircle className="size-4" />
-              <AlertTitle>Request failed</AlertTitle>
+              <AlertTitle>Check your inputs</AlertTitle>
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           ) : null}
@@ -582,7 +583,7 @@ export function TestExecutionEffortClient() {
           ) : null}
         </div>
       ) : estimateResult ? (
-        <div ref={reviewRef} className="space-y-5">
+        <div ref={reviewRef} className="dashboard-stack">
           <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="text-sm font-semibold text-foreground">Reviewing effort for story #{storyId}</div>
@@ -594,7 +595,7 @@ export function TestExecutionEffortClient() {
             </Button>
           </div>
           <StorySummaryPanel preview={estimateResult} />
-          <div className="space-y-2">
+          <div className="space-y-4">
             {mode === "auto" && gen.status === "completed" ? (
               <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
             ) : null}
@@ -636,27 +637,19 @@ function StorySummaryPanel({ preview }: { preview: EffortPreview }) {
     : `${preview.summary.totalSteps} total steps`;
 
   return (
-    <Card>
+    <Card role="region" aria-labelledby="tee-story-title">
       <CardHeader className="border-b">
-        <CardTitle>Story and Test Case Summary</CardTitle>
+        <CardTitle id="tee-story-title">Story and Test Case Summary</CardTitle>
         <CardDescription>Fetched from the selected Azure DevOps project.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {preview.summary.workItemTypeWarning ? (
-          <Alert>
-            <AlertCircle className="size-4" />
-            <AlertTitle>Work item type warning</AlertTitle>
-            <AlertDescription>{preview.summary.workItemTypeWarning}</AlertDescription>
-          </Alert>
+          <Callout tone="warning" role="status" title="Work item type warning">{preview.summary.workItemTypeWarning}</Callout>
         ) : null}
         {hasMissingSteps ? (
-          <Alert>
-            <AlertCircle className="size-4" />
-            <AlertTitle>Missing test steps</AlertTitle>
-            <AlertDescription>Some linked test cases have no manual steps. The estimate may be less accurate.</AlertDescription>
-          </Alert>
+          <Callout tone="warning" role="status" title="Missing test steps">Some linked test cases have no manual steps. The estimate may be less accurate.</Callout>
         ) : null}
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 sm:max-w-xs">
           <StatCard label="Linked Test Cases" value={String(preview.summary.linkedTestCaseCount)} detail={linkedTestCaseDetail} />
         </div>
       </CardContent>
@@ -667,13 +660,13 @@ function StorySummaryPanel({ preview }: { preview: EffortPreview }) {
 function EstimateResultPanel({ result }: { result: EffortEstimate }) {
   return (
     <div className="space-y-5">
-      <Card>
+      <Card role="region" aria-labelledby="tee-estimate-title">
         <CardHeader className="border-b">
-          <CardTitle>Execution Effort Estimate</CardTitle>
+          <CardTitle id="tee-estimate-title">Execution Effort Estimate</CardTitle>
           <CardDescription>{result.estimate.confidenceReason}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
             <StatCard label="Minimum" value={formatHours(result.estimate.minimumHours)} detail="Optimistic lower bound" />
             <StatCard label="Most Likely" value={formatHours(result.estimate.mostLikelyHours)} detail="Expected execution effort" />
             <StatCard label="Maximum" value={formatHours(result.estimate.maximumHours)} detail="Upper bound if risks appear" />
@@ -711,12 +704,13 @@ function StatisticsPanel({ statistics }: { statistics: EffortEstimate["statistic
   ];
 
   return (
-    <Card>
+    <Card role="region" aria-labelledby="tee-statistics-title">
       <CardHeader className="border-b">
-        <CardTitle>Statistics</CardTitle>
+        <CardTitle id="tee-statistics-title">Statistics</CardTitle>
+        <CardDescription>Derived counts and complexity signals behind the estimate.</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-4">
           {rows.map(([label, value]) => (
             <StatCard key={String(label)} label={label} value={String(value)} size="sm" />
           ))}
@@ -728,28 +722,36 @@ function StatisticsPanel({ statistics }: { statistics: EffortEstimate["statistic
 
 function BreakdownTable({ rows }: { rows: EffortEstimate["breakdown"] }) {
   return (
-    <Card>
+    <Card role="region" aria-labelledby="tee-breakdown-title">
       <CardHeader className="border-b">
-        <CardTitle>Breakdown</CardTitle>
+        <CardTitle id="tee-breakdown-title">Breakdown</CardTitle>
+        <CardDescription>Estimated hours grouped by execution area.</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="rounded-lg border">
+        <div className="dashboard-scroll-region overflow-hidden rounded-lg border">
           <Table>
+            <TableCaption className="sr-only">Estimated execution effort by area</TableCaption>
             <TableHeader>
               <TableRow>
-                <TableHead>Area</TableHead>
-                <TableHead>Estimated hours</TableHead>
-                <TableHead className="min-w-[360px]">Reason</TableHead>
+                <TableHead scope="col">Area</TableHead>
+                <TableHead scope="col" className="text-right">Estimated hours</TableHead>
+                <TableHead scope="col" className="min-w-[360px]">Reason</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map((row) => (
-                <TableRow key={`${row.area}-${row.estimatedHours}`}>
-                  <TableCell className="font-medium">{row.area}</TableCell>
-                  <TableCell>{formatHours(row.estimatedHours)}</TableCell>
-                  <TableCell className="whitespace-normal text-muted-foreground">{row.reason}</TableCell>
+              {rows.length ? (
+                rows.map((row) => (
+                  <TableRow key={`${row.area}-${row.estimatedHours}`}>
+                    <TableCell className="font-medium">{row.area}</TableCell>
+                    <TableCell className="text-right tabular-nums">{formatHours(row.estimatedHours)}</TableCell>
+                    <TableCell className="whitespace-normal text-muted-foreground">{row.reason}</TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell colSpan={3} className="p-6 text-center text-sm text-muted-foreground">No breakdown rows were returned.</TableCell>
                 </TableRow>
-              ))}
+              )}
             </TableBody>
           </Table>
         </div>
@@ -760,46 +762,54 @@ function BreakdownTable({ rows }: { rows: EffortEstimate["breakdown"] }) {
 
 function TestCaseEstimateTable({ rows }: { rows: EffortEstimate["testCaseEstimates"] }) {
   return (
-    <Card>
+    <Card role="region" aria-labelledby="tee-testcase-title">
       <CardHeader className="border-b">
-        <CardTitle>Test Case Estimates</CardTitle>
+        <CardTitle id="tee-testcase-title">Test Case Estimates</CardTitle>
+        <CardDescription>Per-test-case minutes across each effort factor.</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="rounded-lg border">
-          <Table>
+        <div className="dashboard-scroll-region overflow-hidden rounded-lg border">
+          <Table className="min-w-[1100px]">
+            <TableCaption className="sr-only">Per-test-case execution effort breakdown</TableCaption>
             <TableHeader>
               <TableRow>
-                <TableHead>Test Case ID</TableHead>
-                <TableHead className="min-w-[260px]">Title</TableHead>
-                <TableHead>Steps</TableHead>
-                <TableHead>Complexity</TableHead>
-                <TableHead>Execution</TableHead>
-                <TableHead>Data prep</TableHead>
-                <TableHead>Setup</TableHead>
-                <TableHead>Integration</TableHead>
-                <TableHead>Evidence/defect</TableHead>
-                <TableHead>Retesting</TableHead>
-                <TableHead>Total</TableHead>
-                <TableHead className="min-w-[320px]">Reason</TableHead>
+                <TableHead scope="col">Test Case ID</TableHead>
+                <TableHead scope="col" className="min-w-[260px]">Title</TableHead>
+                <TableHead scope="col" className="text-right">Steps</TableHead>
+                <TableHead scope="col">Complexity</TableHead>
+                <TableHead scope="col" className="text-right">Execution</TableHead>
+                <TableHead scope="col" className="text-right">Data prep</TableHead>
+                <TableHead scope="col" className="text-right">Setup</TableHead>
+                <TableHead scope="col" className="text-right">Integration</TableHead>
+                <TableHead scope="col" className="text-right">Evidence/defect</TableHead>
+                <TableHead scope="col" className="text-right">Retesting</TableHead>
+                <TableHead scope="col" className="text-right">Total</TableHead>
+                <TableHead scope="col" className="min-w-[320px]">Reason</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map((row) => (
-                <TableRow key={row.testCaseId}>
-                  <TableCell className="font-mono text-xs text-primary">{row.testCaseId}</TableCell>
-                  <TableCell className="whitespace-normal font-medium">{row.title}</TableCell>
-                  <TableCell>{row.stepsCount}</TableCell>
-                  <TableCell><Badge variant="outline">{row.complexity}</Badge></TableCell>
-                  <TableCell>{formatMinutes(row.executionMinutes)}</TableCell>
-                  <TableCell>{formatMinutes(row.dataPreparationMinutes)}</TableCell>
-                  <TableCell>{formatMinutes(row.environmentSetupMinutes)}</TableCell>
-                  <TableCell>{formatMinutes(row.integrationValidationMinutes)}</TableCell>
-                  <TableCell>{formatMinutes(row.evidenceAndDefectLoggingMinutes)}</TableCell>
-                  <TableCell>{formatMinutes(row.retestingBufferMinutes)}</TableCell>
-                  <TableCell className="font-semibold">{formatMinutes(row.totalEstimatedMinutes)}</TableCell>
-                  <TableCell className="whitespace-normal text-muted-foreground">{row.reason}</TableCell>
+              {rows.length ? (
+                rows.map((row) => (
+                  <TableRow key={row.testCaseId}>
+                    <TableCell className="font-mono text-xs text-primary">{row.testCaseId}</TableCell>
+                    <TableCell className="whitespace-normal font-medium">{row.title}</TableCell>
+                    <TableCell className="text-right tabular-nums">{row.stepsCount}</TableCell>
+                    <TableCell><Badge variant="outline">{row.complexity}</Badge></TableCell>
+                    <TableCell className="text-right tabular-nums">{formatMinutes(row.executionMinutes)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{formatMinutes(row.dataPreparationMinutes)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{formatMinutes(row.environmentSetupMinutes)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{formatMinutes(row.integrationValidationMinutes)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{formatMinutes(row.evidenceAndDefectLoggingMinutes)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{formatMinutes(row.retestingBufferMinutes)}</TableCell>
+                    <TableCell className="text-right font-semibold tabular-nums">{formatMinutes(row.totalEstimatedMinutes)}</TableCell>
+                    <TableCell className="whitespace-normal text-muted-foreground">{row.reason}</TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell colSpan={12} className="p-6 text-center text-sm text-muted-foreground">No test case estimates were returned.</TableCell>
                 </TableRow>
-              ))}
+              )}
             </TableBody>
           </Table>
         </div>
@@ -818,9 +828,9 @@ function PlanningNotesPanel({
   recommendations: string[];
 }) {
   return (
-    <Card>
+    <Card role="region" aria-labelledby="tee-notes-title">
       <CardHeader className="border-b">
-        <CardTitle>Planning Notes</CardTitle>
+        <CardTitle id="tee-notes-title">Planning Notes</CardTitle>
         <CardDescription>Assumptions, risks, and recommendations used to interpret the estimate.</CardDescription>
       </CardHeader>
       <CardContent>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ListChecks, Play, Radar } from "lucide-react";
+import { ArrowLeft, ListChecks, Loader2, Play, Radar } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -251,7 +251,7 @@ export function TestGapAnalysisClient() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="dashboard-stack">
       {projectWarning(scope)}
       <WorkflowStepper
         steps={[
@@ -282,7 +282,7 @@ export function TestGapAnalysisClient() {
       />
 
       {activeStep === "analyze" ? (
-        <div className="space-y-6">
+        <div className="dashboard-stack">
           <SectionCard
             title="Analyze Linked Test Coverage"
             description="Enter a user story ID. Linked test cases and project context are selected automatically for this run."
@@ -314,12 +314,12 @@ export function TestGapAnalysisClient() {
                 </div>
                 {mode === "auto" ? (
                   <Button onClick={review} disabled={!scope || !targetWorkItemId || gen.isRunning || !extraInstructionsValid}>
-                    <Play className="h-4 w-4" />
+                    {gen.isRunning ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" />}
                     {gen.isRunning ? "Reviewing..." : "Analyze Coverage"}
                   </Button>
                 ) : (
                   <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !extraInstructionsValid}>
-                    <Play className="h-4 w-4" />
+                    {prep.isRunning ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" />}
                     {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
                   </Button>
                 )}
@@ -349,7 +349,7 @@ export function TestGapAnalysisClient() {
 
             {mode === "manual" && (manualDraft.data || manualSubmitError) ? (
               <div className="space-y-4">
-                {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
+                {manualSubmitError ? <Callout tone="error" role="alert">{manualSubmitError}</Callout> : null}
                 {manualDraft.data ? (
                   <ManualLLMPanel
                     prompt={manualDraft.data.prompt}
@@ -391,15 +391,15 @@ export function TestGapAnalysisClient() {
           ) : null}
         </div>
       ) : state.data ? (
-        <div ref={resultsRef} className="space-y-6 pb-24">
-          <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div ref={resultsRef} className="dashboard-stack pb-40 sm:pb-24">
+          <div className="flex flex-col gap-3 dashboard-surface p-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="text-sm font-semibold text-foreground">
+              <h2 className="text-sm font-semibold text-foreground">
                 {activeStep === "linkedCases" ? "Reviewing linked cases and additions" : "Reviewing coverage gaps"} for #{targetWorkItemId}
                 {workItemLookup.data?.title ? (
                   <span className="font-normal text-muted-foreground"> — {workItemLookup.data.title}</span>
                 ) : null}
-              </div>
+              </h2>
               <div className="text-xs text-muted-foreground">Coverage results remain available while you revisit the analysis input.</div>
             </div>
             <Button type="button" variant="outline" onClick={() => setActiveStep("analyze")}>
@@ -417,13 +417,13 @@ export function TestGapAnalysisClient() {
                 <ReviewMetrics result={state.data} />
                 <ReviewSummaryCard summary={state.data.summary} />
               </div>
-              <Tabs value={reviewTab} onValueChange={(value) => changeReviewTab(value as ReviewTab)} className="w-full flex-col gap-4">
+              <Tabs id="gap-review" value={reviewTab} onValueChange={(value) => changeReviewTab(value as ReviewTab)} className="w-full flex-col gap-4">
                 <TabsList variant="primary" className="grid h-auto w-full grid-cols-2 sm:inline-grid sm:w-fit sm:min-w-[420px]">
-                  <TabsTrigger value="findings" className="h-10 px-3 py-2">
+                  <TabsTrigger value="findings" className="h-10 px-2 py-2 sm:px-3">
                     Findings Review
                     <span className="ml-1.5 text-xs opacity-80">({state.data.findings.length + state.data.insights.length})</span>
                   </TabsTrigger>
-                  <TabsTrigger value="matrix" className="h-10 px-3 py-2">
+                  <TabsTrigger value="matrix" className="h-10 px-2 py-2 sm:px-3">
                     Traceability Matrix
                     <span className="ml-1.5 text-xs opacity-80">({state.data.traceabilityMatrix.length})</span>
                   </TabsTrigger>

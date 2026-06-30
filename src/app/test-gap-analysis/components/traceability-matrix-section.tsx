@@ -90,6 +90,7 @@ export function TraceabilityMatrixSection({
 
   return (
     <SectionCard
+      title="Traceability Matrix"
       description="Evidence and audit trail — expand any row to inspect coverage evidence and recommended action."
       action={<span className="text-xs text-muted-foreground">{filteredRows.length} of {rows.length} rows</span>}
     >

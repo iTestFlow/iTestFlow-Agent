@@ -54,7 +54,7 @@ export function StatCard({
       >
         {label}
       </div>
-      <div className={cn("font-semibold", size === "sm" ? "mt-1 text-base" : "mt-2 text-2xl", valueClass[tone])}>
+      <div className={cn("font-semibold tabular-nums", size === "sm" ? "mt-1 text-base" : "mt-2 text-2xl", valueClass[tone])}>
         {value}
       </div>
       {detail ? <div className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</div> : null}

@@ -72,15 +72,15 @@ export function TraceabilityRowPanel({
             ) : null}
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground lg:hidden">
               <ToneBadge tone={coverageTone(row.coverageStatus)}>{row.coverageStatus}</ToneBadge>
-              <span>{linkedCaseCount} linked case{linkedCaseCount === 1 ? "" : "s"}</span>
-              <span>Min {row.recommendedMinimumTestCount}</span>
+              <span className="tabular-nums">{linkedCaseCount} linked case{linkedCaseCount === 1 ? "" : "s"}</span>
+              <span className="tabular-nums">Min {row.recommendedMinimumTestCount}</span>
             </div>
           </div>
           <div className="hidden lg:block">
             <ToneBadge tone={coverageTone(row.coverageStatus)}>{row.coverageStatus}</ToneBadge>
           </div>
-          <div className="hidden text-xs text-muted-foreground lg:block">{linkedCaseCount} linked</div>
-          <div className="hidden text-xs text-muted-foreground lg:block">{row.recommendedMinimumTestCount}</div>
+          <div className="hidden text-xs text-muted-foreground lg:block tabular-nums">{linkedCaseCount} linked</div>
+          <div className="hidden text-xs text-muted-foreground lg:block tabular-nums">{row.recommendedMinimumTestCount}</div>
         </div>
       </AccordionTrigger>
       <AccordionContent className="bg-muted/10">
