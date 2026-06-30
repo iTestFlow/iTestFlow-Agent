@@ -116,6 +116,26 @@ describe("AzureDevOpsRestAdapter.fetchProjectUsers", () => {
   });
 });
 
+describe("AzureDevOpsRestAdapter Test Plans errors", () => {
+  it("surfaces friendly license guidance instead of Azure exception JSON", async () => {
+    globalThis.fetch = vi.fn(async () => jsonResponse({
+      $id: "1",
+      message: "TF400409: You do not have licensing rights to access this feature: Web-based Test Execution",
+      typeName: "Microsoft.TeamFoundation.Server.Core.MissingLicenseException",
+      eventId: 3000,
+    }, { status: 403 })) as typeof fetch;
+
+    const adapter = new AzureDevOpsRestAdapter({
+      organizationUrl: "https://dev.azure.com/fabrikam",
+      personalAccessToken: "pat",
+    });
+
+    await expect(adapter.fetchTestPlans({ projectId: "project-1" })).rejects.toThrow(
+      "Your Azure DevOps account isn’t licensed to use Test Plans. Ask an Azure DevOps administrator to assign Basic + Test Plans or Visual Studio Enterprise access, then try again.",
+    );
+  });
+});
+
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
     status: init.status ?? 200,

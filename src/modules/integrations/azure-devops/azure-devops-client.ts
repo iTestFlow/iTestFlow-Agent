@@ -1,6 +1,7 @@
 import "server-only";
 
 import { ProjectIsolationError, workItemNotInProjectMessage } from "@/modules/projects/project-isolation.guard";
+import { formatAzureDevOpsError } from "@/shared/lib/sanitize-azure-error";
 import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
 import { mapAzureTestCase, mapAzureWorkItem } from "./azure-devops-mapper";
 import { buildAzureTestCasePatch } from "./azure-devops-test-case-payload";
@@ -1061,7 +1062,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     const body = await response.text();
     if (!response.ok) {
       if (response.status === 401) this.onUnauthorized?.();
-      throw new Error(`Azure DevOps request failed (${response.status}): ${body}`);
+      throw new Error(formatAzureDevOpsError(response.status, body, path));
     }
     if (!isJsonResponse(response)) {
       throw new Error(
@@ -1082,7 +1083,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     if (!response.ok) {
       const body = await response.text();
       if (response.status === 401) this.onUnauthorized?.();
-      throw new Error(`Azure DevOps request failed (${response.status}): ${body}`);
+      throw new Error(formatAzureDevOpsError(response.status, body, path));
     }
   }
 
