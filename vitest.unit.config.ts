@@ -9,5 +9,17 @@ export default mergeConfig(baseConfig, {
     // integration lane's include — see vitest.config.ts.)
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
     exclude: ["src/**/*.db.test.{ts,tsx}"],
+    // GitHub Actions runs the coverage config, which inherits this lane. Emit a
+    // distinctly named JUnit report for the consolidated CI summary. Explicitly
+    // selecting reporters also prevents Vitest from appending its anonymous,
+    // auto-enabled GitHub job summary for every test invocation.
+    reporters:
+      process.env.GITHUB_ACTIONS === "true"
+        ? ["default", ["junit", { suiteName: "Unit & coverage" }]]
+        : undefined,
+    outputFile:
+      process.env.GITHUB_ACTIONS === "true"
+        ? { junit: "./reports/unit.xml" }
+        : undefined,
   },
 });
