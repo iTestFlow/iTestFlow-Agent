@@ -8,7 +8,6 @@ export default function TestCaseDesignPage() {
   return (
     <ContentShell
       title="Test Case Design"
-      maxWidth="dashboard"
       description="Generate test cases for a real Azure DevOps work item with automatic project context selection."
     >
       <TestCaseDesignClient />

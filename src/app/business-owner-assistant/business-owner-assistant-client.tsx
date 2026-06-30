@@ -509,7 +509,7 @@ function renderMarkdownBlocks(content: string) {
 
 function MarkdownTable({ table }: { table: MarkdownTable }) {
   return (
-    <div className="dashboard-scroll-region rounded-md border border-border">
+    <div className="content-scroll-region rounded-md border border-border">
       <table className="w-full min-w-max border-collapse text-left text-sm">
         <thead className="bg-muted text-foreground">
           <tr>

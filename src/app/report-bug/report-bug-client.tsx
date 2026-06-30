@@ -657,7 +657,7 @@ export function ReportBugClient() {
     !validateGeneratedTestCase(suggestedTestCase).valid;
 
   return (
-    <div className="dashboard-stack">
+    <div className="content-stack">
       {!scope ? <WarningBlock message="Please select an Azure DevOps project before creating a bug." /> : null}
       <WorkflowStepper
         steps={[
@@ -682,7 +682,7 @@ export function ReportBugClient() {
       />
 
       {activeStep === "describe" ? (
-        <div className="dashboard-stack pb-2">
+        <div className="content-stack pb-2">
           {metadata.error ? <ErrorBlock message={metadata.error} /> : null}
 
           <SectionCard
@@ -949,7 +949,7 @@ Actual: the button stays inactive / no request is triggered.`}
         </div>
       ) : report ? (
         <div ref={reviewSectionRef} className="space-y-5">
-          <div className="dashboard-surface flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="content-surface flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <h2 className="text-sm font-semibold text-foreground">
                 {parentStoryId ? `Reviewing bug for story #${parentStoryId}` : "Reviewing generated bug report"}

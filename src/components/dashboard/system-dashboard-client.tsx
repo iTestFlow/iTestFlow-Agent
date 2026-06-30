@@ -185,7 +185,7 @@ export function SystemDashboardsClient({ active }: { active: boolean }) {
   }
 
   return (
-    <div className="dashboard-stack" aria-busy={loading}>
+    <div className="content-stack" aria-busy={loading}>
       <SystemFilters filters={filters} setFilters={handleFiltersChange} data={data} disabled={loading && !data} />
       <RefreshBar
         projectName={scope.azureProjectName}
@@ -332,7 +332,7 @@ function RefreshBar({
   onRefresh: () => void;
 }) {
   return (
-    <section className="dashboard-surface px-4 py-3">
+    <section className="content-surface px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="text-xs font-medium uppercase text-muted-foreground">iTestFlow Value Scope</div>

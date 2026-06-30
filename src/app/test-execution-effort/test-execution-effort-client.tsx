@@ -375,7 +375,7 @@ export function TestExecutionEffortClient() {
   const actionDisabled = busy || !scope || !storyId.trim();
 
   return (
-    <div className="dashboard-stack">
+    <div className="content-stack">
       {!scope ? (
         <Alert>
           <AlertCircle className="size-4" />
@@ -407,7 +407,7 @@ export function TestExecutionEffortClient() {
       />
 
       {activeStep === "configure" ? (
-        <div className="dashboard-stack">
+        <div className="content-stack">
           <Card role="region" aria-labelledby="tee-inputs-title">
             <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="space-y-0.5">
@@ -583,7 +583,7 @@ export function TestExecutionEffortClient() {
           ) : null}
         </div>
       ) : estimateResult ? (
-        <div ref={reviewRef} className="dashboard-stack">
+        <div ref={reviewRef} className="content-stack">
           <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="text-sm font-semibold text-foreground">Reviewing effort for story #{storyId}</div>
@@ -728,7 +728,7 @@ function BreakdownTable({ rows }: { rows: EffortEstimate["breakdown"] }) {
         <CardDescription>Estimated hours grouped by execution area.</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="dashboard-scroll-region overflow-hidden rounded-lg border">
+        <div className="content-scroll-region overflow-hidden rounded-lg border">
           <Table>
             <TableCaption className="sr-only">Estimated execution effort by area</TableCaption>
             <TableHeader>
@@ -768,7 +768,7 @@ function TestCaseEstimateTable({ rows }: { rows: EffortEstimate["testCaseEstimat
         <CardDescription>Per-test-case minutes across each effort factor.</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="dashboard-scroll-region overflow-hidden rounded-lg border">
+        <div className="content-scroll-region overflow-hidden rounded-lg border">
           <Table className="min-w-[1100px]">
             <TableCaption className="sr-only">Per-test-case execution effort breakdown</TableCaption>
             <TableHeader>

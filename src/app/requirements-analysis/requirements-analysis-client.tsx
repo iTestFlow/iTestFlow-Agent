@@ -764,7 +764,7 @@ function RequirementMentionPicker({
       )}>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold text-foreground">Mention members</div>
-          <div className="dashboard-scroll-region mt-2 flex max-h-16 min-h-8 flex-wrap items-center gap-2 overflow-y-auto">
+          <div className="content-scroll-region mt-2 flex max-h-16 min-h-8 flex-wrap items-center gap-2 overflow-y-auto">
             {selectedUsers.length ? selectedUsers.map((user) => (
               <UiBadge key={user.id} variant="secondary" className="h-7 max-w-full gap-1 rounded-md pl-2 pr-1">
                 <span className="max-w-[160px] truncate">{projectUserLabel(user)}</span>

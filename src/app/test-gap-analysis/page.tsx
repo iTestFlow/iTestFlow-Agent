@@ -8,7 +8,6 @@ export default function TestGapAnalysisPage() {
   return (
     <ContentShell
       title="Test Gap Analysis"
-      maxWidth="dashboard"
       description="Review linked Azure DevOps test cases against each user story detail, description point, and acceptance criterion."
     >
       <TestGapAnalysisClient />

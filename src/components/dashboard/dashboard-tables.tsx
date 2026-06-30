@@ -122,7 +122,7 @@ function DashboardTableCard({
     <Card className="qa-card min-w-0 overflow-hidden">
       <CardHeader className="flex flex-col items-start justify-between gap-3 space-y-0 pb-3 lg:flex-row lg:items-center">
         <CardTitle className="text-base">{title}</CardTitle>
-        {action ? <div className="dashboard-scroll-region pb-0.5">{action}</div> : null}
+        {action ? <div className="content-scroll-region pb-0.5">{action}</div> : null}
       </CardHeader>
       <CardContent className="p-0">
         {hasRows ? <div className="max-h-[560px] overflow-auto border-t border-border overscroll-contain [&_[data-slot=table-container]]:overflow-visible [&_thead]:sticky [&_thead]:top-0 [&_thead]:z-10 [&_thead]:bg-muted/95 [&_thead]:shadow-[0_1px_0_hsl(var(--border))]">{children}</div> : (

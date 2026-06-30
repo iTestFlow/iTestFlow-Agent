@@ -178,7 +178,7 @@ export function MyWorkbenchDashboardClient({ active }: { active: boolean }) {
   const metadata = data?.filterMetadata ?? emptyMetadata;
 
   return (
-    <div className="dashboard-stack" aria-busy={state.loading}>
+    <div className="content-stack" aria-busy={state.loading}>
       <WorkbenchFilters
         value={filters}
         metadata={metadata}
@@ -454,7 +454,7 @@ function WorkbenchScopeBar({
   if (filters.priority !== "all") chips.push(filters.priority === "none" ? "No priority" : `Priority ${filters.priority}`);
 
   return (
-    <section className="dashboard-surface px-4 py-3">
+    <section className="content-surface px-4 py-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="text-xs font-medium uppercase tracking-normal text-muted-foreground">Personal Scope</div>

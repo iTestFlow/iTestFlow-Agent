@@ -22,7 +22,7 @@ export function DashboardLoadingState({
       <span className="sr-only">{label}</span>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {Array.from({ length: cards }).map((_, index) => (
-          <div key={index} className="dashboard-surface space-y-4 p-4">
+          <div key={index} className="content-surface space-y-4 p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1 space-y-3">
                 <Skeleton className="h-3 w-28" />
@@ -36,11 +36,11 @@ export function DashboardLoadingState({
         ))}
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
-        <div className="dashboard-surface space-y-4 p-4">
+        <div className="content-surface space-y-4 p-4">
           <Skeleton className="h-4 w-44" />
           <Skeleton className="h-[220px] w-full" />
         </div>
-        <div className="dashboard-surface space-y-4 p-4">
+        <div className="content-surface space-y-4 p-4">
           <Skeleton className="h-4 w-40" />
           <Skeleton className="h-[220px] w-full" />
         </div>
@@ -66,7 +66,7 @@ export function DashboardEmptyPanel({
     <div
       role="status"
       className={cn(
-        "dashboard-empty-state",
+        "content-empty-state",
         compact ? "min-h-32 py-6" : "min-h-[220px] py-8",
         className,
       )}

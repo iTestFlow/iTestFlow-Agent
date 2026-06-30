@@ -78,8 +78,8 @@ export function DashboardsClient() {
   const ActiveViewIcon = activeView.icon;
 
   return (
-    <Tabs id="dashboard-sections" value={activeDashboard} onValueChange={(value) => setActiveDashboard(value as "workbench" | "project" | "system")} className="dashboard-stack">
-      <div className="dashboard-scroll-region pb-1">
+    <Tabs id="dashboard-sections" value={activeDashboard} onValueChange={(value) => setActiveDashboard(value as "workbench" | "project" | "system")} className="content-stack">
+      <div className="content-scroll-region pb-1">
         <TabsList variant="primary" aria-label="Dashboard view" className="grid h-auto w-full min-w-0 grid-cols-3 sm:inline-grid sm:w-fit sm:min-w-[640px]">
           {Object.entries(dashboardViews).map(([value, view]) => {
             const Icon = view.icon;
@@ -250,7 +250,7 @@ function ProjectDashboardsClient({ active }: { active: boolean }) {
   }
 
   return (
-    <div className="dashboard-stack" aria-busy={state.loading}>
+    <div className="content-stack" aria-busy={state.loading}>
       <DashboardFilters value={filters} effective={data?.filters} metadata={metadata} disabled={state.loading && !data} onChange={handleFiltersChange} />
 
       <ReportingScope
@@ -276,7 +276,7 @@ function ProjectDashboardsClient({ active }: { active: boolean }) {
           <ReleaseBlockersTable rows={data.releaseReadiness.blockers} onViewAll={() => navigate("blockers")} />
 
           <Tabs id="dashboard-details" tabIndex={-1} value={activeTab} onValueChange={(value) => setActiveTab(value as DashboardTab)} className="w-full min-w-0 scroll-mt-20 flex-col gap-4 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
-            <div className="dashboard-scroll-region pb-1">
+            <div className="content-scroll-region pb-1">
               <TabsList variant="primary" className="h-10 min-w-max shrink-0 justify-start border-border/80 bg-muted/60 p-1 shadow-none">
                 <TabsTrigger value="testing" className="h-8 flex-none px-4">Testing Progress</TabsTrigger>
                 <TabsTrigger value="bugs" className="h-8 flex-none px-4">Bug Status</TabsTrigger>
@@ -333,7 +333,7 @@ function ReportingScope({
 }) {
   const chips = scopeChips(filters, data, metadata);
   return (
-    <section className="dashboard-surface px-4 py-3">
+    <section className="content-surface px-4 py-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="text-xs font-medium uppercase tracking-normal text-muted-foreground">Reporting Scope</div>

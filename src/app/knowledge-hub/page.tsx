@@ -21,7 +21,6 @@ export default async function KnowledgeHubPage() {
   return (
     <ContentShell
       title="Knowledge Hub"
-      maxWidth="dashboard"
       description={
         canBuildKnowledge
           ? "Explore indexed source work items, build compiled knowledge, and monitor project knowledge health."

@@ -929,7 +929,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     : "No project context has been indexed yet."
 
   return (
-    <div className="dashboard-stack">
+    <div className="content-stack">
       {!scope ? (
         <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/15 p-3 text-sm text-warning-foreground dark:text-warning">
           <AlertTriangle className="size-4" />
@@ -970,7 +970,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
           ) : null}
         </TabsList>
 
-        <TabsContent value="hub" className="dashboard-stack">
+        <TabsContent value="hub" className="content-stack">
           <HubSummary
             activeSourceCount={totalCount}
             totalKnowledgeItems={totalKnowledgeItems}
@@ -1859,7 +1859,7 @@ function IndexedContextView({
         <KnowledgeLoadingState label="Loading indexed project context" compact />
       ) : items.length ? (
         <div className="space-y-3">
-          <div className="dashboard-scroll-region">
+          <div className="content-scroll-region">
             <Table className={`min-w-[760px] ${loading ? "opacity-60" : ""}`}>
               <TableHeader>
                 <TableRow>
@@ -1996,7 +1996,7 @@ function KnowledgeOpsPanel({
   onExport: () => void
 }) {
   return (
-    <section className="dashboard-surface space-y-3 p-4" aria-label="Compiled knowledge operations">
+    <section className="content-surface space-y-3 p-4" aria-label="Compiled knowledge operations">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -2306,7 +2306,7 @@ function KnowledgeEmptyState({
   compact?: boolean
 }) {
   return (
-    <div role="status" className={`dashboard-empty-state ${compact ? "min-h-36 py-6" : "min-h-[220px] py-8"}`}>
+    <div role="status" className={`content-empty-state ${compact ? "min-h-36 py-6" : "min-h-[220px] py-8"}`}>
       <div className="rounded-lg border border-border bg-background p-2.5 text-muted-foreground shadow-sm">
         <SearchX className="size-5" aria-hidden="true" />
       </div>

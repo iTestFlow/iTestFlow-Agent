@@ -8,7 +8,6 @@ export default function ReportBugPage() {
   return (
     <ContentShell
       title="Report Bug"
-      maxWidth="dashboard"
       description="Generate, review, and post Azure DevOps Bug work items from QA defect notes."
     >
       <ReportBugClient />

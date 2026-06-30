@@ -324,7 +324,7 @@ export function TestCaseDesignClient() {
   }
 
   return (
-    <div className="dashboard-stack">
+    <div className="content-stack">
       {projectWarning(scope)}
       <WorkflowStepper
         steps={[
@@ -349,7 +349,7 @@ export function TestCaseDesignClient() {
       />
 
       {activeStep === "generate" ? (
-        <div className="dashboard-stack">
+        <div className="content-stack">
           <SectionCard
             title="Generate Test Cases from Azure DevOps Requirement"
             description="Project context is selected automatically for this run."
@@ -468,7 +468,7 @@ export function TestCaseDesignClient() {
           ) : null}
         </div>
       ) : (
-        <div ref={generatedCasesRef} className="dashboard-stack pb-24">
+        <div ref={generatedCasesRef} className="content-stack pb-24">
           <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <div role="heading" aria-level={2} className="text-sm font-semibold text-foreground">

@@ -251,7 +251,7 @@ export function TestGapAnalysisClient() {
   }
 
   return (
-    <div className="dashboard-stack">
+    <div className="content-stack">
       {projectWarning(scope)}
       <WorkflowStepper
         steps={[
@@ -282,7 +282,7 @@ export function TestGapAnalysisClient() {
       />
 
       {activeStep === "analyze" ? (
-        <div className="dashboard-stack">
+        <div className="content-stack">
           <SectionCard
             title="Analyze Linked Test Coverage"
             description="Enter a user story ID. Linked test cases and project context are selected automatically for this run."
@@ -391,8 +391,8 @@ export function TestGapAnalysisClient() {
           ) : null}
         </div>
       ) : state.data ? (
-        <div ref={resultsRef} className="dashboard-stack pb-40 sm:pb-24">
-          <div className="flex flex-col gap-3 dashboard-surface p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div ref={resultsRef} className="content-stack pb-40 sm:pb-24">
+          <div className="flex flex-col gap-3 content-surface p-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="text-sm font-semibold text-foreground">
                 {activeStep === "linkedCases" ? "Reviewing linked cases and additions" : "Reviewing coverage gaps"} for #{targetWorkItemId}
