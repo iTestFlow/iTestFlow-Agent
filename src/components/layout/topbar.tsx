@@ -2,7 +2,7 @@
 
 import { Check, ChevronDown, Eye, EyeOff, KeyRound, Loader2, LogOut, Menu, RefreshCw, Settings2, UserRound } from "lucide-react"
 import Link from "next/link"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { forwardRef, useCallback, useEffect, useMemo, useState, type ComponentProps } from "react"
 import { toast } from "sonner"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -78,6 +78,7 @@ type SyncScheduleStatus = {
 
 type Provider = "openai" | "gemini" | "anthropic"
 type ModelOption = { id: string; displayName: string }
+type HeaderStatus = "success" | "warning" | "error" | "neutral" | "loading"
 
 function providerLabel(value?: string | null) {
   switch (value) {
@@ -94,6 +95,54 @@ function providerLabel(value?: string | null) {
 
 function isProvider(value?: string | null): value is Provider {
   return value === "openai" || value === "gemini" || value === "anthropic"
+}
+
+function humanizeModelId(model: string, provider?: string | null) {
+  const vendorPrefixes: Record<string, RegExp> = {
+    gemini: /^gemini[-_]/i,
+    anthropic: /^claude[-_]/i,
+    openai: /^openai[-_]/i,
+  }
+  const modelName = (model.split("/").pop() ?? model)
+    .replace(provider ? vendorPrefixes[provider] ?? /$^/ : /$^/, "")
+    .split(/[-_]+/)
+    .filter((part) => part && !/^\d{8}$/.test(part) && part.toLocaleLowerCase() !== "latest")
+    .slice(0, 4)
+    .map((part) => {
+      if (/^gpt$/i.test(part)) return "GPT"
+      if (/^[a-z]\d+$/i.test(part) || /^\d+(?:\.\d+)*$/.test(part)) return part
+      return `${part.charAt(0).toLocaleUpperCase()}${part.slice(1)}`
+    })
+    .join(" ")
+
+  return modelName || "Model"
+}
+
+function modelDisplayLabel(provider?: string | null, model?: string | null) {
+  const providerName = providerLabel(provider)
+  const normalizedModel = model?.toLocaleLowerCase() ?? ""
+
+  if (provider === "gemini") {
+    if (normalizedModel.includes("flash-lite")) return "Gemini: Flash Lite"
+    if (normalizedModel.includes("flash")) return "Gemini: Flash"
+    if (normalizedModel.includes("pro")) return "Gemini: Pro"
+    return model ? `Gemini: ${humanizeModelId(model, provider)}` : "Gemini"
+  }
+
+  if (provider === "anthropic") {
+    if (normalizedModel.includes("haiku")) return "Claude: Haiku"
+    if (normalizedModel.includes("sonnet")) return "Claude: Sonnet"
+    if (normalizedModel.includes("opus")) return "Claude: Opus"
+    return model ? `Claude: ${humanizeModelId(model, provider)}` : "Claude"
+  }
+
+  if (provider === "openai") {
+    const conciseModel = model?.match(/^(gpt-[\w.]+|o\d(?:-[\w.]+)?)/i)?.[1]
+    if (conciseModel) return `${providerName}: ${humanizeModelId(conciseModel, provider)}`
+    return model ? `${providerName}: ${humanizeModelId(model, provider)}` : providerName
+  }
+
+  return model ? `${providerName}: ${humanizeModelId(model, provider)}` : providerName
 }
 
 function roleLabel(role: WorkspaceRole) {
@@ -280,47 +329,47 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
 
   const azureConfiguredError = profileError?.toLowerCase().includes("not configured") || profileError?.toLowerCase().includes("personal access token")
   const azureStatus = profile
-    ? { text: "Azure: Connected", tone: "connected" as const, title: `Azure DevOps connected as ${profile.displayName}` }
+    ? { label: "Azure", status: "success" as const, detail: `Azure DevOps connected as ${profile.displayName}.` }
     : profileError
       ? {
-          text: azureConfiguredError ? "Azure: Not configured" : "Azure: Unavailable",
-          tone: azureConfiguredError ? "missing" as const : "warning" as const,
-          title: profileError,
+          label: azureConfiguredError ? "Azure Off" : "Azure Issue",
+          status: "error" as const,
+          detail: `Azure DevOps ${azureConfiguredError ? "is not configured" : "is unavailable"}. ${profileError}`,
         }
-      : { text: "Azure: Checking", tone: "checking" as const, title: "Checking Azure DevOps connection." }
+      : { label: "Azure", status: "loading" as const, detail: "Checking Azure DevOps connection." }
 
   const llm = credentials?.llm
   const llmConnected = llm?.status === "configured"
   const llmStatus = llmConnected
     ? {
-        text: `LLM: ${providerLabel(llm?.provider)} / ${llm?.model ?? ""}`.trim(),
-        tone: "connected" as const,
-        title: `LLM configured: ${providerLabel(llm?.provider)}${llm?.model ? ` using ${llm.model}` : ""}`,
+        label: modelDisplayLabel(llm?.provider, llm?.model),
+        status: "success" as const,
+        detail: `LLM configured. Provider: ${providerLabel(llm?.provider)}.${llm?.model ? ` Model: ${llm.model}.` : ""}`,
       }
     : credentialsLoading
-      ? { text: "LLM: Checking", tone: "checking" as const, title: "Checking your LLM credentials." }
+      ? { label: "LLM", status: "loading" as const, detail: "Checking your LLM credentials." }
       : {
-          text: "LLM: Not configured",
-          tone: "missing" as const,
-          title: "Add your LLM provider, model, and API key in Settings → My Credentials.",
+          label: "LLM Off",
+          status: "warning" as const,
+          detail: "LLM is not configured. Add your provider, model, and API key in Settings → My Credentials.",
         }
 
   const syncStatus = syncScheduleLoading
-    ? { text: "Sync: Checking", tone: "checking" as const, title: "Checking scheduled knowledge sync." }
+    ? { label: "Sync", status: "loading" as const, detail: "Checking scheduled knowledge sync." }
     : !syncSchedule
-      ? { text: "Sync: Off", tone: "missing" as const, title: "No scheduled knowledge sync is configured." }
+      ? { label: "Sync Off", status: "warning" as const, detail: "Scheduled knowledge sync is not configured." }
       : syncSchedule.enabled
         ? {
-            text: "Sync: On",
-            tone: syncSchedule.nextRunAt ? "connected" as const : "warning" as const,
-            title: syncSchedule.nextRunAt
+            label: "Sync On",
+            status: syncSchedule.nextRunAt ? "success" as const : "warning" as const,
+            detail: syncSchedule.nextRunAt
               ? `Scheduled knowledge sync is enabled. Next sync: ${formatDateTime(syncSchedule.nextRunAt)}.`
               : "Scheduled knowledge sync is enabled, but the next sync time is not available.",
           }
         : {
-            text: "Sync: Off",
-            tone: "warning" as const,
-            title: syncSchedule.lastEnqueuedAt
+            label: "Sync Off",
+            status: "warning" as const,
+            detail: syncSchedule.lastEnqueuedAt
               ? `Scheduled knowledge sync is disabled. Last enqueued: ${formatDateTime(syncSchedule.lastEnqueuedAt)}.`
               : "Scheduled knowledge sync is disabled.",
           }
@@ -330,9 +379,9 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   const pat = credentials?.azurePat
   const patWarning =
     pat?.status === "expired" || pat?.status === "invalid"
-      ? { text: "Azure PAT: Expired", title: "Azure DevOps rejected your PAT. Re-enter it in Settings → My Credentials." }
+      ? { label: "PAT Expired", detail: "Azure DevOps rejected your PAT. Re-enter it in Settings → My Credentials." }
       : pat?.isStale
-        ? { text: "Azure PAT: Re-validate", title: "Your Azure DevOps PAT hasn't been validated in a while. Re-enter it in Settings → My Credentials." }
+        ? { label: "Check PAT", detail: "Your Azure DevOps PAT hasn't been validated in a while. Re-enter it in Settings → My Credentials." }
         : null
 
   return (
@@ -351,21 +400,21 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         <HeaderProjectSelector />
       </div>
 
-      <div className="hidden min-w-0 items-center gap-2 xl:flex">
-        <ConnectivityChip {...azureStatus} />
+      <div className="hidden min-w-0 items-center gap-1.5 xl:flex">
+        <HeaderStatusChip {...azureStatus} />
         {patWarning ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <Link
                 href="/settings"
-                className={connectivityChipClass("warning", "max-w-[220px] cursor-pointer hover:brightness-95")}
-                aria-label={patWarning.title}
+                className={headerStatusChipClass("error", "max-w-36 transition-colors hover:bg-destructive/15")}
+                aria-label={patWarning.detail}
               >
-                <span className="truncate">{patWarning.text}</span>
-                <Settings2 className="size-3.5 shrink-0" />
+                <StatusChipContent label={patWarning.label} status="error" />
+                <Settings2 className="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
               </Link>
             </TooltipTrigger>
-            <TooltipContent sideOffset={8} className="max-w-sm text-left">{patWarning.title}</TooltipContent>
+            <TooltipContent sideOffset={8} className="max-w-sm text-left">{patWarning.detail}</TooltipContent>
           </Tooltip>
         ) : null}
         <LlmModelChip
@@ -375,7 +424,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           disabled={credentialsLoading}
           onChanged={loadCredentials}
         />
-        {syncScheduleVisible ? <ConnectivityChip {...syncStatus} className="max-w-[170px]" /> : null}
+        {syncScheduleVisible ? <HeaderStatusChip {...syncStatus} className="max-w-28" /> : null}
         <Button
           type="button"
           variant="ghost"
@@ -626,28 +675,47 @@ function patDialogStatus(summary: CredentialSummary | null, loading: boolean) {
   }
 }
 
-function ConnectivityChip({
-  text,
-  title,
-  tone,
-  className = "",
+function HeaderStatusChip({
+  label,
+  detail,
+  status,
+  className,
 }: {
-  text: string
-  title: string
-  tone: "connected" | "checking" | "missing" | "warning"
+  label: string
+  detail: string
+  status: HeaderStatus
   className?: string
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={connectivityChipClass(tone, className)} aria-label={title}>
-          <span className="truncate">{text}</span>
+        <span className={headerStatusChipClass(status, className)} aria-label={detail}>
+          <StatusChipContent label={label} status={status} />
         </span>
       </TooltipTrigger>
       <TooltipContent sideOffset={8} className="max-w-sm text-left">
-        {title}
+        {detail}
       </TooltipContent>
     </Tooltip>
+  )
+}
+
+function StatusChipContent({ label, status }: { label: string; status: HeaderStatus }) {
+  return (
+    <>
+      <span
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          status === "success" && "bg-success",
+          status === "warning" && "bg-warning",
+          status === "error" && "bg-destructive",
+          (status === "neutral" || status === "loading") && "bg-muted-foreground",
+          status === "loading" && "animate-pulse",
+        )}
+        aria-hidden="true"
+      />
+      <span className="truncate">{label}</span>
+    </>
   )
 }
 
@@ -681,13 +749,13 @@ function LlmModelChip({
   disabled,
   onChanged,
 }: {
-  status: { text: string; title: string; tone: "connected" | "checking" | "missing" | "warning" }
+  status: { label: string; detail: string; status: HeaderStatus }
   provider: Provider | null
   model: string
   disabled: boolean
   onChanged: () => void
 }) {
-  const configured = status.tone === "connected" && provider
+  const configured = status.status === "success" && provider
   const [open, setOpen] = useState(false)
   const [models, setModels] = useState<ModelOption[]>([])
   const [search, setSearch] = useState("")
@@ -761,11 +829,15 @@ function LlmModelChip({
     return (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Link href="/settings" className={connectivityChipClass(status.tone, "max-w-[260px] cursor-pointer hover:brightness-95")} aria-label={status.title}>
-              <span className="truncate">{status.text}</span>
+            <Link
+              href="/settings"
+              className={headerStatusChipClass(status.status, "max-w-32 transition-colors hover:bg-muted")}
+              aria-label={status.detail}
+            >
+              <StatusChipContent label={status.label} status={status.status} />
             </Link>
           </TooltipTrigger>
-          <TooltipContent sideOffset={8} className="max-w-sm text-left">{status.title}</TooltipContent>
+          <TooltipContent sideOffset={8} className="max-w-sm text-left">{status.detail}</TooltipContent>
         </Tooltip>
     )
   }
@@ -779,24 +851,17 @@ function LlmModelChip({
         if (!nextOpen) setSearch("")
       }}
     >
-      <div className={connectivityChipClass(status.tone, "max-w-[260px] overflow-hidden")}>
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            className="inline-flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left hover:brightness-95 disabled:pointer-events-none disabled:opacity-60"
-            disabled={disabled}
-            aria-label={`${status.title}. Change LLM model.`}
-            title={`${status.title}. Click to change model.`}
-          >
-            <span className="truncate">{status.text}</span>
-            {loadingModels || savingModel ? (
-              <Loader2 className="size-3.5 shrink-0 animate-spin" />
-            ) : (
-              <ChevronDown className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-180")} />
-            )}
-          </button>
-        </PopoverTrigger>
-      </div>
+      <PopoverTrigger asChild>
+        <HeaderStatusChipButton
+          label={status.label}
+          status={status.status}
+          detail={`${status.detail} Select to change the model.`}
+          className="max-w-44"
+          disabled={disabled}
+          open={open}
+          busy={loadingModels || Boolean(savingModel)}
+        />
+      </PopoverTrigger>
       <PopoverContent align="end" className="w-[min(520px,calc(100vw-2rem))] p-0">
         <Command shouldFilter={false}>
           <CommandInput value={search} onValueChange={setSearch} placeholder="Search models..." />
@@ -856,19 +921,60 @@ function LlmModelChip({
   )
 }
 
-function connectivityChipClass(
-  tone: "connected" | "checking" | "missing" | "warning",
-  className = "",
-) {
+type HeaderStatusChipButtonProps = Omit<ComponentProps<"button">, "children"> & {
+  label: string
+  detail: string
+  status: HeaderStatus
+  open: boolean
+  busy: boolean
+}
+
+const HeaderStatusChipButton = forwardRef<HTMLButtonElement, HeaderStatusChipButtonProps>(
+  function HeaderStatusChipButton(
+    { label, detail, status, disabled, open, busy, className, ...triggerProps },
+    ref,
+  ) {
+  return (
+    <button
+      {...triggerProps}
+      ref={ref}
+      type="button"
+      className={headerStatusChipClass(
+        status,
+        cn(
+          "cursor-pointer transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60",
+          className,
+        ),
+      )}
+      disabled={disabled}
+      aria-label={detail}
+      title={detail}
+    >
+      <StatusChipContent label={label} status={status} />
+      {busy ? (
+        <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
+      ) : (
+        <ChevronDown
+          className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
+          aria-hidden="true"
+        />
+      )}
+    </button>
+  )
+  },
+)
+
+function headerStatusChipClass(status: HeaderStatus, className = "") {
   const styles = {
-    connected: "border-success/30 bg-success/10 text-success before:bg-success",
-    checking: "border-border bg-muted text-muted-foreground before:bg-muted-foreground",
-    missing: "border-warning/40 bg-warning/15 text-warning-foreground dark:text-warning before:bg-warning",
-    warning: "border-destructive/30 bg-destructive/10 text-destructive before:bg-destructive",
-  }[tone]
+    success: "border-success/25 bg-success/5 text-foreground",
+    warning: "border-warning/30 bg-warning/10 text-foreground",
+    error: "border-destructive/25 bg-destructive/5 text-foreground",
+    neutral: "border-border/80 bg-muted/40 text-muted-foreground",
+    loading: "border-border/80 bg-muted/40 text-muted-foreground",
+  }[status]
 
   return cn(
-    "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-[6px] border px-2.5 text-xs font-medium before:size-1.5 before:shrink-0 before:rounded-full",
+    "inline-flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium leading-none",
     styles,
     className,
   )
