@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { cloneElement, isValidElement, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import { AlertTriangle, ArrowLeft, Bug, CheckCircle2, ChevronDown, FileText, FileUp, ListChecks, Loader2, Play, Plus, Send, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -657,7 +657,7 @@ export function ReportBugClient() {
     !validateGeneratedTestCase(suggestedTestCase).valid;
 
   return (
-    <div className="space-y-5">
+    <div className="dashboard-stack">
       {!scope ? <WarningBlock message="Please select an Azure DevOps project before creating a bug." /> : null}
       <WorkflowStepper
         steps={[
@@ -682,7 +682,7 @@ export function ReportBugClient() {
       />
 
       {activeStep === "describe" ? (
-        <div className="space-y-5 pb-2">
+        <div className="dashboard-stack pb-2">
           {metadata.error ? <ErrorBlock message={metadata.error} /> : null}
 
           <SectionCard
@@ -700,7 +700,7 @@ export function ReportBugClient() {
               />
             }
           >
-            <div className="space-y-5 p-4">
+            <div className="space-y-4 p-4">
               <Field
                 label="Bug description"
                 description="Tip: Include the page name, action taken, expected result, actual result, frequency, and any error message."
@@ -722,6 +722,7 @@ Actual: the button stays inactive / no request is triggered.`}
                 <Field
                   label="Parent Story ID"
                   description="Optional. Story details load automatically after you enter a valid numeric ID."
+                  error={parentState.error ?? undefined}
                 >
                   <Input
                     value={parentStoryId}
@@ -766,7 +767,7 @@ Actual: the button stays inactive / no request is triggered.`}
             title="Azure DevOps Assignment"
             description="Set ownership, classification paths, and required or custom Bug fields."
           >
-            <div className="space-y-5 p-4">
+            <div className="space-y-4 p-4">
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Assignee">
                   <ProjectUserPicker
@@ -787,41 +788,49 @@ Actual: the button stays inactive / no request is triggered.`}
                 </Field>
 
                 <Field label="Area path">
-                  <select
-                    value={selectedAreaPath}
-                    onChange={(event) => {
-                      setHasUnfinishedWork(true);
-                      setSelectedAreaPath(event.target.value);
-                    }}
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                    disabled={metadata.loading}
-                  >
-                    <option value="">{metadata.loading ? "Loading areas..." : "Azure DevOps default"}</option>
-                    {areas.map((area) => (
-                      <option key={area.id} value={area.path}>
-                        {area.path}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <select
+                      value={selectedAreaPath}
+                      onChange={(event) => {
+                        setHasUnfinishedWork(true);
+                        setSelectedAreaPath(event.target.value);
+                      }}
+                      aria-label="Area path"
+                      className="focus-ring h-8 w-full min-w-0 appearance-none truncate rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={metadata.loading}
+                    >
+                      <option value="">{metadata.loading ? "Loading areas..." : "Azure DevOps default"}</option>
+                      {areas.map((area) => (
+                        <option key={area.id} value={area.path}>
+                          {area.path}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  </div>
                 </Field>
 
                 <Field label="Iteration path">
-                  <select
-                    value={selectedIterationPath}
-                    onChange={(event) => {
-                      setHasUnfinishedWork(true);
-                      setSelectedIterationPath(event.target.value);
-                    }}
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                    disabled={metadata.loading}
-                  >
-                    <option value="">{metadata.loading ? "Loading iterations..." : "Azure DevOps default"}</option>
-                    {iterations.map((iteration) => (
-                      <option key={iteration.id} value={iteration.path}>
-                        {iteration.path}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <select
+                      value={selectedIterationPath}
+                      onChange={(event) => {
+                        setHasUnfinishedWork(true);
+                        setSelectedIterationPath(event.target.value);
+                      }}
+                      aria-label="Iteration path"
+                      className="focus-ring h-8 w-full min-w-0 appearance-none truncate rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={metadata.loading}
+                    >
+                      <option value="">{metadata.loading ? "Loading iterations..." : "Azure DevOps default"}</option>
+                      {iterations.map((iteration) => (
+                        <option key={iteration.id} value={iteration.path}>
+                          {iteration.path}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  </div>
                 </Field>
               </div>
 
@@ -898,8 +907,9 @@ Actual: the button stays inactive / no request is triggered.`}
                     }
                   }}
                   disabled={generateDisabled}
+                  aria-busy={gen.isRunning || prep.isRunning}
                 >
-                  {gen.isRunning || prep.isRunning ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
+                  {gen.isRunning || prep.isRunning ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <Play className="size-4" />}
                   {mode === "auto"
                     ? gen.isRunning
                       ? "Generating Bug Draft..."
@@ -914,7 +924,7 @@ Actual: the button stays inactive / no request is triggered.`}
 
           {mode === "manual" ? (
             <div className="space-y-4">
-              {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
+              {manualSubmitError ? <Callout tone="error" role="alert">{manualSubmitError}</Callout> : null}
               {manualDraft ? (
                 <ManualLLMPanel
                   prompt={manualDraft.prompt}
@@ -939,17 +949,17 @@ Actual: the button stays inactive / no request is triggered.`}
         </div>
       ) : report ? (
         <div ref={reviewSectionRef} className="space-y-5">
-          <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="text-sm font-semibold text-foreground">
+          <div className="dashboard-surface flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold text-foreground">
                 {parentStoryId ? `Reviewing bug for story #${parentStoryId}` : "Reviewing generated bug report"}
                 {parentStory?.title ? (
                   <span className="font-normal text-muted-foreground"> - {parentStory.title}</span>
                 ) : null}
-              </div>
+              </h2>
               <div className="text-xs text-muted-foreground">The generated report stays available while you revisit the source details.</div>
             </div>
-            <Button type="button" variant="outline" onClick={() => setActiveStep("describe")}>
+            <Button type="button" variant="outline" className="shrink-0" onClick={() => setActiveStep("describe")}>
               <ArrowLeft className="size-4" />
               Back to inputs
             </Button>
@@ -959,8 +969,8 @@ Actual: the button stays inactive / no request is triggered.`}
           <CardHeader>
             <CardTitle className="text-base">Review & Post</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-5 pt-5">
-            <Field label="Title">
+          <CardContent className="space-y-4">
+            <Field label="Title" required>
               <Input value={report.title} onChange={(event) => updateReport("title", event.target.value)} />
             </Field>
 
@@ -994,14 +1004,14 @@ Actual: the button stays inactive / no request is triggered.`}
             <Field label="Precondition">
               <Textarea value={report.precondition} onChange={(event) => updateReport("precondition", event.target.value)} />
             </Field>
-            <Field label="Steps to Reproduce">
+            <Field label="Steps to Reproduce" required>
               <Textarea className="min-h-36" value={report.stepsToReproduce} onChange={(event) => updateReport("stepsToReproduce", event.target.value)} />
             </Field>
             <div className="grid gap-4 lg:grid-cols-2">
               <Field label="Expected Result">
                 <Textarea value={report.expectedResult} onChange={(event) => updateReport("expectedResult", event.target.value)} />
               </Field>
-              <Field label="Actual Result">
+              <Field label="Actual Result" required>
                 <Textarea value={report.actualResult} onChange={(event) => updateReport("actualResult", event.target.value)} />
               </Field>
             </div>
@@ -1012,8 +1022,8 @@ Actual: the button stays inactive / no request is triggered.`}
             {postState.data ? <PostSuccess result={postState.data} /> : null}
 
             <div className="flex justify-end">
-              <Button type="button" onClick={postBug} disabled={postDisabled}>
-                {postState.loading ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+              <Button type="button" onClick={postBug} disabled={postDisabled} aria-busy={postState.loading}>
+                {postState.loading ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <Send className="size-4" />}
                 {postState.loading ? "Posting..." : "Post to Azure DevOps"}
               </Button>
             </div>
@@ -1050,6 +1060,8 @@ function AttachmentDropzone({
   return (
     <div className="grid gap-3">
       <div
+        role="group"
+        aria-label="Evidence file drop zone — use the Select files button to choose files"
         className={`rounded-lg border border-dashed p-6 text-center transition ${
           dragging ? "border-primary bg-primary/5" : "border-input bg-muted/15"
         }`}
@@ -1087,6 +1099,7 @@ function AttachmentDropzone({
             type="file"
             multiple
             accept="image/*,video/*,.gif,.log,.txt,.har,.json,text/plain,application/json"
+            aria-label="Upload evidence files"
             className="sr-only"
             onChange={(event) => {
               onAdd(Array.from(event.target.files ?? []));
@@ -1097,7 +1110,8 @@ function AttachmentDropzone({
       </div>
 
       {files.length ? (
-        <div className="grid gap-2">
+        <div className="grid gap-2" aria-live="polite">
+          <p className="sr-only">{files.length} evidence file{files.length === 1 ? "" : "s"} attached</p>
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs font-medium text-muted-foreground">Selected evidence</p>
             <Badge variant="secondary">{files.length} file{files.length === 1 ? "" : "s"}</Badge>
@@ -1139,17 +1153,37 @@ function AttachmentDropzone({
 function Field({
   label,
   description,
+  error,
+  required,
+  id,
   children,
 }: {
   label: string;
   description?: string;
+  error?: string;
+  required?: boolean;
+  id?: string;
   children: React.ReactNode;
 }) {
+  const reactId = useId();
+  const fieldId = id ?? reactId;
+  const control = isValidElement(children)
+    ? cloneElement(children as ReactElement<{ id?: string }>, {
+        id: (children as ReactElement<{ id?: string }>).props.id ?? fieldId,
+      })
+    : children;
   return (
     <div className="grid content-start gap-2">
-      <Label>{label}</Label>
-      {children}
-      {description ? <p className="text-xs leading-5 text-muted-foreground">{description}</p> : null}
+      <Label htmlFor={fieldId}>
+        {label}
+        {required ? <span aria-hidden className="text-destructive"> *</span> : null}
+      </Label>
+      {control}
+      {error ? (
+        <p className="text-xs leading-5 text-destructive">{error}</p>
+      ) : description ? (
+        <p className="text-xs leading-5 text-muted-foreground">{description}</p>
+      ) : null}
     </div>
   );
 }
@@ -1167,25 +1201,31 @@ function SuggestionSelect({
   options: Array<{ value: string; label: string; hint: string }>;
   onChange: (value: string) => void;
 }) {
+  const id = useId();
   return (
-    <div className="rounded-md border border-input bg-background p-3">
+    <div className="rounded-lg border border-input bg-background p-3">
       <div className="grid gap-3 md:grid-cols-[120px_minmax(180px,240px)_minmax(0,1fr)] md:items-start">
         <div className="flex min-h-10 flex-wrap items-center gap-2">
-          <Label>{label}</Label>
+          <Label htmlFor={id}>{label}</Label>
           <Badge variant="secondary" className="shrink-0">LLM</Badge>
         </div>
-        <select
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-        >
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label} - {option.hint}
-            </option>
-          ))}
-        </select>
-        <p className="text-xs leading-5 text-muted-foreground">
+        <div className="relative">
+          <select
+            id={id}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            aria-describedby={`${id}-rationale`}
+            className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui"
+          >
+            {options.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label} - {option.hint}
+              </option>
+            ))}
+          </select>
+          <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        </div>
+        <p id={`${id}-rationale`} className="text-xs leading-5 text-muted-foreground">
           {rationale || "No rationale provided."}
         </p>
       </div>
@@ -1292,7 +1332,7 @@ function TestCasePicker({
         <PopoverTrigger asChild>
           <Button type="button" variant="outline" disabled={disabled || loading} className="h-10 min-w-0 flex-1 justify-between px-3">
             <span className="inline-flex min-w-0 items-center gap-2">
-              {loading ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+              {loading ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <CheckCircle2 className="size-4" />}
               <span className="truncate">{label}</span>
             </span>
             <ChevronDown className={`size-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
@@ -1384,8 +1424,8 @@ function SuggestedReproductionTestCasePanel({
                 ? `Bug ${bugId} is ready for the test case creation and linking action.`
                 : "Post the bug first, then create and link this generated reproduction test case."}
             </div>
-            <Button type="button" onClick={onPublish} disabled={publishDisabled}>
-              {publishState.loading ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+            <Button type="button" onClick={onPublish} disabled={publishDisabled} aria-busy={publishState.loading}>
+              {publishState.loading ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <Send className="size-4" />}
               {publishState.loading ? "Linking..." : "Create / link test case"}
             </Button>
           </div>
@@ -1557,24 +1597,30 @@ function CustomFieldsSummary({ customFields }: { customFields: BugCustomField[] 
 function CustomFieldValueInput({ row, field, onChange }: { row: CustomFieldRow; field?: BugFieldMetadata; onChange: (value: string) => void }) {
   if (field?.allowedValues?.length) {
     return (
-      <select value={row.value} onChange={(event) => onChange(event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
-        <option value="">Select value</option>
-        {field.allowedValues.map((value) => (
-          <option key={String(value)} value={String(value)}>
-            {String(value)}
-          </option>
-        ))}
-      </select>
+      <div className="relative">
+        <select value={row.value} onChange={(event) => onChange(event.target.value)} aria-label="Field value" className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui">
+          <option value="">Select value</option>
+          {field.allowedValues.map((value) => (
+            <option key={String(value)} value={String(value)}>
+              {String(value)}
+            </option>
+          ))}
+        </select>
+        <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+      </div>
     );
   }
 
   if (field?.type === "boolean") {
     return (
-      <select value={row.value} onChange={(event) => onChange(event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
-        <option value="">Select value</option>
-        <option value="true">True</option>
-        <option value="false">False</option>
-      </select>
+      <div className="relative">
+        <select value={row.value} onChange={(event) => onChange(event.target.value)} aria-label="Field value" className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui">
+          <option value="">Select value</option>
+          <option value="true">True</option>
+          <option value="false">False</option>
+        </select>
+        <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+      </div>
     );
   }
 
@@ -1595,13 +1641,13 @@ function CustomFieldValueInput({ row, field, onChange }: { row: CustomFieldRow; 
 function PostSuccess({ result }: { result: PostBugResult }) {
   const failedAttachments = result.attachmentResults.filter((attachment) => !attachment.success);
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" role="status" aria-live="polite">
       <div className="rounded-md border border-success/30 bg-success/10 p-4 text-sm text-foreground">
         <div className="flex items-center gap-2 font-semibold">
           <CheckCircle2 className="size-4" />
           Bug {result.bugId} created
         </div>
-        <a href={result.webUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block font-medium text-success underline">
+        <a href={result.webUrl} target="_blank" rel="noreferrer" className="focus-ring mt-2 inline-block rounded-sm font-medium text-success underline">
           View in Azure DevOps
         </a>
       </div>
@@ -1624,18 +1670,18 @@ function PostSuccess({ result }: { result: PostBugResult }) {
 
 function ErrorBlock({ message }: { message: string }) {
   return (
-    <Callout tone="error" title="Action failed">
+    <Callout tone="error" title="Action failed" role="alert">
       <span className="break-words">{message}</span>
     </Callout>
   );
 }
 
 function WarningBlock({ message }: { message: string }) {
-  return <Callout tone="warning">{message}</Callout>;
+  return <Callout tone="warning" role="status">{message}</Callout>;
 }
 
 function InfoBlock({ message }: { message: string }) {
-  return <div className="rounded-md border border-input bg-muted/20 p-3 text-sm text-muted-foreground">{message}</div>;
+  return <Callout tone="info" role="status">{message}</Callout>;
 }
 
 function buildSuggestedTestCaseFromBugReport(report: BugReport, sourceBugDescription: string): GeneratedTestCase {
