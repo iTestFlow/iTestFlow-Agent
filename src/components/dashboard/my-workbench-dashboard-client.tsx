@@ -14,10 +14,10 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AutoRefreshStatus } from "@/components/dashboard/auto-refresh-status";
+import { DashboardEmptyPanel, DashboardLoadingState } from "@/components/dashboard/dashboard-states";
 import { DashboardChartCard, DistributionBarChart, DonutChart } from "@/components/dashboard/dashboard-visualizations";
 import { EmptyState } from "@/components/qa/empty-state";
 import { ErrorState } from "@/components/qa/error-state";
-import { LoadingState } from "@/components/qa/loading-state";
 import { MetricCard } from "@/components/qa/metric-card";
 import { StatusChip } from "@/components/qa/status-chip";
 import { Badge } from "@/components/ui/badge";
@@ -169,7 +169,7 @@ export function MyWorkbenchDashboardClient({ active }: { active: boolean }) {
     markInteracting();
   }
 
-  if (scope === undefined) return <LoadingState rows={8} />;
+  if (scope === undefined) return <DashboardLoadingState label="Loading your workbench" />;
   if (!scope) {
     return <EmptyState title="Select an Azure DevOps project" description="Use the project selector in the top bar to load your assigned Azure DevOps work." />;
   }
@@ -178,12 +178,7 @@ export function MyWorkbenchDashboardClient({ active }: { active: boolean }) {
   const metadata = data?.filterMetadata ?? emptyMetadata;
 
   return (
-    <div className="space-y-4">
-      <section className="space-y-1">
-        <h2 className="text-lg font-semibold text-foreground">My Workbench</h2>
-        <p className="text-sm text-muted-foreground">Track your assigned Azure DevOps work, sprint focus, remaining hours, states, and priorities.</p>
-      </section>
-
+    <div className="dashboard-stack" aria-busy={state.loading}>
       <WorkbenchFilters
         value={filters}
         metadata={metadata}
@@ -206,7 +201,7 @@ export function MyWorkbenchDashboardClient({ active }: { active: boolean }) {
       {state.error ? <ErrorState title="My Workbench refresh failed" message={state.error} onRetry={() => triggerRefresh(false)} /> : null}
       {data?.metadata.warnings.length ? <WorkbenchWarnings warnings={data.metadata.warnings} /> : null}
 
-      {!data && state.loading ? <LoadingState rows={8} /> : null}
+      {!data && state.loading ? <DashboardLoadingState label="Loading your assigned work" /> : null}
       {data ? (
         <>
           <p className="text-xs leading-5 text-muted-foreground">Showing work assigned to you for the selected project and sprint.</p>
@@ -347,7 +342,7 @@ function WorkbenchFilters({
 
         <Popover open={moreFiltersOpen} onOpenChange={setMoreFiltersOpen}>
           <PopoverTrigger asChild>
-            <Button type="button" variant="outline" className="mt-6 h-10 justify-start gap-2 whitespace-nowrap px-3" disabled={disabled}>
+            <Button type="button" variant="outline" className="h-10 justify-start gap-2 whitespace-nowrap px-3 md:mt-6" disabled={disabled}>
               <Filter className="size-4" />
               More filters{activeAdvanced ? " (active)" : ""}
             </Button>
@@ -459,7 +454,7 @@ function WorkbenchScopeBar({
   if (filters.priority !== "all") chips.push(filters.priority === "none" ? "No priority" : `Priority ${filters.priority}`);
 
   return (
-    <section className="rounded-xl border border-border bg-card px-4 py-3 text-card-foreground shadow-sm">
+    <section className="dashboard-surface px-4 py-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="text-xs font-medium uppercase tracking-normal text-muted-foreground">Personal Scope</div>
@@ -484,9 +479,9 @@ function WorkbenchScopeBar({
 
 function WorkbenchWarnings({ warnings }: { warnings: string[] }) {
   return (
-    <div className="flex min-h-9 items-center gap-2 rounded-lg border border-warning/35 bg-warning/10 px-3 py-1.5 text-sm">
+    <div className="flex min-h-9 flex-col items-start gap-2 rounded-lg border border-warning/35 bg-warning/10 px-3 py-2 text-sm sm:flex-row sm:items-center">
       <AlertTriangle className="size-4 shrink-0 text-warning" aria-hidden="true" />
-      <p className="min-w-0 flex-1 truncate text-foreground" title={warnings[0]}>
+      <p className="min-w-0 flex-1 leading-5 text-foreground">
         <span className="font-medium">Data limitation:</span> {warnings[0]}
       </p>
       {warnings.length > 1 ? <span className="shrink-0 text-xs font-semibold text-muted-foreground">+{warnings.length - 1}</span> : null}
@@ -608,13 +603,11 @@ function DashboardTableCard({
       </CardHeader>
       <CardContent className="p-0">
         {hasRows ? (
-          <div className="max-h-[560px] overflow-auto border-t border-border [&_[data-slot=table-container]]:overflow-visible [&_thead]:sticky [&_thead]:top-0 [&_thead]:z-10 [&_thead]:bg-muted/95 [&_thead]:shadow-[0_1px_0_hsl(var(--border))]">
+          <div className="max-h-[560px] overflow-auto overscroll-contain border-t border-border [&_[data-slot=table-container]]:overflow-visible [&_thead]:sticky [&_thead]:top-0 [&_thead]:z-10 [&_thead]:bg-muted/95 [&_thead]:shadow-[0_1px_0_hsl(var(--border))]">
             {children}
           </div>
         ) : (
-          <div className="flex flex-col items-center border-t border-border px-6 py-9 text-center text-sm text-muted-foreground">
-            {emptyMessage}
-          </div>
+          <DashboardEmptyPanel title="Nothing needs attention" message={emptyMessage} compact className="rounded-none border-x-0 border-b-0" />
         )}
       </CardContent>
     </Card>

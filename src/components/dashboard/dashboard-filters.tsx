@@ -127,7 +127,7 @@ export function DashboardFilters({
 
         <Popover open={moreFiltersOpen} onOpenChange={setMoreFiltersOpen}>
           <PopoverTrigger asChild>
-            <Button type="button" variant="outline" className="mt-6 h-10 justify-start gap-2 px-3" disabled={disabled}>
+            <Button type="button" variant="outline" className="h-10 justify-start gap-2 px-3 md:mt-6" disabled={disabled}>
               <Filter className="size-4" />More filters{activeAdvanced ? " (active)" : ""}
             </Button>
           </PopoverTrigger>
@@ -175,10 +175,15 @@ export function DashboardFilters({
       </div>
 
       {value.datePreset === "custom" ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <Input type="date" aria-label="Dashboard start date" value={value.from} max={value.to || undefined} onChange={(event) => patch({ from: event.target.value })} className="w-[170px]" />
-          <span className="text-xs text-muted-foreground">to</span>
-          <Input type="date" aria-label="Dashboard end date" value={value.to} min={value.from || undefined} onChange={(event) => patch({ to: event.target.value })} className="w-[170px]" />
+        <div className="grid gap-3 sm:grid-cols-2 sm:items-end">
+          <div className="space-y-1.5">
+            <Label htmlFor="dashboard-start-date">Start date</Label>
+            <Input id="dashboard-start-date" type="date" value={value.from} max={value.to || undefined} onChange={(event) => patch({ from: event.target.value })} className="w-full sm:w-[180px]" />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="dashboard-end-date">End date</Label>
+            <Input id="dashboard-end-date" type="date" value={value.to} min={value.from || undefined} onChange={(event) => patch({ to: event.target.value })} className="w-full sm:w-[180px]" />
+          </div>
         </div>
       ) : null}
     </section>

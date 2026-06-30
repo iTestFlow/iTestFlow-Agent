@@ -78,6 +78,9 @@ td {
   }
 
   :root {
+    --motion-fast: 150ms;
+    --motion-ui: 200ms;
+    --dashboard-section-gap: 1rem;
     --background: 220 25% 97%;
     --foreground: 221 39% 14%;
     --card: 0 0% 100%;
@@ -121,6 +124,9 @@ td {
   }
 
   .dark {
+    --motion-fast: 150ms;
+    --motion-ui: 200ms;
+    --dashboard-section-gap: 1rem;
     --background: 224 39% 7%;
     --foreground: 210 40% 96%;
     --card: 224 31% 11%;
@@ -190,5 +196,36 @@ td {
 
   .analytics-card {
     @apply rounded-2xl border border-border bg-card text-card-foreground shadow-card transition-colors dark:shadow-card-dark;
+  }
+
+  .dashboard-surface {
+    @apply rounded-xl border border-border bg-card text-card-foreground shadow-sm;
+  }
+
+  .dashboard-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--dashboard-section-gap);
+  }
+
+  .dashboard-scroll-region {
+    @apply max-w-full overflow-x-auto overscroll-x-contain;
+    scrollbar-gutter: stable;
+  }
+
+  .dashboard-empty-state {
+    @apply flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-muted/20 px-6 text-center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-stack,
+  .dashboard-stack *,
+  .dashboard-surface,
+  .dashboard-surface * {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
