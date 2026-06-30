@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, FileSearch, ListChecks, Loader2, Play, Send, X } from "lucide-react";
+import { ArrowLeft, CheckCircle2, FileSearch, ListChecks, Loader2, Play, Send, TriangleAlert, X } from "lucide-react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -155,17 +155,14 @@ export function RequirementsAnalysisClient() {
   }, [projectUsers, selectedMentionUserIds]);
   const checklistSelectionValid = enabledChecklistItemIds.length > 0;
   const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
-  const pushActionDescription = pushState.error ? (
-    <span className="text-destructive">{pushState.error}</span>
-  ) : pushState.data?.success ? (
-    <span className="text-success">Comment pushed to Azure DevOps.</span>
-  ) : invalidSelectedFindingCount > 0 ? (
-    <span className="text-warning-foreground dark:text-warning">
+  const pushActionDescription = invalidSelectedFindingCount > 0 ? (
+    <span id="push-comment-reason" className="inline-flex items-center gap-1 font-medium text-warning-foreground dark:text-warning">
+      <TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />
       Resolve validation issues in the {invalidSelectedFindingCount} selected finding
       {invalidSelectedFindingCount === 1 ? "" : "s"} before pushing.
     </span>
   ) : (
-    "Only selected and valid findings will be included in the Azure DevOps comment."
+    <span id="push-comment-reason">Only selected and valid findings will be included in the Azure DevOps comment.</span>
   );
 
   useEffect(() => {
@@ -413,7 +410,7 @@ export function RequirementsAnalysisClient() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {projectWarning(scope)}
       <WorkflowStepper
         steps={[
@@ -438,10 +435,14 @@ export function RequirementsAnalysisClient() {
       />
 
       {activeStep === "analyze" ? (
-        <div className="space-y-6">
+        <div className="space-y-4">
           <SectionCard
             title="Analyze Azure DevOps Requirement"
-            description="Enter a real Azure DevOps work item ID. Project context is selected automatically for this run."
+            description={
+              mode === "auto"
+                ? "Enter a real Azure DevOps work item ID to analyze it directly with the configured LLM. Project context is selected automatically for this run."
+                : "Enter a real Azure DevOps work item ID to build a structured prompt for an external LLM, then validate the pasted response. Project context is selected automatically."
+            }
             action={
               <GenerationModeToggle
                 mode={mode}
@@ -469,13 +470,13 @@ export function RequirementsAnalysisClient() {
                   />
                 </div>
                 {mode === "auto" ? (
-                  <Button onClick={runAnalysis} disabled={!scope || !targetWorkItemId || gen.isRunning || !checklistSelectionValid || !extraInstructionsValid}>
-                    <Play className="h-4 w-4" />
+                  <Button className="w-full min-w-[9rem] lg:w-auto" onClick={runAnalysis} disabled={!scope || !targetWorkItemId || gen.isRunning || !checklistSelectionValid || !extraInstructionsValid}>
+                    {gen.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                     {gen.isRunning ? "Analyzing..." : "Analyze"}
                   </Button>
                 ) : (
-                  <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !checklistSelectionValid || !extraInstructionsValid}>
-                    <Play className="h-4 w-4" />
+                  <Button className="w-full min-w-[9rem] lg:w-auto" onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !checklistSelectionValid || !extraInstructionsValid}>
+                    {prep.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                     {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
                   </Button>
                 )}
@@ -511,7 +512,7 @@ export function RequirementsAnalysisClient() {
 
             {mode === "manual" && (manualDraft.data || manualSubmitError) ? (
               <div className="space-y-4">
-                {manualSubmitError ? <Callout tone="error">{manualSubmitError}</Callout> : null}
+                {manualSubmitError ? <div role="alert"><Callout tone="error">{manualSubmitError}</Callout></div> : null}
                 {manualDraft.data ? (
                   <ManualLLMPanel
                     prompt={manualDraft.data.prompt}
@@ -553,11 +554,11 @@ export function RequirementsAnalysisClient() {
           ) : null}
         </div>
       ) : analysis.data ? (
-        <div ref={findingsCardRef} className="space-y-3 pb-24">
-          <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="text-sm font-semibold text-foreground">
-                Reviewing analysis findings for #{targetWorkItemId}
+        <div ref={findingsCardRef} className="space-y-4 pb-24">
+          <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div role="heading" aria-level={2} tabIndex={-1} className="line-clamp-1 text-base font-semibold text-foreground focus-ring">
+                Reviewing findings for <span className="font-mono font-semibold tabular-nums text-primary">#{targetWorkItemId}</span>
                 {workItemLookup.data?.title ? (
                   <span className="font-normal text-muted-foreground"> — {workItemLookup.data.title}</span>
                 ) : null}
@@ -585,12 +586,19 @@ export function RequirementsAnalysisClient() {
             onChange={changeFindings}
             onSelectedIdsChange={changeSelectedFindingIds}
           />
+          {pushState.error ? (
+            <div role="alert">
+              <Callout tone="error">{pushState.error}</Callout>
+            </div>
+          ) : pushState.data?.success ? (
+            <Callout tone="success" title="Comment pushed">Your comment was posted to Azure DevOps.</Callout>
+          ) : null}
           <StickyActionBar
             title={
               <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span>{selectedFindingList.length} selected finding{selectedFindingList.length === 1 ? "" : "s"}</span>
-                <span className="text-muted-foreground">|</span>
-                <span>{selectedMentionUsers.length} mention{selectedMentionUsers.length === 1 ? "" : "s"}</span>
+                <span className="tabular-nums">{selectedFindingList.length} selected finding{selectedFindingList.length === 1 ? "" : "s"}</span>
+                <span aria-hidden="true" className="text-muted-foreground">|</span>
+                <span className="tabular-nums">{selectedMentionUsers.length} mention{selectedMentionUsers.length === 1 ? "" : "s"}</span>
               </span>
             }
             description={pushActionDescription}
@@ -610,6 +618,7 @@ export function RequirementsAnalysisClient() {
                 <ConfirmationDialog
                   trigger={
                     <Button
+                      aria-describedby="push-comment-reason"
                       disabled={
                         !scope ||
                         !targetWorkItemId ||
@@ -620,7 +629,7 @@ export function RequirementsAnalysisClient() {
                       }
                       className="w-full sm:w-auto"
                     >
-                      {pushState.loading ? <Loader2 className="animate-spin" /> : <Send />}
+                      {pushState.data?.success ? <CheckCircle2 /> : pushState.loading ? <Loader2 className="animate-spin" /> : <Send />}
                       {pushState.data?.success ? "Comment Pushed" : pushState.loading ? "Pushing..." : "Push Comment"}
                     </Button>
                   }
@@ -663,11 +672,11 @@ function RequirementChecklistSelector({
   const noneSelected = selectedIds.length === 0;
 
   return (
-    <div className="rounded-md border border-border bg-muted p-4">
+    <div role="group" aria-labelledby="req-checklist-label" aria-describedby="req-checklist-count" className="rounded-md border border-border bg-muted p-4">
       <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="text-sm font-semibold text-foreground">Requirements Analysis Checklist</div>
-          <div className="text-xs text-muted-foreground">
+          <div id="req-checklist-label" className="text-sm font-semibold text-foreground">Requirements Analysis Checklist</div>
+          <div id="req-checklist-count" className="text-xs text-muted-foreground">
             {selectedIds.length} of {allRequirementAnalysisChecklistItemIds.length} selected
           </div>
         </div>
@@ -681,15 +690,25 @@ function RequirementChecklistSelector({
         </div>
       </div>
 
-      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {requirementAnalysisChecklistOptions.map((checklistItem) => {
           const checked = selectedIdSet.has(checklistItem.id);
           return (
             <label
               key={checklistItem.id}
-              className="flex min-h-12 cursor-pointer items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground transition hover:border-primary/30 hover:bg-accent"
+              className={cn(
+                "flex min-h-12 cursor-pointer items-center gap-2.5 rounded-md border bg-card px-3 py-2 text-sm text-foreground transition-colors duration-ui",
+                "hover:border-primary/30 hover:bg-accent",
+                "focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-ring/40",
+                checked ? "border-primary/40 bg-accent/60" : "border-border",
+              )}
             >
-              <Checkbox checked={checked} onCheckedChange={(value) => onToggle(checklistItem.id, value === true)} aria-label={checklistItem.title} />
+              <Checkbox
+                checked={checked}
+                onCheckedChange={(value) => onToggle(checklistItem.id, value === true)}
+                aria-label={checklistItem.title}
+                className="shrink-0"
+              />
               <span className="leading-5">{checklistItem.title}</span>
             </label>
           );
@@ -697,8 +716,10 @@ function RequirementChecklistSelector({
       </div>
 
       {noneSelected ? (
-        <div className="mt-3 rounded-md border border-warning/40 bg-warning/15 px-3 py-2 text-sm text-foreground">
-          Select at least one checklist item to run analysis or prepare the external LLM prompt.
+        <div role="status" aria-live="polite" className="mt-3">
+          <Callout tone="warning">
+            Select at least one checklist item to run analysis or prepare the external LLM prompt.
+          </Callout>
         </div>
       ) : null}
     </div>
@@ -747,10 +768,10 @@ function RequirementMentionPicker({
       )}>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold text-foreground">Mention members</div>
-          <div className="mt-2 flex min-h-8 flex-wrap items-center gap-2">
+          <div className="dashboard-scroll-region mt-2 flex max-h-16 min-h-8 flex-wrap items-center gap-2 overflow-y-auto">
             {selectedUsers.length ? selectedUsers.map((user) => (
               <UiBadge key={user.id} variant="secondary" className="h-7 max-w-full gap-1 rounded-md pl-2 pr-1">
-                <span className="max-w-[220px] truncate">{projectUserLabel(user)}</span>
+                <span className="max-w-[160px] truncate">{projectUserLabel(user)}</span>
                 <button
                   type="button"
                   className="rounded-[4px] p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
