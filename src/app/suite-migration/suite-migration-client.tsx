@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowRight, ClipboardList, GitBranch, Loader2, MoveRight, Send, ShieldAlert } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowRight, ChevronDown, ClipboardList, GitBranch, Loader2, MoveRight, Send, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
+import { cn } from "@/lib/utils";
+import { Callout } from "@/components/qa/callout";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { RefreshButton } from "@/components/qa/refresh-button";
@@ -394,6 +396,17 @@ export function SuiteMigrationClient() {
     !previewState.loading
   );
   const canExecute = Boolean(preview && !preview.errors.length && !executeState.loading);
+  const previewBlockReason = !scope
+    ? "Select an Azure DevOps project"
+    : !sourcePlanId
+      ? "Select a source test plan"
+      : !selectedSuiteIds.length
+        ? "Select at least one source suite"
+        : !targetPlanId
+          ? "Select a target test plan"
+          : !targetParentSuiteId
+            ? "Choose a target parent suite"
+            : null;
 
   const refreshAfterMigration = useCallback(async (
     migrationReport: MigrationReport,
@@ -497,7 +510,7 @@ export function SuiteMigrationClient() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="content-stack">
       {!scope ? (
         <Alert className="border-warning/40 bg-warning/15">
           <AlertTriangle className="size-4" />
@@ -515,11 +528,9 @@ export function SuiteMigrationClient() {
       </Alert>
 
       {operationMode === "move" ? (
-        <Alert className="border-destructive/30 bg-destructive/10">
-          <AlertTriangle className="size-4 text-destructive" />
-          <AlertTitle>Move mode is destructive after validation</AlertTitle>
-          <AlertDescription>Source root suites are removed only after target migration completes without critical failures.</AlertDescription>
-        </Alert>
+        <Callout tone="error" role="alert" icon={ShieldAlert} title="Move mode is destructive" className="border-destructive/40 shadow-sm">
+          Source root suites are permanently removed after target migration completes without critical failures. This cannot be undone.
+        </Callout>
       ) : null}
 
       {plansState.error ? <ErrorBanner message={plansState.error} /> : null}
@@ -530,9 +541,9 @@ export function SuiteMigrationClient() {
 
       <Card className="qa-card">
         <CardHeader>
-          <CardTitle className="text-base">Migration Setup</CardTitle>
+          <CardTitle className="text-base" role="heading" aria-level={2}>Migration Setup</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_320px]">
+        <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_320px]">
           <section className="space-y-3">
             <SectionLabel icon={GitBranch} label="Source" />
             <Field label="Source test plan">
@@ -583,8 +594,9 @@ export function SuiteMigrationClient() {
                     {flattenTree(filteredSourceTree).length} of {sourceFlatSuites.length} suites visible
                   </div>
                 ) : null}
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">Selecting a suite includes all of its child suites; their checkboxes are then locked.</p>
               </div>
-              <div className="max-h-[420px] overflow-auto bg-card p-3">
+              <div className="max-h-[420px] overflow-auto bg-card p-3" role="status" aria-live="polite" aria-label="Source suites">
                 {sourceTreeState.loading ? (
                   <LoadingInline label="Loading source suites..." />
                 ) : filteredSourceTree.length ? (
@@ -604,7 +616,7 @@ export function SuiteMigrationClient() {
               </div>
             </div>
             {sourceTreeNotice ? (
-              <div className="text-xs leading-5 text-warning-foreground dark:text-warning">{sourceTreeNotice}</div>
+              <Callout tone="warning" role="status">{sourceTreeNotice}</Callout>
             ) : null}
           </section>
 
@@ -673,7 +685,7 @@ export function SuiteMigrationClient() {
               Only static suites can be selected as a parent. Requirement-based and query-based suites are hidden.
             </div>
             {targetTreeNotice ? (
-              <div className="text-xs leading-5 text-warning-foreground dark:text-warning">{targetTreeNotice}</div>
+              <Callout tone="warning" role="status">{targetTreeNotice}</Callout>
             ) : null}
             <div className="rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
               Suite migration runs within the selected Azure DevOps project only.
@@ -682,35 +694,53 @@ export function SuiteMigrationClient() {
 
           <section className="space-y-3">
             <SectionLabel icon={ClipboardList} label="Options" />
-            <Field label="Operation">
-              <select
-                className="focus-ring h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={operationMode}
-                onChange={(event) => {
-                  setHasUnfinishedWork(true);
-                  setOperationMode(event.target.value as SuiteMigrationOperationMode);
-                  setPreview(null);
-                  setReport(null);
-                }}
-              >
-                <option value="copy">Copy selected suite(s)</option>
-                <option value="move">Move selected suite(s)</option>
-              </select>
+            <Field
+              label={
+                <span className="flex flex-wrap items-center gap-2">
+                  Operation
+                  {operationMode === "move" ? (
+                    <span className="inline-flex items-center gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-xs font-semibold text-destructive">
+                      <AlertTriangle className="size-3" aria-hidden="true" />
+                      Destructive
+                    </span>
+                  ) : null}
+                </span>
+              }
+            >
+              <div className="relative">
+                <select
+                  className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui"
+                  value={operationMode}
+                  onChange={(event) => {
+                    setHasUnfinishedWork(true);
+                    setOperationMode(event.target.value as SuiteMigrationOperationMode);
+                    setPreview(null);
+                    setReport(null);
+                  }}
+                >
+                  <option value="copy">Copy selected suite(s)</option>
+                  <option value="move">Move selected suite(s)</option>
+                </select>
+                <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              </div>
             </Field>
             <Field label="Outcome migration">
-              <select
-                className="focus-ring h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={outcomeMode}
-                onChange={(event) => {
-                  setHasUnfinishedWork(true);
-                  setOutcomeMode(event.target.value as OutcomeMigrationMode);
-                  setPreview(null);
-                  setReport(null);
-                }}
-              >
-                <option value="none">Do not migrate outcomes</option>
-                <option value="latestOutcome">Migrate latest outcome</option>
-              </select>
+              <div className="relative">
+                <select
+                  className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui"
+                  value={outcomeMode}
+                  onChange={(event) => {
+                    setHasUnfinishedWork(true);
+                    setOutcomeMode(event.target.value as OutcomeMigrationMode);
+                    setPreview(null);
+                    setReport(null);
+                  }}
+                >
+                  <option value="none">Do not migrate outcomes</option>
+                  <option value="latestOutcome">Migrate latest outcome</option>
+                </select>
+                <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              </div>
             </Field>
             <SettingSwitch
               checked={overwriteTargetOutcomes}
@@ -733,11 +763,18 @@ export function SuiteMigrationClient() {
             <div className="font-semibold text-foreground">Selected suites</div>
             <div className="mt-1 truncate">{selectedSuiteNames.length ? selectedSuiteNames.join(", ") : "No source suites selected"}</div>
           </div>
-          <div className="flex shrink-0 flex-col gap-2 sm:flex-row md:justify-self-end">
-            <Button className="whitespace-nowrap" onClick={previewMigration} disabled={!canPreview}>
-              {previewState.loading ? <Loader2 className="size-4 animate-spin" /> : <ArrowRight className="size-4" />}
+          <div className="flex shrink-0 flex-col gap-1 md:justify-self-end md:text-right">
+            <Button
+              className="whitespace-nowrap"
+              onClick={previewMigration}
+              disabled={!canPreview}
+              aria-busy={previewState.loading}
+              title={previewBlockReason ?? undefined}
+            >
+              {previewState.loading ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <ArrowRight className="size-4" />}
               Preview Migration
             </Button>
+            {previewBlockReason ? <p className="text-xs leading-5 text-muted-foreground">{previewBlockReason}</p> : null}
           </div>
         </CardContent>
       </Card>
@@ -763,7 +800,7 @@ export function SuiteMigrationClient() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="space-y-1.5">
       <Label className="text-sm font-semibold">{label}</Label>
@@ -774,7 +811,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function SectionLabel({ icon: Icon, label }: { icon: typeof GitBranch; label: string }) {
   return (
-    <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+    <div role="heading" aria-level={3} className="flex items-center gap-2 text-sm font-semibold text-foreground">
       <Icon className="size-4 text-primary" />
       {label}
     </div>
@@ -804,7 +841,7 @@ function SuiteCheckboxTree({
 
         return (
           <div key={node.id} className="space-y-1">
-            <div className="flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-muted">
+            <div className="flex items-start gap-2 rounded-md px-2 py-1.5 transition-colors duration-ui hover:bg-muted has-[:focus-visible]:bg-muted">
               <Checkbox
                 checked={checked}
                 disabled={disabledByAncestor}
@@ -819,9 +856,9 @@ function SuiteCheckboxTree({
                   onChange([...next]);
                 }}
                 className="mt-0.5"
-                aria-label={`Select suite ${node.name}`}
+                aria-label={disabledByAncestor ? `Suite ${node.name} is included automatically because a parent suite is selected` : `Select suite ${node.name}`}
               />
-              <div className="min-w-0">
+              <div className={cn("min-w-0", disabledByAncestor && "opacity-60")}>
                 <div className="truncate text-sm font-medium">{node.name}</div>
                 <div className="mt-0.5 flex flex-wrap gap-1 text-xs text-muted-foreground">
                   <span>ID {node.id}</span>
@@ -831,7 +868,7 @@ function SuiteCheckboxTree({
               </div>
             </div>
             {node.children.length ? (
-              <div className="ml-5 border-l pl-3">
+              <div role="group" aria-label={`Child suites of ${node.name}`} className="ml-5 border-l border-border pl-3">
                 <SuiteCheckboxTree nodes={node.children} selectedIds={selectedIds} onChange={onChange} selectedAncestorId={nextSelectedAncestor} />
               </div>
             ) : null}
@@ -859,13 +896,13 @@ function PreviewPanel({
     <Card className="qa-card">
       <CardHeader>
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <CardTitle className="text-base">Migration Preview</CardTitle>
+          <CardTitle className="text-base" role="heading" aria-level={2}>Migration Preview</CardTitle>
           <div className="flex flex-wrap gap-2">
             <Badge variant={preview.errors.length ? "destructive" : "secondary"}>{formatStatus(preview.status)}</Badge>
             <ConfirmationDialog
               trigger={
-                <Button disabled={!canExecute}>
-                  {executing ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                <Button disabled={!canExecute} aria-busy={executing} title={preview.errors.length ? "Resolve preview errors before executing" : undefined}>
+                  {executing ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <Send className="size-4" />}
                   {executing ? "Migrating..." : operationMode === "move" ? "Confirm Move" : "Confirm Migration"}
                 </Button>
               }
@@ -886,7 +923,7 @@ function PreviewPanel({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 grid-cols-2 xl:grid-cols-4">
           <Metric label="Selected roots" value={preview.selectedRootSuiteCount} />
           <Metric label="Child suites included" value={preview.childSuitesIncludedCount} />
           <Metric label="Total suites" value={preview.totalSuiteCount} />
@@ -898,7 +935,7 @@ function PreviewPanel({
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="rounded-md border border-border">
+          <div className="overflow-hidden rounded-md border border-border">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
               <div className="text-sm font-semibold">Preview rows</div>
             </div>
@@ -940,17 +977,17 @@ function PreviewTable({ rows }: { rows: MigrationPreviewRow[] }) {
         <TableRow>
           <TableHead>Source Root Suite</TableHead>
           <TableHead className="min-w-[240px]">Source Suite Path</TableHead>
-          <TableHead>Source Suite ID</TableHead>
-          <TableHead>Source Test Case ID</TableHead>
+          <TableHead className="text-right">Source Suite ID</TableHead>
+          <TableHead className="text-right">Source Test Case ID</TableHead>
           <TableHead className="min-w-[240px]">Source Test Case Title</TableHead>
           <TableHead>Source Configuration</TableHead>
           <TableHead>Source Latest Outcome</TableHead>
-          <TableHead>Source Last Run Date</TableHead>
+          <TableHead className="text-right">Source Last Run Date</TableHead>
           <TableHead className="w-10 border-x border-border bg-muted/30 text-center">
             <span className="sr-only">Maps to</span>
           </TableHead>
           <TableHead className="min-w-[240px]">Target Suite Path</TableHead>
-          <TableHead>Target Test Case ID</TableHead>
+          <TableHead className="text-right">Target Test Case ID</TableHead>
           <TableHead>Target Configuration</TableHead>
           <TableHead>Planned Action</TableHead>
           <TableHead>Warning/Error</TableHead>
@@ -960,22 +997,22 @@ function PreviewTable({ rows }: { rows: MigrationPreviewRow[] }) {
         {rows.map((row, index) => (
           <TableRow key={`${row.sourceSuiteId}-${row.sourceTestCaseId}-${row.sourceConfiguration}-${index}`}>
             <TableCell>{row.sourceRootSuite}</TableCell>
-            <TableCell className="whitespace-normal">{row.sourceSuitePath}</TableCell>
-            <TableCell className="font-mono text-xs">{row.sourceSuiteId}</TableCell>
-            <TableCell className="font-mono text-xs">{row.sourceTestCaseId ?? "-"}</TableCell>
-            <TableCell className="whitespace-normal">{row.sourceTestCaseTitle ?? "-"}</TableCell>
+            <TableCell className="max-w-[280px] truncate" title={row.sourceSuitePath}>{row.sourceSuitePath}</TableCell>
+            <TableCell className="text-right font-mono text-xs tabular-nums">{row.sourceSuiteId}</TableCell>
+            <TableCell className="text-right font-mono text-xs tabular-nums">{row.sourceTestCaseId ?? "-"}</TableCell>
+            <TableCell className="max-w-[280px] truncate" title={row.sourceTestCaseTitle ?? undefined}>{row.sourceTestCaseTitle ?? "-"}</TableCell>
             <TableCell>{row.sourceConfiguration ?? "-"}</TableCell>
             <TableCell>{row.sourceLatestOutcome ?? "-"}</TableCell>
-            <TableCell>{formatDate(row.sourceLastRunDate)}</TableCell>
+            <TableCell className="text-right tabular-nums">{formatDate(row.sourceLastRunDate)}</TableCell>
             <TableCell className="w-10 border-x border-border bg-muted/20 text-center text-muted-foreground">
               <ArrowRight className="mx-auto size-4" aria-hidden="true" />
               <span className="sr-only">maps to</span>
             </TableCell>
-            <TableCell className="whitespace-normal">{row.targetSuitePath}</TableCell>
-            <TableCell className="font-mono text-xs">{row.targetTestCaseId ?? "-"}</TableCell>
+            <TableCell className="max-w-[280px] truncate" title={row.targetSuitePath}>{row.targetSuitePath}</TableCell>
+            <TableCell className="text-right font-mono text-xs tabular-nums">{row.targetTestCaseId ?? "-"}</TableCell>
             <TableCell>{row.targetConfiguration ?? "-"}</TableCell>
             <TableCell className="whitespace-normal">{row.plannedAction}</TableCell>
-            <TableCell className="whitespace-normal">{row.warningOrError ?? "-"}</TableCell>
+            <TableCell className="max-w-[280px] whitespace-normal break-words">{row.warningOrError ?? "-"}</TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -988,14 +1025,14 @@ function ReportPanel({ report }: { report: MigrationReport }) {
     <Card className="qa-card">
       <CardHeader>
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <CardTitle className="text-base">Final Migration Report</CardTitle>
+          <CardTitle className="text-base" role="heading" aria-level={2}>Final Migration Report</CardTitle>
           <Badge variant={report.status === "completed" ? "secondary" : report.status === "partiallyCompleted" ? "outline" : "destructive"}>
             {formatStatus(report.status)}
           </Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <div className="grid gap-3 grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
           <Metric label="Suites created" value={report.summary.suitesCreated} />
           <Metric label="Case batches added" value={report.summary.testCasesAdded} />
           <Metric label="Outcomes updated" value={report.summary.outcomesUpdated} />
@@ -1056,7 +1093,10 @@ function IssueList({ title, items, emptyLabel, tone = "warning" }: { title: stri
         {items.length ? (
           <ul className="space-y-2">
             {items.map((item, index) => (
-              <li key={`${item}-${index}`} className={tone === "error" ? "text-destructive" : "text-warning-foreground dark:text-warning"}>{item}</li>
+              <li key={`${item}-${index}`} className={cn("flex items-start gap-2", tone === "error" ? "text-destructive" : "text-warning-foreground dark:text-warning")}>
+                {tone === "error" ? <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" /> : <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />}
+                <span>{item}</span>
+              </li>
             ))}
           </ul>
         ) : (
@@ -1071,14 +1111,14 @@ function ErrorBanner({ message }: { message: string }) {
   return (
     <Alert className="border-destructive/30 bg-destructive/10">
       <AlertTriangle className="size-4 text-destructive" />
-      <AlertTitle>Request failed</AlertTitle>
+      <AlertTitle className="justify-self-start text-left [justify-self:left]">Request failed</AlertTitle>
       <AlertDescription>{message}</AlertDescription>
     </Alert>
   );
 }
 
 function LoadingInline({ label }: { label: string }) {
-  return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{label}</div>;
+  return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 motion-safe:animate-spin" />{label}</div>;
 }
 
 function EmptyInline({ label }: { label: string }) {
