@@ -109,7 +109,8 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
   }, []);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    messagesEndRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "end" });
   }, [messages, loading]);
 
   useEffect(() => {
@@ -186,6 +187,7 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
       ]);
     } finally {
       setLoading(false);
+      requestAnimationFrame(() => textareaRef.current?.focus());
     }
   }
 
@@ -230,11 +232,11 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
   }
 
   return (
-    <div className="grid min-h-[calc(100vh-11rem)] grid-rows-[auto_1fr_auto] overflow-hidden rounded-lg border border-border bg-card text-card-foreground shadow-sm">
+    <div className="grid min-h-[calc(100dvh-11rem)] grid-rows-[auto_1fr_auto] overflow-hidden rounded-lg border border-border bg-card text-card-foreground shadow-sm lg:min-h-[calc(100dvh-9rem)]">
       <div className="flex flex-col gap-3 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Bot className="size-5" />
+            <Bot className="size-5" aria-hidden="true" />
           </div>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold">{scope?.azureProjectName ?? "No project selected"}</div>
@@ -244,13 +246,13 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
           </div>
         </div>
         <Button variant="outline" size="sm" onClick={clearChat}>
-          <Trash2 className="size-4" />
+          <Trash2 className="size-4" aria-hidden="true" />
           Clear
         </Button>
       </div>
 
       <ScrollArea className="min-h-0">
-        <div className="space-y-4 p-4">
+        <div className="space-y-6 p-4" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Assistant conversation">
           {!scope ? (
             <Callout tone="warning">Select an Azure DevOps project before chatting.</Callout>
           ) : null}
@@ -266,11 +268,14 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
           ))}
 
           {loading ? (
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-              <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <RefreshCw className="size-4 animate-spin" />
+            <div className="flex gap-3" role="status" aria-live="polite">
+              <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Bot className="size-4" aria-hidden="true" />
               </div>
-              Searching local context and knowledge...
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm text-muted-foreground shadow-sm">
+                <RefreshCw className="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                Searching local context and knowledge…
+              </div>
             </div>
           ) : null}
 
@@ -278,8 +283,12 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
         </div>
       </ScrollArea>
 
-      <div className="border-t border-border p-3">
-        {error ? <Callout tone="error" className="mb-3">{error}</Callout> : null}
+      <div className="border-t border-border p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+        {error ? (
+          <div role="alert" aria-live="assertive" className="mb-3">
+            <Callout tone="error">{error}</Callout>
+          </div>
+        ) : null}
         <div className="flex items-end gap-2">
           <Textarea
             ref={textareaRef}
@@ -291,8 +300,9 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
             onKeyDown={handleKeyDown}
             rows={1}
             disabled={loading || !scope}
+            aria-label="Ask the Business Owner Assistant about this project"
             placeholder={scope ? "Ask about this project's requirements, rules, workflows, or glossary..." : "Select a project first"}
-            className="max-h-36 min-h-10 resize-none rounded-md text-sm"
+            className="max-h-36 min-h-10 resize-none text-sm"
           />
           <Button
             size="icon-lg"
@@ -300,9 +310,12 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
             disabled={!input.trim() || loading || !scope}
             aria-label="Send message"
           >
-            <Send className="size-4" />
+            <Send className="size-4" aria-hidden="true" />
           </Button>
         </div>
+        {!scope ? (
+          <p className="mt-2 text-xs text-muted-foreground">Select an Azure DevOps project from the top bar to start chatting.</p>
+        ) : null}
       </div>
     </div>
   );
@@ -320,55 +333,61 @@ function ChatBubble({
   onPromote: () => void;
 }) {
   const isUser = message.role === "user";
+  const isWelcome = Boolean(message.welcome);
   const canPromote = canPromoteKnowledge && !isUser && !message.welcome && Boolean(message.citations?.length);
   return (
     <div className={cn("flex gap-3", isUser && "justify-end")}>
       {!isUser ? (
         <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <Bot className="size-4" />
+          <Bot className="size-4" aria-hidden="true" />
         </div>
       ) : null}
-      <div className={cn("max-w-[min(860px,85%)] space-y-2", isUser && "items-end")}>
+      <div className={cn("flex max-w-[min(860px,85%)] flex-col gap-2", isUser ? "items-end" : "items-start")}>
         <div
           className={cn(
             "rounded-lg border px-3 py-2 text-sm leading-6",
-            isUser
-              ? "border-primary bg-primary text-primary-foreground"
-              : "border-border bg-background text-foreground",
+            isWelcome
+              ? "border-dashed border-border bg-muted/30 text-muted-foreground"
+              : isUser
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border bg-card text-card-foreground shadow-sm",
           )}
         >
+          <span className="sr-only">{isUser ? "You said:" : "Assistant said:"}</span>
           {isUser ? (
             <div className="whitespace-pre-wrap break-words">{message.content}</div>
           ) : (
             <MarkdownMessage content={message.content} />
           )}
-          <div className={cn("mt-2 text-xs", isUser ? "text-primary-foreground/75" : "text-muted-foreground")}>
-            {formatTime(message.timestamp)}
-          </div>
         </div>
+        {!isWelcome ? (
+          <span className={cn("px-1 text-[0.6875rem] tabular-nums text-muted-foreground", isUser && "self-end")}>
+            {formatTime(message.timestamp)}
+          </span>
+        ) : null}
 
         {!isUser && message.metadata ? (
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge variant="secondary" className="gap-1">
-              <Database className="size-3" />
+              <Database className="size-3" aria-hidden="true" />
               {message.metadata.retrievedContextCount} context
             </Badge>
             <Badge variant="secondary">{message.metadata.retrievedKnowledgeCount} knowledge</Badge>
-            <Badge variant="outline">{message.metadata.provider} / {message.metadata.model}</Badge>
+            <Badge variant="outline" className="max-w-full min-w-0"><span className="truncate">{message.metadata.provider} / {message.metadata.model}</span></Badge>
           </div>
         ) : null}
 
         {!isUser && message.citations?.length ? <CitationList citations={message.citations} /> : null}
         {canPromote ? (
           <Button variant="outline" size="sm" onClick={onPromote} disabled={promoting}>
-            {promoting ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
+            {promoting ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <BookOpen className="size-4" aria-hidden="true" />}
             Save insight
           </Button>
         ) : null}
       </div>
       {isUser ? (
         <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-          <UserRound className="size-4" />
+          <UserRound className="size-4" aria-hidden="true" />
         </div>
       ) : null}
     </div>
@@ -407,7 +426,7 @@ function renderMarkdownBlocks(content: string) {
       }
       if (index < lines.length) index += 1;
       blocks.push(
-        <pre key={`code-${blocks.length}`} className="overflow-x-auto rounded-md bg-muted p-3 text-xs leading-5 text-muted-foreground">
+        <pre key={`code-${blocks.length}`} className="overflow-x-auto rounded-md border border-border bg-muted p-3 font-mono text-xs leading-5 text-foreground">
           {language ? <div className="mb-2 text-xs font-medium uppercase text-muted-foreground/70">{language}</div> : null}
           <code>{codeLines.join("\n")}</code>
         </pre>,
@@ -419,8 +438,9 @@ function renderMarkdownBlocks(content: string) {
     if (heading) {
       const level = heading[1].length;
       const Tag = level === 1 ? "h3" : level === 2 ? "h4" : "h5";
+      const headingClass = level === 1 ? "text-base font-semibold" : level === 2 ? "text-sm font-semibold" : "text-sm font-medium text-muted-foreground";
       blocks.push(
-        <Tag key={`heading-${blocks.length}`} className="font-semibold text-foreground">
+        <Tag key={`heading-${blocks.length}`} className={cn("mt-3 text-foreground first:mt-0", headingClass)}>
           {renderInlineMarkdown(heading[2])}
         </Tag>,
       );
@@ -493,14 +513,14 @@ function renderMarkdownBlocks(content: string) {
 
 function MarkdownTable({ table }: { table: MarkdownTable }) {
   return (
-    <div className="max-w-full overflow-x-auto rounded-md border border-border">
+    <div className="dashboard-scroll-region rounded-md border border-border">
       <table className="w-full min-w-max border-collapse text-left text-sm">
-        <thead className="bg-muted/70 text-foreground">
+        <thead className="bg-muted text-foreground">
           <tr>
             {table.headers.map((header, cellIndex) => (
               <th
                 key={cellIndex}
-                className={cn("border-b border-r border-border px-3 py-2 font-semibold last:border-r-0", tableCellAlignment(table.alignments[cellIndex]))}
+                className={cn("border-b-2 border-r border-border px-3 py-2 font-semibold last:border-r-0", tableCellAlignment(table.alignments[cellIndex]))}
               >
                 {renderInlineMarkdown(header)}
               </th>
@@ -513,7 +533,7 @@ function MarkdownTable({ table }: { table: MarkdownTable }) {
               {table.headers.map((_, cellIndex) => (
                 <td
                   key={cellIndex}
-                  className={cn("max-w-[28rem] whitespace-normal border-r border-t border-border px-3 py-2 align-top last:border-r-0", tableCellAlignment(table.alignments[cellIndex]))}
+                  className={cn("max-w-[min(20rem,70vw)] whitespace-normal break-words border-r border-t border-border px-3 py-2 align-top last:border-r-0", tableCellAlignment(table.alignments[cellIndex]))}
                 >
                   {renderInlineMarkdown(row[cellIndex] ?? "")}
                 </td>

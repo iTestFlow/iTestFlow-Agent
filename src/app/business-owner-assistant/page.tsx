@@ -20,6 +20,7 @@ export default async function BusinessOwnerAssistantPage() {
   return (
     <ContentShell
       title="Business Owner Assistant"
+      maxWidth="dashboard"
       description="Ask questions grounded in the selected project's indexed context and saved knowledge hub."
     >
       <BusinessOwnerAssistantClient workspaceRole={workspaceRole} />
