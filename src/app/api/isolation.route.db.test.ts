@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 
 // Inject the session cookie that requireSession() reads via next/headers. The store
 // is mutable so each test sets (or clears) the active token before calling a route.
@@ -15,7 +15,7 @@ vi.mock("next/headers", () => ({
   }),
 }));
 
-import { flushBackgroundWrites, resetDatabaseForTests, sqlGet } from "@/modules/shared/infrastructure/database/db";
+import { flushBackgroundWrites, resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { cleanupFixtures, createTestSession, describeDb, seedMembership, seedProject, seedUser, seedWorkspace } from "@/test/db";
 import { POST as workItemDetailsPost } from "@/app/api/azure-devops/work-item-details/route";
 import { POST as requirementRunPost } from "@/app/api/requirement-analysis/run/route";
@@ -100,6 +100,22 @@ describeDb("API isolation & pre-auth side effects (DB-backed, route-level)", () 
     cookieState.token = undefined;
     await cleanupFixtures({ workspaceIds: [WS_A, WS_B], userIds: [USER] });
     await resetDatabaseForTests();
+  });
+
+  // Per-test reset: clear only the analytics/audit rows that tests accumulate for
+  // PROJECT_A so each test starts from an empty baseline. This makes the exact-count
+  // assertions (toBe(0)/toBe(1)) order-independent without removing the beforeAll
+  // seed data (workspaces/users/membership/projects). Runs after the test body —
+  // i.e. after any in-test flushBackgroundWrites() and count assertions — using the
+  // same azure_project_id predicate the count helpers above scope by.
+  afterEach(async () => {
+    await flushBackgroundWrites();
+    await sqlRun(`DELETE FROM analytics_workflow_runs WHERE azure_project_id = @azureProjectId`, {
+      azureProjectId: PROJECT_A,
+    });
+    await sqlRun(`DELETE FROM audit_logs WHERE azure_project_id = @azureProjectId`, {
+      azureProjectId: PROJECT_A,
+    });
   });
 
   // R4 #3 — a guarded route, driven with a foreign azureProjectId, must 403 at the

@@ -211,9 +211,27 @@ The UI uses Next.js App Router, React, TypeScript, Tailwind CSS, shadcn/Radix pr
 ```bash
 npm run db:migrate
 npm run typecheck
-npm test
+npm run test:unit
+npm run test:coverage
+npm run test:integration
 npm run build
 ```
+
+`test:unit` and `test:coverage` need no database, browser, internet, Azure DevOps
+connection, or LLM credentials. `test:integration` requires `DATABASE_URL` and a
+migrated PostgreSQL database. Use `test:coverage:all` for the broader non-gated
+coverage report.
+
+> **`test:coverage` is a curated, risk-based gate, not a repository-wide number.**
+> Its thresholds apply only to the allowlist (`GATED_INCLUDE` in `vitest.coverage-manifest.ts`,
+> high-risk domain logic and boundary adapters), so its percentage reflects "coverage of the
+> gated logic," not the whole repo. Run `test:coverage:all` for the broader non-gated
+> report across the configured source roots.
+>
+> A guard test (`src/test/coverage-manifest.integrity.test.ts`) keeps the allowlist honest:
+> every logic source file must be either gated in `GATED_INCLUDE` or listed in the committed
+> inventory `src/test/coverage-ungated.json`. If it fails for a new file, either gate it
+> (preferred for high-risk logic) or run `npm run coverage:inventory:update` to acknowledge it.
 
 ### Production Build
 

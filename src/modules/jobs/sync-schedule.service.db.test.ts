@@ -15,7 +15,7 @@ const TEST_EMAIL = "owner-sched@itestflow.test";
 const TEST_ORG = "itestflow-sched-test-org";
 const TEST_ORG_URL = "https://dev.azure.com/itestflow-sched-test-org";
 
-// DB-backed (ADR-9): requires migrated PostgreSQL via DATABASE_URL; skipped otherwise.
+// DB-backed integration coverage; requires migrated PostgreSQL via DATABASE_URL.
 const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
 async function cleanup(workspaceId?: string) {

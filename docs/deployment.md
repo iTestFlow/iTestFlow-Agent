@@ -256,11 +256,15 @@ Recommended pre-release checks:
 
 ```bash
 npm run typecheck
-npm test
+npm run test:unit
+npm run test:coverage
+npm run test:integration
 npm run build
 ```
 
-For changes touching migrations, jobs, auth, credentials, workspace settings, or project isolation, also run the affected integration tests against PostgreSQL.
+The unit and gated coverage suites are fully local and mock external boundaries.
+The integration suite requires `DATABASE_URL` and a migrated PostgreSQL database;
+it exits immediately instead of silently skipping when that prerequisite is absent.
 
 ## Docs Cleanup Guidance
 

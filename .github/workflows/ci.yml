@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - multi-user-self-hosted
 
 jobs:
   verify:
@@ -41,6 +40,7 @@ jobs:
       - run: npm ci
       - run: npm run db:migrate
       - run: npm run typecheck
-      - run: node -e "if (!process.env.DATABASE_URL) { console.error('DATABASE_URL must be set so DB-backed tests do not silently skip.'); process.exit(1); }"
-      - run: npm test
+      - run: npm run lint
+      - run: npm run test:coverage
+      - run: npm run test:integration
       - run: npm run build

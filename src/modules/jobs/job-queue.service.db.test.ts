@@ -6,7 +6,7 @@ import { claimNextJob, completeJob, enqueueJob, failJob, heartbeatJob } from "@/
 const TYPE = "test_noop";
 const WS = "ws_jobtest";
 
-// DB-backed (ADR-9): requires migrated PostgreSQL via DATABASE_URL; skipped otherwise.
+// DB-backed integration coverage; requires migrated PostgreSQL via DATABASE_URL.
 const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
 describeDb("job queue (DB-backed)", () => {

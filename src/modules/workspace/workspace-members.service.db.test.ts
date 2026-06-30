@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 
 import { createId, nowIso, resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
@@ -8,16 +8,13 @@ import {
   removeMember,
   updateMemberRole,
 } from "@/modules/workspace/workspace-members.service";
+import { describeDb } from "@/test/db";
 
 const TEST_EMAIL = "owner-members@itestflow.test";
 const TEST_ORG = "itestflow-members-test-org";
 const TEST_ORG_URL = "https://dev.azure.com/itestflow-members-test-org";
 const ADMIN_GUARD_ORG_URL = "https://dev.azure.com/itestflow-admin-guard-test-org";
 const MEMBER_EMAIL_SUFFIX = "@members-test.itestflow.test";
-
-// DB-backed integration test (ADR-9): requires a migrated PostgreSQL via
-// DATABASE_URL; skipped otherwise so the default unit run needs no database.
-const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
 async function addMember(workspaceId: string, name: string, role: "owner" | "admin" | "member"): Promise<string> {
   const now = nowIso();
@@ -56,6 +53,8 @@ async function cleanup() {
 describeDb("workspace member management (DB-backed)", () => {
   let workspaceId: string;
   let ownerUserId: string;
+  const savedOwnerEmail = process.env.BOOTSTRAP_OWNER_EMAIL;
+  const savedOwnerAzureOrg = process.env.BOOTSTRAP_OWNER_AZURE_ORG;
 
   beforeAll(async () => {
     process.env.BOOTSTRAP_OWNER_EMAIL = TEST_EMAIL;
@@ -68,6 +67,10 @@ describeDb("workspace member management (DB-backed)", () => {
 
   afterAll(async () => {
     await cleanup();
+    if (savedOwnerEmail === undefined) delete process.env.BOOTSTRAP_OWNER_EMAIL;
+    else process.env.BOOTSTRAP_OWNER_EMAIL = savedOwnerEmail;
+    if (savedOwnerAzureOrg === undefined) delete process.env.BOOTSTRAP_OWNER_AZURE_ORG;
+    else process.env.BOOTSTRAP_OWNER_AZURE_ORG = savedOwnerAzureOrg;
     await resetDatabaseForTests();
   });
 
