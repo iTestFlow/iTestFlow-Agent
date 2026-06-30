@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 
 import { createId, nowIso, resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
@@ -10,16 +10,17 @@ import {
 } from "@/modules/workspace/workspace-access.service";
 import { getWorkspaceById, getWorkspacesForUser } from "@/modules/workspace/workspace.service";
 import { persistSession, resolveSessionToken, revokeSessionToken } from "@/modules/auth/session.service";
+import { describeDb } from "@/test/db";
 
 const TEST_EMAIL = "owner@itestflow.test";
 const TEST_ORG = "itestflow-test-org";
 const TEST_ORG_URL = "https://dev.azure.com/itestflow-test-org";
 
-// DB-backed integration test (ADR-9): requires a migrated PostgreSQL via
-// DATABASE_URL; skipped otherwise so the default unit run needs no database.
-const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
-
 describeDb("auth & workspace foundation (DB-backed)", () => {
+  const savedOwnerEmail = process.env.BOOTSTRAP_OWNER_EMAIL;
+  const savedOwnerAzureOrg = process.env.BOOTSTRAP_OWNER_AZURE_ORG;
+  const savedAzureOrgs = process.env.BOOTSTRAP_AZURE_ORGS;
+
   beforeAll(async () => {
     process.env.BOOTSTRAP_OWNER_EMAIL = TEST_EMAIL;
     process.env.BOOTSTRAP_OWNER_AZURE_ORG = TEST_ORG;
@@ -32,6 +33,12 @@ describeDb("auth & workspace foundation (DB-backed)", () => {
   afterAll(async () => {
     await sqlRun(`DELETE FROM workspaces WHERE azure_org_url = @url`, { url: TEST_ORG_URL });
     await sqlRun(`DELETE FROM users WHERE email_or_unique_name = @email`, { email: TEST_EMAIL });
+    if (savedOwnerEmail === undefined) delete process.env.BOOTSTRAP_OWNER_EMAIL;
+    else process.env.BOOTSTRAP_OWNER_EMAIL = savedOwnerEmail;
+    if (savedOwnerAzureOrg === undefined) delete process.env.BOOTSTRAP_OWNER_AZURE_ORG;
+    else process.env.BOOTSTRAP_OWNER_AZURE_ORG = savedOwnerAzureOrg;
+    if (savedAzureOrgs === undefined) delete process.env.BOOTSTRAP_AZURE_ORGS;
+    else process.env.BOOTSTRAP_AZURE_ORGS = savedAzureOrgs;
     await resetDatabaseForTests();
   });
 
