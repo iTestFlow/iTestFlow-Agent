@@ -24,7 +24,7 @@ export function DataToolbar({
   return (
     <div
       className={cn(
-        "flex flex-col gap-3 border-b border-border p-4 lg:flex-row lg:items-center lg:justify-between",
+        "flex flex-col gap-3 border-b border-border px-4 py-4 lg:flex-row lg:items-center lg:justify-between",
         className
       )}
     >

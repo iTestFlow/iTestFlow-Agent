@@ -19,8 +19,31 @@ import type {
   DashboardRecentActivity,
 } from "@/types/dashboard";
 import { Button } from "@/components/ui/button";
+import { StatusChip } from "@/components/qa/status-chip";
 import { toneClass } from "@/components/qa/tone";
 import { cn } from "@/lib/utils";
+
+/** Maps an audit/activity status label to a semantic StatusChip tone. */
+function activityStatusTone(
+  status: string,
+): "success" | "warning" | "error" | "info" | "neutral" | "draft" {
+  switch (status) {
+    case "Success":
+      return "success";
+    case "Failed":
+      return "error";
+    case "Warning":
+    case "Partial failure":
+      return "warning";
+    case "Pending":
+    case "Info":
+      return "info";
+    case "Draft":
+      return "draft";
+    default:
+      return "neutral";
+  }
+}
 
 const palette = [
   "hsl(var(--chart-1))",
@@ -313,9 +336,7 @@ export function RecentActivityList({
                 <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.message}</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <span className="rounded-full border border-border bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">
-                  {item.status}
-                </span>
+                <StatusChip tone={activityStatusTone(item.status)}>{item.status}</StatusChip>
                 <Button
                   type="button"
                   variant="outline"
@@ -325,14 +346,14 @@ export function RecentActivityList({
                   title={label}
                   onClick={() => toggleActivity(item.id)}
                 >
-                  <ChevronDown className={cn("size-4 transition-transform", expanded && "rotate-180")} aria-hidden="true" />
+                  <ChevronDown className={cn("size-4 motion-safe:transition-transform", expanded && "rotate-180")} aria-hidden="true" />
                 </Button>
               </div>
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>{item.projectName ?? "All projects"}</span>
               <span aria-hidden="true">/</span>
-              <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time>
+              <time dateTime={item.createdAt} className="tabular-nums">{new Date(item.createdAt).toLocaleString()}</time>
             </div>
             {expanded ? (
               <pre className="mt-3 max-h-96 overflow-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-xs leading-5 text-muted-foreground">
