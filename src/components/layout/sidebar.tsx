@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   Library,
   ListPlus,
+  Loader2,
   Radar,
   Settings,
   ShieldCheck,
@@ -21,6 +22,7 @@ import {
 
 import { BRAND_ICON_SRC, PRODUCT_NAME } from "@/lib/constants"
 import { cn } from "@/lib/utils"
+import { useNavigationFeedback } from "@/components/navigation/unsaved-changes-provider"
 
 type NavLeaf = { label: string; href: string; icon: LucideIcon }
 type NavNode =
@@ -70,18 +72,39 @@ function isActive(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`)
 }
 
-function NavLink({ item, onNavigate, active }: { item: NavLeaf; onNavigate?: () => void; active: boolean }) {
+function NavLink({
+  item,
+  onNavigate,
+  active,
+  navigationPending,
+  pending,
+}: {
+  item: NavLeaf
+  onNavigate?: () => void
+  active: boolean
+  navigationPending: boolean
+  pending: boolean
+}) {
   const Icon = item.icon
   return (
     <Link
       href={item.href}
       onClick={onNavigate}
+      aria-current={active ? "page" : undefined}
+      aria-disabled={navigationPending || undefined}
+      aria-busy={pending || undefined}
       className={cn(
         "flex min-h-9 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-        active && "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm ring-1 ring-sidebar-ring/20 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+        active && "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm ring-1 ring-sidebar-ring/20 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        navigationPending && "cursor-not-allowed opacity-60",
+        pending && "bg-sidebar-accent text-sidebar-accent-foreground opacity-100",
       )}
     >
-      <Icon className="size-4 shrink-0" aria-hidden="true" />
+      {pending ? (
+        <Loader2 className="size-4 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+      ) : (
+        <Icon className="size-4 shrink-0" aria-hidden="true" />
+      )}
       <span className="truncate">{item.label}</span>
     </Link>
   )
@@ -89,20 +112,31 @@ function NavLink({ item, onNavigate, active }: { item: NavLeaf; onNavigate?: () 
 
 export function Sidebar({ className, onNavigate }: { className?: string; onNavigate?: () => void }) {
   const pathname = usePathname()
+  const { navigationPending, pendingHref } = useNavigationFeedback()
 
   return (
     <aside className={cn("flex h-full flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground", className)}>
       <div className="px-4 py-5">
-        <Link href="/dashboards" onClick={onNavigate} className="flex items-center gap-3">
+        <Link
+          href="/dashboards"
+          onClick={onNavigate}
+          aria-disabled={navigationPending || undefined}
+          aria-busy={pendingHref === "/dashboards" || undefined}
+          className={cn("flex items-center gap-3", navigationPending && "cursor-not-allowed opacity-60")}
+        >
           <div className="flex h-10 w-12 shrink-0 items-center justify-center rounded-lg bg-white p-1.5 shadow-sm ring-1 ring-sidebar-border">
-            <Image
-              src={BRAND_ICON_SRC}
-              alt=""
-              width={510}
-              height={342}
-              priority
-              className="h-full w-full object-contain"
-            />
+            {pendingHref === "/dashboards" ? (
+              <Loader2 className="size-5 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" />
+            ) : (
+              <Image
+                src={BRAND_ICON_SRC}
+                alt=""
+                width={510}
+                height={342}
+                priority
+                className="h-full w-full object-contain"
+              />
+            )}
           </div>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold">{PRODUCT_NAME}</div>
@@ -120,6 +154,8 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
                 item={node.item}
                 onNavigate={onNavigate}
                 active={isActive(pathname, node.item.href)}
+                navigationPending={navigationPending}
+                pending={pendingHref === node.item.href}
               />
             )
           }
@@ -135,6 +171,8 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
                   item={item}
                   onNavigate={onNavigate}
                   active={isActive(pathname, item.href)}
+                  navigationPending={navigationPending}
+                  pending={pendingHref === item.href}
                 />
               ))}
             </div>

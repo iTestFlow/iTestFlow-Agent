@@ -1,7 +1,6 @@
 "use client"
 
 import { Check, ChevronDown, Eye, EyeOff, KeyRound, Loader2, LogOut, Menu, RefreshCw, Settings2, UserRound } from "lucide-react"
-import Link from "next/link"
 import { forwardRef, useCallback, useEffect, useMemo, useState, type ComponentProps } from "react"
 import { toast } from "sonner"
 
@@ -38,6 +37,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { ThemeToggle } from "@/components/theme/theme-toggle"
 import { HeaderProjectSelector } from "@/shared/components/live/project-status"
 import { cn } from "@/lib/utils"
+import { NavigationLink } from "@/components/navigation/navigation-link"
 
 type AzureProfile = {
   displayName: string
@@ -405,14 +405,14 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         {patWarning ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <Link
+              <NavigationLink
                 href="/settings"
                 className={headerStatusChipClass("error", "max-w-36 transition-colors hover:bg-destructive/15")}
                 aria-label={patWarning.detail}
               >
                 <StatusChipContent label={patWarning.label} status="error" />
                 <Settings2 className="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
-              </Link>
+              </NavigationLink>
             </TooltipTrigger>
             <TooltipContent sideOffset={8} className="max-w-sm text-left">{patWarning.detail}</TooltipContent>
           </Tooltip>
@@ -487,10 +487,10 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuItem asChild>
-            <Link href="/settings">
+            <NavigationLink href="/settings">
               <Settings2 className="size-4" />
               Settings
-            </Link>
+            </NavigationLink>
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() => {
@@ -829,13 +829,13 @@ function LlmModelChip({
     return (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Link
+            <NavigationLink
               href="/settings"
               className={headerStatusChipClass(status.status, "max-w-32 transition-colors hover:bg-muted")}
               aria-label={status.detail}
             >
               <StatusChipContent label={status.label} status={status.status} />
-            </Link>
+            </NavigationLink>
           </TooltipTrigger>
           <TooltipContent sideOffset={8} className="max-w-sm text-left">{status.detail}</TooltipContent>
         </Tooltip>
@@ -880,7 +880,7 @@ function LlmModelChip({
                     Retry
                   </Button>
                   <Button type="button" variant="ghost" size="sm" asChild>
-                    <Link href="/settings">Open settings</Link>
+                    <NavigationLink href="/settings">Open settings</NavigationLink>
                   </Button>
                 </div>
               </div>
