@@ -769,9 +769,9 @@ function TestCaseEstimateTable({ rows }: { rows: EffortEstimate["testCaseEstimat
       </CardHeader>
       <CardContent>
         <div className="content-scroll-region overflow-hidden rounded-lg border">
-          <Table className="min-w-[1100px]">
+          <Table className="min-w-[1100px]" containerClassName="max-h-[70vh] overflow-y-auto overscroll-contain">
             <TableCaption className="sr-only">Per-test-case execution effort breakdown</TableCaption>
-            <TableHeader>
+            <TableHeader className="sticky top-0 z-20 bg-card">
               <TableRow>
                 <TableHead scope="col">Test Case ID</TableHead>
                 <TableHead scope="col" className="min-w-[260px]">Title</TableHead>

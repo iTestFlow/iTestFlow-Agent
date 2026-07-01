@@ -75,8 +75,8 @@ export function ContextStorySelector({
           </div>
         </div>
         <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
+          <Table containerClassName="max-h-[70vh] overflow-y-auto overscroll-contain">
+            <TableHeader className="sticky top-0 z-20 bg-card">
               <TableRow>
                 <TableHead className="w-10">Select</TableHead>
                 <TableHead>Work Item ID</TableHead>

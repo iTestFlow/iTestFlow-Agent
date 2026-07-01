@@ -957,8 +957,8 @@ function PreviewPanel({
 function PreviewTable({ rows }: { rows: MigrationPreviewRow[] }) {
   if (!rows.length) return <div className="p-4 text-sm text-muted-foreground">No preview rows.</div>;
   return (
-    <Table className="min-w-[1680px]">
-      <TableHeader>
+    <Table className="min-w-[1680px]" containerClassName="max-h-[70vh] overflow-y-auto overscroll-contain">
+      <TableHeader className="sticky top-0 z-20 bg-card">
         <TableRow className="bg-muted/40 hover:bg-muted/40">
           <TableHead colSpan={8} className="h-8 text-xs font-semibold text-muted-foreground">
             Source

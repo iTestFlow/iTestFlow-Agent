@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Info, TriangleAlert } from "lucide-react"
+import { Info, Loader2, TriangleAlert } from "lucide-react"
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
@@ -192,7 +192,14 @@ export function DashboardValueMetricsSection() {
               Reset to recommended defaults
             </Button>
             <Button type="button" className="ml-auto" onClick={onSave} disabled={saving || loading}>
-              {saving ? "Saving…" : "Save"}
+              {saving ? (
+                <>
+                  <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+                  Saving…
+                </>
+              ) : (
+                "Save"
+              )}
             </Button>
           </div>
         </div>

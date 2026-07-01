@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { ChevronDown, Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -154,16 +155,22 @@ function AiProviderCard() {
       action={<StatusBadge tone={badge.tone} label={badge.label} />}
     >
       <Field label="LLM Provider" htmlFor="llm-provider">
-        <select
-          id="llm-provider"
-          className="h-11 w-full rounded-md border border-input bg-card px-3 text-sm text-foreground"
-          value={provider}
-          onChange={(event) => setProvider(event.target.value as Provider)}
-        >
-          <option value="openai">OpenAI</option>
-          <option value="gemini">Gemini</option>
-          <option value="anthropic">Anthropic</option>
-        </select>
+        <div className="relative">
+          <select
+            id="llm-provider"
+            className="h-8 w-full appearance-none rounded-lg border border-input bg-card pl-2.5 pr-9 text-sm text-foreground outline-none transition-colors duration-ui focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+            value={provider}
+            onChange={(event) => setProvider(event.target.value as Provider)}
+          >
+            <option value="openai">OpenAI</option>
+            <option value="gemini">Gemini</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
+          <ChevronDown
+            className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
+        </div>
       </Field>
 
       <SecretField
@@ -183,7 +190,7 @@ function AiProviderCard() {
       >
         <Input
           id="llm-base-url"
-          className="h-11 border-input bg-card text-foreground"
+          className="h-8 border-input bg-card text-foreground"
           value={baseUrl}
           onChange={(event) => setBaseUrl(event.target.value)}
           placeholder={defaultBaseUrlPlaceholder(provider)}
@@ -198,7 +205,7 @@ function AiProviderCard() {
         {modelsFetched && models.length === 0 ? (
           <Input
             id="llm-model"
-            className="h-11 border-input bg-card text-foreground"
+            className="h-8 border-input bg-card text-foreground"
             placeholder="No models returned — type a model ID"
             value={model}
             onChange={(event) => setModel(event.target.value)}
@@ -220,7 +227,14 @@ function AiProviderCard() {
       </Field>
 
       <Button type="button" onClick={() => void onSave()} disabled={saving || loading || !apiKey.trim() || !model.trim()}>
-        {saving ? "Saving…" : "Save AI provider"}
+        {saving ? (
+          <>
+            <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+            Saving…
+          </>
+        ) : (
+          "Save AI provider"
+        )}
       </Button>
     </SectionCard>
   )
@@ -339,7 +353,14 @@ function OutputCapCard() {
             </div>
           </Field>
           <Button type="button" onClick={() => void onSave()} disabled={saving || loading}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? (
+              <>
+                <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+                Saving…
+              </>
+            ) : (
+              "Save"
+            )}
           </Button>
         </div>
       )}

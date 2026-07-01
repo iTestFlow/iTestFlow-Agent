@@ -93,11 +93,11 @@ export function SearchableCombobox({
           className={cn("h-10 w-full justify-between px-3 text-left font-normal", className, triggerClassName)}
         >
           <span className="inline-flex min-w-0 items-center gap-2">
-            {loading ? <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" /> : null}
+            {loading ? <Loader2 className="size-4 shrink-0 motion-safe:animate-spin" aria-hidden="true" /> : null}
             <span className="truncate">{triggerLabel}</span>
           </span>
           <ChevronDown
-            className={cn("ml-2 size-4 shrink-0 opacity-50 transition-transform", open && "rotate-180")}
+            className={cn("ml-2 size-4 shrink-0 opacity-50 motion-safe:transition-transform", open && "rotate-180")}
             aria-hidden="true"
           />
         </Button>

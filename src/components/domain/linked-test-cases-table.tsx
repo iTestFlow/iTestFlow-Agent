@@ -37,8 +37,8 @@ export function LinkedTestCasesTable({ rows }: { rows: LinkedTestCase[] }) {
           </p>
         </div>
         <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
+          <Table containerClassName="max-h-[70vh] overflow-y-auto overscroll-contain">
+            <TableHeader className="sticky top-0 z-20 bg-card">
               <TableRow>
                 <TableHead>Test Case ID</TableHead>
                 <TableHead className="min-w-[280px]">Title</TableHead>

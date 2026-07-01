@@ -29,8 +29,8 @@ export function AuditLogTable({ logs }: { logs: AuditLog[] }) {
     <>
       <div className="overflow-hidden rounded-xl border border-border bg-card">
         <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
+          <Table containerClassName="max-h-[70vh] overflow-y-auto overscroll-contain">
+            <TableHeader className="sticky top-0 z-20 bg-card">
               <TableRow>
                 <TableHead>Timestamp</TableHead>
                 <TableHead>Action</TableHead>

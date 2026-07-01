@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -108,7 +109,7 @@ export function KnowledgeContextSection() {
               min={min}
               max={max}
               step={1}
-              className="h-9 w-24 border-input bg-card text-foreground"
+              className="h-8 w-24 border-input bg-card text-foreground"
               value={topK}
               placeholder="8"
               onChange={(event) => {
@@ -119,7 +120,14 @@ export function KnowledgeContextSection() {
               disabled={loading}
             />
             <Button type="button" className="ml-auto" onClick={() => void onSave()} disabled={saving || loading}>
-              {saving ? "Saving…" : "Save"}
+              {saving ? (
+                <>
+                  <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+                  Saving…
+                </>
+              ) : (
+                "Save"
+              )}
             </Button>
           </div>
         </Field>
