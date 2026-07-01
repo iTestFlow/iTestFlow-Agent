@@ -24,6 +24,7 @@ import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session";
 import { isRequirementLikeType, scrollToNextStep } from "@/components/workflow/test-intelligence-shared";
+import { postJson } from "@/components/workflow/post-json";
 import { WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
@@ -914,20 +915,6 @@ function useActiveProject() {
   }, []);
 
   return scope;
-}
-
-async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(typeof data.error === "string" ? data.error : "Request failed.");
-  }
-  return data as T;
 }
 
 function formatHours(value: number) {

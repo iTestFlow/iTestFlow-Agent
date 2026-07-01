@@ -17,7 +17,7 @@ import { toneClass, toneSolidClass, type Tone } from "@/components/qa/tone";
 import { cn } from "@/lib/utils";
 import { formatEnumLabel, formatPercentage } from "@/shared/lib/format";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
-import { ApiError } from "@/components/workflow/api-error";
+import { postJson } from "@/components/workflow/post-json";
 import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import type {
   ApiState,
@@ -52,28 +52,10 @@ export function useActiveProject() {
   return scope;
 }
 
-export async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-    cache: "no-store",
-  });
-  const text = await response.text();
-  const json = parseJsonResponse(text, response.ok);
-  if (!response.ok) throw ApiError.fromResponse(json, response.status);
-  return json as T;
-}
-
-function parseJsonResponse(text: string, ok: boolean) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    if (ok) throw new Error("The server returned an invalid JSON response.");
-    return { error: "The server returned a non-JSON response. Check the server logs or runtime configuration." };
-  }
-}
+// The shared JSON POST helper (with non-JSON diagnostic capture) now lives in
+// `@/components/workflow/post-json`. Re-exported here to preserve the existing
+// import path used across the workflow clients.
+export { postJson };
 
 export function scrollToNextStep(ref: React.RefObject<HTMLElement | null>) {
   window.setTimeout(() => {

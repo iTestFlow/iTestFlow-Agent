@@ -52,7 +52,7 @@ export function ErrorState({
                 <TechnicalBlock label="JSON snippet" value={technicalContext?.jsonSnippet} />
                 <TechnicalBlock label="Raw output excerpt" value={technicalContext?.rawOutputExcerpt} />
                 {showTextDetails ? (
-                  <div className="whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 p-3 font-mono">
+                  <div className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 p-3 font-mono">
                     {detailsText}
                   </div>
                 ) : null}

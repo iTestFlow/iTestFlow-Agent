@@ -22,6 +22,7 @@ import {
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress";
 import { ManualLLMPanel } from "@/components/workflow/manual-llm-panel";
 import { SectionCard, scrollToNextStep } from "@/components/workflow/test-intelligence-shared";
+import { postForm, postJson } from "@/components/workflow/post-json";
 import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session";
@@ -145,28 +146,6 @@ type ReproductionPublishResult = {
   bugLink?: { success: boolean; error?: string };
   error?: string;
 };
-
-async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  });
-  const text = await response.text();
-  const json = parseJsonResponse(text, response.ok);
-  if (!response.ok) throw new Error(json.error ?? `Request failed: ${response.status}`);
-  return json as T;
-}
-
-function parseJsonResponse(text: string, ok: boolean) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    if (ok) throw new Error("The server returned an invalid JSON response.");
-    return { error: "The server returned a non-JSON response. Check the server logs or runtime configuration." };
-  }
-}
 
 export function ReportBugClient() {
   const reviewSectionRef = useRef<HTMLDivElement | null>(null);
@@ -626,11 +605,7 @@ export function ReportBugClient() {
         }),
       );
       attachments.forEach((file) => formData.append("attachments", file));
-      const response = await fetch("/api/bugs/post", { method: "POST", body: formData });
-      const text = await response.text();
-      const json = parseJsonResponse(text, response.ok);
-      if (!response.ok) throw new Error(json.error ?? `Request failed: ${response.status}`);
-      const result = json as PostBugResult;
+      const result = await postForm<PostBugResult>("/api/bugs/post", formData);
       setPostState({ loading: false, error: null, data: result });
       const attachmentsComplete = result.attachmentResults.every((attachment) => attachment.success);
       const reproductionPublishPending = suggestTestCaseChecked && Boolean(suggestedTestCase);
