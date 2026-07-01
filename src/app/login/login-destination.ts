@@ -6,7 +6,14 @@ export function resolveLoginDestination(nextParam: string | null) {
     nextParam.startsWith("/") &&
     !nextParam.startsWith("//")
 
-  if (!isSafeInAppPath || nextParam === "/") {
+  // Never bounce back to the login route itself (a crafted next=/login would otherwise
+  // navigate straight back here after a successful sign-in).
+  const isLoginPath =
+    nextParam === "/login" ||
+    (nextParam?.startsWith("/login?") ?? false) ||
+    (nextParam?.startsWith("/login/") ?? false)
+
+  if (!isSafeInAppPath || nextParam === "/" || isLoginPath) {
     return DEFAULT_LOGIN_DESTINATION
   }
 

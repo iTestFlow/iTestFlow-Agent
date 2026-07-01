@@ -136,12 +136,16 @@ td {
     --accent-foreground: 222 88% 45%;
     --destructive: 6 75% 55%;
     --destructive-foreground: 0 0% 100%;
+    /* Darker fill for solid badges so white text clears WCAG AA 4.5:1 (tinted --destructive does not). */
+    --destructive-solid: 6 75% 48%;
     --border: 221 18% 86%;
     --input: 221 18% 86%;
     --ring: 222 88% 57%;
     --chart-1: 222 88% 61%;
     --chart-2: 158 64% 42%;
     --chart-3: 268 75% 61%;
+    /* Darker violet fill so white text on the solid `draft` tone clears 4.5:1. */
+    --chart-3-solid: 268 75% 52%;
     --chart-4: 188 84% 43%;
     --chart-5: 43 93% 52%;
     --chart-6: 6 75% 57%;
@@ -182,12 +186,16 @@ td {
     --accent-foreground: 210 40% 96%;
     --destructive: 6 75% 58%;
     --destructive-foreground: 0 0% 100%;
+    /* Darker fill for solid badges so white text clears WCAG AA 4.5:1 (tinted --destructive does not). */
+    --destructive-solid: 6 75% 48%;
     --border: 224 22% 20%;
     --input: 224 22% 20%;
     --ring: 225 96% 65%;
     --chart-1: 225 96% 68%;
     --chart-2: 157 72% 44%;
     --chart-3: 266 91% 67%;
+    /* Darker violet fill so white text on the solid `draft` tone clears 4.5:1. */
+    --chart-3-solid: 266 91% 52%;
     --chart-4: 190 95% 50%;
     --chart-5: 43 96% 56%;
     --chart-6: 3 89% 65%;

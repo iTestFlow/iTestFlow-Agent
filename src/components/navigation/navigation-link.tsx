@@ -22,6 +22,10 @@ export const NavigationLink = forwardRef<HTMLAnchorElement, NavigationLinkProps>
         href={href}
         aria-disabled={navigationPending || props["aria-disabled"] || undefined}
         aria-busy={isPendingDestination || props["aria-busy"] || undefined}
+        // While a navigation is pending, links are inert (activation is blocked by the
+        // provider's capture-phase handler). Remove them from the tab order too so the
+        // aria-disabled/dimmed state matches keyboard + screen-reader reality.
+        tabIndex={navigationPending ? -1 : props.tabIndex}
         className={cn(className, navigationPending && "cursor-not-allowed opacity-60")}
       >
         {children}

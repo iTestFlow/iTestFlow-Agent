@@ -41,7 +41,19 @@ export async function postForm<T>(url: string, formData: FormData, signal?: Abor
 async function readJsonResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
   const json = parseJsonResponse(text, response);
-  if (!response.ok) throw ApiError.fromResponse(json as ApiErrorPayload, response.status);
+  if (!response.ok) {
+    // A non-ok body can parse to a bare token (number/string/null/array) — treating that
+    // as an ApiErrorPayload loses the diagnostics (and `null.error` would throw), so fall
+    // back to the non-JSON diagnostic unless we actually got an error-shaped object.
+    const payload =
+      json && typeof json === "object" && !Array.isArray(json)
+        ? (json as ApiErrorPayload)
+        : {
+            error: "The server returned a non-JSON response. Check the server logs or runtime configuration.",
+            technicalDetails: nonJsonResponseDetails(response, text),
+          };
+    throw ApiError.fromResponse(payload, response.status);
+  }
   return json as T;
 }
 
@@ -65,7 +77,11 @@ function parseJsonResponse(text: string, response: Response) {
 
 export function nonJsonResponseDetails(response: Response, text: string) {
   const body = text.trim();
-  const bodyExcerpt = body ? body.slice(0, 1200) : "(empty response body)";
+  const bodyExcerpt = body
+    ? body.length > 1200
+      ? `${body.slice(0, 1200)}\n… (truncated, ${body.length - 1200} more characters)`
+      : body
+    : "(empty response body)";
   return [
     `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
     `Content-Type: ${response.headers.get("content-type") ?? "(none)"}`,

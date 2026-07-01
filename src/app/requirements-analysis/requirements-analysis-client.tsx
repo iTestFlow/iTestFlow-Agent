@@ -71,6 +71,7 @@ function buildCommentBodyWithMentions(commentBody: string, mentionedUsers: Proje
 export function RequirementsAnalysisClient() {
   const scope = useActiveProject();
   const findingsCardRef = useRef<HTMLDivElement | null>(null);
+  const findingsHeadingRef = useRef<HTMLDivElement | null>(null);
   const promptSectionRef = useRef<HTMLDivElement | null>(null);
   const [activeStep, setActiveStep] = useState<"analyze" | "review">("analyze");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
@@ -87,7 +88,7 @@ export function RequirementsAnalysisClient() {
   const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
   const loadingGame = useLlmLoadingGameSession<RequirementAnalysisRunResult>((data) => {
     applyAnalysisResult(data);
-    scrollToNextStep(findingsCardRef);
+    scrollToNextStep(findingsCardRef, findingsHeadingRef);
   });
   const cancelGeneration = gen.cancel;
   const cancelPreparation = prep.cancel;
@@ -340,7 +341,7 @@ export function RequirementsAnalysisClient() {
         retrievalTopK: manualDraft.data.retrievalTopK,
       });
       applyAnalysisResult(data);
-      scrollToNextStep(findingsCardRef);
+      scrollToNextStep(findingsCardRef, findingsHeadingRef);
     } catch (error) {
       setManualSubmitError(error instanceof Error ? error.message : "External LLM response validation failed.");
     } finally {
@@ -557,7 +558,7 @@ export function RequirementsAnalysisClient() {
         <div ref={findingsCardRef} className="space-y-4 pb-24">
           <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
-              <div role="heading" aria-level={2} tabIndex={-1} className="line-clamp-1 text-base font-semibold text-foreground focus-ring">
+              <div ref={findingsHeadingRef} role="heading" aria-level={2} tabIndex={-1} className="line-clamp-1 text-base font-semibold text-foreground focus-ring">
                 Reviewing findings for <span className="font-mono font-semibold tabular-nums text-primary">#{targetWorkItemId}</span>
                 {workItemLookup.data?.title ? (
                   <span className="font-normal text-muted-foreground"> — {workItemLookup.data.title}</span>

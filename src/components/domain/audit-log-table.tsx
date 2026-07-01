@@ -28,7 +28,6 @@ export function AuditLogTable({ logs }: { logs: AuditLog[] }) {
   return (
     <>
       <div className="overflow-hidden rounded-xl border border-border bg-card">
-        <div className="overflow-x-auto">
           <Table containerClassName="max-h-[70vh] overflow-y-auto overscroll-contain">
             <TableHeader className="sticky top-0 z-20 bg-card">
               <TableRow>
@@ -61,7 +60,6 @@ export function AuditLogTable({ logs }: { logs: AuditLog[] }) {
               ))}
             </TableBody>
           </Table>
-        </div>
         <div className="flex items-center justify-between border-t border-border px-4 py-3 text-sm text-muted-foreground">
           <span>Page 1 of 1</span>
           <div className="flex gap-2">

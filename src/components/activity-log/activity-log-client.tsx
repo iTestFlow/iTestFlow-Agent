@@ -214,8 +214,9 @@ export function ActivityLogClient() {
           items={data?.items ?? []}
           hasMore={data?.hasMore ?? false}
           loadingMore={state.loading && Boolean(data)}
+          loading={state.loading && !data}
           onLoadMore={loadMoreRecentActivity}
-          emptyLabel={state.loading && !data ? "Loading activity…" : hasActiveFilters ? "No activity matches your filters" : "No recent local activity yet"}
+          emptyLabel={hasActiveFilters ? "No activity matches your filters" : "No recent local activity yet"}
         />
       </ChartCard>
     </div>

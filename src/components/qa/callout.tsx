@@ -28,6 +28,7 @@ export function Callout({
   action,
   className,
   role,
+  id,
 }: {
   tone?: CalloutTone
   title?: ReactNode
@@ -41,11 +42,13 @@ export function Callout({
    * Omit for static informational callouts.
    */
   role?: "status" | "alert"
+  /** Optional id so a form control can reference the callout via aria-describedby. */
+  id?: string
 }) {
   const Icon = icon ?? defaultIcon[tone]
 
   return (
-    <div role={role} className={cn("flex gap-3 rounded-lg border p-3", toneClass[tone], className)}>
+    <div id={id} role={role} className={cn("flex gap-3 rounded-lg border p-3", toneClass[tone], className)}>
       <Icon className={cn("mt-0.5 size-4 shrink-0", toneTextClass[tone])} aria-hidden="true" />
       <div className="min-w-0 flex-1 space-y-1">
         {title ? <div className="text-sm font-semibold text-foreground">{title}</div> : null}

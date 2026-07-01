@@ -13,7 +13,8 @@ import { Callout } from "@/components/qa/callout";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { RefreshButton } from "@/components/qa/refresh-button";
-import { toneClass, toneSolidClass, type Tone } from "@/components/qa/tone";
+import { toneClass, type Tone } from "@/components/qa/tone";
+import { SeverityPill } from "@/components/qa/severity-chip";
 import { cn } from "@/lib/utils";
 import { formatEnumLabel, formatPercentage } from "@/shared/lib/format";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
@@ -57,9 +58,15 @@ export function useActiveProject() {
 // import path used across the workflow clients.
 export { postJson };
 
-export function scrollToNextStep(ref: React.RefObject<HTMLElement | null>) {
+export function scrollToNextStep(
+  ref: React.RefObject<HTMLElement | null>,
+  focusRef?: React.RefObject<HTMLElement | null>,
+) {
   window.setTimeout(() => {
     ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // Move focus to the revealed step (e.g. the results heading) so keyboard/SR
+    // users are taken to the new content, not left on the trigger button.
+    focusRef?.current?.focus({ preventScroll: true });
   }, 120);
 }
 
@@ -137,11 +144,10 @@ const SEVERITY_TONE: Record<string, Tone> = {
 export function SeverityBadge({ severity, className }: { severity: string; className?: string }) {
   const key = severity.toLowerCase();
   const tone = SEVERITY_TONE[key] ?? "neutral";
-  const solid = key === "critical";
   return (
-    <Badge variant="outline" className={cn("rounded-full border", solid ? toneSolidClass.error : toneClass[tone], className)}>
+    <SeverityPill tone={tone} solid={key === "critical"} className={className}>
       {formatEnumLabel(severity)}
-    </Badge>
+    </SeverityPill>
   );
 }
 

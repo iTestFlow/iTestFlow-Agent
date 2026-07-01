@@ -59,6 +59,8 @@ import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { cn } from "@/lib/utils";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import type { ProjectUser } from "@/types/azure-devops";
+import { postJson } from "@/components/workflow/post-json";
+import { NativeSelect } from "@/components/ui/native-select";
 
 type TargetMode = "iteration" | "manual";
 type WorkflowStepId = "task-templates" | "target-stories" | "review-create";
@@ -161,27 +163,6 @@ const BULK_TASK_WORKFLOW_STEPS = [
     description: "Review generated tasks and create the batch.",
   },
 ] as const;
-
-async function postJson<T>(url: string, body: unknown): Promise<T> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const text = await response.text();
-  const json = parseJsonResponse(text, response.ok);
-  if (!response.ok) throw new Error(json.error ?? `Request failed: ${response.status}`);
-  return json as T;
-}
-
-function parseJsonResponse(text: string, ok: boolean) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    if (ok) throw new Error("The server returned an invalid JSON response.");
-    return { error: "The server returned a non-JSON response. Check the server logs or runtime configuration." };
-  }
-}
 
 export function BulkTaskCreationClient() {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null);
@@ -1169,24 +1150,20 @@ function TargetStoriesStep({
           <TabsContent value="iteration" className="space-y-4">
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-end">
               <Field label="Sprint" htmlFor="bulk-task-iteration">
-                <div className="relative">
-                  <select
-                    id="bulk-task-iteration"
-                    className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-card pl-2.5 pr-8 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-                    value={selectedIterationPath}
-                    onChange={(event) => onIterationChange(event.target.value)}
-                    disabled={!scope || iterationsLoading}
-                    aria-busy={iterationsLoading}
-                  >
-                    <option value="">{iterationsLoading ? "Loading sprints..." : "Select sprint"}</option>
-                    {iterations.map((iteration) => (
-                      <option key={iteration.id} value={iteration.path}>
-                        {iteration.path}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-                </div>
+                <NativeSelect
+                  id="bulk-task-iteration"
+                  value={selectedIterationPath}
+                  onChange={(event) => onIterationChange(event.target.value)}
+                  disabled={!scope || iterationsLoading}
+                  aria-busy={iterationsLoading}
+                >
+                  <option value="">{iterationsLoading ? "Loading sprints..." : "Select sprint"}</option>
+                  {iterations.map((iteration) => (
+                    <option key={iteration.id} value={iteration.path}>
+                      {iteration.path}
+                    </option>
+                  ))}
+                </NativeSelect>
               </Field>
               <div className="flex gap-3 [&>button]:flex-1 lg:contents">
                 <Button

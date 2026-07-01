@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -72,9 +73,6 @@ const SYSTEM_DATE_PRESET_OPTIONS = [
   { value: "overall", label: "All time" },
   { value: "custom", label: "Custom range" },
 ];
-
-const selectClass =
-  "h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50";
 
 type SystemTab = "value" | "adoption";
 
@@ -247,15 +245,15 @@ function SystemFilters({
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         <div className="space-y-1.5">
           <Label htmlFor="system-dashboard-date-range">Date range</Label>
-          <select
+          <NativeSelect
             id="system-dashboard-date-range"
-            className={selectClass}
+            className="h-10"
             value={filters.datePreset}
             onChange={(event) => setFilters((current) => ({ ...current, datePreset: event.target.value as SystemDashboardDatePreset }))}
             disabled={disabled}
           >
             {SYSTEM_DATE_PRESET_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
+          </NativeSelect>
         </div>
         <div className="space-y-1.5">
           <Label>Workflow types</Label>
@@ -274,20 +272,20 @@ function SystemFilters({
         <div className="space-y-1.5">
           <Label htmlFor="system-dashboard-user">User</Label>
           {canViewWorkspaceUsers ? (
-            <select
+            <NativeSelect
               id="system-dashboard-user"
-              className={selectClass}
+              className="h-10"
               value={filters.userId ?? "__all__"}
               onChange={(event) => setFilters((current) => ({ ...current, userId: event.target.value === "__all__" ? null : event.target.value }))}
               disabled={disabled || !userOptions.length}
             >
               <option value="__all__">All users</option>
               {userOptions.map((user) => <option key={user.value} value={user.value}>{user.label}</option>)}
-            </select>
+            </NativeSelect>
           ) : (
-            <select id="system-dashboard-user" className={selectClass} value="__mine__" disabled>
+            <NativeSelect id="system-dashboard-user" className="h-10" value="__mine__" disabled>
               <option value="__mine__">My activity only</option>
-            </select>
+            </NativeSelect>
           )}
         </div>
       </div>
@@ -512,7 +510,7 @@ function SavedHoursBar({ rows }: { rows: SystemDashboardAnalytics["workflowSavin
         <BarChart data={values} layout="vertical" margin={{ left: 8, right: 8 }}>
           <CartesianGrid stroke="hsl(var(--border))" horizontal={false} />
           <XAxis type="number" tick={{ fontSize: 11 }} />
-          <YAxis type="category" dataKey="name" width={108} tick={{ fontSize: 9 }} tickFormatter={(value: string) => value.length > 18 ? `${value.slice(0, 17)}…` : value} />
+          <YAxis type="category" dataKey="name" width={132} tick={{ fontSize: 11 }} tickFormatter={(value: string) => value.length > 22 ? `${value.slice(0, 21)}…` : value} />
           <Tooltip
             content={<SystemChartTooltip suffix=" hr" />}
             cursor={{ fill: "hsl(var(--muted) / 0.35)" }}

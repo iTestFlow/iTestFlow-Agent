@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react"
+import { DashboardEmptyPanel } from "@/components/dashboard/dashboard-states"
 import {
   AlertTriangle,
   ArrowUpDown,
@@ -2263,20 +2264,15 @@ function KnowledgeEmptyState({
   compact?: boolean
 }) {
   return (
-    <div role="status" className={`content-empty-state ${compact ? "min-h-36 py-6" : "min-h-[220px] py-8"}`}>
-      <div className="rounded-lg border border-border bg-background p-2.5 text-muted-foreground shadow-sm">
-        <SearchX className="size-5" aria-hidden="true" />
-      </div>
-      <div className="space-y-1">
-        <div className="font-semibold text-foreground">{title}</div>
-        <p className="mx-auto max-w-md text-sm leading-6 text-muted-foreground">{message}</p>
-      </div>
-      {actionLabel && onAction ? (
-        <Button type="button" variant="outline" size="sm" onClick={onAction}>
-          {actionLabel}
-        </Button>
-      ) : null}
-    </div>
+    <DashboardEmptyPanel
+      title={title}
+      message={message}
+      compact={compact}
+      icon={SearchX}
+      actionLabel={actionLabel}
+      onAction={onAction}
+      live={false}
+    />
   )
 }
 

@@ -40,7 +40,11 @@ type GuardContextValue = {
 
 const GuardContext = createContext<GuardContextValue | null>(null)
 const HISTORY_POINT_KEY = "__itestflowNavigationPoint"
-const NAVIGATION_FAILSAFE_MS = 15_000
+// Backstop for clearing the pending state if neither the pathname-commit effect nor a
+// route-loading fallback fires (e.g. a search/hash-only transition that keeps the same
+// pathname). Kept short so a missed clear never freezes the nav for long; the actual
+// route-loading UI is driven independently by Next's loading.tsx.
+const NAVIGATION_FAILSAFE_MS = 4_000
 
 type PendingNavigation = {
   href: string
@@ -157,6 +161,9 @@ export function UnsavedChangesProvider({ children }: { children: React.ReactNode
             const destination = new URL(href, window.location.href)
             return `${destination.pathname}${destination.search}${destination.hash}`
           })()
+    // No-op navigations to the current URL never commit a new route, so they would
+    // otherwise leave the pending state to expire on the failsafe — skip them.
+    if (typeof window !== "undefined" && normalizedHref === currentRelativeUrl()) return false
     const nextPending = { href: normalizedHref, startedAt: Date.now() }
     pendingNavigationRef.current = nextPending
     setPendingNavigation(nextPending)
@@ -208,6 +215,15 @@ export function UnsavedChangesProvider({ children }: { children: React.ReactNode
 
     const timeout = window.setTimeout(() => {
       if (activeFallbacksRef.current === 0) finishNavigation()
+
+      // Move focus to the new view so keyboard/SR users are not stranded on the
+      // (now dimmed) originating link. Only pull focus when it is still on the shell
+      // chrome — never steal it from an autofocused control inside the new content.
+      const main = document.getElementById("main-content")
+      const active = document.activeElement
+      if (main && (!active || active === document.body || !main.contains(active))) {
+        main.focus({ preventScroll: true })
+      }
     }, 0)
     return () => window.clearTimeout(timeout)
   }, [finishNavigation, pathname])

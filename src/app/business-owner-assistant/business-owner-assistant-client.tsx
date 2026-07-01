@@ -49,6 +49,7 @@ import { cn } from "@/lib/utils";
 import { normalizeContextChatbotHistory } from "@/modules/context-chatbot/context-chatbot-history";
 import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-citations";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import { postJson } from "@/components/workflow/post-json";
 
 type ChatRole = "user" | "assistant";
 type WorkspaceRole = "owner" | "admin" | "member";
@@ -149,28 +150,6 @@ const SUGGESTED_PROMPTS = [
     icon: Lightbulb,
   },
 ] as const;
-
-async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  });
-  const text = await response.text();
-  const json = parseJsonResponse(text, response.ok);
-  if (!response.ok) throw new Error(json.error ?? `Request failed: ${response.status}`);
-  return json as T;
-}
-
-function parseJsonResponse(text: string, ok: boolean) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    if (ok) throw new Error("The server returned an invalid JSON response.");
-    return { error: "The server returned a non-JSON response. Check the server logs or runtime configuration." };
-  }
-}
 
 export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole: WorkspaceRole | null }) {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null);
@@ -442,7 +421,7 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
           className="mx-auto w-full max-w-4xl space-y-6 p-4 sm:p-6"
           role="log"
           aria-live="polite"
-          aria-relevant="additions text"
+          aria-relevant="additions"
           aria-label="Assistant conversation"
         >
           {!scope ? (
@@ -463,8 +442,10 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
               />
             ))}
 
-          {loading && messages.length > 0 ? (
-            <div className="flex gap-3" role="status" aria-live="polite">
+          {/* The user message is always appended before `loading` flips true, so the
+              parent role="log" announces this indicator as an addition — no nested live region. */}
+          {loading ? (
+            <div className="flex gap-3">
               <div className="mt-1 flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <Bot className="size-4" aria-hidden="true" />
               </div>
@@ -515,10 +496,9 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
           <div id="business-owner-question-help" className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
             <span>
               {scope ? (
-                <>
-                  <span className="hidden sm:inline">Enter to send · Shift+Enter for a new line</span>
-                  <span className="sm:hidden">Use the Ask button to send</span>
-                </>
+                isMobile
+                  ? "Use the Ask button to send"
+                  : "Enter to send · Shift+Enter for a new line"
               ) : "Select an Azure DevOps project from the top bar to start chatting."}
             </span>
             {input.length ? <span className="tabular-nums">{input.length}/4000</span> : null}
@@ -618,8 +598,8 @@ function NoProjectState() {
 function ReadinessSummary({ readiness }: { readiness: ProjectReadiness }) {
   const presentation = readinessPresentation(readiness.status);
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground" aria-live="polite">
-      <Badge variant="outline" className={cn("gap-1.5", presentation.className)}>
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+      <Badge variant="outline" className={cn("gap-1.5", presentation.className)} aria-live="polite">
         {readiness.status === "loading" ? (
           <RefreshCw className="size-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         ) : (

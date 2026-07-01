@@ -36,7 +36,6 @@ export function LinkedTestCasesTable({ rows }: { rows: LinkedTestCase[] }) {
             Existing linked Azure DevOps test cases only. Paste, upload, and import are intentionally not supported.
           </p>
         </div>
-        <div className="overflow-x-auto">
           <Table containerClassName="max-h-[70vh] overflow-y-auto overscroll-contain">
             <TableHeader className="sticky top-0 z-20 bg-card">
               <TableRow>
@@ -71,7 +70,6 @@ export function LinkedTestCasesTable({ rows }: { rows: LinkedTestCase[] }) {
               ))}
             </TableBody>
           </Table>
-        </div>
       </Card>
 
       <Sheet open={Boolean(active)} onOpenChange={(open) => !open && setActive(null)}>

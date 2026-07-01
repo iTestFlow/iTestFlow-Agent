@@ -1,5 +1,6 @@
-import { BarChart3, SearchX } from "lucide-react";
+import { BarChart3, SearchX, type LucideIcon } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -54,17 +55,26 @@ export function DashboardEmptyPanel({
   message,
   compact = false,
   className,
+  icon,
+  actionLabel,
+  onAction,
+  live = true,
 }: {
   title?: string;
   message: string;
   compact?: boolean;
   className?: string;
+  icon?: LucideIcon;
+  actionLabel?: string;
+  onAction?: () => void;
+  /** When true, announces politely (role="status"). Set false for purely static empties. */
+  live?: boolean;
 }) {
-  const Icon = compact ? SearchX : BarChart3;
+  const Icon = icon ?? (compact ? SearchX : BarChart3);
 
   return (
     <div
-      role="status"
+      role={live ? "status" : undefined}
       className={cn(
         "content-empty-state",
         compact ? "min-h-32 py-6" : "min-h-[220px] py-8",
@@ -78,6 +88,11 @@ export function DashboardEmptyPanel({
         <div className="font-semibold text-foreground">{title}</div>
         <p className="mx-auto max-w-md text-sm leading-6 text-muted-foreground">{message}</p>
       </div>
+      {actionLabel && onAction ? (
+        <Button type="button" variant="outline" size="sm" onClick={onAction}>
+          {actionLabel}
+        </Button>
+      ) : null}
     </div>
   );
 }

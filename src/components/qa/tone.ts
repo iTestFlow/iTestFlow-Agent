@@ -58,6 +58,6 @@ export const toneSolidClass: Record<Tone, string> = {
   info: "border-transparent bg-primary text-primary-foreground",
   success: "border-transparent bg-success text-success-foreground",
   warning: "border-transparent bg-warning text-warning-foreground",
-  error: "border-transparent bg-destructive text-destructive-foreground",
-  draft: "border-transparent bg-[hsl(var(--chart-3))] text-white",
+  error: "border-transparent bg-[hsl(var(--destructive-solid))] text-destructive-foreground",
+  draft: "border-transparent bg-[hsl(var(--chart-3-solid))] text-white",
 }

@@ -55,6 +55,7 @@ export const GATED_INCLUDE: string[] = [
   "src/app/test-gap-analysis/lib/findings-filters.ts",
   "src/app/test-gap-analysis/lib/matrix-filters.ts",
   "src/app/test-gap-analysis/lib/summary-key-points.ts",
+  "src/components/workflow/post-json.ts",
   "src/shared/lib/active-project.ts",
 ];
 

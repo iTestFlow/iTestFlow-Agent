@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ChevronDown, ClipboardList, ListChecks, Loader2, Play } from "lucide-react";
+import { ArrowLeft, ClipboardList, ListChecks, Loader2, Play } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -554,21 +555,18 @@ function TestDesignOptionsSelector({
         <div className="space-y-3">
           <div>
             <div id="test-design-target-range-label" className="text-sm font-semibold text-foreground">Target Test Case Range</div>
-            <div className="relative mt-2">
-              <select
-                aria-labelledby="test-design-target-range-label"
-                className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui"
-                value={settings.targetTestCaseRange}
-                onChange={(event) => onTargetRangeChange(event.target.value as TargetTestCaseRangeId)}
-              >
-                {targetTestCaseRangeOptions.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.id === "custom" ? option.label : `${option.label} (${option.minCases}-${option.maxCases})`}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            </div>
+            <NativeSelect
+              containerClassName="mt-2"
+              aria-labelledby="test-design-target-range-label"
+              value={settings.targetTestCaseRange}
+              onChange={(event) => onTargetRangeChange(event.target.value as TargetTestCaseRangeId)}
+            >
+              {targetTestCaseRangeOptions.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.id === "custom" ? option.label : `${option.label} (${option.minCases}-${option.maxCases})`}
+                </option>
+              ))}
+            </NativeSelect>
           </div>
 
           {settings.targetTestCaseRange === "custom" ? (
@@ -582,6 +580,7 @@ function TestDesignOptionsSelector({
                   value={settings.customMinCases ?? ""}
                   onChange={(event) => onCustomRangeChange("customMinCases", event.target.value)}
                   aria-invalid={!customRangeValid}
+                  aria-describedby={!customRangeValid ? "custom-range-error" : undefined}
                   className="mt-1"
                 />
               </label>
@@ -594,6 +593,7 @@ function TestDesignOptionsSelector({
                   value={settings.customMaxCases ?? ""}
                   onChange={(event) => onCustomRangeChange("customMaxCases", event.target.value)}
                   aria-invalid={!customRangeValid}
+                  aria-describedby={!customRangeValid ? "custom-range-error" : undefined}
                   className="mt-1"
                 />
               </label>
@@ -601,7 +601,7 @@ function TestDesignOptionsSelector({
           ) : null}
 
           {!customRangeValid ? (
-            <Callout tone="warning" role="status">
+            <Callout tone="warning" role="status" id="custom-range-error">
               Custom range must be between 1 and {maxCustomTestCaseRange}, with minimum not greater than maximum.
             </Callout>
           ) : null}

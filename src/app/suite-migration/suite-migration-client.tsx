@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, AlertTriangle, ArrowRight, ChevronDown, ClipboardList, GitBranch, Loader2, MoveRight, Send, ShieldAlert } from "lucide-react";
+import { postJson } from "@/components/workflow/post-json";
+import { NativeSelect } from "@/components/ui/native-select";
+import { AlertCircle, AlertTriangle, ArrowRight, ClipboardList, GitBranch, Loader2, MoveRight, Send, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -47,29 +49,6 @@ type ApiState = {
   loading: boolean;
   error: string | null;
 };
-
-async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-    cache: "no-store",
-  });
-  const text = await response.text();
-  const json = parseJsonResponse(text, response.ok);
-  if (!response.ok) throw new Error(json.error ?? `Request failed: ${response.status}`);
-  return json as T;
-}
-
-function parseJsonResponse(text: string, ok: boolean) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    if (ok) throw new Error("The server returned an invalid JSON response.");
-    return { error: "The server returned a non-JSON response. Check the server logs or runtime configuration." };
-  }
-}
 
 export function SuiteMigrationClient() {
   const previewSectionRef = useRef<HTMLDivElement | null>(null);
@@ -707,40 +686,32 @@ export function SuiteMigrationClient() {
                 </span>
               }
             >
-              <div className="relative">
-                <select
-                  className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui"
-                  value={operationMode}
-                  onChange={(event) => {
-                    setHasUnfinishedWork(true);
-                    setOperationMode(event.target.value as SuiteMigrationOperationMode);
-                    setPreview(null);
-                    setReport(null);
-                  }}
-                >
-                  <option value="copy">Copy selected suite(s)</option>
-                  <option value="move">Move selected suite(s)</option>
-                </select>
-                <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              </div>
+              <NativeSelect
+                value={operationMode}
+                onChange={(event) => {
+                  setHasUnfinishedWork(true);
+                  setOperationMode(event.target.value as SuiteMigrationOperationMode);
+                  setPreview(null);
+                  setReport(null);
+                }}
+              >
+                <option value="copy">Copy selected suite(s)</option>
+                <option value="move">Move selected suite(s)</option>
+              </NativeSelect>
             </Field>
             <Field label="Outcome migration">
-              <div className="relative">
-                <select
-                  className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui"
-                  value={outcomeMode}
-                  onChange={(event) => {
-                    setHasUnfinishedWork(true);
-                    setOutcomeMode(event.target.value as OutcomeMigrationMode);
-                    setPreview(null);
-                    setReport(null);
-                  }}
-                >
-                  <option value="none">Do not migrate outcomes</option>
-                  <option value="latestOutcome">Migrate latest outcome</option>
-                </select>
-                <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              </div>
+              <NativeSelect
+                value={outcomeMode}
+                onChange={(event) => {
+                  setHasUnfinishedWork(true);
+                  setOutcomeMode(event.target.value as OutcomeMigrationMode);
+                  setPreview(null);
+                  setReport(null);
+                }}
+              >
+                <option value="none">Do not migrate outcomes</option>
+                <option value="latestOutcome">Migrate latest outcome</option>
+              </NativeSelect>
             </Field>
             <SettingSwitch
               checked={overwriteTargetOutcomes}
@@ -1111,7 +1082,7 @@ function ErrorBanner({ message }: { message: string }) {
   return (
     <Alert className="border-destructive/30 bg-destructive/10">
       <AlertTriangle className="size-4 text-destructive" />
-      <AlertTitle className="justify-self-start text-left [justify-self:left]">Request failed</AlertTitle>
+      <AlertTitle className="justify-self-start text-left">Request failed</AlertTitle>
       <AlertDescription>{message}</AlertDescription>
     </Alert>
   );

@@ -74,7 +74,6 @@ export function EditableTestCaseTable({ testCases }: { testCases: GeneratedTestC
             <Button size="sm">Continue to Publish</Button>
           </div>
         </div>
-        <div className="overflow-x-auto">
           <Table containerClassName="max-h-[70vh] overflow-y-auto overscroll-contain">
             <TableHeader className="sticky top-0 z-20 bg-card">
               <TableRow>
@@ -144,7 +143,6 @@ export function EditableTestCaseTable({ testCases }: { testCases: GeneratedTestC
               ))}
             </TableBody>
           </Table>
-        </div>
       </Card>
       <TestCaseEditDrawer
         testCase={active}

@@ -127,10 +127,11 @@ describe("nonJsonResponseDetails", () => {
     expect(details).toContain("(empty response body)");
   });
 
-  it("truncates the body excerpt to 1200 characters", () => {
+  it("truncates the body excerpt to 1200 characters with a truncation marker", () => {
     const long = "A".repeat(5000);
     const details = nonJsonResponseDetails(new Response(long, { status: 500 }), long);
     const excerpt = details.split("Body excerpt:\n")[1] ?? "";
-    expect(excerpt.length).toBe(1200);
+    expect(excerpt.startsWith("A".repeat(1200))).toBe(true);
+    expect(excerpt).toContain("truncated, 3800 more characters");
   });
 });

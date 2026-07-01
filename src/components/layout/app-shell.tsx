@@ -45,7 +45,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="lg:pl-64">
         <Topbar onOpenSidebar={() => setMobileOpen(true)} />
-        <main>{children}</main>
+        {/* Focus target for route changes: the provider moves focus here on navigation
+            so keyboard/SR users land on the new view. tabIndex=-1 + outline-none keeps it
+            programmatically focusable without a persistent ring. */}
+        <main id="main-content" tabIndex={-1} className="outline-none">
+          {children}
+        </main>
       </div>
     </div>
   )

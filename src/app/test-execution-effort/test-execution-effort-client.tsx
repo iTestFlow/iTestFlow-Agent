@@ -524,7 +524,7 @@ export function TestExecutionEffortClient() {
           {error ? (
             <Alert variant="destructive">
               <AlertCircle className="size-4" />
-              <AlertTitle>Check your inputs</AlertTitle>
+              <AlertTitle>Something went wrong</AlertTitle>
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           ) : null}
@@ -729,7 +729,7 @@ function BreakdownTable({ rows }: { rows: EffortEstimate["breakdown"] }) {
         <CardDescription>Estimated hours grouped by execution area.</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="content-scroll-region overflow-hidden rounded-lg border">
+        <div className="overflow-hidden rounded-lg border">
           <Table>
             <TableCaption className="sr-only">Estimated execution effort by area</TableCaption>
             <TableHeader>

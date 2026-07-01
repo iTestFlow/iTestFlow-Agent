@@ -19,6 +19,7 @@ import type {
   DashboardRecentActivity,
 } from "@/types/dashboard";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { StatusChip } from "@/components/qa/status-chip";
 import { toneClass } from "@/components/qa/tone";
 import { cn } from "@/lib/utils";
@@ -295,12 +296,14 @@ export function RecentActivityList({
   items,
   hasMore = false,
   loadingMore = false,
+  loading = false,
   onLoadMore,
   emptyLabel = "No recent local activity yet",
 }: {
   items: DashboardRecentActivity[];
   hasMore?: boolean;
   loadingMore?: boolean;
+  loading?: boolean;
   onLoadMore?: () => void;
   emptyLabel?: string;
 }) {
@@ -319,6 +322,23 @@ export function RecentActivityList({
   }
 
   if (!items.length) {
+    if (loading) {
+      return (
+        <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading activity">
+          {[0, 1, 2].map((row) => (
+            <div key={row} className="rounded-xl border border-border bg-background/60 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1 space-y-2">
+                  <Skeleton className="h-4 w-1/3 motion-reduce:animate-none" />
+                  <Skeleton className="h-3 w-2/3 motion-reduce:animate-none" />
+                </div>
+                <Skeleton className="h-5 w-16 shrink-0 motion-reduce:animate-none" />
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
     return <EmptyChart label={emptyLabel} />;
   }
 

@@ -20,4 +20,10 @@ describe("resolveLoginDestination", () => {
   it("rejects protocol-relative destinations", () => {
     expect(resolveLoginDestination("//example.com")).toBe("/dashboards")
   })
+
+  it("never redirects back to the login route", () => {
+    expect(resolveLoginDestination("/login")).toBe("/dashboards")
+    expect(resolveLoginDestination("/login?next=/settings")).toBe("/dashboards")
+    expect(resolveLoginDestination("/login/callback")).toBe("/dashboards")
+  })
 })

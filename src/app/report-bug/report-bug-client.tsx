@@ -3,6 +3,7 @@
 import { cloneElement, isValidElement, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import { AlertTriangle, ArrowLeft, Bug, CheckCircle2, ChevronDown, FileText, FileUp, ListChecks, Loader2, Play, Plus, Send, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -763,49 +764,41 @@ Actual: the button stays inactive / no request is triggered.`}
                 </Field>
 
                 <Field label="Area path">
-                  <div className="relative">
-                    <select
-                      value={selectedAreaPath}
-                      onChange={(event) => {
-                        setHasUnfinishedWork(true);
-                        setSelectedAreaPath(event.target.value);
-                      }}
-                      aria-label="Area path"
-                      className="focus-ring h-8 w-full min-w-0 appearance-none truncate rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui disabled:cursor-not-allowed disabled:opacity-50"
-                      disabled={metadata.loading}
-                    >
-                      <option value="">{metadata.loading ? "Loading areas..." : "Azure DevOps default"}</option>
-                      {areas.map((area) => (
-                        <option key={area.id} value={area.path}>
-                          {area.path}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                  </div>
+                  <NativeSelect
+                    value={selectedAreaPath}
+                    onChange={(event) => {
+                      setHasUnfinishedWork(true);
+                      setSelectedAreaPath(event.target.value);
+                    }}
+                    aria-label="Area path"
+                    disabled={metadata.loading}
+                  >
+                    <option value="">{metadata.loading ? "Loading areas..." : "Azure DevOps default"}</option>
+                    {areas.map((area) => (
+                      <option key={area.id} value={area.path}>
+                        {area.path}
+                      </option>
+                    ))}
+                  </NativeSelect>
                 </Field>
 
                 <Field label="Iteration path">
-                  <div className="relative">
-                    <select
-                      value={selectedIterationPath}
-                      onChange={(event) => {
-                        setHasUnfinishedWork(true);
-                        setSelectedIterationPath(event.target.value);
-                      }}
-                      aria-label="Iteration path"
-                      className="focus-ring h-8 w-full min-w-0 appearance-none truncate rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui disabled:cursor-not-allowed disabled:opacity-50"
-                      disabled={metadata.loading}
-                    >
-                      <option value="">{metadata.loading ? "Loading iterations..." : "Azure DevOps default"}</option>
-                      {iterations.map((iteration) => (
-                        <option key={iteration.id} value={iteration.path}>
-                          {iteration.path}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                  </div>
+                  <NativeSelect
+                    value={selectedIterationPath}
+                    onChange={(event) => {
+                      setHasUnfinishedWork(true);
+                      setSelectedIterationPath(event.target.value);
+                    }}
+                    aria-label="Iteration path"
+                    disabled={metadata.loading}
+                  >
+                    <option value="">{metadata.loading ? "Loading iterations..." : "Azure DevOps default"}</option>
+                    {iterations.map((iteration) => (
+                      <option key={iteration.id} value={iteration.path}>
+                        {iteration.path}
+                      </option>
+                    ))}
+                  </NativeSelect>
                 </Field>
               </div>
 
@@ -1184,22 +1177,18 @@ function SuggestionSelect({
           <Label htmlFor={id}>{label}</Label>
           <Badge variant="secondary" className="shrink-0">LLM</Badge>
         </div>
-        <div className="relative">
-          <select
-            id={id}
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
-            aria-describedby={`${id}-rationale`}
-            className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui"
-          >
-            {options.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label} - {option.hint}
-              </option>
-            ))}
-          </select>
-          <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        </div>
+        <NativeSelect
+          id={id}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          aria-describedby={`${id}-rationale`}
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label} - {option.hint}
+            </option>
+          ))}
+        </NativeSelect>
         <p id={`${id}-rationale`} className="text-xs leading-5 text-muted-foreground">
           {rationale || "No rationale provided."}
         </p>
@@ -1572,30 +1561,24 @@ function CustomFieldsSummary({ customFields }: { customFields: BugCustomField[] 
 function CustomFieldValueInput({ row, field, onChange }: { row: CustomFieldRow; field?: BugFieldMetadata; onChange: (value: string) => void }) {
   if (field?.allowedValues?.length) {
     return (
-      <div className="relative">
-        <select value={row.value} onChange={(event) => onChange(event.target.value)} aria-label="Field value" className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui">
-          <option value="">Select value</option>
-          {field.allowedValues.map((value) => (
-            <option key={String(value)} value={String(value)}>
-              {String(value)}
-            </option>
-          ))}
-        </select>
-        <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-      </div>
+      <NativeSelect value={row.value} onChange={(event) => onChange(event.target.value)} aria-label="Field value">
+        <option value="">Select value</option>
+        {field.allowedValues.map((value) => (
+          <option key={String(value)} value={String(value)}>
+            {String(value)}
+          </option>
+        ))}
+      </NativeSelect>
     );
   }
 
   if (field?.type === "boolean") {
     return (
-      <div className="relative">
-        <select value={row.value} onChange={(event) => onChange(event.target.value)} aria-label="Field value" className="focus-ring h-8 w-full appearance-none rounded-lg border border-input bg-background pl-2.5 pr-9 text-sm text-foreground transition-colors duration-ui">
-          <option value="">Select value</option>
-          <option value="true">True</option>
-          <option value="false">False</option>
-        </select>
-        <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-      </div>
+      <NativeSelect value={row.value} onChange={(event) => onChange(event.target.value)} aria-label="Field value">
+        <option value="">Select value</option>
+        <option value="true">True</option>
+        <option value="false">False</option>
+      </NativeSelect>
     );
   }
 

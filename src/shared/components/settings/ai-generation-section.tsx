@@ -1,11 +1,12 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { ChevronDown, Loader2 } from "lucide-react"
+import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { NativeSelect } from "@/components/ui/native-select"
 import { SearchableCombobox } from "@/components/ui/searchable-combobox"
 import { OwnerOnlyNotice } from "./owner-only-notice"
 import {
@@ -155,22 +156,15 @@ function AiProviderCard() {
       action={<StatusBadge tone={badge.tone} label={badge.label} />}
     >
       <Field label="LLM Provider" htmlFor="llm-provider">
-        <div className="relative">
-          <select
-            id="llm-provider"
-            className="h-8 w-full appearance-none rounded-lg border border-input bg-card pl-2.5 pr-9 text-sm text-foreground outline-none transition-colors duration-ui focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-            value={provider}
-            onChange={(event) => setProvider(event.target.value as Provider)}
-          >
-            <option value="openai">OpenAI</option>
-            <option value="gemini">Gemini</option>
-            <option value="anthropic">Anthropic</option>
-          </select>
-          <ChevronDown
-            className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-            aria-hidden="true"
-          />
-        </div>
+        <NativeSelect
+          id="llm-provider"
+          value={provider}
+          onChange={(event) => setProvider(event.target.value as Provider)}
+        >
+          <option value="openai">OpenAI</option>
+          <option value="gemini">Gemini</option>
+          <option value="anthropic">Anthropic</option>
+        </NativeSelect>
       </Field>
 
       <SecretField
