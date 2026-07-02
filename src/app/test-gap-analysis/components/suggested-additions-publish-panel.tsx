@@ -84,7 +84,7 @@ export function SuggestedAdditionsPublishPanel({
       <div className="space-y-4 p-4">
         {state.error ? <ErrorBlock message={state.error} /> : null}
         {invalidCaseCount > 0 ? (
-          <Callout tone="warning">
+          <Callout tone="warning" role="status">
             Resolve validation issues in the {invalidCaseCount} selected suggested test case{invalidCaseCount === 1 ? "" : "s"} before creating them.
           </Callout>
         ) : null}
@@ -95,7 +95,7 @@ export function SuggestedAdditionsPublishPanel({
           <ConfirmationDialog
             trigger={
               <Button disabled={disabled}>
-                {state.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                {state.loading ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Send className="h-4 w-4" />}
                 {state.loading ? "Adding..." : "Add to Azure"}
               </Button>
             }

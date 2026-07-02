@@ -24,6 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { resolveLoginDestination } from "@/app/login/login-destination"
 
 type OrganizationOption = {
   name: string
@@ -166,10 +167,9 @@ export default function LoginPage() {
       }
       toast.success("Signed in.")
       // Return the user to where the session-expiry redirect sent them from, if it's
-      // a safe in-app path; otherwise land on the home route.
+      // a safe in-app path; otherwise land directly on the dashboard.
       const nextParam = new URLSearchParams(window.location.search).get("next")
-      const destination = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//") ? nextParam : "/"
-      router.push(destination)
+      router.push(resolveLoginDestination(nextParam))
       router.refresh()
     } catch {
       toast.error("Sign in failed. Check your connection and try again.")

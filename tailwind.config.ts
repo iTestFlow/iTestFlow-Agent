@@ -77,6 +77,10 @@ const config: Config = {
         card: "0 10px 30px rgba(15,23,42,0.06)",
         "card-dark": "0 18px 60px rgba(0,0,0,0.28)",
       },
+      transitionDuration: {
+        fast: "var(--motion-fast)",
+        ui: "var(--motion-ui)",
+      },
     },
   },
   plugins: [],

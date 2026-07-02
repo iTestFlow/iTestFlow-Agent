@@ -103,6 +103,7 @@ export function FindingsReviewQueue({
 
   return (
     <SectionCard
+      title="Findings Review"
       description="Review actionable gaps, weak coverage, and recommended test improvements."
       action={<span className="text-xs text-muted-foreground">{filteredReviewItems.length} of {reviewItems.length} items</span>}
     >
@@ -193,7 +194,7 @@ export function FindingsReviewQueue({
             </div>
           </div>
           {filteredReviewItems.length ? (
-            <div className="space-y-5 p-4">
+            <div className="space-y-4 p-4">
               {groups.map((group) =>
                 group.items.length ? (
                   <section key={group.key} className="space-y-2" aria-label={`${group.label} (${group.items.length})`}>

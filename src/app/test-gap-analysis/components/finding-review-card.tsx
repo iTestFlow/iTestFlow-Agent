@@ -4,7 +4,7 @@ import { useId, useState } from "react";
 import { ChevronDown, Eye } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { ToneBadge, severityTone } from "@/components/workflow/test-intelligence-shared";
+import { SeverityBadge, ToneBadge } from "@/components/workflow/test-intelligence-shared";
 import { cn } from "@/lib/utils";
 
 import type { CoverageReviewItem } from "../lib/findings-filters";
@@ -36,7 +36,7 @@ export function FindingReviewCard({
       <div className="p-3">
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <ToneBadge tone={severityTone(item.severity)}>{item.severity}</ToneBadge>
+            <SeverityBadge severity={item.severity} />
             <ToneBadge tone={item.kind === "finding" ? "warning" : "neutral"}>
               {item.kind === "finding" ? "Finding" : "Note"}
             </ToneBadge>

@@ -2,6 +2,7 @@
 
 import {
   Activity,
+  AlertTriangle,
   Clock3,
   RefreshCw,
   Sparkles,
@@ -23,14 +24,16 @@ import {
   YAxis,
 } from "recharts";
 
+import { DashboardEmptyPanel, DashboardLoadingState } from "@/components/dashboard/dashboard-states";
 import { MetricCard } from "@/components/qa/metric-card";
 import { EmptyState } from "@/components/qa/empty-state";
 import { ErrorState } from "@/components/qa/error-state";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { workflowLabels, workflowTypeValues, type WorkflowType } from "@/modules/analytics/analytics-config";
@@ -70,9 +73,6 @@ const SYSTEM_DATE_PRESET_OPTIONS = [
   { value: "overall", label: "All time" },
   { value: "custom", label: "Custom range" },
 ];
-
-const selectClass =
-  "h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50";
 
 type SystemTab = "value" | "adoption";
 
@@ -183,7 +183,7 @@ export function SystemDashboardsClient({ active }: { active: boolean }) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="content-stack" aria-busy={loading}>
       <SystemFilters filters={filters} setFilters={handleFiltersChange} data={data} disabled={loading && !data} />
       <RefreshBar
         projectName={scope.azureProjectName}
@@ -200,8 +200,9 @@ export function SystemDashboardsClient({ active }: { active: boolean }) {
       {data ? (
         <>
           {data.warnings.length ? (
-            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-muted-foreground">
-              {data.warnings[0]}
+            <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-muted-foreground">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
+              <span className="leading-5">{data.warnings[0]}</span>
             </div>
           ) : null}
           <Tabs id="system-dashboard-details" value={activeTab} onValueChange={(value) => setActiveTab(value as SystemTab)} className="flex-col gap-4">
@@ -242,47 +243,51 @@ function SystemFilters({
   return (
     <section className="qa-card space-y-3 p-4">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        <select
-          className={selectClass}
-          value={filters.datePreset}
-          onChange={(event) => setFilters((current) => ({ ...current, datePreset: event.target.value as SystemDashboardDatePreset }))}
-          disabled={disabled}
-          aria-label="System dashboard date range"
-        >
-          {SYSTEM_DATE_PRESET_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
-        <SearchableMultiSelect
-          options={data?.filterMetadata.workflows ?? workflowTypeValues.map((value) => ({ value, label: workflowLabels[value] }))}
-          value={filters.workflowTypes}
-          onValueChange={(workflowTypes) => setFilters((current) => ({ ...current, workflowTypes: workflowTypes as WorkflowType[] }))}
-          getOptionValue={(option) => option.value}
-          getOptionLabel={(option) => option.label}
-          placeholder="All workflows"
-          ariaLabel="Workflow types"
-          triggerClassName="h-10"
-          disabled={disabled}
-        />
-        {canViewWorkspaceUsers ? (
-          <select
-            className={selectClass}
-            value={filters.userId ?? "__all__"}
-            onChange={(event) => setFilters((current) => ({ ...current, userId: event.target.value === "__all__" ? null : event.target.value }))}
-            disabled={disabled || !userOptions.length}
-            aria-label="System dashboard user"
+        <div className="space-y-1.5">
+          <Label htmlFor="system-dashboard-date-range">Date range</Label>
+          <NativeSelect
+            id="system-dashboard-date-range"
+            className="h-10"
+            value={filters.datePreset}
+            onChange={(event) => setFilters((current) => ({ ...current, datePreset: event.target.value as SystemDashboardDatePreset }))}
+            disabled={disabled}
           >
-            <option value="__all__">All users</option>
-            {userOptions.map((user) => <option key={user.value} value={user.value}>{user.label}</option>)}
-          </select>
-        ) : (
-          <select
-            className={selectClass}
-            value="__mine__"
-            disabled
-            aria-label="System dashboard user scope"
-          >
-            <option value="__mine__">My activity only</option>
-          </select>
-        )}
+            {SYSTEM_DATE_PRESET_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </NativeSelect>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Workflow types</Label>
+          <SearchableMultiSelect
+            options={data?.filterMetadata.workflows ?? workflowTypeValues.map((value) => ({ value, label: workflowLabels[value] }))}
+            value={filters.workflowTypes}
+            onValueChange={(workflowTypes) => setFilters((current) => ({ ...current, workflowTypes: workflowTypes as WorkflowType[] }))}
+            getOptionValue={(option) => option.value}
+            getOptionLabel={(option) => option.label}
+            placeholder="All workflows"
+            ariaLabel="Workflow types"
+            triggerClassName="h-10"
+            disabled={disabled}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="system-dashboard-user">User</Label>
+          {canViewWorkspaceUsers ? (
+            <NativeSelect
+              id="system-dashboard-user"
+              className="h-10"
+              value={filters.userId ?? "__all__"}
+              onChange={(event) => setFilters((current) => ({ ...current, userId: event.target.value === "__all__" ? null : event.target.value }))}
+              disabled={disabled || !userOptions.length}
+            >
+              <option value="__all__">All users</option>
+              {userOptions.map((user) => <option key={user.value} value={user.value}>{user.label}</option>)}
+            </NativeSelect>
+          ) : (
+            <NativeSelect id="system-dashboard-user" className="h-10" value="__mine__" disabled>
+              <option value="__mine__">My activity only</option>
+            </NativeSelect>
+          )}
+        </div>
       </div>
       {!canViewWorkspaceUsers ? (
         <p className="text-xs leading-5 text-muted-foreground">
@@ -290,10 +295,15 @@ function SystemFilters({
         </p>
       ) : null}
       {filters.datePreset === "custom" ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <Input type="date" value={filters.from} onChange={(event) => setFilters((current) => ({ ...current, from: event.target.value }))} className="w-[170px]" />
-          <span className="text-xs text-muted-foreground">to</span>
-          <Input type="date" value={filters.to} onChange={(event) => setFilters((current) => ({ ...current, to: event.target.value }))} className="w-[170px]" />
+        <div className="grid gap-3 sm:grid-cols-2 sm:items-end">
+          <div className="space-y-1.5">
+            <Label htmlFor="system-dashboard-start-date">Start date</Label>
+            <Input id="system-dashboard-start-date" type="date" value={filters.from} max={filters.to || undefined} onChange={(event) => setFilters((current) => ({ ...current, from: event.target.value }))} className="w-full sm:w-[180px]" />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="system-dashboard-end-date">End date</Label>
+            <Input id="system-dashboard-end-date" type="date" value={filters.to} min={filters.from || undefined} onChange={(event) => setFilters((current) => ({ ...current, to: event.target.value }))} className="w-full sm:w-[180px]" />
+          </div>
         </div>
       ) : null}
     </section>
@@ -320,7 +330,7 @@ function RefreshBar({
   onRefresh: () => void;
 }) {
   return (
-    <section className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+    <section className="content-surface px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="text-xs font-medium uppercase text-muted-foreground">iTestFlow Value Scope</div>
@@ -402,7 +412,10 @@ function WorkflowSavingsTable({ rows }: { rows: SystemDashboardAnalytics["workfl
                   <TableCell className="font-medium" title={row.workflow}>
                     {row.workflow}
                     {row.reviewExceedsManual ? (
-                      <span className="ml-2 text-xs text-warning" title="Review effort meets or exceeds the manual baseline — the AI is not saving time here.">⚠</span>
+                      <span className="ml-2 inline-flex text-warning" title="Review effort meets or exceeds the manual baseline; the AI is not saving time here.">
+                        <AlertTriangle className="size-3.5" aria-hidden="true" />
+                        <span className="sr-only">Review effort exceeds the manual baseline</span>
+                      </span>
                     ) : null}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{row.runs}</TableCell>
@@ -416,7 +429,7 @@ function WorkflowSavingsTable({ rows }: { rows: SystemDashboardAnalytics["workfl
             </TableBody>
           </Table>
         ) : (
-          <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">No workflow runs are recorded for this scope yet.</div>
+          <DashboardEmptyPanel title="No workflow runs yet" message="No workflow runs are recorded for this scope. Try a wider date range or clear the workflow filter." compact />
         )}
       </CardContent>
     </Card>
@@ -477,7 +490,7 @@ function ChartCard({ title, empty, children }: { title: string; empty: boolean; 
     <Card className="qa-card">
       <CardHeader><CardTitle className="text-base">{title}</CardTitle></CardHeader>
       <CardContent>
-        {empty ? <div className="flex h-[280px] items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">No value data is available yet.</div> : children}
+        {empty ? <DashboardEmptyPanel message="No value data is available for this scope yet. Try a wider date range or clear the active filters." /> : children}
       </CardContent>
     </Card>
   );
@@ -492,12 +505,12 @@ function SavedHoursBar({ rows }: { rows: SystemDashboardAnalytics["workflowSavin
       cycleHours: round(row.cycleSavedMinutes / 60),
     }));
   return (
-    <div className="h-[300px]">
+    <div className="h-[260px] sm:h-[300px]">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={values} layout="vertical" margin={{ left: 80, right: 20 }}>
+        <BarChart data={values} layout="vertical" margin={{ left: 8, right: 8 }}>
           <CartesianGrid stroke="hsl(var(--border))" horizontal={false} />
           <XAxis type="number" tick={{ fontSize: 11 }} />
-          <YAxis type="category" dataKey="name" width={140} tick={{ fontSize: 10 }} />
+          <YAxis type="category" dataKey="name" width={132} tick={{ fontSize: 11 }} tickFormatter={(value: string) => value.length > 22 ? `${value.slice(0, 21)}…` : value} />
           <Tooltip
             content={<SystemChartTooltip suffix=" hr" />}
             cursor={{ fill: "hsl(var(--muted) / 0.35)" }}
@@ -513,7 +526,7 @@ function SavedHoursBar({ rows }: { rows: SystemDashboardAnalytics["workflowSavin
 
 function SavedHoursTrend({ rows }: { rows: SystemDashboardAnalytics["workflowSavings"]["trend"] }) {
   return (
-    <div className="h-[300px]">
+    <div className="h-[260px] sm:h-[300px]">
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={rows}>
           <CartesianGrid stroke="hsl(var(--border))" vertical={false} />
@@ -530,7 +543,7 @@ function SavedHoursTrend({ rows }: { rows: SystemDashboardAnalytics["workflowSav
 }
 
 function SystemDashboardSkeleton() {
-  return <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{Array.from({ length: 8 }).map((_, index) => <Skeleton key={index} className="h-32 rounded-xl" />)}</div>;
+  return <DashboardLoadingState label="Loading platform insights" cards={5} />;
 }
 
 type SystemChartTooltipPayload = {

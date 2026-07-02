@@ -50,9 +50,8 @@ export function WorkItemTable({ items }: { items: WorkItem[] }) {
             Open selected
           </Button>
         </div>
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
+          <Table containerClassName="max-h-[70vh] overflow-y-auto overscroll-contain">
+            <TableHeader className="sticky top-0 z-20 bg-card">
               <TableRow>
                 <TableHead className="w-10">
                   <Checkbox
@@ -114,7 +113,6 @@ export function WorkItemTable({ items }: { items: WorkItem[] }) {
               })}
             </TableBody>
           </Table>
-        </div>
       </div>
       <WorkItemDetailsDrawer workItem={active} open={Boolean(active)} onOpenChange={(open) => !open && setActive(null)} />
     </>

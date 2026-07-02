@@ -6,6 +6,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SearchableCombobox } from "@/components/ui/searchable-combobox";
 import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
@@ -43,9 +44,6 @@ const DATE_PRESET_OPTIONS = [
   { value: "custom", label: "Custom range" },
 ];
 
-const selectClass =
-  "h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50";
-
 export function DashboardFilters({
   value,
   effective,
@@ -73,21 +71,21 @@ export function DashboardFilters({
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5 xl:items-start">
         <div className="space-y-1.5">
           <Label className="text-sm font-semibold text-foreground">Date range</Label>
-          <select
-            className={selectClass}
+          <NativeSelect
+            className="h-10"
             value={value.datePreset}
             onChange={(event) => patch({ datePreset: event.target.value as DashboardDatePreset })}
             disabled={disabled}
             aria-label="Dashboard date range"
           >
             {DATE_PRESET_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
+          </NativeSelect>
         </div>
 
         <div className="space-y-1.5">
           <Label className="text-sm font-semibold text-foreground">Sprint</Label>
-          <select
-            className={selectClass}
+          <NativeSelect
+            className="h-10"
             value={value.iterationPath ?? "__all__"}
             onChange={(event) => patch({ iterationPath: event.target.value === "__all__" ? null : event.target.value })}
             disabled={disabled}
@@ -95,7 +93,7 @@ export function DashboardFilters({
           >
             <option value="__all__">All sprints</option>
             {metadata.iterations.map((iteration) => <option key={iteration.value} value={iteration.value}>{iteration.label}</option>)}
-          </select>
+          </NativeSelect>
         </div>
 
         <div className="space-y-1.5">
@@ -127,7 +125,7 @@ export function DashboardFilters({
 
         <Popover open={moreFiltersOpen} onOpenChange={setMoreFiltersOpen}>
           <PopoverTrigger asChild>
-            <Button type="button" variant="outline" className="mt-6 h-10 justify-start gap-2 px-3" disabled={disabled}>
+            <Button type="button" variant="outline" className="h-10 justify-start gap-2 px-3 md:mt-6" disabled={disabled}>
               <Filter className="size-4" />More filters{activeAdvanced ? " (active)" : ""}
             </Button>
           </PopoverTrigger>
@@ -175,10 +173,15 @@ export function DashboardFilters({
       </div>
 
       {value.datePreset === "custom" ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <Input type="date" aria-label="Dashboard start date" value={value.from} max={value.to || undefined} onChange={(event) => patch({ from: event.target.value })} className="w-[170px]" />
-          <span className="text-xs text-muted-foreground">to</span>
-          <Input type="date" aria-label="Dashboard end date" value={value.to} min={value.from || undefined} onChange={(event) => patch({ to: event.target.value })} className="w-[170px]" />
+        <div className="grid gap-3 sm:grid-cols-2 sm:items-end">
+          <div className="space-y-1.5">
+            <Label htmlFor="dashboard-start-date">Start date</Label>
+            <Input id="dashboard-start-date" type="date" value={value.from} max={value.to || undefined} onChange={(event) => patch({ from: event.target.value })} className="w-full sm:w-[180px]" />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="dashboard-end-date">End date</Label>
+            <Input id="dashboard-end-date" type="date" value={value.to} min={value.from || undefined} onChange={(event) => patch({ to: event.target.value })} className="w-full sm:w-[180px]" />
+          </div>
         </div>
       ) : null}
     </section>

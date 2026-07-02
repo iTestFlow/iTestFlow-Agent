@@ -32,7 +32,7 @@ export function MetricCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">{title}</p>
-            <div className="mt-2 break-words text-2xl font-bold leading-tight text-foreground">{value}</div>
+            <div className="mt-2 break-words text-2xl font-bold leading-tight text-foreground tabular-nums">{value}</div>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">{description}</p>
           </div>
           <div className={cn("rounded-lg border p-2", toneClass[metricToneMap[tone]])}>

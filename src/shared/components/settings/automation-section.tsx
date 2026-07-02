@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector"
@@ -205,7 +206,7 @@ export function AutomationSection() {
       {forbidden ? (
         <OwnerOnlyNotice />
       ) : (
-        <div className="space-y-5">
+        <div className="space-y-4">
           <div className="flex items-center justify-between rounded-md border p-3">
             <div>
               <div className="text-sm font-medium">Enable scheduled sync</div>
@@ -331,7 +332,14 @@ export function AutomationSection() {
 
           <div className="flex items-center gap-2">
             <Button type="button" onClick={() => void onSave()} disabled={saving || loading || !canSave}>
-              {saving ? "Saving…" : "Save schedule"}
+              {saving ? (
+                <>
+                  <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+                  Saving…
+                </>
+              ) : (
+                "Save schedule"
+              )}
             </Button>
             {hasSaved ? (
               <Button type="button" variant="ghost" className="text-destructive" onClick={() => void onRemove()} disabled={saving}>

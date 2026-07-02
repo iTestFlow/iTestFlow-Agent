@@ -46,9 +46,8 @@ export function RequirementFindingsTable({ findings }: { findings: RequirementFi
           <Button size="sm" variant="outline"><Plus className="size-3.5" />Add Selected to Azure DevOps Comment</Button>
         </div>
       </div>
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
+        <Table containerClassName="max-h-[70vh] overflow-y-auto overscroll-contain">
+          <TableHeader className="sticky top-0 z-20 bg-card">
             <TableRow>
               <TableHead className="w-10">Select</TableHead>
               <TableHead>Severity</TableHead>
@@ -86,7 +85,6 @@ export function RequirementFindingsTable({ findings }: { findings: RequirementFi
             ))}
           </TableBody>
         </Table>
-      </div>
     </Card>
   )
 }

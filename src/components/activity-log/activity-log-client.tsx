@@ -144,19 +144,19 @@ export function ActivityLogClient() {
         title={scope === undefined ? "Loading activity" : scope?.azureProjectName ? `${scope.azureProjectName} activity` : "All local project activity"}
         description="Recent local workflow audit entries, generated outputs, and user actions, scoped to the active project."
         action={
-          <div className="flex items-center gap-2">
-            <span className="hidden rounded-full border border-border bg-background/70 px-3 py-1.5 text-xs text-muted-foreground md:inline-flex">
+          <div className="flex flex-wrap items-center gap-2">
+            <span role="status" className="inline-flex rounded-full border border-border bg-background/70 px-3 py-1.5 text-xs tabular-nums text-muted-foreground">
               Updated {formatGeneratedAt(data?.generatedAt)}
             </span>
-            <Button size="sm" variant="outline" onClick={() => setReloadToken((token) => token + 1)} disabled={state.loading}>
-              <RefreshCw className={state.loading ? "size-4 animate-spin" : "size-4"} />
+            <Button size="sm" variant="outline" aria-busy={state.loading} onClick={() => setReloadToken((token) => token + 1)} disabled={state.loading}>
+              <RefreshCw className={state.loading ? "size-4 motion-safe:animate-spin" : "size-4"} aria-hidden="true" />
               Refresh
             </Button>
           </div>
         }
       />
 
-      {state.error ? <Callout tone="error">{state.error}</Callout> : null}
+      {state.error ? <Callout tone="error" role="alert">{state.error}</Callout> : null}
 
       <ChartCard title="Recent Activity" description="Latest local workflow audit entries." marker="red">
         <div className="-mx-5 mb-4 border-y border-border bg-muted/20">
@@ -168,7 +168,7 @@ export function ActivityLogClient() {
             filters={
               <>
                 <Select value={group} onValueChange={changeGroup}>
-                  <SelectTrigger className="h-8 w-[200px]" aria-label="Activity type">
+                  <SelectTrigger className="h-8 w-full min-w-0 sm:w-[200px]" aria-label="Activity type">
                     <SelectValue placeholder="All types" />
                   </SelectTrigger>
                   <SelectContent>
@@ -180,26 +180,28 @@ export function ActivityLogClient() {
                     ))}
                   </SelectContent>
                 </Select>
-                <Input
-                  type="date"
-                  aria-label="From date"
-                  value={from}
-                  max={to || undefined}
-                  onChange={(event) => changeFrom(event.target.value)}
-                  className="h-8 w-[150px]"
-                />
-                <span className="text-xs text-muted-foreground">to</span>
-                <Input
-                  type="date"
-                  aria-label="To date"
-                  value={to}
-                  min={from || undefined}
-                  onChange={(event) => changeTo(event.target.value)}
-                  className="h-8 w-[150px]"
-                />
+                <div role="group" aria-label="Date range" className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+                  <Input
+                    type="date"
+                    aria-label="From date"
+                    value={from}
+                    max={to || undefined}
+                    onChange={(event) => changeFrom(event.target.value)}
+                    className="h-8 w-full min-w-0 sm:w-[150px]"
+                  />
+                  <span className="text-xs text-muted-foreground">to</span>
+                  <Input
+                    type="date"
+                    aria-label="To date"
+                    value={to}
+                    min={from || undefined}
+                    onChange={(event) => changeTo(event.target.value)}
+                    className="h-8 w-full min-w-0 sm:w-[150px]"
+                  />
+                </div>
                 {hasActiveFilters ? (
                   <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
-                    <X className="size-4" />
+                    <X className="size-4" aria-hidden="true" />
                     Clear
                   </Button>
                 ) : null}
@@ -212,8 +214,9 @@ export function ActivityLogClient() {
           items={data?.items ?? []}
           hasMore={data?.hasMore ?? false}
           loadingMore={state.loading && Boolean(data)}
+          loading={state.loading && !data}
           onLoadMore={loadMoreRecentActivity}
-          emptyLabel={hasActiveFilters ? "No activity matches your filters." : "No recent local activity yet"}
+          emptyLabel={hasActiveFilters ? "No activity matches your filters" : "No recent local activity yet"}
         />
       </ChartCard>
     </div>

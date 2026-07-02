@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -98,7 +99,7 @@ export function ConnectionsSection() {
       >
         <Input
           id="azure-org-url"
-          className="h-11 border-input bg-muted/40 text-muted-foreground"
+          className="h-8 border-input bg-muted/40 text-muted-foreground"
           value={loading ? "Loading…" : status?.azureOrgUrl ?? "—"}
           readOnly
           disabled
@@ -116,7 +117,14 @@ export function ConnectionsSection() {
       />
 
       <Button type="button" onClick={() => void onSave()} disabled={saving || loading || !azurePat.trim()}>
-        {saving ? "Saving…" : "Save PAT"}
+        {saving ? (
+          <>
+            <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+            Saving…
+          </>
+        ) : (
+          "Save PAT"
+        )}
       </Button>
     </SectionCard>
   )

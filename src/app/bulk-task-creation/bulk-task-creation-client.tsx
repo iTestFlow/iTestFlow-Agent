@@ -59,6 +59,8 @@ import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { cn } from "@/lib/utils";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import type { ProjectUser } from "@/types/azure-devops";
+import { postJson } from "@/components/workflow/post-json";
+import { NativeSelect } from "@/components/ui/native-select";
 
 type TargetMode = "iteration" | "manual";
 type WorkflowStepId = "task-templates" | "target-stories" | "review-create";
@@ -161,27 +163,6 @@ const BULK_TASK_WORKFLOW_STEPS = [
     description: "Review generated tasks and create the batch.",
   },
 ] as const;
-
-async function postJson<T>(url: string, body: unknown): Promise<T> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const text = await response.text();
-  const json = parseJsonResponse(text, response.ok);
-  if (!response.ok) throw new Error(json.error ?? `Request failed: ${response.status}`);
-  return json as T;
-}
-
-function parseJsonResponse(text: string, ok: boolean) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    if (ok) throw new Error("The server returned an invalid JSON response.");
-    return { error: "The server returned a non-JSON response. Check the server logs or runtime configuration." };
-  }
-}
 
 export function BulkTaskCreationClient() {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null);
@@ -615,7 +596,7 @@ export function BulkTaskCreationClient() {
         <Callout tone="warning">Select an Azure DevOps project before creating tasks.</Callout>
       ) : null}
 
-      {error ? <Callout tone="error">{error}</Callout> : null}
+      {error ? <Callout tone="error" role="alert">{error}</Callout> : null}
 
       {activeStepId === "task-templates" ? (
         <TaskTemplatesStep
@@ -709,9 +690,10 @@ export function BulkTaskCreationClient() {
               <span className="font-normal text-muted-foreground">{requestedCount} tasks will be created</span>
             </div>
           }
+          description={!canSubmit && blockingErrors[0] ? blockingErrors[0] : undefined}
           actions={
-            <Button type="button" size="lg" onClick={submit} disabled={!canSubmit}>
-              {submitLoading ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+            <Button type="button" size="lg" className="w-full sm:w-auto" onClick={submit} disabled={!canSubmit} aria-busy={submitLoading} title={!canSubmit && blockingErrors[0] ? blockingErrors[0] : undefined}>
+              {submitLoading ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <Send className="size-4" />}
               {submitLoading ? "Creating tasks..." : `Create ${requestedCount} Tasks`}
             </Button>
           }
@@ -740,7 +722,7 @@ function WorkflowSummaryStrip({
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-2 xl:grid-cols-4" aria-label="Bulk task summary">
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" aria-label="Bulk task summary">
       {items.map((item) => {
         const Icon = item.icon;
         return (
@@ -752,7 +734,7 @@ function WorkflowSummaryStrip({
               <Icon className="size-3.5" aria-hidden="true" />
               {item.label}
             </div>
-            <div className="mt-1 text-lg font-semibold leading-none text-foreground">{item.value}</div>
+            <div className="mt-1 text-lg font-semibold leading-none tabular-nums text-foreground">{item.value}</div>
           </div>
         );
       })}
@@ -790,7 +772,7 @@ function TaskTemplatesStep({
       <CardHeader>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <CardTitle className="text-base">Task Templates</CardTitle>
+            <CardTitle className="text-base" role="heading" aria-level={2}>Task Templates</CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
               Each template creates one task under every selected story.
             </p>
@@ -885,7 +867,12 @@ function TemplateStatusBadge({ status }: { status: TemplateStatus }) {
       </Badge>
     );
   }
-  return null;
+  return (
+    <Badge className="border-success/40 bg-success/10 text-success">
+      <CheckCircle2 className="size-3" aria-hidden="true" />
+      Ready
+    </Badge>
+  );
 }
 
 function TaskTemplateCard({
@@ -980,6 +967,8 @@ function TaskTemplateCard({
                   value={task.title}
                   onChange={(event) => onUpdate({ title: event.target.value })}
                   placeholder="Task title"
+                  required
+                  aria-required={true}
                   aria-invalid={Boolean(titleIssue)}
                   aria-describedby={titleIssue ? titleErrorId : undefined}
                 />
@@ -1037,7 +1026,7 @@ function TaskTemplateCard({
               </Field>
               <Label
                 htmlFor={remainingWorkId}
-                className="flex items-start gap-2.5 rounded-md border border-border bg-muted/20 px-3 py-2 text-sm"
+                className="flex items-start gap-2.5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm"
               >
                 <Checkbox
                   id={remainingWorkId}
@@ -1129,7 +1118,7 @@ function TargetStoriesStep({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <CardTitle className="text-base">Target Stories</CardTitle>
+              <CardTitle className="text-base" role="heading" aria-level={2}>Target Stories</CardTitle>
               <Badge variant="secondary">{selectedCount} selected</Badge>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -1161,12 +1150,12 @@ function TargetStoriesStep({
           <TabsContent value="iteration" className="space-y-4">
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-end">
               <Field label="Sprint" htmlFor="bulk-task-iteration">
-                <select
+                <NativeSelect
                   id="bulk-task-iteration"
-                  className="focus-ring h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
                   value={selectedIterationPath}
                   onChange={(event) => onIterationChange(event.target.value)}
                   disabled={!scope || iterationsLoading}
+                  aria-busy={iterationsLoading}
                 >
                   <option value="">{iterationsLoading ? "Loading sprints..." : "Select sprint"}</option>
                   {iterations.map((iteration) => (
@@ -1174,25 +1163,29 @@ function TargetStoriesStep({
                       {iteration.path}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               </Field>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={onReloadIterations}
-                disabled={!scope || iterationsLoading || storiesLoading}
-              >
-                {iterationsLoading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                Refresh
-              </Button>
-              <Button
-                type="button"
-                onClick={onLoadStories}
-                disabled={!scope || !selectedIterationPath || storiesLoading || iterationsLoading}
-              >
-                {storiesLoading ? <Loader2 className="size-4 animate-spin" /> : <ClipboardList className="size-4" />}
-                {storiesLoading ? "Loading Stories..." : "Load User Stories"}
-              </Button>
+              <div className="flex gap-3 [&>button]:flex-1 lg:contents">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={onReloadIterations}
+                  disabled={!scope || iterationsLoading || storiesLoading}
+                  aria-busy={iterationsLoading}
+                >
+                  {iterationsLoading ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <RefreshCw className="size-4" />}
+                  Refresh
+                </Button>
+                <Button
+                  type="button"
+                  onClick={onLoadStories}
+                  disabled={!scope || !selectedIterationPath || storiesLoading || iterationsLoading}
+                  aria-busy={storiesLoading}
+                >
+                  {storiesLoading ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <ClipboardList className="size-4" />}
+                  {storiesLoading ? "Loading Stories..." : "Load User Stories"}
+                </Button>
+              </div>
             </div>
 
             {selectedIteration ? (
@@ -1204,7 +1197,7 @@ function TargetStoriesStep({
             ) : null}
 
             {stories.length ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-muted/25 px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2">
                 <span className="text-sm text-muted-foreground">
                   {selectedStoryIds.length} of {stories.length} loaded stories selected
                 </span>
@@ -1276,7 +1269,7 @@ function TargetStoriesStep({
             <ArrowLeft className="size-4" />
             Back to Templates
           </Button>
-          <Button type="button" onClick={onReview} disabled={!canReview}>
+          <Button type="button" onClick={onReview} disabled={!canReview} title={!canReview ? "Select at least one story to review" : undefined}>
             Review {selectedCount ? `${selectedCount} Stories` : "Selection"}
             <ArrowRight className="size-4" />
           </Button>
@@ -1301,7 +1294,12 @@ function Field({
     <div className="space-y-1.5">
       <Label htmlFor={htmlFor} className="text-sm font-semibold text-foreground">
         {label}
-        {required ? <span className="ml-1 text-destructive">*</span> : null}
+        {required ? (
+          <>
+            <span className="ml-1 text-destructive" aria-hidden="true">*</span>
+            <span className="sr-only"> (required)</span>
+          </>
+        ) : null}
       </Label>
       {children}
     </div>
@@ -1352,12 +1350,13 @@ function StorySelectionTable({
     : sortedStories;
   const allVisibleSelected = visibleStories.length > 0
     && visibleStories.every((story) => selectedStoryIds.includes(story.id));
+  const someVisibleSelected = visibleStories.some((story) => selectedStoryIds.includes(story.id));
 
   if (loading) {
     return (
       <div className="space-y-3 rounded-md border border-border bg-card p-4" aria-label="Loading user stories">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
+          <Loader2 className="size-4 motion-safe:animate-spin" />
           Loading user stories...
         </div>
         {Array.from({ length: 4 }, (_, index) => (
@@ -1368,13 +1367,19 @@ function StorySelectionTable({
   }
 
   if (!stories.length) {
-    return <div className="rounded-md border border-border bg-card p-5 text-sm text-muted-foreground">No user stories loaded.</div>;
+    return (
+      <div className="content-empty-state py-8">
+        <ClipboardList className="size-5 text-muted-foreground" aria-hidden="true" />
+        <p className="text-sm text-muted-foreground">No user stories loaded. Choose a sprint and select Load User Stories.</p>
+      </div>
+    );
   }
 
   if (!visibleStories.length) {
     return (
-      <div className="rounded-md border border-border bg-card p-5 text-sm text-muted-foreground">
-        No selected stories to display. Turn off Selected only to view all loaded stories.
+      <div className="content-empty-state py-8">
+        <BookOpen className="size-5 text-muted-foreground" aria-hidden="true" />
+        <p className="text-sm text-muted-foreground">No selected stories to display. Turn off Selected only to view all loaded stories.</p>
       </div>
     );
   }
@@ -1385,16 +1390,16 @@ function StorySelectionTable({
         <TableRow>
           <TableHead className="w-10">
             <Checkbox
-              checked={allVisibleSelected}
+              checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false}
               onCheckedChange={(checked) =>
                 onToggleAll(checked === true, visibleStories.map((story) => story.id))
               }
               aria-label="Select all visible stories"
             />
           </TableHead>
-          <TableHead>ID</TableHead>
-          <TableHead className="min-w-[320px]">Title</TableHead>
-          <TableHead>
+          <TableHead aria-sort="none">ID</TableHead>
+          <TableHead className="min-w-[320px]" aria-sort="none">Title</TableHead>
+          <TableHead aria-sort={sortKey === "state" ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>
             <StorySortHeader
               label="State"
               active={sortKey === "state"}
@@ -1402,7 +1407,7 @@ function StorySelectionTable({
               onClick={() => toggleSort("state")}
             />
           </TableHead>
-          <TableHead>
+          <TableHead aria-sort={sortKey === "assignedTo" ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>
             <StorySortHeader
               label="Assignee"
               active={sortKey === "assignedTo"}
@@ -1410,7 +1415,7 @@ function StorySelectionTable({
               onClick={() => toggleSort("assignedTo")}
             />
           </TableHead>
-          <TableHead>Sprint</TableHead>
+          <TableHead aria-sort="none">Sprint</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -1421,7 +1426,7 @@ function StorySelectionTable({
               <TableCell>
                 <Checkbox checked={selected} onCheckedChange={(checked) => onToggleStory(story.id, checked === true)} aria-label={`Select story ${story.id}`} />
               </TableCell>
-              <TableCell className="font-mono text-xs font-semibold text-primary">{story.id}</TableCell>
+              <TableCell className="font-mono text-xs font-semibold tabular-nums text-primary">{story.id}</TableCell>
               <TableCell className="min-w-[320px] whitespace-normal font-medium text-foreground">{story.title}</TableCell>
               <TableCell>{story.state ?? "-"}</TableCell>
               <TableCell className="max-w-[220px] truncate">{story.assignedTo ?? "-"}</TableCell>
@@ -1454,7 +1459,6 @@ function StorySortHeader({
       className="-ml-2 h-8 px-2 text-foreground"
       onClick={onClick}
       aria-label={`Sort by ${label} ${active && direction === "asc" ? "descending" : "ascending"}`}
-      aria-sort={active ? (direction === "asc" ? "ascending" : "descending") : "none"}
     >
       {label}
       <Icon className="size-3.5" aria-hidden="true" />
@@ -1512,7 +1516,7 @@ function ReviewCreateStep({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <CardTitle className="text-base">Review & Create</CardTitle>
+              <CardTitle className="text-base" role="heading" aria-level={2}>Review &amp; Create</CardTitle>
               <Badge variant="outline">{tasks.length} templates</Badge>
               <Badge variant="outline">{rows.length} stories</Badge>
               <Badge variant="secondary">{tasks.length * rows.length} tasks</Badge>
@@ -1584,8 +1588,9 @@ function StoryReviewAccordion({
 }) {
   if (!rows.length) {
     return (
-      <div className="rounded-md border border-border bg-card p-5 text-sm text-muted-foreground">
-        No target stories selected.
+      <div className="content-empty-state py-8">
+        <BookOpen className="size-5 text-muted-foreground" aria-hidden="true" />
+        <p className="text-sm text-muted-foreground">No target stories selected.</p>
       </div>
     );
   }
@@ -1639,7 +1644,7 @@ function StoryReviewAccordion({
             <AccordionContent>
               <div className="space-y-3">
                 {storyWarnings.length ? (
-                  <Callout tone="warning">
+                  <Callout tone="warning" role="status">
                     <ul className="list-disc space-y-0.5 pl-4">
                       {storyWarnings.map((warning) => (
                         <li key={`${warning.templateId}-${warning.message}`}>{warning.message}</li>
@@ -1901,9 +1906,19 @@ function ResultPanel({ result }: { result: BulkTaskResponse }) {
   return (
     <Card className="qa-card">
       <CardHeader>
-        <CardTitle className="text-base">Result</CardTitle>
+        <CardTitle className="text-base" role="heading" aria-level={2}>
+          <span className="inline-flex items-center gap-2">
+            {result.failed.length ? (
+              <><XCircle className="size-4 text-destructive" aria-hidden="true" />Completed with failures</>
+            ) : result.skipped.length ? (
+              <><TriangleAlert className="size-4 text-warning" aria-hidden="true" />Completed with skips</>
+            ) : (
+              <><CheckCircle2 className="size-4 text-success" aria-hidden="true" />All tasks created</>
+            )}
+          </span>
+        </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-4" role="status">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard label="Requested" value={result.requestedCount} />
           <StatCard label="Created" value={result.created.length} tone="success" />

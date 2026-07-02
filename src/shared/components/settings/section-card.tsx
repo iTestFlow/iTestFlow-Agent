@@ -38,13 +38,13 @@ export function SectionCard({
   return (
     <Card className={className}>
       <CardHeader className="border-b">
-        <CardTitle className="text-base">{title}</CardTitle>
+        <CardTitle className="text-base" role="heading" aria-level={2}>{title}</CardTitle>
         {description ? (
           <CardDescription className="text-xs leading-5">{description}</CardDescription>
         ) : null}
         {action ? <CardAction>{action}</CardAction> : null}
       </CardHeader>
-      <CardContent className={cn("space-y-5 pt-5", contentClassName)}>{children}</CardContent>
+      <CardContent className={cn("space-y-4", contentClassName)}>{children}</CardContent>
     </Card>
   )
 }
@@ -113,7 +113,7 @@ export function SecretField({
         <div className="relative">
           <Input
             id={inputId}
-            className="h-11 border-input bg-card pr-10 text-foreground"
+            className="h-11 border-input bg-card pr-11 text-foreground"
             type={reveal ? "text" : "password"}
             value={value}
             onChange={(event) => onChange(event.target.value)}
@@ -123,7 +123,7 @@ export function SecretField({
           <button
             type="button"
             onClick={() => setReveal((current) => !current)}
-            className="absolute inset-y-0 right-2 flex items-center text-muted-foreground hover:text-foreground"
+            className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-muted-foreground hover:text-foreground"
             aria-label={reveal ? `Hide ${label}` : `Show ${label}`}
           >
             {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -133,7 +133,7 @@ export function SecretField({
         <div
           role="group"
           aria-labelledby={labelId}
-          className="flex h-11 items-center justify-between rounded-md border border-input bg-card px-3"
+          className="flex h-11 items-center justify-between rounded-lg border border-input bg-card px-3"
         >
           <span className="text-sm text-muted-foreground">************ Saved</span>
           <Button

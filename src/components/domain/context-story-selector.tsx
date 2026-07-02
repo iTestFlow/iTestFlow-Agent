@@ -74,9 +74,8 @@ export function ContextStorySelector({
             <Button size="sm"><Plus className="size-3.5" />Add selected</Button>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
+          <Table containerClassName="max-h-[70vh] overflow-y-auto overscroll-contain">
+            <TableHeader className="sticky top-0 z-20 bg-card">
               <TableRow>
                 <TableHead className="w-10">Select</TableHead>
                 <TableHead>Work Item ID</TableHead>
@@ -120,7 +119,6 @@ export function ContextStorySelector({
               })}
             </TableBody>
           </Table>
-        </div>
       </Card>
 
       <div className="space-y-4">

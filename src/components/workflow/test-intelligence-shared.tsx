@@ -14,10 +14,11 @@ import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { RefreshButton } from "@/components/qa/refresh-button";
 import { toneClass, type Tone } from "@/components/qa/tone";
+import { SeverityPill } from "@/components/qa/severity-chip";
 import { cn } from "@/lib/utils";
 import { formatEnumLabel, formatPercentage } from "@/shared/lib/format";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
-import { ApiError } from "@/components/workflow/api-error";
+import { postJson } from "@/components/workflow/post-json";
 import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import type {
   ApiState,
@@ -52,32 +53,20 @@ export function useActiveProject() {
   return scope;
 }
 
-export async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-    cache: "no-store",
-  });
-  const text = await response.text();
-  const json = parseJsonResponse(text, response.ok);
-  if (!response.ok) throw ApiError.fromResponse(json, response.status);
-  return json as T;
-}
+// The shared JSON POST helper (with non-JSON diagnostic capture) now lives in
+// `@/components/workflow/post-json`. Re-exported here to preserve the existing
+// import path used across the workflow clients.
+export { postJson };
 
-function parseJsonResponse(text: string, ok: boolean) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    if (ok) throw new Error("The server returned an invalid JSON response.");
-    return { error: "The server returned a non-JSON response. Check the server logs or runtime configuration." };
-  }
-}
-
-export function scrollToNextStep(ref: React.RefObject<HTMLElement | null>) {
+export function scrollToNextStep(
+  ref: React.RefObject<HTMLElement | null>,
+  focusRef?: React.RefObject<HTMLElement | null>,
+) {
   window.setTimeout(() => {
     ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // Move focus to the revealed step (e.g. the results heading) so keyboard/SR
+    // users are taken to the new content, not left on the trigger button.
+    focusRef?.current?.focus({ preventScroll: true });
   }, 120);
 }
 
@@ -115,12 +104,6 @@ export async function copyTextWithFeedback(text: string, setCopied: (copied: boo
 // use them too; re-exported here to preserve existing import paths.
 export { formatEnumLabel, formatPercentage };
 
-export function severityTone(value: string): Tone {
-  if (value === "critical" || value === "high" || value === "High") return "error";
-  if (value === "medium" || value === "Medium") return "warning";
-  return "success";
-}
-
 export function qualityTone(value: string): Tone {
   if (value === "excellent" || value === "good") return "success";
   if (value === "fair") return "warning";
@@ -140,6 +123,31 @@ export function ToneBadge({ tone, children, className }: { tone: Tone; children:
     <Badge variant="outline" className={cn("rounded-full border", toneClass[tone], className)}>
       {children}
     </Badge>
+  );
+}
+
+/**
+ * Severity badge with a 5-level visual ramp that keeps every level distinct:
+ * `critical` = solid red (stands apart from the tinted `high`), `high` = tinted
+ * red, `medium` = amber, `low` = green, `info`/unknown = neutral grey. The text
+ * label is always rendered, so meaning never depends on color alone. Accepts
+ * either lowercase (`critical`) or capitalized (`Critical`) values.
+ */
+const SEVERITY_TONE: Record<string, Tone> = {
+  critical: "error",
+  high: "error",
+  medium: "warning",
+  low: "success",
+  info: "neutral",
+};
+
+export function SeverityBadge({ severity, className }: { severity: string; className?: string }) {
+  const key = severity.toLowerCase();
+  const tone = SEVERITY_TONE[key] ?? "neutral";
+  return (
+    <SeverityPill tone={tone} solid={key === "critical"} className={className}>
+      {formatEnumLabel(severity)}
+    </SeverityPill>
   );
 }
 

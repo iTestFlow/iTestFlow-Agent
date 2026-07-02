@@ -19,8 +19,32 @@ import type {
   DashboardRecentActivity,
 } from "@/types/dashboard";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { StatusChip } from "@/components/qa/status-chip";
 import { toneClass } from "@/components/qa/tone";
 import { cn } from "@/lib/utils";
+
+/** Maps an audit/activity status label to a semantic StatusChip tone. */
+function activityStatusTone(
+  status: string,
+): "success" | "warning" | "error" | "info" | "neutral" | "draft" {
+  switch (status) {
+    case "Success":
+      return "success";
+    case "Failed":
+      return "error";
+    case "Warning":
+    case "Partial failure":
+      return "warning";
+    case "Pending":
+    case "Info":
+      return "info";
+    case "Draft":
+      return "draft";
+    default:
+      return "neutral";
+  }
+}
 
 const palette = [
   "hsl(var(--chart-1))",
@@ -272,12 +296,14 @@ export function RecentActivityList({
   items,
   hasMore = false,
   loadingMore = false,
+  loading = false,
   onLoadMore,
   emptyLabel = "No recent local activity yet",
 }: {
   items: DashboardRecentActivity[];
   hasMore?: boolean;
   loadingMore?: boolean;
+  loading?: boolean;
   onLoadMore?: () => void;
   emptyLabel?: string;
 }) {
@@ -296,6 +322,23 @@ export function RecentActivityList({
   }
 
   if (!items.length) {
+    if (loading) {
+      return (
+        <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading activity">
+          {[0, 1, 2].map((row) => (
+            <div key={row} className="rounded-xl border border-border bg-background/60 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1 space-y-2">
+                  <Skeleton className="h-4 w-1/3 motion-reduce:animate-none" />
+                  <Skeleton className="h-3 w-2/3 motion-reduce:animate-none" />
+                </div>
+                <Skeleton className="h-5 w-16 shrink-0 motion-reduce:animate-none" />
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
     return <EmptyChart label={emptyLabel} />;
   }
 
@@ -313,9 +356,7 @@ export function RecentActivityList({
                 <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.message}</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <span className="rounded-full border border-border bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">
-                  {item.status}
-                </span>
+                <StatusChip tone={activityStatusTone(item.status)}>{item.status}</StatusChip>
                 <Button
                   type="button"
                   variant="outline"
@@ -325,14 +366,14 @@ export function RecentActivityList({
                   title={label}
                   onClick={() => toggleActivity(item.id)}
                 >
-                  <ChevronDown className={cn("size-4 transition-transform", expanded && "rotate-180")} aria-hidden="true" />
+                  <ChevronDown className={cn("size-4 motion-safe:transition-transform", expanded && "rotate-180")} aria-hidden="true" />
                 </Button>
               </div>
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>{item.projectName ?? "All projects"}</span>
               <span aria-hidden="true">/</span>
-              <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time>
+              <time dateTime={item.createdAt} className="tabular-nums">{new Date(item.createdAt).toLocaleString()}</time>
             </div>
             {expanded ? (
               <pre className="mt-3 max-h-96 overflow-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-xs leading-5 text-muted-foreground">

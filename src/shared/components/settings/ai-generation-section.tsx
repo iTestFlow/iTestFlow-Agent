@@ -1,10 +1,12 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { NativeSelect } from "@/components/ui/native-select"
 import { SearchableCombobox } from "@/components/ui/searchable-combobox"
 import { OwnerOnlyNotice } from "./owner-only-notice"
 import {
@@ -154,16 +156,15 @@ function AiProviderCard() {
       action={<StatusBadge tone={badge.tone} label={badge.label} />}
     >
       <Field label="LLM Provider" htmlFor="llm-provider">
-        <select
+        <NativeSelect
           id="llm-provider"
-          className="h-11 w-full rounded-md border border-input bg-card px-3 text-sm text-foreground"
           value={provider}
           onChange={(event) => setProvider(event.target.value as Provider)}
         >
           <option value="openai">OpenAI</option>
           <option value="gemini">Gemini</option>
           <option value="anthropic">Anthropic</option>
-        </select>
+        </NativeSelect>
       </Field>
 
       <SecretField
@@ -183,7 +184,7 @@ function AiProviderCard() {
       >
         <Input
           id="llm-base-url"
-          className="h-11 border-input bg-card text-foreground"
+          className="h-8 border-input bg-card text-foreground"
           value={baseUrl}
           onChange={(event) => setBaseUrl(event.target.value)}
           placeholder={defaultBaseUrlPlaceholder(provider)}
@@ -198,7 +199,7 @@ function AiProviderCard() {
         {modelsFetched && models.length === 0 ? (
           <Input
             id="llm-model"
-            className="h-11 border-input bg-card text-foreground"
+            className="h-8 border-input bg-card text-foreground"
             placeholder="No models returned — type a model ID"
             value={model}
             onChange={(event) => setModel(event.target.value)}
@@ -220,7 +221,14 @@ function AiProviderCard() {
       </Field>
 
       <Button type="button" onClick={() => void onSave()} disabled={saving || loading || !apiKey.trim() || !model.trim()}>
-        {saving ? "Saving…" : "Save AI provider"}
+        {saving ? (
+          <>
+            <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+            Saving…
+          </>
+        ) : (
+          "Save AI provider"
+        )}
       </Button>
     </SectionCard>
   )
@@ -339,7 +347,14 @@ function OutputCapCard() {
             </div>
           </Field>
           <Button type="button" onClick={() => void onSave()} disabled={saving || loading}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? (
+              <>
+                <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+                Saving…
+              </>
+            ) : (
+              "Save"
+            )}
           </Button>
         </div>
       )}

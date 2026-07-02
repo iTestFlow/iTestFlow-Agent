@@ -1,19 +1,23 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react"
+import { DashboardEmptyPanel } from "@/components/dashboard/dashboard-states"
 import {
   AlertTriangle,
   ArrowUpDown,
   BookOpen,
   ChevronLeft,
   ChevronRight,
+  Clock3,
   Database,
   Download,
   History,
   RefreshCw,
   Save,
   Search,
+  SearchX,
   ShieldCheck,
+  type LucideIcon,
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
@@ -23,7 +27,7 @@ import { ContextFilterSelector } from "@/components/domain/context-filter-select
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle"
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress"
 import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics"
-import { ApiError } from "@/components/workflow/api-error"
+import { postJson } from "@/components/workflow/post-json"
 import { ManualLLMFields } from "@/components/workflow/manual-llm-panel"
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper"
 import { useAiGeneration } from "@/components/workflow/use-ai-generation"
@@ -31,6 +35,7 @@ import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-game
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
   TableBody,
@@ -297,49 +302,6 @@ type KnowledgeExplorerEntry = {
   sourceWorkItemIds: string[]
   meta: string[]
   searchText: string
-}
-
-async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-    cache: "no-store",
-  })
-  const text = await response.text()
-  const json = parseJsonResponse(text, response)
-  if (!response.ok) throw ApiError.fromResponse(json, response.status)
-  return json as T
-}
-
-function parseJsonResponse(text: string, response: Response) {
-  try {
-    return JSON.parse(text)
-  } catch {
-    const technicalDetails = nonJsonResponseDetails(response, text)
-    if (response.ok) {
-      throw new ApiError("The server returned an invalid JSON response.", {
-        status: response.status,
-        technicalDetails,
-      })
-    }
-    return {
-      error: "The server returned a non-JSON response. Check the server logs or runtime configuration.",
-      technicalDetails,
-    }
-  }
-}
-
-function nonJsonResponseDetails(response: Response, text: string) {
-  const body = text.trim()
-  const bodyExcerpt = body ? body.slice(0, 1200) : "(empty response body)"
-  return [
-    `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
-    `Content-Type: ${response.headers.get("content-type") ?? "(none)"}`,
-    `Response URL: ${response.url || "(unknown)"}`,
-    `Body excerpt:\n${bodyExcerpt}`,
-  ].join("\n")
 }
 
 export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: WorkspaceRole | null }) {
@@ -907,7 +869,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     ? manualKnowledgeValidatedCount === manualKnowledgeDraft.batchCount
     : false
   const rangeStart = totalCount === 0 ? 0 : (page - 1) * pageSize + 1
-  const rangeEnd = Math.min(totalCount, rangeStart + recentItems.length - 1)
+  const rangeEnd = totalCount === 0 ? 0 : Math.min(totalCount, rangeStart + recentItems.length - 1)
   const totalKnowledgeItems = knowledgeSnapshot ? countKnowledgeItems(knowledgeSnapshot.knowledgeBase) : 0
   const canLoadIndex = Boolean(scope)
     && Boolean(workItemMetadata)
@@ -925,7 +887,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     : "No project context has been indexed yet."
 
   return (
-    <div className="space-y-4">
+    <div className="content-stack">
       {!scope ? (
         <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/15 p-3 text-sm text-warning-foreground dark:text-warning">
           <AlertTriangle className="size-4" />
@@ -936,6 +898,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       ) : null}
 
       <Tabs
+        id="knowledge-hub-sections"
         value={activeTab}
         onValueChange={(value) => {
           const nextTab = value as TopTab
@@ -946,25 +909,26 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       >
         <TabsList
           variant="primary"
+          aria-label="Knowledge Hub section"
           className={`grid h-auto w-full sm:inline-grid sm:w-fit ${canBuildKnowledge ? "grid-cols-2 sm:min-w-[460px]" : "grid-cols-1 sm:min-w-[220px]"}`}
         >
           <TabsTrigger
             value="hub"
-            className="h-10 px-3 py-2 duration-200"
+            className="h-11 px-3 py-2 duration-ui"
           >
             Knowledge Hub
           </TabsTrigger>
           {canBuildKnowledge ? (
             <TabsTrigger
               value="build"
-              className="h-10 px-3 py-2 duration-200"
+              className="h-11 px-3 py-2 duration-ui"
             >
               Build Knowledge
             </TabsTrigger>
           ) : null}
         </TabsList>
 
-        <TabsContent value="hub" className="space-y-4">
+        <TabsContent value="hub" className="content-stack">
           <HubSummary
             activeSourceCount={totalCount}
             totalKnowledgeItems={totalKnowledgeItems}
@@ -986,13 +950,15 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
           />
 
           {knowledgeError ? (
-            <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-              {knowledgeError}
+            <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <span>{knowledgeError}</span>
             </div>
           ) : null}
 
-          <Card className="qa-card">
+          <Card className="qa-card min-w-0">
             <Tabs
+              id="knowledge-hub-views"
               value={hubView}
               onValueChange={(value) => setHubView(value as HubView)}
               className="flex-col gap-0"
@@ -1000,23 +966,27 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
               <div className="border-b border-border">
                 <TabsList
                   variant="line"
-                  className="group-data-horizontal/tabs:h-auto w-full justify-start gap-5 px-4 py-0"
+                  aria-label="Knowledge content view"
+                  className="group-data-horizontal/tabs:h-auto grid w-full grid-cols-2 gap-1 px-3 py-0 sm:flex sm:justify-start sm:gap-5 sm:px-4"
                 >
-                  <HubViewTab value="explorer" label="Knowledge Explorer" count={knowledgeStatusLoading ? "-" : totalKnowledgeItems} />
-                  <HubViewTab value="context" label="Indexed Project Context" count={totalCount} />
+                  <HubViewTab value="explorer" label="Knowledge Explorer" shortLabel="Explorer" count={knowledgeStatusLoading ? "-" : totalKnowledgeItems} />
+                  <HubViewTab value="context" label="Indexed Project Context" shortLabel="Indexed Context" count={totalCount} />
                 </TabsList>
               </div>
 
               <CardContent className="pt-4">
                 <TabsContent value="explorer" className="mt-0">
                   {knowledgeStatusLoading ? (
-                    <div className="text-sm text-muted-foreground">Loading saved knowledge base...</div>
+                    <KnowledgeLoadingState label="Loading saved knowledge base" />
                   ) : knowledgeSnapshot ? (
                     <KnowledgeExplorer knowledgeBase={knowledgeSnapshot.knowledgeBase} />
                   ) : (
-                    <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
-                      {emptyKnowledgeMessage}
-                    </div>
+                    <KnowledgeEmptyState
+                      title="No compiled knowledge yet"
+                      message={emptyKnowledgeMessage}
+                      actionLabel={canBuildKnowledge ? "Build Knowledge" : undefined}
+                      onAction={canBuildKnowledge ? () => setActiveTab("build") : undefined}
+                    />
                   )}
                 </TabsContent>
 
@@ -1049,7 +1019,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
             <CardHeader>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="flex items-center gap-2">
-                  <CardTitle className="text-base">Build Knowledge</CardTitle>
+                  <CardTitle className="text-base" role="heading" aria-level={2}>Build Knowledge</CardTitle>
                   {knowledgeSnapshot ? <Badge variant="outline">Prompt {knowledgeSnapshot.promptVersion}</Badge> : null}
                 </div>
                 <GenerationModeToggle
@@ -1064,8 +1034,9 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                 <BuildStepper step={buildStep} />
 
                 {buildError ? (
-                  <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-                    {buildError}
+                  <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                    <span>{buildError}</span>
                   </div>
                 ) : null}
 
@@ -1294,37 +1265,64 @@ function HubSummary({
   loading: boolean
 }) {
   return (
-    <Card className="qa-card">
-      <CardContent className="space-y-3 p-4">
-        <div className="grid gap-3 md:grid-cols-2">
-          <MetricPanel label="Active source work items" value={activeSourceCount} />
-          <MetricPanel label="Knowledge base items" value={loading ? "-" : totalKnowledgeItems} />
-        </div>
-        <div className="text-sm text-muted-foreground">
-          <div><span className="font-semibold text-foreground">Last extracted:</span> {formatDate(snapshot?.extractedAt)}</div>
+    <Card className="qa-card" aria-busy={loading}>
+      <CardContent className="p-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <MetricPanel label="Active source work items" value={activeSourceCount} icon={Database} />
+          <MetricPanel label="Knowledge base items" value={totalKnowledgeItems} icon={BookOpen} loading={loading} />
+          <MetricPanel label="Last extracted" value={formatDate(snapshot?.extractedAt)} icon={Clock3} className="sm:col-span-2 xl:col-span-1" />
         </div>
       </CardContent>
     </Card>
   )
 }
 
-function MetricPanel({ label, value }: { label: string; value: number | string }) {
+function MetricPanel({
+  label,
+  value,
+  icon: Icon,
+  loading = false,
+  className,
+}: {
+  label: string
+  value: number | string
+  icon: LucideIcon
+  loading?: boolean
+  className?: string
+}) {
   return (
-    <div className="rounded-md border border-border bg-card p-3">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-1 text-xl font-semibold text-foreground">{value}</div>
+    <div className={`flex items-start justify-between gap-3 rounded-lg border border-border bg-muted/20 p-3 ${className ?? ""}`}>
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-muted-foreground">{label}</div>
+        {loading ? <Skeleton className="mt-2 h-7 w-20" /> : <div className="mt-1 truncate text-xl font-semibold tabular-nums text-foreground">{value}</div>}
+      </div>
+      <div className="rounded-lg border border-primary/20 bg-primary/10 p-2 text-primary">
+        <Icon className="size-4" aria-hidden="true" />
+      </div>
     </div>
   )
 }
 
-function HubViewTab({ value, label, count }: { value: HubView; label: string; count: number | string }) {
+function HubViewTab({
+  value,
+  label,
+  shortLabel,
+  count,
+}: {
+  value: HubView
+  label: string
+  shortLabel: string
+  count: number | string
+}) {
   return (
     <TabsTrigger
       value={value}
-      className="relative h-auto flex-none gap-2 rounded-none border-0 px-1 py-3 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-primary after:opacity-0 group-data-horizontal/tabs:after:bottom-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-primary data-[state=active]:shadow-none data-[state=active]:after:opacity-100"
+      aria-label={`${label}, ${count} items`}
+      className="relative h-auto min-w-0 gap-1.5 rounded-none border-0 px-1 py-3 text-sm font-medium text-muted-foreground transition-colors duration-ui hover:text-foreground after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-primary after:opacity-0 group-data-horizontal/tabs:after:bottom-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-primary data-[state=active]:shadow-none data-[state=active]:after:opacity-100 sm:flex-none sm:gap-2"
     >
-      {label}
-      <Badge variant="secondary">{count}</Badge>
+      <span className="min-w-0 truncate sm:hidden">{shortLabel}</span>
+      <span className="hidden min-w-0 truncate sm:inline">{label}</span>
+      <Badge variant="secondary" className="shrink-0 px-1.5 tabular-nums">{count}</Badge>
     </TabsTrigger>
   )
 }
@@ -1423,7 +1421,7 @@ function IndexLoadPanel({
           <div className="mb-3 text-xs leading-5 text-muted-foreground">
             This step syncs the selected source work items and refreshes the retrieval index used by knowledge preparation.
           </div>
-          <Button className="h-11 w-full justify-center" onClick={onLoad} disabled={!canLoad}>
+          <Button className="h-11 w-full justify-center" onClick={onLoad} disabled={!canLoad} aria-busy={loading}>
             {loading ? <RefreshCw className="size-4 animate-spin" /> : <Database className="size-4" />}
             {loading ? "Loading..." : "Load Project Index"}
           </Button>
@@ -1456,7 +1454,8 @@ function KnowledgePreparePanel({
           <div className="mt-2 grid gap-2 rounded-md border border-border bg-muted p-1 sm:grid-cols-2">
             <button
               type="button"
-              className={`rounded-md border px-3 py-2 text-sm font-semibold transition-all duration-200 ${
+              aria-pressed={compileMode === "incremental"}
+              className={`rounded-md border px-3 py-2 text-sm font-semibold outline-none transition-colors duration-ui focus-visible:ring-2 focus-visible:ring-ring ${
                 compileMode === "incremental"
                   ? "border-primary bg-accent text-primary shadow-sm"
                   : "border-transparent bg-card text-foreground hover:border-primary/40 hover:bg-accent"
@@ -1467,7 +1466,8 @@ function KnowledgePreparePanel({
             </button>
             <button
               type="button"
-              className={`rounded-md border px-3 py-2 text-sm font-semibold transition-all duration-200 ${
+              aria-pressed={compileMode === "full"}
+              className={`rounded-md border px-3 py-2 text-sm font-semibold outline-none transition-colors duration-ui focus-visible:ring-2 focus-visible:ring-ring ${
                 compileMode === "full"
                   ? "border-primary bg-accent text-primary shadow-sm"
                   : "border-transparent bg-card text-foreground hover:border-primary/40 hover:bg-accent"
@@ -1485,7 +1485,7 @@ function KnowledgePreparePanel({
           <div className="mb-3 text-xs leading-5 text-muted-foreground">
             Review the compile mode, then prepare the next knowledge preview.
           </div>
-          <Button className="h-11 w-full justify-center" onClick={onPrepare} disabled={!canPrepare}>
+          <Button className="h-11 w-full justify-center" onClick={onPrepare} disabled={!canPrepare} aria-busy={loading}>
             {loading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
             {actionLabel}
           </Button>
@@ -1531,8 +1531,8 @@ function GeneratedPreviewPanel({
   return (
     <div className="space-y-4 rounded-md border border-border bg-card p-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <div className="text-sm font-semibold text-foreground">Generated Knowledge Preview</div>
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-foreground" role="heading" aria-level={3}>Generated Knowledge Preview</div>
           <div className="text-xs text-muted-foreground">
             {isIncremental ? (
               <>
@@ -1563,7 +1563,7 @@ function GeneratedPreviewPanel({
         <KnowledgeExplorer knowledgeBase={displayBase} compact />
       )}
       <div className="flex justify-end gap-2 border-t border-border pt-3">
-        <Button onClick={onSave} disabled={saving}>
+        <Button onClick={onSave} disabled={saving} aria-busy={saving}>
           {saving ? <RefreshCw className="size-4 animate-spin" /> : <Save className="size-4" />}
           {saving ? "Saving..." : "Save Knowledge Base"}
         </Button>
@@ -1726,7 +1726,13 @@ function SortHeader({
   onClick: () => void
 }) {
   return (
-    <Button variant="ghost" size="sm" className="-ml-3 h-8 px-2 text-foreground" onClick={onClick}>
+    <Button
+      variant="ghost"
+      size="sm"
+      className="-ml-3 h-8 px-2 text-foreground"
+      onClick={onClick}
+      aria-label={`Sort by ${label}${active ? `, currently ${direction === "asc" ? "ascending" : "descending"}` : ""}`}
+    >
       {label}
       <ArrowUpDown className="size-3.5" />
       {active ? <span className="text-xs text-muted-foreground">{direction === "asc" ? "Asc" : "Desc"}</span> : null}
@@ -1738,7 +1744,7 @@ function IndexedContextPanel(props: IndexedContextViewProps) {
   return (
     <Card className="qa-card">
       <CardHeader>
-        <CardTitle className="text-base">Indexed Project Context</CardTitle>
+        <CardTitle className="text-base" role="heading" aria-level={2}>Indexed Project Context</CardTitle>
       </CardHeader>
       <CardContent>
         <IndexedContextView {...props} />
@@ -1788,8 +1794,12 @@ function IndexedContextView({
   return (
     <>
       <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="text-sm text-muted-foreground">
-          Showing {rangeStart}-{rangeEnd} of {totalCount} active source work items available for retrieval.
+        <div role="status" aria-live="polite" className="text-sm text-muted-foreground">
+          {totalCount > 0
+            ? `Showing ${rangeStart}-${rangeEnd} of ${totalCount} active source work items available for retrieval.`
+            : search.trim()
+              ? "No active source work items match the current search."
+              : "No active source work items are available for retrieval yet."}
         </div>
         <div className="relative w-full lg:w-[360px]">
           <Search className="pointer-events-none absolute left-2.5 top-2 size-4 text-muted-foreground" />
@@ -1798,26 +1808,27 @@ function IndexedContextView({
             onChange={(event) => onSearchChange(event.target.value)}
             className="pl-8"
             placeholder="Search ID, title, or indexed text"
+            aria-label="Search indexed project context"
           />
         </div>
       </div>
 
       {!items.length && loading ? (
-        <div className="text-sm text-muted-foreground">Loading indexed context...</div>
+        <KnowledgeLoadingState label="Loading indexed project context" compact />
       ) : items.length ? (
         <div className="space-y-3">
-          <div className="overflow-x-auto">
-            <Table className={loading ? "opacity-60" : undefined}>
+          <div className="content-scroll-region">
+            <Table className={`min-w-[760px] ${loading ? "opacity-60" : ""}`}>
               <TableHeader>
                 <TableRow>
                   <TableHead>ID</TableHead>
-                  <TableHead>
+                  <TableHead aria-sort={sortBy === "type" ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>
                     <SortHeader label="Type" active={sortBy === "type"} direction={sortDirection} onClick={() => onSortChange("type")} />
                   </TableHead>
                   <TableHead className="min-w-[320px]">Title</TableHead>
-                  <TableHead>Chunks</TableHead>
+                  <TableHead className="text-right">Chunks</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>
+                  <TableHead aria-sort={sortBy === "lastIndexedAt" ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>
                     <SortHeader
                       label="Last Indexed"
                       active={sortBy === "lastIndexedAt"}
@@ -1830,12 +1841,12 @@ function IndexedContextView({
               <TableBody>
                 {items.map((item) => (
                   <TableRow key={item.workItemId}>
-                    <TableCell className="font-mono text-xs font-semibold text-primary">{item.workItemId}</TableCell>
+                    <TableCell className="font-mono text-xs font-semibold tabular-nums text-primary">{item.workItemId}</TableCell>
                     <TableCell><Badge variant="secondary">{item.workItemType}</Badge></TableCell>
-                    <TableCell className="font-medium text-foreground">{item.title}</TableCell>
-                    <TableCell>{item.chunkCount}</TableCell>
-                    <TableCell><Badge variant="outline">{item.syncStatus ?? "active"}</Badge></TableCell>
-                    <TableCell>{formatDate(item.lastIndexedAt)}</TableCell>
+                    <TableCell className="max-w-[420px] truncate font-medium text-foreground" title={item.title}>{item.title}</TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">{item.chunkCount}</TableCell>
+                    <TableCell><Badge variant="outline" className={`capitalize ${syncStatusToneClass(item.syncStatus)}`}>{item.syncStatus ?? "active"}</Badge></TableCell>
+                    <TableCell className="tabular-nums text-muted-foreground">{formatDate(item.lastIndexedAt)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -1871,9 +1882,13 @@ function IndexedContextView({
           </div>
         </div>
       ) : (
-        <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
-          {search.trim() ? "No indexed work items match the current search." : emptyMessage}
-        </div>
+        <KnowledgeEmptyState
+          title={search.trim() ? "No indexed work items match" : "No indexed project context"}
+          message={search.trim() ? "Try a broader title, work item ID, or indexed-text search." : emptyMessage}
+          actionLabel={search.trim() ? "Clear search" : undefined}
+          onAction={search.trim() ? () => onSearchChange("") : undefined}
+          compact
+        />
       )}
     </>
   )
@@ -1894,14 +1909,14 @@ function IndexSummary({ result }: { result: IndexResult }) {
   return (
     <Card className="qa-card">
       <CardHeader>
-        <CardTitle className="text-base">Latest Indexing Summary</CardTitle>
+        <CardTitle className="text-base" role="heading" aria-level={2}>Latest Indexing Summary</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {metrics.map(([label, value]) => (
             <div key={label} className="rounded-md border border-border bg-card p-3">
               <div className="text-xs text-muted-foreground">{label}</div>
-              <div className="mt-1 text-lg font-semibold text-foreground">{value}</div>
+              <div className="mt-1 text-base font-semibold tabular-nums text-foreground">{value}</div>
             </div>
           ))}
         </div>
@@ -1939,24 +1954,30 @@ function KnowledgeOpsPanel({
   onExport: () => void
 }) {
   return (
-    <div className="space-y-3 rounded-md border border-border bg-card p-4">
+    <section className="content-surface space-y-3 p-4" aria-label="Compiled knowledge operations">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <div className="text-sm font-semibold text-foreground">Compiled Knowledge Operations</div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="size-4 shrink-0 text-primary" aria-hidden="true" />
+            <span role="heading" aria-level={2} className="text-sm font-semibold text-foreground">Compiled Knowledge Operations</span>
+          </div>
           <div className="text-xs text-muted-foreground">Health checks, event history, and Markdown export for the source-backed knowledge layer.</div>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="grid grid-cols-2 gap-2 min-[420px]:grid-cols-3 sm:flex sm:flex-wrap lg:shrink-0 lg:flex-nowrap">
           <Button variant="outline" size="sm" onClick={onRunHealthCheck} disabled={healthLoading}>
             {healthLoading ? <RefreshCw className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
-            Health
+            <span className="sm:hidden">Health</span>
+            <span className="hidden sm:inline">Check health</span>
           </Button>
-          <Button variant={logVisible ? "secondary" : "outline"} size="sm" onClick={onToggleLog} disabled={logLoading}>
+          <Button variant={logVisible ? "secondary" : "outline"} size="sm" onClick={onToggleLog} disabled={logLoading} aria-expanded={logVisible}>
             {logLoading ? <RefreshCw className="size-4 animate-spin" /> : <History className="size-4" />}
-            {logVisible ? "Hide Log" : "Log"}
+            <span className="sm:hidden">{logVisible ? "Hide" : "Log"}</span>
+            <span className="hidden sm:inline">{logVisible ? "Hide Log" : "Log"}</span>
           </Button>
           <Button variant="outline" size="sm" onClick={onExport} disabled={exportLoading}>
             {exportLoading ? <RefreshCw className="size-4 animate-spin" /> : <Download className="size-4" />}
-            Export
+            <span className="sm:hidden">Export</span>
+            <span className="hidden sm:inline">Export Markdown</span>
           </Button>
         </div>
       </div>
@@ -2015,7 +2036,7 @@ function KnowledgeOpsPanel({
           )}
         </div>
       ) : null}
-    </div>
+    </section>
   )
 }
 
@@ -2024,7 +2045,7 @@ function KnowledgeMetric({ label, value, tone }: { label: string; value: number;
   return (
     <div className="rounded-md border border-border bg-card p-3">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`mt-1 text-lg font-semibold ${valueClass}`}>{value}</div>
+      <div className={`mt-1 text-base font-semibold tabular-nums ${valueClass}`}>{value}</div>
     </div>
   )
 }
@@ -2055,42 +2076,58 @@ function KnowledgeExplorer({ knowledgeBase, compact = false }: { knowledgeBase: 
   return (
     <div className="space-y-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="text-sm text-muted-foreground">
+        <div role="status" aria-live="polite" className="text-sm text-muted-foreground">
           {filteredEntries.length} entries match the current filters.
         </div>
-        <div className="w-full lg:w-[420px]">
-          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search knowledge or source IDs" />
+        <div className="relative w-full lg:w-[420px]">
+          <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" aria-hidden="true" />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search knowledge or source IDs"
+            aria-label="Search compiled knowledge"
+            className="pl-9"
+          />
         </div>
       </div>
       <div className={`grid gap-4 ${compact ? "lg:grid-cols-[180px_1fr]" : "lg:grid-cols-[190px_1fr]"}`}>
-        <div className="space-y-1">
-          <KnowledgeCategoryButton
-            label="All"
-            count={entries.length}
-            active={category === "all"}
-            onClick={() => setCategory("all")}
-          />
-          {KNOWLEDGE_CATEGORIES.map((item) => (
+        <div className="-mx-1 px-1 lg:mx-0 lg:px-0">
+          <div role="group" aria-label="Knowledge categories" className="flex flex-wrap gap-1 lg:block lg:space-y-1">
             <KnowledgeCategoryButton
-              key={item.key}
-              label={item.label}
-              count={counts[item.key]}
-              active={category === item.key}
-              onClick={() => setCategory(item.key)}
+              label="All"
+              count={entries.length}
+              active={category === "all"}
+              onClick={() => setCategory("all")}
             />
-          ))}
+            {KNOWLEDGE_CATEGORIES.map((item) => (
+              <KnowledgeCategoryButton
+                key={item.key}
+                label={item.label}
+                count={counts[item.key]}
+                active={category === item.key}
+                onClick={() => setCategory(item.key)}
+              />
+            ))}
+          </div>
         </div>
         <div className={`space-y-3 ${compact ? "max-h-[520px] overflow-y-auto pr-1" : ""}`}>
           {visibleEntries.length ? (
             visibleEntries.map((entry) => <KnowledgeExplorerEntryCard key={entry.key} entry={entry} compact={compact} />)
           ) : (
-            <div className="rounded-md border border-border bg-card p-5 text-sm text-muted-foreground">
-              No knowledge entries match the current filters.
-            </div>
+            <KnowledgeEmptyState
+              title="No knowledge entries match"
+              message="Try a broader search or reset the category filter."
+              actionLabel="Clear filters"
+              onAction={() => {
+                setCategory("all")
+                setQuery("")
+              }}
+              compact
+            />
           )}
           {filteredEntries.length > pageSize ? (
-            <div className="flex items-center justify-between border-t border-border pt-3 text-sm text-muted-foreground">
-              <span>Showing {pageStart}-{pageEnd} of {filteredEntries.length}</span>
+            <div className="flex flex-col gap-3 border-t border-border pt-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+              <span className="tabular-nums">Showing {pageStart}-{pageEnd} of {filteredEntries.length}</span>
               <div className="flex gap-2">
                 <Button size="sm" variant="outline" disabled={safePage <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>
                   Previous
@@ -2122,8 +2159,9 @@ function KnowledgeCategoryButton({
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-medium ${
-        active ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted"
+      aria-pressed={active}
+      className={`flex min-h-10 w-auto shrink-0 items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm font-medium outline-none transition-colors duration-ui focus-visible:ring-2 focus-visible:ring-ring lg:w-full ${
+        active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"
       }`}
     >
       <span>{label}</span>
@@ -2134,7 +2172,7 @@ function KnowledgeCategoryButton({
 
 function KnowledgeExplorerEntryCard({ entry, compact }: { entry: KnowledgeExplorerEntry; compact?: boolean }) {
   return (
-    <div className="rounded-md border border-border bg-muted p-4">
+    <article className="knowledge-entry rounded-lg border border-border bg-muted/60 p-4 transition-colors duration-ui hover:border-primary/40 hover:bg-muted focus-within:ring-2 focus-within:ring-ring">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -2145,12 +2183,19 @@ function KnowledgeExplorerEntryCard({ entry, compact }: { entry: KnowledgeExplor
             {entry.description}
           </div>
         </div>
-        <div className="flex max-w-[420px] flex-wrap gap-1">
+        <div role="group" aria-label="Source work item IDs" className="flex max-w-[420px] flex-wrap gap-1">
           {entry.sourceWorkItemIds.slice(0, compact ? 6 : 10).map((id) => (
-            <Badge key={id} variant="outline" className="font-mono text-xs">{id}</Badge>
+            <Badge key={id} variant="outline" className="font-mono text-xs tabular-nums">{id}</Badge>
           ))}
           {entry.sourceWorkItemIds.length > (compact ? 6 : 10) ? (
-            <Badge variant="outline" className="font-mono text-xs">+{entry.sourceWorkItemIds.length - (compact ? 6 : 10)}</Badge>
+            <Badge
+              variant="outline"
+              className="font-mono text-xs tabular-nums text-muted-foreground"
+              aria-label={`${entry.sourceWorkItemIds.length - (compact ? 6 : 10)} more source work items`}
+              title={entry.sourceWorkItemIds.slice(compact ? 6 : 10).join(", ")}
+            >
+              +{entry.sourceWorkItemIds.length - (compact ? 6 : 10)}
+            </Badge>
           ) : null}
         </div>
       </div>
@@ -2162,7 +2207,72 @@ function KnowledgeExplorerEntryCard({ entry, compact }: { entry: KnowledgeExplor
       <div className={`mt-3 rounded-md bg-card p-3 text-sm text-muted-foreground ${compact ? "line-clamp-2" : ""}`}>
         <span className="font-semibold text-foreground">Evidence:</span> {entry.evidence}
       </div>
+    </article>
+  )
+}
+
+function KnowledgeLoadingState({ label, compact = false }: { label: string; compact?: boolean }) {
+  const rows = Array.from({ length: compact ? 2 : 4 }).map((_, index) => (
+    <div key={index} className="rounded-lg border border-border bg-muted/30 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 space-y-3">
+          <Skeleton className="h-4 w-2/5" />
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-3 w-4/5" />
+        </div>
+        <Skeleton className="h-6 w-12" />
+      </div>
     </div>
+  ))
+
+  return (
+    <div role="status" aria-live="polite" aria-label={label} className="space-y-3">
+      <span className="sr-only">{label}</span>
+      {compact ? (
+        <div className="space-y-3">{rows}</div>
+      ) : (
+        <>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <Skeleton className="h-4 w-48" />
+            <Skeleton className="h-9 w-full lg:w-[420px]" />
+          </div>
+          <div className="grid gap-4 lg:grid-cols-[190px_1fr]">
+            <div className="space-y-1">
+              {Array.from({ length: 5 }).map((_, index) => (
+                <Skeleton key={index} className="h-10 w-full" />
+              ))}
+            </div>
+            <div className="space-y-3">{rows}</div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function KnowledgeEmptyState({
+  title,
+  message,
+  actionLabel,
+  onAction,
+  compact = false,
+}: {
+  title: string
+  message: string
+  actionLabel?: string
+  onAction?: () => void
+  compact?: boolean
+}) {
+  return (
+    <DashboardEmptyPanel
+      title={title}
+      message={message}
+      compact={compact}
+      icon={SearchX}
+      actionLabel={actionLabel}
+      onAction={onAction}
+      live={false}
+    />
   )
 }
 
@@ -2263,6 +2373,14 @@ function filterKnowledgeBaseBySource(knowledgeBase: ProjectKnowledgeBase, source
     glossary: keep(knowledgeBase.glossary),
     crossDependencies: keep(knowledgeBase.crossDependencies),
   }
+}
+
+function syncStatusToneClass(status?: string | null) {
+  const value = (status ?? "active").toLowerCase()
+  if (value === "active") return "border-success/40 bg-success/10 text-success"
+  if (value === "stale" || value === "pending") return "border-warning/40 bg-warning/10 text-warning-foreground dark:text-warning"
+  if (value === "error" || value === "failed") return "border-destructive/40 bg-destructive/10 text-destructive"
+  return ""
 }
 
 function formatGlossaryType(value?: string) {

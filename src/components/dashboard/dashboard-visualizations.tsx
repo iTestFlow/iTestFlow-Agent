@@ -4,6 +4,7 @@ import { Info } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DashboardEmptyPanel } from "@/components/dashboard/dashboard-states";
 import { cn } from "@/lib/utils";
 import type { DashboardDistributionDatum } from "@/types/dashboard";
 
@@ -77,18 +78,14 @@ export function DashboardChartCard({
 }
 
 export function EmptyChartState({ message }: { message: string }) {
-  return (
-    <div className="flex h-[260px] items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 px-6 text-center text-sm text-muted-foreground">
-      {message}
-    </div>
-  );
+  return <DashboardEmptyPanel message={message} />;
 }
 
 export function DonutChart({ data, centerLabel }: { data: DashboardDistributionDatum[]; centerLabel?: string }) {
   const total = data.reduce((sum, item) => sum + item.value, 0);
   return (
     <div className="min-w-0">
-      <div className="relative h-[220px]">
+      <div className="relative h-[200px] sm:h-[220px]">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={62} outerRadius={92} paddingAngle={2}>
@@ -120,7 +117,7 @@ export function DonutChart({ data, centerLabel }: { data: DashboardDistributionD
 
 export function DistributionBarChart({ data }: { data: DashboardDistributionDatum[] }) {
   return (
-    <div className="h-[260px]">
+    <div className="h-[220px] sm:h-[260px]">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 8, left: -18, bottom: 4 }}>
           <CartesianGrid stroke="hsl(var(--border))" vertical={false} />

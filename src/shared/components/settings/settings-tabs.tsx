@@ -25,7 +25,7 @@ export function SettingsTabs() {
   const [tab, setTab] = useState<SettingsTab>("connections")
 
   return (
-    <Tabs value={tab} onValueChange={(value) => setTab(value as SettingsTab)} className="w-full min-w-0 flex-col gap-4">
+    <Tabs id="settings" value={tab} onValueChange={(value) => setTab(value as SettingsTab)} className="w-full min-w-0 flex-col gap-4">
       <div className="max-w-full overflow-x-auto pb-1">
         <TabsList variant="primary" className="h-auto min-w-max justify-start">
           {TABS.map((entry) => (
