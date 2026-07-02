@@ -1,6 +1,7 @@
 {
   "name": "itestflow-agent",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "description": "Local-first test intelligence command center for Azure DevOps testing workflows.",
   "scripts": {
