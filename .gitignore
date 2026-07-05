@@ -5,9 +5,6 @@ coverage
 .env
 .env.*
 !.env.example
-data/*.sqlite
-data/*.sqlite-shm
-data/*.sqlite-wal
 data/runtime-settings.json
 data/.runtime-settings-key
 data/uploads/*

@@ -3,13 +3,10 @@
 /**
  * Phase 1a — initial PostgreSQL schema.
  *
- * Ported verbatim from the former src/modules/shared/infrastructure/database/schema.sql
- * (node:sqlite). Type mapping: TEXT->text, INTEGER->integer, REAL->double precision.
  * Integer 0/1 flag columns are kept as `integer` to avoid churn in the data layer.
  *
- * The two former FTS5 virtual tables are recreated as ordinary tables carrying a
- * GENERATED STORED `tsvector` column (config 'simple' ≈ FTS5 unicode61, no stemming)
- * with a GIN index. The retrieval service keeps maintaining these tables explicitly.
+ * Full-text search uses GENERATED STORED `tsvector` columns with GIN indexes.
+ * The retrieval service keeps maintaining the search tables explicitly.
  */
 
 exports.shorthands = undefined;

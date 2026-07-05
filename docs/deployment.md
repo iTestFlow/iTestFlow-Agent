@@ -268,4 +268,4 @@ it exits immediately instead of silently skipping when that prerequisite is abse
 
 ## Docs Cleanup Guidance
 
-Keep `docs/deployment.md` and `docs/knowledge-wiki-rag-enhancement.md` as durable references. Historical plan files such as `multi-user-migration-plan.md` and `remediation-plan-v2-isolation-guards-jobs.md` can be deleted or archived after the team confirms there are no open decisions left in them. Their final architecture decisions should live in [Project Architecture](../PROJECT_ARCHITECTURE.md), not in plan documents.
+Keep `docs/deployment.md` and `docs/knowledge-wiki-rag-enhancement.md` as durable references. Final architecture decisions should live in [Project Architecture](../PROJECT_ARCHITECTURE.md).

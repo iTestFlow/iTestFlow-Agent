@@ -3,7 +3,7 @@
  *
  * The app is local-first: the Node process runs in the user's own timezone, so
  * "today" and daily trend buckets are computed against the host's local calendar
- * day rather than UTC. Azure DevOps / SQLite timestamps are stored in UTC; convert
+ * day rather than UTC. Azure DevOps timestamps are stored in UTC; convert
  * them with toLocalDayString for bucketing, and use localDayStartIso to derive the
  * UTC instant of a local day's midnight for fetch/query lower bounds.
  */

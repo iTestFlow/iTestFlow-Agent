@@ -6,9 +6,8 @@ import { randomUUID } from "crypto";
 /**
  * PostgreSQL access layer.
  *
- * The previous implementation used the synchronous `node:sqlite` `DatabaseSync`
- * API. PostgreSQL access is asynchronous, so the data layer exposes three async
- * helpers — {@link sqlAll}, {@link sqlGet}, {@link sqlRun} — plus
+ * The data layer exposes three async helpers — {@link sqlAll}, {@link sqlGet},
+ * {@link sqlRun} — plus
  * {@link withTransaction}. Call sites keep their existing SQL strings and named
  * (`@name`) parameter objects; {@link translateNamedParameters} rewrites
  * `@name` placeholders into PostgreSQL positional `$n` placeholders so the port
@@ -143,9 +142,7 @@ export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>)
 
 /**
  * Serialized queue for best-effort, fire-and-forget writes (audit logs, LLM
- * request logs, analytics instrumentation). These were synchronous — and thus
- * implicitly ordered and never threw into the request path — under node:sqlite.
- * PostgreSQL writes are async, so they are enqueued here: tasks run one at a time
+ * request logs, analytics instrumentation). Tasks run one at a time
  * in submission order (preserving e.g. start→update→complete ordering for a single
  * analytics run) and failures are logged and swallowed, never surfaced to callers.
  */
