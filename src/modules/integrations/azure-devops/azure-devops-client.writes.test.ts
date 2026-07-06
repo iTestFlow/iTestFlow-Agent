@@ -28,7 +28,7 @@ describe("AzureDevOpsRestAdapter write contracts", () => {
     vi.clearAllMocks();
   });
 
-  it("posts a test-case JSON patch with the required content type", async () => {
+  it("posts a test-case JSON patch with the required content type and PAT auth headers", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ id: 901 }));
     vi.stubGlobal("fetch", fetchMock);
     const result = await adapter().createTestCase({
@@ -48,7 +48,12 @@ describe("AzureDevOpsRestAdapter write contracts", () => {
     expect(write.url).toBe(`${ORG}/proj-1/_apis/wit/workitems/$Test%20Case?api-version=7.1`);
     expect(write.init).toMatchObject({
       method: "POST",
-      headers: expect.objectContaining({ "Content-Type": "application/json-patch+json" }),
+      headers: expect.objectContaining({
+        // Basic token is base64(":" + PAT) — the PAT rides in the password slot.
+        Authorization: "Basic OnBhdA==",
+        Accept: "application/json",
+        "Content-Type": "application/json-patch+json",
+      }),
     });
     expect(JSON.parse(String(write.init?.body))).toEqual(
       expect.arrayContaining([

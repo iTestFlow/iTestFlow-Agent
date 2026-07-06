@@ -31,6 +31,8 @@ describe("POST /api/workspace/sync", () => {
     const response = await POST();
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, workspaceId: "ws-1", enqueued: 2 });
+    // Role guard requires owner/admin.
+    expect(mocks.resolveWorkspaceRequest).toHaveBeenCalledWith(["owner", "admin"]);
     expect(mocks.enqueueWorkspaceContextSync).toHaveBeenCalledWith("ws-1", "admin-1");
   });
 

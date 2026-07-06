@@ -58,6 +58,8 @@ describe("workspace member mutation routes", () => {
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
+    // Role guard requires owner/admin.
+    expect(mocks.resolveWorkspaceRequest).toHaveBeenCalledWith(["owner", "admin"]);
     expect(mocks.updateMemberRole).toHaveBeenCalledWith({
       workspaceId: "ws-1",
       membershipId: "mbr-target",
@@ -97,6 +99,8 @@ describe("workspace member mutation routes", () => {
       params,
     );
     expect(response.status).toBe(200);
+    // Role guard requires owner/admin.
+    expect(mocks.resolveWorkspaceRequest).toHaveBeenCalledWith(["owner", "admin"]);
     expect(mocks.removeMember).toHaveBeenCalledWith({
       workspaceId: "ws-1",
       membershipId: "mbr-target",

@@ -93,9 +93,10 @@ describe("GeneratedTestCasesReview", () => {
   it("adds a selected manual draft with a collision-free ID", () => {
     const onChange = vi.fn();
     const onSelectedIdsChange = vi.fn();
+    const withManual = [...cases, generatedCase({ id: "TC-MANUAL-002", title: "Existing manual case" })];
     render(
       <GeneratedTestCasesReview
-        testCases={cases}
+        testCases={withManual}
         selectedIds={["TC-001"]}
         onChange={onChange}
         onSelectedIdsChange={onSelectedIdsChange}
@@ -103,9 +104,10 @@ describe("GeneratedTestCasesReview", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Add Test Case" }));
     const nextCases = onChange.mock.calls[0][0] as GeneratedTestCase[];
-    expect(nextCases).toHaveLength(3);
-    expect(nextCases[2].id).toMatch(/^TC-MANUAL-/);
-    expect(onSelectedIdsChange).toHaveBeenCalledWith(["TC-001", nextCases[2].id]);
+    expect(nextCases).toHaveLength(4);
+    // The counter continues past the highest existing TC-MANUAL number instead of reissuing it.
+    expect(nextCases[3].id).toBe("TC-MANUAL-003");
+    expect(onSelectedIdsChange).toHaveBeenCalledWith(["TC-001", "TC-MANUAL-003"]);
   });
 
   it("normalizes the edited case with a synthetic preconditions row and renumbered execution steps", () => {

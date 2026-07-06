@@ -4,7 +4,6 @@ const mocks = vi.hoisted(() => ({
   createBulkTasks: vi.fn(),
   requireWorkflowContext: vi.fn(),
   getUserAzureAdapter: vi.fn(),
-  authErrorResponse: vi.fn(),
   resolveProjectScope: vi.fn(),
   startWorkflowRun: vi.fn(),
   completeWorkflowRun: vi.fn(),
@@ -14,14 +13,17 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/modules/integrations/azure-devops/azure-devops-bulk-task.service", () => ({
   createBulkTasks: mocks.createBulkTasks,
 }));
-// Auth mapping for a real SessionError/WorkflowAuthError is covered by
-// core-route-contracts.test.ts; here authErrorResponse is a pass-through stub
-// (null = not an auth error) so service failures reach the sanitized 503 branch.
-vi.mock("@/modules/credentials/scoped-resolution.service", () => ({
-  requireWorkflowContext: mocks.requireWorkflowContext,
-  getUserAzureAdapter: mocks.getUserAzureAdapter,
-  authErrorResponse: mocks.authErrorResponse,
-}));
+// importOriginal keeps the REAL authErrorResponse and auth error classes so the
+// auth mapping tests below exercise the route's actual SessionError /
+// WorkflowAuthError catch branch; only the context/adapter resolvers are stubbed.
+vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/credentials/scoped-resolution.service")>();
+  return {
+    ...actual,
+    requireWorkflowContext: mocks.requireWorkflowContext,
+    getUserAzureAdapter: mocks.getUserAzureAdapter,
+  };
+});
 vi.mock("@/modules/analytics/workflow-analytics.service", () => ({
   startWorkflowRun: mocks.startWorkflowRun,
   completeWorkflowRun: mocks.completeWorkflowRun,
@@ -31,6 +33,8 @@ vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
 }));
 
+import { SessionError } from "@/modules/auth/session.service";
+import { WorkflowAuthError } from "@/modules/credentials/scoped-resolution.service";
 import { jsonRequest, projectScope } from "@/test/factories";
 import { POST } from "./route";
 
@@ -62,7 +66,6 @@ describe("POST /api/azure-devops/bulk-tasks", () => {
     mocks.requireWorkflowContext.mockReset().mockResolvedValue(context);
     mocks.resolveProjectScope.mockReset().mockResolvedValue(trustedScope);
     mocks.getUserAzureAdapter.mockReset().mockResolvedValue(adapter);
-    mocks.authErrorResponse.mockReset().mockReturnValue(null);
     mocks.startWorkflowRun.mockReset().mockReturnValue("run-1");
     mocks.completeWorkflowRun.mockReset();
     mocks.failWorkflowRun.mockReset();
@@ -277,6 +280,35 @@ describe("POST /api/azure-devops/bulk-tasks", () => {
       error: "No bulk tasks were created.",
     });
     expect(mocks.completeWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it("maps a SessionError from requireWorkflowContext to 401 before any analytics run starts", async () => {
+    mocks.requireWorkflowContext.mockRejectedValue(new SessionError());
+
+    const response = await post(body());
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "Authentication required." });
+    expect(mocks.startWorkflowRun).not.toHaveBeenCalled();
+    expect(mocks.createBulkTasks).not.toHaveBeenCalled();
+    expect(mocks.failWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it("maps a missing-PAT WorkflowAuthError to its own status, not the sanitized 503", async () => {
+    mocks.getUserAzureAdapter.mockRejectedValue(
+      new WorkflowAuthError("Add your Azure DevOps Personal Access Token first.", 400),
+    );
+
+    const response = await post(body());
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "Add your Azure DevOps Personal Access Token first.",
+    });
+    expect(mocks.createBulkTasks).not.toHaveBeenCalled();
+    // Auth errors return before the catch block's failWorkflowRun fallback,
+    // even though the analytics run had already started.
+    expect(mocks.failWorkflowRun).not.toHaveBeenCalled();
   });
 
   it("maps a service throw to a sanitized 503 and fails the analytics run with the raw message", async () => {

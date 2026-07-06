@@ -199,6 +199,69 @@ describe("AzureDevOpsRestAdapter pagination", () => {
   });
 });
 
+describe("AzureDevOpsRestAdapter response handling", () => {
+  const authFailedMessage =
+    "Azure DevOps authentication failed. Check that your Personal Access Token is valid and has not expired, then sign in again.";
+
+  // PAT expiry is signaled through the onUnauthorized constructor hook.
+  function hookedAdapter(onUnauthorized: () => void) {
+    return new AzureDevOpsRestAdapter(
+      { organizationUrl: ORG, personalAccessToken: "pat" },
+      { azureProjectId: "proj-guid-1", azureProjectName: "Fabrikam Project" },
+      { onUnauthorized },
+    );
+  }
+
+  it("fires the onUnauthorized hook on a 401 and still rejects with the auth failure", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ message: "TF400813: not authorized" }, { status: 401 })));
+    const onUnauthorized = vi.fn();
+
+    await expect(hookedAdapter(onUnauthorized).fetchProjects()).rejects.toThrow(authFailedMessage);
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires the onUnauthorized hook when a no-content endpoint returns 401", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/_apis/testplan/plans/10?")) {
+        return jsonResponse({ project: { id: "proj-guid-1" } });
+      }
+      return new Response("", { status: 401 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onUnauthorized = vi.fn();
+
+    // deleteTestSuite reports failures as a result object, but the hook must still fire.
+    await expect(hookedAdapter(onUnauthorized).deleteTestSuite({
+      projectId: "proj-guid-1",
+      testPlanId: "10",
+      testSuiteId: "30",
+    })).resolves.toEqual({ success: false, error: authFailedMessage });
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a 200 response that is not JSON, such as an HTML sign-in page", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>Sign in</html>", {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    })));
+
+    await expect(scopedAdapter().fetchProjects()).rejects.toThrow(
+      "Azure DevOps returned a non-JSON response (200). Check that the organization URL and Personal Access Token are valid.",
+    );
+  });
+
+  it("rejects a 200 application/json response whose body does not parse", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response('{"value": [', {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })));
+
+    await expect(scopedAdapter().fetchProjects()).rejects.toThrow(
+      "Azure DevOps returned malformed JSON (200). Check that the organization URL and Personal Access Token are valid.",
+    );
+  });
+});
+
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
     status: init.status ?? 200,

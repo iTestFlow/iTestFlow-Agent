@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
-import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LoadedWorkItem } from "@/components/workflow/work-item-loader";
 import { useWorkItemLookup } from "@/components/workflow/work-item-loader";
@@ -17,6 +17,10 @@ vi.mock("@/components/workflow/test-intelligence-shared", () => ({
   postJson: postJsonMock,
   isRequirementLikeType: (workItemType: string) => workItemType === "User Story",
 }));
+
+// Vitest globals are off, so RTL never registers its own cleanup; unmount explicitly so
+// debounce timers from earlier tests cannot fire during later timer advances.
+afterEach(cleanup);
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

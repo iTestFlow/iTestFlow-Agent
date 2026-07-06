@@ -91,12 +91,11 @@ describe("buildCommentBodyWithMentions", () => {
     }
   });
 
-  it("does not duplicate markup for users already referenced by name in the reviewed body", () => {
+  it("prepends the mention line even when the user is already referenced by display name in the body (no dedup)", () => {
     const jane = makeUser({ id: "id-jane", displayName: "Jane Doe" });
     const body = "As discussed with @Jane Doe, R2 conflicts with R7.";
-    const result = buildCommentBodyWithMentions(body, [jane]);
-    expect(result.split("@<id-jane>").length - 1).toBe(1);
-    expect(result).toBe(`@<id-jane>\n\n${body}`);
+    // The helper never inspects the body for existing references — the id token is always prepended.
+    expect(buildCommentBodyWithMentions(body, [jane])).toBe(`@<id-jane>\n\n${body}`);
   });
 
   it("preserves HTML in the body untouched around the injected markup", () => {

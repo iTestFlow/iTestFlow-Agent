@@ -21,6 +21,12 @@ const jobTypes: string[] = [];
 
 describeDb("worker cycle (DB-backed)", () => {
   beforeAll(async () => {
+    // Sweep this suite's leftovers from a crashed prior local run: claimNextJob is a
+    // global scan ordered by priority/created_at, so a stale pending priority -1000 job
+    // (older created_at) would be claimed before this run's jobs and fail dispatch.
+    await sqlRun(`DELETE FROM jobs WHERE job_type LIKE ANY(@patterns)`, {
+      patterns: ["worker_success_%", "worker_retry_%", "worker_missing_%"],
+    });
     await seedWorkspace({ id: workspaceId, orgUrl: organizationUrl });
   });
 

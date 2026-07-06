@@ -49,6 +49,8 @@ describe("workspace sync schedule routes", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(await response.json()).toEqual({ workspaceId: "ws-1", schedule: null });
+    // Role guard requires owner/admin.
+    expect(mocks.resolveWorkspaceRequest).toHaveBeenCalledWith(["owner", "admin"]);
     expect(mocks.getWorkspaceSyncSchedule).toHaveBeenCalledWith("ws-1");
   });
 
@@ -60,6 +62,8 @@ describe("workspace sync schedule routes", () => {
       states: ["Active"],
     }));
     expect(response.status).toBe(200);
+    // Role guard requires owner/admin.
+    expect(mocks.resolveWorkspaceRequest).toHaveBeenCalledWith(["owner", "admin"]);
     expect(mocks.upsertWorkspaceSyncSchedule).toHaveBeenCalledWith({
       workspaceId: "ws-1",
       cronExpression: "0 2 * * *",
@@ -117,6 +121,8 @@ describe("workspace sync schedule routes", () => {
     const response = await DELETE();
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
+    // Role guard requires owner/admin.
+    expect(mocks.resolveWorkspaceRequest).toHaveBeenCalledWith(["owner", "admin"]);
     expect(mocks.deleteWorkspaceSyncSchedule).toHaveBeenCalledWith("ws-1");
   });
 

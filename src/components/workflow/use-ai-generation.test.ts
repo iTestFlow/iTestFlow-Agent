@@ -1,11 +1,15 @@
 /* @vitest-environment jsdom */
 
-import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, cleanup, renderHook } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "./api-error";
 import { useAiGeneration } from "./use-ai-generation";
 import { AppErrorCode } from "@/modules/shared/errors/app-error";
+
+// Vitest globals are off, so RTL never registers its own cleanup; unmount explicitly so
+// intervals from earlier tests cannot leak into later timer-count assertions.
+afterEach(cleanup);
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

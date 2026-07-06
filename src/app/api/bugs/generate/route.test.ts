@@ -46,6 +46,7 @@ vi.mock("@/modules/analytics/workflow-analytics.service", () => ({
   failWorkflowRun: mocks.failWorkflowRun,
 }));
 
+import { WorkflowAuthError } from "@/modules/credentials/scoped-resolution.service";
 import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import { fakeAzureAdapter, fakeLlmProvider, jsonRequest, projectScope, requirement } from "@/test/factories";
 import { POST } from "./route";
@@ -122,6 +123,39 @@ describe("POST /api/bugs/generate", () => {
       expect.objectContaining({ scope: trustedScope, actor: "user-1", parentStory: null }),
     );
     expect(await response.json()).toMatchObject({ analyticsRunId: "run-1", parentStoryId: null });
+  });
+
+  it("rejects malformed JSON with the 400 validation response before authenticating or starting analytics", async () => {
+    const request = new Request("http://localhost/api/bugs/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{",
+    });
+
+    const response = await POST(request);
+
+    // Regression: the body parse happens outside the try block, so without the
+    // .catch(() => ({})) guard the rejection would escape POST as an unhandled 500.
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: expect.any(String) });
+    expect(mocks.requireWorkflowContext).not.toHaveBeenCalled();
+    expect(mocks.startWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it("maps an auth rejection through the real authErrorResponse without starting analytics", async () => {
+    mocks.requireWorkflowContext.mockRejectedValue(
+      new WorkflowAuthError("Workspace access denied.", 403),
+    );
+
+    const response = await POST(generateRequest());
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "Workspace access denied." });
+    expect(mocks.generateBugReport).not.toHaveBeenCalled();
+    expect(mocks.startWorkflowRun).not.toHaveBeenCalled();
+    // The auth short-circuit returns before the audit + failWorkflowRun fallback.
+    expect(mocks.writeGenerationFailureAudit).not.toHaveBeenCalled();
+    expect(mocks.failWorkflowRun).not.toHaveBeenCalled();
   });
 
   it("maps a generation failure to its audit entry, a failed run, and the statusForServerError status", async () => {

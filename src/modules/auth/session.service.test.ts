@@ -102,6 +102,23 @@ describe("session service", () => {
     });
   });
 
+  it("treats a session expiring exactly now as still valid (strict `<` boundary)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-06T00:00:00.000Z"));
+    database.sqlGet.mockResolvedValueOnce({
+      id: "sess-1",
+      user_id: "user-1",
+      active_workspace_id: "ws-1",
+      expires_at: "2026-07-06T00:00:00.000Z",
+      revoked_at: null,
+    });
+    await expect(resolveSessionToken("boundary")).resolves.toEqual({
+      sessionId: "sess-1",
+      userId: "user-1",
+      activeWorkspaceId: "ws-1",
+    });
+  });
+
   it("revokes idempotently and ignores an absent token", async () => {
     await revokeSessionToken("");
     expect(database.sqlRun).not.toHaveBeenCalled();
@@ -128,6 +145,17 @@ describe("session service", () => {
         path: "/",
         maxAge: 7 * 24 * 60 * 60,
       },
+    );
+  });
+
+  it("leaves the cookie non-secure outside production so local http development works", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    await createSession({ userId: "user-1", workspaceId: "ws-1" });
+
+    expect(cookieStore.set).toHaveBeenCalledWith(
+      "itf_session",
+      expect.any(String),
+      expect.objectContaining({ httpOnly: true, secure: false }),
     );
   });
 

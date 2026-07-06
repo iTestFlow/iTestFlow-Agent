@@ -19,6 +19,7 @@ vi.mock("./workspace-sync.handler", () => ({
   enqueueWorkspaceContextSync: sync.enqueueWorkspaceContextSync,
 }));
 
+import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
 import { enqueueDueScheduledSyncs } from "./sync-schedule.service";
 
 describe("enqueueDueScheduledSyncs failure isolation", () => {
@@ -51,21 +52,32 @@ describe("enqueueDueScheduledSyncs failure isolation", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
 
     await expect(enqueueDueScheduledSyncs()).resolves.toBe(2);
+    // Both claimed rows get their next_run_at advanced, keyed by their own id.
     expect(database.sqlRun).toHaveBeenCalledTimes(2);
+    expect(database.sqlRun).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("SET next_run_at = @next"),
+      expect.objectContaining({ id: "schedule-1" }),
+      expect.anything(),
+    );
+    expect(database.sqlRun).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("SET next_run_at = @next"),
+      expect.objectContaining({ id: "schedule-2" }),
+      expect.anything(),
+    );
     expect(sync.enqueueWorkspaceContextSync).toHaveBeenNthCalledWith(
       1,
       "ws-1",
       null,
       { workItemTypes: ["Bug"], states: ["Active"] },
     );
+    // Unparseable/null filter columns fall back to the shared defaults, exactly.
     expect(sync.enqueueWorkspaceContextSync).toHaveBeenNthCalledWith(
       2,
       "ws-2",
       null,
-      expect.objectContaining({
-        workItemTypes: expect.any(Array),
-        states: expect.any(Array),
-      }),
+      { workItemTypes: DEFAULT_CONTEXT_WORK_ITEM_TYPES, states: DEFAULT_CONTEXT_STATES },
     );
     expect(errorLog).toHaveBeenCalledWith(
       "[scheduler] failed to enqueue sync for workspace ws-1",

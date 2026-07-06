@@ -34,6 +34,8 @@ describe("workspace settings routes", () => {
     const response = await GET();
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
+    // Role guard requires owner/admin.
+    expect(mocks.resolveWorkspaceRequest).toHaveBeenCalledWith(["owner", "admin"]);
     expect(await response.json()).toMatchObject({
       workspaceId: "ws-1",
       settings: {
@@ -51,6 +53,8 @@ describe("workspace settings routes", () => {
       llmRetryAttempts: 2,
     }));
     expect(response.status).toBe(200);
+    // Role guard requires owner/admin.
+    expect(mocks.resolveWorkspaceRequest).toHaveBeenCalledWith(["owner", "admin"]);
     expect(mocks.upsertWorkspaceSettings).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: "ws-1",
