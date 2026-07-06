@@ -71,6 +71,7 @@ export const GATED_INCLUDE: string[] = [
   "src/app/api/workspace/sync-schedule/route.ts",
   "src/app/api/workspace/sync/route.ts",
   "src/app/report-bug/lib/reproduction-test-case.ts",
+  "src/app/report-bug/lib/action-gating.ts",
   "src/app/report-bug/lib/bug-custom-fields.ts",
   "src/app/report-bug/lib/generation-payload.ts",
   "src/app/requirements-analysis/lib/comment-helpers.ts",

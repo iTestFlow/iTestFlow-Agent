@@ -49,6 +49,7 @@ import {
   testCaseId,
   type LinkedTestCase,
 } from "./lib/generation-payload";
+import { getReportBugActionGates } from "./lib/action-gating";
 import type { GeneratedTestCase } from "@/components/workflow/test-intelligence-types";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import type { ProjectUser } from "@/types/azure-devops";
@@ -575,21 +576,27 @@ export function ReportBugClient() {
     }
   }
 
-  const generateDisabled =
-    !scope ||
-    !bugDescription.trim() ||
-    metadata.loading ||
-    gen.isRunning ||
-    prep.isRunning ||
-    parentStoryInvalid;
-  const postDisabled = !scope || !report || !report.title.trim() || !report.actualResult.trim() || !report.stepsToReproduce.trim() || postState.loading || parentStoryInvalid;
-  const publishTestCaseDisabled =
-    !scope ||
-    !parentStoryValid ||
-    !postState.data ||
-    testCasePublishState.loading ||
-    !suggestedTestCase ||
-    !validateGeneratedTestCase(suggestedTestCase).valid;
+  const {
+    generateDisabled,
+    postDisabled,
+    publishTestCaseDisabled,
+  } = getReportBugActionGates({
+    hasScope: Boolean(scope),
+    bugDescription,
+    metadataLoading: metadata.loading,
+    generationRunning: gen.isRunning,
+    preparationRunning: prep.isRunning,
+    parentStoryInvalid,
+    parentStoryValid,
+    report,
+    posting: postState.loading,
+    hasPostedBug: Boolean(postState.data),
+    publishingTestCase: testCasePublishState.loading,
+    hasSuggestedTestCase: Boolean(suggestedTestCase),
+    suggestedTestCaseValid: suggestedTestCase
+      ? validateGeneratedTestCase(suggestedTestCase).valid
+      : false,
+  });
 
   return (
     <div className="content-stack">
