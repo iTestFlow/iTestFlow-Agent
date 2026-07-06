@@ -40,6 +40,7 @@ export function PatternSequenceGame({
   const [message, setMessage] = useState("Watch the pattern.");
   const [playbackKey, setPlaybackKey] = useState(0);
   const [reducedMotion, setReducedMotion] = useState(false);
+  const inputRef = useRef<number[]>([]);
   const wonRef = useRef(false);
   const timersRef = useRef<number[]>([]);
 
@@ -54,6 +55,7 @@ export function PatternSequenceGame({
   useEffect(() => {
     timersRef.current.forEach((timer) => window.clearTimeout(timer));
     timersRef.current = [];
+    inputRef.current = [];
     setInput([]);
     setActiveTile(null);
     setPhase("watching");
@@ -79,6 +81,7 @@ export function PatternSequenceGame({
 
   function startRecall() {
     setActiveTile(null);
+    inputRef.current = [];
     setInput([]);
     setPhase("input");
     setMessage(config.reverse ? "Repeat the pattern in reverse." : "Repeat the pattern.");
@@ -91,13 +94,16 @@ export function PatternSequenceGame({
 
   function chooseTile(tile: number) {
     if (disabled || phase !== "input" || wonRef.current) return;
-    const nextInput = [...input, tile];
+    const nextInput = [...inputRef.current, tile];
     if (tile !== expected[nextInput.length - 1]) {
+      inputRef.current = [];
       setInput([]);
       setMessage("That was not the sequence. Try again or replay it.");
       return;
     }
+    inputRef.current = nextInput;
     setInput(nextInput);
+    setMessage(config.reverse ? "Repeat the pattern in reverse." : "Repeat the pattern.");
     if (nextInput.length !== expected.length) return;
 
     if (modifierId === "growing" && round < 2) {
