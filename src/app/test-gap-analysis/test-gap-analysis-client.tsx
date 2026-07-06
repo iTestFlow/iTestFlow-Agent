@@ -39,8 +39,13 @@ import type {
   WorkflowMode,
 } from "@/components/workflow/test-intelligence-types";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
+import { countEditedById } from "@/shared/lib/edited-count";
 
-import { countTraceabilityStatuses } from "./lib/traceability-text";
+import {
+  countInvalidSuggestions,
+  countReviewGaps,
+  selectSuggestedAdditions,
+} from "./lib/suggestion-selection";
 import { ReviewMetrics } from "./components/review-metrics";
 import { ReviewSummaryCard } from "./components/review-summary-card";
 import { FindingsReviewQueue } from "./components/findings-review-queue";
@@ -100,19 +105,18 @@ export function TestGapAnalysisClient() {
   }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
   const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
   const suggestedAdditions = useMemo(() => state.data?.suggestedAdditions ?? [], [state.data?.suggestedAdditions]);
-  const selectedSuggestedAdditions = useMemo(() => {
-    const selectedIds = new Set(selectedSuggestedIds);
-    return suggestedAdditions.filter((testCase) => selectedIds.has(testCase.id));
-  }, [selectedSuggestedIds, suggestedAdditions]);
+  const selectedSuggestedAdditions = useMemo(
+    () => selectSuggestedAdditions(suggestedAdditions, selectedSuggestedIds),
+    [selectedSuggestedIds, suggestedAdditions],
+  );
   const invalidSelectedSuggestedCount = useMemo(
-    () => selectedSuggestedAdditions.filter((testCase) => !validateGeneratedTestCase(testCase).valid).length,
+    () => countInvalidSuggestions(selectedSuggestedAdditions, validateGeneratedTestCase),
     [selectedSuggestedAdditions],
   );
-  const reviewGapCount = useMemo(() => {
-    if (!state.data) return 0;
-    const counts = countTraceabilityStatuses(state.data.traceabilityMatrix);
-    return counts["Partially covered"] + counts["Not covered"] + counts["Needs review"];
-  }, [state.data]);
+  const reviewGapCount = useMemo(
+    () => countReviewGaps(state.data?.traceabilityMatrix ?? []),
+    [state.data?.traceabilityMatrix],
+  );
 
   function changeTargetWorkItemId(value: string) {
     gen.cancel();
@@ -479,10 +483,10 @@ export function TestGapAnalysisClient() {
                     onPublished={() => setHasUnfinishedWork(false)}
                     analyticsRunId={state.data.analyticsRunId}
                     itemsGenerated={state.data.suggestedAdditions.length}
-                    itemsEdited={selectedSuggestedAdditions.filter((testCase) => {
-                      const original = state.data?.suggestedAdditions.find((item) => item.id === testCase.id);
-                      return JSON.stringify(testCase) !== JSON.stringify(original);
-                    }).length}
+                    itemsEdited={countEditedById(
+                      selectedSuggestedAdditions,
+                      new Map(state.data.suggestedAdditions.map((item) => [item.id, item])),
+                    )}
                   />
                 </>
               ) : (

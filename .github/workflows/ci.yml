@@ -61,7 +61,7 @@ jobs:
       - name: PostgreSQL integration tests
         id: integration_tests
         continue-on-error: true
-        run: npm run test:integration
+        run: npm run test:coverage:integration
 
       - name: Validate test report files
         id: validate_test_reports

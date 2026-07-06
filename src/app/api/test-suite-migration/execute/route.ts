@@ -14,7 +14,7 @@ import { resolveProjectScope } from "@/modules/projects/workspace-projects.servi
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const parsed = SuiteMigrationRequestSchema.safeParse(await request.json());
+  const parsed = SuiteMigrationRequestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Migration request is invalid." }, { status: 400 });
   }

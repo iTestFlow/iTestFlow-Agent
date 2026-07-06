@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { GATED_INCLUDE } from "../vitest.coverage-manifest.ts";
+import {
+  GATED_INCLUDE,
+  HIGH_RISK_GATED_INCLUDE,
+} from "../vitest.coverage-manifest.ts";
 
 /**
  * Per-file floor for the risk-based coverage gate — the companion to the AGGREGATE
@@ -14,7 +17,9 @@ import { GATED_INCLUDE } from "../vitest.coverage-manifest.ts";
  * Runs as part of `npm run test:coverage` (chained after vitest) against the
  * json-summary report, which contains exactly the GATED_INCLUDE files.
  */
-const FLOOR = { lines: 60, statements: 60, functions: 60, branches: 50 };
+const LEGACY_FLOOR = { lines: 65, statements: 60, functions: 65, branches: 50 };
+const HIGH_RISK_FLOOR = { lines: 80, statements: 80, functions: 80, branches: 70 };
+const highRiskFiles = new Set(HIGH_RISK_GATED_INCLUDE);
 
 const summaryPath = path.join(process.cwd(), "coverage", "coverage-summary.json");
 if (!existsSync(summaryPath)) {
@@ -38,12 +43,13 @@ const reportedFiles = new Map(
 for (const gatedFile of GATED_INCLUDE) {
   const rel = gatedFile.split(path.sep).join("/");
   const metrics = reportedFiles.get(canonicalPath(gatedFile));
+  const floorByMetric = highRiskFiles.has(rel) ? HIGH_RISK_FLOOR : LEGACY_FLOOR;
   if (!metrics) {
     failures.push(`${rel}: missing from coverage-summary.json`);
     continue;
   }
 
-  for (const [metric, floor] of Object.entries(FLOOR)) {
+  for (const [metric, floor] of Object.entries(floorByMetric)) {
     const pct = metrics[metric]?.pct;
     if (typeof pct !== "number" || !Number.isFinite(pct)) {
       failures.push(`${rel}: ${metric} percentage is missing or invalid`);

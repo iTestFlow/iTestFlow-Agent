@@ -8,7 +8,10 @@ import {
   formatSelectedPlan,
   isStaticSuite,
   normalizeSearch,
+  descendantSuiteIds,
+  suiteSelectionState,
   suiteMatches,
+  toggleSuiteSelection,
 } from "./suite-tree";
 
 function makeSuite(id: string, overrides: Partial<SuiteTreeNode> = {}): SuiteTreeNode {
@@ -139,5 +142,30 @@ describe("formatSelectedPlan", () => {
     const plans = [{ id: "10", name: "Sprint 1" }];
     expect(formatSelectedPlan(plans, "99")).toBeUndefined();
     expect(formatSelectedPlan(plans, "")).toBeUndefined();
+  });
+});
+
+describe("suite tree selection", () => {
+  it("finds every nested descendant id", () => {
+    expect(descendantSuiteIds(makeTree()[0]!)).toEqual(["2", "3", "4"]);
+  });
+
+  it("reports selected, inherited, indeterminate, and clear states", () => {
+    const root = makeTree()[0]!;
+    expect(suiteSelectionState(root, ["1"])).toBe(true);
+    expect(suiteSelectionState(root.children[0]!, [], "1")).toBe(true);
+    expect(suiteSelectionState(root, ["3"])).toBe("indeterminate");
+    expect(suiteSelectionState(root, [])).toBe(false);
+  });
+
+  it("selecting a parent removes redundant descendant selections", () => {
+    const root = makeTree()[0]!;
+    expect(toggleSuiteSelection(root, ["3", "4", "unrelated"], true))
+      .toEqual(["unrelated", "1"]);
+  });
+
+  it("clearing a parent keeps unrelated selections", () => {
+    expect(toggleSuiteSelection(makeTree()[0]!, ["1", "unrelated"], false))
+      .toEqual(["unrelated"]);
   });
 });

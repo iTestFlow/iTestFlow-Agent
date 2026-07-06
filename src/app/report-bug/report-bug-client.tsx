@@ -30,12 +30,30 @@ import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-game
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import { buildSuggestedTestCaseFromBugReport, createLocalId } from "./lib/reproduction-test-case";
+import {
+  attachmentKey,
+  buildRequiredFieldRows,
+  customFieldsToRows,
+  defaultFieldValue,
+  findField,
+  formatFileSize,
+  mergeCustomFields,
+  reservedBugFields,
+  rowsToCustomFields,
+  type BugCustomField,
+  type BugFieldMetadata,
+  type CustomFieldRow,
+} from "./lib/bug-custom-fields";
+import {
+  buildBugGenerationPayload,
+  testCaseId,
+  type LinkedTestCase,
+} from "./lib/generation-payload";
 import type { GeneratedTestCase } from "@/components/workflow/test-intelligence-types";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import type { ProjectUser } from "@/types/azure-devops";
 
 type WorkflowMode = "auto" | "manual";
-type FieldValue = string | number | boolean;
 
 type ApiState<T> = {
   loading: boolean;
@@ -61,18 +79,6 @@ type WorkItem = {
   iterationPath?: string;
 };
 
-type BugFieldMetadata = {
-  name: string;
-  referenceName: string;
-  type?: string;
-  helpText?: string;
-  required?: boolean;
-  alwaysRequired?: boolean;
-  readOnly?: boolean;
-  defaultValue?: unknown;
-  allowedValues?: FieldValue[];
-};
-
 type BugMetadataResponse = {
   fields: BugFieldMetadata[];
   users: ProjectUser[];
@@ -80,19 +86,6 @@ type BugMetadataResponse = {
   areas: AzureClassificationPath[];
   currentIterationPath?: string | null;
   defaultAreaPath?: string | null;
-};
-
-type BugCustomField = {
-  referenceName: string;
-  name?: string;
-  value: FieldValue;
-};
-
-type CustomFieldRow = {
-  id: string;
-  referenceName: string;
-  name?: string;
-  value: string;
 };
 
 type BugReport = {
@@ -123,20 +116,6 @@ type PostBugResult = {
   bugId: string;
   webUrl: string;
   attachmentResults: Array<{ fileName: string; success: boolean; attachmentUrl?: string; error?: string }>;
-};
-
-type LinkedTestCase = {
-  id: string;
-  title: string;
-  description?: string;
-  preconditions?: string;
-  steps: Array<{ action: string; expectedResult: string }>;
-  testData?: string;
-  expectedResult?: string;
-  priority?: 1 | 2 | 3 | 4;
-  testType?: string;
-  automationSuitability?: string;
-  azureTestCaseId?: string;
 };
 
 type ReproductionPublishResult = {
@@ -434,36 +413,15 @@ export function ReportBugClient() {
   }
 
   function buildGenerationPayload(activeScope: ActiveProjectScope) {
-    const selectedRelatedTestCase = buildSelectedRelatedTestCaseContext();
-    return {
+    return buildBugGenerationPayload({
       scope: activeScope,
       bugDescription,
-      parentStoryId: parentStoryId.trim() || undefined,
-      selectedRelatedTestCase,
+      parentStoryId,
+      selectedTestCaseId,
+      linkedTestCases: linkedTestCases.data ?? [],
       customFields,
-      attachments: attachments.map((file) => ({ fileName: file.name, contentType: file.type || undefined, size: file.size })),
-    };
-  }
-
-  function buildSelectedRelatedTestCaseContext() {
-    if (!selectedTestCaseId) return undefined;
-    const selected = linkedTestCases.data?.find((testCase) => testCaseId(testCase) === selectedTestCaseId);
-    if (!selected) return undefined;
-    return {
-      id: selected.id,
-      azureTestCaseId: selected.azureTestCaseId,
-      title: selected.title,
-      description: selected.description,
-      preconditions: selected.preconditions,
-      steps: (selected.steps ?? []).map((step) => ({
-        action: step.action,
-        expectedResult: step.expectedResult,
-      })),
-      testData: selected.testData,
-      expectedResult: selected.expectedResult,
-      priority: selected.priority,
-      testType: selected.testType,
-    };
+      attachments,
+    });
   }
 
   function applyGeneratedReport(data: GeneratedBugReport) {
@@ -1642,110 +1600,3 @@ function WarningBlock({ message }: { message: string }) {
 function InfoBlock({ message }: { message: string }) {
   return <Callout tone="info" role="status">{message}</Callout>;
 }
-
-function testCaseId(testCase: LinkedTestCase) {
-  return testCase.azureTestCaseId ?? testCase.id;
-}
-
-function buildRequiredFieldRows(fields: BugFieldMetadata[]): CustomFieldRow[] {
-  return fields
-    .filter((field) => (field.alwaysRequired || field.required) && !field.readOnly && !reservedBugFields.has(field.referenceName))
-    .map((field) => ({
-      id: createLocalId(field.referenceName),
-      referenceName: field.referenceName,
-      name: field.name,
-      value: defaultFieldValue(field),
-    }));
-}
-
-function rowsToCustomFields(rows: CustomFieldRow[], fields: BugFieldMetadata[]): BugCustomField[] {
-  const customFields: BugCustomField[] = [];
-  for (const row of rows) {
-    const field = findField(fields, row.referenceName);
-    const referenceName = field?.referenceName ?? row.referenceName.trim();
-    if (!referenceName) continue;
-    if (reservedBugFields.has(referenceName)) continue;
-    customFields.push({
-      referenceName,
-      name: field?.name ?? row.name,
-      value: coerceCustomFieldValue(row.value, field),
-    });
-  }
-  return customFields;
-}
-
-function customFieldsToRows(customFields: BugCustomField[], fields: BugFieldMetadata[]): CustomFieldRow[] {
-  if (!customFields.length) return buildRequiredFieldRows(fields);
-  return customFields
-    .filter((field) => !reservedBugFields.has(findField(fields, field.referenceName)?.referenceName ?? field.referenceName))
-    .map((field) => {
-      const metadataField = findField(fields, field.referenceName);
-      return {
-        id: createLocalId(field.referenceName),
-        referenceName: metadataField?.referenceName ?? field.referenceName,
-        name: metadataField?.name ?? field.name,
-        value: String(field.value ?? ""),
-      };
-    });
-}
-
-function mergeCustomFields(existing: BugCustomField[], generated: BugCustomField[]) {
-  const merged = new Map<string, BugCustomField>();
-  generated.filter((field) => !reservedBugFields.has(field.referenceName)).forEach((field) => merged.set(field.referenceName.toLowerCase(), field));
-  existing.filter((field) => !reservedBugFields.has(field.referenceName)).forEach((field) => merged.set(field.referenceName.toLowerCase(), field));
-  return [...merged.values()];
-}
-
-function coerceCustomFieldValue(value: string, field?: BugFieldMetadata): FieldValue {
-  if (field?.allowedValues?.length) {
-    const matched = field.allowedValues.find((allowed) => String(allowed).toLowerCase() === value.toLowerCase());
-    if (matched !== undefined) return matched;
-  }
-  if (field?.type === "integer" || field?.type === "picklistInteger") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? Math.trunc(parsed) : value;
-  }
-  if (field?.type === "double" || field?.type === "picklistDouble") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : value;
-  }
-  if (field?.type === "boolean") {
-    if (/^(true|yes|1)$/i.test(value.trim())) return true;
-    if (/^(false|no|0)$/i.test(value.trim())) return false;
-  }
-  return value;
-}
-
-function findField(fields: BugFieldMetadata[], value: string) {
-  const normalized = value.trim().toLowerCase();
-  return fields.find((field) => field.referenceName.toLowerCase() === normalized || field.name.toLowerCase() === normalized);
-}
-
-function defaultFieldValue(field: BugFieldMetadata) {
-  if (field.defaultValue !== undefined && field.defaultValue !== null) return String(field.defaultValue);
-  return "";
-}
-
-function attachmentKey(file: File) {
-  return `${file.name}-${file.size}-${file.lastModified}-${file.type}`;
-}
-
-function formatFileSize(size: number) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-const reservedBugFields = new Set([
-  "System.Title",
-  "System.State",
-  "Microsoft.VSTS.TCM.ReproSteps",
-  "Microsoft.VSTS.Common.Priority",
-  "Microsoft.VSTS.Common.Severity",
-  "System.AssignedTo",
-  "System.AreaPath",
-  "System.AreaId",
-  "System.IterationPath",
-  "System.IterationId",
-  "Microsoft.VSTS.Common.ValueArea",
-]);

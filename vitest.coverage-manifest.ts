@@ -16,6 +16,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/analytics/system-dashboard-scope.ts",
   "src/modules/auth/bootstrap.service.ts",
   "src/modules/auth/pat-auth-provider.ts",
+  "src/modules/auth/session.service.ts",
   "src/modules/bug-reporting/schemas/bug-report.schema.ts",
   "src/modules/context-chatbot/context-chatbot-history.ts",
   "src/modules/context-selection/context-suggestion-sizing.ts",
@@ -48,6 +49,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/scoring/scoring.service.ts",
   "src/modules/security/encryption.service.ts",
   "src/modules/settings/cron-expression.ts",
+  "src/modules/shared/infrastructure/database/db.ts",
   "src/modules/shared/errors/app-error.ts",
   "src/modules/shared/errors/error-response.ts",
   "src/modules/test-case-design/test-design-options.ts",
@@ -56,16 +58,58 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/test-suite-migration/test-suite-migration.logic.ts",
   "src/modules/test-suite-migration/test-suite-migration.schema.ts",
   "src/modules/workspace/workspace-request.ts",
+  "src/app/api/auth/session/route.ts",
+  "src/app/api/azure-devops/project/select/route.ts",
+  "src/app/api/bugs/post/route.ts",
+  "src/app/api/context/index/route.ts",
+  "src/app/api/context/knowledge/manual/finalize/route.ts",
+  "src/app/api/context/knowledge/promote/route.ts",
+  "src/app/api/context/knowledge/save/route.ts",
+  "src/app/api/test-suite-migration/execute/route.ts",
+  "src/app/api/workspace/members/[membershipId]/route.ts",
+  "src/app/api/workspace/settings/route.ts",
+  "src/app/api/workspace/sync-schedule/route.ts",
+  "src/app/api/workspace/sync/route.ts",
   "src/app/report-bug/lib/reproduction-test-case.ts",
+  "src/app/report-bug/lib/bug-custom-fields.ts",
+  "src/app/report-bug/lib/generation-payload.ts",
   "src/app/requirements-analysis/lib/comment-helpers.ts",
+  "src/app/requirements-analysis/lib/findings-selection.ts",
   "src/app/suite-migration/lib/suite-tree.ts",
+  "src/app/suite-migration/lib/migration-request.ts",
   "src/app/test-gap-analysis/lib/findings-filters.ts",
   "src/app/test-gap-analysis/lib/matrix-filters.ts",
   "src/app/test-gap-analysis/lib/summary-key-points.ts",
+  "src/app/test-gap-analysis/lib/suggestion-selection.ts",
   "src/components/layout/topbar-labels.ts",
+  "src/components/workflow/ai-generation-progress.tsx",
+  "src/components/workflow/manual-llm-panel.tsx",
   "src/components/workflow/post-json.ts",
+  "src/components/workflow/workflow-stepper.tsx",
   "src/shared/lib/active-project.ts",
   "src/shared/lib/cron-schedule.ts",
+  "src/shared/lib/edited-count.ts",
+];
+
+/**
+ * Exact-path subset of GATED_INCLUDE that receives the stricter new-code floor.
+ * Legacy files keep their established ratchet while security and mutation
+ * boundaries cannot hide behind the aggregate percentage.
+ */
+export const HIGH_RISK_GATED_INCLUDE: string[] = [
+  "src/modules/auth/session.service.ts",
+  "src/app/api/auth/session/route.ts",
+  "src/app/api/azure-devops/project/select/route.ts",
+  "src/app/api/bugs/post/route.ts",
+  "src/app/api/context/index/route.ts",
+  "src/app/api/context/knowledge/manual/finalize/route.ts",
+  "src/app/api/context/knowledge/promote/route.ts",
+  "src/app/api/context/knowledge/save/route.ts",
+  "src/app/api/test-suite-migration/execute/route.ts",
+  "src/app/api/workspace/members/[membershipId]/route.ts",
+  "src/app/api/workspace/settings/route.ts",
+  "src/app/api/workspace/sync-schedule/route.ts",
+  "src/app/api/workspace/sync/route.ts",
 ];
 
 /**
@@ -80,6 +124,5 @@ export const COVERAGE_EXCLUDE: string[] = [
   "src/**/*-types.ts",
   "src/**/types.ts",
   "src/modules/integrations/azure-devops/azure-devops-adapter.ts",
-  "src/modules/shared/infrastructure/database/db.ts",
   "src/components/workflow/llm-loading-games/*.tsx",
 ];

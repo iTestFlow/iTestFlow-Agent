@@ -42,6 +42,7 @@ describe("isCredentialStale (pure)", () => {
 describeDb("credential service (DB-backed)", () => {
   const workspaceId = createId("ws");
   const userId = createId("user");
+  const originalEncryptionKey = process.env.APP_ENCRYPTION_KEY;
 
   beforeAll(async () => {
     process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
@@ -60,9 +61,17 @@ describeDb("credential service (DB-backed)", () => {
   });
 
   afterAll(async () => {
-    await sqlRun(`DELETE FROM workspaces WHERE azure_org_url = @u`, { u: WS_URL });
-    await sqlRun(`DELETE FROM users WHERE id = @id`, { id: userId });
-    await resetDatabaseForTests();
+    try {
+      await sqlRun(`DELETE FROM workspaces WHERE azure_org_url = @u`, { u: WS_URL });
+      await sqlRun(`DELETE FROM users WHERE id = @id`, { id: userId });
+      await resetDatabaseForTests();
+    } finally {
+      if (originalEncryptionKey === undefined) {
+        delete process.env.APP_ENCRYPTION_KEY;
+      } else {
+        process.env.APP_ENCRYPTION_KEY = originalEncryptionKey;
+      }
+    }
   });
 
   it("stores and resolves an encrypted Azure PAT", async () => {

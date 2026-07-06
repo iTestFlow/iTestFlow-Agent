@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 
 import { describeDb } from "@/test/db";
-import { createId, nowIso, resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { createId, getPool, nowIso, resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
 import { getWorkspaceById } from "@/modules/workspace/workspace.service";
 import {
@@ -128,6 +128,56 @@ describeDb("workspace sync schedule (DB-backed)", () => {
 
     // Already advanced into the future ⇒ a second tick fires nothing.
     expect(await enqueueDueScheduledSyncs()).toBe(0);
+  });
+
+  it("skips a row locked by another scheduler and advances it exactly once after release", async () => {
+    await upsertWorkspaceSyncSchedule({
+      workspaceId,
+      cronExpression: "*/15 * * * *",
+      enabled: true,
+      workItemTypes: ["Bug"],
+      states: ["New"],
+      createdByUserId: null,
+    });
+    await sqlRun(`DELETE FROM jobs WHERE workspace_id = @id`, { id: workspaceId });
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await sqlRun(
+      `UPDATE workspace_sync_schedules
+       SET next_run_at = @past, last_enqueued_at = NULL
+       WHERE workspace_id = @id`,
+      { past, id: workspaceId },
+    );
+
+    const lockingClient = await getPool().connect();
+    try {
+      await lockingClient.query("BEGIN");
+      await lockingClient.query(
+        "SELECT id FROM workspace_sync_schedules WHERE workspace_id = $1 FOR UPDATE",
+        [workspaceId],
+      );
+
+      expect(await enqueueDueScheduledSyncs()).toBe(0);
+      expect((await getWorkspaceSyncSchedule(workspaceId))?.nextRunAt).toBe(past);
+    } finally {
+      await lockingClient.query("ROLLBACK");
+      lockingClient.release();
+    }
+
+    const fired = await Promise.all([
+      enqueueDueScheduledSyncs(),
+      enqueueDueScheduledSyncs(),
+    ]);
+    expect(fired.reduce((total, count) => total + count, 0)).toBe(1);
+
+    const schedule = await getWorkspaceSyncSchedule(workspaceId);
+    expect(schedule?.lastEnqueuedAt).not.toBeNull();
+    expect(Date.parse(schedule!.nextRunAt!)).toBeGreaterThan(Date.now());
+    expect(await sqlGet<{ count: number }>(
+      `SELECT COUNT(*)::int AS count
+       FROM jobs
+       WHERE workspace_id = @id AND job_type = 'workspace_context_sync'`,
+      { id: workspaceId },
+    )).toEqual({ count: 1 });
   });
 
   it("removes the schedule", async () => {

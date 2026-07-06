@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { GATED_INCLUDE, HIGH_RISK_GATED_INCLUDE } from "../../vitest.coverage-manifest";
 import {
   ROOT,
   UNGATED_INVENTORY_REL,
@@ -51,6 +52,14 @@ describe("coverage gate manifest integrity (no silent shrink)", () => {
       missing,
       `Stale coverage-gate entries (renamed/deleted without updating vitest.coverage.config.ts):\n${missing.join("\n")}`,
     ).toEqual([]);
+  });
+
+  it("keeps every strict high-risk path inside the gated exact-path manifest", () => {
+    const gated = new Set(GATED_INCLUDE);
+    const invalid = HIGH_RISK_GATED_INCLUDE.filter(
+      (entry) => entry.includes("*") || !gated.has(entry) || !patternResolves(entry),
+    );
+    expect(invalid).toEqual([]);
   });
 });
 
@@ -117,7 +126,6 @@ describe("coverage exclude matcher (shared with vitest coverage.exclude)", () =>
       "src/modules/bar-types.ts",
       "src/modules/types.ts",
       "src/modules/integrations/azure-devops/azure-devops-adapter.ts",
-      "src/modules/shared/infrastructure/database/db.ts",
       "src/components/workflow/llm-loading-games/snake.tsx",
     ]) {
       expect(isExcluded(f), `expected EXCLUDED: ${f}`).toBe(true);
@@ -127,6 +135,7 @@ describe("coverage exclude matcher (shared with vitest coverage.exclude)", () =>
   it("does not exclude real logic files (incl. nested game .tsx, which the single-level glob misses)", () => {
     for (const f of [
       "src/modules/scoring/scoring.service.ts",
+      "src/modules/shared/infrastructure/database/db.ts",
       "src/lib/utils.ts",
       "src/app/api/auth/login/route.ts",
       "src/middleware.ts",

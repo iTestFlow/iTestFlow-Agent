@@ -55,3 +55,32 @@ export function formatSelectedPlan(plans: TestPlan[], planId: string) {
 export function flattenTree(nodes: SuiteTreeNode[]): SuiteTreeNode[] {
   return nodes.flatMap((node) => [node, ...flattenTree(node.children)]);
 }
+
+export function descendantSuiteIds(node: SuiteTreeNode) {
+  return flattenTree(node.children).map((child) => child.id);
+}
+
+export function suiteSelectionState(
+  node: SuiteTreeNode,
+  selectedIds: readonly string[],
+  selectedAncestorId?: string,
+): true | false | "indeterminate" {
+  if (selectedAncestorId || selectedIds.includes(node.id)) return true;
+  const selected = new Set(selectedIds);
+  return descendantSuiteIds(node).some((id) => selected.has(id)) ? "indeterminate" : false;
+}
+
+export function toggleSuiteSelection(
+  node: SuiteTreeNode,
+  selectedIds: readonly string[],
+  checked: boolean,
+) {
+  const next = new Set(selectedIds);
+  if (checked) {
+    next.add(node.id);
+    descendantSuiteIds(node).forEach((id) => next.delete(id));
+  } else {
+    next.delete(node.id);
+  }
+  return [...next];
+}

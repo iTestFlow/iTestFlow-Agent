@@ -14,6 +14,7 @@
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:coverage": "vitest run --config vitest.coverage.config.ts --coverage && node --import tsx scripts/check-coverage-floor.mjs",
     "test:coverage:all": "vitest run --config vitest.coverage-all.config.ts --coverage",
+    "test:coverage:integration": "node -e \"if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is required for integration coverage.'); process.exit(1) }\" && vitest run --config vitest.integration-coverage.config.ts --coverage",
     "coverage:inventory:update": "node scripts/update-coverage-inventory.mjs",
     "test:integration": "node -e \"if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is required for integration tests.'); process.exit(1) }\" && vitest run --config vitest.integration.config.ts",
     "db:migrate": "node-pg-migrate up",
