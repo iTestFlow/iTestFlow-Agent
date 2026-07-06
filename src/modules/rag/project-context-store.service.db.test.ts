@@ -1,0 +1,329 @@
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
+
+import {
+  flushBackgroundWrites,
+  resetDatabaseForTests,
+  sqlAll,
+  sqlGet,
+  sqlRun,
+} from "@/modules/shared/infrastructure/database/db";
+import {
+  getRecentProjectContext,
+  indexAzureWorkItemsAsProjectContext,
+  retrieveStoredProjectContext,
+} from "@/modules/rag/project-context-store.service";
+import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
+import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
+import { fakeAzureAdapter, requirement } from "@/test/factories";
+import { cleanupFixtures, describeDb, seedProject, seedWorkspace, uniqueTestId } from "@/test/db";
+
+// Per-run identifiers: this suite shares the database with other suites/agents, so
+// every row it writes is keyed under these unique project ids.
+const WS = uniqueTestId("ws_ctxstore");
+const ORG = `https://dev.azure.com/${WS}`;
+const PROJ_A = uniqueTestId("az_ctxstore_a");
+const PROJ_B = uniqueTestId("az_ctxstore_b");
+
+const scopeA: ProjectScope = {
+  projectId: PROJ_A,
+  azureProjectId: PROJ_A,
+  azureProjectName: "Context Store A",
+  azureOrganizationUrl: ORG,
+};
+const scopeB: ProjectScope = {
+  projectId: PROJ_B,
+  azureProjectId: PROJ_B,
+  azureProjectName: "Context Store B",
+  azureOrganizationUrl: ORG,
+};
+
+const CHANGED_DESCRIPTION = "Customer completes checkout after the payment gateway approves the card.";
+
+// Fixture content is chosen so each assertion has a unique token: "payment gateway"
+// only in item 101 (project A), "zebra telemetry" only in project B, and literal
+// "%" / "_" only in item 103 (the LIKE-escaping subject).
+function checkoutItem(description = "Customer pays through the payment gateway during checkout."): Requirement {
+  return requirement({
+    id: "101",
+    azureProjectId: PROJ_A,
+    title: "Checkout flow",
+    description,
+    acceptanceCriteria: "Given a cart, when the gateway approves, then show confirmation.",
+    tags: [],
+  });
+}
+
+function refundItem(): Requirement {
+  return requirement({
+    id: "102",
+    azureProjectId: PROJ_A,
+    title: "Refund flow",
+    description: "Support agent issues a refund for a delivered order.",
+    acceptanceCriteria: "Given a delivered order, when a refund is issued, then notify the customer.",
+    tags: [],
+  });
+}
+
+function rolloutItem(): Requirement {
+  return requirement({
+    id: "103",
+    azureProjectId: PROJ_A,
+    title: "Rollout 100% complete",
+    description: "Track rollout progress across regions at a 50_percent sample rate.",
+    acceptanceCriteria: "Given a region, when rollout reaches full coverage, then close the tracker.",
+    tags: [],
+  });
+}
+
+// Deliberately reuses Azure work item id "101" so cross-project assertions prove
+// scoping keys on the project, not on the work item id.
+function telemetryItem(): Requirement {
+  return requirement({
+    id: "101",
+    azureProjectId: PROJ_B,
+    title: "Telemetry pipeline",
+    description: "Ingest zebra telemetry events from devices.",
+    acceptanceCriteria: "Given a device, when events arrive, then store them.",
+    tags: [],
+  });
+}
+
+async function sync(scope: ProjectScope, items: Requirement[]) {
+  return indexAzureWorkItemsAsProjectContext({
+    scope,
+    actor: "db-test",
+    adapter: fakeAzureAdapter({ fetchWorkItems: vi.fn(async () => items) }),
+    workItemTypes: ["User Story"],
+    states: ["Active"],
+  });
+}
+
+type WorkItemRow = {
+  id: string;
+  azure_work_item_id: string;
+  sync_status: string | null;
+  content_hash: string | null;
+  current_index_run_id: string | null;
+  created_at: string;
+};
+
+async function workItemRows(projectId: string): Promise<WorkItemRow[]> {
+  return sqlAll<WorkItemRow>(
+    `SELECT id, azure_work_item_id, sync_status, content_hash, current_index_run_id, created_at
+     FROM azure_devops_work_items
+     WHERE project_id = @projectId
+     ORDER BY azure_work_item_id`,
+    { projectId },
+  );
+}
+
+async function chunkRows(projectId: string) {
+  return sqlAll<{ id: string; azure_work_item_id: string | null; chunk_index: number; content: string; created_at: string; updated_at: string }>(
+    `SELECT id, azure_work_item_id, chunk_index, content, created_at, updated_at
+     FROM document_chunks
+     WHERE project_id = @projectId AND source_type = 'azure_work_item'
+     ORDER BY id`,
+    { projectId },
+  );
+}
+
+// Projection without current_index_run_id (the one column an unchanged run rewrites).
+function stableColumns(rows: WorkItemRow[]) {
+  return rows.map(({ id, azure_work_item_id, sync_status, content_hash, created_at }) => ({
+    id,
+    azure_work_item_id,
+    sync_status,
+    content_hash,
+    created_at,
+  }));
+}
+
+// Tests run in file order and advance one sync lifecycle for project A:
+// create -> unchanged -> changed -> missing/inactive -> reactivated.
+describeDb("project context store sync state machine (DB-backed)", () => {
+  beforeAll(async () => {
+    await seedWorkspace({ id: WS, orgUrl: ORG });
+    await seedProject({ workspaceId: WS, orgUrl: ORG, azureProjectId: PROJ_A, azureProjectName: "Context Store A" });
+    await seedProject({ workspaceId: WS, orgUrl: ORG, azureProjectId: PROJ_B, azureProjectName: "Context Store B" });
+  });
+
+  afterAll(async () => {
+    // Audit/knowledge-log writes are backgrounded; land them while the seeded
+    // projects still exist, then delete feature rows before cleanupFixtures can
+    // trip on their workspace_id FKs.
+    await flushBackgroundWrites();
+    for (const projectId of [PROJ_A, PROJ_B]) {
+      await sqlRun(`DELETE FROM document_chunks_fts WHERE project_id = @projectId`, { projectId });
+      await sqlRun(`DELETE FROM document_chunks WHERE project_id = @projectId`, { projectId });
+      await sqlRun(`DELETE FROM azure_devops_work_items WHERE project_id = @projectId`, { projectId });
+      await sqlRun(`DELETE FROM project_knowledge_log WHERE project_id = @projectId`, { projectId });
+    }
+    await cleanupFixtures({ workspaceIds: [WS], userIds: [] });
+    await resetDatabaseForTests();
+  });
+
+  it("first incremental run inserts every fetched item as active with chunks", async () => {
+    const fetchWorkItems = vi.fn(async () => [checkoutItem(), refundItem(), rolloutItem()]);
+    const result = await indexAzureWorkItemsAsProjectContext({
+      scope: scopeA,
+      actor: "db-test",
+      adapter: fakeAzureAdapter({ fetchWorkItems }),
+      workItemTypes: ["User Story"],
+      states: ["Active"],
+    });
+
+    // The adapter is queried with the scope's Azure project, never a raw client value.
+    expect(fetchWorkItems).toHaveBeenCalledWith({
+      projectId: PROJ_A,
+      workItemTypes: ["User Story"],
+      states: ["Active"],
+    });
+    expect(result).toMatchObject({
+      mode: "incremental",
+      fetchedCount: 3,
+      createdCount: 3,
+      updatedCount: 0,
+      unchangedCount: 0,
+      inactiveCount: 0,
+      indexedWorkItemCount: 3,
+      indexedChunkCount: 3,
+      skippedEmptyCount: 0,
+    });
+
+    const rows = await workItemRows(PROJ_A);
+    expect(rows.map((row) => row.azure_work_item_id)).toEqual(["101", "102", "103"]);
+    expect(rows.every((row) => row.sync_status === "active")).toBe(true);
+    expect(rows.every((row) => Boolean(row.content_hash))).toBe(true);
+
+    // Short work items land as exactly one chunk each, keyed to their work item.
+    const chunks = await chunkRows(PROJ_A);
+    expect(chunks.map((chunk) => chunk.azure_work_item_id).sort()).toEqual(["101", "102", "103"]);
+  });
+
+  it("re-running with unchanged content keeps items active without rewriting rows or chunks", async () => {
+    const before = await workItemRows(PROJ_A);
+    const chunksBefore = await chunkRows(PROJ_A);
+
+    const result = await sync(scopeA, [checkoutItem(), refundItem(), rolloutItem()]);
+    expect(result).toMatchObject({
+      createdCount: 0,
+      updatedCount: 0,
+      unchangedCount: 3,
+      inactiveCount: 0,
+      indexedWorkItemCount: 0,
+      indexedChunkCount: 0,
+    });
+
+    // Rows were claimed by the new run (fresh run id) but not rewritten: primary
+    // keys, hashes, statuses and created_at are untouched.
+    const after = await workItemRows(PROJ_A);
+    expect(stableColumns(after)).toEqual(stableColumns(before));
+    expect(after[0]?.current_index_run_id).not.toBe(before[0]?.current_index_run_id);
+
+    // Chunks were not deleted and reinserted.
+    expect(await chunkRows(PROJ_A)).toEqual(chunksBefore);
+  });
+
+  it("changed content re-upserts the same row and rebuilds its chunk", async () => {
+    const before = await workItemRows(PROJ_A);
+    const beforeCheckout = before.find((row) => row.azure_work_item_id === "101");
+
+    const result = await sync(scopeA, [checkoutItem(CHANGED_DESCRIPTION), refundItem(), rolloutItem()]);
+    expect(result).toMatchObject({
+      createdCount: 0,
+      updatedCount: 1,
+      unchangedCount: 2,
+      inactiveCount: 0,
+      indexedWorkItemCount: 1,
+    });
+
+    // Upsert, not insert: the primary key survives while the hash tracks new content.
+    const afterCheckout = (await workItemRows(PROJ_A)).find((row) => row.azure_work_item_id === "101");
+    expect(afterCheckout?.id).toBe(beforeCheckout?.id);
+    expect(afterCheckout?.content_hash).not.toBe(beforeCheckout?.content_hash);
+    expect(afterCheckout?.sync_status).toBe("active");
+
+    const chunk = await sqlGet<{ content: string }>(
+      `SELECT content FROM document_chunks WHERE project_id = @projectId AND azure_work_item_id = '101'`,
+      { projectId: PROJ_A },
+    );
+    expect(chunk?.content).toContain("approves the card");
+  });
+
+  it("items missing from the batch flip to inactive; the active set is exactly the survivors", async () => {
+    const result = await sync(scopeA, [refundItem(), rolloutItem()]);
+    expect(result).toMatchObject({ createdCount: 0, updatedCount: 0, unchangedCount: 2, inactiveCount: 1 });
+
+    // Marking the wrong rows inactive silently shrinks the retrieval corpus, so the
+    // surviving active set is asserted precisely, not just counted.
+    const rows = await workItemRows(PROJ_A);
+    expect(rows.filter((row) => row.sync_status === "active").map((row) => row.azure_work_item_id)).toEqual(["102", "103"]);
+    expect(rows.find((row) => row.azure_work_item_id === "101")?.sync_status).toBe("inactive");
+
+    // The inactive item's chunk stays on disk but stops feeding retrieval and listing.
+    const orphanChunks = await sqlGet<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM document_chunks WHERE project_id = @projectId AND azure_work_item_id = '101'`,
+      { projectId: PROJ_A },
+    );
+    expect(orphanChunks?.count).toBe(1);
+    expect(await retrieveStoredProjectContext({ scope: scopeA, query: "payment gateway" })).toEqual([]);
+
+    const recent = await getRecentProjectContext({ scope: scopeA });
+    expect(recent.totalCount).toBe(2);
+    expect(recent.items.map((item) => item.workItemId).sort()).toEqual(["102", "103"]);
+  });
+
+  it("a reappearing inactive item is re-upserted to active instead of skipped as unchanged", async () => {
+    // Content hash matches the stored row, but an inactive row must not take the
+    // unchanged shortcut — otherwise it would stay invisible forever.
+    const result = await sync(scopeA, [checkoutItem(CHANGED_DESCRIPTION), refundItem(), rolloutItem()]);
+    expect(result).toMatchObject({ createdCount: 0, updatedCount: 1, unchangedCount: 2, inactiveCount: 0 });
+
+    const rows = await workItemRows(PROJ_A);
+    expect(rows.filter((row) => row.sync_status === "active").map((row) => row.azure_work_item_id)).toEqual(["101", "102", "103"]);
+
+    const sources = await retrieveStoredProjectContext({ scope: scopeA, query: "payment gateway" });
+    expect(sources.map((source) => source.workItemId)).toEqual(["101"]);
+  });
+
+  it("retrieval and listing stay inside the scoped project even for a colliding work item id", async () => {
+    const result = await sync(scopeB, [telemetryItem()]);
+    expect(result).toMatchObject({ createdCount: 1 });
+
+    const fromB = await retrieveStoredProjectContext({ scope: scopeB, query: "zebra telemetry ingest" });
+    expect(fromB).toHaveLength(1);
+    expect(fromB[0]).toMatchObject({ workItemId: "101", title: "Telemetry pipeline" });
+    expect(fromB[0]?.content).toContain("zebra");
+
+    // No leakage in either direction, even though both projects hold an item "101".
+    expect(await retrieveStoredProjectContext({ scope: scopeA, query: "zebra telemetry ingest" })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ scope: scopeB, query: "payment gateway" })).toEqual([]);
+
+    const recentA = await getRecentProjectContext({ scope: scopeA });
+    expect(recentA.totalCount).toBe(3);
+    expect(recentA.items.some((item) => item.title === "Telemetry pipeline")).toBe(false);
+
+    const recentB = await getRecentProjectContext({ scope: scopeB });
+    expect(recentB.totalCount).toBe(1);
+    expect(recentB.items[0]).toMatchObject({ workItemId: "101", title: "Telemetry pipeline" });
+  });
+
+  it("search queries treat % and _ as literal characters, not LIKE wildcards", async () => {
+    // "%" must match only rows containing a literal percent — unescaped it would
+    // wildcard-match every row in the project.
+    const percent = await getRecentProjectContext({ scope: scopeA, query: "%" });
+    expect(percent.totalCount).toBe(1);
+    expect(percent.items[0]?.workItemId).toBe("103");
+
+    const literalPercent = await getRecentProjectContext({ scope: scopeA, query: "100%" });
+    expect(literalPercent.items.map((item) => item.workItemId)).toEqual(["103"]);
+
+    const literalUnderscore = await getRecentProjectContext({ scope: scopeA, query: "50_percent" });
+    expect(literalUnderscore.items.map((item) => item.workItemId)).toEqual(["103"]);
+
+    // Unescaped, '1__%' would wildcard-match every work item id (101/102/103).
+    const wildcards = await getRecentProjectContext({ scope: scopeA, query: "1__%" });
+    expect(wildcards.totalCount).toBe(0);
+    expect(wildcards.items).toEqual([]);
+  });
+});

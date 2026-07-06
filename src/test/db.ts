@@ -13,6 +13,18 @@ import { persistSession } from "@/modules/auth/session.service";
 
 export const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
+// Mechanical isolation: fixture IDs built with uniqueTestId never collide with rows
+// left behind by a crashed earlier run (afterAll cleanup does not run on a crash, and
+// unlike CI's fresh service container, a local database persists between runs).
+const RUN_SUFFIX = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+let uniqueCounter = 0;
+
+/** A per-run-unique fixture ID: `${prefix}_<runsuffix>_<n>`. Prefer this over fixed IDs in new tests. */
+export function uniqueTestId(prefix: string): string {
+  uniqueCounter += 1;
+  return `${prefix}_${RUN_SUFFIX}_${uniqueCounter}`;
+}
+
 export async function seedWorkspace(input: { id: string; orgUrl: string; name?: string; orgName?: string }): Promise<void> {
   await sqlRun(
     `INSERT INTO workspaces (id, name, azure_org_name, azure_org_url, status, created_at, updated_at)

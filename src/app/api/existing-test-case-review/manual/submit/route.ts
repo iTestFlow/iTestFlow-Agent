@@ -3,6 +3,7 @@ import { countTestCategories } from "@/modules/analytics/test-category-normaliza
 import { z } from "zod";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { completeManualExistingTestCaseReview } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
+import { deriveExistingTestCaseReviewMetrics } from "@/modules/existing-test-case-review/review-metrics";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
 import { isAppError } from "@/modules/shared/errors/app-error";
@@ -54,8 +55,7 @@ export async function POST(request: Request) {
       projectId: trustedScope.azureProjectId,
       userStoryId: parsed.data.targetWorkItemId,
     });
-    const gapRows = result.validatedOutput.traceabilityMatrix.filter((row) => row.coverageStatus !== "Covered");
-    const weakDuplicateCases = result.validatedOutput.findings.filter((finding) => finding.category === "Duplicate" || finding.category.startsWith("Weak")).length;
+    const metrics = deriveExistingTestCaseReviewMetrics(result.validatedOutput);
     updateWorkflowRun({
       scope: trustedScope,
       runId: analyticsRunId,
@@ -63,15 +63,15 @@ export async function POST(request: Request) {
         status: "generated",
         generationCompletedAt: new Date().toISOString(),
         itemsGenerated: result.validatedOutput.suggestedAdditions.length,
-        highRiskItemsFound: result.validatedOutput.findings.filter((finding) => finding.severity === "High").length,
-        mediumRiskItemsFound: result.validatedOutput.findings.filter((finding) => finding.severity === "Medium").length,
-        lowRiskItemsFound: result.validatedOutput.findings.filter((finding) => finding.severity === "Low").length,
+        highRiskItemsFound: metrics.highRiskItemsFound,
+        mediumRiskItemsFound: metrics.mediumRiskItemsFound,
+        lowRiskItemsFound: metrics.lowRiskItemsFound,
         usedKnowledgeContext: parsed.data.contextCitations.length > 0,
         metadata: {
           coverage: {
             score: result.validatedOutput.coverageScore,
-            missingAreas: gapRows.length,
-            weakDuplicateCases,
+            missingAreas: metrics.gapRows.length,
+            weakDuplicateCases: metrics.weakDuplicateCases,
           },
           testDesign: { categories: countTestCategories(result.validatedOutput.suggestedAdditions) },
           contextUsed: result.validatedOutput.contextUsed,

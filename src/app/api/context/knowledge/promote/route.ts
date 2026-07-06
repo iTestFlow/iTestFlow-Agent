@@ -25,7 +25,7 @@ const RequestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const parsed = RequestSchema.safeParse(await request.json());
+  const parsed = RequestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "Promoted knowledge must include a selected project, an answer, and at least one citation." }, { status: 400 });
   }

@@ -31,7 +31,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Bug post payload is required." }, { status: 400 });
     }
 
-    const parsed = PayloadSchema.safeParse(JSON.parse(payloadRaw));
+    let payload: unknown;
+    try {
+      payload = JSON.parse(payloadRaw);
+    } catch {
+      return NextResponse.json({ error: "Bug report details are invalid." }, { status: 400 });
+    }
+    const parsed = PayloadSchema.safeParse(payload);
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Bug report details are invalid." }, { status: 400 });
     }

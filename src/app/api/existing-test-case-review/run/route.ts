@@ -10,6 +10,7 @@ import {
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { reviewExistingLinkedTestCases } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
+import { deriveExistingTestCaseReviewMetrics } from "@/modules/existing-test-case-review/review-metrics";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
 import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
@@ -90,8 +91,7 @@ export async function POST(request: Request) {
       resolvedContextUsed: autoContext.contextUsed,
       relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
     });
-    const gapRows = result.validatedOutput.traceabilityMatrix.filter((row) => row.coverageStatus !== "Covered");
-    const weakDuplicateCases = result.validatedOutput.findings.filter((finding) => finding.category === "Duplicate" || finding.category.startsWith("Weak")).length;
+    const metrics = deriveExistingTestCaseReviewMetrics(result.validatedOutput);
     updateWorkflowRun({
       scope: trustedScope,
       runId: analyticsRunId,
@@ -99,15 +99,15 @@ export async function POST(request: Request) {
         status: "generated",
         generationCompletedAt: new Date().toISOString(),
         itemsGenerated: result.validatedOutput.suggestedAdditions.length,
-        highRiskItemsFound: result.validatedOutput.findings.filter((finding) => finding.severity === "High").length,
-        mediumRiskItemsFound: result.validatedOutput.findings.filter((finding) => finding.severity === "Medium").length,
-        lowRiskItemsFound: result.validatedOutput.findings.filter((finding) => finding.severity === "Low").length,
+        highRiskItemsFound: metrics.highRiskItemsFound,
+        mediumRiskItemsFound: metrics.mediumRiskItemsFound,
+        lowRiskItemsFound: metrics.lowRiskItemsFound,
         usedKnowledgeContext: contextCitations.length > 0,
         metadata: {
           coverage: {
             score: result.validatedOutput.coverageScore,
-            missingAreas: gapRows.length,
-            weakDuplicateCases,
+            missingAreas: metrics.gapRows.length,
+            weakDuplicateCases: metrics.weakDuplicateCases,
           },
           testDesign: { categories: countTestCategories(result.validatedOutput.suggestedAdditions) },
           contextUsed: result.validatedOutput.contextUsed,

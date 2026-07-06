@@ -797,7 +797,7 @@ function tokenizeForPromptSearch(value: string) {
   );
 }
 
-function cleanPromptText(value?: string) {
+export function cleanPromptText(value?: string) {
   if (!value) return undefined;
 
   return decodeHtmlEntities(value)

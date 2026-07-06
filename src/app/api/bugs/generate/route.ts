@@ -31,7 +31,7 @@ const RequestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const parsed = RequestSchema.safeParse(await request.json());
+  const parsed = RequestSchema.safeParse(await request.json().catch(() => ({})));
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Bug description is required." }, { status: 400 });
   }
@@ -60,7 +60,11 @@ export async function POST(request: Request) {
       : null;
 
     if (parentStory && parentStory.workItemType !== "User Story") {
-      return NextResponse.json({ error: `Parent Story ID ${parentStory.id} is a ${parentStory.workItemType}, not a User Story.` }, { status: 400 });
+      const message = `Parent Story ID ${parentStory.id} is a ${parentStory.workItemType}, not a User Story.`;
+      // The analytics run has already started; finalize it before the early
+      // return so the run is not left dangling in "started" forever.
+      failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: message });
+      return NextResponse.json({ error: message }, { status: 400 });
     }
 
     const result = await generateBugReport({

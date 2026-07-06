@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 
 import { resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
@@ -10,10 +10,9 @@ import {
   resolveActiveWorkspaceForUser,
   setWorkspaceStatusByOrgUrl,
 } from "@/modules/workspace/workspace.service";
-import { seedMembership, seedUser, seedWorkspace } from "@/test/db";
+import { describeDb, seedMembership, seedUser, seedWorkspace } from "@/test/db";
 
 // DB-backed (ADR-9): requires a migrated PostgreSQL via DATABASE_URL.
-const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
 const ORG_A = "https://dev.azure.com/itf-multiorg-a";
 const ORG_B = "https://dev.azure.com/itf-multiorg-b";

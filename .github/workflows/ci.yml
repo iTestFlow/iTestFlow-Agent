@@ -6,6 +6,11 @@ on:
     branches:
       - main
 
+# A superseded push to the same ref should not keep burning a full verify job.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   checks: write
@@ -56,7 +61,7 @@ jobs:
       - name: PostgreSQL integration tests
         id: integration_tests
         continue-on-error: true
-        run: npm run test:integration
+        run: npm run test:coverage:integration
 
       - name: Validate test report files
         id: validate_test_reports

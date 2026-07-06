@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 
+import { describeDb } from "@/test/db";
 import { getPool, resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { claimNextJob, completeJob, enqueueJob, failJob, heartbeatJob } from "@/modules/jobs/job-queue.service";
 
@@ -7,7 +8,6 @@ const TYPE = "test_noop";
 const WS = "ws_jobtest";
 
 // DB-backed integration coverage; requires migrated PostgreSQL via DATABASE_URL.
-const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
 describeDb("job queue (DB-backed)", () => {
   beforeAll(async () => {

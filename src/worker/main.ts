@@ -17,6 +17,8 @@
  *                                   cron schedule (Settings → Workspace); a workspace
  *                                   with no schedule is a no-op.
  */
+import { pathToFileURL } from "node:url";
+
 import { claimNextJob, completeJob, failJob, heartbeatJob } from "@/modules/jobs/job-queue.service";
 import { getJobHandler, registeredJobTypes } from "@/modules/jobs/job-handlers";
 import { registerAllJobHandlers } from "@/modules/jobs/register-handlers";
@@ -34,7 +36,12 @@ function sleep(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-async function processNextJob(): Promise<boolean> {
+/**
+ * Claims and dispatches a single job. Returns true when a job was claimed (the
+ * loop should immediately poll again) and false when the queue was idle.
+ * Exported for tests; the CLI loop below is the only production caller.
+ */
+export async function processNextJob(): Promise<boolean> {
   const job = await claimNextJob(WORKER_ID);
   if (!job) return false;
 
@@ -131,4 +138,8 @@ async function main() {
   await Promise.all(loops);
 }
 
-void main();
+// Auto-start only when this module's resolved URL is the process entrypoint.
+// Importing it from tests or another module must not start the loops.
+const entrypointUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : undefined;
+const isProcessEntrypoint = entrypointUrl === import.meta.url;
+if (isProcessEntrypoint) void main();

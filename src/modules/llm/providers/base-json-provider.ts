@@ -27,6 +27,7 @@ export type LLMProviderCallResult = {
   requestBody?: unknown;
   responseBody?: unknown;
   errorMessage?: string;
+  userMessage?: string;
   finishReason?: string;
   tokenUsage?: TokenUsage;
 };
@@ -38,6 +39,7 @@ type ProviderErrorContext = {
   tokenUsage?: TokenUsage;
   durationMs?: number;
   upstreamCause?: string;
+  userMessage?: string;
 };
 
 export abstract class BaseJsonProvider implements LLMProvider {
@@ -75,6 +77,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
           finishReason: callResult.finishReason,
           tokenUsage: callResult.tokenUsage,
           durationMs: Date.now() - startedAt,
+          userMessage: callResult.userMessage,
         });
       }
 
@@ -128,6 +131,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
           finishReason: callResult.finishReason,
           tokenUsage: callResult.tokenUsage,
           durationMs: Date.now() - startedAt,
+          userMessage: callResult.userMessage,
         });
       }
 
@@ -303,9 +307,11 @@ export abstract class BaseJsonProvider implements LLMProvider {
     return new AppError({
       code: networkError ? AppErrorCode.Network : AppErrorCode.ProviderUnavailable,
       message: renderedMessage,
-      userMessage: networkError
-        ? networkUserMessage(context.durationMs)
-        : "The AI provider could not complete the request. Please try again in a moment or check the provider settings.",
+      userMessage: context.userMessage ?? (
+        networkError
+          ? networkUserMessage(context.durationMs)
+          : "The AI provider could not complete the request. Please try again in a moment or check the provider settings."
+      ),
       technicalContext: {
         provider: this.name,
         model: this.model,

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
+import { normalizeTestCasePriority } from "@/modules/integrations/azure-devops/publish-normalization";
 import {
   completeWorkflowRun,
   failWorkflowRun,
@@ -146,13 +147,4 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
-}
-
-function normalizeTestCasePriority(value: unknown) {
-  if (value === 1 || value === "1" || value === "critical") return 1;
-  if (value === 2 || value === "2" || value === "high") return 2;
-  if (value === 3 || value === "3" || value === "medium") return 3;
-  if (value === 4 || value === "4" || value === "low") return 4;
-  if (value === undefined || value === null || value === "") return 2;
-  return value;
 }

@@ -29,12 +29,32 @@ import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
+import { buildSuggestedTestCaseFromBugReport, createLocalId } from "./lib/reproduction-test-case";
+import {
+  attachmentKey,
+  buildRequiredFieldRows,
+  customFieldsToRows,
+  defaultFieldValue,
+  findField,
+  formatFileSize,
+  mergeCustomFields,
+  reservedBugFields,
+  rowsToCustomFields,
+  type BugCustomField,
+  type BugFieldMetadata,
+  type CustomFieldRow,
+} from "./lib/bug-custom-fields";
+import {
+  buildBugGenerationPayload,
+  testCaseId,
+  type LinkedTestCase,
+} from "./lib/generation-payload";
+import { getReportBugActionGates } from "./lib/action-gating";
 import type { GeneratedTestCase } from "@/components/workflow/test-intelligence-types";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import type { ProjectUser } from "@/types/azure-devops";
 
 type WorkflowMode = "auto" | "manual";
-type FieldValue = string | number | boolean;
 
 type ApiState<T> = {
   loading: boolean;
@@ -60,18 +80,6 @@ type WorkItem = {
   iterationPath?: string;
 };
 
-type BugFieldMetadata = {
-  name: string;
-  referenceName: string;
-  type?: string;
-  helpText?: string;
-  required?: boolean;
-  alwaysRequired?: boolean;
-  readOnly?: boolean;
-  defaultValue?: unknown;
-  allowedValues?: FieldValue[];
-};
-
 type BugMetadataResponse = {
   fields: BugFieldMetadata[];
   users: ProjectUser[];
@@ -79,19 +87,6 @@ type BugMetadataResponse = {
   areas: AzureClassificationPath[];
   currentIterationPath?: string | null;
   defaultAreaPath?: string | null;
-};
-
-type BugCustomField = {
-  referenceName: string;
-  name?: string;
-  value: FieldValue;
-};
-
-type CustomFieldRow = {
-  id: string;
-  referenceName: string;
-  name?: string;
-  value: string;
 };
 
 type BugReport = {
@@ -122,20 +117,6 @@ type PostBugResult = {
   bugId: string;
   webUrl: string;
   attachmentResults: Array<{ fileName: string; success: boolean; attachmentUrl?: string; error?: string }>;
-};
-
-type LinkedTestCase = {
-  id: string;
-  title: string;
-  description?: string;
-  preconditions?: string;
-  steps: Array<{ action: string; expectedResult: string }>;
-  testData?: string;
-  expectedResult?: string;
-  priority?: 1 | 2 | 3 | 4;
-  testType?: string;
-  automationSuitability?: string;
-  azureTestCaseId?: string;
 };
 
 type ReproductionPublishResult = {
@@ -433,36 +414,15 @@ export function ReportBugClient() {
   }
 
   function buildGenerationPayload(activeScope: ActiveProjectScope) {
-    const selectedRelatedTestCase = buildSelectedRelatedTestCaseContext();
-    return {
+    return buildBugGenerationPayload({
       scope: activeScope,
       bugDescription,
-      parentStoryId: parentStoryId.trim() || undefined,
-      selectedRelatedTestCase,
+      parentStoryId,
+      selectedTestCaseId,
+      linkedTestCases: linkedTestCases.data ?? [],
       customFields,
-      attachments: attachments.map((file) => ({ fileName: file.name, contentType: file.type || undefined, size: file.size })),
-    };
-  }
-
-  function buildSelectedRelatedTestCaseContext() {
-    if (!selectedTestCaseId) return undefined;
-    const selected = linkedTestCases.data?.find((testCase) => testCaseId(testCase) === selectedTestCaseId);
-    if (!selected) return undefined;
-    return {
-      id: selected.id,
-      azureTestCaseId: selected.azureTestCaseId,
-      title: selected.title,
-      description: selected.description,
-      preconditions: selected.preconditions,
-      steps: (selected.steps ?? []).map((step) => ({
-        action: step.action,
-        expectedResult: step.expectedResult,
-      })),
-      testData: selected.testData,
-      expectedResult: selected.expectedResult,
-      priority: selected.priority,
-      testType: selected.testType,
-    };
+      attachments,
+    });
   }
 
   function applyGeneratedReport(data: GeneratedBugReport) {
@@ -616,21 +576,27 @@ export function ReportBugClient() {
     }
   }
 
-  const generateDisabled =
-    !scope ||
-    !bugDescription.trim() ||
-    metadata.loading ||
-    gen.isRunning ||
-    prep.isRunning ||
-    parentStoryInvalid;
-  const postDisabled = !scope || !report || !report.title.trim() || !report.actualResult.trim() || !report.stepsToReproduce.trim() || postState.loading || parentStoryInvalid;
-  const publishTestCaseDisabled =
-    !scope ||
-    !parentStoryValid ||
-    !postState.data ||
-    testCasePublishState.loading ||
-    !suggestedTestCase ||
-    !validateGeneratedTestCase(suggestedTestCase).valid;
+  const {
+    generateDisabled,
+    postDisabled,
+    publishTestCaseDisabled,
+  } = getReportBugActionGates({
+    hasScope: Boolean(scope),
+    bugDescription,
+    metadataLoading: metadata.loading,
+    generationRunning: gen.isRunning,
+    preparationRunning: prep.isRunning,
+    parentStoryInvalid,
+    parentStoryValid,
+    report,
+    posting: postState.loading,
+    hasPostedBug: Boolean(postState.data),
+    publishingTestCase: testCasePublishState.loading,
+    hasSuggestedTestCase: Boolean(suggestedTestCase),
+    suggestedTestCaseValid: suggestedTestCase
+      ? validateGeneratedTestCase(suggestedTestCase).valid
+      : false,
+  });
 
   return (
     <div className="content-stack">
@@ -1641,197 +1607,3 @@ function WarningBlock({ message }: { message: string }) {
 function InfoBlock({ message }: { message: string }) {
   return <Callout tone="info" role="status">{message}</Callout>;
 }
-
-function buildSuggestedTestCaseFromBugReport(report: BugReport, sourceBugDescription: string): GeneratedTestCase {
-  const parsedSteps = parseBugSteps(report.stepsToReproduce);
-  const reproductionSteps = parsedSteps.length ? parsedSteps : [report.stepsToReproduce || sourceBugDescription || report.title];
-  const steps: GeneratedTestCase["steps"] = [
-    {
-      stepNumber: 1,
-      action: `Preconditions:\n${report.precondition || "No specific preconditions were generated."}`,
-      expectedResult: "Preconditions are met",
-    },
-    ...reproductionSteps.map((step, index) => ({
-      stepNumber: index + 2,
-      action: step,
-      expectedResult: index === reproductionSteps.length - 1 ? report.expectedResult : "Step completes successfully.",
-    })),
-  ];
-
-  return {
-    id: createLocalId("bug-repro-tc"),
-    title: buildReproductionTestCaseTitle(report),
-    description: [
-      sourceBugDescription.trim() ? `Bug description:\n${sourceBugDescription.trim()}` : "",
-      report.actualResult ? `Actual result to prevent:\n${report.actualResult}` : "",
-    ].filter(Boolean).join("\n\n"),
-    priority: report.priority,
-    type: "regression",
-    category: report.category || "Functional",
-    preconditions: report.precondition,
-    testData: report.systemInfo || report.environment || "",
-    steps,
-  };
-}
-
-function buildReproductionTestCaseTitle(report: BugReport) {
-  const expectedBehaviorTitle = testCaseTitleFromExpectedResult(report.expectedResult);
-  if (expectedBehaviorTitle && !sameText(expectedBehaviorTitle, report.title)) return expectedBehaviorTitle;
-
-  const firstStep = parseBugSteps(report.stepsToReproduce)[0];
-  const stepTitle = firstStep ? compactText(`Verify reproduction flow: ${firstStep}`) : "";
-  if (stepTitle && !sameText(stepTitle, report.title)) return truncateText(stepTitle, 140);
-
-  const category = report.category || "reported defect";
-  return `Verify ${category.toLowerCase()} reproduction scenario`;
-}
-
-function testCaseTitleFromExpectedResult(value: string) {
-  const expected = compactText(value).split(/(?<=[.!?])\s+|,\s+/)[0]?.replace(/[.!?]+$/, "").trim();
-  if (!expected) return "";
-
-  const systemShould = expected.match(/^the\s+system\s+should\s+(.+)$/i);
-  if (systemShould?.[1]) return truncateText(`Verify the system ${systemShould[1]}`, 140);
-
-  const shouldMatch = expected.match(/^(.+?)\s+should\s+(.+)$/i);
-  if (shouldMatch?.[1] && shouldMatch[2]) {
-    return truncateText(`Verify ${shouldMatch[1].trim()} ${shouldMatch[2].trim()}`, 140);
-  }
-
-  return truncateText(`Verify ${expected}`, 140);
-}
-
-function compactText(value: string) {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function truncateText(value: string, maxLength: number) {
-  const normalized = compactText(value);
-  if (normalized.length <= maxLength) return normalized;
-  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
-}
-
-function sameText(first: string, second: string) {
-  return compactText(first).toLowerCase() === compactText(second).toLowerCase();
-}
-
-function parseBugSteps(value: string) {
-  const normalized = value.replace(/\r\n/g, "\n").trim();
-  if (!normalized) return [];
-  const numberedMatches = [...normalized.matchAll(/(?:^|\n)\s*(?:\d+[\).\:-]\s+)([\s\S]*?)(?=\n\s*\d+[\).\:-]\s+|$)/g)]
-    .map((match) => match[1].trim())
-    .filter(Boolean);
-  if (numberedMatches.length) return numberedMatches;
-  return normalized.split("\n").map((line) => line.trim()).filter(Boolean);
-}
-
-function testCaseId(testCase: LinkedTestCase) {
-  return testCase.azureTestCaseId ?? testCase.id;
-}
-
-function buildRequiredFieldRows(fields: BugFieldMetadata[]): CustomFieldRow[] {
-  return fields
-    .filter((field) => (field.alwaysRequired || field.required) && !field.readOnly && !reservedBugFields.has(field.referenceName))
-    .map((field) => ({
-      id: createLocalId(field.referenceName),
-      referenceName: field.referenceName,
-      name: field.name,
-      value: defaultFieldValue(field),
-    }));
-}
-
-function rowsToCustomFields(rows: CustomFieldRow[], fields: BugFieldMetadata[]): BugCustomField[] {
-  const customFields: BugCustomField[] = [];
-  for (const row of rows) {
-    const field = findField(fields, row.referenceName);
-    const referenceName = field?.referenceName ?? row.referenceName.trim();
-    if (!referenceName) continue;
-    if (reservedBugFields.has(referenceName)) continue;
-    customFields.push({
-      referenceName,
-      name: field?.name ?? row.name,
-      value: coerceCustomFieldValue(row.value, field),
-    });
-  }
-  return customFields;
-}
-
-function customFieldsToRows(customFields: BugCustomField[], fields: BugFieldMetadata[]): CustomFieldRow[] {
-  if (!customFields.length) return buildRequiredFieldRows(fields);
-  return customFields
-    .filter((field) => !reservedBugFields.has(findField(fields, field.referenceName)?.referenceName ?? field.referenceName))
-    .map((field) => {
-      const metadataField = findField(fields, field.referenceName);
-      return {
-        id: createLocalId(field.referenceName),
-        referenceName: metadataField?.referenceName ?? field.referenceName,
-        name: metadataField?.name ?? field.name,
-        value: String(field.value ?? ""),
-      };
-    });
-}
-
-function mergeCustomFields(existing: BugCustomField[], generated: BugCustomField[]) {
-  const merged = new Map<string, BugCustomField>();
-  generated.filter((field) => !reservedBugFields.has(field.referenceName)).forEach((field) => merged.set(field.referenceName.toLowerCase(), field));
-  existing.filter((field) => !reservedBugFields.has(field.referenceName)).forEach((field) => merged.set(field.referenceName.toLowerCase(), field));
-  return [...merged.values()];
-}
-
-function coerceCustomFieldValue(value: string, field?: BugFieldMetadata): FieldValue {
-  if (field?.allowedValues?.length) {
-    const matched = field.allowedValues.find((allowed) => String(allowed).toLowerCase() === value.toLowerCase());
-    if (matched !== undefined) return matched;
-  }
-  if (field?.type === "integer" || field?.type === "picklistInteger") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? Math.trunc(parsed) : value;
-  }
-  if (field?.type === "double" || field?.type === "picklistDouble") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : value;
-  }
-  if (field?.type === "boolean") {
-    if (/^(true|yes|1)$/i.test(value.trim())) return true;
-    if (/^(false|no|0)$/i.test(value.trim())) return false;
-  }
-  return value;
-}
-
-function findField(fields: BugFieldMetadata[], value: string) {
-  const normalized = value.trim().toLowerCase();
-  return fields.find((field) => field.referenceName.toLowerCase() === normalized || field.name.toLowerCase() === normalized);
-}
-
-function defaultFieldValue(field: BugFieldMetadata) {
-  if (field.defaultValue !== undefined && field.defaultValue !== null) return String(field.defaultValue);
-  return "";
-}
-
-function createLocalId(prefix: string) {
-  return `${prefix.replace(/[^a-z0-9]/gi, "-")}-${Math.random().toString(36).slice(2, 9)}`;
-}
-
-function attachmentKey(file: File) {
-  return `${file.name}-${file.size}-${file.lastModified}-${file.type}`;
-}
-
-function formatFileSize(size: number) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-const reservedBugFields = new Set([
-  "System.Title",
-  "System.State",
-  "Microsoft.VSTS.TCM.ReproSteps",
-  "Microsoft.VSTS.Common.Priority",
-  "Microsoft.VSTS.Common.Severity",
-  "System.AssignedTo",
-  "System.AreaPath",
-  "System.AreaId",
-  "System.IterationPath",
-  "System.IterationId",
-  "Microsoft.VSTS.Common.ValueArea",
-]);

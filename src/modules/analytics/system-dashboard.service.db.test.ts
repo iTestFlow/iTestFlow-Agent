@@ -1,5 +1,6 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, it } from "vitest";
 
+import { describeDb } from "@/test/db";
 import {
   flushBackgroundWrites,
   resetDatabaseForTests,
@@ -37,7 +38,6 @@ const otherScope = {
 // (e.g. `docker compose --profile test up -d postgres-test`, point DATABASE_URL at it,
 // then `npm run db:migrate`). Skipped when DATABASE_URL is unset so the default unit
 // test run requires no database (ADR-9).
-const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
 describeDb("system dashboard analytics (DB-backed)", () => {
   beforeEach(async () => {

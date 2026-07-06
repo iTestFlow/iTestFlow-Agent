@@ -604,7 +604,9 @@ async function countRows(sql: string, scope: ProjectScope) {
 // terms (>2 chars, max 16) become prefix matches joined with OR, e.g.
 // "login flow" -> "login:* | flow:*". Terms are alphanumeric-only by
 // construction, so they are safe to interpolate into to_tsquery('simple', ...).
-function buildFtsQuery(value: string) {
+// Exported for unit tests only; production callers go through
+// retrieveContextChatbotEvidence.
+export function buildFtsQuery(value: string) {
   const terms = Array.from(
     new Set(
       value

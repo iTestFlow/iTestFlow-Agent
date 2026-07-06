@@ -40,10 +40,23 @@ import type {
   TestSuiteMigrationRequest,
 } from "@/types/test-suite-migration";
 
-type TestPlan = {
-  id: string;
-  name: string;
-};
+import {
+  filterSuiteTree,
+  flattenTree,
+  formatSelectedPlan,
+  isStaticSuite,
+  suiteSelectionState,
+  toggleSuiteSelection,
+  type TestPlan,
+} from "./lib/suite-tree";
+import {
+  buildMigrationRequest,
+  canExecuteMigration,
+  formatMigrationDate,
+  formatMigrationLabel,
+  migrationPreviewState,
+  planSuiteTreeRefresh,
+} from "./lib/migration-request";
 
 type ApiState = {
   loading: boolean;
@@ -364,74 +377,57 @@ export function SuiteMigrationClient() {
     () => selectedSuiteIds.map((suiteId) => sourceFlatSuites.find((suite) => suite.id === suiteId)?.name ?? suiteId),
     [selectedSuiteIds, sourceFlatSuites],
   );
-  const canPreview = Boolean(
-    scope &&
-    sourcePlanId &&
-    targetPlanId &&
-    targetParentSuiteId &&
-    selectedSuiteIds.length &&
-    !sourceTreeState.loading &&
-    !targetTreeState.loading &&
-    !previewState.loading
-  );
-  const canExecute = Boolean(preview && !preview.errors.length && !executeState.loading);
-  const previewBlockReason = !scope
-    ? "Select an Azure DevOps project"
-    : !sourcePlanId
-      ? "Select a source test plan"
-      : !selectedSuiteIds.length
-        ? "Select at least one source suite"
-        : !targetPlanId
-          ? "Select a target test plan"
-          : !targetParentSuiteId
-            ? "Choose a target parent suite"
-            : null;
+  const { canPreview, blockReason: previewBlockReason } = migrationPreviewState({
+    scope,
+    sourcePlanId,
+    targetPlanId,
+    targetParentSuiteId,
+    selectedSuiteIds,
+    sourceTreeLoading: sourceTreeState.loading,
+    targetTreeLoading: targetTreeState.loading,
+    previewLoading: previewState.loading,
+  });
+  const canExecute = canExecuteMigration(preview?.errors.length ?? null, executeState.loading);
 
   const refreshAfterMigration = useCallback(async (
     migrationReport: MigrationReport,
     request: TestSuiteMigrationRequest,
   ) => {
-    const affectedPlanIds = new Set<string>();
-    if (migrationReport.summary.suitesCreated > 0) affectedPlanIds.add(request.targetTestPlanId);
-    if (migrationReport.summary.sourceSuitesDeleted > 0) affectedPlanIds.add(request.sourceTestPlanId);
-    if (!affectedPlanIds.size) return;
-
     const currentSourcePlanId = sourcePlanIdRef.current;
     const currentTargetPlanId = targetPlanIdRef.current;
-    const refreshSource = affectedPlanIds.has(currentSourcePlanId);
-    const refreshTarget = affectedPlanIds.has(currentTargetPlanId);
-    if (!refreshSource && !refreshTarget) return;
-
-    if (refreshSource && refreshTarget && currentSourcePlanId === currentTargetPlanId) {
+    const refreshPlan = planSuiteTreeRefresh({
+      suitesCreated: migrationReport.summary.suitesCreated,
+      sourceSuitesDeleted: migrationReport.summary.sourceSuitesDeleted,
+      request,
+      currentSourcePlanId,
+      currentTargetPlanId,
+    });
+    if (refreshPlan === "none") return;
+    if (refreshPlan === "shared") {
       await loadSharedSuiteTree(currentSourcePlanId);
       return;
     }
 
     await Promise.all([
-      refreshSource
+      refreshPlan === "source" || refreshPlan === "both"
         ? loadSuiteTree("source", currentSourcePlanId, "post-migration")
         : Promise.resolve(),
-      refreshTarget
+      refreshPlan === "target" || refreshPlan === "both"
         ? loadSuiteTree("target", currentTargetPlanId, "post-migration")
         : Promise.resolve(),
     ]);
   }, [loadSharedSuiteTree, loadSuiteTree]);
 
   function buildRequest(): TestSuiteMigrationRequest | null {
-    if (!scope) return null;
-    return {
-      scope,
-      sourceProjectId: scope.azureProjectId,
-      sourceTestPlanId: sourcePlanId,
+    return buildMigrationRequest(scope, {
+      sourcePlanId,
       selectedSuiteIds,
-      targetProjectId: scope.azureProjectId,
-      targetTestPlanId: targetPlanId,
+      targetPlanId,
       targetParentSuiteId,
       operationMode,
       outcomeMode,
       overwriteTargetOutcomes,
-      conflictStrategy: "renameWithMigratedSuffix",
-    };
+    });
   }
 
   async function previewMigration() {
@@ -804,10 +800,8 @@ function SuiteCheckboxTree({
   return (
     <div className="space-y-1">
       {nodes.map((node) => {
-        const descendantIds = flattenTree(node.children).map((child) => child.id);
-        const hasSelectedDescendant = descendantIds.some((id) => selected.has(id));
         const disabledByAncestor = Boolean(selectedAncestorId);
-        const checked = selected.has(node.id) || disabledByAncestor ? true : hasSelectedDescendant ? "indeterminate" : false;
+        const checked = suiteSelectionState(node, selectedIds, selectedAncestorId);
         const nextSelectedAncestor = selected.has(node.id) || selectedAncestorId ? node.id : undefined;
 
         return (
@@ -817,14 +811,7 @@ function SuiteCheckboxTree({
                 checked={checked}
                 disabled={disabledByAncestor}
                 onCheckedChange={(value) => {
-                  const next = new Set(selectedIds);
-                  if (value === true) {
-                    next.add(node.id);
-                    descendantIds.forEach((id) => next.delete(id));
-                  } else {
-                    next.delete(node.id);
-                  }
-                  onChange([...next]);
+                  onChange(toggleSuiteSelection(node, selectedIds, value === true));
                 }}
                 className="mt-0.5"
                 aria-label={disabledByAncestor ? `Suite ${node.name} is included automatically because a parent suite is selected` : `Select suite ${node.name}`}
@@ -1096,59 +1083,14 @@ function EmptyInline({ label }: { label: string }) {
   return <div className="text-sm text-muted-foreground">{label}</div>;
 }
 
-function filterSuiteTree(nodes: SuiteTreeNode[], search: string): SuiteTreeNode[] {
-  const query = normalizeSearch(search);
-  if (!query) return nodes;
-
-  return nodes
-    .map((node) => {
-      const children = filterSuiteTree(node.children, search);
-      if (suiteMatches(node, query) || children.length) {
-        return { ...node, children };
-      }
-      return undefined;
-    })
-    .filter((node): node is SuiteTreeNode => Boolean(node));
-}
-
-function suiteMatches(node: SuiteTreeNode, normalizedQuery: string) {
-  return [
-    node.id,
-    node.name,
-    node.path,
-    node.suiteType,
-    node.requirementId,
-  ]
-    .filter(Boolean)
-    .some((value) => normalizeSearch(String(value)).includes(normalizedQuery));
-}
-
-function normalizeSearch(value: string) {
-  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
-}
-
-function isStaticSuite(suite: SuiteTreeNode) {
-  return suite.suiteType === "staticTestSuite";
-}
-
-function formatSelectedPlan(plans: TestPlan[], planId: string) {
-  const plan = plans.find((candidate) => candidate.id === planId);
-  return plan ? `${plan.id} - ${plan.name}` : undefined;
-}
-
-function flattenTree(nodes: SuiteTreeNode[]): SuiteTreeNode[] {
-  return nodes.flatMap((node) => [node, ...flattenTree(node.children)]);
-}
-
 function formatSuiteType(value: string) {
-  return value.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return formatMigrationLabel(value);
 }
 
 function formatDate(value?: string) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+  return formatMigrationDate(value);
 }
 
 function formatStatus(value: string) {
-  return value.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return formatMigrationLabel(value);
 }

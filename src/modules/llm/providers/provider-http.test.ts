@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 vi.mock("../llm-request-log.service", () => ({
   writeLLMRequestLog: vi.fn(),
@@ -8,6 +9,9 @@ import { AnthropicProvider } from "./anthropic-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
 import { GeminiProvider } from "./gemini-provider";
 import { OpenAIProvider } from "./openai-provider";
+import { RequirementAnalysisOutputSchema } from "../../requirement-analysis/schemas/requirement-analysis.schema";
+import { TestCaseGenerationOutputSchema } from "../../test-case-design/schemas/test-case.schema";
+import { ExistingTestCaseReviewOutputSchema } from "../../existing-test-case-review/schemas/existing-test-case-review.schema";
 
 describe("provider HTTP adapters", () => {
   afterEach(() => {
@@ -95,6 +99,174 @@ describe("provider HTTP adapters", () => {
       tokenUsage: { input: 9, output: 5, total: 14 },
     });
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.example/v1/messages");
+  });
+
+  it.each(["claude-sonnet-5", "claude-fable-5"])(
+    "reads %s structured output from text blocks after adaptive thinking",
+    async (model) => {
+      const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+        content: [
+          { type: "thinking", thinking: "I will produce the requested object.", signature: "signature" },
+          { type: "text", text: "{\"value\":1,\"checklistItemId\":\"ambiguity_clarity\",\"format\":\"json\"}" },
+        ],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 20 },
+      }), { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const provider = new AnthropicProvider({
+        provider: "anthropic",
+        model,
+        apiKey: "key",
+        retryAttempts: 0,
+      });
+
+      await expect(provider.generateStructuredOutput({
+        schemaName: "ExampleOutput",
+        schema: z.object({
+          value: z.number().min(0).max(100),
+          checklistItemId: z.enum(["ambiguity_clarity", "impact_risk_assessment"]),
+          format: z.string(),
+        }),
+        system: "Return structured data.",
+        user: "Create the object.",
+      })).resolves.toMatchObject({
+        rawOutput: "{\"value\":1,\"checklistItemId\":\"ambiguity_clarity\",\"format\":\"json\"}",
+        validatedOutput: { value: 1, checklistItemId: "ambiguity_clarity", format: "json" },
+        tokenUsage: { input: 10, output: 20, total: 30 },
+      });
+      const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(requestBody.output_config).toEqual({
+        format: {
+          type: "json_schema",
+          schema: {
+            type: "object",
+            properties: {
+              value: { type: "number" },
+              checklistItemId: {
+                type: "string",
+                enum: ["ambiguity_clarity", "impact_risk_assessment"],
+              },
+              format: { type: "string" },
+            },
+            required: ["value", "checklistItemId", "format"],
+            additionalProperties: false,
+          },
+        },
+      });
+    },
+  );
+
+  it("reports a friendly Anthropic error when no final text block is returned", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      content: [
+        { type: "thinking", thinking: "Reasoning only.", signature: "signature" },
+      ],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 20 },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new AnthropicProvider({
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      apiKey: "key",
+      retryAttempts: 0,
+    });
+
+    await expect(provider.generateStructuredOutput({
+      schemaName: "ExampleOutput",
+      schema: z.object({ value: z.number() }),
+      system: "Return structured data.",
+      user: "Create the object.",
+    })).rejects.toMatchObject({
+      userMessage: "Claude completed the request without a final JSON response. Please retry; if this repeats, choose another model.",
+      message: expect.stringContaining("Content block types: thinking"),
+    });
+  });
+
+  it("constrains Sonnet 5 requirement-analysis enum values with the native schema", async () => {
+    const output = {
+      findings: [],
+      summary: {
+        totalFindings: 0,
+        criticalCount: 0,
+        highCount: 0,
+        mediumCount: 0,
+        lowCount: 0,
+        infoCount: 0,
+        overallQuality: "good",
+        completenessScore: 90,
+        clarityScore: 90,
+        testabilityScore: 90,
+        summaryText: "The requirement is clear.",
+      },
+      recommendations: [],
+      questionsForProductOwner: [],
+      contextUsed: [],
+    };
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      content: [{ type: "text", text: JSON.stringify(output) }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 20 },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new AnthropicProvider({
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      apiKey: "key",
+      retryAttempts: 0,
+    });
+
+    await provider.generateStructuredOutput({
+      schemaName: "RequirementAnalysisOutput",
+      schema: RequirementAnalysisOutputSchema,
+      system: "Analyze the requirement.",
+      user: "Return the analysis.",
+    });
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const sentSchema = requestBody.output_config.format.schema;
+    expect(sentSchema.properties.findings.items.properties.checklistItemId.enum).toContain("ambiguity_clarity");
+    expect(sentSchema.properties.findings.items.properties.checklistItemId.enum).not.toContain("traceability_gap");
+    expect(JSON.stringify(sentSchema)).not.toMatch(/"(?:minimum|maximum|minLength|maxLength|format)":/);
+  });
+
+  it("applies native schemas to Sonnet 5 test design and gap analysis", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      content: [{ type: "text", text: "{}" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 2 },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new AnthropicProvider({
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      apiKey: "key",
+      retryAttempts: 0,
+    });
+
+    for (const [schemaName, schema] of [
+      ["TestCaseGenerationOutput", TestCaseGenerationOutputSchema],
+      ["ExistingTestCaseReviewOutput", ExistingTestCaseReviewOutputSchema],
+    ] as const) {
+      await expect(provider.generateStructuredOutput({
+        schemaName,
+        schema,
+        system: "Return structured data.",
+        user: "Analyze the supplied requirement.",
+      })).rejects.toMatchObject({ code: "schema_validation" });
+    }
+
+    const testDesignSchema = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+      .output_config.format.schema;
+    expect(testDesignSchema.properties.testCases.items.properties.type.enum).toContain("functional");
+    expect(testDesignSchema.properties.testCases.items.properties.priority.enum).toEqual([1, 2, 3, 4]);
+
+    const gapAnalysisSchema = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
+      .output_config.format.schema;
+    expect(gapAnalysisSchema.properties.traceabilityMatrix.items.properties.coverageStatus.enum)
+      .toContain("Not covered");
+    expect(gapAnalysisSchema.properties.findings.items.properties.category.enum)
+      .toContain("Missing coverage");
   });
 
   it("retries transient responses and network failures with deterministic timers", async () => {

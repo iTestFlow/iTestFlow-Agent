@@ -25,7 +25,7 @@ const RequestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const parsed = RequestSchema.safeParse(await request.json());
+  const parsed = RequestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Please select a project, at least one work item type, and at least one state before indexing context." },

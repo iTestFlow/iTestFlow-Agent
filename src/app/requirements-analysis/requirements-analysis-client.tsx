@@ -50,23 +50,16 @@ import { buildRequirementAnalysisComment } from "@/modules/requirement-analysis/
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 import type { ProjectUser } from "@/types/azure-devops";
 import { cn } from "@/lib/utils";
+import { countEditedById } from "@/shared/lib/edited-count";
 
-function severityRank(value: RequirementFinding["severity"]) {
-  const ranks: Record<RequirementFinding["severity"], number> = {
-    critical: 0,
-    high: 1,
-    medium: 2,
-    low: 3,
-    info: 4,
-  };
-  return ranks[value] ?? 5;
-}
-
-function buildCommentBodyWithMentions(commentBody: string, mentionedUsers: ProjectUser[]) {
-  if (!mentionedUsers.length) return commentBody;
-  const mentionLine = mentionedUsers.map((user) => `@<${user.id}>`).join(" ");
-  return `${mentionLine}\n\n${commentBody.trim()}`;
-}
+import { buildCommentBodyWithMentions } from "./lib/comment-helpers";
+import {
+  countInvalidFindings,
+  selectFindings,
+  sortFindingsBySeverity,
+  toggleOrderedSelection,
+  toggleUniqueId,
+} from "./lib/findings-selection";
 
 export function RequirementsAnalysisClient() {
   const scope = useActiveProject();
@@ -131,23 +124,20 @@ export function RequirementsAnalysisClient() {
     setSelectedMentionUserIds([]);
   }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
   const sortedFindingList = useMemo(
-    () => [...findings].sort((left, right) => severityRank(left.severity) - severityRank(right.severity)),
+    () => sortFindingsBySeverity(findings),
     [findings],
   );
   const selectedFindingList = useMemo(
-    () => {
-      const selectedIds = new Set(selectedFindingIds);
-      return sortedFindingList.filter((finding) => selectedIds.has(finding.id));
-    },
+    () => selectFindings(sortedFindingList, selectedFindingIds),
     [selectedFindingIds, sortedFindingList],
   );
   const invalidSelectedFindingCount = useMemo(
-    () => selectedFindingList.filter((finding) => !validateRequirementFinding(finding).valid).length,
+    () => countInvalidFindings(selectedFindingList, validateRequirementFinding),
     [selectedFindingList],
   );
   const editedSelectedFindingCount = useMemo(() => {
     const originalById = new Map((analysis.data?.findings ?? []).map((finding) => [finding.id, finding]));
-    return selectedFindingList.filter((finding) => JSON.stringify(finding) !== JSON.stringify(originalById.get(finding.id))).length;
+    return countEditedById(selectedFindingList, originalById);
   }, [analysis.data?.findings, selectedFindingList]);
   const projectUsers = useMemo(() => projectUsersState.data ?? [], [projectUsersState.data]);
   const selectedMentionUsers = useMemo(() => {
@@ -239,15 +229,14 @@ export function RequirementsAnalysisClient() {
 
   function changeChecklistSelection(checklistItemId: RequirementAnalysisChecklistItemId, checked: boolean) {
     setHasUnfinishedWork(true);
-    setEnabledChecklistItemIds((current) => {
-      const nextIds = new Set(current);
-      if (checked) {
-        nextIds.add(checklistItemId);
-      } else {
-        nextIds.delete(checklistItemId);
-      }
-      return allRequirementAnalysisChecklistItemIds.filter((id) => nextIds.has(id));
-    });
+    setEnabledChecklistItemIds((current) =>
+      toggleOrderedSelection(
+        allRequirementAnalysisChecklistItemIds,
+        current,
+        checklistItemId,
+        checked,
+      ),
+    );
     resetManualDraftForChecklistChange();
   }
 
@@ -745,10 +734,7 @@ function RequirementMentionPicker({
   className?: string;
 }) {
   function setUserSelected(userId: string, selected: boolean) {
-    const nextIds = selected
-      ? [...selectedUserIds, userId].filter((value, index, values) => values.indexOf(value) === index)
-      : selectedUserIds.filter((value) => value !== userId);
-    onSelectionChange(nextIds);
+    onSelectionChange(toggleUniqueId(selectedUserIds, userId, selected));
   }
 
   return (

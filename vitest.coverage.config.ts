@@ -11,8 +11,10 @@ import { GATED_INCLUDE } from "./vitest.coverage-manifest";
  * gate, so its reported percentage means "coverage of the gated high-risk logic," not
  * the whole repo (run `npm run test:coverage:all` for the broader non-gated report
  * across its configured source roots; persistence-heavy services are covered in the
- * PostgreSQL integration lane via `npm run test:integration`). Thresholds are
- * AGGREGATE (no `perFile`), so a strongly covered file can offset a weaker one.
+ * PostgreSQL integration lane via `npm run test:integration`). Thresholds here are
+ * AGGREGATE (vitest can enforce aggregate OR per-file, not both); the per-file floor
+ * that stops a strongly covered file from masking a weak one is enforced by
+ * `scripts/check-coverage-floor.mjs`, chained after this run in `npm run test:coverage`.
  *
  * Adding a new high-risk module? Add its exact path to GATED_INCLUDE in
  * `vitest.coverage-manifest.ts`. The meta-test

@@ -226,12 +226,35 @@ coverage report.
 > Its thresholds apply only to the allowlist (`GATED_INCLUDE` in `vitest.coverage-manifest.ts`,
 > high-risk domain logic and boundary adapters), so its percentage reflects "coverage of the
 > gated logic," not the whole repo. Run `test:coverage:all` for the broader non-gated
-> report across the configured source roots.
+> report across the configured source roots. The gate enforces aggregate thresholds in
+> vitest plus a per-file floor (`scripts/check-coverage-floor.mjs`), so a strongly covered
+> file cannot mask a weakly covered one.
 >
 > A guard test (`src/test/coverage-manifest.integrity.test.ts`) keeps the allowlist honest:
 > every logic source file must be either gated in `GATED_INCLUDE` or listed in the committed
 > inventory `src/test/coverage-ungated.json`. If it fails for a new file, either gate it
 > (preferred for high-risk logic) or run `npm run coverage:inventory:update` to acknowledge it.
+
+### Testing a new feature
+
+Every feature follows the same four-lane convention — new tests slot in with zero config:
+
+1. **Pure/deterministic logic** lives in its `src/modules/<feature>/` module with a colocated
+   `<module>.test.ts` (node environment, hermetic: mock boundaries with `vi.mock`, stub `fetch`,
+   fake timers — never real sleeps). Add the file's exact path to `GATED_INCLUDE` in
+   `vitest.coverage-manifest.ts` so thresholds enforce it.
+2. **Persistence/SQL behavior** goes in a colocated `<module>.db.test.ts` using `describeDb` and
+   the seed helpers from `src/test/db.ts`. The `*.db.test.ts` suffix alone routes it to the
+   serial PostgreSQL lane. Use unique per-run IDs and clean up in `afterAll` — files share one
+   database.
+3. **API route wiring** (status mapping, guard enforcement, analytics patches) uses the
+   mock-boundaries pattern of `src/app/api/core-route-contracts.test.ts`. Auth-guard presence is
+   already enforced statically for every route by `src/app/api/route-guards.test.ts`.
+4. **Client logic** is extracted from components into a `lib/` module and unit-tested there
+   (see `src/app/test-gap-analysis/lib/`); hooks get `/* @vitest-environment jsdom */` +
+   `renderHook` with fake timers. JSX shells stay untested by design.
+
+Shared fixtures (fake LLM provider, fake Azure adapter, scope factories) live in `src/test/factories.ts`.
 
 ### Production Build
 

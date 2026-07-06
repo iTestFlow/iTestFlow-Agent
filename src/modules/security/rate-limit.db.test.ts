@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 
 import { resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { checkRateLimit, resetRateLimitsForTests } from "@/modules/security/rate-limit";
+import { describeDb } from "@/test/db";
 
 describe("rate limiter (in-memory)", () => {
   beforeEach(() => resetRateLimitsForTests());
@@ -24,18 +25,22 @@ describe("rate limiter (in-memory)", () => {
   });
 
   it("resets after the window elapses", async () => {
-    // A real (not sub-millisecond) window: the first two calls land in the same
-    // window deterministically, then we wait past it to see the counter reset.
-    expect((await checkRateLimit("c", 1, 120)).allowed).toBe(true);
-    expect((await checkRateLimit("c", 1, 120)).allowed).toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 180));
-    expect((await checkRateLimit("c", 1, 120)).allowed).toBe(true);
+    // The memory backend reads only Date.now(), so drive the window with a faked
+    // clock instead of a real sleep — a loaded runner can stretch a real sleep past
+    // the window and flip the assertion.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t0 = new Date("2026-06-30T12:00:00.000Z").getTime();
+      vi.setSystemTime(t0);
+      expect((await checkRateLimit("c", 1, 120)).allowed).toBe(true);
+      expect((await checkRateLimit("c", 1, 120)).allowed).toBe(false);
+      vi.setSystemTime(t0 + 121);
+      expect((await checkRateLimit("c", 1, 120)).allowed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
-
-// DB-backed integration coverage for the shared/global limiter. Requires migrated PostgreSQL via
-// DATABASE_URL; skipped otherwise.
-const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
 describeDb("rate limiter (postgres, shared)", () => {
   beforeEach(() => {

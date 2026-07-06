@@ -4,6 +4,8 @@ import type { ExistingTraceabilityRow } from "@/components/workflow/test-intelli
 
 import {
   EMPTY_MATRIX_FILTER,
+  formatCoverageFilterLabel,
+  formatSourceFilterLabel,
   matchesMatrixFilter,
   matrixActiveCount,
   matrixFiltersActive,
@@ -78,5 +80,17 @@ describe("matrixFiltersActive / matrixActiveCount", () => {
     };
     expect(matrixFiltersActive(state)).toBe(true);
     expect(matrixActiveCount(state)).toBe(6);
+  });
+});
+
+describe("matrix filter labels", () => {
+  it("uses a descriptive default coverage label without rewriting real statuses", () => {
+    expect(formatCoverageFilterLabel("All")).toBe("All coverage");
+    expect(formatCoverageFilterLabel("Partially covered")).toBe("Partially covered");
+  });
+
+  it("uses source-specific labels and a descriptive default source label", () => {
+    expect(formatSourceFilterLabel("All")).toBe("All sources");
+    expect(formatSourceFilterLabel("acceptanceCriteria")).toBe("AC");
   });
 });
