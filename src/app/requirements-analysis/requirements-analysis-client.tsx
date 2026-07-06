@@ -51,22 +51,7 @@ import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/mod
 import type { ProjectUser } from "@/types/azure-devops";
 import { cn } from "@/lib/utils";
 
-function severityRank(value: RequirementFinding["severity"]) {
-  const ranks: Record<RequirementFinding["severity"], number> = {
-    critical: 0,
-    high: 1,
-    medium: 2,
-    low: 3,
-    info: 4,
-  };
-  return ranks[value] ?? 5;
-}
-
-function buildCommentBodyWithMentions(commentBody: string, mentionedUsers: ProjectUser[]) {
-  if (!mentionedUsers.length) return commentBody;
-  const mentionLine = mentionedUsers.map((user) => `@<${user.id}>`).join(" ");
-  return `${mentionLine}\n\n${commentBody.trim()}`;
-}
+import { buildCommentBodyWithMentions, severityRank } from "./lib/comment-helpers";
 
 export function RequirementsAnalysisClient() {
   const scope = useActiveProject();

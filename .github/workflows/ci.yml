@@ -6,6 +6,11 @@ on:
     branches:
       - main
 
+# A superseded push to the same ref should not keep burning a full verify job.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   checks: write

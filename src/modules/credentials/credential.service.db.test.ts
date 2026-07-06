@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createId, nowIso, resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { describeDb } from "@/test/db";
 import {
   getUserCredentialStatus,
   isCredentialStale,
@@ -37,7 +38,6 @@ describe("isCredentialStale (pure)", () => {
 });
 
 // DB-backed integration coverage; requires migrated PostgreSQL via DATABASE_URL.
-const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
 describeDb("credential service (DB-backed)", () => {
   const workspaceId = createId("ws");

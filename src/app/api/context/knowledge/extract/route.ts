@@ -8,6 +8,12 @@ import {
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
+import {
+  InvalidKnowledgeBaseOutputMessage,
+  TruncatedKnowledgeBaseOutputMessage,
+  isInvalidKnowledgeBaseOutputError,
+  isTruncatedKnowledgeBaseOutputError,
+} from "@/modules/rag/knowledge-error-classification";
 import { extractAndSaveProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
@@ -17,11 +23,6 @@ const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   mode: z.enum(["incremental", "full"]).optional(),
 });
-
-const InvalidKnowledgeBaseOutputMessage =
-  "The model returned invalid knowledge-base JSON. No data was saved. Please retry extraction or reduce indexed context size.";
-const TruncatedKnowledgeBaseOutputMessage =
-  "The model ran out of output tokens before completing the knowledge-base JSON. No data was saved. Please retry extraction; if it still fails, increase max tokens or index a narrower context.";
 
 export async function POST(request: Request) {
   const parsed = RequestSchema.safeParse(await request.json());
@@ -50,6 +51,8 @@ export async function POST(request: Request) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
     if (trustedScope && actor) writeGenerationFailureAudit({ scope: trustedScope, actor, action: "rag.extract_project_knowledge_base", label: "Project knowledge extraction failed.", error });
+    // Unlike the preview route, there is no isAppError branch here: AppErrors are
+    // classified by message regex like any other Error (or fall through to 503).
     if (isTruncatedKnowledgeBaseOutputError(error)) {
       return NextResponse.json({ error: TruncatedKnowledgeBaseOutputMessage }, { status: 422 });
     }
@@ -63,15 +66,4 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
-}
-
-function isTruncatedKnowledgeBaseOutputError(error: unknown) {
-  if (!(error instanceof Error)) return false;
-  return /max output token|token budget|finishReason.*MAX_TOKENS/i.test(error.message);
-}
-
-function isInvalidKnowledgeBaseOutputError(error: unknown) {
-  if (error instanceof z.ZodError || error instanceof SyntaxError) return true;
-  if (!(error instanceof Error)) return false;
-  return /json|parse|validation|schema/i.test(error.message);
 }

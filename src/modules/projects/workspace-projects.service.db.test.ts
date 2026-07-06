@@ -1,10 +1,9 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 
 import { resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { WorkflowAuthError, type WorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { resolveProjectScope, upsertWorkspaceProject } from "@/modules/projects/workspace-projects.service";
-
-const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
+import { describeDb } from "@/test/db";
 
 const WS_A = "ws_project_anchor_a";
 const WS_B = "ws_project_anchor_b";

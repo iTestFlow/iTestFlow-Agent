@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { publishApprovedTestCases } from "@/modules/integrations/azure-devops/azure-devops-test-plan.service";
+import { azureIdSchema, normalizeTestCasePriority } from "@/modules/integrations/azure-devops/publish-normalization";
 import {
   completeWorkflowRun,
   failWorkflowRun,
@@ -153,37 +154,4 @@ function countPublishActions(result: Awaited<ReturnType<typeof publishApprovedTe
       + (item.suite?.success ? 1 : 0);
   }, 0);
   return caseActions + (result.requirementSuite?.success ? 1 : 0);
-}
-
-function azureIdSchema(kind: "plan" | "suite") {
-  return z.string().min(1).transform((value, ctx) => {
-    const id = extractAzureId(value, kind);
-    if (!id) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `Enter a valid Azure Test ${kind === "plan" ? "Plan" : "Suite"} ID or URL.`,
-      });
-      return z.NEVER;
-    }
-
-    return id;
-  });
-}
-
-function extractAzureId(value: string, kind: "plan" | "suite") {
-  const trimmed = value.trim();
-  if (/^\d+$/.test(trimmed)) return trimmed;
-
-  const queryPattern = kind === "plan" ? /[?&]planId=(\d+)/i : /[?&]suiteId=(\d+)/i;
-  const pathPattern = kind === "plan" ? /\/plans\/(\d+)(?:\/|$|\?)/i : /\/suites\/(\d+)(?:\/|$|\?)/i;
-  return trimmed.match(queryPattern)?.[1] ?? trimmed.match(pathPattern)?.[1];
-}
-
-function normalizeTestCasePriority(value: unknown) {
-  if (value === 1 || value === "1" || value === "critical") return 1;
-  if (value === 2 || value === "2" || value === "high") return 2;
-  if (value === 3 || value === "3" || value === "medium") return 3;
-  if (value === 4 || value === "4" || value === "low") return 4;
-  if (value === undefined || value === null || value === "") return 2;
-  return value;
 }

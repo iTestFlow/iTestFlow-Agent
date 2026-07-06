@@ -33,6 +33,9 @@ const UNIVERSE: Array<{ root: string; exts: string[]; recursive?: boolean }> = [
   { root: "src/shared", exts: [".ts"] },
   { root: "src/worker", exts: [".ts"] },
   { root: "src/scripts", exts: [".ts"] },
+  // Repo-root ops/CI scripts (e.g. render-vitest-summary.ts) — same gate-or-acknowledge
+  // decision as src/scripts; .mjs launchers are out of scope.
+  { root: "scripts", exts: [".ts"] },
   { root: "src/components/workflow", exts: [".ts", ".tsx"] },
   { root: "src/app/api", exts: [".ts"] },
   { root: "src/app/test-gap-analysis/lib", exts: [".ts"] },

@@ -1,6 +1,7 @@
 {
   "description": "Logic files intentionally NOT in the risk-based coverage gate (vitest.coverage.config.ts). A new logic file must be gated OR added here. Refresh with `npm run coverage:inventory:update`. Guarded by src/test/coverage-manifest.integrity.test.ts.",
   "ungated": [
+    "scripts/render-vitest-summary.ts",
     "src/app/api/activity-log/route.ts",
     "src/app/api/auth/login/route.ts",
     "src/app/api/auth/logout/route.ts",
@@ -174,11 +175,9 @@
     "src/modules/test-suite-migration/test-suite-migration.service.ts",
     "src/modules/workspace/workspace-access.service.ts",
     "src/modules/workspace/workspace-members.service.ts",
-    "src/modules/workspace/workspace-request.ts",
     "src/modules/workspace/workspace-settings.service.ts",
     "src/modules/workspace/workspace.service.ts",
     "src/scripts/manage-org.ts",
-    "src/shared/lib/cron-schedule.ts",
     "src/shared/lib/format.ts",
     "src/shared/lib/local-day.ts",
     "src/shared/lib/sanitize-azure-error.ts",
@@ -187,7 +186,6 @@
     "src/shared/lib/use-dashboard-refresh.ts",
     "src/shared/lib/use-project-work-item-metadata.ts",
     "src/shared/lib/utils.ts",
-    "src/shared/validators/api-validation-errors.ts",
     "src/worker/main.ts"
   ]
 }

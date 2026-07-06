@@ -8,6 +8,12 @@ import {
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
+import {
+  InvalidKnowledgeBaseOutputMessage,
+  TruncatedKnowledgeBaseOutputMessage,
+  isInvalidKnowledgeBaseOutputError,
+  isTruncatedKnowledgeBaseOutputError,
+} from "@/modules/rag/knowledge-error-classification";
 import { previewGeneratedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { isAppError } from "@/modules/shared/errors/app-error";
@@ -20,11 +26,6 @@ const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   mode: z.enum(["incremental", "full"]).optional(),
 });
-
-const InvalidKnowledgeBaseOutputMessage =
-  "The model returned invalid knowledge-base JSON. No data was saved. Please retry extraction or reduce indexed context size.";
-const TruncatedKnowledgeBaseOutputMessage =
-  "The model ran out of output tokens before completing the knowledge-base JSON. No data was saved. Please retry extraction; if it still fails, increase max tokens or index a narrower context.";
 
 export async function POST(request: Request) {
   let requestBody: unknown;
@@ -61,6 +62,8 @@ export async function POST(request: Request) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
     if (trustedScope && actor) writeGenerationFailureAudit({ scope: trustedScope, actor, action: "rag.preview_project_knowledge_base", label: "Project knowledge preview failed.", error });
+    // Unlike the extract route, AppErrors are handled BEFORE the knowledge-output
+    // classifiers: a matching AppError gets its own userMessage/status, not the guidance.
     if (isAppError(error)) {
       return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
     }
@@ -78,15 +81,4 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
-}
-
-function isTruncatedKnowledgeBaseOutputError(error: unknown) {
-  if (!(error instanceof Error)) return false;
-  return /max output token|token budget|finishReason.*MAX_TOKENS/i.test(error.message);
-}
-
-function isInvalidKnowledgeBaseOutputError(error: unknown) {
-  if (error instanceof z.ZodError || error instanceof SyntaxError) return true;
-  if (!(error instanceof Error)) return false;
-  return /json|parse|validation|schema/i.test(error.message);
 }

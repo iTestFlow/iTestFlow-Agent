@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 
+import { describeDb } from "@/test/db";
 import { createId, nowIso, resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
 import { getWorkspaceById } from "@/modules/workspace/workspace.service";
@@ -16,7 +17,6 @@ const TEST_ORG = "itestflow-sched-test-org";
 const TEST_ORG_URL = "https://dev.azure.com/itestflow-sched-test-org";
 
 // DB-backed integration coverage; requires migrated PostgreSQL via DATABASE_URL.
-const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
 async function cleanup(workspaceId?: string) {
   if (workspaceId) await sqlRun(`DELETE FROM jobs WHERE workspace_id = @id`, { id: workspaceId });
