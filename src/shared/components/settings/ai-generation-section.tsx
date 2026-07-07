@@ -74,7 +74,7 @@ function AiProviderCard() {
       if (data.llm.provider && PROVIDERS.includes(data.llm.provider as Provider)) {
         setProvider(data.llm.provider as Provider)
       }
-      if (data.llm.model) setModel(data.llm.model)
+      setModel(data.llm.model ?? "")
     } catch {
       toast.error("Could not load your AI provider settings.")
     } finally {
@@ -94,6 +94,13 @@ function AiProviderCard() {
     setModels([])
     setModelsFetched(false)
   }, [provider])
+
+  function onProviderChange(nextProvider: Provider) {
+    setProvider(nextProvider)
+    setModel(status?.llm.provider === nextProvider ? status.llm.model ?? "" : "")
+    setModels([])
+    setModelsFetched(false)
+  }
 
   async function fetchModels() {
     setLoadingModels(true)
@@ -159,7 +166,7 @@ function AiProviderCard() {
         <NativeSelect
           id="llm-provider"
           value={provider}
-          onChange={(event) => setProvider(event.target.value as Provider)}
+          onChange={(event) => onProviderChange(event.target.value as Provider)}
         >
           <option value="openai">OpenAI</option>
           <option value="gemini">Gemini</option>
