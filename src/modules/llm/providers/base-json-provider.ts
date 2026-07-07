@@ -2,6 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
+import { friendlyErrorMessage } from "@/modules/shared/errors/error-response";
 import { JsonParseError, parseJsonWithRepair } from "../json-extraction";
 import { addTokenUsage, hasTokenUsage } from "../token-usage";
 import {
@@ -304,14 +305,17 @@ export abstract class BaseJsonProvider implements LLMProvider {
   ) {
     const renderedMessage = renderMessageWithCause(message, context.upstreamCause);
     const networkError = isLikelyNetworkError(renderedMessage);
+    const defaultUserMessage = networkError
+      ? networkUserMessage(context.durationMs)
+      : friendlyErrorMessage(new Error(renderedMessage), {
+          domain: "llm",
+          provider: this.name,
+          fallback: "The AI provider could not complete the request. Please try again in a moment or check the provider settings.",
+        });
     return new AppError({
       code: networkError ? AppErrorCode.Network : AppErrorCode.ProviderUnavailable,
       message: renderedMessage,
-      userMessage: context.userMessage ?? (
-        networkError
-          ? networkUserMessage(context.durationMs)
-          : "The AI provider could not complete the request. Please try again in a moment or check the provider settings."
-      ),
+      userMessage: context.userMessage ?? defaultUserMessage,
       technicalContext: {
         provider: this.name,
         model: this.model,

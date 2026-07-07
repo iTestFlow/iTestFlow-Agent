@@ -2,12 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
+  authErrorResponse,
   getUserAzureAdapter,
   getUserLLMProvider,
   requireWorkflowContext,
-  WorkflowAuthError,
 } from "@/modules/credentials/scoped-resolution.service";
-import { SessionError } from "@/modules/auth/session.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { runRequirementAnalysis } from "@/modules/requirement-analysis/application/requirement-analysis.service";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
@@ -134,12 +133,8 @@ export async function POST(request: Request) {
       warnings: result.warnings,
     });
   } catch (error) {
-    if (error instanceof SessionError) {
-      return NextResponse.json({ error: error.message }, { status: 401 });
-    }
-    if (error instanceof WorkflowAuthError) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
-    }
+    const authResponse = authErrorResponse(error);
+    if (authResponse) return authResponse;
     console.error("Requirement analysis failed", error);
     if (scope && actor) writeGenerationFailureAudit({ scope, actor, action: "requirement_analysis.run", label: "Requirement analysis failed.", error });
     if (scope && analyticsRunId) {

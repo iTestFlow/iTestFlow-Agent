@@ -3,13 +3,13 @@ import { z } from "zod";
 import { createBulkTasks } from "@/modules/integrations/azure-devops/azure-devops-bulk-task.service";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
 import {
   completeWorkflowRun,
   failWorkflowRun,
   startWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -185,10 +185,11 @@ export async function POST(request: Request) {
     if (trustedScope && analyticsRunId) {
       failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Bulk task creation failed." });
     }
-    return NextResponse.json(
-      { error: error instanceof Error ? sanitizeAzureError(error.message) : "Azure DevOps bulk task creation failed." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, {
+      domain: "azure",
+      fallback: "Azure DevOps bulk task creation failed.",
+      status: 503,
+    });
   }
 }
 

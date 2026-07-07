@@ -120,7 +120,7 @@ describe("POST /api/context/knowledge/preview", () => {
     expect(await response.json()).toEqual({ error: InvalidKnowledgeBaseOutputMessage });
   });
 
-  it("returns 503 with the original message for unclassified errors", async () => {
+  it("normalizes unclassified provider errors before returning them", async () => {
     mocks.previewGeneratedProjectKnowledgeBase.mockRejectedValue(
       new Error("Azure DevOps rate limit exceeded."),
     );
@@ -128,6 +128,8 @@ describe("POST /api/context/knowledge/preview", () => {
     const response = await POST(previewRequest());
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "Azure DevOps rate limit exceeded." });
+    const body = await response.json();
+    expect(body.error).toBe("The request could not be completed because a rate limit or quota was reached. Wait a moment, then try again.");
+    expect(body.technicalDetails).toContain("Azure DevOps rate limit exceeded.");
   });
 });

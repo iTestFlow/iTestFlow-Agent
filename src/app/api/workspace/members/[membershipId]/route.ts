@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { resolveWorkspaceRequest, workspaceRequestError } from "@/modules/workspace/workspace-request";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import { getWorkspaceMembership, type WorkspaceRole } from "@/modules/workspace/workspace-access.service";
 import {
   MemberActionError,
@@ -24,7 +25,11 @@ async function resolveActor() {
 
 function memberActionResponse(error: unknown): NextResponse | null {
   if (error instanceof MemberActionError) {
-    return NextResponse.json({ error: error.message }, { status: error.status });
+    return routeErrorResponse(error, {
+      domain: "settings",
+      fallback: error.message,
+      status: error.status,
+    });
   }
   return workspaceRequestError(error);
 }

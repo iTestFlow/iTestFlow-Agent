@@ -30,6 +30,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 import type {
   MigrationPreview,
   MigrationPreviewRow,
@@ -175,7 +176,7 @@ export function SuiteMigrationClient() {
         });
       })
       .catch((error: unknown) => {
-        if (!cancelled) setPlansState({ loading: false, error: error instanceof Error ? error.message : "Azure Test Plan fetch failed." });
+        if (!cancelled) setPlansState({ loading: false, error: caughtErrorMessage(error, "Azure Test Plan fetch failed.") });
       })
       .finally(() => {
         if (!cancelled) setPlansState((current) => ({ ...current, loading: false }));
@@ -274,7 +275,7 @@ export function SuiteMigrationClient() {
       setState({ loading: false, error: null });
     } catch (error) {
       if (!controller.signal.aborted && requestRef.current === requestId) {
-        setState({ loading: false, error: error instanceof Error ? error.message : "Azure Test Suite tree fetch failed." });
+        setState({ loading: false, error: caughtErrorMessage(error, "Azure Test Suite tree fetch failed.") });
       }
     } finally {
       if (requestRef.current === requestId) {
@@ -315,7 +316,7 @@ export function SuiteMigrationClient() {
       }
     } catch (error) {
       if (controller.signal.aborted) return;
-      const message = error instanceof Error ? error.message : "Azure Test Suite tree fetch failed.";
+      const message = caughtErrorMessage(error, "Azure Test Suite tree fetch failed.");
       if (sourceTreeRequestRef.current === sourceRequestId) {
         setSourceTreeState({ loading: false, error: message });
       }
@@ -450,7 +451,7 @@ export function SuiteMigrationClient() {
         toast.success("Migration preview is ready.");
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Migration preview failed.";
+      const message = caughtErrorMessage(error, "Migration preview failed.");
       setPreviewState({ loading: false, error: message });
       toast.error(message);
       return;
@@ -476,7 +477,7 @@ export function SuiteMigrationClient() {
       if (data.report.status === "completed") setHasUnfinishedWork(false);
       void refreshAfterMigration(data.report, request);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Suite migration failed.";
+      const message = caughtErrorMessage(error, "Suite migration failed.");
       setExecuteState({ loading: false, error: message });
       toast.error(message);
       return;
@@ -581,6 +582,8 @@ export function SuiteMigrationClient() {
                     onChange={(ids) => {
                       setHasUnfinishedWork(true);
                       updateSelectedSuiteIds(ids);
+                      setPreview(null);
+                      setReport(null);
                     }}
                   />
                 ) : sourceTree.length ? (

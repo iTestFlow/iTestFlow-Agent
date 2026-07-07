@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { SuiteTreeRequestSchema } from "@/modules/test-suite-migration/test-suite-migration.schema";
 import { loadMigrationSuiteTree } from "@/modules/test-suite-migration/test-suite-migration.service";
-import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -28,9 +28,10 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    return NextResponse.json(
-      { error: error instanceof Error ? sanitizeAzureError(error.message) : "Azure Test Suite tree fetch failed." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, {
+      domain: "azure",
+      fallback: "Azure Test Suite tree fetch failed.",
+      status: 503,
+    });
   }
 }

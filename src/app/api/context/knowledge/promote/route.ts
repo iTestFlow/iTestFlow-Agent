@@ -8,6 +8,7 @@ import {
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { promoteContextChatbotAnswer } from "@/modules/rag/project-knowledge-compiled.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -38,9 +39,6 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Context chatbot answer promotion failed." },
-      { status: 422 },
-    );
+    return routeErrorResponse(error, { domain: "generic", status: 422, fallback: "Context chatbot answer promotion failed." });
   }
 }

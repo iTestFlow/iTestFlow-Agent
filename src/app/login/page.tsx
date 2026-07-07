@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { resolveLoginDestination } from "@/app/login/login-destination"
+import { apiErrorMessage } from "@/shared/lib/api-error-message"
 
 type OrganizationOption = {
   name: string
@@ -162,7 +163,7 @@ export default function LoginPage() {
       })
       const data = (await response.json().catch(() => ({}))) as { error?: string }
       if (!response.ok) {
-        toast.error(data.error ?? "Sign in failed.")
+        toast.error(apiErrorMessage(data, "Sign in failed."))
         return
       }
       toast.success("Signed in.")

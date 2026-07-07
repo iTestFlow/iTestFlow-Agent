@@ -16,6 +16,7 @@ import {
 } from "@/modules/rag/knowledge-error-classification";
 import { extractAndSaveProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -51,8 +52,8 @@ export async function POST(request: Request) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
     if (trustedScope && actor) writeGenerationFailureAudit({ scope: trustedScope, actor, action: "rag.extract_project_knowledge_base", label: "Project knowledge extraction failed.", error });
-    // Unlike the preview route, there is no isAppError branch here: AppErrors are
-    // classified by message regex like any other Error (or fall through to 503).
+    // Preserve knowledge-specific validation copy before the shared normalizer
+    // handles provider and infrastructure failures.
     if (isTruncatedKnowledgeBaseOutputError(error)) {
       return NextResponse.json({ error: TruncatedKnowledgeBaseOutputMessage }, { status: 422 });
     }
@@ -61,9 +62,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: InvalidKnowledgeBaseOutputMessage }, { status: 422 });
     }
 
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Project knowledge extraction failed." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, { domain: "llm", status: 503, fallback: "Project knowledge extraction failed." });
   }
 }

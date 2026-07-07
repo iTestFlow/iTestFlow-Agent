@@ -6,6 +6,7 @@ import { isRequirementLikeType, postJson } from "@/components/workflow/test-inte
 import type { ApiState } from "@/components/workflow/test-intelligence-types";
 import { WorkItemSummaryCard, type WorkItemSummary } from "@/components/workflow/work-item-summary-card";
 import type { ActiveProjectScope } from "@/shared/lib/active-project";
+import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 
 /**
  * Shared Azure DevOps work-item lookup: a debounced "load by ID" hook plus a
@@ -69,7 +70,7 @@ export function useWorkItemLookup({
         })
         .catch((error: unknown) => {
           if (!cancelled) {
-            setState({ loading: false, error: error instanceof Error ? error.message : errorMessage, data: null });
+            setState({ loading: false, error: caughtErrorMessage(error, errorMessage), data: null });
           }
         });
     }, debounceMs);

@@ -6,6 +6,7 @@ import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -56,9 +57,6 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "External LLM bug prompt preparation failed." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, { domain: "llm", status: 503, fallback: "External LLM bug prompt preparation failed." });
   }
 }

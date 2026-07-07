@@ -152,9 +152,9 @@ describe("POST /api/auth/login", () => {
     const response = await POST(loginRequest({ organization: "contoso", personalAccessToken: "bad-pat" }));
 
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({
-      error: "Azure DevOps rejected the Personal Access Token, or the organization URL is incorrect.",
-    });
+    const body = await response.json();
+    expect(body.error).toBe("Azure DevOps authentication failed. Check that your Personal Access Token is valid and has not expired, then try again.");
+    expect(body.technicalDetails).toContain("Azure DevOps rejected the Personal Access Token");
     expect(mocks.provisionUserFromIdentity).not.toHaveBeenCalled();
     expect(mocks.storeUserAzurePat).not.toHaveBeenCalled();
     expect(mocks.createSession).not.toHaveBeenCalled();
@@ -167,7 +167,20 @@ describe("POST /api/auth/login", () => {
     const response = await POST(loginRequest({ organization: "contoso", personalAccessToken: "bad-pat" }));
 
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: "Azure DevOps authentication failed." });
+    expect(await response.json()).toMatchObject({ error: "Azure DevOps authentication failed." });
+  });
+
+  it("preserves missing identity guidance from Azure DevOps authentication", async () => {
+    mocks.authenticate.mockRejectedValue(new Error("Azure DevOps did not return an identity for this token."));
+
+    const response = await POST(loginRequest({ organization: "contoso", personalAccessToken: "identity-less-pat" }));
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({
+      error: "Azure DevOps did not return an identity for this token. Check that the PAT belongs to the selected organization and try again.",
+    });
+    expect(mocks.provisionUserFromIdentity).not.toHaveBeenCalled();
+    expect(mocks.storeUserAzurePat).not.toHaveBeenCalled();
   });
 
   it("provisions, joins, stores the PAT, and creates the session in order, with audit and cookie", async () => {

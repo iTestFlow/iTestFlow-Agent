@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { apiErrorMessage } from "@/shared/lib/api-error-message"
 import { OwnerOnlyNotice } from "./owner-only-notice"
 import { SectionCard } from "./section-card"
 
@@ -117,7 +118,7 @@ export function DashboardValueMetricsSection() {
       })
       const data = (await response.json().catch(() => ({}))) as { error?: string }
       if (!response.ok) {
-        toast.error(data.error ?? "Could not save the value-metrics baselines.")
+        toast.error(apiErrorMessage(data, "Could not save the value-metrics baselines."))
         return
       }
       toast.success("Value-metrics baselines saved.")

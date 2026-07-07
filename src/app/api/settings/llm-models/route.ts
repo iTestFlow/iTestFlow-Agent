@@ -5,6 +5,7 @@ import { requireSession, SessionError } from "@/modules/auth/session.service";
 import { resolveActiveWorkspaceForUser } from "@/modules/workspace/workspace.service";
 import { resolveUserLlmConfig } from "@/modules/credentials/credential.service";
 import { listLLMModels, LLMProviderNameSchema } from "@/modules/llm/model-catalog.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -25,7 +26,7 @@ export async function POST(request: Request) {
   try {
     session = await requireSession();
   } catch (error) {
-    if (error instanceof SessionError) return NextResponse.json({ error: error.message }, { status: 401 });
+    if (error instanceof SessionError) return routeErrorResponse(error, { domain: "auth", status: 401, fallback: "Sign in required." });
     throw error;
   }
 
@@ -61,9 +62,10 @@ export async function POST(request: Request) {
     const models = await listLLMModels({ provider, apiKey, baseUrl });
     return NextResponse.json({ models });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to fetch models from provider." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, {
+      domain: "llm",
+      provider,
+      fallback: "Failed to fetch models from provider.",
+    });
   }
 }

@@ -18,6 +18,7 @@ import { SeverityPill } from "@/components/qa/severity-chip";
 import { cn } from "@/lib/utils";
 import { formatEnumLabel, formatPercentage } from "@/shared/lib/format";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 import { postJson } from "@/components/workflow/post-json";
 import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import type {
@@ -438,7 +439,7 @@ export function PublishGeneratedCasesPanel({
       .then((data) => setTestPlans(data.testPlans))
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
-          setPlanError(error instanceof Error ? error.message : "Azure Test Plan fetch failed.");
+          setPlanError(caughtErrorMessage(error, "Azure Test Plan fetch failed."));
         }
       })
       .finally(() => {
@@ -487,7 +488,7 @@ export function PublishGeneratedCasesPanel({
       }
     } catch (error) {
       if (!controller.signal.aborted && suiteRequestRef.current === requestId) {
-        setSuiteError(error instanceof Error ? error.message : "Azure Test Suite fetch failed.");
+        setSuiteError(caughtErrorMessage(error, "Azure Test Suite fetch failed."));
       }
     } finally {
       if (suiteRequestRef.current === requestId) setSuitesLoading(false);
@@ -572,7 +573,7 @@ export function PublishGeneratedCasesPanel({
       const suitePublished = !createRequirementSuite || data.requirementSuite?.success === true;
       if (casesPublished && suitePublished) onPublished?.();
     } catch (error) {
-      setState({ loading: false, error: error instanceof Error ? error.message : "Publish failed.", data: null });
+      setState({ loading: false, error: caughtErrorMessage(error, "Publish failed."), data: null });
     }
   }
 

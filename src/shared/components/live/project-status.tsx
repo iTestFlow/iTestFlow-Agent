@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
+import { apiErrorMessage, caughtErrorMessage } from "@/shared/lib/api-error-message";
 import {
   projectSelectionNeedingRefresh,
   readActiveProject,
@@ -36,7 +37,7 @@ export function HeaderProjectSelector() {
       body: JSON.stringify({ workspaceId: project.workspaceId, azureProjectId: project.id }),
     });
     const json = await response.json();
-    if (!response.ok) throw new Error(json.error ?? "Failed to select Azure DevOps project.");
+    if (!response.ok) throw new Error(apiErrorMessage(json, "Failed to select Azure DevOps project."));
     return json.scope as ActiveProjectScope;
   }
 
@@ -45,7 +46,7 @@ export function HeaderProjectSelector() {
     fetch("/api/azure-devops/projects", { cache: "no-store" })
       .then(async (response) => {
         const json = await response.json();
-        if (!response.ok) throw new Error(json.error ?? "Failed to fetch Azure DevOps projects.");
+        if (!response.ok) throw new Error(apiErrorMessage(json, "Failed to fetch Azure DevOps projects."));
         const loadedProjects = (json.projects ?? []) as AzureProject[];
         setProjects(loadedProjects);
         const stored = readActiveProject();
@@ -56,7 +57,7 @@ export function HeaderProjectSelector() {
           setActiveProject(scope);
         }
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Azure DevOps is not configured."));
+      .catch((err: unknown) => setError(caughtErrorMessage(err, "Azure DevOps is not configured.")));
 
     const onChange = (event: Event) => {
       const custom = event as CustomEvent<ActiveProjectScope>;
@@ -95,7 +96,7 @@ export function HeaderProjectSelector() {
               writeActiveProject(scope);
               setActiveProject(scope);
             }).catch((err: unknown) => {
-              setError(err instanceof Error ? err.message : "Azure DevOps project selection failed.");
+              setError(caughtErrorMessage(err, "Azure DevOps project selection failed."));
             });
           });
         }}

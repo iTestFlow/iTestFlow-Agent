@@ -52,6 +52,7 @@ import {
 import { getReportBugActionGates } from "./lib/action-gating";
 import type { GeneratedTestCase } from "@/components/workflow/test-intelligence-types";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 import type { ProjectUser } from "@/types/azure-devops";
 
 type WorkflowMode = "auto" | "manual";
@@ -231,7 +232,7 @@ export function ReportBugClient() {
         setCustomFieldRows(buildRequiredFieldRows(data.fields));
       })
       .catch((error: unknown) => {
-        if (!cancelled) setMetadata({ loading: false, error: error instanceof Error ? error.message : "Bug metadata fetch failed.", data: null });
+        if (!cancelled) setMetadata({ loading: false, error: caughtErrorMessage(error, "Bug metadata fetch failed."), data: null });
       });
     return () => {
       cancelled = true;
@@ -305,7 +306,7 @@ export function ReportBugClient() {
       setParentState({ loading: false, error: null, data: data.workItem });
     } catch (error) {
       setParentStory(null);
-      setParentState({ loading: false, error: error instanceof Error ? error.message : "Parent story fetch failed.", data: null });
+      setParentState({ loading: false, error: caughtErrorMessage(error, "Parent story fetch failed."), data: null });
     }
   }, [parentStoryId, scope]);
 
@@ -343,7 +344,7 @@ export function ReportBugClient() {
         if (!cancelled) {
           setLinkedTestCases({
             loading: false,
-            error: error instanceof Error ? error.message : "Linked test case fetch failed.",
+            error: caughtErrorMessage(error, "Linked test case fetch failed."),
             data: null,
           });
         }
@@ -407,7 +408,7 @@ export function ReportBugClient() {
       applyGeneratedReport(data);
     } catch (error) {
       if (requestVersion !== generationRequestVersionRef.current) return;
-      setManualSubmitError(error instanceof Error ? error.message : "External LLM response validation failed.");
+      setManualSubmitError(caughtErrorMessage(error, "External LLM response validation failed."));
     } finally {
       setManualSubmitLoading(false);
     }
@@ -541,7 +542,7 @@ export function ReportBugClient() {
     } catch (error) {
       setTestCasePublishState({
         loading: false,
-        error: error instanceof Error ? error.message : "Reproduction test case publish failed.",
+        error: caughtErrorMessage(error, "Reproduction test case publish failed."),
         data: null,
       });
     }
@@ -572,7 +573,7 @@ export function ReportBugClient() {
       const reproductionPublishPending = suggestTestCaseChecked && Boolean(suggestedTestCase);
       if (attachmentsComplete && !reproductionPublishPending) setHasUnfinishedWork(false);
     } catch (error) {
-      setPostState({ loading: false, error: error instanceof Error ? error.message : "Azure DevOps bug creation failed.", data: null });
+      setPostState({ loading: false, error: caughtErrorMessage(error, "Azure DevOps bug creation failed."), data: null });
     }
   }
 

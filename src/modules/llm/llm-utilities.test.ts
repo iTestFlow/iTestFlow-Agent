@@ -141,19 +141,24 @@ describe("LLM utility contracts", () => {
       error: { code: "rate_limit_exceeded", message: "Quota exceeded." },
     }), { status: 429 })));
     await expect(listLLMModels({ provider: "openai", apiKey: "sk-test" })).rejects.toThrow(
-      "OpenAI could not load models because the provider rate limit or quota was reached. Wait a moment, then try again.",
+      "OpenAI could not complete the request because the provider rate limit or quota was reached. Wait a moment, then try again.",
     );
 
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => new Response("not found", { status: 404 })));
     await expect(listLLMModels({ provider: "anthropic", apiKey: "sk-ant-test" })).rejects.toThrow(
-      "Anthropic could not find the model-list endpoint. Check the optional provider base URL and try again.",
+      "Anthropic could not find the requested endpoint. Check the optional provider base URL and try again.",
+    );
+
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => new Response("overloaded", { status: 503 })));
+    await expect(listLLMModels({ provider: "openai", apiKey: "sk-test" })).rejects.toThrow(
+      "OpenAI is temporarily unavailable. Try again in a moment.",
     );
 
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => {
       throw new TypeError("fetch failed");
     }));
     await expect(listLLMModels({ provider: "gemini", apiKey: "key" })).rejects.toThrow(
-      "Could not connect to Gemini to load models. Check your network connection and provider base URL, then try again.",
+      "Could not connect to Gemini. Check your network connection and provider base URL, then try again.",
     );
   });
 });

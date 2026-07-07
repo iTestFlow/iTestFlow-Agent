@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { TokenUsage } from "@/modules/llm/llm-types";
 import { ApiError } from "@/components/workflow/api-error";
 import type { AppErrorCode, ErrorTechnicalContext } from "@/modules/shared/errors/app-error";
+import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 
 /* --------------------------------------------------------------------------
  * Driver hook for the AI generation progress experience.
@@ -99,7 +100,7 @@ function errorFrom(error: unknown): AiGenerationError {
     };
   }
   return {
-    message: error instanceof Error ? error.message : "Generation failed.",
+    message: caughtErrorMessage(error, "Generation failed."),
   };
 }
 

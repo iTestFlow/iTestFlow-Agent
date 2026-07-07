@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { Callout } from "@/components/qa/callout";
 import { DataToolbar } from "@/components/qa/data-toolbar";
+import { caughtErrorMessage, responseErrorMessage } from "@/shared/lib/api-error-message";
 import { useActiveProject } from "@/shared/lib/use-active-project";
 import type { ActivityLogResult } from "@/types/activity-log";
 
@@ -91,14 +92,14 @@ export function ActivityLogClient() {
           body: JSON.stringify(body),
           signal: controller.signal,
         });
+        if (!response.ok) throw new Error(await responseErrorMessage(response, "Activity log failed to load."));
         const json = await response.json();
-        if (!response.ok) throw new Error(json.error ?? "Activity log failed to load.");
         setState({ loading: false, error: null, data: json as ActivityLogResult });
       } catch (error) {
         if (controller.signal.aborted) return; // superseded by a newer request
         setState({
           loading: false,
-          error: error instanceof Error ? error.message : "Activity log failed to load.",
+          error: caughtErrorMessage(error, "Activity log failed to load."),
           data: null,
         });
       }

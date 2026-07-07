@@ -52,6 +52,7 @@ import {
 } from "@/modules/test-case-design/test-design-options";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 import { cn } from "@/lib/utils";
+import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 
 export function TestCaseDesignClient() {
   const scope = useActiveProject();
@@ -318,7 +319,7 @@ export function TestCaseDesignClient() {
       applyGeneratedCases(data);
       scrollToNextStep(generatedCasesRef);
     } catch (error) {
-      setManualSubmitError(error instanceof Error ? error.message : "External LLM response validation failed.");
+      setManualSubmitError(caughtErrorMessage(error, "External LLM response validation failed."));
     } finally {
       setManualSubmitLoading(false);
     }

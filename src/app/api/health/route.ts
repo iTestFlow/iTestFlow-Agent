@@ -11,12 +11,12 @@ export async function GET() {
       database: "postgres",
       timestamp: new Date().toISOString(),
     });
-  } catch (error) {
+  } catch {
     return NextResponse.json(
       {
         status: "error",
         database: "postgres",
-        message: error instanceof Error ? error.message : "Database connection failed.",
+        message: "Database connection failed.",
         timestamp: new Date().toISOString(),
       },
       { status: 503 },

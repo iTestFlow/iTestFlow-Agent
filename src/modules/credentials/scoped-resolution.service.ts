@@ -1,11 +1,12 @@
 import "server-only";
 
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
 import { AzureDevOpsRestAdapter } from "@/modules/integrations/azure-devops/azure-devops-client";
 import { createLLMProvider } from "@/modules/llm/llm-provider.factory";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { DEFAULT_RETRY_ATTEMPTS, getMaxOutputTokenCapDefaultFromEnv } from "@/modules/llm/llm-defaults";
 import { requireSession, SessionError } from "@/modules/auth/session.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import { getWorkspaceMembership, type WorkspaceRole } from "@/modules/workspace/workspace-access.service";
 import { getWorkspaceById, resolveActiveWorkspaceForUser, type WorkspaceRef } from "@/modules/workspace/workspace.service";
 import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
@@ -145,10 +146,18 @@ export async function getUserLLMProvider(ctx: WorkflowContext): Promise<LLMProvi
  */
 export function authErrorResponse(error: unknown): NextResponse | null {
   if (error instanceof SessionError) {
-    return NextResponse.json({ error: error.message }, { status: 401 });
+    return routeErrorResponse(error, {
+      domain: "auth",
+      fallback: error.message,
+      status: 401,
+    });
   }
   if (error instanceof WorkflowAuthError) {
-    return NextResponse.json({ error: error.message }, { status: error.status });
+    return routeErrorResponse(error, {
+      domain: error.message.includes("LLM") ? "llm" : "auth",
+      fallback: error.message,
+      status: error.status,
+    });
   }
   return null;
 }

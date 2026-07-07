@@ -18,6 +18,7 @@ import {
   updateUserLlmModel,
 } from "@/modules/credentials/credential.service";
 import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -39,9 +40,9 @@ async function resolveContext() {
 }
 
 function errorResponse(error: unknown) {
-  if (error instanceof SessionError) return NextResponse.json({ error: error.message }, { status: 401 });
+  if (error instanceof SessionError) return routeErrorResponse(error, { domain: "auth", status: 401, fallback: "Sign in required." });
   if (error instanceof Error && error.name === "NoWorkspaceError") {
-    return NextResponse.json({ error: error.message }, { status: 403 });
+    return routeErrorResponse(error, { domain: "auth", status: 403, fallback: "No workspace membership found for this user." });
   }
   throw error;
 }
@@ -113,10 +114,11 @@ export async function PUT(request: Request) {
         personalAccessToken: parsed.data.azurePat,
       });
     } catch (error) {
-      return NextResponse.json(
-        { error: error instanceof Error ? error.message : "Azure DevOps PAT validation failed." },
-        { status: 422 },
-      );
+      return routeErrorResponse(error, {
+        domain: "azure",
+        status: 422,
+        fallback: "Azure DevOps PAT validation failed.",
+      });
     }
     const storedIdentity = await getStoredUserIdentity(context.userId);
     if (!storedIdentity || !authenticatedIdentityMatchesStoredUser(identity, storedIdentity)) {

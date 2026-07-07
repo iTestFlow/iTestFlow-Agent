@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { NativeSelect } from "@/components/ui/native-select"
 import { SearchableCombobox } from "@/components/ui/searchable-combobox"
 import { OwnerOnlyNotice } from "./owner-only-notice"
+import { apiErrorMessage } from "@/shared/lib/api-error-message"
 import {
   Field,
   SecretField,
@@ -113,7 +114,7 @@ function AiProviderCard() {
       })
       const data = (await response.json().catch(() => ({}))) as { models?: ModelOption[]; error?: string }
       if (!response.ok) {
-        toast.error(data.error ?? "Could not fetch models.")
+        toast.error(apiErrorMessage(data, "Could not fetch models."))
         return
       }
       setModels(data.models ?? [])
@@ -140,7 +141,7 @@ function AiProviderCard() {
       })
       const data = (await response.json().catch(() => ({}))) as CredentialStatusResponse & { error?: string }
       if (!response.ok) {
-        toast.error(data.error ?? "Could not save your LLM credentials.")
+        toast.error(apiErrorMessage(data, "Could not save your LLM credentials."))
         return
       }
       toast.success("LLM credentials updated.")
@@ -297,7 +298,7 @@ function OutputCapCard() {
       })
       const data = (await response.json().catch(() => ({}))) as { error?: string }
       if (!response.ok) {
-        toast.error(data.error ?? "Could not save the LLM output limit.")
+        toast.error(apiErrorMessage(data, "Could not save the LLM output limit."))
         return
       }
       toast.success("LLM output limit saved.")

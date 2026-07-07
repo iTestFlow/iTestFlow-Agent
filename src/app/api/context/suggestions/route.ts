@@ -13,6 +13,7 @@ import { getContextSuggestionCandidatePoolSize, getContextSuggestionFinalLimit }
 import { requirementToRetrievalQuery, retrieveStoredProjectContext, type LlmContextSource } from "@/modules/rag/project-context-store.service";
 import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -79,10 +80,7 @@ export async function POST(request: Request) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
     if (trustedScope && actor) writeGenerationFailureAudit({ scope: trustedScope, actor, action: "context_selection.suggest", label: "Context suggestion failed.", error });
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Context suggestion failed." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, { domain: "llm", status: 503, fallback: "Context suggestion failed." });
   }
 }
 

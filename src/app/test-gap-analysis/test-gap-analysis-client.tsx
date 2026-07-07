@@ -40,6 +40,7 @@ import type {
 } from "@/components/workflow/test-intelligence-types";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 import { countEditedById } from "@/shared/lib/edited-count";
+import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 
 import {
   countInvalidSuggestions,
@@ -248,7 +249,7 @@ export function TestGapAnalysisClient() {
       applyReviewResult(data);
       scrollToNextStep(resultsRef);
     } catch (error) {
-      setManualSubmitError(error instanceof Error ? error.message : "External LLM response validation failed.");
+      setManualSubmitError(caughtErrorMessage(error, "External LLM response validation failed."));
     } finally {
       setManualSubmitLoading(false);
     }

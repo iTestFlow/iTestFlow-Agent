@@ -3,6 +3,7 @@ import {
   isAppErrorCode,
   type ErrorTechnicalContext,
 } from "@/modules/shared/errors/app-error";
+import { apiErrorMessage } from "@/shared/lib/api-error-message";
 
 export type ApiErrorPayload = {
   error?: unknown;
@@ -32,9 +33,7 @@ export class ApiError extends Error {
   }
 
   static fromResponse(payload: ApiErrorPayload, status: number) {
-    const message = typeof payload.error === "string" && payload.error.trim()
-      ? payload.error
-      : `Request failed: ${status}`;
+    const message = apiErrorMessage(payload, `Request failed: ${status}`);
     return new ApiError(message, {
       status,
       code: isAppErrorCode(payload.code) ? payload.code : undefined,

@@ -14,6 +14,7 @@ import {
   startWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -77,9 +78,6 @@ export async function POST(request: Request) {
     if (trustedScope && analyticsRunId) {
       failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Project context indexing failed." });
     }
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Project context indexing failed." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, { domain: "azure", status: 503, fallback: "Project context indexing failed." });
   }
 }

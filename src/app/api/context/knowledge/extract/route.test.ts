@@ -98,7 +98,7 @@ describe("POST /api/context/knowledge/extract", () => {
     expect(await response.json()).toEqual({ error: InvalidKnowledgeBaseOutputMessage });
   });
 
-  it("returns 503 with the original message for unclassified errors", async () => {
+  it("normalizes unclassified provider errors before returning them", async () => {
     mocks.extractAndSaveProjectKnowledgeBase.mockRejectedValue(
       new Error("Azure DevOps rate limit exceeded."),
     );
@@ -106,7 +106,9 @@ describe("POST /api/context/knowledge/extract", () => {
     const response = await POST(extractRequest());
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "Azure DevOps rate limit exceeded." });
+    const body = await response.json();
+    expect(body.error).toBe("The request could not be completed because a rate limit or quota was reached. Wait a moment, then try again.");
+    expect(body.technicalDetails).toContain("Azure DevOps rate limit exceeded.");
   });
 
   // This route has no isAppError branch: AppErrors are classified by message regex like
@@ -126,7 +128,7 @@ describe("POST /api/context/knowledge/extract", () => {
     expect(await response.json()).toEqual({ error: TruncatedKnowledgeBaseOutputMessage });
   });
 
-  it("returns 503 with an AppError's raw message (not userMessage) when no classifier matches", async () => {
+  it("returns 503 with an AppError's user message when no classifier matches", async () => {
     mocks.extractAndSaveProjectKnowledgeBase.mockRejectedValue(
       new AppError({
         code: AppErrorCode.ProviderUnavailable,
@@ -138,7 +140,10 @@ describe("POST /api/context/knowledge/extract", () => {
     const response = await POST(extractRequest());
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "OpenAI returned 503." });
+    expect(await response.json()).toMatchObject({
+      error: "The LLM provider is currently unavailable.",
+      code: AppErrorCode.ProviderUnavailable,
+    });
   });
 
   it("skips the failure audit when the error happens before the scope is resolved", async () => {
@@ -147,7 +152,9 @@ describe("POST /api/context/knowledge/extract", () => {
     const response = await POST(extractRequest());
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "Project not found in this workspace." });
+    const body = await response.json();
+    expect(body.error).toBe("Project knowledge extraction failed.");
+    expect(body.technicalDetails).toContain("Project not found in this workspace.");
     expect(mocks.writeGenerationFailureAudit).not.toHaveBeenCalled();
   });
 

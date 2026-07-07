@@ -6,6 +6,7 @@ import { PatAuthProvider } from "@/modules/auth/pat-auth-provider";
 import { storeWorkspaceSyncPat } from "@/modules/credentials/credential.service";
 import { resolveWorkspaceRequest, workspaceRequestError } from "@/modules/workspace/workspace-request";
 import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -46,10 +47,11 @@ export async function POST(request: Request) {
       personalAccessToken: parsed.data.personalAccessToken,
     });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Azure DevOps PAT validation failed." },
-      { status: 422 },
-    );
+    return routeErrorResponse(error, {
+      domain: "azure",
+      status: 422,
+      fallback: "Azure DevOps PAT validation failed.",
+    });
   }
 
   await storeWorkspaceSyncPat({

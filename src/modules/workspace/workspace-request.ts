@@ -1,8 +1,9 @@
 import "server-only";
 
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
 
 import { requireSession, SessionError } from "@/modules/auth/session.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import { resolveActiveWorkspaceForUser, type WorkspaceRef } from "./workspace.service";
 import {
   requireWorkspaceAccess,
@@ -31,7 +32,19 @@ export async function resolveWorkspaceRequest(roles?: WorkspaceRole[]): Promise<
 }
 
 export function workspaceRequestError(error: unknown): NextResponse | null {
-  if (error instanceof SessionError) return NextResponse.json({ error: error.message }, { status: 401 });
-  if (error instanceof WorkspaceAccessError) return NextResponse.json({ error: error.message }, { status: 403 });
+  if (error instanceof SessionError) {
+    return routeErrorResponse(error, {
+      domain: "auth",
+      fallback: error.message,
+      status: 401,
+    });
+  }
+  if (error instanceof WorkspaceAccessError) {
+    return routeErrorResponse(error, {
+      domain: "auth",
+      fallback: error.message,
+      status: 403,
+    });
+  }
   return null;
 }

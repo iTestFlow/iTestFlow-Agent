@@ -51,6 +51,7 @@ import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/mod
 import type { ProjectUser } from "@/types/azure-devops";
 import { cn } from "@/lib/utils";
 import { countEditedById } from "@/shared/lib/edited-count";
+import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 
 import { buildCommentBodyWithMentions } from "./lib/comment-helpers";
 import {
@@ -171,7 +172,7 @@ export function RequirementsAnalysisClient() {
         if (cancelled) return;
         setProjectUsersState({
           loading: false,
-          error: error instanceof Error ? error.message : "Azure DevOps project user fetch failed.",
+          error: caughtErrorMessage(error, "Azure DevOps project user fetch failed."),
           data: [],
         });
       });
@@ -332,7 +333,7 @@ export function RequirementsAnalysisClient() {
       applyAnalysisResult(data);
       scrollToNextStep(findingsCardRef, findingsHeadingRef);
     } catch (error) {
-      setManualSubmitError(error instanceof Error ? error.message : "External LLM response validation failed.");
+      setManualSubmitError(caughtErrorMessage(error, "External LLM response validation failed."));
     } finally {
       setManualSubmitLoading(false);
     }
@@ -395,7 +396,7 @@ export function RequirementsAnalysisClient() {
       setPushState({ loading: false, error: null, data: { success: true } });
       setHasUnfinishedWork(false);
     } catch (error) {
-      setPushState({ loading: false, error: error instanceof Error ? error.message : "Azure DevOps comment push failed.", data: null });
+      setPushState({ loading: false, error: caughtErrorMessage(error, "Azure DevOps comment push failed."), data: null });
     }
   }
 

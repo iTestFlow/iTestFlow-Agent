@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AutoRefreshStatus } from "@/components/dashboard/auto-refresh-status";
 import { useActiveProject } from "@/shared/lib/use-active-project";
+import { apiErrorMessage, caughtErrorMessage } from "@/shared/lib/api-error-message";
 import { useDashboardRefresh } from "@/shared/lib/use-dashboard-refresh";
 import type {
   DashboardAnalytics,
@@ -195,7 +196,7 @@ function ProjectDashboardsClient({ active }: { active: boolean }) {
           cache: "no-store",
         });
         const json = await response.json();
-        if (!response.ok) throw new Error(json.error ?? "Dashboard analytics failed.");
+        if (!response.ok) throw new Error(apiErrorMessage(json, "Dashboard analytics failed."));
         setState({ loading: false, error: null, data: json as DashboardAnalytics });
         setRefreshFailed(false);
       } catch (error) {
@@ -206,7 +207,7 @@ function ProjectDashboardsClient({ active }: { active: boolean }) {
         } else {
           setState((current) => ({
             loading: false,
-            error: error instanceof Error ? error.message : "Dashboard analytics failed.",
+            error: caughtErrorMessage(error, "Dashboard analytics failed."),
             data: current.data,
           }));
         }

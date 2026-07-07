@@ -9,6 +9,7 @@ import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { ProjectKnowledgeBaseSchema } from "@/modules/rag/project-knowledge.schema";
 import { saveManualProjectKnowledgeBaseFromBatches } from "@/modules/rag/project-knowledge.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -40,9 +41,6 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "External LLM knowledge base finalization failed." },
-      { status: 422 },
-    );
+    return routeErrorResponse(error, { domain: "llm", status: 422, fallback: "External LLM knowledge base finalization failed." });
   }
 }

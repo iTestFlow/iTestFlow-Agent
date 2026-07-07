@@ -148,7 +148,9 @@ describe("POST /api/bugs/post", () => {
     }));
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "Azure unavailable" });
+    const body = await response.json();
+    expect(body.error).toBe("The service is temporarily unavailable. Try again in a moment.");
+    expect(body.technicalDetails).toContain("Azure unavailable");
     expect(mocks.failWorkflowRun).toHaveBeenCalledWith({
       scope: trustedScope,
       runId: "run-1",
