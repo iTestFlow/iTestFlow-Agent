@@ -119,4 +119,41 @@ describe("LLM utility contracts", () => {
     ]);
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.openai.com/v1/models");
   });
+
+  it("returns a friendly model-catalog error when Gemini rejects an API key", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      error: {
+        code: 400,
+        message: "API key not valid. Please pass a valid API key.",
+        status: "INVALID_ARGUMENT",
+      },
+    }), { status: 400 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listLLMModels({ provider: "gemini", apiKey: "bad-key" })).rejects.toThrow(
+      "Gemini rejected the API key. Check that the key is correct and belongs to Gemini, then try again.",
+    );
+    await expect(listLLMModels({ provider: "gemini", apiKey: "bad-key" })).rejects.not.toThrow("INVALID_ARGUMENT");
+  });
+
+  it("returns friendly model-catalog errors for quota, endpoint, and network failures", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      error: { code: "rate_limit_exceeded", message: "Quota exceeded." },
+    }), { status: 429 })));
+    await expect(listLLMModels({ provider: "openai", apiKey: "sk-test" })).rejects.toThrow(
+      "OpenAI could not load models because the provider rate limit or quota was reached. Wait a moment, then try again.",
+    );
+
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => new Response("not found", { status: 404 })));
+    await expect(listLLMModels({ provider: "anthropic", apiKey: "sk-ant-test" })).rejects.toThrow(
+      "Anthropic could not find the model-list endpoint. Check the optional provider base URL and try again.",
+    );
+
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => {
+      throw new TypeError("fetch failed");
+    }));
+    await expect(listLLMModels({ provider: "gemini", apiKey: "key" })).rejects.toThrow(
+      "Could not connect to Gemini to load models. Check your network connection and provider base URL, then try again.",
+    );
+  });
 });
