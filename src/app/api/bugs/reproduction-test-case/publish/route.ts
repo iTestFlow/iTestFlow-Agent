@@ -6,6 +6,7 @@ import type { FinalApprovedTestCase } from "@/modules/integrations/azure-devops/
 import { normalizeTestCasePriority } from "@/modules/integrations/azure-devops/publish-normalization";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -128,10 +129,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Reproduction test case publish failed." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, { domain: "azure", status: 503, fallback: "Reproduction test case publish failed." });
   }
 }
 

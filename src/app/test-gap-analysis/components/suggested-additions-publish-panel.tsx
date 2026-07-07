@@ -20,6 +20,7 @@ import type {
   SuggestedAdditionsPublishResult,
 } from "@/components/workflow/test-intelligence-types";
 import type { ActiveProjectScope } from "@/shared/lib/active-project";
+import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 
 /* Creates the selected suggested test cases in Azure DevOps and links them to
  * the target user story. Behaviour and API contract are unchanged. */
@@ -70,7 +71,7 @@ export function SuggestedAdditionsPublishPanel({
         onPublished();
       }
     } catch (error) {
-      setState({ loading: false, error: error instanceof Error ? error.message : "Suggested additions publish failed.", data: null });
+      setState({ loading: false, error: caughtErrorMessage(error, "Suggested additions publish failed."), data: null });
     }
   }
 

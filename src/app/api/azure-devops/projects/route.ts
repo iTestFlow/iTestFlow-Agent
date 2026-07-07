@@ -4,6 +4,7 @@ import {
   getUserAzureAdapterOrgLevel,
   requireWorkflowContext,
 } from "@/modules/credentials/scoped-resolution.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -25,11 +26,6 @@ export async function GET() {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Azure DevOps project fetch failed.",
-      },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, { domain: "azure", status: 503, fallback: "Azure DevOps project fetch failed." });
   }
 }

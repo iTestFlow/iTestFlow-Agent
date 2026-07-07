@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults"
+import { apiErrorMessage } from "@/shared/lib/api-error-message"
 import {
   buildDailyCron,
   buildMonthlyCron,
@@ -155,7 +156,7 @@ export function AutomationSection() {
       })
       const data = (await response.json().catch(() => ({}))) as ScheduleResponse & { error?: string }
       if (!response.ok) {
-        toast.error(data.error ?? "Could not save the schedule.")
+        toast.error(apiErrorMessage(data, "Could not save the schedule."))
         return
       }
       toast.success("Sync schedule saved.")

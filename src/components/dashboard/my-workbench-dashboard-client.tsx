@@ -30,6 +30,7 @@ import { SearchableCombobox } from "@/components/ui/searchable-combobox";
 import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useActiveProject } from "@/shared/lib/use-active-project";
+import { apiErrorMessage, caughtErrorMessage } from "@/shared/lib/api-error-message";
 import { useDashboardRefresh } from "@/shared/lib/use-dashboard-refresh";
 import type {
   MyWorkbenchAnalytics,
@@ -141,7 +142,7 @@ export function MyWorkbenchDashboardClient({ active }: { active: boolean }) {
           cache: "no-store",
         });
         const json = await response.json();
-        if (!response.ok) throw new Error(json.error ?? "Could not load your Azure DevOps assigned work.");
+        if (!response.ok) throw new Error(apiErrorMessage(json, "Could not load your Azure DevOps assigned work."));
         setState({ loading: false, error: null, data: json as MyWorkbenchAnalytics });
         setRefreshFailed(false);
       } catch (error) {
@@ -151,7 +152,7 @@ export function MyWorkbenchDashboardClient({ active }: { active: boolean }) {
         } else {
           setState((current) => ({
             loading: false,
-            error: error instanceof Error ? error.message : "Could not load your Azure DevOps assigned work.",
+            error: caughtErrorMessage(error, "Could not load your Azure DevOps assigned work."),
             data: current.data,
           }));
         }

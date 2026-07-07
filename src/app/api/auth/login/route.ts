@@ -10,6 +10,7 @@ import { findWorkspaceByAzureOrgUrl } from "@/modules/workspace/workspace.servic
 import { storeUserAzurePat } from "@/modules/credentials/credential.service";
 import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
 import { writeAuditLog } from "@/modules/audit/audit.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -56,10 +57,11 @@ export async function POST(request: Request) {
       personalAccessToken: parsed.data.personalAccessToken,
     });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Azure DevOps authentication failed." },
-      { status: 401 },
-    );
+    return routeErrorResponse(error, {
+      domain: "azure",
+      status: 401,
+      fallback: "Azure DevOps authentication failed.",
+    });
   }
 
   const userId = await provisionUserFromIdentity(identity);

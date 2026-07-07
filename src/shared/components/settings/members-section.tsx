@@ -46,6 +46,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { apiErrorMessage } from "@/shared/lib/api-error-message"
 import { SectionCard } from "./section-card"
 
 type Role = "owner" | "admin" | "member"
@@ -285,7 +286,7 @@ export function MembersSection() {
       }
       if (!response.ok) {
         const body = (await response.json().catch(() => ({}))) as { error?: string }
-        toast.error(body.error ?? "Could not load workspace members.")
+        toast.error(apiErrorMessage(body, "Could not load workspace members."))
         return
       }
       setAccessDenied(false)
@@ -342,7 +343,7 @@ export function MembersSection() {
       })
       const body = (await response.json().catch(() => ({}))) as { error?: string }
       if (!response.ok) {
-        toast.error(body.error ?? "Could not update role.")
+        toast.error(apiErrorMessage(body, "Could not update role."))
         return
       }
       toast.success(`Updated ${member.displayName ?? member.email ?? "member"} to ${ROLE_LABEL[role]}.`)
@@ -358,7 +359,7 @@ export function MembersSection() {
       const response = await fetch(`/api/workspace/members/${member.membershipId}`, { method: "DELETE" })
       const body = (await response.json().catch(() => ({}))) as { error?: string }
       if (!response.ok) {
-        toast.error(body.error ?? "Could not remove member.")
+        toast.error(apiErrorMessage(body, "Could not remove member."))
         return
       }
       toast.success(`Removed ${member.displayName ?? member.email ?? "member"} from the workspace.`)

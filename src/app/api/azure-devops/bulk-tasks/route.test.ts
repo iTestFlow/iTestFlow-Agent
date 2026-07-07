@@ -311,16 +311,16 @@ describe("POST /api/azure-devops/bulk-tasks", () => {
     expect(mocks.failWorkflowRun).not.toHaveBeenCalled();
   });
 
-  it("maps a service throw to a sanitized 503 and fails the analytics run with the raw message", async () => {
+  it("maps a service throw to a friendly 503 and fails the analytics run with the raw message", async () => {
     mocks.createBulkTasks.mockRejectedValue(new Error("Azure DevOps request failed with pat=abc123"));
 
     const response = await post(body());
 
     expect(response.status).toBe(503);
     // Credentials are redacted from the client-facing body.
-    expect(await response.json()).toEqual({
-      error: "Azure DevOps request failed with PAT: [redacted]",
-    });
+    const bodyJson = await response.json();
+    expect(bodyJson.error).toBe("Azure DevOps request failed with PAT: [redacted]");
+    expect(JSON.stringify(bodyJson)).not.toContain("abc123");
     expect(mocks.failWorkflowRun).toHaveBeenCalledWith({
       scope: trustedScope,
       runId: "run-1",

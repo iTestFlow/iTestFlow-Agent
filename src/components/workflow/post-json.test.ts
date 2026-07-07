@@ -46,7 +46,7 @@ describe("postJson", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).status).toBe(504);
     // Message stays the stable, user-facing sentence...
-    expect((error as ApiError).message).toContain("non-JSON response");
+    expect((error as ApiError).message).toBe("The server returned an unexpected response. Please try again.");
     // ...while technicalDetails carries the diagnostic that pinpoints the layer.
     const details = (error as ApiError).technicalDetails ?? "";
     expect(details).toContain("HTTP 504 Gateway Timeout");
@@ -66,7 +66,7 @@ describe("postJson", () => {
     const error = await postJson("/api/generate", {}).catch((caught) => caught);
 
     expect(error).toBeInstanceOf(ApiError);
-    expect((error as ApiError).message).toContain("invalid JSON response");
+    expect((error as ApiError).message).toBe("The server returned an unexpected response. Please try again.");
     expect((error as ApiError).technicalDetails).toContain("HTTP 200");
     expect((error as ApiError).technicalDetails).toContain("runtime error page");
   });

@@ -8,7 +8,6 @@ const mocks = vi.hoisted(() => ({
   startWorkflowRun: vi.fn(() => "run-1"),
   completeWorkflowRun: vi.fn(),
   failWorkflowRun: vi.fn(),
-  sanitizeAzureError: vi.fn((message: string) => `safe:${message}`),
 }));
 
 vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal) => {
@@ -30,10 +29,6 @@ vi.mock("@/modules/analytics/workflow-analytics.service", () => ({
   completeWorkflowRun: mocks.completeWorkflowRun,
   failWorkflowRun: mocks.failWorkflowRun,
 }));
-vi.mock("@/shared/lib/sanitize-azure-error", () => ({
-  sanitizeAzureError: mocks.sanitizeAzureError,
-}));
-
 import { SessionError } from "@/modules/auth/session.service";
 import { fakeAzureAdapter, jsonRequest, projectScope } from "@/test/factories";
 import { POST } from "./route";
@@ -132,17 +127,29 @@ describe("POST /api/test-suite-migration/execute", () => {
     expect(mocks.completeWorkflowRun).not.toHaveBeenCalled();
   });
 
-  it("sanitizes downstream errors and fails the established run", async () => {
+  it("normalizes downstream errors and fails the established run", async () => {
     mocks.executeSuiteMigration.mockRejectedValue(new Error("secret Azure failure"));
     const response = await POST(jsonRequest("/api/test-suite-migration/execute", body()));
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "safe:secret Azure failure" });
+    const responseBody = await response.json();
+    expect(responseBody.error).toBe("Suite migration failed.");
+    expect(responseBody.technicalDetails).toContain("secret Azure failure");
     expect(mocks.failWorkflowRun).toHaveBeenCalledWith({
       scope: trustedScope,
       runId: "run-1",
       error: "secret Azure failure",
     });
+  });
+
+  it("preserves actionable suite migration validation errors", async () => {
+    const message = "Target parent suite cannot be one of the selected source suites or their descendants.";
+    mocks.executeSuiteMigration.mockRejectedValue(new Error(message));
+
+    const response = await POST(jsonRequest("/api/test-suite-migration/execute", body()));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: message });
   });
 
   it("maps authentication failure without starting analytics", async () => {

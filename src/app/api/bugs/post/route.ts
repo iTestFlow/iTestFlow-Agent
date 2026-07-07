@@ -9,6 +9,7 @@ import {
   failWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -96,9 +97,6 @@ export async function POST(request: Request) {
         error: error instanceof Error ? error.message : "Azure DevOps bug creation failed.",
       });
     }
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Azure DevOps bug creation failed." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, { domain: "azure", status: 503, fallback: "Azure DevOps bug creation failed." });
   }
 }

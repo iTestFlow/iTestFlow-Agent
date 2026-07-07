@@ -39,6 +39,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { workflowLabels, workflowTypeValues, type WorkflowType } from "@/modules/analytics/analytics-config";
 import { AutoRefreshStatus } from "@/components/dashboard/auto-refresh-status";
 import { useActiveProject } from "@/shared/lib/use-active-project";
+import { apiErrorMessage, caughtErrorMessage } from "@/shared/lib/api-error-message";
 import { useDashboardRefresh } from "@/shared/lib/use-dashboard-refresh";
 import type {
   SystemDashboardAnalytics,
@@ -146,7 +147,7 @@ export function SystemDashboardsClient({ active }: { active: boolean }) {
           signal: controller.signal,
         });
         const json = await response.json();
-        if (!response.ok) throw new Error(json.error ?? "System dashboard refresh failed.");
+        if (!response.ok) throw new Error(apiErrorMessage(json, "System dashboard refresh failed."));
         setData(json as SystemDashboardAnalytics);
         setError(null);
         setRefreshFailed(false);
@@ -155,7 +156,7 @@ export function SystemDashboardsClient({ active }: { active: boolean }) {
         if (background) {
           setRefreshFailed(true);
         } else {
-          setError(fetchError instanceof Error ? fetchError.message : "System dashboard refresh failed.");
+          setError(caughtErrorMessage(fetchError, "System dashboard refresh failed."));
         }
       } finally {
         if (!controller.signal.aborted) {

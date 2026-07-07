@@ -3,6 +3,8 @@ import "server-only";
 import { z } from "zod";
 import type { LLMProviderName } from "./llm-types";
 import { normalizeProviderBaseUrl } from "./provider-base-url";
+import { AppError, AppErrorCode, isAppError } from "@/modules/shared/errors/app-error";
+import { friendlyErrorMessage } from "@/modules/shared/errors/error-response";
 
 const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
 
@@ -28,10 +30,17 @@ export async function listLLMModels(input: z.infer<typeof ListLLMModelsInputSche
       case "anthropic": return await listAnthropicModels(input);
     }
   } catch (error) {
-    if (error instanceof ModelCatalogError) throw error;
-    throw new ModelCatalogError(
-      `Could not connect to ${providerLabel(input.provider)} to load models. Check your network connection and provider base URL, then try again.`,
-    );
+    if (isAppError(error)) throw error;
+    const userMessage = friendlyErrorMessage(error, { domain: "llm", provider: input.provider });
+    throw new AppError({
+      code: AppErrorCode.Network,
+      message: userMessage,
+      userMessage,
+      technicalContext: {
+        provider: input.provider,
+        upstreamCause: error instanceof Error ? error.message : undefined,
+      },
+    });
   }
 }
 
@@ -112,64 +121,21 @@ function sortModelIds(a: string, b: string) {
   return a.localeCompare(b);
 }
 
-class ModelCatalogError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ModelCatalogError";
-  }
-}
-
 async function modelFetchError(provider: LLMProviderName, response: Response) {
   const body = await response.text().catch(() => "");
-  return new ModelCatalogError(friendlyModelFetchMessage(provider, response.status, body));
-}
-
-function friendlyModelFetchMessage(provider: LLMProviderName, status: number, body: string) {
-  const label = providerLabel(provider);
-  const text = body.toLowerCase();
-
-  if (status === 401 || isAuthenticationError(text)) {
-    return `${label} rejected the API key. Check that the key is correct and belongs to ${label}, then try again.`;
-  }
-
-  if (status === 403 || text.includes("permission") || text.includes("forbidden")) {
-    return `${label} rejected the request. Check that your API key has permission to list models for this provider.`;
-  }
-
-  if (status === 429 || text.includes("rate limit") || text.includes("quota") || text.includes("resource_exhausted")) {
-    return `${label} could not load models because the provider rate limit or quota was reached. Wait a moment, then try again.`;
-  }
-
-  if (status === 404) {
-    return `${label} could not find the model-list endpoint. Check the optional provider base URL and try again.`;
-  }
-
-  if (status >= 500 || text.includes("overloaded") || text.includes("unavailable")) {
-    return `${label} is temporarily unavailable while loading models. Try again in a moment.`;
-  }
-
-  return `${label} could not load models. Check the selected provider, API key, and optional base URL, then try again.`;
-}
-
-function isAuthenticationError(text: string) {
-  return (
-    text.includes("api key") ||
-    text.includes("x-api-key") ||
-    text.includes("invalid_api_key") ||
-    text.includes("authentication_error") ||
-    text.includes("unauthorized") ||
-    text.includes("unauthenticated") ||
-    text.includes("invalid_argument")
-  );
-}
-
-function providerLabel(provider: LLMProviderName) {
-  switch (provider) {
-    case "openai":
-      return "OpenAI";
-    case "gemini":
-      return "Gemini";
-    case "anthropic":
-      return "Anthropic";
-  }
+  const message = `${provider} model list request failed (${response.status}): ${body}`;
+  const userMessage = friendlyErrorMessage(new Error(message), {
+    domain: "llm",
+    provider,
+    status: response.status,
+  });
+  return new AppError({
+    code: AppErrorCode.ProviderUnavailable,
+    message: userMessage,
+    userMessage,
+    technicalContext: {
+      provider,
+      rawOutputExcerpt: body,
+    },
+  });
 }

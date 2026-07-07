@@ -6,6 +6,7 @@ import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { apiErrorMessage } from "@/shared/lib/api-error-message"
 import { OwnerOnlyNotice } from "./owner-only-notice"
 import { Field, SectionCard } from "./section-card"
 
@@ -63,7 +64,7 @@ export function KnowledgeContextSection() {
       })
       const data = (await response.json().catch(() => ({}))) as { error?: string }
       if (!response.ok) {
-        toast.error(data.error ?? "Could not save the retrieval settings.")
+        toast.error(apiErrorMessage(data, "Could not save the retrieval settings."))
         return
       }
       toast.success("Retrieval settings saved.")

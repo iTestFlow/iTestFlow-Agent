@@ -18,6 +18,7 @@ import {
   startWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -87,9 +88,6 @@ export async function POST(request: Request) {
     if (trustedScope && analyticsRunId) {
       failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Context chatbot failed." });
     }
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Context chatbot failed." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, { domain: "llm", status: 503, fallback: "Context chatbot failed." });
   }
 }

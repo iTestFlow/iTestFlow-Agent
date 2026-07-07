@@ -126,6 +126,8 @@ describe("POST /api/dashboard/system-analytics", () => {
     const response = await POST(analyticsRequest());
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "analytics store unavailable" });
+    const body = await response.json();
+    expect(body.error).toBe("The service is temporarily unavailable. Try again in a moment.");
+    expect(body.technicalDetails).toContain("analytics store unavailable");
   });
 });

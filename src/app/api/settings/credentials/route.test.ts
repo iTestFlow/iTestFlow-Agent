@@ -130,7 +130,9 @@ describe("PUT /api/settings/credentials", () => {
     const response = await PUT(jsonRequest("PUT", { azurePat: "bad-pat" }));
 
     expect(response.status).toBe(422);
-    expect((await response.json()).error).toContain("rejected the Personal Access Token");
+    const body = await response.json();
+    expect(body.error).toBe("Azure DevOps authentication failed. Check that your Personal Access Token is valid and has not expired, then try again.");
+    expect(body.technicalDetails).toContain("rejected the Personal Access Token");
     expect(getStoredUserIdentity).not.toHaveBeenCalled();
     expect(storeUserAzurePat).not.toHaveBeenCalled();
   });

@@ -49,7 +49,7 @@ async function readJsonResponse<T>(response: Response): Promise<T> {
       json && typeof json === "object" && !Array.isArray(json)
         ? (json as ApiErrorPayload)
         : {
-            error: "The server returned a non-JSON response. Check the server logs or runtime configuration.",
+            error: "The server returned an unexpected response. Please try again.",
             technicalDetails: nonJsonResponseDetails(response, text),
           };
     throw ApiError.fromResponse(payload, response.status);
@@ -63,13 +63,13 @@ function parseJsonResponse(text: string, response: Response) {
   } catch {
     const technicalDetails = nonJsonResponseDetails(response, text);
     if (response.ok) {
-      throw new ApiError("The server returned an invalid JSON response.", {
+      throw new ApiError("The server returned an unexpected response. Please try again.", {
         status: response.status,
         technicalDetails,
       });
     }
     return {
-      error: "The server returned a non-JSON response. Check the server logs or runtime configuration.",
+      error: "The server returned an unexpected response. Please try again.",
       technicalDetails,
     };
   }

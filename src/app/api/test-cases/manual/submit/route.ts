@@ -8,6 +8,7 @@ import { resolveProjectScope } from "@/modules/projects/workspace-projects.servi
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
 import { isAppError } from "@/modules/shared/errors/app-error";
 import { statusForManualValidationError, toErrorResponse } from "@/modules/shared/errors/error-response";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import {
   failWorkflowRun,
   startWorkflowRun,
@@ -86,9 +87,6 @@ export async function POST(request: Request) {
     if (isAppError(error)) {
       return NextResponse.json(toErrorResponse(error), { status: statusForManualValidationError(error) });
     }
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "External LLM test case validation failed." },
-      { status: 422 },
-    );
+    return routeErrorResponse(error, { domain: "llm", status: 422, fallback: "External LLM test case validation failed." });
   }
 }

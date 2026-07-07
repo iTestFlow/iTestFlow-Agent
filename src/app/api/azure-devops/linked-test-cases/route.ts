@@ -4,6 +4,7 @@ import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "
 import { fetchProjectScopedLinkedTestCases } from "@/modules/integrations/azure-devops/azure-devops-linked-test-cases.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -33,9 +34,6 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Linked test case fetch failed." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, { domain: "azure", status: 503, fallback: "Linked test case fetch failed." });
   }
 }

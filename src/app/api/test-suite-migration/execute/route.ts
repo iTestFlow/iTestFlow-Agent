@@ -3,13 +3,13 @@ import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { SuiteMigrationRequestSchema } from "@/modules/test-suite-migration/test-suite-migration.schema";
 import { executeSuiteMigration } from "@/modules/test-suite-migration/test-suite-migration.service";
-import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
 import {
   completeWorkflowRun,
   failWorkflowRun,
   startWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -56,9 +56,10 @@ export async function POST(request: Request) {
     if (trustedScope && analyticsRunId) {
       failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Suite migration failed." });
     }
-    return NextResponse.json(
-      { error: error instanceof Error ? sanitizeAzureError(error.message) : "Suite migration failed." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, {
+      domain: "azure",
+      fallback: "Suite migration failed.",
+      status: 503,
+    });
   }
 }

@@ -52,6 +52,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/shared/infrastructure/database/db.ts",
   "src/modules/shared/errors/app-error.ts",
   "src/modules/shared/errors/error-response.ts",
+  "src/modules/shared/errors/route-error-response.ts",
   "src/modules/test-case-design/test-design-options.ts",
   "src/modules/test-case-design/schemas/test-case.schema.ts",
   "src/modules/test-execution-effort/test-execution-effort.schema.ts",
@@ -88,6 +89,7 @@ export const GATED_INCLUDE: string[] = [
   "src/components/workflow/post-json.ts",
   "src/components/workflow/workflow-stepper.tsx",
   "src/shared/lib/active-project.ts",
+  "src/shared/lib/api-error-message.ts",
   "src/shared/lib/cron-schedule.ts",
   "src/shared/lib/edited-count.ts",
 ];

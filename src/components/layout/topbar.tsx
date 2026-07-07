@@ -39,6 +39,7 @@ import { HeaderProjectSelector } from "@/shared/components/live/project-status"
 import { cn } from "@/lib/utils"
 import { NavigationLink } from "@/components/navigation/navigation-link"
 import { isProvider, modelDisplayLabel, providerLabel, type Provider } from "@/components/layout/topbar-labels"
+import { apiErrorMessage, caughtErrorMessage } from "@/shared/lib/api-error-message"
 
 type AzureProfile = {
   displayName: string
@@ -117,12 +118,12 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
     try {
       const response = await fetch("/api/azure-devops/profile", { cache: "no-store" })
       const json = await response.json()
-      if (!response.ok) throw new Error(json.error ?? "Failed to fetch Azure DevOps profile.")
+      if (!response.ok) throw new Error(apiErrorMessage(json, "Failed to fetch Azure DevOps profile."))
       setProfile(json.user ?? null)
       setProfileError(null)
     } catch (error: unknown) {
       setProfile(null)
-      setProfileError(error instanceof Error ? error.message : "Azure DevOps user unavailable.")
+      setProfileError(caughtErrorMessage(error, "Azure DevOps user unavailable."))
     } finally {
       setProfileLoading(false)
     }
@@ -193,12 +194,12 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
       const response = await fetch("/api/auth/logout", { method: "POST", cache: "no-store" })
       if (!response.ok) {
         const data = (await response.json().catch(() => ({}))) as { error?: string }
-        throw new Error(data.error ?? "Could not log out.")
+        throw new Error(apiErrorMessage(data, "Could not log out."))
       }
       window.location.assign("/login")
     } catch (error) {
       setLoggingOut(false)
-      toast.error(error instanceof Error ? error.message : "Could not log out.")
+      toast.error(caughtErrorMessage(error, "Could not log out."))
     }
   }, [loggingOut])
 
@@ -231,7 +232,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
       })
       const data = (await response.json().catch(() => ({}))) as CredentialStatus & { error?: string }
       if (!response.ok) {
-        toast.error(data.error ?? "Could not replace your PAT.")
+        toast.error(apiErrorMessage(data, "Could not replace your PAT."))
         return
       }
 
@@ -724,7 +725,7 @@ function LlmModelChip({
       })
       const data = (await response.json().catch(() => ({}))) as { models?: ModelOption[]; error?: string }
       if (!response.ok) {
-        setError(data.error ?? "Could not fetch models.")
+        setError(apiErrorMessage(data, "Could not fetch models."))
         return
       }
       setModels(data.models ?? [])
@@ -748,7 +749,7 @@ function LlmModelChip({
       })
       const data = (await response.json().catch(() => ({}))) as { error?: string }
       if (!response.ok) {
-        toast.error(data.error ?? "Could not update the LLM model.")
+        toast.error(apiErrorMessage(data, "Could not update the LLM model."))
         return
       }
       toast.success(`LLM model switched to ${nextModel}.`)

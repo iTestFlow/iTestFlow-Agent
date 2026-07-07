@@ -6,6 +6,7 @@ import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { apiErrorMessage } from "@/shared/lib/api-error-message"
 import { Field, SecretField, SectionCard, StatusBadge, type StatusTone } from "./section-card"
 
 type CredentialSummary = {
@@ -71,7 +72,7 @@ export function ConnectionsSection() {
       })
       const data = (await response.json().catch(() => ({}))) as CredentialStatusResponse & { error?: string }
       if (!response.ok) {
-        toast.error(data.error ?? "Could not save your PAT.")
+        toast.error(apiErrorMessage(data, "Could not save your PAT."))
         return
       }
       toast.success("Azure DevOps PAT updated.")

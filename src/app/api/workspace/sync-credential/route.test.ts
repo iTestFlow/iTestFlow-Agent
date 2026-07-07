@@ -100,7 +100,9 @@ describe("POST /api/workspace/sync-credential", () => {
 
     const response = await POST(request({ personalAccessToken: "bad-pat" }));
     expect(response.status).toBe(422);
-    expect((await response.json()).error).toBe("Azure DevOps rejected the Personal Access Token.");
+    const body = await response.json();
+    expect(body.error).toBe("Azure DevOps authentication failed. Check that your Personal Access Token is valid and has not expired, then try again.");
+    expect(body.technicalDetails).toContain("Azure DevOps rejected the Personal Access Token.");
     expect(storeWorkspaceSyncPat).not.toHaveBeenCalled();
   });
 

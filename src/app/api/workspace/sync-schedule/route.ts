@@ -8,6 +8,7 @@ import {
   ScheduleError,
   upsertWorkspaceSyncSchedule,
 } from "@/modules/jobs/sync-schedule.service";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
 
 export const runtime = "nodejs";
@@ -68,7 +69,11 @@ export async function PUT(request: Request) {
     return NextResponse.json({ workspaceId: context.workspace.id, schedule });
   } catch (error) {
     if (error instanceof ScheduleError) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
+      return routeErrorResponse(error, {
+        domain: "settings",
+        fallback: error.message,
+        status: error.status,
+      });
     }
     throw error;
   }

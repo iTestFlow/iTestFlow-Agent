@@ -18,6 +18,7 @@ import { previewGeneratedProjectKnowledgeBase } from "@/modules/rag/project-know
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { isAppError } from "@/modules/shared/errors/app-error";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -76,9 +77,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: InvalidKnowledgeBaseOutputMessage }, { status: 422 });
     }
 
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Project knowledge preview failed." },
-      { status: 503 },
-    );
+    return routeErrorResponse(error, { domain: "llm", status: 503, fallback: "Project knowledge preview failed." });
   }
 }
