@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { azureDevOpsIntegrationError } from "@/modules/integrations/azure-devops/azure-devops-error";
 import { AppError, AppErrorCode } from "./app-error";
 import {
   statusForCode,
@@ -232,6 +233,26 @@ describe("toFriendlyErrorResponse", () => {
 
     expect(azure.body.code).toBeUndefined();
     expect(llm.body.code).toBe(AppErrorCode.ProviderUnavailable);
+  });
+
+  it.each([
+    [401, JSON.stringify({ message: "TF400813: not authorized" })],
+    [403, JSON.stringify({ message: "TF400409: You do not have licensing rights to access this feature: Web-based Test Execution" })],
+    [404, JSON.stringify({ message: "TF401232: Work item 123 does not exist, or you do not have permissions to read it." })],
+    [429, JSON.stringify({ message: "Rate limit reached" })],
+    [500, "plain text failure"],
+  ] as const)("treats Azure IntegrationError like a plain Error for response text (%s)", (status, body) => {
+    const integrationError = azureDevOpsIntegrationError(status, body, "_apis/testplan/plans?api-version=7.1");
+    const plainError = new Error(integrationError.message);
+    const options = {
+      domain: "azure" as const,
+      status: 503,
+      fallback: "Azure DevOps project fetch failed.",
+    };
+
+    expect(toFriendlyErrorResponse(integrationError, options)).toEqual(
+      toFriendlyErrorResponse(plainError, options),
+    );
   });
 });
 

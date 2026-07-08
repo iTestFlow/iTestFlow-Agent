@@ -17,6 +17,7 @@ const ctxA: WorkflowContext = {
     name: "Project Anchor A",
     azureOrgName: "project-anchor-a",
     azureOrgUrl: ORG_A_URL,
+    providerId: "azure-devops",
   },
 };
 
@@ -27,6 +28,7 @@ const ctxB: WorkflowContext = {
     name: "Project Anchor B",
     azureOrgName: "project-anchor-b",
     azureOrgUrl: ORG_B_URL,
+    providerId: "azure-devops",
   },
 };
 

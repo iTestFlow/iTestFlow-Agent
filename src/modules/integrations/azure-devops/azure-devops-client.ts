@@ -1,9 +1,9 @@
 import "server-only";
 
 import { ProjectIsolationError, workItemNotInProjectMessage } from "@/modules/projects/project-isolation.guard";
-import { formatAzureDevOpsError } from "@/shared/lib/sanitize-azure-error";
 import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
 import { mapAzureTestCase, mapAzureWorkItem } from "./azure-devops-mapper";
+import { azureDevOpsIntegrationError, azureDevOpsInvalidResponseError } from "./azure-devops-error";
 import { buildAzureTestCasePatch } from "./azure-devops-test-case-payload";
 import type {
   AddSuiteTestCaseInput,
@@ -1062,18 +1062,20 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     const body = await response.text();
     if (!response.ok) {
       if (response.status === 401) this.onUnauthorized?.();
-      throw new Error(formatAzureDevOpsError(response.status, body, path));
+      throw azureDevOpsIntegrationError(response.status, body, path);
     }
     if (!isJsonResponse(response)) {
-      throw new Error(
+      throw azureDevOpsInvalidResponseError(
         `Azure DevOps returned a non-JSON response (${response.status}). Check that the organization URL and Personal Access Token are valid.`,
+        response.status,
       );
     }
     try {
       return { json: JSON.parse(body) as T, headers: response.headers };
     } catch {
-      throw new Error(
+      throw azureDevOpsInvalidResponseError(
         `Azure DevOps returned malformed JSON (${response.status}). Check that the organization URL and Personal Access Token are valid.`,
+        response.status,
       );
     }
   }
@@ -1083,7 +1085,7 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     if (!response.ok) {
       const body = await response.text();
       if (response.status === 401) this.onUnauthorized?.();
-      throw new Error(formatAzureDevOpsError(response.status, body, path));
+      throw azureDevOpsIntegrationError(response.status, body, path);
     }
   }
 

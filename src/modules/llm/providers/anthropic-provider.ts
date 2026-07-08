@@ -82,14 +82,43 @@ export class AnthropicProvider extends BaseJsonProvider {
           },
         }
       : undefined;
-    const requestBody = {
+    const requestBody = this.structuredRequestBody(input, outputConfig);
+    const response = await this.postMessages(requestBody);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      if (outputConfig && isAnthropicGrammarTooLargeError(errorText)) {
+        const fallbackRequestBody = this.structuredRequestBody(input);
+        const fallbackResponse = await this.postMessages(fallbackRequestBody);
+        return anthropicStructuredCallResult(fallbackResponse, fallbackRequestBody);
+      }
+      return {
+        rawOutput: "{}",
+        requestBody,
+        responseBody: errorText,
+        errorMessage: `Anthropic request failed: ${errorText}`,
+      };
+    }
+
+    return anthropicStructuredCallResult(response, requestBody);
+  }
+
+  private structuredRequestBody<TSchema extends z.ZodTypeAny>(
+    input: GenerateStructuredOutputInput<TSchema>,
+    outputConfig?: Record<string, unknown>,
+  ) {
+    return {
       model: this.model,
       max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
       system: withStructuredOutputInstruction(input.system, input.schemaName),
       messages: [{ role: "user", content: input.user }],
       ...(outputConfig ? { output_config: outputConfig } : {}),
     };
-    const response = await fetchWithTransientRetry(`${this.baseUrl()}/messages`, {
+  }
+
+  private postMessages(requestBody: Record<string, unknown>) {
+    if (!this.config.apiKey) throw new Error("Anthropic API key is not configured.");
+    return fetchWithTransientRetry(`${this.baseUrl()}/messages`, {
       method: "POST",
       headers: {
         ...this.headers(),
@@ -98,29 +127,6 @@ export class AnthropicProvider extends BaseJsonProvider {
       },
       body: JSON.stringify(requestBody),
     }, this.config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      return {
-        rawOutput: "{}",
-        requestBody,
-        responseBody: errorText,
-        errorMessage: `Anthropic request failed: ${errorText}`,
-      };
-    }
-    const json = await response.json();
-    const rawOutput = anthropicTextContent(json.content);
-    return {
-      rawOutput,
-      requestBody,
-      responseBody: json,
-      errorMessage: rawOutput.trim() ? undefined : noTextContentError(json.content),
-      userMessage: rawOutput.trim()
-        ? undefined
-        : "Claude completed the request without a final JSON response. Please retry; if this repeats, choose another model.",
-      finishReason: json.stop_reason,
-      tokenUsage: anthropicTokenUsage(json.usage),
-    };
   }
 
   private baseUrl() {
@@ -154,6 +160,38 @@ function anthropicJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
     target: "jsonSchema7",
   });
   return sanitizeAnthropicJsonSchema(jsonSchema) as Record<string, unknown>;
+}
+
+async function anthropicStructuredCallResult(
+  response: Response,
+  requestBody: Record<string, unknown>,
+): Promise<LLMProviderCallResult> {
+  if (!response.ok) {
+    const errorText = await response.text();
+    return {
+      rawOutput: "{}",
+      requestBody,
+      responseBody: errorText,
+      errorMessage: `Anthropic request failed: ${errorText}`,
+    };
+  }
+  const json = await response.json();
+  const rawOutput = anthropicTextContent(json.content);
+  return {
+    rawOutput,
+    requestBody,
+    responseBody: json,
+    errorMessage: rawOutput.trim() ? undefined : noTextContentError(json.content),
+    userMessage: rawOutput.trim()
+      ? undefined
+      : "Claude completed the request without a final JSON response. Please retry; if this repeats, choose another model.",
+    finishReason: json.stop_reason,
+    tokenUsage: anthropicTokenUsage(json.usage),
+  };
+}
+
+function isAnthropicGrammarTooLargeError(errorText: string) {
+  return /compiled grammar is too large/i.test(errorText);
 }
 
 function sanitizeAnthropicJsonSchema(value: unknown, propertyMap = false): unknown {

@@ -109,7 +109,9 @@ describeDb("auth & workspace foundation (DB-backed)", () => {
     const bootstrap = await ensureBootstrapOwner();
     const { userId, workspaceId } = bootstrap!;
 
-    expect((await getWorkspaceById(workspaceId))?.id).toBe(workspaceId);
+    const workspace = await getWorkspaceById(workspaceId);
+    expect(workspace?.id).toBe(workspaceId);
+    expect(workspace?.providerId).toBe("azure-devops");
     expect(await getWorkspaceById("ws_does_not_exist")).toBeNull();
 
     const list = await getWorkspacesForUser(userId);
