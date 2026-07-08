@@ -156,6 +156,44 @@ describe("provider HTTP adapters", () => {
     },
   );
 
+  it("falls back to prompt-only JSON when Anthropic native schema grammar is too large", async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: {
+          type: "invalid_request_error",
+          message: "The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools.",
+        },
+        type: "error",
+      }), { status: 400 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        content: [{ type: "text", text: "{\"value\":1}" }],
+        stop_reason: "end_turn",
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new AnthropicProvider({
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      apiKey: "key",
+      retryAttempts: 0,
+    });
+
+    await expect(provider.generateStructuredOutput({
+      schemaName: "ExampleOutput",
+      schema: z.object({ value: z.number() }),
+      system: "Return structured data.",
+      user: "Create the object.",
+    })).resolves.toMatchObject({
+      rawOutput: "{\"value\":1}",
+      validatedOutput: { value: 1 },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const nativeBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const fallbackBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(nativeBody.output_config).toBeDefined();
+    expect(fallbackBody).not.toHaveProperty("output_config");
+  });
+
   it("reports a friendly Anthropic error when no final text block is returned", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       content: [
