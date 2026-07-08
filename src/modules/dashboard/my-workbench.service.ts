@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { AzureDevOpsRestAdapter } from "@/modules/integrations/azure-devops/azure-devops-client";
+import type { WorkManagementProvider } from "@/modules/integrations/core/work-management-provider";
 import type { AzureArea, AzureIteration, Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import type { MyWorkbenchAnalytics, WorkbenchFilters } from "@/types/my-workbench-dashboard";
@@ -30,7 +30,7 @@ const METADATA_CACHE_TTL_MS = 300_000;
 const METADATA_CACHE_MAX_ENTRIES = 100;
 const metadataCache = new Map<string, { expiresAt: number; value: MetadataCacheValue }>();
 
-export async function getMyWorkbenchAnalytics(input: MyWorkbenchAnalyticsInput, adapter: AzureDevOpsRestAdapter): Promise<MyWorkbenchAnalytics> {
+export async function getMyWorkbenchAnalytics(input: MyWorkbenchAnalyticsInput, adapter: WorkManagementProvider): Promise<MyWorkbenchAnalytics> {
   const scope = assertProjectScope(input.scope);
   const filters = normalizeWorkbenchFilters(input.filters);
   const [user, metadata] = await Promise.all([
@@ -115,7 +115,7 @@ async function getCachedWorkbenchMetadata(scope: ProjectScope, loader: () => Pro
 }
 
 async function loadWorkbenchMetadata(
-  adapter: AzureDevOpsRestAdapter,
+  adapter: WorkManagementProvider,
   scope: ProjectScope,
 ): Promise<MetadataCacheValue> {
   const [iterations, areas, workItemMetadata] = await Promise.all([
@@ -133,7 +133,7 @@ async function loadWorkbenchMetadata(
 
 async function loadParentSummaries(input: {
   items: Requirement[];
-  adapter: AzureDevOpsRestAdapter;
+  adapter: WorkManagementProvider;
   scope: ProjectScope;
 }) {
   const parentIds = unique(input.items.flatMap((item) => item.parentLinks ?? []));
@@ -150,7 +150,7 @@ async function loadParentSummaries(input: {
 }
 
 function buildWorkItemUrl(
-  adapter: AzureDevOpsRestAdapter,
+  adapter: WorkManagementProvider,
   scope: ProjectScope,
   id: string,
 ) {

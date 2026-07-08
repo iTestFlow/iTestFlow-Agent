@@ -276,6 +276,7 @@ Docker is required only if you use the provided local PostgreSQL service.
 ## Project Documentation
 
 - [Project Architecture](PROJECT_ARCHITECTURE.md) - routes, modules, integrations, storage, and architecture decisions
+- [Integration Providers](docs/integration-providers.md) - work/test management contracts, Azure DevOps provider boundary, capabilities, and extension rules
 - [Deployment Guide](docs/deployment.md) - private hosted runtime, environment, workers, backups, and migrations
 - [Knowledge Wiki and RAG Enhancement](docs/knowledge-wiki-rag-enhancement.md) - compiled knowledge and wiki design
 - [Environment Variable Template](.env.example) - supported bootstrap configuration

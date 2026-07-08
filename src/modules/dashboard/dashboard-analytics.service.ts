@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { AzureDevOpsRestAdapter } from "@/modules/integrations/azure-devops/azure-devops-client";
+import type { IntegrationProvider } from "@/modules/integrations/provider-registry";
 import type {
   AzureIteration,
   AzureTestPoint,
@@ -71,7 +71,7 @@ const DEFAULT_REQUIREMENT_TYPES = ["User Story", "Product Backlog Item", "Requir
 const analyticsCache = new Map<string, { expiresAt: number; value: DashboardAnalytics }>();
 const metadataCache = new Map<string, { expiresAt: number; value: Awaited<ReturnType<typeof loadBaseMetadata>> }>();
 
-export async function getDashboardAnalytics(input: DashboardAnalyticsInput, adapter: AzureDevOpsRestAdapter): Promise<DashboardAnalytics> {
+export async function getDashboardAnalytics(input: DashboardAnalyticsInput, adapter: IntegrationProvider): Promise<DashboardAnalytics> {
   const scope = assertProjectScope(input.scope);
   const cacheKey = buildCacheKey(scope, input.filters);
   const cached = analyticsCache.get(cacheKey);
@@ -310,7 +310,7 @@ async function getCachedMetadata(
 }
 
 async function loadBaseMetadata(
-  adapter: AzureDevOpsRestAdapter,
+  adapter: IntegrationProvider,
   scope: ProjectScope,
 ) {
   const [plans, areas, iterations, users, workItemMetadata] = await Promise.all([
@@ -332,7 +332,7 @@ async function loadBaseMetadata(
 }
 
 async function loadTestPoints(
-  adapter: AzureDevOpsRestAdapter,
+  adapter: IntegrationProvider,
   projectId: string,
   testPlanId: string,
   suites: SuiteWithPath[],
@@ -353,7 +353,7 @@ async function loadTestPoints(
 }
 
 async function loadTestResults(
-  adapter: AzureDevOpsRestAdapter,
+  adapter: IntegrationProvider,
   projectId: string,
   runs: AzureTestRun[],
 ): Promise<SourceResult<AzureTestResult[]>> {
@@ -369,7 +369,7 @@ async function loadTestResults(
 
 function toExecutionItem(
   point: PointWithSuite,
-  adapter: AzureDevOpsRestAdapter,
+  adapter: IntegrationProvider,
   scope: ProjectScope,
 ): DashboardExecutionItem {
   return {
@@ -387,7 +387,7 @@ function toExecutionItem(
 function buildBugRows(
   bugs: Requirement[],
   requirements: Requirement[],
-  adapter: AzureDevOpsRestAdapter,
+  adapter: IntegrationProvider,
   scope: ProjectScope,
 ): DashboardBugRow[] {
   const requirementsById = new Map(requirements.map((requirement) => [requirement.id, requirement]));
@@ -626,7 +626,7 @@ function outcomeDistribution(counts: ReturnType<typeof countOutcomes>): Dashboar
 }
 
 function buildWorkItemUrl(
-  adapter: AzureDevOpsRestAdapter,
+  adapter: IntegrationProvider,
   scope: ProjectScope,
   id: string,
 ) {

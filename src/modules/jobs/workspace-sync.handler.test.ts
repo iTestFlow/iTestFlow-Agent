@@ -5,13 +5,13 @@ const database = vi.hoisted(() => ({
   sqlAll: vi.fn(),
 }));
 const credentials = vi.hoisted(() => ({ resolveWorkspaceSyncPat: vi.fn() }));
-const azure = vi.hoisted(() => ({ AzureDevOpsRestAdapter: vi.fn() }));
+const registry = vi.hoisted(() => ({ createIntegrationProvider: vi.fn() }));
 const contextStore = vi.hoisted(() => ({ indexAzureWorkItemsAsProjectContext: vi.fn() }));
 const jobQueue = vi.hoisted(() => ({ enqueueJob: vi.fn() }));
 
 vi.mock("@/modules/shared/infrastructure/database/db", () => database);
 vi.mock("@/modules/credentials/credential.service", () => credentials);
-vi.mock("@/modules/integrations/azure-devops/azure-devops-client", () => azure);
+vi.mock("@/modules/integrations/provider-registry", () => registry);
 vi.mock("@/modules/rag/project-context-store.service", () => contextStore);
 vi.mock("./job-queue.service", () => jobQueue);
 
@@ -27,6 +27,7 @@ const projectRow = {
   azure_project_id: "azp-1",
   azure_project_name: "Contoso",
   azure_organization_url: "https://dev.azure.com/contoso",
+  provider_id: "azure-devops",
 };
 
 function makeJob(overrides: Partial<Job> = {}): Job {
@@ -56,6 +57,7 @@ describe("runWorkspaceContextSync", () => {
     vi.clearAllMocks();
     database.sqlGet.mockResolvedValue(projectRow);
     credentials.resolveWorkspaceSyncPat.mockResolvedValue("sync-pat");
+    registry.createIntegrationProvider.mockReturnValue({ adapter: "registry-built" });
     contextStore.indexAzureWorkItemsAsProjectContext.mockResolvedValue(undefined);
   });
 
@@ -96,7 +98,7 @@ describe("runWorkspaceContextSync", () => {
       "No workspace sync credential configured. Set one in Workspace settings.",
     );
     expect(credentials.resolveWorkspaceSyncPat).toHaveBeenCalledWith("ws-1");
-    expect(azure.AzureDevOpsRestAdapter).not.toHaveBeenCalled();
+    expect(registry.createIntegrationProvider).not.toHaveBeenCalled();
     expect(contextStore.indexAzureWorkItemsAsProjectContext).not.toHaveBeenCalled();
   });
 
@@ -105,10 +107,11 @@ describe("runWorkspaceContextSync", () => {
       makeJob({ payload: { projectId: "proj-1", workItemTypes: ["Bug"], states: ["Active"] } }),
     );
     // The adapter is built from the workspace sync PAT, never a user credential.
-    expect(azure.AzureDevOpsRestAdapter).toHaveBeenCalledWith(
-      { organizationUrl: "https://dev.azure.com/contoso", personalAccessToken: "sync-pat" },
-      { azureProjectId: "azp-1", azureProjectName: "Contoso" },
-    );
+    expect(registry.createIntegrationProvider).toHaveBeenCalledWith({
+      providerId: "azure-devops",
+      settings: { organizationUrl: "https://dev.azure.com/contoso", personalAccessToken: "sync-pat" },
+      projectScope: { azureProjectId: "azp-1", azureProjectName: "Contoso" },
+    });
     expect(contextStore.indexAzureWorkItemsAsProjectContext).toHaveBeenCalledTimes(1);
     // Scope comes from the projects row, not the job payload.
     expect(contextStore.indexAzureWorkItemsAsProjectContext).toHaveBeenCalledWith({
@@ -119,7 +122,7 @@ describe("runWorkspaceContextSync", () => {
         azureOrganizationUrl: "https://dev.azure.com/contoso",
       },
       actor: "system:worker",
-      adapter: azure.AzureDevOpsRestAdapter.mock.instances[0],
+      adapter: registry.createIntegrationProvider.mock.results[0].value,
       workItemTypes: ["Bug"],
       states: ["Active"],
       mode: "incremental",

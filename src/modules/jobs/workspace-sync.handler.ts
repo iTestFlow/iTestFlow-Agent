@@ -2,7 +2,7 @@ import "server-only";
 
 import { sqlAll, sqlGet } from "@/modules/shared/infrastructure/database/db";
 import { resolveWorkspaceSyncPat } from "@/modules/credentials/credential.service";
-import { AzureDevOpsRestAdapter } from "@/modules/integrations/azure-devops/azure-devops-client";
+import { createIntegrationProvider } from "@/modules/integrations/provider-registry";
 import { indexAzureWorkItemsAsProjectContext } from "@/modules/rag/project-context-store.service";
 import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
 import { enqueueJob, type Job } from "./job-queue.service";
@@ -24,8 +24,9 @@ export async function runWorkspaceContextSync(job: Job): Promise<void> {
     azure_project_id: string;
     azure_project_name: string;
     azure_organization_url: string;
+    provider_id: string;
   }>(
-    `SELECT azure_project_id, azure_project_name, azure_organization_url
+    `SELECT azure_project_id, azure_project_name, azure_organization_url, provider_id
      FROM projects WHERE id = @projectId AND workspace_id = @workspaceId LIMIT 1`,
     { projectId, workspaceId: job.workspaceId },
   );
@@ -40,10 +41,11 @@ export async function runWorkspaceContextSync(job: Job): Promise<void> {
     azureProjectName: project.azure_project_name,
     azureOrganizationUrl: project.azure_organization_url,
   };
-  const adapter = new AzureDevOpsRestAdapter(
-    { organizationUrl: scope.azureOrganizationUrl, personalAccessToken: pat },
-    { azureProjectId: scope.azureProjectId, azureProjectName: scope.azureProjectName },
-  );
+  const adapter = createIntegrationProvider({
+    providerId: project.provider_id,
+    settings: { organizationUrl: scope.azureOrganizationUrl, personalAccessToken: pat },
+    projectScope: { azureProjectId: scope.azureProjectId, azureProjectName: scope.azureProjectName },
+  });
 
   const workItemTypes =
     Array.isArray(job.payload.workItemTypes) && job.payload.workItemTypes.length

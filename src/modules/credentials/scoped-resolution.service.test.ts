@@ -10,7 +10,8 @@ const mocks = vi.hoisted(() => ({
   resolveUserLlmConfig: vi.fn(),
   markUserAzurePatExpired: vi.fn(),
   createLLMProvider: vi.fn(),
-  adapterConstructor: vi.fn(),
+  createIntegrationProvider: vi.fn(),
+  resolveWorkspaceProviderId: vi.fn(),
 }));
 
 // Keep the real SessionError class so authErrorResponse's `instanceof
@@ -40,14 +41,9 @@ vi.mock("@/modules/credentials/credential.service", () => ({
 vi.mock("@/modules/llm/llm-provider.factory", () => ({
   createLLMProvider: mocks.createLLMProvider,
 }));
-// Capturing stand-in: the real adapter's constructor args are private, and the
-// tests must observe the settings/scope/hooks wiring without any network.
-vi.mock("@/modules/integrations/azure-devops/azure-devops-client", () => ({
-  AzureDevOpsRestAdapter: class {
-    constructor(...args: unknown[]) {
-      mocks.adapterConstructor(...args);
-    }
-  },
+vi.mock("@/modules/integrations/provider-registry", () => ({
+  createIntegrationProvider: mocks.createIntegrationProvider,
+  resolveWorkspaceProviderId: mocks.resolveWorkspaceProviderId,
 }));
 
 import { SessionError } from "@/modules/auth/session.service";
@@ -69,6 +65,7 @@ const workspace = {
   name: "Acme",
   azureOrgName: "acme",
   azureOrgUrl: "https://dev.azure.com/acme",
+  providerId: "azure-devops",
 };
 const ctx: WorkflowContext = { userId: "user-1", workspace };
 
@@ -108,6 +105,8 @@ beforeEach(() => {
   });
   mocks.markUserAzurePatExpired.mockResolvedValue(undefined);
   mocks.createLLMProvider.mockReturnValue(fakeLlmProvider());
+  mocks.createIntegrationProvider.mockReturnValue({ __provider: "azure" });
+  mocks.resolveWorkspaceProviderId.mockImplementation((workspaceArg) => workspaceArg.providerId);
 });
 
 describe("requireWorkflowContext", () => {
@@ -179,7 +178,7 @@ describe("Azure adapter resolution", () => {
     expect(error.status).toBe(400);
     expect(error.message).toBe(patMessage);
     expect(mocks.resolveUserAzurePat).toHaveBeenCalledWith("ws-1", "user-1");
-    expect(mocks.adapterConstructor).not.toHaveBeenCalled();
+    expect(mocks.createIntegrationProvider).not.toHaveBeenCalled();
   });
 
   it("rejects the org-level adapter with the same 400 when the PAT is missing", async () => {
@@ -191,29 +190,30 @@ describe("Azure adapter resolution", () => {
 
   it("builds the adapter from the workspace org URL and the server-resolved project scope", async () => {
     await getUserAzureAdapter(ctx, projectScope());
-    expect(mocks.adapterConstructor).toHaveBeenCalledWith(
-      { organizationUrl: "https://dev.azure.com/acme", personalAccessToken: "pat-secret" },
-      { azureProjectId: "azure-project-1", azureProjectName: "Demo Project" },
-      { onUnauthorized: expect.any(Function) },
-    );
+    expect(mocks.resolveWorkspaceProviderId).toHaveBeenCalledWith(workspace);
+    expect(mocks.createIntegrationProvider).toHaveBeenCalledWith({
+      providerId: "azure-devops",
+      settings: { organizationUrl: "https://dev.azure.com/acme", personalAccessToken: "pat-secret" },
+      projectScope: { azureProjectId: "azure-project-1", azureProjectName: "Demo Project" },
+      hooks: { onUnauthorized: expect.any(Function) },
+    });
   });
 
   it("builds the org-level adapter without a project binding", async () => {
     await getUserAzureAdapterOrgLevel(ctx);
-    expect(mocks.adapterConstructor).toHaveBeenCalledWith(
-      { organizationUrl: "https://dev.azure.com/acme", personalAccessToken: "pat-secret" },
-      undefined,
-      { onUnauthorized: expect.any(Function) },
-    );
+    expect(mocks.createIntegrationProvider).toHaveBeenCalledWith({
+      providerId: "azure-devops",
+      settings: { organizationUrl: "https://dev.azure.com/acme", personalAccessToken: "pat-secret" },
+      projectScope: undefined,
+      hooks: { onUnauthorized: expect.any(Function) },
+    });
   });
 
   it("expires the PAT on the unauthorized hook without failing the in-flight request", async () => {
     mocks.markUserAzurePatExpired.mockRejectedValue(new Error("db down"));
     await getUserAzureAdapterOrgLevel(ctx);
-    const [, , hooks] = mocks.adapterConstructor.mock.calls[0] as [
-      unknown,
-      unknown,
-      { onUnauthorized: () => void },
+    const [{ hooks }] = mocks.createIntegrationProvider.mock.calls[0] as [
+      { hooks: { onUnauthorized: () => void } },
     ];
     // Fire-and-forget: the hook returns synchronously and swallows the failure.
     expect(() => hooks.onUnauthorized()).not.toThrow();

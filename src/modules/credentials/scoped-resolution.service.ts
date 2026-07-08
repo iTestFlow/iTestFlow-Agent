@@ -1,7 +1,10 @@
 import "server-only";
 
 import type { NextResponse } from "next/server";
-import { AzureDevOpsRestAdapter } from "@/modules/integrations/azure-devops/azure-devops-client";
+import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
+import type { TestManagementProvider } from "@/modules/integrations/core/test-management-provider";
+import type { WorkManagementProvider } from "@/modules/integrations/core/work-management-provider";
+import { createIntegrationProvider, resolveWorkspaceProviderId } from "@/modules/integrations/provider-registry";
 import { createLLMProvider } from "@/modules/llm/llm-provider.factory";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { DEFAULT_RETRY_ATTEMPTS, getMaxOutputTokenCapDefaultFromEnv } from "@/modules/llm/llm-defaults";
@@ -75,7 +78,7 @@ export async function requireWorkflowRole(
 export async function getUserAzureAdapter(
   ctx: WorkflowContext,
   project: ProjectScope,
-): Promise<AzureDevOpsRestAdapter> {
+): Promise<AzureDevOpsAdapter> {
   const pat = await resolveUserAzurePat(ctx.workspace.id, ctx.userId);
   if (!pat) {
     throw new WorkflowAuthError(
@@ -83,15 +86,16 @@ export async function getUserAzureAdapter(
       400,
     );
   }
-  return new AzureDevOpsRestAdapter(
-    { organizationUrl: ctx.workspace.azureOrgUrl, personalAccessToken: pat },
-    { azureProjectId: project.azureProjectId, azureProjectName: project.azureProjectName },
-    expirePatOnUnauthorized(ctx),
-  );
+  return createIntegrationProvider({
+    providerId: resolveWorkspaceProviderId(ctx.workspace),
+    settings: { organizationUrl: ctx.workspace.azureOrgUrl, personalAccessToken: pat },
+    projectScope: { azureProjectId: project.azureProjectId, azureProjectName: project.azureProjectName },
+    hooks: expirePatOnUnauthorized(ctx),
+  });
 }
 
 /** Org-level adapter (no project binding) for org-wide reads: list projects, profile. */
-export async function getUserAzureAdapterOrgLevel(ctx: WorkflowContext): Promise<AzureDevOpsRestAdapter> {
+export async function getUserAzureAdapterOrgLevel(ctx: WorkflowContext): Promise<AzureDevOpsAdapter> {
   const pat = await resolveUserAzurePat(ctx.workspace.id, ctx.userId);
   if (!pat) {
     throw new WorkflowAuthError(
@@ -99,11 +103,26 @@ export async function getUserAzureAdapterOrgLevel(ctx: WorkflowContext): Promise
       400,
     );
   }
-  return new AzureDevOpsRestAdapter(
-    { organizationUrl: ctx.workspace.azureOrgUrl, personalAccessToken: pat },
-    undefined,
-    expirePatOnUnauthorized(ctx),
-  );
+  return createIntegrationProvider({
+    providerId: resolveWorkspaceProviderId(ctx.workspace),
+    settings: { organizationUrl: ctx.workspace.azureOrgUrl, personalAccessToken: pat },
+    projectScope: undefined,
+    hooks: expirePatOnUnauthorized(ctx),
+  });
+}
+
+export async function getUserWorkManagementProvider(
+  ctx: WorkflowContext,
+  project: ProjectScope,
+): Promise<WorkManagementProvider> {
+  return getUserAzureAdapter(ctx, project);
+}
+
+export async function getUserTestManagementProvider(
+  ctx: WorkflowContext,
+  project: ProjectScope,
+): Promise<TestManagementProvider> {
+  return getUserAzureAdapter(ctx, project);
 }
 
 /**

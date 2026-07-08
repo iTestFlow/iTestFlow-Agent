@@ -4,7 +4,7 @@ This document is the living architecture map for iTestFlow. Update it whenever a
 
 ## Architecture Overview
 
-iTestFlow is a privately hosted, workspace-scoped Next.js application for Azure DevOps testing workflows. The browser talks only to Next.js pages and API routes. Server-side modules own authentication, workspace authorization, project isolation, PostgreSQL access, Azure DevOps integration, LLM provider calls, RAG/knowledge workflows, audit logging, and background jobs.
+iTestFlow is a privately hosted, workspace-scoped Next.js application for Azure DevOps testing workflows. The browser talks only to Next.js pages and API routes. Server-side modules own authentication, workspace authorization, project isolation, PostgreSQL access, integration-provider access, LLM provider calls, RAG/knowledge workflows, audit logging, and background jobs.
 
 ```mermaid
 flowchart LR
@@ -37,7 +37,7 @@ Primary dependency direction:
 
 - UI routes and components call local API routes.
 - API routes validate input, resolve authenticated workspace/project context, and delegate to modules.
-- Domain modules own workflow logic, SQL access, Azure DevOps adapter calls, LLM calls, and audit/activity records.
+- Domain modules own workflow logic, SQL access, integration-provider calls, LLM calls, and audit/activity records.
 - Integration adapters isolate external API details from workflow services.
 - PostgreSQL stores all durable application data, including users, sessions, workspaces, credentials metadata, encrypted secrets, project anchors, indexed context, compiled knowledge, jobs, audit logs, and workflow analytics.
 - The worker process claims jobs from PostgreSQL and performs scheduled/on-demand workspace sync outside the web request path.
@@ -241,14 +241,21 @@ Activity and audit:
 
 ## Integration Boundaries
 
-Azure DevOps:
+Work and test management providers:
 
-- Adapter interface: `src/modules/integrations/azure-devops/azure-devops-adapter.ts`.
-- REST implementation: `src/modules/integrations/azure-devops/azure-devops-client.ts`.
-- Mapping: `src/modules/integrations/azure-devops/azure-devops-mapper.ts`.
+- Core contracts: `src/modules/integrations/core`.
+- Provider registry: `src/modules/integrations/provider-registry.ts`.
+- Azure DevOps compatibility interface: `src/modules/integrations/azure-devops/azure-devops-adapter.ts`.
+- Azure DevOps REST implementation: `src/modules/integrations/azure-devops/azure-devops-client.ts`.
+- Azure DevOps mapping: `src/modules/integrations/azure-devops/azure-devops-mapper.ts`.
 - Workflow-specific services handle comments, linked test cases, test plan publishing, suite migration, bulk task creation, metadata, and user/project reads.
+- Azure DevOps is the only registered provider today. `workspaces.provider_id` and `projects.provider_id` default to `azure-devops` so provider resolution is explicit without changing current behavior.
+- `src/modules/integrations/core` must not import provider-specific packages. Provider packages may import core contracts; `provider-registry.ts` is the composition point for workflow and worker provider construction.
+- Login PAT validation remains a documented exception: `pat-auth-provider.ts` is already behind the `AuthProvider` port and constructs the Azure DevOps client directly until non-Azure auth is introduced.
+- Azure-branded routes, result fields, and accessor names remain compatibility contracts until a separate migration is planned.
 - Use org-level adapters only for org-wide reads such as profile, project list, and connection validation.
 - Use project-scoped adapters for project data and writes.
+- Provider architecture details are documented in `docs/integration-providers.md`.
 
 LLM providers:
 
@@ -286,7 +293,8 @@ Multiple worker processes may run against the same database. A job should be wri
 - All browser-to-provider access flows through server-side API routes.
 - User Azure DevOps and LLM credentials are private per user/workspace and encrypted before persistence.
 - Shared project context, compiled knowledge, dashboards, jobs, audit logs, and workflow history are workspace scoped.
-- Azure DevOps is an integration, not a standalone bulk work-item browser.
+- Azure DevOps is the first implementation behind generic work-management and test-management provider contracts, not a standalone bulk work-item browser.
+- Provider identity is persisted per workspace and project, but no provider selection UI exists yet.
 - Project Context/Knowledge Hub is the only place that intentionally fetches many work items, and it does so with filters.
 - Workflows usually operate on one selected project and one target work item ID.
 - All project-scoped Azure DevOps access must be resolved through trusted workspace/project scope before reading or writing.

@@ -9,7 +9,7 @@ const WS = "ws_scoping_trigger";
 const ORG = "https://dev.azure.com/scoping-trigger";
 const ctx: WorkflowContext = {
   userId: "user_scoping_trigger",
-  workspace: { id: WS, name: "Scoping", azureOrgName: "scoping-trigger", azureOrgUrl: ORG },
+  workspace: { id: WS, name: "Scoping", azureOrgName: "scoping-trigger", azureOrgUrl: ORG, providerId: "azure-devops" },
 };
 
 describeDb("workspace_id scoping trigger & id reconciliation (DB-backed)", () => {
