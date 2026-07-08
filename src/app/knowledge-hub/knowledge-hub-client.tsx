@@ -2171,6 +2171,8 @@ function KnowledgeCategoryButton({
 }
 
 function KnowledgeExplorerEntryCard({ entry, compact }: { entry: KnowledgeExplorerEntry; compact?: boolean }) {
+  const description = entry.description.trim()
+
   return (
     <article className="knowledge-entry rounded-lg border border-border bg-muted/60 p-4 transition-colors duration-ui hover:border-primary/40 hover:bg-muted focus-within:ring-2 focus-within:ring-ring">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -2179,9 +2181,11 @@ function KnowledgeExplorerEntryCard({ entry, compact }: { entry: KnowledgeExplor
             <Badge variant="secondary">{entry.badge}</Badge>
             <span className="font-semibold text-foreground">{entry.title}</span>
           </div>
-          <div className={`mt-2 text-sm text-muted-foreground ${compact ? "line-clamp-2" : ""}`}>
-            {entry.description}
-          </div>
+          {description ? (
+            <div className={`mt-2 text-sm text-muted-foreground ${compact ? "line-clamp-2" : ""}`}>
+              {description}
+            </div>
+          ) : null}
         </div>
         <div role="group" aria-label="Source work item IDs" className="flex max-w-[420px] flex-wrap gap-1">
           {entry.sourceWorkItemIds.slice(0, compact ? 6 : 10).map((id) => (
@@ -2324,9 +2328,10 @@ function knowledgeTitle(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) 
 }
 
 function knowledgeDescription(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) {
+  if (category === "businessRules") return ""
   if (category === "glossary") return item.definition ?? "-"
   if (category === "stateTransitions") return item.triggerOrCondition ?? "-"
-  return item.description ?? "-"
+  return item.description ?? ""
 }
 
 function knowledgeMeta(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) {
