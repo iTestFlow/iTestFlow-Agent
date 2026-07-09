@@ -41,7 +41,15 @@ function jsonResponse(value: unknown, status = 200) {
   });
 }
 
-function installFetch(options?: { statusFailure?: boolean }) {
+const defaultCitations = [{
+  sourceType: "project_context",
+  sourceId: "WI:123",
+  title: "Approval workflow",
+  workItemId: "123",
+  workItemType: "User Story",
+}];
+
+function installFetch(options?: { statusFailure?: boolean; answer?: string; citations?: typeof defaultCitations }) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     void _init;
     const url = String(input);
@@ -69,16 +77,11 @@ function installFetch(options?: { statusFailure?: boolean }) {
       });
     }
     if (url === "/api/context-chatbot/message") {
+      const citations = options?.citations ?? defaultCitations;
       return jsonResponse({
-        answer: "The approval rule is grounded in [WI:123]. Unknown text [UNKNOWN] stays plain.",
-        citations: [{
-          sourceType: "project_context",
-          sourceId: "WI:123",
-          title: "Approval workflow",
-          workItemId: "123",
-          workItemType: "User Story",
-        }],
-        retrievedContextCount: 1,
+        answer: options?.answer ?? "The approval rule is grounded in [WI:123]. Unknown text [UNKNOWN] stays plain.",
+        citations,
+        retrievedContextCount: citations.length,
         retrievedKnowledgeCount: 0,
         provider: "test-provider",
         model: "test-model",
@@ -152,6 +155,33 @@ describe("BusinessOwnerAssistantClient", () => {
       "https://dev.azure.com/demo-org/Demo%20Project/_workitems/edit/123",
     );
     expect(screen.queryByRole("button", { name: "Save insight" })).not.toBeInTheDocument();
+  });
+
+  it("turns parenthesized source ID runs into inline source buttons", async () => {
+    installFetch({
+      answer: "Payment and policy issuance are supported by provider calls (WI:123, WI:456). Unknown WI:999 stays plain.",
+      citations: [
+        defaultCitations[0],
+        {
+          sourceType: "project_context",
+          sourceId: "WI:456",
+          title: "Policy issuance",
+          workItemId: "456",
+          workItemType: "Feature",
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<BusinessOwnerAssistantClient workspaceRole="member" />);
+
+    await user.click(await screen.findByRole("button", { name: /Main business rules/i }));
+
+    expect(await screen.findByRole("button", { name: "View source WI:123" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View source WI:456" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "View source WI:999" })).not.toBeInTheDocument();
+    expect(screen.getByText((_, element) => (
+      element?.tagName === "P" && element.textContent?.includes("Unknown WI:999 stays plain") === true
+    ))).toBeInTheDocument();
   });
 
   it("confirms before starting a new chat", async () => {

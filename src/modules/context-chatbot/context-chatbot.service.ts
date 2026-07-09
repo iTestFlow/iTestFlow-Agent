@@ -215,6 +215,21 @@ function buildCitations(context: ContextChatbotContextEvidence[], knowledge: Con
   });
 
   knowledge.forEach((item) => {
+    item.sourceWorkItemIds.forEach((sourceWorkItemId) => {
+      const workItemId = normalizeWorkItemId(sourceWorkItemId);
+      if (!workItemId) return;
+      const sourceId = `WI:${workItemId}`;
+      if (!byId.has(sourceId)) {
+        byId.set(sourceId, {
+          sourceType: "project_context",
+          sourceId,
+          title: `Source work item ${workItemId}`,
+          workItemId,
+          workItemType: "Work item",
+        });
+      }
+    });
+
     byId.set(item.sourceId, {
       sourceType: "project_knowledge",
       sourceId: item.sourceId,
@@ -225,4 +240,10 @@ function buildCitations(context: ContextChatbotContextEvidence[], knowledge: Con
   });
 
   return Array.from(byId.values());
+}
+
+function normalizeWorkItemId(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return trimmed.replace(/^WI:/i, "").trim();
 }

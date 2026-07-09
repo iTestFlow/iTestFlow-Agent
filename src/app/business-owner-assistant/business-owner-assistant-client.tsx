@@ -1105,7 +1105,9 @@ function renderInlineMarkdown(value: string, options: InlineMarkdownOptions = {}
   let match: RegExpExecArray | null;
 
   while ((match = tokenPattern.exec(value))) {
-    if (match.index > lastIndex) nodes.push(value.slice(lastIndex, match.index));
+    if (match.index > lastIndex) {
+      nodes.push(...renderTextWithCitationButtons(value.slice(lastIndex, match.index), options, `text-${lastIndex}`));
+    }
     const [, token, linkText, href, bracketLabel, boldStar, boldUnderscore, code, italicStar, italicUnderscore] = match;
     const key = `${match.index}-${token}`;
     const citation = bracketLabel
@@ -1119,19 +1121,14 @@ function renderInlineMarkdown(value: string, options: InlineMarkdownOptions = {}
         </a>,
       );
     } else if (citation && options.onCitation) {
-      nodes.push(
-        <button
-          key={key}
-          type="button"
-          className="mx-0.5 inline-flex min-h-7 items-center rounded-md border border-primary/20 bg-primary/5 px-1.5 align-baseline text-[0.85em] font-medium leading-6 text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() => options.onCitation?.(citation)}
-          aria-label={`View source ${citation.sourceId}`}
-        >
-          {citation.sourceId}
-        </button>,
-      );
+      nodes.push(renderCitationButton(citation, options, key));
     } else if (bracketLabel) {
-      nodes.push(token);
+      const bracketNodes = renderTextWithCitationButtons(bracketLabel, options, `${key}-bracket`);
+      if (bracketNodes.some((node) => typeof node !== "string")) {
+        nodes.push("[", ...bracketNodes, "]");
+      } else {
+        nodes.push(token);
+      }
     } else if (boldStar || boldUnderscore) {
       nodes.push(<strong key={key}>{renderInlineMarkdown(boldStar ?? boldUnderscore, options)}</strong>);
     } else if (code) {
@@ -1146,8 +1143,70 @@ function renderInlineMarkdown(value: string, options: InlineMarkdownOptions = {}
     lastIndex = match.index + token.length;
   }
 
-  if (lastIndex < value.length) nodes.push(value.slice(lastIndex));
+  if (lastIndex < value.length) {
+    nodes.push(...renderTextWithCitationButtons(value.slice(lastIndex), options, `text-${lastIndex}`));
+  }
   return nodes.length ? nodes : value;
+}
+
+function renderTextWithCitationButtons(value: string, options: InlineMarkdownOptions, keyPrefix: string): ReactNode[] {
+  if (!value || !options.onCitation || !options.citations?.length) return value ? [value] : [];
+  const nodes: ReactNode[] = [];
+  let index = 0;
+
+  while (index < value.length) {
+    const match = findNextCitation(value, index, options.citations);
+    if (!match) break;
+    if (match.index > index) nodes.push(value.slice(index, match.index));
+    nodes.push(renderCitationButton(match.citation, options, `${keyPrefix}-${match.index}-${match.citation.sourceId}`));
+    index = match.index + match.citation.sourceId.length;
+  }
+
+  if (index < value.length) nodes.push(value.slice(index));
+  return nodes.length ? nodes : [value];
+}
+
+function findNextCitation(value: string, startIndex: number, citations: ContextChatbotCitation[]) {
+  let best: { citation: ContextChatbotCitation; index: number } | null = null;
+
+  for (const citation of citations) {
+    if (!citation.sourceId) continue;
+    let index = value.indexOf(citation.sourceId, startIndex);
+    while (index !== -1) {
+      const endIndex = index + citation.sourceId.length;
+      if (isCitationBoundary(value[index - 1]) && isCitationBoundary(value[endIndex])) {
+        if (
+          !best ||
+          index < best.index ||
+          (index === best.index && citation.sourceId.length > best.citation.sourceId.length)
+        ) {
+          best = { citation, index };
+        }
+        break;
+      }
+      index = value.indexOf(citation.sourceId, index + 1);
+    }
+  }
+
+  return best;
+}
+
+function isCitationBoundary(char: string | undefined) {
+  return !char || !/[A-Za-z0-9:_-]/.test(char);
+}
+
+function renderCitationButton(citation: ContextChatbotCitation, options: InlineMarkdownOptions, key: string) {
+  return (
+    <button
+      key={key}
+      type="button"
+      className="mx-0.5 inline-flex min-h-7 items-center rounded-md border border-primary/20 bg-primary/5 px-1.5 align-baseline text-[0.85em] font-medium leading-6 text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      onClick={() => options.onCitation?.(citation)}
+      aria-label={`View source ${citation.sourceId}`}
+    >
+      {citation.sourceId}
+    </button>
+  );
 }
 
 function countKnowledgeItems(knowledgeBase?: KnowledgeBaseStatus) {

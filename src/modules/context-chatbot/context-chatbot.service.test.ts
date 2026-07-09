@@ -80,4 +80,54 @@ describe("context chatbot service", () => {
       user: expect.stringContaining("Checkout requires payment"),
     }));
   });
+
+  it("adds knowledge source work items as clickable work-item citations", async () => {
+    retrieveEvidence.mockResolvedValue({
+      context: [{
+        sourceId: "WI:1",
+        title: "Checkout",
+        workItemId: "1",
+        workItemType: "Story",
+        content: "Checkout requires payment.",
+        metadata: {},
+      }],
+      knowledge: [{
+        sourceId: "KB:rule:payment",
+        title: "Payment rule",
+        category: "business_rule",
+        sourceWorkItemIds: ["1", "2", "WI:3"],
+        content: "Payment is required.",
+      }],
+    });
+    const provider = fakeLlmProvider({ text: "Payment is covered by WI:2 and WI:3." });
+
+    const result = await answerContextChatbot({
+      scope: projectScope(),
+      actor: "qa",
+      provider,
+      message: "What are the payment rules?",
+    });
+
+    expect(result.citations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceId: "WI:1",
+        title: "Checkout",
+        workItemType: "Story",
+      }),
+      expect.objectContaining({
+        sourceId: "WI:2",
+        title: "Source work item 2",
+        workItemId: "2",
+        workItemType: "Work item",
+      }),
+      expect.objectContaining({
+        sourceId: "WI:3",
+        workItemId: "3",
+      }),
+      expect.objectContaining({
+        sourceId: "KB:rule:payment",
+      }),
+    ]));
+    expect(result.citations).toHaveLength(4);
+  });
 });
