@@ -6,7 +6,7 @@ import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/projec
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { isAppError } from "@/modules/shared/errors/app-error";
 import { statusForManualValidationError, toErrorResponse } from "@/modules/shared/errors/error-response";
-import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
+import { integrationScopeHeaders, routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import {
   failWorkflowRun,
   startWorkflowRun,
@@ -71,7 +71,9 @@ export async function POST(request: Request) {
       failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "External bug response validation failed." });
     }
     if (isAppError(error)) {
-      return NextResponse.json(toErrorResponse(error), { status: statusForManualValidationError(error) });
+      const status = statusForManualValidationError(error);
+      const headers = integrationScopeHeaders(error);
+      return NextResponse.json(toErrorResponse(error), headers ? { status, headers } : { status });
     }
     return routeErrorResponse(error, { domain: "llm", status: 422, fallback: "External LLM bug response validation failed." });
   }

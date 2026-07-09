@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { isIntegrationError } from "@/modules/integrations/core/integration-error";
 import { ProjectIsolationError, workItemNotInProjectMessage } from "@/modules/projects/project-isolation.guard";
 import { AzureDevOpsRestAdapter } from "./azure-devops-client";
 
@@ -146,6 +147,40 @@ describe("AzureDevOpsRestAdapter transient retry", () => {
     await vi.runAllTimersAsync();
     await expect(pending).resolves.toEqual([]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries two thrown network failures and succeeds on the third attempt", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error("ECONNRESET"))
+      .mockRejectedValueOnce(new Error("ETIMEDOUT"))
+      .mockResolvedValueOnce(jsonResponse({ value: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = scopedAdapter().fetchProjects();
+    await vi.runAllTimersAsync();
+    await expect(pending).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("wraps repeated thrown network failures as an IntegrationError with cause", async () => {
+    vi.useFakeTimers();
+    const cause = new Error("ECONNRESET");
+    const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(cause);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = scopedAdapter().fetchProjects();
+    const captured = pending.catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    const caught = await captured;
+
+    expect(isIntegrationError(caught)).toBe(true);
+    if (!isIntegrationError(caught)) throw new Error("Expected an IntegrationError.");
+    expect(caught.message).toBe("ECONNRESET");
+    expect(caught.providerId).toBe("azure-devops");
+    expect(caught.code).toBe("integration_unavailable");
+    expect((caught as Error & { cause?: unknown }).cause).toBe(cause);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("gives up after three transient attempts and surfaces the Azure error", async () => {

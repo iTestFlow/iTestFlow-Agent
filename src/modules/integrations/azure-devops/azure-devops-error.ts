@@ -21,6 +21,19 @@ export function azureDevOpsInvalidResponseError(message: string, status: number)
   });
 }
 
+export function azureDevOpsTransportError(cause: unknown, fallbackMessage = "") {
+  return new IntegrationError({
+    providerId: AZURE_DEVOPS_PROVIDER_ID,
+    code: "integration_unavailable",
+    message: cause instanceof Error
+      ? cause.message
+      : typeof cause === "string"
+        ? cause
+        : fallbackMessage,
+    cause,
+  });
+}
+
 export function integrationCodeForStatus(status: number): IntegrationErrorCode {
   if (status === 401) return "integration_auth_failed";
   if (status === 403) return "integration_permission_denied";

@@ -3,7 +3,7 @@ import "server-only";
 import { ProjectIsolationError, workItemNotInProjectMessage } from "@/modules/projects/project-isolation.guard";
 import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
 import { mapAzureTestCase, mapAzureWorkItem } from "./azure-devops-mapper";
-import { azureDevOpsIntegrationError, azureDevOpsInvalidResponseError } from "./azure-devops-error";
+import { azureDevOpsIntegrationError, azureDevOpsInvalidResponseError, azureDevOpsTransportError } from "./azure-devops-error";
 import { buildAzureTestCasePatch } from "./azure-devops-test-case-payload";
 import type {
   AddSuiteTestCaseInput,
@@ -1110,13 +1110,13 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
         await delay(retryDelayMs(response, attempt));
       } catch (error) {
         lastError = error;
-        if (attempt === 2) throw error;
+        if (attempt === 2) throw azureDevOpsTransportError(error, "Azure DevOps request failed.");
         await delay(250 * (attempt + 1));
       }
     }
 
     if (response) return response;
-    throw lastError instanceof Error ? lastError : new Error("Azure DevOps request failed.");
+    throw azureDevOpsTransportError(lastError, "Azure DevOps request failed.");
   }
 }
 

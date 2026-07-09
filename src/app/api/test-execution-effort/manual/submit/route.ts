@@ -13,7 +13,8 @@ import {
 } from "@/modules/test-execution-effort/test-execution-effort.schema";
 import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-citations";
 import { isAppError } from "@/modules/shared/errors/app-error";
-import { statusForManualValidationError, toErrorResponse } from "@/modules/shared/errors/error-response";
+import { statusForManualValidationError, statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
+import { integrationScopeHeaders } from "@/modules/shared/errors/route-error-response";
 import {
   completeWorkflowRun,
   failWorkflowRun,
@@ -103,12 +104,16 @@ export async function POST(request: Request) {
       failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: message || "Manual Test Execution Effort validation failed." });
     }
     if (isAppError(error)) {
-      return NextResponse.json(toErrorResponse(error), { status: statusForManualValidationError(error) });
+      const status = statusForManualValidationError(error);
+      const headers = integrationScopeHeaders(error);
+      return NextResponse.json(toErrorResponse(error), headers ? { status, headers } : { status });
     }
     if (message.includes("External LLM output") || message.includes("Paste the external LLM JSON") || message.includes("schema validation")) {
       return NextResponse.json({ error: message }, { status: 422 });
     }
     const safeError = toSafeTestExecutionEffortError(error, "External LLM Test Execution Effort validation failed.", parsed.data.storyId);
-    return NextResponse.json({ error: safeError.message }, { status: safeError.status === 400 ? 400 : 422 });
+    const status = statusForServerError(error, { status: safeError.status === 400 ? 400 : 422 });
+    const headers = integrationScopeHeaders(error);
+    return NextResponse.json({ error: safeError.message }, headers ? { status, headers } : { status });
   }
 }

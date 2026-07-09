@@ -3,6 +3,8 @@ import { z } from "zod";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema, ProjectIsolationError, workItemNotInProjectMessage } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { statusForServerError } from "@/modules/shared/errors/error-response";
+import { integrationScopeHeaders } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -34,9 +36,11 @@ export async function POST(request: Request) {
     if (error instanceof ProjectIsolationError || isWorkItemNotFound(error)) {
       return NextResponse.json({ error: workItemNotInProjectMessage(parsed.data.workItemId) }, { status: 404 });
     }
+    const status = statusForServerError(error, { status: 503 });
+    const headers = integrationScopeHeaders(error);
     return NextResponse.json(
       { error: friendlyWorkItemError(error) },
-      { status: 503 },
+      headers ? { status, headers } : { status },
     );
   }
 }

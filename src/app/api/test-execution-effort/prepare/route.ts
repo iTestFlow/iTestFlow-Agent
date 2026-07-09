@@ -10,6 +10,8 @@ import {
   TestExecutionEffortOptionsSchema,
 } from "@/modules/test-execution-effort/test-execution-effort.schema";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { statusForServerError } from "@/modules/shared/errors/error-response";
+import { integrationScopeHeaders } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 
@@ -56,7 +58,9 @@ export async function POST(request: Request) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
     const safeError = toSafeTestExecutionEffortError(error, "Test Execution Effort preview failed.", parsed.data.storyId);
-    return NextResponse.json({ error: safeError.message }, { status: safeError.status });
+    const status = statusForServerError(error, { status: safeError.status });
+    const headers = integrationScopeHeaders(error);
+    return NextResponse.json({ error: safeError.message }, headers ? { status, headers } : { status });
   }
 }
 

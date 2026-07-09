@@ -29,7 +29,8 @@ export function SessionExpiryRedirect() {
           const url =
             typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
           const sameOriginApi = url.startsWith("/api/") || url.startsWith(`${window.location.origin}/api/`);
-          if (sameOriginApi) {
+          const integrationError = response.headers.get("x-itf-error-scope") === "integration";
+          if (sameOriginApi && !integrationError) {
             redirecting = true;
             const next = encodeURIComponent(window.location.pathname + window.location.search);
             window.location.assign(`/login?next=${next}`);

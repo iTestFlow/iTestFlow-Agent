@@ -1,5 +1,6 @@
 import "server-only";
 
+import { isIntegrationError, type IntegrationErrorCode } from "@/modules/integrations/core/integration-error";
 import { AppErrorCode, isAppError, type ErrorTechnicalContext } from "./app-error";
 import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
 
@@ -49,6 +50,12 @@ export function toErrorResponse(error: unknown, options: FriendlyErrorOptions = 
 }
 
 export function toFriendlyErrorResponse(error: unknown, options: FriendlyErrorOptions = {}): FriendlyErrorResult {
+  if (isIntegrationError(error)) {
+    return {
+      body: normalizePlainError(error, options).body,
+      status: statusForIntegrationErrorCode(error.code),
+    };
+  }
   if (isAppError(error)) {
     return { body: toErrorResponse(error, options), status: statusForServerError(error, options) };
   }
@@ -60,6 +67,7 @@ export function friendlyErrorMessage(error: unknown, options: FriendlyErrorOptio
 }
 
 export function statusForServerError(error: unknown, options: FriendlyErrorOptions = {}) {
+  if (isIntegrationError(error)) return statusForIntegrationErrorCode(error.code);
   if (!isAppError(error)) return options.status ?? 500;
   return options.status ?? statusForCode(error.code);
 }
@@ -82,6 +90,31 @@ export function statusForCode(code: AppErrorCode) {
     case AppErrorCode.NoProvider:
       return 503;
     case AppErrorCode.Unknown:
+    default:
+      return 500;
+  }
+}
+
+export function statusForIntegrationErrorCode(code: IntegrationErrorCode) {
+  switch (code) {
+    case "integration_auth_failed":
+      return 401;
+    case "integration_permission_denied":
+      return 403;
+    case "integration_not_found":
+      return 404;
+    case "integration_rate_limited":
+      return 429;
+    case "integration_validation":
+      return 422;
+    case "integration_invalid_response":
+      return 502;
+    case "integration_unavailable":
+      return 503;
+    case "integration_unsupported_capability":
+    case "integration_unsupported_provider":
+    case "integration_configuration":
+    case "integration_unknown":
     default:
       return 500;
   }

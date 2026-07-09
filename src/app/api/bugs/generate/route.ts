@@ -12,6 +12,7 @@ import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
+import { integrationScopeHeaders } from "@/modules/shared/errors/route-error-response";
 import {
   failWorkflowRun,
   startWorkflowRun,
@@ -105,6 +106,8 @@ export async function POST(request: Request) {
     if (trustedScope && analyticsRunId) {
       failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Bug report generation failed." });
     }
-    return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
+    const status = statusForServerError(error);
+    const headers = integrationScopeHeaders(error);
+    return NextResponse.json(toErrorResponse(error), headers ? { status, headers } : { status });
   }
 }

@@ -22,6 +22,7 @@ import {
 } from "@/modules/analytics/workflow-analytics.service";
 import { requirementAnalysisChecklistOptions } from "@/modules/requirement-analysis/checklist-options";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
+import { integrationScopeHeaders } from "@/modules/shared/errors/route-error-response";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 
 export const runtime = "nodejs";
@@ -140,7 +141,9 @@ export async function POST(request: Request) {
     if (scope && analyticsRunId) {
       failWorkflowRun({ scope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Requirement analysis failed." });
     }
-    return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
+    const status = statusForServerError(error);
+    const headers = integrationScopeHeaders(error);
+    return NextResponse.json(toErrorResponse(error), headers ? { status, headers } : { status });
   }
 }
 

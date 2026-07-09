@@ -18,7 +18,7 @@ import { previewGeneratedProjectKnowledgeBase } from "@/modules/rag/project-know
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { isAppError } from "@/modules/shared/errors/app-error";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
-import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
+import { integrationScopeHeaders, routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -66,7 +66,9 @@ export async function POST(request: Request) {
     // Unlike the extract route, AppErrors are handled BEFORE the knowledge-output
     // classifiers: a matching AppError gets its own userMessage/status, not the guidance.
     if (isAppError(error)) {
-      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
+      const status = statusForServerError(error);
+      const headers = integrationScopeHeaders(error);
+      return NextResponse.json(toErrorResponse(error), headers ? { status, headers } : { status });
     }
 
     if (isTruncatedKnowledgeBaseOutputError(error)) {

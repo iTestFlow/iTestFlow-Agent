@@ -17,8 +17,8 @@ function stubLocation({ pathname = "/dashboards", search = "" } = {}) {
 }
 
 // Must be stubbed BEFORE render: the effect captures window.fetch as the "original".
-function stubFetch(status: number) {
-  const response = new Response(null, { status });
+function stubFetch(status: number, headers?: HeadersInit) {
+  const response = new Response(null, { status, headers });
   const fetchMock = vi.fn(async () => response);
   vi.stubGlobal("fetch", fetchMock);
   return { fetchMock, response };
@@ -44,6 +44,15 @@ describe("SessionExpiryRedirect", () => {
     // The redirecting latch prevents a second navigation from parallel 401s.
     await window.fetch("/api/y");
     expect(assign).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not redirect a 401 marked as an integration error", async () => {
+    const { response } = stubFetch(401, { "x-itf-error-scope": "integration" });
+    const assign = stubLocation({ pathname: "/dashboards", search: "" });
+    render(<SessionExpiryRedirect />);
+
+    await expect(window.fetch("/api/azure-devops/profile")).resolves.toBe(response);
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it("resolves Request and URL inputs via their absolute-url branches", async () => {

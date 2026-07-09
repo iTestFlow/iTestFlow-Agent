@@ -4,6 +4,7 @@ import { formatAzureDevOpsError } from "@/shared/lib/sanitize-azure-error";
 import {
   azureDevOpsIntegrationError,
   azureDevOpsInvalidResponseError,
+  azureDevOpsTransportError,
   integrationCodeForStatus,
 } from "./azure-devops-error";
 
@@ -68,5 +69,35 @@ describe("azureDevOpsInvalidResponseError", () => {
     expect(error.code).toBe("integration_invalid_response");
     expect(error.providerId).toBe("azure-devops");
     expect(error.statusCode).toBe(200);
+  });
+});
+
+describe("azureDevOpsTransportError", () => {
+  it("preserves Error messages and cause", () => {
+    const cause = new Error("ECONNRESET");
+    const error = azureDevOpsTransportError(cause);
+
+    expect(error.message).toBe("ECONNRESET");
+    expect(error.code).toBe("integration_unavailable");
+    expect(error.providerId).toBe("azure-devops");
+    expect(error.statusCode).toBeUndefined();
+    expect((error as Error & { cause?: unknown }).cause).toBe(cause);
+  });
+
+  it("preserves string rejection messages", () => {
+    const error = azureDevOpsTransportError("socket hang up");
+
+    expect(error.message).toBe("socket hang up");
+    expect(error.code).toBe("integration_unavailable");
+    expect((error as Error & { cause?: unknown }).cause).toBe("socket hang up");
+  });
+
+  it("uses the fallback message for exotic rejection values", () => {
+    const cause = { reason: "unknown" };
+    const error = azureDevOpsTransportError(cause, "Azure DevOps request failed.");
+
+    expect(error.message).toBe("Azure DevOps request failed.");
+    expect(error.code).toBe("integration_unavailable");
+    expect((error as Error & { cause?: unknown }).cause).toBe(cause);
   });
 });

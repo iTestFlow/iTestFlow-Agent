@@ -18,6 +18,7 @@ import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
+import { integrationScopeHeaders } from "@/modules/shared/errors/route-error-response";
 import {
   failWorkflowRun,
   startWorkflowRun,
@@ -128,6 +129,8 @@ export async function POST(request: Request) {
     if (trustedScope && analyticsRunId) {
       failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error instanceof Error ? error.message : "Test case generation failed." });
     }
-    return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
+    const status = statusForServerError(error);
+    const headers = integrationScopeHeaders(error);
+    return NextResponse.json(toErrorResponse(error), headers ? { status, headers } : { status });
   }
 }

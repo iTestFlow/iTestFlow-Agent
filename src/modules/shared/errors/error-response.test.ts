@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { azureDevOpsIntegrationError } from "@/modules/integrations/azure-devops/azure-devops-error";
+import { IntegrationError, type IntegrationErrorCode } from "@/modules/integrations/core/integration-error";
 import { AppError, AppErrorCode } from "./app-error";
 import {
   statusForCode,
+  statusForIntegrationErrorCode,
   statusForManualValidationError,
   statusForServerError,
   toFriendlyErrorResponse,
@@ -241,7 +243,7 @@ describe("toFriendlyErrorResponse", () => {
     [404, JSON.stringify({ message: "TF401232: Work item 123 does not exist, or you do not have permissions to read it." })],
     [429, JSON.stringify({ message: "Rate limit reached" })],
     [500, "plain text failure"],
-  ] as const)("treats Azure IntegrationError like a plain Error for response text (%s)", (status, body) => {
+  ] as const)("treats Azure IntegrationError like a plain Error for response body (%s)", (status, body) => {
     const integrationError = azureDevOpsIntegrationError(status, body, "_apis/testplan/plans?api-version=7.1");
     const plainError = new Error(integrationError.message);
     const options = {
@@ -250,9 +252,12 @@ describe("toFriendlyErrorResponse", () => {
       fallback: "Azure DevOps project fetch failed.",
     };
 
-    expect(toFriendlyErrorResponse(integrationError, options)).toEqual(
-      toFriendlyErrorResponse(plainError, options),
-    );
+    const integrationResponse = toFriendlyErrorResponse(integrationError, options);
+    const plainResponse = toFriendlyErrorResponse(plainError, options);
+
+    expect(integrationResponse.body).toEqual(plainResponse.body);
+    expect(integrationResponse.status).toBe(statusForIntegrationErrorCode(integrationError.code));
+    expect(plainResponse.status).toBe(503);
   });
 });
 
@@ -264,6 +269,26 @@ describe("error statuses", () => {
     expect(statusForCode(AppErrorCode.InvalidJson)).toBe(503);
     expect(statusForCode(AppErrorCode.SchemaValidation)).toBe(503);
     expect(statusForCode(AppErrorCode.Unknown)).toBe(500);
+  });
+
+  it.each([
+    ["integration_auth_failed", 401],
+    ["integration_permission_denied", 403],
+    ["integration_not_found", 404],
+    ["integration_rate_limited", 429],
+    ["integration_validation", 422],
+    ["integration_invalid_response", 502],
+    ["integration_unavailable", 503],
+    ["integration_unsupported_capability", 500],
+    ["integration_unsupported_provider", 500],
+    ["integration_configuration", 500],
+    ["integration_unknown", 500],
+  ] satisfies Array<[IntegrationErrorCode, number]>)("maps %s to HTTP %i", (code, expectedStatus) => {
+    const error = new IntegrationError({ providerId: "azure-devops", code, message: "Integration failed." });
+
+    expect(statusForIntegrationErrorCode(code)).toBe(expectedStatus);
+    expect(statusForServerError(error, { status: 503 })).toBe(expectedStatus);
+    expect(toFriendlyErrorResponse(error, { status: 503 }).status).toBe(expectedStatus);
   });
 
   it("uses 422 for manual parse and schema validation errors", () => {

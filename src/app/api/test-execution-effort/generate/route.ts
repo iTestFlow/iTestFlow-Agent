@@ -22,6 +22,7 @@ import {
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
 import { isAppError } from "@/modules/shared/errors/app-error";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
+import { integrationScopeHeaders } from "@/modules/shared/errors/route-error-response";
 import {
   completeWorkflowRun,
   failWorkflowRun,
@@ -126,13 +127,17 @@ export async function POST(request: Request) {
       if (trustedScope && analyticsRunId) {
         failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error.message });
       }
-      return NextResponse.json(toErrorResponse(error), { status: statusForServerError(error) });
+      const status = statusForServerError(error);
+      const headers = integrationScopeHeaders(error);
+      return NextResponse.json(toErrorResponse(error), headers ? { status, headers } : { status });
     }
     const safeError = toSafeTestExecutionEffortError(error, "Test Execution Effort generation failed.", parsed.data.storyId);
     if (trustedScope && analyticsRunId) {
       failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: safeError.message });
     }
-    return NextResponse.json({ error: safeError.message }, { status: safeError.status });
+    const status = statusForServerError(error, { status: safeError.status });
+    const headers = integrationScopeHeaders(error);
+    return NextResponse.json({ error: safeError.message }, headers ? { status, headers } : { status });
   }
 }
 
