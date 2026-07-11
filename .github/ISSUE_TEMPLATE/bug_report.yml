@@ -1,0 +1,114 @@
+name: Bug Report
+description: Report something that is not working as expected.
+title: "[Bug]: "
+labels: ["type: bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please provide clear details so we can reproduce and investigate it faster.
+
+  - type: checkboxes
+    id: existing-issue
+    attributes:
+      label: Existing issue check
+      description: Please search existing issues before submitting a new one.
+      options:
+        - label: I have searched existing issues and did not find a duplicate.
+          required: true
+
+  - type: dropdown
+    id: affected-area
+    attributes:
+      label: Affected area
+      description: Which area is affected?
+      options:
+        - Frontend / UI
+        - Backend / API
+        - Authentication / Permissions
+        - Azure DevOps Integration
+        - AI / LLM Generation
+        - Knowledge Hub / Context
+        - Test Case Design
+        - Test Gap Analysis
+        - Report Bug
+        - Dashboard / Reporting
+        - Setup / Deployment
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: Current behavior
+      description: What is happening now?
+      placeholder: Describe the actual behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+      placeholder: Describe the expected result.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Provide clear steps so we can reproduce the issue.
+      placeholder: |
+        1. Go to ...
+        2. Click on ...
+        3. Enter ...
+        4. See error ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Share any relevant environment details.
+      value: |
+        - OS:
+        - Browser:
+        - Node.js version:
+        - App version/branch:
+        - Deployment mode: Local / Docker / Hosted
+      render: markdown
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error messages
+      description: Paste relevant logs, console errors, screenshots, or API responses.
+      render: shell
+    validations:
+      required: false
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      description: How serious is this bug?
+      options:
+        - "High: blocks usage or critical flow"
+        - "Medium: affects important functionality but has workaround"
+        - "Low: minor issue or cosmetic problem"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add any extra details, links, screenshots, or related issues.
+    validations:
+      required: false

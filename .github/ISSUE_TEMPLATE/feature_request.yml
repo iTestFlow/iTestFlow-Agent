@@ -1,0 +1,103 @@
+name: Feature Request
+description: Suggest a new capability or new workflow.
+title: "[Feature]: "
+labels: ["type: feature", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for new capabilities, new modules, or new workflows.
+
+  - type: checkboxes
+    id: existing-issue
+    attributes:
+      label: Existing issue check
+      options:
+        - label: I have searched existing issues and did not find a similar feature request.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or need
+      description: What problem does this feature solve?
+      placeholder: As a user, I want to..., so that...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature you want.
+      placeholder: Explain the desired behavior, flow, or outcome.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: affected-area
+    attributes:
+      label: Related area
+      options:
+        - Frontend / UI
+        - Backend / API
+        - Authentication / Permissions
+        - Azure DevOps Integration
+        - AI / LLM Generation
+        - Knowledge Hub / Context
+        - Test Case Design
+        - Test Gap Analysis
+        - Report Bug
+        - Dashboard / Reporting
+        - Setup / Deployment
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: user-value
+    attributes:
+      label: User value
+      description: Why is this useful?
+      placeholder: Explain who benefits and how.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: What should be true when this feature is completed?
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Are there other possible solutions or workarounds?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority suggestion
+      options:
+        - "High: important for core workflow"
+        - "Medium: useful improvement"
+        - "Low: nice to have"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add mockups, screenshots, examples, links, or related issues.
+    validations:
+      required: false

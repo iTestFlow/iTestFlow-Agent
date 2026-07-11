@@ -1,0 +1,100 @@
+name: Enhancement Request
+description: Suggest an improvement to existing functionality.
+title: "[Enhancement]: "
+labels: ["type: enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for improving an existing feature, UI, flow, performance, maintainability, or usability.
+
+  - type: checkboxes
+    id: existing-issue
+    attributes:
+      label: Existing issue check
+      options:
+        - label: I have searched existing issues and did not find a similar enhancement request.
+          required: true
+
+  - type: dropdown
+    id: enhancement-type
+    attributes:
+      label: Enhancement type
+      options:
+        - UI/UX improvement
+        - Performance improvement
+        - Developer experience
+        - Code quality / refactoring
+        - Integration improvement
+        - AI output quality improvement
+        - Documentation improvement
+        - Accessibility improvement
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-situation
+    attributes:
+      label: Current situation
+      description: What exists today?
+      placeholder: Describe the current behavior, limitation, or friction.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggested-improvement
+    attributes:
+      label: Suggested improvement
+      description: What should be improved?
+      placeholder: Describe the improved behavior or design.
+    validations:
+      required: true
+
+  - type: textarea
+    id: benefit
+    attributes:
+      label: Benefit
+      description: Why is this improvement valuable?
+      placeholder: Explain the expected benefit for users, maintainers, or contributors.
+    validations:
+      required: true
+
+  - type: textarea
+    id: affected-files-or-areas
+    attributes:
+      label: Affected area or files
+      description: Mention related pages, components, APIs, services, files, or workflows if known.
+      placeholder: "Example: Dashboard page, Azure DevOps integration, test generation flow, etc."
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority suggestion
+      options:
+        - "High: improves core workflow or removes major friction"
+        - "Medium: useful improvement"
+        - "Low: nice to have"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add screenshots, examples, links, or related issues.
+    validations:
+      required: false
