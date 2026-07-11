@@ -1,7 +1,7 @@
 # iTestFlow
 
 <p align="center">
-  <img src="public/brand/itestflow-logo-full.png" alt="iTestFlow - AI-Powered Software Testing Lifecycle" width="760" />
+  <img src="public/brand/itestflow-logo-readme.png" alt="iTestFlow - AI-Powered Software Testing Lifecycle" width="760" />
 </p>
 
 <p align="center">
