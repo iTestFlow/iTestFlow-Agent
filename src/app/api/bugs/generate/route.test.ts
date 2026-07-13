@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   resolveProjectScope: vi.fn(),
   fetchWorkItemById: vi.fn(),
   generateBugReport: vi.fn(),
-  getSavedProjectKnowledgeBase: vi.fn(),
+  loadProjectKnowledgeContext: vi.fn(),
   writeGenerationFailureAudit: vi.fn(),
   startWorkflowRun: vi.fn(),
   updateWorkflowRun: vi.fn(),
@@ -35,7 +35,7 @@ vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
 }));
 vi.mock("@/modules/rag/project-knowledge.service", () => ({
-  getSavedProjectKnowledgeBase: mocks.getSavedProjectKnowledgeBase,
+  loadProjectKnowledgeContext: mocks.loadProjectKnowledgeContext,
 }));
 vi.mock("@/modules/audit/generation-failure-audit", () => ({
   writeGenerationFailureAudit: mocks.writeGenerationFailureAudit,
@@ -85,7 +85,7 @@ describe("POST /api/bugs/generate", () => {
       fakeAzureAdapter({ fetchWorkItemById: mocks.fetchWorkItemById }),
     );
     mocks.startWorkflowRun.mockReturnValue("run-1");
-    mocks.getSavedProjectKnowledgeBase.mockResolvedValue(null);
+    mocks.loadProjectKnowledgeContext.mockResolvedValue({ knowledgeBase: null, health: null, usage: "raw_only", promptNotice: null });
     mocks.generateBugReport.mockResolvedValue({
       provider: "openai",
       model: "test-model",

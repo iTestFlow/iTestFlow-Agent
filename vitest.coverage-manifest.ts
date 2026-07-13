@@ -47,6 +47,15 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/projects/project-isolation.guard.ts",
   "src/modules/rag/knowledge-error-classification.ts",
   "src/modules/rag/local-vector-store.ts",
+  "src/modules/rag/project-knowledge-consolidation.ts",
+  "src/modules/rag/project-knowledge-conflicts.ts",
+  "src/modules/rag/project-knowledge-contracts.ts",
+  "src/modules/rag/project-knowledge-evidence-repair.ts",
+  "src/modules/rag/project-knowledge-lock.ts",
+  "src/modules/rag/project-knowledge-publication-policy.ts",
+  "src/modules/rag/project-knowledge-provenance.ts",
+  "src/modules/rag/project-knowledge-review.contracts.ts",
+  "src/modules/rag/project-knowledge-reconciliation.ts",
   "src/modules/rag/rag-pipeline.service.ts",
   "src/modules/rag/retrieval-config.ts",
   "src/modules/rag/workflow-context-citations.ts",
@@ -69,6 +78,7 @@ export const GATED_INCLUDE: string[] = [
   "src/app/api/bugs/post/route.ts",
   "src/app/api/context/index/route.ts",
   "src/app/api/context/knowledge/manual/finalize/route.ts",
+  "src/app/api/context/knowledge/drafts/[draftId]/review-context/route.ts",
   "src/app/api/context/knowledge/promote/route.ts",
   "src/app/api/context/knowledge/save/route.ts",
   "src/app/api/test-suite-migration/execute/route.ts",
@@ -105,6 +115,7 @@ export const GATED_INCLUDE: string[] = [
  * boundaries cannot hide behind the aggregate percentage.
  */
 export const HIGH_RISK_GATED_INCLUDE: string[] = [
+  "src/modules/rag/project-knowledge-publication-policy.ts",
   "src/modules/auth/session.service.ts",
   "src/app/api/auth/session/route.ts",
   "src/app/api/azure-devops/project/select/route.ts",

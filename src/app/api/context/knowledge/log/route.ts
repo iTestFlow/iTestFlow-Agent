@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
-  limit: z.number().int().min(1).max(100).optional(),
+  limit: z.number().int().min(1).max(500).optional(),
 });
 
 export async function POST(request: Request) {

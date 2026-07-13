@@ -13,6 +13,7 @@ import {
   type ContextChatbotContextEvidence,
   type ContextChatbotKnowledgeEvidence,
 } from "@/modules/rag/context-chatbot-retrieval.service";
+import { recordProjectKnowledgeBenchmarkQuestion } from "@/modules/rag/project-knowledge-benchmark.service";
 
 export type ContextChatbotCitation = {
   sourceType: "project_context" | "project_knowledge";
@@ -30,10 +31,16 @@ export async function answerContextChatbot(input: {
   provider: LLMProvider;
   message: string;
   history?: ContextChatbotHistoryMessage[];
+  selectedWorkItemIds?: string[];
 }) {
   const scope = assertProjectScope(input.scope);
   const question = input.message.trim();
   if (!question) throw new Error("Enter a question before sending a chat message.");
+  recordProjectKnowledgeBenchmarkQuestion({
+    scope,
+    sourceType: "business_owner_assistant",
+    question,
+  });
 
   const evidence = await retrieveContextChatbotEvidence({
     scope,
@@ -41,6 +48,7 @@ export async function answerContextChatbot(input: {
     contextLimit: 10,
     knowledgeLimit: 10,
     maxContextChunksPerWorkItem: 2,
+    selectedWorkItemIds: input.selectedWorkItemIds,
   });
   const citations = buildCitations(evidence.context, evidence.knowledge);
 
@@ -95,6 +103,7 @@ export async function answerContextChatbot(input: {
       retrievedContextCount: evidence.context.length,
       retrievedKnowledgeCount: evidence.knowledge.length,
       citationCount: citations.length,
+      knowledgeRetrievalMode: evidence.retrievalMode ?? "raw_wins",
     },
   });
 

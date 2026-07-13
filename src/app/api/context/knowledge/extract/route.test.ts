@@ -57,14 +57,15 @@ describe("POST /api/context/knowledge/extract", () => {
     mocks.getUserLLMProvider.mockResolvedValue(fakeLlmProvider());
   });
 
-  it("returns the snapshot and extracts with the trusted scope, actor, and default incremental mode", async () => {
-    const snapshot = { provider: "openai", model: "test-model", sections: [] };
-    mocks.extractAndSaveProjectKnowledgeBase.mockResolvedValue(snapshot);
+  it("returns a deprecated 202 draft and never publishes directly", async () => {
+    const draft = { draftId: "draft-1", provider: "openai", model: "test-model", sections: [] };
+    mocks.extractAndSaveProjectKnowledgeBase.mockResolvedValue(draft);
 
     const response = await POST(extractRequest());
 
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual(snapshot);
+    expect(response.status).toBe(202);
+    expect(response.headers.get("deprecation")).toBe("true");
+    expect(await response.json()).toEqual({ draftId: "draft-1", requiresReview: true, draft });
     expect(mocks.extractAndSaveProjectKnowledgeBase).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ scope: trustedScope, actor: "user-1", mode: "incremental" }),
     );
@@ -111,9 +112,7 @@ describe("POST /api/context/knowledge/extract", () => {
     expect(body.technicalDetails).toContain("Azure DevOps rate limit exceeded.");
   });
 
-  // This route has no isAppError branch: AppErrors are classified by message regex like
-  // any other Error, so a truncation-shaped AppError gets the guidance, not its userMessage.
-  it("classifies an AppError by message regex, ignoring its userMessage and code", async () => {
+  it("keeps truncation guidance ahead of generic AppError rendering", async () => {
     mocks.extractAndSaveProjectKnowledgeBase.mockRejectedValue(
       new AppError({
         code: AppErrorCode.TokenLimit,
@@ -143,6 +142,26 @@ describe("POST /api/context/knowledge/extract", () => {
     expect(await response.json()).toMatchObject({
       error: "The LLM provider is currently unavailable.",
       code: AppErrorCode.ProviderUnavailable,
+    });
+  });
+
+  it.each([
+    [AppErrorCode.KnowledgeDraftConflict, 409],
+    [AppErrorCode.KnowledgePublicationBlocked, 422],
+    [AppErrorCode.ResourceNotFound, 404],
+  ] as const)("preserves %s AppErrors with status %s", async (code, status) => {
+    mocks.extractAndSaveProjectKnowledgeBase.mockRejectedValue(new AppError({
+      code,
+      message: "Knowledge workflow state changed.",
+      userMessage: "Refresh the knowledge workflow.",
+    }));
+
+    const response = await POST(extractRequest());
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toMatchObject({
+      error: "Refresh the knowledge workflow.",
+      code,
     });
   });
 

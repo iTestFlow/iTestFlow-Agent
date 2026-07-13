@@ -17,8 +17,8 @@ const glossaryEntry = (overrides: Record<string, unknown>) => ({
 
 const parseGlossary = (glossary: unknown[]) => ProjectKnowledgeBaseSchema.parse({ glossary }).glossary;
 
-describe("glossary deduplication", () => {
-  it("keeps the most business-like type and merges source IDs and evidence across duplicates", () => {
+describe("glossary duplicate identity preservation", () => {
+  it("preserves normalized duplicate terms for downstream hard-conflict detection", () => {
     const glossary = parseGlossary([
       // Same term modulo case/whitespace; types span the preference order.
       glossaryEntry({ term: "Shopping Cart", type: "term", definition: "Basic cart", sourceWorkItemIds: ["1", "2"], evidence: "Seen in WI 1 | Seen in WI 2" }),
@@ -29,20 +29,14 @@ describe("glossary deduplication", () => {
     ]);
 
     expect(glossary).toEqual([
-      {
-        // business_entity outranks system and term; the winner keeps its own term/definition.
-        term: "SHOPPING CART",
-        type: "business_entity",
-        definition: "The customer's cart",
-        // IDs and evidence merge across all duplicates in first-seen order, deduped.
-        sourceWorkItemIds: ["1", "2", "3", "4"],
-        evidence: "Seen in WI 1 | Seen in WI 2 | Seen in WI 3 | Seen in WI 4",
-      },
+      { term: "Shopping Cart", type: "term", definition: "Basic cart", sourceWorkItemIds: ["1", "2"], evidence: "Seen in WI 1 | Seen in WI 2" },
+      { term: "shopping  cart", type: "system", definition: "Cart subsystem", sourceWorkItemIds: ["2", "3"], evidence: "Seen in WI 2 | Seen in WI 3" },
+      { term: "SHOPPING CART", type: "business_entity", definition: "The customer's cart", sourceWorkItemIds: ["4"], evidence: "Seen in WI 4" },
       { term: "Order", type: "business_entity", definition: "An order", sourceWorkItemIds: ["5"], evidence: "WI 5" },
     ]);
   });
 
-  it("breaks type ties by longer definition but never lets definition length outrank type", () => {
+  it("does not silently select one projection when duplicate terms disagree", () => {
     const glossary = parseGlossary([
       glossaryEntry({ term: "Refund", type: "process", definition: "Short", sourceWorkItemIds: ["1"], evidence: "A" }),
       glossaryEntry({ term: "refund", type: "process", definition: "A longer refund process definition", sourceWorkItemIds: ["2"], evidence: "B" }),
@@ -50,14 +44,11 @@ describe("glossary deduplication", () => {
       glossaryEntry({ term: "REFUND", type: "term", definition: "An even longer definition that must not win on length alone", sourceWorkItemIds: ["3"], evidence: "C" }),
     ]);
 
-    expect(glossary).toEqual([
-      {
-        term: "refund",
-        type: "process",
-        definition: "A longer refund process definition",
-        sourceWorkItemIds: ["1", "2", "3"],
-        evidence: "A | B | C",
-      },
+    expect(glossary).toHaveLength(3);
+    expect(glossary.map((entry) => entry.definition)).toEqual([
+      "Short",
+      "A longer refund process definition",
+      "An even longer definition that must not win on length alone",
     ]);
   });
 });

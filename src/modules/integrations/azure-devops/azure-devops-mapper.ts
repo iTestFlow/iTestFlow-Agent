@@ -2,6 +2,7 @@ import type { Requirement, TestCase, TestCasePriority } from "./azure-devops-typ
 
 type AzureWorkItem = {
   id: number;
+  rev?: number;
   fields?: Record<string, unknown>;
   relations?: Array<{ rel?: string; url?: string; attributes?: Record<string, unknown> }>;
 };
@@ -33,6 +34,7 @@ export function mapAzureWorkItem(item: AzureWorkItem, azureProjectId: string): R
 
   return {
     id: String(item.id),
+    revision: typeof item.rev === "number" ? item.rev : undefined,
     azureProjectId,
     teamProject: text(fields["System.TeamProject"]),
     workItemType: text(fields["System.WorkItemType"]) ?? "Unknown",

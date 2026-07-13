@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { PoolClient } from "pg";
 import { createId, enqueueBackgroundWrite, nowIso, sqlRun } from "@/modules/shared/infrastructure/database/db";
 
 export type AuditStatus = "Success" | "Failed" | "Pending" | "Partial failure" | "Info";
@@ -20,8 +21,18 @@ export type AuditLogInput = {
 };
 
 export function writeAuditLog(input: AuditLogInput) {
+  const params = buildAuditLogParams(input);
+  enqueueBackgroundWrite(`audit:${input.action}`, () => insertAuditLog(params));
+}
+
+/** Critical state-transition audit that commits or rolls back with its mutation. */
+export async function writeAuditLogTransactional(input: AuditLogInput, client: PoolClient) {
+  await insertAuditLog(buildAuditLogParams(input), client);
+}
+
+function buildAuditLogParams(input: AuditLogInput) {
   const now = nowIso();
-  const params = {
+  return {
     id: createId("audit"),
     // Set explicitly when known (e.g. login, which has no project_id) so the row is
     // visible to workspace-scoped reads. For project-scoped writes that omit it, the
@@ -41,17 +52,15 @@ export function writeAuditLog(input: AuditLogInput) {
     createdAt: now,
     updatedAt: now,
   };
+}
 
-  enqueueBackgroundWrite(`audit:${input.action}`, () =>
-    sqlRun(
-      `INSERT INTO audit_logs (
+function insertAuditLog(params: ReturnType<typeof buildAuditLogParams>, client?: PoolClient) {
+  const query = `INSERT INTO audit_logs (
         id, workspace_id, project_id, azure_project_id, azure_project_name, azure_organization_url,
         entity_type, entity_id, action, status, actor, message, details_json, created_at, updated_at
       ) VALUES (
         @id, @workspaceId, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
         @entityType, @entityId, @action, @status, @actor, @message, @detailsJson, @createdAt, @updatedAt
-      )`,
-      params,
-    ),
-  );
+       )`;
+  return client ? sqlRun(query, params, client) : sqlRun(query, params);
 }

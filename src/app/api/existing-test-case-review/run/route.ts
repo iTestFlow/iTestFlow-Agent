@@ -11,7 +11,7 @@ import {
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { reviewExistingLinkedTestCases } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
 import { deriveExistingTestCaseReviewMetrics } from "@/modules/existing-test-case-review/review-metrics";
-import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
 import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
@@ -77,6 +77,7 @@ export async function POST(request: Request) {
       retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
       workflowType: "existing_test_case_review",
     });
+    const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "existing_test_case_review" });
     const result = await reviewExistingLinkedTestCases({
       scope: trustedScope,
       actor: ctx.userId,
@@ -85,7 +86,8 @@ export async function POST(request: Request) {
       linkedTestCases,
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
+      projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      projectKnowledgeNotice: knowledgeContext.promptNotice,
       extraInstructions: parsed.data.extraInstructions,
     });
     const contextCitations = buildWorkflowContextCitations({
@@ -129,7 +131,7 @@ export async function POST(request: Request) {
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
       tokenUsage: provider.getTokenUsage(),
-      warnings: result.warnings,
+      warnings: [...(result.warnings ?? []), ...(knowledgeContext.promptNotice ? [knowledgeContext.promptNotice] : [])],
     });
   } catch (error) {
     const authResponse = authErrorResponse(error);

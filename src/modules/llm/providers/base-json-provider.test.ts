@@ -6,7 +6,11 @@ vi.mock("../llm-request-log.service", () => ({
 }));
 
 import { AppErrorCode } from "@/modules/shared/errors/app-error";
-import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
+import {
+  BaseJsonProvider,
+  resolveModelInputTokenLimit,
+  type LLMProviderCallResult,
+} from "./base-json-provider";
 import type { GenerateStructuredOutputInput } from "../llm-types";
 
 class TestProvider extends BaseJsonProvider {
@@ -47,6 +51,22 @@ function provider() {
 describe("BaseJsonProvider", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("resolves exact model capabilities, explicit overrides, and the 16k unknown fallback", () => {
+    expect(resolveModelInputTokenLimit({ provider: "openai", model: "GPT-4.1" }))
+      .toEqual({ tokens: 1_000_000, source: "model_capability" });
+    expect(resolveModelInputTokenLimit({
+      provider: "openai",
+      model: "gpt-4.1",
+      maxInputTokens: 32_000,
+    })).toEqual({ tokens: 32_000, source: "user_override" });
+    expect(resolveModelInputTokenLimit({ provider: "openai", model: "future-model" }))
+      .toEqual({ tokens: 16_000, source: "unknown_fallback" });
+    expect(resolveModelInputTokenLimit({ provider: "openai", model: "gpt-4.1-2025-04-14" }))
+      .toEqual({ tokens: 1_000_000, source: "model_capability" });
+    expect(resolveModelInputTokenLimit({ provider: "openai", model: "future-model-2025-04-14" }))
+      .toEqual({ tokens: 16_000, source: "unknown_fallback" });
   });
 
   it("parses and validates structured output within the configured cap", async () => {

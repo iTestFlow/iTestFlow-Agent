@@ -13,8 +13,20 @@ import { ApiError, type ApiErrorPayload } from "@/components/workflow/api-error"
  * ------------------------------------------------------------------------ */
 
 export async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return sendJson<T>(url, "POST", body, signal);
+}
+
+export async function patchJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return sendJson<T>(url, "PATCH", body, signal);
+}
+
+export async function putJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return sendJson<T>(url, "PUT", body, signal);
+}
+
+async function sendJson<T>(url: string, method: "POST" | "PATCH" | "PUT", body: unknown, signal?: AbortSignal) {
   const response = await fetch(url, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal,

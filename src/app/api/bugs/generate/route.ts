@@ -10,7 +10,7 @@ import {
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import { integrationScopeHeaders } from "@/modules/shared/errors/route-error-response";
 import {
@@ -68,6 +68,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: message }, { status: 400 });
     }
 
+    const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "bug_reporting" });
     const result = await generateBugReport({
       scope: trustedScope,
       actor: ctx.userId,
@@ -77,7 +78,8 @@ export async function POST(request: Request) {
       selectedRelatedTestCase: parsed.data.selectedRelatedTestCase,
       customFields: parsed.data.customFields,
       attachments: parsed.data.attachments,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
+      projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      projectKnowledgeNotice: knowledgeContext.promptNotice,
     });
     updateWorkflowRun({
       scope: trustedScope,
@@ -98,6 +100,7 @@ export async function POST(request: Request) {
       model: result.model,
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
+      warnings: [...(result.warnings ?? []), ...(knowledgeContext.promptNotice ? [knowledgeContext.promptNotice] : [])],
     });
   } catch (error) {
     const authResponse = authErrorResponse(error);

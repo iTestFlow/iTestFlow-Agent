@@ -77,11 +77,14 @@ describe("bug reporting", () => {
       parentStory: requirement({ description: "<p>Checkout story</p>" }),
       attachments: [{ fileName: "screen.png", size: 10 }],
       customFields: [{ referenceName: "Custom.Channel", value: "Web" }],
+      projectKnowledgeNotice: "Current raw work-item evidence wins every conflict.",
     });
     expect(draft.schemaName).toBe("BugReportGenerationOutput");
     expect(draft.userPrompt).toContain("Payment fails");
     expect(draft.userPrompt).toContain("Checkout story");
     expect(draft.userPrompt).toContain("screen.png");
+    expect(draft.userPrompt).toContain("# Knowledge Authority");
+    expect(draft.userPrompt).toContain("Current raw work-item evidence wins every conflict.");
     expect(draft.prompt).toContain(draft.systemPrompt);
   });
 

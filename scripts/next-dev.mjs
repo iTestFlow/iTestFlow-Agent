@@ -8,7 +8,7 @@ const hasHeapOption = /--max[-_]old[-_]space[-_]size(?:=|\s|$)/.test(nodeOptions
 const mergedNodeOptions = hasHeapOption ? nodeOptions : `${nodeOptions} --max-old-space-size=${heapMb}`.trim();
 const nextBin = fileURLToPath(new URL("../node_modules/next/dist/bin/next", import.meta.url));
 
-const child = spawn(process.execPath, [nextBin, "dev", ...process.argv.slice(2)], {
+const child = spawn(process.execPath, [nextBin, "dev", "--turbopack", ...process.argv.slice(2)], {
   stdio: "inherit",
   env: {
     ...process.env,

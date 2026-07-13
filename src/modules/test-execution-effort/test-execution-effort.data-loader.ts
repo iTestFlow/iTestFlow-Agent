@@ -3,7 +3,7 @@ import "server-only";
 import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext, resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
 
 export async function loadTestExecutionEffortData(input: {
@@ -46,7 +46,7 @@ export async function loadTestExecutionEffortData(input: {
         selectedContextIds: input.selectedContextIds,
         retrievalTopK: input.retrievalTopK,
       });
-  const projectKnowledgeBase = await getSavedProjectKnowledgeBase({ scope });
+  const projectKnowledge = await loadProjectKnowledgeContext({ scope, consumer: "test_execution_effort" });
 
   return {
     targetRequirement,
@@ -55,8 +55,9 @@ export async function loadTestExecutionEffortData(input: {
     selectedContext: context.selectedContext,
     resolvedContextUsed: context.contextUsed,
     retrievalTopK: context.retrievalTopK,
-    projectKnowledgeBase,
-    hasProjectContext: Boolean(context.selectedContext.length || context.relatedWorkItems.length || projectKnowledgeBase),
+    projectKnowledgeBase: projectKnowledge.knowledgeBase,
+    projectKnowledgeNotice: projectKnowledge.promptNotice,
+    hasProjectContext: Boolean(context.selectedContext.length || context.relatedWorkItems.length || projectKnowledge.knowledgeBase),
   };
 }
 

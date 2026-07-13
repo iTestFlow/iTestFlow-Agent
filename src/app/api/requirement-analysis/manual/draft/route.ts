@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { buildRequirementAnalysisPromptDraft } from "@/modules/requirement-analysis/application/requirement-analysis.service";
-import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
 import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
@@ -51,12 +51,14 @@ export async function POST(request: Request) {
       selectedContextIds: parsed.data.selectedContextIds,
       retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
     });
+    const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "requirement_analysis_manual" });
     const draft = buildRequirementAnalysisPromptDraft({
       scope: trustedScope,
       targetRequirement,
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
+      projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      projectKnowledgeNotice: knowledgeContext.promptNotice,
       enabledChecklistItemIds: parsed.data.enabledChecklistItemIds,
       extraInstructions: parsed.data.extraInstructions,
     });
@@ -72,6 +74,7 @@ export async function POST(request: Request) {
       contextCitations,
       retrievalTopK: autoContext.retrievalTopK,
       ...draft,
+      warnings: knowledgeContext.promptNotice ? [knowledgeContext.promptNotice] : undefined,
     });
   } catch (error) {
     const authResponse = authErrorResponse(error);

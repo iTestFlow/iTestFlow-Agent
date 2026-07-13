@@ -7,7 +7,6 @@ import {
 } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
-import { ProjectKnowledgeBaseSchema } from "@/modules/rag/project-knowledge.schema";
 import { saveGeneratedProjectKnowledgeBaseDraft } from "@/modules/rag/project-knowledge.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
@@ -15,12 +14,7 @@ export const runtime = "nodejs";
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
-  provider: z.string().min(1),
-  model: z.string().min(1),
-  rawOutput: z.string().min(1),
-  requestedMode: z.enum(["incremental", "full"]).optional(),
-  mode: z.enum(["incremental", "full"]),
-  knowledgeBase: ProjectKnowledgeBaseSchema,
+  draftId: z.string().min(1),
 });
 
 export async function POST(request: Request) {
@@ -37,6 +31,6 @@ export async function POST(request: Request) {
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    return routeErrorResponse(error, { domain: "generic", status: 422, fallback: "Project knowledge save failed." });
+    return routeErrorResponse(error, { domain: "generic", fallback: "Project knowledge save failed." });
   }
 }

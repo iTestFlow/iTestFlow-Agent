@@ -7,6 +7,11 @@ export enum AppErrorCode {
   ProviderUnavailable = "provider_unavailable",
   NoProvider = "no_provider",
   Network = "network",
+  KnowledgeDraftConflict = "knowledge_draft_conflict",
+  KnowledgePublicationBlocked = "knowledge_publication_blocked",
+  KnowledgeDraftNotFound = "knowledge_draft_not_found",
+  KnowledgeContractMismatch = "knowledge_contract_mismatch",
+  ResourceNotFound = "resource_not_found",
   Unknown = "unknown",
 }
 

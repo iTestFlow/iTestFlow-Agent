@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildExistingTestCaseReviewMarkdownPrompt,
   buildRequirementAnalysisMarkdownPrompt,
   buildTestCaseGenerationMarkdownPrompt,
+  buildTestExecutionEffortMarkdownPrompt,
   cleanPromptText,
   extractWorkItemId,
 } from "@/modules/llm/markdown-prompt-renderer";
@@ -111,6 +113,21 @@ describe("extractWorkItemId", () => {
 });
 
 describe("buildRequirementAnalysisMarkdownPrompt", () => {
+  it("inserts the raw-authority notice before saved knowledge in every shared workflow", () => {
+    const projectKnowledgeNotice = "Current raw work-item evidence wins every conflict.";
+    const inputs = { currentProject, targetRequirement, outputContract, projectKnowledgeNotice };
+    const prompts = [
+      buildRequirementAnalysisMarkdownPrompt(inputs).prompt,
+      buildTestCaseGenerationMarkdownPrompt(inputs).prompt,
+      buildExistingTestCaseReviewMarkdownPrompt(inputs).prompt,
+      buildTestExecutionEffortMarkdownPrompt(inputs).prompt,
+    ];
+
+    for (const prompt of prompts) {
+      expectOrdered(prompt, ["# Knowledge Authority", projectKnowledgeNotice, "# Saved Project Knowledge"]);
+    }
+  });
+
   it("renders sections in a fixed order with the output contract JSON last", () => {
     const { prompt, relevantProjectKnowledgeBase } = buildRequirementAnalysisMarkdownPrompt({
       currentProject,

@@ -52,6 +52,7 @@ export async function POST(request: Request) {
 
     const draft = await previewGeneratedProjectKnowledgeBase({
       scope: trustedScope,
+      actor: ctx.userId,
       provider,
       mode: parsed.data.mode ?? "incremental",
     });

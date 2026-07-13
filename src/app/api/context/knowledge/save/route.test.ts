@@ -23,12 +23,7 @@ import { POST } from "./route";
 const trustedScope = projectScope();
 const body = {
   scope: { ...trustedScope, workspaceId: "ws-1" },
-  provider: "openai",
-  model: "gpt-test",
-  rawOutput: "{}",
-  requestedMode: "full",
-  mode: "full",
-  knowledgeBase: {},
+  draftId: "draft-1",
 };
 
 describe("POST /api/context/knowledge/save", () => {
@@ -69,9 +64,13 @@ describe("POST /api/context/knowledge/save", () => {
   });
 
   it("maps save failures to the route's validation status", async () => {
-    mocks.saveGeneratedProjectKnowledgeBaseDraft.mockRejectedValue(new Error("Revision conflict"));
+    mocks.saveGeneratedProjectKnowledgeBaseDraft.mockRejectedValue(new (await import("@/modules/shared/errors/app-error")).AppError({
+      code: (await import("@/modules/shared/errors/app-error")).AppErrorCode.KnowledgeDraftConflict,
+      message: "Revision conflict",
+      userMessage: "Revision conflict",
+    }));
     const response = await POST(jsonRequest("/api/context/knowledge/save", body));
-    expect(response.status).toBe(422);
-    expect(await response.json()).toEqual({ error: "Revision conflict" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "Revision conflict", code: "knowledge_draft_conflict" });
   });
 });

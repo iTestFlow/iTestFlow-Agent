@@ -16,6 +16,7 @@ type MarkdownPromptInput = {
   relatedWorkItems?: unknown[];
   selectedContext?: unknown[];
   projectKnowledgeBase?: unknown | null;
+  projectKnowledgeNotice?: string | null;
   extraInstructions?: string;
   outputContract: unknown;
 };
@@ -41,6 +42,7 @@ export function buildRequirementAnalysisMarkdownPrompt(input: MarkdownPromptInpu
       renderTargetWorkItem("User Story Under Analysis", input.targetRequirement),
       renderWorkItemCollection("Related Work Items", input.relatedWorkItems ?? []),
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
+      renderProjectKnowledgeAuthorityNotice(input.projectKnowledgeNotice),
       renderProjectKnowledge(relevantKnowledge),
       renderExtraInstructionsSection(input.extraInstructions),
       renderOutputContract(input.outputContract),
@@ -75,6 +77,7 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
       renderTestDesignOptions(input.options ?? {}),
       renderCoverageExpectations(),
+      renderProjectKnowledgeAuthorityNotice(input.projectKnowledgeNotice),
       renderProjectKnowledge(relevantKnowledge),
       renderExtraInstructionsSection(input.extraInstructions),
       renderOutputContract(input.outputContract),
@@ -108,6 +111,7 @@ export function buildExistingTestCaseReviewMarkdownPrompt(input: MarkdownPromptI
       renderLinkedTestCaseCollection("Linked Azure DevOps Test Cases Under Review", input.linkedTestCases ?? []),
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
       renderExistingCoverageReviewInstructions(),
+      renderProjectKnowledgeAuthorityNotice(input.projectKnowledgeNotice),
       renderProjectKnowledge(relevantKnowledge),
       renderExtraInstructionsSection(input.extraInstructions),
       renderOutputContract(input.outputContract),
@@ -149,6 +153,7 @@ export function buildTestExecutionEffortMarkdownPrompt(
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
       renderTestExecutionEffortOptions(input.options ?? {}),
       renderTestExecutionEffortInstructions(),
+      renderProjectKnowledgeAuthorityNotice(input.projectKnowledgeNotice),
       renderProjectKnowledge(relevantKnowledge),
       renderExtraInstructionsSection(input.extraInstructions),
       renderOutputContract(input.outputContract),
@@ -457,6 +462,10 @@ function renderLinkedTestCase(value: unknown, headingLevel: number) {
   }
 
   return lines.join("\n");
+}
+
+function renderProjectKnowledgeAuthorityNotice(notice: string | null | undefined) {
+  return notice ? ["# Knowledge Authority", notice].join("\n\n") : "";
 }
 
 function renderProjectKnowledge(knowledgeBase: ProjectKnowledgeBase | null) {

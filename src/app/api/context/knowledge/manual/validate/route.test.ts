@@ -4,8 +4,7 @@ const mocks = vi.hoisted(() => ({
   requireWorkflowContext: vi.fn(),
   requireWorkflowRole: vi.fn(),
   resolveProjectScope: vi.fn(),
-  validateProjectKnowledgeExternalOutput: vi.fn(),
-  saveManualProjectKnowledgeBaseSnapshot: vi.fn(),
+  validateProjectKnowledgeManualBatch: vi.fn(),
 }));
 
 vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal) => {
@@ -20,8 +19,7 @@ vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
 }));
 vi.mock("@/modules/rag/project-knowledge.service", () => ({
-  validateProjectKnowledgeExternalOutput: mocks.validateProjectKnowledgeExternalOutput,
-  saveManualProjectKnowledgeBaseSnapshot: mocks.saveManualProjectKnowledgeBaseSnapshot,
+  validateProjectKnowledgeManualBatch: mocks.validateProjectKnowledgeManualBatch,
 }));
 
 import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
@@ -34,6 +32,8 @@ function validateRequest(rawOutput = "{\"knowledgeBase\":{}}") {
   return jsonRequest("/api/context/knowledge/manual/validate", {
     scope: { ...trustedScope, workspaceId: "ws-1" },
     rawOutput,
+    draftId: "draft-1",
+    batchIndex: 1,
   });
 }
 
@@ -43,11 +43,11 @@ describe("POST /api/context/knowledge/manual/validate", () => {
     mocks.requireWorkflowContext.mockResolvedValue({ userId: "user-1", workspace: { id: "ws-1" } });
     mocks.requireWorkflowRole.mockResolvedValue(undefined);
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
-    mocks.validateProjectKnowledgeExternalOutput.mockReturnValue({ sections: [] });
+    mocks.validateProjectKnowledgeManualBatch.mockResolvedValue({ sections: [] });
   });
 
   it("returns 422, not 503, when external output is invalid JSON", async () => {
-    mocks.validateProjectKnowledgeExternalOutput.mockImplementation(() => {
+    mocks.validateProjectKnowledgeManualBatch.mockImplementation(() => {
       throw new AppError({
         code: AppErrorCode.InvalidJson,
         message: "External LLM output was not valid JSON.",

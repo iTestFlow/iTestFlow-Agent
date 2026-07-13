@@ -4,7 +4,7 @@ import { buildBugReportPromptDraft } from "@/modules/bug-reporting/bug-reporting
 import { BugAttachmentDescriptorSchema, BugCustomFieldValueSchema, BugRelatedTestCaseContextSchema } from "@/modules/bug-reporting/schemas/bug-report.schema";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
@@ -40,6 +40,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Parent Story ID ${parentStory.id} is a ${parentStory.workItemType}, not a User Story.` }, { status: 400 });
     }
 
+    const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "bug_reporting_manual" });
     const draft = buildBugReportPromptDraft({
       scope: trustedScope,
       bugDescription: parsed.data.bugDescription,
@@ -47,12 +48,14 @@ export async function POST(request: Request) {
       selectedRelatedTestCase: parsed.data.selectedRelatedTestCase,
       customFields: parsed.data.customFields,
       attachments: parsed.data.attachments,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
+      projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      projectKnowledgeNotice: knowledgeContext.promptNotice,
     });
 
     return NextResponse.json({
       parentStoryId: parsed.data.parentStoryId ?? null,
       ...draft,
+      warnings: knowledgeContext.promptNotice ? [knowledgeContext.promptNotice] : undefined,
     });
   } catch (error) {
     const authResponse = authErrorResponse(error);

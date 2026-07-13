@@ -42,7 +42,10 @@ const CHANGED_DESCRIPTION = "Customer completes checkout after the payment gatew
 // Fixture content is chosen so each assertion has a unique token: "payment gateway"
 // only in item 101 (project A), "zebra telemetry" only in project B, and literal
 // "%" / "_" only in item 103 (the LIKE-escaping subject).
-function checkoutItem(description = "Customer pays through the payment gateway during checkout."): Requirement {
+function checkoutItem(
+  description = "Customer pays through the payment gateway during checkout.",
+  revision = 10,
+): Requirement {
   return requirement({
     id: "101",
     azureProjectId: PROJ_A,
@@ -50,6 +53,7 @@ function checkoutItem(description = "Customer pays through the payment gateway d
     description,
     acceptanceCriteria: "Given a cart, when the gateway approves, then show confirmation.",
     tags: [],
+    revision,
   });
 }
 
@@ -61,6 +65,7 @@ function refundItem(): Requirement {
     description: "Support agent issues a refund for a delivered order.",
     acceptanceCriteria: "Given a delivered order, when a refund is issued, then notify the customer.",
     tags: [],
+    revision: 7,
   });
 }
 
@@ -72,6 +77,7 @@ function rolloutItem(): Requirement {
     description: "Track rollout progress across regions at a 50_percent sample rate.",
     acceptanceCriteria: "Given a region, when rollout reaches full coverage, then close the tracker.",
     tags: [],
+    revision: 3,
   });
 }
 
@@ -85,6 +91,7 @@ function telemetryItem(): Requirement {
     description: "Ingest zebra telemetry events from devices.",
     acceptanceCriteria: "Given a device, when events arrive, then store them.",
     tags: [],
+    revision: 4,
   });
 }
 
@@ -104,12 +111,14 @@ type WorkItemRow = {
   sync_status: string | null;
   content_hash: string | null;
   current_index_run_id: string | null;
+  current_snapshot_id: string | null;
   created_at: string;
 };
 
 async function workItemRows(projectId: string): Promise<WorkItemRow[]> {
   return sqlAll<WorkItemRow>(
-    `SELECT id, azure_work_item_id, sync_status, content_hash, current_index_run_id, created_at
+    `SELECT id, azure_work_item_id, sync_status, content_hash, current_index_run_id,
+            current_snapshot_id, created_at
      FROM azure_devops_work_items
      WHERE project_id = @projectId
      ORDER BY azure_work_item_id`,
@@ -118,8 +127,8 @@ async function workItemRows(projectId: string): Promise<WorkItemRow[]> {
 }
 
 async function chunkRows(projectId: string) {
-  return sqlAll<{ id: string; azure_work_item_id: string | null; chunk_index: number; content: string; created_at: string; updated_at: string }>(
-    `SELECT id, azure_work_item_id, chunk_index, content, created_at, updated_at
+  return sqlAll<{ id: string; azure_work_item_id: string | null; chunk_index: number; content: string; source_snapshot_id: string | null; created_at: string; updated_at: string }>(
+    `SELECT id, azure_work_item_id, chunk_index, content, source_snapshot_id, created_at, updated_at
      FROM document_chunks
      WHERE project_id = @projectId AND source_type = 'azure_work_item'
      ORDER BY id`,
@@ -129,12 +138,24 @@ async function chunkRows(projectId: string) {
 
 // Projection without current_index_run_id (the one column an unchanged run rewrites).
 function stableColumns(rows: WorkItemRow[]) {
-  return rows.map(({ id, azure_work_item_id, sync_status, content_hash, created_at }) => ({
+  return rows.map(({ id, azure_work_item_id, sync_status, content_hash, current_snapshot_id, created_at }) => ({
     id,
     azure_work_item_id,
     sync_status,
     content_hash,
+    current_snapshot_id,
     created_at,
+  }));
+}
+
+function chunkColumnsWithoutSnapshot(rows: Awaited<ReturnType<typeof chunkRows>>) {
+  return rows.map((chunk) => ({
+    id: chunk.id,
+    azure_work_item_id: chunk.azure_work_item_id,
+    chunk_index: chunk.chunk_index,
+    content: chunk.content,
+    created_at: chunk.created_at,
+    updated_at: chunk.updated_at,
   }));
 }
 
@@ -156,6 +177,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       await sqlRun(`DELETE FROM document_chunks_fts WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM document_chunks WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM azure_devops_work_items WHERE project_id = @projectId`, { projectId });
+      await sqlRun(`DELETE FROM azure_devops_work_item_snapshots WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM project_knowledge_log WHERE project_id = @projectId`, { projectId });
     }
     await cleanupFixtures({ workspaceIds: [WS], userIds: [] });
@@ -194,10 +216,25 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     expect(rows.map((row) => row.azure_work_item_id)).toEqual(["101", "102", "103"]);
     expect(rows.every((row) => row.sync_status === "active")).toBe(true);
     expect(rows.every((row) => Boolean(row.content_hash))).toBe(true);
+    expect(rows.every((row) => Boolean(row.current_snapshot_id))).toBe(true);
 
     // Short work items land as exactly one chunk each, keyed to their work item.
     const chunks = await chunkRows(PROJ_A);
     expect(chunks.map((chunk) => chunk.azure_work_item_id).sort()).toEqual(["101", "102", "103"]);
+    expect(chunks.every((chunk) => Boolean(chunk.source_snapshot_id))).toBe(true);
+
+    const snapshots = await sqlAll<{ azure_work_item_id: string; ado_revision: number; fields_json: unknown }>(
+      `SELECT azure_work_item_id, ado_revision, fields_json
+       FROM azure_devops_work_item_snapshots WHERE project_id = @projectId
+       ORDER BY azure_work_item_id`,
+      { projectId: PROJ_A },
+    );
+    expect(snapshots.map((snapshot) => [snapshot.azure_work_item_id, snapshot.ado_revision])).toEqual([
+      ["101", 10],
+      ["102", 7],
+      ["103", 3],
+    ]);
+    expect(snapshots.every((snapshot) => !("raw" in (snapshot.fields_json as Record<string, unknown>)))).toBe(true);
   });
 
   it("re-running with unchanged content keeps items active without rewriting rows or chunks", async () => {
@@ -224,11 +261,38 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     expect(await chunkRows(PROJ_A)).toEqual(chunksBefore);
   });
 
+  it("captures a new Azure revision snapshot without rebuilding semantic chunks", async () => {
+    const beforeChunks = await chunkRows(PROJ_A);
+    const before = (await workItemRows(PROJ_A)).find((row) => row.azure_work_item_id === "101");
+
+    const result = await sync(scopeA, [checkoutItem(undefined, 11), refundItem(), rolloutItem()]);
+    expect(result).toMatchObject({
+      createdCount: 0,
+      updatedCount: 0,
+      unchangedCount: 3,
+      provenanceRefreshCount: 1,
+      indexedChunkCount: 0,
+    });
+    const after = (await workItemRows(PROJ_A)).find((row) => row.azure_work_item_id === "101");
+    expect(after?.content_hash).toBe(before?.content_hash);
+    expect(after?.current_snapshot_id).not.toBe(before?.current_snapshot_id);
+    const afterChunks = await chunkRows(PROJ_A);
+    expect(chunkColumnsWithoutSnapshot(afterChunks)).toEqual(chunkColumnsWithoutSnapshot(beforeChunks));
+    expect(afterChunks.find((chunk) => chunk.azure_work_item_id === "101")?.source_snapshot_id)
+      .toBe(after?.current_snapshot_id);
+    expect(await sqlAll<{ ado_revision: number }>(
+      `SELECT ado_revision FROM azure_devops_work_item_snapshots
+       WHERE project_id = @projectId AND azure_work_item_id = '101'
+       ORDER BY ado_revision`,
+      { projectId: PROJ_A },
+    )).toEqual([{ ado_revision: 10 }, { ado_revision: 11 }]);
+  });
+
   it("changed content re-upserts the same row and rebuilds its chunk", async () => {
     const before = await workItemRows(PROJ_A);
     const beforeCheckout = before.find((row) => row.azure_work_item_id === "101");
 
-    const result = await sync(scopeA, [checkoutItem(CHANGED_DESCRIPTION), refundItem(), rolloutItem()]);
+    const result = await sync(scopeA, [checkoutItem(CHANGED_DESCRIPTION, 12), refundItem(), rolloutItem()]);
     expect(result).toMatchObject({
       createdCount: 0,
       updatedCount: 1,
@@ -276,7 +340,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
   it("a reappearing inactive item is re-upserted to active instead of skipped as unchanged", async () => {
     // Content hash matches the stored row, but an inactive row must not take the
     // unchanged shortcut — otherwise it would stay invisible forever.
-    const result = await sync(scopeA, [checkoutItem(CHANGED_DESCRIPTION), refundItem(), rolloutItem()]);
+    const result = await sync(scopeA, [checkoutItem(CHANGED_DESCRIPTION, 12), refundItem(), rolloutItem()]);
     expect(result).toMatchObject({ createdCount: 0, updatedCount: 1, unchangedCount: 2, inactiveCount: 0 });
 
     const rows = await workItemRows(PROJ_A);
@@ -325,5 +389,32 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     const wildcards = await getRecentProjectContext({ scope: scopeA, query: "1__%" });
     expect(wildcards.totalCount).toBe(0);
     expect(wildcards.items).toEqual([]);
+  });
+
+  it("rebuild replaces the current source set but preserves immutable snapshot history", async () => {
+    const beforeSnapshots = await sqlAll<{ id: string }>(
+      `SELECT id FROM azure_devops_work_item_snapshots WHERE project_id = @projectId ORDER BY id`,
+      { projectId: PROJ_A },
+    );
+    const result = await indexAzureWorkItemsAsProjectContext({
+      scope: scopeA,
+      actor: "db-test",
+      adapter: fakeAzureAdapter({ fetchWorkItems: vi.fn(async () => [refundItem(), rolloutItem()]) }),
+      workItemTypes: ["User Story"],
+      states: ["Active"],
+      mode: "rebuild",
+    });
+
+    expect(result).toMatchObject({ mode: "rebuild", fetchedCount: 2, createdCount: 2 });
+    expect((await workItemRows(PROJ_A)).map((row) => row.azure_work_item_id)).toEqual(["102", "103"]);
+    expect(await sqlAll<{ id: string }>(
+      `SELECT id FROM azure_devops_work_item_snapshots WHERE project_id = @projectId ORDER BY id`,
+      { projectId: PROJ_A },
+    )).toEqual(beforeSnapshots);
+    expect(await sqlGet<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM azure_devops_work_item_snapshots
+       WHERE project_id = @projectId AND azure_work_item_id = '101'`,
+      { projectId: PROJ_A },
+    )).toEqual({ count: 3 });
   });
 });

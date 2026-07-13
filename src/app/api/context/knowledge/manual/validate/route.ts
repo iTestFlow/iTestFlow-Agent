@@ -8,18 +8,18 @@ import {
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import {
-  saveManualProjectKnowledgeBaseSnapshot,
-  validateProjectKnowledgeExternalOutput,
+  validateProjectKnowledgeManualBatch,
 } from "@/modules/rag/project-knowledge.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
+import { statusForManualValidationError } from "@/modules/shared/errors/error-response";
 
 export const runtime = "nodejs";
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   rawOutput: z.string().min(1),
-  mode: z.enum(["incremental", "full"]).optional().default("full"),
-  save: z.boolean().optional().default(false),
+  draftId: z.string().min(1),
+  batchIndex: z.number().int().positive(),
 });
 
 export async function POST(request: Request) {
@@ -32,22 +32,21 @@ export async function POST(request: Request) {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can build project knowledge.");
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
-    if (parsed.data.save) {
-      const snapshot = await saveManualProjectKnowledgeBaseSnapshot({
-        scope: trustedScope,
-        actor: ctx.userId,
-        rawOutput: parsed.data.rawOutput,
-        mode: parsed.data.mode,
-      });
-      return NextResponse.json({ knowledgeBase: snapshot.knowledgeBase, snapshot });
-    }
-
     return NextResponse.json({
-      knowledgeBase: validateProjectKnowledgeExternalOutput(parsed.data.rawOutput),
+      knowledgeBase: await validateProjectKnowledgeManualBatch({
+        scope: trustedScope,
+        draftId: parsed.data.draftId,
+        batchIndex: parsed.data.batchIndex,
+        rawOutput: parsed.data.rawOutput,
+      }),
     });
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
-    return routeErrorResponse(error, { domain: "llm", status: 422, fallback: "External LLM knowledge response validation failed." });
+    return routeErrorResponse(error, {
+      domain: "llm",
+      status: statusForManualValidationError(error),
+      fallback: "External LLM knowledge response validation failed.",
+    });
   }
 }

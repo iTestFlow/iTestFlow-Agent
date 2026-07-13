@@ -17,6 +17,7 @@ import {
 import { extractAndSaveProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
+import { isAppError } from "@/modules/shared/errors/app-error";
 
 export const runtime = "nodejs";
 
@@ -40,14 +41,23 @@ export async function POST(request: Request) {
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const provider = await getUserLLMProvider(ctx);
 
-    const snapshot = await extractAndSaveProjectKnowledgeBase({
+    const draft = await extractAndSaveProjectKnowledgeBase({
       scope: trustedScope,
       actor: ctx.userId,
       provider,
       mode: parsed.data.mode ?? "incremental",
     });
 
-    return NextResponse.json(snapshot);
+    return NextResponse.json(
+      { draftId: draft.draftId, requiresReview: true, draft },
+      {
+        status: 202,
+        headers: {
+          Deprecation: "true",
+          Link: '</api/context/knowledge/preview>; rel="successor-version"',
+        },
+      },
+    );
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
@@ -60,6 +70,10 @@ export async function POST(request: Request) {
 
     if (isInvalidKnowledgeBaseOutputError(error)) {
       return NextResponse.json({ error: InvalidKnowledgeBaseOutputMessage }, { status: 422 });
+    }
+
+    if (isAppError(error)) {
+      return routeErrorResponse(error, { domain: "llm", fallback: "Project knowledge extraction failed." });
     }
 
     return routeErrorResponse(error, { domain: "llm", status: 503, fallback: "Project knowledge extraction failed." });
