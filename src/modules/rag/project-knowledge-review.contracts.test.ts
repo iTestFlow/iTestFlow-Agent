@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  findProjectKnowledgeEntryInstance,
   normalizeProjectKnowledgeBlockers,
   projectKnowledgeBlockerId,
+  projectKnowledgeEntryInstanceId,
+  projectKnowledgeEntryInstances,
   summarizeProjectKnowledgeReview,
 } from "./project-knowledge-review.contracts";
+import { flattenProjectKnowledgeSemanticEntries } from "./project-knowledge-contracts";
 
 describe("project knowledge review contracts", () => {
   it("creates stable encoded blocker identities with fallbacks", () => {
@@ -16,6 +20,69 @@ describe("project knowledge review contracts", () => {
     })).toBe("quote%20mismatch:business_rule:promo%20code:operation%2F1");
     expect(projectKnowledgeBlockerId({ type: "missing_evidence_refs" }))
       .toBe("missing_evidence_refs:unknown:unknown:");
+  });
+
+  it("adds entry and evidence discriminators to collision-safe blocker identities", () => {
+    const first = projectKnowledgeBlockerId({
+      type: "quote_mismatch",
+      category: "glossary",
+      entryKey: "payment gateway",
+      entryInstanceId: "instance-one",
+      sourceSnapshotId: "snapshot-1",
+      sourceWorkItemId: "1",
+      sourceField: "description",
+      referenceIdentity: "ref-one",
+    });
+    const second = projectKnowledgeBlockerId({
+      type: "quote_mismatch",
+      category: "glossary",
+      entryKey: "payment gateway",
+      entryInstanceId: "instance-two",
+      sourceSnapshotId: "snapshot-1",
+      sourceWorkItemId: "1",
+      sourceField: "description",
+      referenceIdentity: "ref-two",
+    });
+
+    expect(first).not.toBe(second);
+    expect(first).toContain("entry%3Dinstance-one");
+    expect(first).toContain("reference%3Dref-one");
+  });
+
+  it("derives browser-safe semantic/provenance entry identities for exact lookup", () => {
+    const knowledgeBase = {
+      modules: [],
+      businessRules: [],
+      stateTransitions: [],
+      glossary: [
+        {
+          term: "Payment Gateway",
+          type: "system" as const,
+          definition: "Routes card payments.",
+          sourceWorkItemIds: ["10"],
+          evidence: "Routes card payments.",
+        },
+        {
+          term: "Payment Gateway",
+          type: "system" as const,
+          definition: "Routes bank transfers.",
+          sourceWorkItemIds: ["11"],
+          evidence: "Routes bank transfers.",
+        },
+      ],
+      crossDependencies: [],
+    };
+    const firstPass = projectKnowledgeEntryInstances(knowledgeBase);
+    const secondPass = projectKnowledgeEntryInstances(structuredClone(knowledgeBase));
+
+    expect(firstPass.map((entry) => entry.entryInstanceId))
+      .toEqual(secondPass.map((entry) => entry.entryInstanceId));
+    expect(new Set(firstPass.map((entry) => entry.entryInstanceId)).size).toBe(2);
+    expect(firstPass.every((entry) => entry.entryInstanceId.startsWith("pkei_"))).toBe(true);
+    expect(flattenProjectKnowledgeSemanticEntries(knowledgeBase).map(projectKnowledgeEntryInstanceId).sort())
+      .toEqual(firstPass.map((entry) => entry.entryInstanceId).sort());
+    expect(findProjectKnowledgeEntryInstance(knowledgeBase, firstPass[1].entryInstanceId)?.entry)
+      .toMatchObject({ definition: "Routes bank transfers.", sourceWorkItemIds: ["11"] });
   });
 
   it("normalizes every supported blocker shape and discards malformed values", () => {
@@ -102,6 +169,30 @@ describe("project knowledge review contracts", () => {
       message: "This entry needs at least one immutable evidence reference.",
       sourceWorkItemIds: [],
     });
+  });
+
+  it("normalizes legacy blocker identities and disambiguates persisted duplicate ids", () => {
+    const blockers = normalizeProjectKnowledgeBlockers([
+      {
+        id: "legacy-duplicate",
+        type: "missing_evidence_refs",
+        category: "glossary",
+        entryKey: "Payment Gateway",
+        sourceWorkItemIds: ["10"],
+      },
+      {
+        id: "legacy-duplicate",
+        type: "missing_evidence_refs",
+        category: "glossary",
+        entryKey: "Payment Gateway",
+        sourceWorkItemIds: ["11"],
+      },
+    ]);
+
+    expect(blockers).toHaveLength(2);
+    expect(blockers.every((blocker) => blocker.entryInstanceId?.startsWith("pkei_"))).toBe(true);
+    expect(new Set(blockers.map((blocker) => blocker.entryInstanceId)).size).toBe(2);
+    expect(new Set(blockers.map((blocker) => blocker.id)).size).toBe(2);
   });
 
   it("summarizes valid metrics and counts by type and category", () => {

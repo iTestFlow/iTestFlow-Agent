@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ArrowUpDown,
   BookOpen,
+  Check,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -355,6 +356,7 @@ const KNOWLEDGE_CATEGORIES = [
 
 type KnowledgeCategoryKey = (typeof KNOWLEDGE_CATEGORIES)[number]["key"]
 type KnowledgeExplorerCategory = KnowledgeCategoryKey | "all"
+const NO_HIGHLIGHTED_KNOWLEDGE_ENTRIES: string[] = []
 
 type AnyKnowledgeItem = KnowledgeSource & {
   id?: string
@@ -378,6 +380,7 @@ type AnyKnowledgeItem = KnowledgeSource & {
 
 type KnowledgeExplorerEntry = {
   key: string
+  highlightIdentity: string
   category: KnowledgeCategoryKey
   categoryLabel: string
   badge: string
@@ -808,6 +811,51 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     loadingGame.completeSession(draft)
   }
 
+  async function regenerateAutoKnowledge() {
+    if (!scope || gen.isRunning || buildLoading) return
+
+    setHasUnfinishedWork(true)
+    setBuildLoading(true)
+    setBuildError(null)
+    try {
+      await indexContextForBuild()
+      loadingGame.startSession()
+      const replacement = await gen.start((signal) =>
+        postJson<KnowledgeGeneratedDraft>("/api/context/knowledge/preview", { scope, mode: compileMode }, signal),
+      )
+      if (!replacement) {
+        loadingGame.endSession()
+        return
+      }
+      loadingGame.completeSession(replacement)
+    } catch (regenerationError) {
+      loadingGame.endSession()
+      const detail = regenerationError instanceof Error
+        ? regenerationError.message
+        : "Source refresh or draft regeneration failed."
+      setBuildError(`The knowledge draft could not be regenerated. Your current draft was kept; retry when the source is available. ${detail}`)
+    } finally {
+      setBuildLoading(false)
+    }
+  }
+
+  function applyManualKnowledgePreparation(data: KnowledgeManualDraft) {
+    setManualKnowledgeDraft(data)
+    setManualKnowledgeReviewDraft(null)
+    setManualKnowledgeCurrentBatch(1)
+    setManualKnowledgeBatchResponses(Object.fromEntries(
+      data.batches.filter((batch) => batch.carriedForward && batch.carriedRawOutput !== undefined)
+        .map((batch) => [batch.batchIndex, batch.carriedRawOutput!]),
+    ))
+    setManualKnowledgeValidatedBatches(Object.fromEntries(
+      data.batches.filter((batch) => batch.carriedForward && batch.carriedKnowledgeBase)
+        .map((batch) => [batch.batchIndex, batch.carriedKnowledgeBase!]),
+    ))
+    const nextStep = data.batchCount === 0 && data.retiredSourceWorkItemCount > 0 ? "preview" : "prepare"
+    setBuildStep(nextStep)
+    scrollBuildSection(nextStep === "preview" ? manualPreviewStepRef : manualPrepareStepRef)
+  }
+
   async function prepareExternalKnowledge() {
     if (!scope) return
     if (!result) {
@@ -829,20 +877,32 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     scrollBuildSection(manualPrepareStepRef)
     try {
       const data = await postJson<KnowledgeManualDraft>("/api/context/knowledge/manual/draft", { scope, mode: compileMode })
-      setManualKnowledgeDraft(data)
-      setManualKnowledgeBatchResponses(Object.fromEntries(
-        data.batches.filter((batch) => batch.carriedForward && batch.carriedRawOutput !== undefined)
-          .map((batch) => [batch.batchIndex, batch.carriedRawOutput!]),
-      ))
-      setManualKnowledgeValidatedBatches(Object.fromEntries(
-        data.batches.filter((batch) => batch.carriedForward && batch.carriedKnowledgeBase)
-          .map((batch) => [batch.batchIndex, batch.carriedKnowledgeBase!]),
-      ))
-      const nextStep = data.batchCount === 0 && data.retiredSourceWorkItemCount > 0 ? "preview" : "prepare"
-      setBuildStep(nextStep)
-      scrollBuildSection(nextStep === "preview" ? manualPreviewStepRef : manualPrepareStepRef)
+      applyManualKnowledgePreparation(data)
     } catch (prepareError) {
       setBuildError(prepareError instanceof Error ? prepareError.message : "External LLM knowledge prompt preparation failed.")
+    } finally {
+      setBuildLoading(false)
+    }
+  }
+
+  async function regenerateExternalKnowledge() {
+    if (!scope || buildLoading) return
+
+    setHasUnfinishedWork(true)
+    setBuildLoading(true)
+    setBuildError(null)
+    try {
+      await indexContextForBuild()
+      const replacement = await postJson<KnowledgeManualDraft>("/api/context/knowledge/manual/draft", {
+        scope,
+        mode: compileMode,
+      })
+      applyManualKnowledgePreparation(replacement)
+    } catch (regenerationError) {
+      const detail = regenerationError instanceof Error
+        ? regenerationError.message
+        : "Source refresh or prompt regeneration failed."
+      setBuildError(`The external LLM draft could not be regenerated. Your current draft was kept; retry when the source is available. ${detail}`)
     } finally {
       setBuildLoading(false)
     }
@@ -949,8 +1009,10 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         { scope, proposedKnowledge },
       )
       applyPersistedDraftToGenerated(data.draft)
+      return data.draft
     } catch (error) {
       setBuildError(error instanceof Error ? error.message : "Project knowledge resolution failed.")
+      throw error
     } finally {
       setGeneratedSaveLoading(false)
     }
@@ -1002,7 +1064,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         return
       }
       const status = manualKnowledgeReviewDraft.persistedStatus ?? manualKnowledgeReviewDraft.status
-      if (status !== "ready_for_review" || manualKnowledgeReviewDraft.blockers.length) return
+      if (status !== "ready_for_review" || manualKnowledgeReviewDraft.blockers.length || manualKnowledgeReviewDraft.regenerateRequired) return
       await postJson("/api/context/knowledge/save", { scope, draftId: manualKnowledgeReviewDraft.id })
       setHasUnfinishedWork(false)
       resetBuildState()
@@ -1029,8 +1091,10 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         { scope, proposedKnowledge },
       )
       setManualKnowledgeReviewDraft(data.draft)
+      return data.draft
     } catch (error) {
       setBuildError(error instanceof Error ? error.message : "Manual knowledge resolution failed.")
+      throw error
     } finally {
       setManualKnowledgeSaveLoading(false)
     }
@@ -1505,7 +1569,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                           onCancel={gen.cancel}
                           onRetry={() => {
                             gen.retry()
-                            void prepareAutoKnowledge()
+                            void (generatedDraft ? regenerateAutoKnowledge() : prepareAutoKnowledge())
                           }}
                           loadingGame={loadingGame.panel}
                         />
@@ -1519,11 +1583,12 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                           <GeneratedPreviewPanel
                             draft={generatedDraft}
                             saving={generatedSaveLoading}
+                            regenerating={buildLoading || gen.isRunning || loadingGame.shouldKeepPanelMounted}
                             onSave={saveGeneratedKnowledge}
                             onResolve={resolveGeneratedKnowledgeDraft}
                             onLoadReviewContext={loadKnowledgeReviewContext}
                             onRebase={rebaseGeneratedKnowledgeDraft}
-                            onRegenerate={prepareAutoKnowledge}
+                            onRegenerate={regenerateAutoKnowledge}
                           />
                         </div>
                       ) : null}
@@ -1538,11 +1603,12 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                       <GeneratedPreviewPanel
                         draft={generatedDraft}
                         saving={generatedSaveLoading}
+                        regenerating={buildLoading || gen.isRunning || loadingGame.shouldKeepPanelMounted}
                         onSave={saveGeneratedKnowledge}
                         onResolve={resolveGeneratedKnowledgeDraft}
                         onLoadReviewContext={loadKnowledgeReviewContext}
                         onRebase={rebaseGeneratedKnowledgeDraft}
-                        onRegenerate={prepareAutoKnowledge}
+                        onRegenerate={regenerateAutoKnowledge}
                       />
                     </div>
                   ) : null}
@@ -1608,6 +1674,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                           allValidated={manualKnowledgeAllBatchesValidated}
                           validationLoading={manualKnowledgeValidationLoading}
                           saveLoading={manualKnowledgeSaveLoading}
+                          regenerating={buildLoading}
                           validatedBatches={manualKnowledgeValidatedBatches}
                           reviewDraft={manualKnowledgeReviewDraft}
                           batchRef={manualBatchRef}
@@ -1625,7 +1692,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                           onResolve={resolveManualKnowledgeDraft}
                           onLoadReviewContext={loadKnowledgeReviewContext}
                           onRebase={rebaseManualKnowledgeDraft}
-                          onRegenerate={prepareExternalKnowledge}
+                          onRegenerate={regenerateExternalKnowledge}
                         />
                       ) : null}
                     </div>
@@ -1641,6 +1708,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                         allValidated={manualKnowledgeAllBatchesValidated}
                         validationLoading={manualKnowledgeValidationLoading}
                         saveLoading={manualKnowledgeSaveLoading}
+                        regenerating={buildLoading}
                         validatedBatches={manualKnowledgeValidatedBatches}
                         reviewDraft={manualKnowledgeReviewDraft}
                         batchRef={manualBatchRef}
@@ -1658,7 +1726,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                         onResolve={resolveManualKnowledgeDraft}
                         onLoadReviewContext={loadKnowledgeReviewContext}
                         onRebase={rebaseManualKnowledgeDraft}
-                        onRegenerate={prepareExternalKnowledge}
+                        onRegenerate={regenerateExternalKnowledge}
                       />
                     </div>
                   ) : null}
@@ -1957,9 +2025,31 @@ function KnowledgeDraftGate({
   )
 }
 
+export function knowledgePublishBlockedReason({
+  status,
+  blockerCount,
+  regenerateRequired,
+}: {
+  status: string | null
+  blockerCount: number
+  regenerateRequired?: boolean
+}) {
+  if (blockerCount > 0) {
+    return `Blocked: ${blockerCount} review ${blockerCount === 1 ? "issue remains" : "issues remain"}.`
+  }
+  if (regenerateRequired) {
+    return "Blocked: Source changes require refreshing sources and regenerating this draft."
+  }
+  if (status !== "ready_for_review") {
+    return "Blocked: Complete and re-check the review before publishing."
+  }
+  return null
+}
+
 function GeneratedPreviewPanel({
   draft,
   saving,
+  regenerating,
   onSave,
   onLoadReviewContext,
   onResolve,
@@ -1968,9 +2058,10 @@ function GeneratedPreviewPanel({
 }: {
   draft: KnowledgeGeneratedDraft
   saving: boolean
+  regenerating: boolean
   onSave: () => void
   onLoadReviewContext: (draftId: string) => Promise<ProjectKnowledgeReviewContext>
-  onResolve: (knowledgeBase: ProjectKnowledgeBase) => Promise<void>
+  onResolve: (knowledgeBase: ProjectKnowledgeBase) => Promise<KnowledgePersistedDraft | void>
   onRebase: () => Promise<void>
   onRegenerate: () => Promise<void>
 }) {
@@ -1985,6 +2076,28 @@ function GeneratedPreviewPanel({
   const totalItems = countKnowledgeItems(draft.knowledgeBase)
   const displayCount = countKnowledgeItems(displayBase)
   const canPublish = draft.draftStatus === "ready_for_review" && draft.blockers.length === 0 && !draft.regenerateRequired
+  const publishBlockedReason = regenerating
+    ? "Refreshing sources and regenerating the draft. Your current draft will remain available until its replacement is ready."
+    : knowledgePublishBlockedReason({
+        status: draft.draftStatus,
+        blockerCount: draft.blockers.length,
+        regenerateRequired: draft.regenerateRequired,
+      })
+  const publishReasonId = `generated-publish-reason-${draft.draftId}`
+  const [highlightedEntryIdentities, setHighlightedEntryIdentities] = useState<string[]>([])
+
+  useEffect(() => {
+    setHighlightedEntryIdentities([])
+  }, [draft.draftId])
+
+  async function resolveAndHighlight(proposedKnowledge: ProjectKnowledgeBase) {
+    const changedEntries = changedKnowledgeEntryIdentities(draft.knowledgeBase, proposedKnowledge)
+    const resolved = await onResolve(proposedKnowledge)
+    const resolvedStatus = resolved ? resolved.persistedStatus ?? resolved.status : null
+    if (resolved && resolvedStatus === "ready_for_review" && !resolved.blockers.length && !resolved.regenerateRequired) {
+      setHighlightedEntryIdentities(changedEntries)
+    }
+  }
 
   if (draft.alreadyCurrent) {
     return (
@@ -2031,7 +2144,7 @@ function GeneratedPreviewPanel({
             : ""}
         </div>
       ) : (
-        <KnowledgeExplorer knowledgeBase={displayBase} compact />
+        <KnowledgeExplorer knowledgeBase={displayBase} compact highlightedEntryIdentities={highlightedEntryIdentities} />
       )}
       <KnowledgeDraftGate
         draftId={draft.draftId}
@@ -2040,16 +2153,27 @@ function GeneratedPreviewPanel({
         reviewSummary={draft.reviewSummary}
         regenerateRequired={draft.regenerateRequired}
         proposedKnowledge={draft.knowledgeBase}
-        busy={saving}
+        busy={saving || regenerating}
         onLoadReviewContext={onLoadReviewContext}
-        onResolve={onResolve}
+        onResolve={resolveAndHighlight}
         onRebase={onRebase}
         onRegenerate={onRegenerate}
       />
-      <div className="flex justify-end gap-2 border-t border-border pt-3">
-        <Button onClick={onSave} disabled={saving || !canPublish} aria-busy={saving}>
-          {saving ? <RefreshCw className="size-4 animate-spin" /> : <Save className="size-4" />}
-          {saving ? "Publishing..." : "Publish Knowledge Base"}
+      <div className="flex flex-col gap-2 border-t border-border pt-3 sm:flex-row sm:items-center">
+        {publishBlockedReason ? (
+          <p id={publishReasonId} className="text-xs leading-5 text-muted-foreground">
+            {publishBlockedReason}
+          </p>
+        ) : null}
+        <Button
+          className="sm:ml-auto"
+          onClick={onSave}
+          disabled={saving || regenerating || !canPublish}
+          aria-busy={saving || regenerating}
+          aria-describedby={publishBlockedReason ? publishReasonId : undefined}
+        >
+          {saving || regenerating ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" /> : <Save className="size-4" />}
+          {regenerating ? "Refreshing draft..." : saving ? "Publishing..." : "Publish Knowledge Base"}
         </Button>
       </div>
     </div>
@@ -2064,6 +2188,7 @@ function ExternalPromptPanel({
   allValidated,
   validationLoading,
   saveLoading,
+  regenerating,
   validatedBatches,
   reviewDraft,
   batchRef,
@@ -2084,6 +2209,7 @@ function ExternalPromptPanel({
   allValidated: boolean
   validationLoading: boolean
   saveLoading: boolean
+  regenerating: boolean
   validatedBatches: Record<number, ProjectKnowledgeBase>
   reviewDraft: KnowledgePersistedDraft | null
   batchRef: RefObject<HTMLDivElement | null>
@@ -2093,7 +2219,7 @@ function ExternalPromptPanel({
   onValidate: () => void
   onSave: () => void
   onLoadReviewContext: (draftId: string) => Promise<ProjectKnowledgeReviewContext>
-  onResolve: (knowledgeBase: ProjectKnowledgeBase) => Promise<void>
+  onResolve: (knowledgeBase: ProjectKnowledgeBase) => Promise<KnowledgePersistedDraft | void>
   onRebase: () => Promise<void>
   onRegenerate: () => Promise<void>
 }) {
@@ -2109,6 +2235,32 @@ function ExternalPromptPanel({
   const reviewStatus = reviewDraft ? reviewDraft.persistedStatus ?? reviewDraft.status : null
   const canPublishReview = reviewStatus === "ready_for_review" && !reviewDraft?.blockers.length && !reviewDraft?.regenerateRequired
   const actionLabel = reviewDraft ? "Publish Knowledge Base" : "Create Review Draft"
+  const publishBlockedReason = regenerating
+    ? "Refreshing sources and regenerating the draft. Your current draft will remain available until its replacement is ready."
+    : reviewDraft
+      ? knowledgePublishBlockedReason({
+          status: reviewStatus,
+          blockerCount: reviewDraft.blockers.length,
+          regenerateRequired: reviewDraft.regenerateRequired,
+        })
+      : null
+  const publishReasonId = `manual-publish-reason-${reviewDraft?.id ?? draft.draftId}`
+  const [highlightedEntryIdentities, setHighlightedEntryIdentities] = useState<string[]>([])
+
+  useEffect(() => {
+    setHighlightedEntryIdentities([])
+  }, [draft.draftId, reviewDraft?.id])
+
+  async function resolveAndHighlight(proposedKnowledge: ProjectKnowledgeBase) {
+    const changedEntries = previewKnowledgeBase
+      ? changedKnowledgeEntryIdentities(previewKnowledgeBase, proposedKnowledge)
+      : []
+    const resolved = await onResolve(proposedKnowledge)
+    const resolvedStatus = resolved ? resolved.persistedStatus ?? resolved.status : null
+    if (resolved && resolvedStatus === "ready_for_review" && !resolved.blockers.length && !resolved.regenerateRequired) {
+      setHighlightedEntryIdentities(changedEntries)
+    }
+  }
 
   if (draft.batchCount === 0) {
     return (
@@ -2140,17 +2292,28 @@ function ExternalPromptPanel({
                 reviewSummary={reviewDraft.reviewSummary}
                 regenerateRequired={reviewDraft.regenerateRequired}
                 proposedKnowledge={reviewDraft.proposedKnowledge ?? reviewDraft.knowledgeBase ?? null}
-                busy={saveLoading}
+                busy={saveLoading || regenerating}
                 onLoadReviewContext={onLoadReviewContext}
-                onResolve={onResolve}
+                onResolve={resolveAndHighlight}
                 onRebase={onRebase}
                 onRegenerate={onRegenerate}
               />
             ) : null}
-            <div className="flex justify-end">
-              <Button onClick={onSave} disabled={saveLoading || (Boolean(reviewDraft) && !canPublishReview)}>
-                {saveLoading ? <RefreshCw className="size-4 animate-spin" /> : <Save className="size-4" />}
-                {saveLoading ? "Working..." : actionLabel}
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              {publishBlockedReason ? (
+                <p id={publishReasonId} className="text-xs leading-5 text-muted-foreground">
+                  {publishBlockedReason}
+                </p>
+              ) : null}
+              <Button
+                className="sm:ml-auto"
+                onClick={onSave}
+                disabled={saveLoading || regenerating || (Boolean(reviewDraft) && !canPublishReview)}
+                aria-busy={saveLoading || regenerating}
+                aria-describedby={publishBlockedReason ? publishReasonId : undefined}
+              >
+                {saveLoading || regenerating ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" /> : <Save className="size-4" />}
+                {regenerating ? "Refreshing draft..." : saveLoading ? "Working..." : actionLabel}
               </Button>
             </div>
           </div>
@@ -2225,7 +2388,7 @@ function ExternalPromptPanel({
             </div>
             <Badge variant="outline">{countKnowledgeItems(previewKnowledgeBase)} entries</Badge>
           </div>
-          <KnowledgeExplorer knowledgeBase={previewKnowledgeBase} compact />
+          <KnowledgeExplorer knowledgeBase={previewKnowledgeBase} compact highlightedEntryIdentities={highlightedEntryIdentities} />
           {reviewDraft ? (
             <KnowledgeDraftGate
               draftId={reviewDraft.id}
@@ -2234,9 +2397,9 @@ function ExternalPromptPanel({
               reviewSummary={reviewDraft.reviewSummary}
               regenerateRequired={reviewDraft.regenerateRequired}
               proposedKnowledge={reviewDraft.proposedKnowledge ?? reviewDraft.knowledgeBase ?? null}
-              busy={saveLoading}
+              busy={saveLoading || regenerating}
               onLoadReviewContext={onLoadReviewContext}
-              onResolve={onResolve}
+              onResolve={resolveAndHighlight}
               onRebase={onRebase}
               onRegenerate={onRegenerate}
             />
@@ -2245,10 +2408,21 @@ function ExternalPromptPanel({
               Finalization creates a persisted review draft. Publishing is a separate explicit action.
             </div>
           )}
-          <div className="flex justify-end gap-2 border-t border-border pt-3">
-            <Button onClick={onSave} disabled={saveLoading || (Boolean(reviewDraft) && !canPublishReview)}>
-              {saveLoading ? <RefreshCw className="size-4 animate-spin" /> : <Save className="size-4" />}
-              {saveLoading ? "Working..." : actionLabel}
+          <div className="flex flex-col gap-2 border-t border-border pt-3 sm:flex-row sm:items-center">
+            {publishBlockedReason ? (
+              <p id={publishReasonId} className="text-xs leading-5 text-muted-foreground">
+                {publishBlockedReason}
+              </p>
+            ) : null}
+            <Button
+              className="sm:ml-auto"
+              onClick={onSave}
+              disabled={saveLoading || regenerating || (Boolean(reviewDraft) && !canPublishReview)}
+              aria-busy={saveLoading || regenerating}
+              aria-describedby={publishBlockedReason ? publishReasonId : undefined}
+            >
+              {saveLoading || regenerating ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" /> : <Save className="size-4" />}
+              {regenerating ? "Refreshing draft..." : saveLoading ? "Working..." : actionLabel}
             </Button>
           </div>
         </div>
@@ -2793,7 +2967,15 @@ function KnowledgeMetric({ label, value, tone }: { label: string; value: number 
   )
 }
 
-function KnowledgeExplorer({ knowledgeBase, compact = false }: { knowledgeBase: ProjectKnowledgeBase; compact?: boolean }) {
+function KnowledgeExplorer({
+  knowledgeBase,
+  compact = false,
+  highlightedEntryIdentities = NO_HIGHLIGHTED_KNOWLEDGE_ENTRIES,
+}: {
+  knowledgeBase: ProjectKnowledgeBase
+  compact?: boolean
+  highlightedEntryIdentities?: string[]
+}) {
   const [category, setCategory] = useState<KnowledgeExplorerCategory>("all")
   const [query, setQuery] = useState("")
   const [page, setPage] = useState(1)
@@ -2815,6 +2997,14 @@ function KnowledgeExplorer({ knowledgeBase, compact = false }: { knowledgeBase: 
   useEffect(() => {
     setPage(1)
   }, [category, query, compact, knowledgeBase])
+
+  useEffect(() => {
+    const highlightedIndex = entries.findIndex((entry) => highlightedEntryIdentities.includes(entry.highlightIdentity))
+    if (highlightedIndex < 0) return
+    setCategory("all")
+    setQuery("")
+    setPage(Math.floor(highlightedIndex / pageSize) + 1)
+  }, [entries, highlightedEntryIdentities, pageSize])
 
   return (
     <div className="space-y-3">
@@ -2855,7 +3045,14 @@ function KnowledgeExplorer({ knowledgeBase, compact = false }: { knowledgeBase: 
         </div>
         <div className={`space-y-3 ${compact ? "max-h-[520px] overflow-y-auto pr-1" : ""}`}>
           {visibleEntries.length ? (
-            visibleEntries.map((entry) => <KnowledgeExplorerEntryCard key={entry.key} entry={entry} compact={compact} />)
+            visibleEntries.map((entry) => (
+              <KnowledgeExplorerEntryCard
+                key={entry.key}
+                entry={entry}
+                compact={compact}
+                highlighted={highlightedEntryIdentities.includes(entry.highlightIdentity)}
+              />
+            ))
           ) : (
             <KnowledgeEmptyState
               title="No knowledge entries match"
@@ -2913,15 +3110,31 @@ function KnowledgeCategoryButton({
   )
 }
 
-function KnowledgeExplorerEntryCard({ entry, compact }: { entry: KnowledgeExplorerEntry; compact?: boolean }) {
+function KnowledgeExplorerEntryCard({
+  entry,
+  compact,
+  highlighted = false,
+}: {
+  entry: KnowledgeExplorerEntry
+  compact?: boolean
+  highlighted?: boolean
+}) {
   const description = entry.description.trim()
 
   return (
-    <article className="knowledge-entry rounded-lg border border-border bg-muted/60 p-4 transition-colors duration-ui hover:border-primary/40 hover:bg-muted focus-within:ring-2 focus-within:ring-ring">
+    <article
+      aria-label={highlighted ? `${entry.title}, updated review result` : undefined}
+      className={`knowledge-entry rounded-lg border-2 p-4 transition-colors duration-ui motion-reduce:transition-none focus-within:ring-2 focus-within:ring-ring ${
+        highlighted
+          ? "border-primary bg-primary/5 ring-2 ring-primary/20"
+          : "border-border bg-muted/60 hover:border-primary/40 hover:bg-muted"
+      }`}
+    >
       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{entry.badge}</Badge>
+            {highlighted ? <Badge className="gap-1"><Check className="size-3.5" aria-hidden="true" />Updated review result</Badge> : null}
             <span className="font-semibold text-foreground">{entry.title}</span>
           </div>
           {description ? (
@@ -3032,6 +3245,7 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
       const meta = knowledgeMeta(category.key, item)
       return {
         key: knowledgeItemKey(category.key, item, index),
+        highlightIdentity: knowledgeHighlightIdentity(category.key, item),
         category: category.key,
         categoryLabel: category.label,
         badge: category.badge,
@@ -3051,6 +3265,38 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
       }
     })
   })
+}
+
+export function changedKnowledgeEntryIdentities(
+  previous: ProjectKnowledgeBase,
+  next: ProjectKnowledgeBase,
+) {
+  const previousCounts = new Map<string, number>()
+  for (const category of KNOWLEDGE_CATEGORIES) {
+    for (const item of previous[category.key] as AnyKnowledgeItem[]) {
+      const identity = `${category.key}:${JSON.stringify(item)}`
+      previousCounts.set(identity, (previousCounts.get(identity) ?? 0) + 1)
+    }
+  }
+
+  const changed: string[] = []
+  for (const category of KNOWLEDGE_CATEGORIES) {
+    const items = next[category.key] as AnyKnowledgeItem[]
+    items.forEach((item) => {
+      const identity = `${category.key}:${JSON.stringify(item)}`
+      const available = previousCounts.get(identity) ?? 0
+      if (available > 0) {
+        previousCounts.set(identity, available - 1)
+      } else {
+        changed.push(knowledgeHighlightIdentity(category.key, item))
+      }
+    })
+  }
+  return changed
+}
+
+function knowledgeHighlightIdentity(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) {
+  return `${category}:${JSON.stringify(item)}`
 }
 
 function knowledgeItemKey(category: KnowledgeCategoryKey, item: AnyKnowledgeItem, index: number) {

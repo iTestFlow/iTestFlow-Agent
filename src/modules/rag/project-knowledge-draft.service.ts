@@ -31,6 +31,7 @@ import {
   hashCanonicalValue,
   flattenProjectKnowledgeSemanticEntries,
   type ProjectKnowledgeDraftStatus,
+  type ProjectKnowledgeEntryCategory,
   type ProjectKnowledgeOperation,
   type ProjectKnowledgeSourceManifestEntry,
 } from "./project-knowledge-contracts";
@@ -54,11 +55,14 @@ import { evaluateAutomaticProvenanceRefresh } from "./project-knowledge-publicat
 import { repairMissingProjectKnowledgeEvidenceRefs } from "./project-knowledge-evidence-repair";
 import {
   verifyProjectKnowledgeEvidence,
+  type ProjectKnowledgeEvidenceBlocker as ProjectKnowledgeVerificationBlocker,
   type ProjectKnowledgeEvidenceSnapshot,
 } from "./project-knowledge-provenance";
 import {
   normalizeProjectKnowledgeBlockers,
   projectKnowledgeBlockerId,
+  projectKnowledgeEntryInstanceId,
+  projectKnowledgeEntryInstances,
   summarizeProjectKnowledgeReview,
   type ProjectKnowledgeDraftBlocker,
   type ProjectKnowledgeReviewContext,
@@ -557,29 +561,18 @@ export async function completeProjectKnowledgeDraft(input: {
     operations.push(...hardConflictOperations(conflicts));
     const currentManifest = await loadCurrentProjectKnowledgeSourceManifest(scope, client);
     const sourceDrifted = computeProjectKnowledgeSourceFingerprint(currentManifest) !== row.source_fingerprint;
-    const hardConflictBlockers = conflicts.map((conflict) => ({
-      id: projectKnowledgeBlockerId({
-        type: "hard_conflict",
-        category: "hard_conflict",
-        entryKey: conflict.identityKey,
-        identityKey: conflict.identityKey,
-      }),
-      type: "hard_conflict",
-      category: "hard_conflict",
-      entryKey: conflict.identityKey,
-      identityKey: conflict.identityKey,
-      subject: conflict.subject,
-      conflictType: conflict.conflictType,
-      affectedCategory: conflict.affectedCategory,
-      participants: conflict.participants,
-      message: "These source-backed entries disagree and require a reviewer decision.",
-    }));
-    const v2Blockers = validateTouchedV2Knowledge(verification.knowledgeBase, touchedKeys);
-    const evidenceBlockers = verification.blockers.map((blocker) => ({
-      ...blocker,
-      id: projectKnowledgeBlockerId(blocker),
-      sourceWorkItemIds: [blocker.sourceWorkItemId],
-    }));
+    const hardConflictBlockers = buildHardConflictBlockers(conflicts);
+    const suppressedEntryInstanceIds = hardConflictParticipantInstanceIds(conflicts);
+    const v2Blockers = validateTouchedV2Knowledge(
+      verification.knowledgeBase,
+      touchedKeys,
+      suppressedEntryInstanceIds,
+    );
+    const evidenceBlockers = buildEvidenceReviewBlockers(
+      verification.knowledgeBase,
+      verification.blockers,
+      conflicts,
+    );
     const blockers = normalizeProjectKnowledgeBlockers([
       ...evidenceBlockers,
       ...v2Blockers,
@@ -1056,41 +1049,35 @@ export async function tryDeterministicProjectKnowledgeRebase(input: {
         })
       : operations;
     nextOperations.push(...hardConflictOperations(mergedConflicts));
-    const replayBlockers = replay.failed.map((outcome) => ({
-      id: projectKnowledgeBlockerId({
+    const replayBlockers = replay.failed.map((outcome) => {
+      const entryInstanceId = projectKnowledgeEntryInstanceId({
+        category: outcome.operation.category,
+        entryKey: outcome.operation.entryKey,
+        projection: outcome.proposed ?? outcome.latest ?? outcome.base,
+        provenance: { operationId: outcome.operation.id, result: outcome.result },
+      });
+      return {
+        id: projectKnowledgeBlockerId({
+          type: "replay_conflict",
+          category: outcome.operation.category,
+          entryKey: outcome.operation.entryKey,
+          entryInstanceId,
+          operationId: outcome.operation.id,
+        }),
         type: "replay_conflict",
         category: outcome.operation.category,
         entryKey: outcome.operation.entryKey,
+        entryInstanceId,
+        message: "The published entry changed after this draft was prepared. Choose the value to keep.",
         operationId: outcome.operation.id,
-      }),
-      type: "replay_conflict",
-      category: outcome.operation.category,
-      entryKey: outcome.operation.entryKey,
-      message: "The published entry changed after this draft was prepared. Choose the value to keep.",
-      operationId: outcome.operation.id,
-      result: outcome.result,
-      base: outcome.base,
-      latest: outcome.latest,
-      proposed: outcome.proposed,
-      actions: ["keep_latest", "use_proposed", "edit_proposed"],
-    }));
-    const hardConflictBlockers = mergedConflicts.map((conflict) => ({
-      id: projectKnowledgeBlockerId({
-        type: "hard_conflict",
-        category: "hard_conflict",
-        entryKey: conflict.identityKey,
-        identityKey: conflict.identityKey,
-      }),
-      type: "hard_conflict",
-      category: "hard_conflict",
-      entryKey: conflict.identityKey,
-      identityKey: conflict.identityKey,
-      subject: conflict.subject,
-      conflictType: conflict.conflictType,
-      affectedCategory: conflict.affectedCategory,
-      participants: conflict.participants,
-      message: "These source-backed entries disagree and require a reviewer decision.",
-    }));
+        result: outcome.result,
+        base: outcome.base,
+        latest: outcome.latest,
+        proposed: outcome.proposed,
+        actions: ["keep_latest", "use_proposed", "edit_proposed"],
+      };
+    });
+    const hardConflictBlockers = buildHardConflictBlockers(mergedConflicts);
     const blockers = normalizeProjectKnowledgeBlockers([...replayBlockers, ...hardConflictBlockers]);
     const childStatus: ProjectKnowledgeDraftStatus = blockers.length ? "blocked" : "ready_for_review";
     const childStatusReason = mergedConflicts.length
@@ -1240,13 +1227,40 @@ export async function getProjectKnowledgeDraftReviewContext(input: {
     : null;
   if (!knowledgeBase) return { entries: [], sources: [] };
   const blockers = normalizeProjectKnowledgeBlockers(asArray(row.blockers_json));
-  const evidenceIdentities = new Set(blockers
-    .filter((blocker) => blocker.type !== "replay_conflict" && blocker.type !== "hard_conflict")
-    .map((blocker) => `${blocker.category}:${canonicalReviewKey(blocker.entryKey)}`));
-  const entries = reviewableKnowledgeEntries(knowledgeBase)
-    .filter((entry) => evidenceIdentities.has(`${entry.category}:${entry.entryKey}`));
+  const sourceBlockers = blockers.filter((blocker) =>
+    blocker.type !== "replay_conflict" && blocker.type !== "hard_conflict");
+  const reviewableEntries = reviewableKnowledgeEntries(knowledgeBase);
+  const entriesByInstanceId = new Map(reviewableEntries.map((entry) => [entry.entryInstanceId, entry]));
+  const sourceTargets = new Map<string, {
+    category: Exclude<ProjectKnowledgeDraftBlocker["category"], "hard_conflict">;
+    entryKey: string;
+    entryInstanceId: string;
+    value?: (typeof reviewableEntries)[number]["value"];
+    blockers: typeof sourceBlockers;
+  }>();
+  for (const blocker of sourceBlockers) {
+    const exactEntry = blocker.entryInstanceId
+      ? entriesByInstanceId.get(blocker.entryInstanceId)
+      : undefined;
+    const logicalMatches = exactEntry ? [] : reviewableEntries.filter((entry) =>
+      entry.category === blocker.category && entry.entryKey === canonicalReviewKey(blocker.entryKey));
+    const entry = exactEntry ?? (logicalMatches.length === 1 ? logicalMatches[0] : undefined);
+    const targetKey = entry?.entryInstanceId ?? blocker.entryInstanceId ?? blocker.id;
+    const existing = sourceTargets.get(targetKey);
+    if (existing) {
+      existing.blockers.push(blocker);
+      continue;
+    }
+    sourceTargets.set(targetKey, {
+      category: blocker.category as Exclude<ProjectKnowledgeDraftBlocker["category"], "hard_conflict">,
+      entryKey: entry?.entryKey ?? canonicalReviewKey(blocker.entryKey),
+      entryInstanceId: targetKey,
+      ...(entry ? { value: entry.value } : {}),
+      blockers: [blocker],
+    });
+  }
   const hardConflictBlockers = blockers.filter((blocker) => blocker.type === "hard_conflict");
-  if (!entries.length && !hardConflictBlockers.length) return { entries: [], sources: [] };
+  if (!sourceTargets.size && !hardConflictBlockers.length) return { entries: [], sources: [] };
 
   const referencedSnapshotIds = new Set<string>();
   const referencedWorkItemIds = new Set<string>();
@@ -1295,19 +1309,46 @@ export async function getProjectKnowledgeDraftReviewContext(input: {
     };
   };
   return {
-    entries: entries.map((entry) => {
-      const allowedFields = entry.category === "business_rule"
+    entries: Array.from(sourceTargets.values()).map((target) => {
+      const allowedFields = target.category === "business_rule"
         ? PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS
         : PROJECT_KNOWLEDGE_SOURCE_FIELDS;
-      const allowedSourceIds = new Set(entry.value.sourceWorkItemIds);
-      const allowedSnapshotIds = new Set((entry.value.evidenceRefs ?? []).map((ref) => ref.sourceSnapshotId));
+      const affectedWorkItemIds = new Set([
+        ...(target.value?.sourceWorkItemIds ?? []),
+        ...(target.value?.evidenceRefs ?? []).map((ref) => ref.sourceWorkItemId),
+        ...target.blockers.flatMap((blocker) => blocker.sourceWorkItemIds),
+      ].filter(Boolean));
+      const expectedSnapshotIds = new Set([
+        ...(target.value?.evidenceRefs ?? []).map((ref) => ref.sourceSnapshotId),
+        ...target.blockers.flatMap((blocker) =>
+          "sourceSnapshotId" in blocker && blocker.sourceSnapshotId ? [blocker.sourceSnapshotId] : []),
+      ]);
+      for (const manifestEntry of manifest) {
+        if (affectedWorkItemIds.has(manifestEntry.sourceWorkItemId)) {
+          expectedSnapshotIds.add(manifestEntry.sourceSnapshotId);
+        }
+      }
+      const matchingSnapshots = snapshots.filter((snapshot) =>
+        affectedWorkItemIds.size
+          ? affectedWorkItemIds.has(snapshot.sourceWorkItemId)
+          : expectedSnapshotIds.has(snapshot.id));
+      const sources = matchingSnapshots.map((snapshot) => reviewSource(snapshot, allowedFields));
+      const missingExpectedSnapshot = Array.from(expectedSnapshotIds)
+        .some((snapshotId) => !snapshots.some((snapshot) => snapshot.id === snapshotId));
+      const sourceAvailability = sources.some((source) => source.fields.length)
+        ? "available" as const
+        : sources.length
+          ? "empty_fields" as const
+          : missingExpectedSnapshot
+            ? "snapshot_missing" as const
+            : "unmatched_work_item" as const;
       return {
-        category: entry.category,
-        entryKey: entry.entryKey,
-        sources: snapshots
-          .filter((snapshot) =>
-            allowedSourceIds.has(snapshot.sourceWorkItemId) || allowedSnapshotIds.has(snapshot.id))
-          .map((snapshot) => reviewSource(snapshot, allowedFields)),
+        category: target.category,
+        entryKey: target.entryKey,
+        entryInstanceId: target.entryInstanceId,
+        sourceAvailability,
+        affectedWorkItemIds: Array.from(affectedWorkItemIds).sort(),
+        sources,
       };
     }),
     sources: snapshots.map((snapshot) => reviewSource(snapshot)),
@@ -1967,6 +2008,143 @@ function hardConflictOperations(conflicts: ProjectKnowledgeHardConflict[]): Proj
   }));
 }
 
+function buildHardConflictBlockers(conflicts: ProjectKnowledgeHardConflict[]) {
+  return conflicts.map((conflict) => {
+    const entryInstanceId = projectKnowledgeEntryInstanceId({
+      category: conflict.affectedCategory,
+      entryKey: conflict.identityKey,
+      projection: {
+        subject: conflict.subject,
+        conflictType: conflict.conflictType,
+        participantSemanticHashes: conflict.participants.map((participant) => participant.semanticHash).sort(),
+      },
+      provenance: {
+        participantIds: conflict.participants.map((participant) => participant.participantId).sort(),
+        sourceSnapshotIds: Array.from(new Set(
+          conflict.participants.flatMap((participant) => participant.sourceSnapshotIds),
+        )).sort(),
+      },
+    });
+    return {
+      id: projectKnowledgeBlockerId({
+        type: "hard_conflict",
+        category: "hard_conflict",
+        entryKey: conflict.identityKey,
+        entryInstanceId,
+        identityKey: conflict.identityKey,
+        detailDiscriminator: conflict.conflictType,
+      }),
+      type: "hard_conflict",
+      category: "hard_conflict",
+      entryKey: conflict.identityKey,
+      entryInstanceId,
+      identityKey: conflict.identityKey,
+      subject: conflict.subject,
+      conflictType: conflict.conflictType,
+      affectedCategory: conflict.affectedCategory,
+      participants: conflict.participants,
+      message: "These source-backed entries disagree and require a reviewer decision.",
+    };
+  });
+}
+
+function hardConflictParticipantInstanceIds(conflicts: ProjectKnowledgeHardConflict[]) {
+  return new Set(conflicts.flatMap((conflict) => conflict.participants.map((participant) =>
+    projectKnowledgeEntryInstanceId({
+      category: participant.category,
+      entryKey: participant.entryKey,
+      projection: participant.projection,
+      evidence: participant.evidence,
+      sourceWorkItemIds: participant.sourceWorkItemIds,
+      evidenceRefs: participant.evidenceRefs,
+    }))));
+}
+
+function hardConflictParticipantIdentities(conflicts: ProjectKnowledgeHardConflict[]) {
+  return new Set(conflicts.flatMap((conflict) => conflict.participants.map((participant) =>
+    `${participant.category}:${canonicalReviewKey(participant.entryKey)}`)));
+}
+
+function buildEvidenceReviewBlockers(
+  knowledgeBase: ProjectKnowledgeBase,
+  verificationBlockers: ProjectKnowledgeVerificationBlocker[],
+  conflicts: ProjectKnowledgeHardConflict[],
+) {
+  const entries = projectKnowledgeEntryInstances(knowledgeBase);
+  const suppressedIdentities = hardConflictParticipantIdentities(conflicts);
+  const occurrences = new Map<string, number>();
+
+  return verificationBlockers.flatMap((blocker) => {
+    const logicalIdentity = `${blocker.category}:${canonicalReviewKey(blocker.entryKey)}`;
+    if (suppressedIdentities.has(logicalIdentity)) return [];
+
+    const candidates = entries.filter((entry) =>
+      entry.category === blocker.category && canonicalReviewKey(entry.entryKey) === canonicalReviewKey(blocker.entryKey));
+    const matchingCandidateRefs = candidates.flatMap((entry) =>
+      (entry.entry.evidenceRefs ?? []).filter((ref) =>
+        ref.sourceSnapshotId === blocker.sourceSnapshotId &&
+        ref.sourceWorkItemId === blocker.sourceWorkItemId &&
+        ref.sourceField === blocker.sourceField)
+        .map((ref) => ({
+          entryInstanceId: entry.entryInstanceId,
+          referenceIdentity: hashCanonicalValue({
+            sourceSnapshotId: ref.sourceSnapshotId,
+            sourceWorkItemId: ref.sourceWorkItemId,
+            sourceField: ref.sourceField,
+            quote: ref.quote,
+            origin: ref.origin,
+          }),
+        })));
+    const candidateRefs = matchingCandidateRefs.length
+      ? matchingCandidateRefs
+      : candidates.map((entry) => ({
+          entryInstanceId: entry.entryInstanceId,
+          referenceIdentity: hashCanonicalValue({
+            sourceSnapshotId: blocker.sourceSnapshotId,
+            sourceWorkItemId: blocker.sourceWorkItemId,
+            sourceField: blocker.sourceField,
+          }),
+        }));
+    const occurrenceKey = [
+      logicalIdentity,
+      blocker.type,
+      blocker.sourceSnapshotId,
+      blocker.sourceWorkItemId,
+      blocker.sourceField,
+    ].join(":");
+    const occurrence = occurrences.get(occurrenceKey) ?? 0;
+    occurrences.set(occurrenceKey, occurrence + 1);
+    const candidate = candidateRefs[occurrence % Math.max(1, candidateRefs.length)];
+    const entryInstanceId = candidate?.entryInstanceId ?? projectKnowledgeEntryInstanceId({
+      category: blocker.category as ProjectKnowledgeEntryCategory,
+      entryKey: blocker.entryKey,
+      projection: null,
+      provenance: {
+        sourceSnapshotId: blocker.sourceSnapshotId,
+        sourceWorkItemId: blocker.sourceWorkItemId,
+        sourceField: blocker.sourceField,
+      },
+    });
+    const referenceIdentity = candidate?.referenceIdentity ?? hashCanonicalValue({
+      sourceSnapshotId: blocker.sourceSnapshotId,
+      sourceWorkItemId: blocker.sourceWorkItemId,
+      sourceField: blocker.sourceField,
+    });
+    return [{
+      ...blocker,
+      id: projectKnowledgeBlockerId({
+        ...blocker,
+        entryInstanceId,
+        referenceIdentity,
+        detailDiscriminator: String(occurrence + 1),
+      }),
+      entryInstanceId,
+      referenceIdentity,
+      sourceWorkItemIds: [blocker.sourceWorkItemId],
+    }];
+  });
+}
+
 async function persistProjectKnowledgeHardConflicts(
   scope: ProjectScope,
   draftId: string,
@@ -2104,13 +2282,12 @@ function comparableProjection(...values: Array<string | undefined>) {
 }
 
 function reviewableKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase) {
-  return [
-    ...knowledgeBase.modules.map((value) => ({ category: "module" as const, entryKey: canonicalReviewKey(value.id), value })),
-    ...knowledgeBase.businessRules.map((value) => ({ category: "business_rule" as const, entryKey: canonicalReviewKey(value.id), value })),
-    ...knowledgeBase.stateTransitions.map((value) => ({ category: "state_transition" as const, entryKey: canonicalReviewKey(value.id), value })),
-    ...knowledgeBase.glossary.map((value) => ({ category: "glossary" as const, entryKey: canonicalReviewKey(value.term), value })),
-    ...knowledgeBase.crossDependencies.map((value) => ({ category: "dependency" as const, entryKey: canonicalReviewKey(value.id), value })),
-  ];
+  return flattenProjectKnowledgeSemanticEntries(knowledgeBase).map((entry) => ({
+    category: entry.category,
+    entryKey: canonicalReviewKey(entry.entryKey),
+    entryInstanceId: projectKnowledgeEntryInstanceId(entry),
+    value: entry.entry,
+  }));
 }
 
 function canonicalReviewKey(value: string) {
@@ -2145,42 +2322,49 @@ function knowledgeEntryKeysForSources(
 function validateTouchedV2Knowledge(
   knowledgeBase: ProjectKnowledgeBase,
   touchedKeys?: Set<string>,
+  suppressedEntryInstanceIds = new Set<string>(),
 ) {
   const blockers: ProjectKnowledgeDraftBlocker[] = [];
   for (const entry of flattenProjectKnowledgeSemanticEntries(knowledgeBase)) {
     const identity = `${entry.category}:${entry.entryKey}`;
     if (touchedKeys && !touchedKeys.has(identity)) continue;
-    if (!entry.evidenceRefs.length) {
+    const entryInstanceId = projectKnowledgeEntryInstanceId(entry);
+    const suppressEvidenceBlocker = suppressedEntryInstanceIds.has(entryInstanceId);
+    if (!suppressEvidenceBlocker && !entry.evidenceRefs.length) {
       blockers.push({
         id: projectKnowledgeBlockerId({
           type: "missing_evidence_refs",
           category: entry.category,
           entryKey: entry.entryKey,
+          entryInstanceId,
+          detailDiscriminator: "missing-evidence",
         }),
         type: "missing_evidence_refs",
         category: entry.category,
         entryKey: entry.entryKey,
+        entryInstanceId,
         sourceWorkItemIds: entry.sourceWorkItemIds,
         message: "This entry needs at least one immutable evidence reference before it can be published.",
       });
     }
-  }
-  for (const rule of knowledgeBase.businessRules) {
-    const identity = `business_rule:${rule.id.trim().toLowerCase().replace(/\s+/g, " ")}`;
-    if (touchedKeys && !touchedKeys.has(identity)) continue;
-    if (!PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS.includes(
-      rule.sourceField as (typeof PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS)[number],
-    )) {
+    if (entry.category === "business_rule") {
+      const rule = entry.entry as ProjectKnowledgeBase["businessRules"][number];
+      if (PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS.includes(
+        rule.sourceField as (typeof PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS)[number],
+      )) continue;
       blockers.push({
         id: projectKnowledgeBlockerId({
           type: "invalid_business_rule_source_field",
           category: "business_rule",
-          entryKey: rule.id,
+          entryKey: entry.entryKey,
+          entryInstanceId,
+          sourceField: rule.sourceField,
         }),
         type: "invalid_business_rule_source_field",
         category: "business_rule",
-        entryKey: rule.id,
-        sourceWorkItemIds: rule.sourceWorkItemIds,
+        entryKey: entry.entryKey,
+        entryInstanceId,
+        sourceWorkItemIds: entry.sourceWorkItemIds,
         message: "A v2 business rule sourceField must be title, description, acceptanceCriteria, or metadata.",
       });
     }

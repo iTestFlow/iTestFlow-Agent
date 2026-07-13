@@ -5,9 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema";
 import type { ProjectKnowledgeDraftBlocker, ProjectKnowledgeReviewSummary } from "@/modules/rag/project-knowledge-review.contracts";
+import { projectKnowledgeEntryInstances } from "@/modules/rag/project-knowledge-review.contracts";
 import { KnowledgeReviewWorkspace } from "./knowledge-review-workspace";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 const knowledge = {
   modules: [{
@@ -29,6 +33,7 @@ function missingBlocker(index = 0): ProjectKnowledgeDraftBlocker {
     type: "missing_evidence_refs",
     category: "module",
     entryKey: index ? `entry-${index}` : "checkout",
+    entryInstanceId: `module-instance-${index}`,
     sourceWorkItemIds: [String(42 + index)],
     message: "This entry needs an immutable evidence reference.",
   };
@@ -77,6 +82,7 @@ function glossaryConflictFixture() {
   });
   const conflict: Extract<ProjectKnowledgeDraftBlocker, { type: "hard_conflict" }> = {
     id: "promo-code-conflict",
+    entryInstanceId: "promo-code-conflict-instance",
     type: "hard_conflict",
     category: "hard_conflict",
     affectedCategory: "glossary",
@@ -144,9 +150,8 @@ describe("KnowledgeReviewWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: /Advanced JSON/ }));
     const editor = await screen.findByLabelText("Complete reviewed proposal");
     fireEvent.change(editor, { target: { value: '{"modules":[{"id":"invalid"}]}' } });
-    fireEvent.click(screen.getByRole("button", { name: "Apply JSON to review" }));
-
     expect(await screen.findByRole("alert")).toHaveTextContent(/modules\.0/);
+    expect(screen.getByRole("button", { name: "Apply edited JSON" })).toBeDisabled();
   });
 
   it("adds an exact reviewer reference from immutable source text before validation", async () => {
@@ -157,6 +162,9 @@ describe("KnowledgeReviewWorkspace", () => {
         entries: [{
           category: "module",
           entryKey: "checkout",
+          entryInstanceId: "module-instance-0",
+          sourceAvailability: "available",
+          affectedWorkItemIds: ["42"],
           sources: [{
             sourceSnapshotId: "snapshot-42",
             sourceWorkItemId: "42",
@@ -190,12 +198,128 @@ describe("KnowledgeReviewWorkspace", () => {
     })]);
   });
 
+  it("targets one duplicate logical entry by entryInstanceId", async () => {
+    const duplicateKnowledge: ProjectKnowledgeBase = {
+      ...knowledge,
+      glossary: [
+        {
+          term: "payment gateway",
+          type: "term",
+          definition: "The first definition.",
+          sourceWorkItemIds: ["41"],
+          evidence: "First evidence.",
+          evidenceRefs: [],
+        },
+        {
+          term: "payment gateway",
+          type: "term",
+          definition: "The retained second definition.",
+          sourceWorkItemIds: ["42"],
+          evidence: "Second evidence.",
+          evidenceRefs: [],
+        },
+      ],
+    };
+    const instances = projectKnowledgeEntryInstances(duplicateKnowledge)
+      .filter((instance) => instance.category === "glossary");
+    const target = instances[1];
+    const blocker: ProjectKnowledgeDraftBlocker = {
+      id: "duplicate-glossary-evidence",
+      type: "missing_evidence_refs",
+      category: "glossary",
+      entryKey: "payment gateway",
+      entryInstanceId: target.entryInstanceId,
+      sourceWorkItemIds: ["42"],
+      message: "This entry needs an immutable evidence reference.",
+    };
+    const onResolve = vi.fn().mockResolvedValue(undefined);
+    renderWorkspace({
+      blockers: [blocker],
+      proposedKnowledge: duplicateKnowledge,
+      reviewSummary: {
+        ...summary([blocker]),
+        byCategory: { glossary: 1 },
+      },
+      onResolve,
+      onLoadReviewContext: vi.fn().mockResolvedValue({
+        entries: [{
+          category: "glossary",
+          entryKey: "payment gateway",
+          entryInstanceId: target.entryInstanceId,
+          sourceAvailability: "available",
+          affectedWorkItemIds: ["42"],
+          sources: [{
+            sourceSnapshotId: "snapshot-42",
+            sourceWorkItemId: "42",
+            workItemType: "User Story",
+            workItemTitle: "Payment gateway",
+            workItemUrl: "https://dev.azure.com/acme/shop/_workitems/edit/42",
+            adoRevision: 4,
+            sourceUpdatedAt: "2026-07-12T10:00:00.000Z",
+            capturedAt: "2026-07-12T10:05:00.000Z",
+            fields: [{ sourceField: "description", text: "Second evidence." }],
+          }],
+        }],
+        sources: [],
+      }),
+    });
+
+    expect((await screen.findByText(/Current evidence:/)).parentElement).toHaveTextContent("Second evidence.");
+    fireEvent.click(screen.getByRole("button", { name: "Use entire field" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add evidence reference" }));
+    fireEvent.click(screen.getByRole("button", { name: "Validate review changes" }));
+
+    await waitFor(() => expect(onResolve).toHaveBeenCalledTimes(1));
+    expect(onResolve.mock.calls[0][0].glossary[0].evidenceRefs).toEqual([]);
+    expect(onResolve.mock.calls[0][0].glossary[1].evidenceRefs).toEqual([
+      expect.objectContaining({ sourceWorkItemId: "42", quote: "Second evidence." }),
+    ]);
+  });
+
+  it("explains an unavailable source snapshot and offers safe regeneration", async () => {
+    const onRegenerate = vi.fn().mockResolvedValue(undefined);
+    renderWorkspace({
+      onRegenerate,
+      onLoadReviewContext: vi.fn().mockResolvedValue({
+        entries: [{
+          category: "module",
+          entryKey: "checkout",
+          entryInstanceId: "module-instance-0",
+          sourceAvailability: "snapshot_missing",
+          affectedWorkItemIds: ["42"],
+          sources: [],
+        }],
+        sources: [],
+      }),
+    });
+
+    expect(await screen.findByText("Source snapshot unavailable for Work Item 42. This entry cannot be verified in the current draft.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh sources and regenerate draft" }));
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh sources and regenerate" }));
+    await waitFor(() => expect(onRegenerate).toHaveBeenCalledTimes(1));
+  });
+
+  it("renders legacy blocker ID collisions without a React key warning", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const first = missingBlocker(0);
+    const second = { ...missingBlocker(1), id: first.id, entryKey: "checkout" };
+    renderWorkspace({ blockers: [first, second], reviewSummary: summary([first, second]) });
+
+    await waitFor(() => expect(screen.getAllByText("Evidence link required")).toHaveLength(2));
+    const keyWarnings = consoleError.mock.calls.filter((call) =>
+      call.some((value) => String(value).includes("same key") || String(value).includes("unique \"key\"")));
+    expect(keyWarnings).toHaveLength(0);
+    consoleError.mockRestore();
+  });
+
   it("applies a structured replay choice without exposing raw JSON", () => {
     const replay: ProjectKnowledgeDraftBlocker = {
       id: "replay-1",
       type: "replay_conflict",
       category: "module",
       entryKey: "checkout",
+      entryInstanceId: "checkout-replay-instance",
       message: "Choose the entry to keep.",
       operationId: "operation-1",
       result: "semantic_conflict",
@@ -239,6 +363,7 @@ describe("KnowledgeReviewWorkspace", () => {
     };
     const conflict: ProjectKnowledgeDraftBlocker = {
       id: "hard-conflict-1",
+      entryInstanceId: "hard-conflict-instance-1",
       type: "hard_conflict",
       category: "hard_conflict",
       affectedCategory: "business_rule",
@@ -314,8 +439,14 @@ describe("KnowledgeReviewWorkspace", () => {
       onResolve,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Keep version 2" }));
+    const versionOneButton = screen.getByRole("button", { name: "Keep version 1" });
+    const versionTwoButton = screen.getByRole("button", { name: "Keep version 2" });
+    fireEvent.click(versionTwoButton);
     expect(screen.getByText("Version 2 selected")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Version 2 selected" })).toHaveAttribute("aria-pressed", "true");
+    expect(versionOneButton).toHaveAttribute("aria-pressed", "false");
+    expect(versionOneButton.closest("fieldset")?.className).not.toContain("opacity");
+    expect(screen.getByText("A code entered during checkout.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save decisions and re-check" }));
 
     await waitFor(() => expect(onResolve).toHaveBeenCalledTimes(1));
@@ -371,7 +502,7 @@ describe("KnowledgeReviewWorkspace", () => {
     fireEvent.change(screen.getByLabelText("Complete reviewed proposal"), {
       target: { value: JSON.stringify(editedKnowledge, null, 2) },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Apply JSON to review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply edited JSON" }));
     fireEvent.click(screen.getByRole("button", { name: "Keep version 2" }));
     fireEvent.click(screen.getByRole("button", { name: "Save decisions and re-check" }));
 
@@ -410,15 +541,23 @@ describe("KnowledgeReviewWorkspace", () => {
       onResolve,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Combine entries" }));
-    const createButton = screen.getByRole("button", { name: "Create combined entry" });
-    expect(createButton).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Review and combine" }));
+    const previewButton = screen.getByRole("button", { name: "Preview combined entry" });
+    expect(previewButton).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save decisions and re-check" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Choose source version for Type"), { target: { value: "0" } });
-    expect(createButton).toBeDisabled();
+    expect(previewButton).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Choose source version for Definition"), { target: { value: "1" } });
-    expect(createButton).not.toBeDisabled();
-    fireEvent.click(createButton);
+    expect(previewButton).not.toBeDisabled();
+    fireEvent.click(previewButton);
+    expect(screen.getByText("Combined entry preview")).toBeTruthy();
+    expect(screen.getByText("From Version 1")).toBeTruthy();
+    expect(screen.getByText("From Version 2")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save decisions and re-check" })).toBeDisabled();
+    expect(onResolve).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Use combined entry" }));
     expect(screen.getByText("Entries combined")).toBeTruthy();
+    expect(screen.getByText("Selected final result")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save decisions and re-check" }));
 
     await waitFor(() => expect(onResolve).toHaveBeenCalledTimes(1));

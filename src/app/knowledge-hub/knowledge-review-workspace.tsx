@@ -19,6 +19,16 @@ import {
 } from "lucide-react"
 
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -26,6 +36,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import {
+  PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS,
   ProjectKnowledgeBaseSchema,
   type ProjectKnowledgeBase,
   type ProjectKnowledgeEvidenceRef,
@@ -41,6 +52,21 @@ import type {
   ProjectKnowledgeReviewSource,
   ProjectKnowledgeReviewSummary,
 } from "@/modules/rag/project-knowledge-review.contracts"
+import { findProjectKnowledgeEntryInstance } from "@/modules/rag/project-knowledge-review.contracts"
+
+type ConflictDecision =
+  | {
+      kind: "version"
+      label: string
+      participantId: string
+      versionIndex: number
+    }
+  | {
+      kind: "combined"
+      label: string
+      entry: ProjectKnowledgeHardConflictParticipant["entry"]
+      fieldSources: Record<string, number>
+    }
 
 type Props = {
   draftId: string
@@ -100,22 +126,25 @@ export function KnowledgeReviewWorkspace({
   const [contextLoading, setContextLoading] = useState(false)
   const [contextError, setContextError] = useState<string | null>(null)
   const [jsonText, setJsonText] = useState(() => JSON.stringify(proposedKnowledge, null, 2))
-  const [jsonError, setJsonError] = useState<string | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [validationRequested, setValidationRequested] = useState(false)
-  const [conflictDecisions, setConflictDecisions] = useState<Record<string, string>>({})
+  const [conflictDecisions, setConflictDecisions] = useState<Record<string, ConflictDecision>>({})
+  const [regenerateDialogOpen, setRegenerateDialogOpen] = useState(false)
   const firstIssueRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     setWorkingKnowledge(proposedKnowledge)
     setJsonText(JSON.stringify(proposedKnowledge, null, 2))
-    setJsonError(null)
     setSubmitError(null)
     setDirty(false)
     setConflictDecisions({})
   }, [draftId, proposedKnowledge])
 
   const needsReviewContext = blockers.some((blocker) => isEvidenceBlocker(blocker) || blocker.type === "hard_conflict")
+  const jsonValidation = useMemo(() => parseReviewedKnowledge(jsonText), [jsonText])
+  const appliedJsonText = workingKnowledge ? JSON.stringify(workingKnowledge, null, 2) : ""
+  const jsonDiffersFromApplied = jsonText !== appliedJsonText
+  const canApplyJson = jsonDiffersFromApplied && Boolean(jsonValidation.data)
 
   async function loadReviewContext() {
     if (!needsReviewContext) return
@@ -149,14 +178,34 @@ export function KnowledgeReviewWorkspace({
 
   if (regenerateRequired) {
     return (
-      <div className="rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm text-warning-foreground">
-        <div className="font-semibold">Compiler contract changed</div>
-        <p className="mt-1 text-xs">This proposal uses incompatible validation semantics and must be regenerated.</p>
-        <Button className="mt-3 min-h-11" size="sm" variant="outline" onClick={() => void onRegenerate()} disabled={busy}>
-          {busy ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" /> : <RefreshCw className="size-4" />}
-          Regenerate draft
-        </Button>
-      </div>
+      <>
+        <div className="rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm text-warning-foreground">
+          <div className="font-semibold">Compiler contract changed</div>
+          <p className="mt-1 text-xs">This proposal uses incompatible validation semantics and must be regenerated.</p>
+          <Button className="mt-3 min-h-11" size="sm" variant="outline" onClick={() => setRegenerateDialogOpen(true)} disabled={busy}>
+            {busy ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" /> : <RefreshCw className="size-4" />}
+            Refresh sources and regenerate draft
+          </Button>
+        </div>
+        <AlertDialog open={regenerateDialogOpen} onOpenChange={setRegenerateDialogOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Refresh sources and regenerate this draft?</AlertDialogTitle>
+              <AlertDialogDescription>
+                The project index will be refreshed before a replacement draft is created. {dirty
+                  ? "Your staged review changes will not carry into the replacement draft."
+                  : "The current draft will remain available if regeneration fails."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={busy}>Keep current draft</AlertDialogCancel>
+              <AlertDialogAction disabled={busy} onClick={() => void onRegenerate()}>
+                Refresh sources and regenerate
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </>
     )
   }
 
@@ -198,7 +247,9 @@ export function KnowledgeReviewWorkspace({
     const categoryMatches = category === "all" || reviewCategory(blocker) === category
     if (!categoryMatches) return false
     if (!normalizedQuery) return true
-    const entry = workingKnowledge ? findKnowledgeEntry(workingKnowledge, blocker.category, blocker.entryKey) : null
+    const entry = workingKnowledge
+      ? findKnowledgeEntry(workingKnowledge, blocker.category, blocker.entryKey, blocker.entryInstanceId)
+      : null
     return [
       BLOCKER_LABELS[blocker.type] ?? blocker.type,
       blocker.entryKey,
@@ -218,6 +269,7 @@ export function KnowledgeReviewWorkspace({
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const safePage = Math.min(page, totalPages)
   const visible = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+  const visibleWithKeys = withUniqueRenderKeys(visible)
   const typeSummaries = Object.entries(reviewSummary.byType)
   const categorySummaries = Object.entries(reviewSummary.byCategory)
   const onlyHardConflicts = blockers.every((blocker) => blocker.type === "hard_conflict")
@@ -226,7 +278,6 @@ export function KnowledgeReviewWorkspace({
   function updateWorkingKnowledge(next: ProjectKnowledgeBase) {
     setWorkingKnowledge(next)
     setJsonText(JSON.stringify(next, null, 2))
-    setJsonError(null)
     setSubmitError(null)
     setDirty(true)
   }
@@ -235,25 +286,15 @@ export function KnowledgeReviewWorkspace({
     if (!proposedKnowledge) return
     setWorkingKnowledge(proposedKnowledge)
     setJsonText(JSON.stringify(proposedKnowledge, null, 2))
-    setJsonError(null)
     setSubmitError(null)
     setDirty(false)
     setConflictDecisions({})
   }
 
   function applyJsonToReview() {
-    try {
-      const parsedJson = JSON.parse(jsonText)
-      const parsed = ProjectKnowledgeBaseSchema.safeParse(parsedJson)
-      if (!parsed.success) {
-        setJsonError(parsed.error.issues.map((issue) => `${issue.path.join(".") || "proposal"}: ${issue.message}`).join("\n"))
-        return
-      }
-      updateWorkingKnowledge(parsed.data)
-      setConflictDecisions({})
-    } catch (error) {
-      setJsonError(error instanceof Error ? error.message : "The reviewed proposal is not valid JSON.")
-    }
+    if (!jsonValidation.data || !jsonDiffersFromApplied) return
+    updateWorkingKnowledge(jsonValidation.data)
+    setConflictDecisions({})
   }
 
   async function validateChanges() {
@@ -342,10 +383,13 @@ export function KnowledgeReviewWorkspace({
       ) : null}
 
       <div className="space-y-3" role="list" aria-label="Unresolved publication issues">
-        {visible.length ? visible.map((blocker, index) => {
-          const entry = workingKnowledge ? findKnowledgeEntry(workingKnowledge, blocker.category, blocker.entryKey) : null
+        {visibleWithKeys.length ? visibleWithKeys.map(({ blocker, renderKey }, index) => {
+          const entry = workingKnowledge ? findKnowledgeEntry(workingKnowledge, blocker.category, blocker.entryKey, blocker.entryInstanceId) : null
           const contextEntry = reviewContext?.entries.find((candidate) =>
-            candidate.category === blocker.category && canonicalKey(candidate.entryKey) === canonicalKey(blocker.entryKey))
+            candidate.category === blocker.category &&
+            (blocker.entryInstanceId && candidate.entryInstanceId
+              ? candidate.entryInstanceId === blocker.entryInstanceId
+              : canonicalKey(candidate.entryKey) === canonicalKey(blocker.entryKey)))
           const title = blocker.type === "hard_conflict"
             ? friendlyConflictSubject(blocker.subject)
             : entry
@@ -353,7 +397,7 @@ export function KnowledgeReviewWorkspace({
               : blocker.entryKey
           return (
             <div
-              key={blocker.id}
+              key={renderKey}
               ref={index === 0 ? firstIssueRef : undefined}
               tabIndex={index === 0 ? -1 : undefined}
               role="listitem"
@@ -388,14 +432,56 @@ export function KnowledgeReviewWorkspace({
                   entry={entry}
                   contextEntry={contextEntry}
                   contextLoading={contextLoading}
-                  onChange={(refs) => workingKnowledge && updateWorkingKnowledge(setEntryEvidenceRefs(workingKnowledge, blocker.category, blocker.entryKey, refs))}
+                  contextError={contextError}
+                  busy={busy}
+                  onRetry={() => void loadReviewContext()}
+                  onRequestRegenerate={() => setRegenerateDialogOpen(true)}
+                  onChange={(refs) => workingKnowledge && updateWorkingKnowledge(setEntryEvidenceRefs(
+                    workingKnowledge,
+                    blocker.category,
+                    blocker.entryKey,
+                    refs,
+                    blocker.entryInstanceId,
+                  ))}
+                />
+              ) : null}
+
+              {!entry && blocker.type !== "hard_conflict" ? (
+                <UnavailableIssueState
+                  workItemIds={"sourceWorkItemIds" in blocker ? blocker.sourceWorkItemIds : []}
+                  onRequestRegenerate={() => setRegenerateDialogOpen(true)}
+                  busy={busy}
+                />
+              ) : null}
+
+              {entry && blocker.type === "invalid_business_rule_source_field" ? (
+                <BusinessRuleSourceFieldEditor
+                  entry={entry}
+                  blockerId={blocker.id}
+                  busy={busy}
+                  onChange={(sourceField) => workingKnowledge && updateWorkingKnowledge(
+                    setKnowledgeEntryField(
+                      workingKnowledge,
+                      "business_rule",
+                      blocker.entryKey,
+                      "sourceField",
+                      sourceField,
+                      blocker.entryInstanceId,
+                    ),
+                  )}
                 />
               ) : null}
 
               {blocker.type === "replay_conflict" ? (
                 <ReplayConflictEditor
                   blocker={blocker}
-                  onUse={(value) => workingKnowledge && updateWorkingKnowledge(setKnowledgeEntryValue(workingKnowledge, blocker.category, blocker.entryKey, value))}
+                  onUse={(value) => workingKnowledge && updateWorkingKnowledge(setKnowledgeEntryValue(
+                    workingKnowledge,
+                    blocker.category,
+                    blocker.entryKey,
+                    value,
+                    blocker.entryInstanceId,
+                  ))}
                 />
               ) : null}
 
@@ -405,16 +491,28 @@ export function KnowledgeReviewWorkspace({
                   sources={reviewContext?.sources ?? []}
                   contextLoading={contextLoading}
                   busy={busy}
-                  decision={conflictDecisions[blocker.id]}
+                  decision={conflictDecisions[blocker.entryInstanceId ?? blocker.id]}
+                  onRequestRegenerate={() => setRegenerateDialogOpen(true)}
                   onKeep={(participant, index) => {
                     if (!workingKnowledge) return
                     updateWorkingKnowledge(replaceConflictGroup(workingKnowledge, blocker, participant.entry))
-                    setConflictDecisions((current) => ({ ...current, [blocker.id]: `Version ${index + 1} selected` }))
+                    setConflictDecisions((current) => ({
+                      ...current,
+                      [blocker.entryInstanceId ?? blocker.id]: {
+                        kind: "version",
+                        label: `Version ${index + 1} selected`,
+                        participantId: participant.participantId,
+                        versionIndex: index,
+                      },
+                    }))
                   }}
-                  onCombine={(merged) => {
+                  onCombine={(merged, fieldSources) => {
                     if (!workingKnowledge) return
                     updateWorkingKnowledge(replaceConflictGroup(workingKnowledge, blocker, merged))
-                    setConflictDecisions((current) => ({ ...current, [blocker.id]: "Entries combined" }))
+                    setConflictDecisions((current) => ({
+                      ...current,
+                      [blocker.entryInstanceId ?? blocker.id]: { kind: "combined", label: "Entries combined", entry: merged, fieldSources },
+                    }))
                   }}
                 />
               ) : null}
@@ -449,7 +547,7 @@ export function KnowledgeReviewWorkspace({
             </AccordionTrigger>
             <AccordionContent className="space-y-3">
               <p className="text-xs leading-5 text-muted-foreground">
-                Applying JSON replaces the guided review state. It does not contact the server until you validate review changes.
+                Advanced JSON is an expert fallback. Applying edited JSON replaces the guided working state, but does not contact the server until you re-check the review.
               </p>
               <Label htmlFor="knowledge-review-json">Complete reviewed proposal</Label>
               <Textarea
@@ -457,20 +555,25 @@ export function KnowledgeReviewWorkspace({
                 value={jsonText}
                 onChange={(event) => {
                   setJsonText(event.target.value)
-                  setJsonError(null)
                 }}
-                aria-invalid={Boolean(jsonError)}
-                aria-describedby={jsonError ? "knowledge-review-json-error" : undefined}
+                aria-invalid={Boolean(jsonValidation.error)}
+                aria-describedby={jsonValidation.error ? "knowledge-review-json-error" : "knowledge-review-json-help"}
                 className="min-h-72 font-mono text-xs"
                 spellCheck={false}
               />
-              {jsonError ? <pre id="knowledge-review-json-error" role="alert" className="whitespace-pre-wrap text-xs text-destructive">{jsonError}</pre> : null}
+              {jsonValidation.error ? (
+                <pre id="knowledge-review-json-error" role="alert" className="whitespace-pre-wrap text-xs text-destructive">{jsonValidation.error}</pre>
+              ) : (
+                <p id="knowledge-review-json-help" className="text-xs text-muted-foreground">
+                  {jsonDiffersFromApplied ? "The edited proposal is valid and ready to apply." : "Edit the JSON to enable Apply edited JSON."}
+                </p>
+              )}
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                 <Button className="min-h-11" size="sm" variant="outline" onClick={resetWorkingKnowledge} disabled={busy}>
                   <RotateCcw className="size-4" /> Reset to server proposal
                 </Button>
-                <Button className="min-h-11" size="sm" variant="secondary" onClick={applyJsonToReview} disabled={busy}>
-                  <FileCheck2 className="size-4" /> Apply JSON to review
+                <Button className="min-h-11" size="sm" variant="secondary" onClick={applyJsonToReview} disabled={busy || !canApplyJson}>
+                  <FileCheck2 className="size-4" /> Apply edited JSON
                 </Button>
               </div>
             </AccordionContent>
@@ -482,15 +585,47 @@ export function KnowledgeReviewWorkspace({
       <div aria-live="polite" className="sr-only">
         {dirty ? "Review changes have not been validated." : `${blockers.length} publication issues remain.`}
       </div>
-      <div className="flex flex-col-reverse gap-2 border-t border-border pt-4 sm:flex-row sm:justify-end">
-        <Button className="min-h-11" size="sm" variant="outline" onClick={resetWorkingKnowledge} disabled={busy || !dirty}>
-          <RotateCcw className="size-4" /> Discard review changes
-        </Button>
-        <Button className="min-h-11" size="sm" onClick={() => void validateChanges()} disabled={busy || !dirty || !workingKnowledge} aria-busy={busy}>
-          {busy ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" /> : <ShieldCheck className="size-4" />}
-          {busy ? "Checking..." : hasHardConflicts ? "Save decisions and re-check" : "Validate review changes"}
-        </Button>
+      <div className="space-y-2 border-t border-border pt-4">
+        {!dirty ? (
+          <p id="knowledge-review-action-help" className="text-right text-xs text-muted-foreground">
+            Resolve an issue or apply an edited proposal before re-checking.
+          </p>
+        ) : null}
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button className="min-h-11" size="sm" variant="outline" onClick={resetWorkingKnowledge} disabled={busy || !dirty}>
+            <RotateCcw className="size-4" /> Discard review changes
+          </Button>
+          <Button
+            className="min-h-11"
+            size="sm"
+            onClick={() => void validateChanges()}
+            disabled={busy || !dirty || !workingKnowledge}
+            aria-busy={busy}
+            aria-describedby={!dirty ? "knowledge-review-action-help" : undefined}
+          >
+            {busy ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" /> : <ShieldCheck className="size-4" />}
+            {busy ? "Checking..." : hasHardConflicts ? "Save decisions and re-check" : "Validate review changes"}
+          </Button>
+        </div>
       </div>
+      <AlertDialog open={regenerateDialogOpen} onOpenChange={setRegenerateDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Refresh sources and regenerate this draft?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The project index will be refreshed before a replacement draft is created. {dirty
+                ? "Your staged review changes will not carry into the replacement draft."
+                : "The current draft will remain available if regeneration fails."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>Keep current draft</AlertDialogCancel>
+            <AlertDialogAction disabled={busy} onClick={() => void onRegenerate()}>
+              Refresh sources and regenerate
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   )
 }
@@ -500,12 +635,20 @@ function EvidenceRepairEditor({
   entry,
   contextEntry,
   contextLoading,
+  contextError,
+  busy,
+  onRetry,
+  onRequestRegenerate,
   onChange,
 }: {
   blocker: ProjectKnowledgeEvidenceBlocker
   entry: Record<string, unknown>
   contextEntry?: ProjectKnowledgeReviewContextEntry
   contextLoading: boolean
+  contextError: string | null
+  busy: boolean
+  onRetry: () => void
+  onRequestRegenerate: () => void
   onChange: (refs: ProjectKnowledgeEvidenceRef[]) => void
 }) {
   const refs = Array.isArray(entry.evidenceRefs) ? entry.evidenceRefs as ProjectKnowledgeEvidenceRef[] : []
@@ -516,12 +659,17 @@ function EvidenceRepairEditor({
   const [error, setError] = useState<string | null>(null)
   const sourceTextarea = useRef<HTMLTextAreaElement | null>(null)
   const sources = useMemo(() => contextEntry?.sources ?? [], [contextEntry])
-  const source = sources.find((candidate) => candidate.sourceSnapshotId === sourceId) ?? sources[0]
+  const usableSources = useMemo(() => sources.filter((candidate) => candidate.fields.length), [sources])
+  const source = usableSources.find((candidate) => candidate.sourceSnapshotId === sourceId) ?? usableSources[0]
   const field = source?.fields.find((candidate) => candidate.sourceField === sourceField) ?? source?.fields[0]
+  const affectedWorkItemIds = contextEntry?.affectedWorkItemIds?.length
+    ? contextEntry.affectedWorkItemIds
+    : blocker.sourceWorkItemIds
+  const availability = contextEntry?.sourceAvailability ?? (usableSources.length ? "available" : "snapshot_missing")
 
   useEffect(() => {
-    if (!sourceId && sources[0]) setSourceId(sources[0].sourceSnapshotId)
-  }, [sourceId, sources])
+    if (!sourceId && usableSources[0]) setSourceId(usableSources[0].sourceSnapshotId)
+  }, [sourceId, usableSources])
 
   useEffect(() => {
     if (source && (!sourceField || !source.fields.some((candidate) => candidate.sourceField === sourceField))) {
@@ -595,7 +743,17 @@ function EvidenceRepairEditor({
         <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
           <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" /> Loading immutable sources...
         </div>
-      ) : sources.length ? (
+      ) : contextError ? (
+        <div className="flex flex-col gap-3 rounded-md border border-destructive/30 bg-card p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="font-semibold text-destructive">Source details could not be loaded</div>
+            <p className="mt-1 text-xs text-muted-foreground">Retry the source request before editing this evidence reference.</p>
+          </div>
+          <Button className="min-h-11 shrink-0" size="sm" variant="outline" onClick={onRetry} disabled={busy}>
+            <RefreshCw className="size-4" /> Retry source loading
+          </Button>
+        </div>
+      ) : availability === "available" && usableSources.length ? (
         <div className="grid gap-4 lg:grid-cols-[minmax(220px,0.7fr)_minmax(0,1.3fr)]">
           <div className="space-y-4">
             <div className="space-y-2">
@@ -606,7 +764,7 @@ function EvidenceRepairEditor({
               }}>
                 <SelectTrigger id={`${blocker.id}-source`} className="h-11 w-full"><SelectValue placeholder="Choose source" /></SelectTrigger>
                 <SelectContent>
-                  {sources.map((candidate) => (
+                  {usableSources.map((candidate) => (
                     <SelectItem key={candidate.sourceSnapshotId} value={candidate.sourceSnapshotId}>Work item {candidate.sourceWorkItemId}</SelectItem>
                   ))}
                 </SelectContent>
@@ -678,10 +836,77 @@ function EvidenceRepairEditor({
           </div>
         </div>
       ) : (
-        <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning-foreground">
-          No immutable source fields are available for this entry. Use Advanced JSON or regenerate the draft.
+        <div className="flex flex-col gap-3 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning-foreground sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="font-semibold">{sourceAvailabilityTitle(availability, affectedWorkItemIds)}</div>
+            <p className="mt-1 text-xs leading-5">
+              This entry cannot be verified in the current draft. Refresh the indexed sources and create a replacement draft.
+            </p>
+          </div>
+          <Button className="min-h-11 shrink-0" size="sm" variant="outline" onClick={onRequestRegenerate} disabled={busy}>
+            <RefreshCw className="size-4" /> Refresh sources and regenerate draft
+          </Button>
         </div>
       )}
+    </fieldset>
+  )
+}
+
+function UnavailableIssueState({
+  workItemIds,
+  busy,
+  onRequestRegenerate,
+}: {
+  workItemIds: string[]
+  busy: boolean
+  onRequestRegenerate: () => void
+}) {
+  return (
+    <div className="mt-4 flex flex-col gap-3 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning-foreground sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <div className="font-semibold">The proposal entry could not be matched to this review issue</div>
+        <p className="mt-1 text-xs leading-5">
+          {workItemIds.length ? `Affected work ${workItemIds.length === 1 ? "item" : "items"}: ${workItemIds.join(", ")}. ` : ""}
+          Refresh the indexed sources and regenerate the draft to rebuild its review context.
+        </p>
+      </div>
+      <Button className="min-h-11 shrink-0" size="sm" variant="outline" onClick={onRequestRegenerate} disabled={busy}>
+        <RefreshCw className="size-4" /> Refresh sources and regenerate draft
+      </Button>
+    </div>
+  )
+}
+
+function BusinessRuleSourceFieldEditor({
+  entry,
+  blockerId,
+  busy,
+  onChange,
+}: {
+  entry: Record<string, unknown>
+  blockerId: string
+  busy: boolean
+  onChange: (sourceField: string) => void
+}) {
+  return (
+    <fieldset className="mt-4 space-y-3 rounded-md border border-border bg-muted/50 p-4">
+      <legend className="px-1 text-sm font-semibold text-foreground">Choose a supported source field</legend>
+      <p className="text-sm text-muted-foreground">
+        Select the immutable work-item field that supports this business rule.
+      </p>
+      <div className="max-w-md space-y-2">
+        <Label htmlFor={`${blockerId}-business-rule-source-field`}>Source field</Label>
+        <Select value={String(entry.sourceField ?? "")} onValueChange={onChange} disabled={busy}>
+          <SelectTrigger id={`${blockerId}-business-rule-source-field`} className="h-11 w-full">
+            <SelectValue placeholder="Choose source field" />
+          </SelectTrigger>
+          <SelectContent>
+            {PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS.map((sourceField) => (
+              <SelectItem key={sourceField} value={sourceField}>{friendlyCode(sourceField)}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
     </fieldset>
   )
 }
@@ -714,6 +939,7 @@ function HardConflictEditor({
   contextLoading,
   busy,
   decision,
+  onRequestRegenerate,
   onKeep,
   onCombine,
 }: {
@@ -721,21 +947,27 @@ function HardConflictEditor({
   sources: ProjectKnowledgeReviewSource[]
   contextLoading: boolean
   busy: boolean
-  decision?: string
+  decision?: ConflictDecision
+  onRequestRegenerate: () => void
   onKeep: (participant: ProjectKnowledgeHardConflictParticipant, index: number) => void
-  onCombine: (entry: ProjectKnowledgeHardConflictParticipant["entry"]) => void
+  onCombine: (entry: ProjectKnowledgeHardConflictParticipant["entry"], fieldSources: Record<string, number>) => void
 }) {
   const differingKeys = conflictProjectionKeys(blocker.participants)
   const [combineOpen, setCombineOpen] = useState(false)
   const [combineSelections, setCombineSelections] = useState<Record<string, string>>({})
+  const [combinePreview, setCombinePreview] = useState<{
+    entry: ProjectKnowledgeHardConflictParticipant["entry"]
+    fieldSources: Record<string, number>
+  } | null>(null)
   const combineComplete = differingKeys.every((key) => Boolean(combineSelections[key]))
 
   function closeCombineBuilder() {
     setCombineOpen(false)
     setCombineSelections({})
+    setCombinePreview(null)
   }
 
-  function createCombinedEntry() {
+  function previewCombinedEntry() {
     if (!combineComplete) return
     const selectedIndexes = Array.from(new Set(
       differingKeys.map((key) => Number(combineSelections[key])),
@@ -755,7 +987,15 @@ function HardConflictEditor({
       else combinedRecord[key] = structuredClone(selectedValue)
     })
 
-    onCombine(combined)
+    setCombinePreview({
+      entry: combined,
+      fieldSources: Object.fromEntries(differingKeys.map((key) => [key, Number(combineSelections[key])])),
+    })
+  }
+
+  function useCombinedEntry() {
+    if (!combinePreview) return
+    onCombine(combinePreview.entry, combinePreview.fieldSources)
     closeCombineBuilder()
   }
 
@@ -766,49 +1006,72 @@ function HardConflictEditor({
       </p>
       {blocker.participants.length ? (
         <div className="grid gap-4 xl:grid-cols-2">
-          {blocker.participants.map((participant, index) => (
-            <fieldset
-              key={`${participant.participantId}-${index}`}
-              className="flex min-w-0 flex-col rounded-lg border border-border bg-muted/40 p-4"
-            >
-              <legend className="px-1 text-sm font-semibold text-foreground">Version {index + 1}</legend>
-              <dl className="space-y-3">
-                {differingKeys.map((key) => (
-                  <div key={key}>
-                    <dt className="text-xs font-semibold text-muted-foreground">{friendlyCode(key)}</dt>
-                    <dd className="mt-1 whitespace-pre-wrap break-words text-sm text-foreground">
-                      {displayConflictValue(participant.projection[key])}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-              <ConflictEvidence participant={participant} sources={sources} contextLoading={contextLoading} />
-              <Button
-                className="mt-4 min-h-11 w-full sm:w-fit"
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  closeCombineBuilder()
-                  onKeep(participant, index)
-                }}
-                disabled={busy}
-                aria-label={`Keep version ${index + 1}`}
+          {blocker.participants.map((participant, index) => {
+            const selected = decision?.kind === "version" && decision.participantId === participant.participantId
+            return (
+              <fieldset
+                key={participant.participantId}
+                aria-label={`Version ${index + 1}${selected ? ", selected" : ""}`}
+                className={`flex min-w-0 flex-col rounded-lg border-2 p-4 transition-colors motion-reduce:transition-none ${
+                  selected
+                    ? "border-primary bg-primary/5 ring-2 ring-primary/20"
+                    : "border-border bg-muted/40"
+                }`}
               >
-                <Check className="size-4" aria-hidden="true" /> Keep this version
-              </Button>
-            </fieldset>
-          ))}
+                <legend className="px-1 text-sm font-semibold text-foreground">
+                  <span className="inline-flex flex-wrap items-center gap-2">
+                    Version {index + 1}
+                    {selected ? <Badge className="gap-1"><Check className="size-3.5" aria-hidden="true" />Selected</Badge> : null}
+                  </span>
+                </legend>
+                <dl className="space-y-3">
+                  {differingKeys.map((key) => (
+                    <div key={key}>
+                      <dt className="text-xs font-semibold text-muted-foreground">{friendlyCode(key)}</dt>
+                      <dd className="mt-1 whitespace-pre-wrap break-words text-sm text-foreground">
+                        {displayConflictValue(participant.projection[key])}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+                <ConflictEvidence participant={participant} sources={sources} contextLoading={contextLoading} />
+                <Button
+                  className="mt-4 min-h-11 w-full sm:w-fit"
+                  size="sm"
+                  variant={selected ? "default" : "outline"}
+                  onClick={() => {
+                    closeCombineBuilder()
+                    onKeep(participant, index)
+                  }}
+                  disabled={busy}
+                  aria-label={selected ? `Version ${index + 1} selected` : `Keep version ${index + 1}`}
+                  aria-pressed={selected}
+                >
+                  <Check className="size-4" aria-hidden="true" /> {selected ? "Selected" : "Keep this version"}
+                </Button>
+              </fieldset>
+            )
+          })}
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">No candidate versions are available. Regenerate the draft to rebuild this review.</p>
+        <UnavailableIssueState workItemIds={[]} busy={busy} onRequestRegenerate={onRequestRegenerate} />
       )}
+      {decision?.kind === "combined" ? (
+        <CombinedEntryPreview
+          entry={decision.entry}
+          fieldSources={decision.fieldSources}
+          sources={sources}
+          title="Combined entry"
+          selected
+        />
+      ) : null}
       <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div role="status" aria-live="polite" className="min-h-5 text-sm font-medium text-success">
-            {decision ?? ""}
+            {decision?.label ?? ""}
           </div>
           {blocker.conflictType === "duplicate_identity" && blocker.participants.length > 1 ? (
-            <p className="mt-1 text-xs text-muted-foreground">Combine lets you choose every differing value and keeps evidence only from the versions you use.</p>
+            <p className="mt-1 text-xs text-muted-foreground">Review and combine lets you choose every differing value and keeps evidence only from the versions you use.</p>
           ) : null}
         </div>
         {blocker.conflictType === "duplicate_identity" && blocker.participants.length > 1 ? (
@@ -819,21 +1082,47 @@ function HardConflictEditor({
             onClick={() => {
               setCombineOpen(true)
               setCombineSelections({})
+              setCombinePreview(null)
             }}
             disabled={busy}
             aria-expanded={combineOpen}
             aria-controls={`${blocker.id}-combine-builder`}
           >
-            <GitMerge className="size-4" aria-hidden="true" /> Combine entries
+            <GitMerge className="size-4" aria-hidden="true" /> Review and combine
           </Button>
         ) : null}
       </div>
       {combineOpen ? (
         <fieldset id={`${blocker.id}-combine-builder`} className="space-y-4 rounded-lg border border-primary/30 bg-primary/5 p-4">
-          <legend className="px-1 text-sm font-semibold text-foreground">Build combined entry</legend>
-          <p className="text-sm leading-6 text-muted-foreground">
-            Choose a source version for every differing field. Only versions used below contribute evidence to the combined entry.
-          </p>
+          <legend className="px-1 text-sm font-semibold text-foreground">Review combined entry</legend>
+          {combinePreview ? (
+            <>
+              <p className="text-sm leading-6 text-muted-foreground">
+                Review the complete result and its provenance. The proposal is unchanged until you use this combined entry.
+              </p>
+              <CombinedEntryPreview
+                entry={combinePreview.entry}
+                fieldSources={combinePreview.fieldSources}
+                sources={sources}
+                title="Combined entry preview"
+              />
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <Button className="min-h-11" size="sm" variant="ghost" onClick={closeCombineBuilder} disabled={busy}>
+                  Cancel merge
+                </Button>
+                <Button className="min-h-11" size="sm" variant="outline" onClick={() => setCombinePreview(null)} disabled={busy}>
+                  Back to choices
+                </Button>
+                <Button className="min-h-11" size="sm" onClick={useCombinedEntry} disabled={busy}>
+                  <Check className="size-4" aria-hidden="true" /> Use combined entry
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-sm leading-6 text-muted-foreground">
+                Choose a source version for every differing field. Only versions used below contribute evidence and source work items.
+              </p>
           <div className="grid gap-4 lg:grid-cols-2">
             {differingKeys.map((key, fieldIndex) => {
               const controlId = `${blocker.id}-combine-field-${fieldIndex}`
@@ -852,7 +1141,7 @@ function HardConflictEditor({
                   >
                     <option value="" disabled>Choose a version</option>
                     {blocker.participants.map((participant, participantIndex) => (
-                      <option key={`${participant.participantId}-${participantIndex}`} value={String(participantIndex)}>
+                      <option key={participant.participantId} value={String(participantIndex)}>
                         Version {participantIndex + 1} — {singleLineConflictValue(participant.projection[key])}
                       </option>
                     ))}
@@ -863,15 +1152,119 @@ function HardConflictEditor({
           </div>
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <Button className="min-h-11" size="sm" variant="outline" onClick={closeCombineBuilder} disabled={busy}>
-              Cancel combine
+              Cancel merge
             </Button>
-            <Button className="min-h-11" size="sm" onClick={createCombinedEntry} disabled={busy || !combineComplete}>
-              <GitMerge className="size-4" aria-hidden="true" /> Create combined entry
+            <Button className="min-h-11" size="sm" onClick={previewCombinedEntry} disabled={busy || !combineComplete}>
+              <GitMerge className="size-4" aria-hidden="true" /> Preview combined entry
             </Button>
           </div>
+            </>
+          )}
         </fieldset>
       ) : null}
     </div>
+  )
+}
+
+function CombinedEntryPreview({
+  entry,
+  fieldSources,
+  sources,
+  title,
+  selected = false,
+}: {
+  entry: ProjectKnowledgeHardConflictParticipant["entry"]
+  fieldSources: Record<string, number>
+  sources: ProjectKnowledgeReviewSource[]
+  title: string
+  selected?: boolean
+}) {
+  const record = entry as unknown as Record<string, unknown>
+  const sourceWorkItemIds = Array.isArray(record.sourceWorkItemIds)
+    ? record.sourceWorkItemIds.filter((value): value is string => typeof value === "string")
+    : []
+  const evidenceRefs = Array.isArray(record.evidenceRefs)
+    ? record.evidenceRefs as ProjectKnowledgeEvidenceRef[]
+    : []
+  const semanticFields = Object.entries(record).filter(([key, value]) =>
+    !["evidence", "evidenceRefs", "sourceWorkItemIds"].includes(key) && value !== undefined)
+
+  return (
+    <section
+      aria-label={`${title}${selected ? ", selected" : ""}`}
+      className={`rounded-lg border-2 p-4 ${
+        selected ? "border-primary bg-primary/5 ring-2 ring-primary/20" : "border-border bg-card"
+      }`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-sm font-semibold text-foreground">{title}</h4>
+        {selected ? (
+          <Badge className="gap-1"><Check className="size-3.5" aria-hidden="true" />Selected final result</Badge>
+        ) : (
+          <Badge variant="secondary">Preview</Badge>
+        )}
+      </div>
+      <dl className="mt-4 grid gap-4 md:grid-cols-2">
+        {semanticFields.map(([key, value]) => (
+          <div key={key} className="min-w-0 rounded-md border border-border bg-background p-3">
+            <dt className="flex flex-wrap items-center justify-between gap-2 text-xs font-semibold text-muted-foreground">
+              <span>{friendlyCode(key)}</span>
+              {fieldSources[key] !== undefined ? (
+                <Badge variant="outline">From Version {fieldSources[key] + 1}</Badge>
+              ) : null}
+            </dt>
+            <dd className="mt-2 whitespace-pre-wrap break-words text-sm text-foreground">
+              {displayConflictValue(value)}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div>
+          <div className="text-xs font-semibold text-foreground">Source work items</div>
+          {sourceWorkItemIds.length ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {sourceWorkItemIds.map((id) => {
+                const source = sources.find((candidate) => candidate.sourceWorkItemId === id)
+                return source?.workItemUrl ? (
+                  <a
+                    key={id}
+                    href={source.workItemUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex min-h-11 items-center gap-1 rounded-md border border-border px-3 text-xs font-medium text-primary outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    #{id} {source.workItemTitle}<ExternalLink className="size-3.5" aria-hidden="true" />
+                  </a>
+                ) : <Badge key={id} variant="outline">Work Item {id}</Badge>
+              })}
+            </div>
+          ) : <p className="mt-2 text-sm text-muted-foreground">No source work items are attached.</p>}
+        </div>
+        <div>
+          <div className="text-xs font-semibold text-foreground">Selected evidence</div>
+          {evidenceRefs.length ? (
+            <div className="mt-2 space-y-2">
+              {evidenceRefs.map((ref) => (
+                <blockquote
+                  key={`${ref.sourceSnapshotId}:${ref.sourceWorkItemId}:${ref.sourceField}:${ref.quote}`}
+                  className="rounded-md border border-border bg-background p-3 text-sm leading-6 text-muted-foreground"
+                >
+                  <span className="mb-1 block text-xs font-medium text-foreground">
+                    Work Item {ref.sourceWorkItemId} · {friendlyCode(ref.sourceField)}
+                  </span>
+                  “{ref.quote}”
+                </blockquote>
+              ))}
+            </div>
+          ) : typeof record.evidence === "string" && record.evidence.trim() ? (
+            <p className="mt-2 rounded-md border border-border bg-background p-3 text-sm leading-6 text-muted-foreground">
+              {record.evidence}
+            </p>
+          ) : <p className="mt-2 text-sm text-muted-foreground">No evidence is attached.</p>}
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -974,6 +1367,54 @@ function singleLineConflictValue(value: unknown) {
   return displayed.length > 100 ? `${displayed.slice(0, 97)}...` : displayed
 }
 
+function parseReviewedKnowledge(value: string): { data?: ProjectKnowledgeBase; error?: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch (error) {
+    return { error: error instanceof Error ? `Invalid JSON: ${error.message}` : "Invalid JSON." }
+  }
+  const result = ProjectKnowledgeBaseSchema.safeParse(parsed)
+  if (result.success) return { data: result.data }
+  return {
+    error: result.error.issues.map((issue) => {
+      const path = issue.path.length ? `${issue.path.join(".")}: ` : ""
+      return `${path}${issue.message}`
+    }).join("\n"),
+  }
+}
+
+function withUniqueRenderKeys(blockers: ProjectKnowledgeDraftBlocker[]) {
+  const totals = blockers.reduce<Map<string, number>>((counts, blocker) => {
+    const identity = `${blocker.entryInstanceId ?? "legacy"}:${blocker.id}`
+    counts.set(identity, (counts.get(identity) ?? 0) + 1)
+    return counts
+  }, new Map())
+  const occurrences = new Map<string, number>()
+  return blockers.map((blocker) => {
+    const identity = `${blocker.entryInstanceId ?? "legacy"}:${blocker.id}`
+    const occurrence = (occurrences.get(identity) ?? 0) + 1
+    occurrences.set(identity, occurrence)
+    return {
+      blocker,
+      renderKey: (totals.get(identity) ?? 0) > 1 ? `${identity}:render-${occurrence}` : identity,
+    }
+  })
+}
+
+function sourceAvailabilityTitle(
+  availability: ProjectKnowledgeReviewContextEntry["sourceAvailability"],
+  affectedWorkItemIds: string[],
+) {
+  const items = affectedWorkItemIds.length
+    ? `Work Item${affectedWorkItemIds.length === 1 ? "" : "s"} ${affectedWorkItemIds.join(", ")}`
+    : "the affected work item"
+  if (availability === "unmatched_work_item") return `No captured source matches ${items}. This entry cannot be verified in the current draft.`
+  if (availability === "empty_fields") return `Captured immutable fields are empty for ${items}. This entry cannot be verified in the current draft.`
+  if (availability === "available") return `Source details are available for ${items}.`
+  return `Source snapshot unavailable for ${items}. This entry cannot be verified in the current draft.`
+}
+
 function DefinitionRows({ value }: { value: Record<string, unknown> | null }) {
   if (!value) return <div className="text-xs italic text-muted-foreground">Entry does not exist</div>
   return (
@@ -1009,7 +1450,16 @@ function isEvidenceBlocker(blocker: ProjectKnowledgeDraftBlocker): blocker is Pr
   return ["missing_evidence_refs", "quote_mismatch", "snapshot_missing", "work_item_mismatch", "source_field_missing"].includes(blocker.type)
 }
 
-function findKnowledgeEntry(knowledge: ProjectKnowledgeBase, category: ProjectKnowledgeReviewCategory, key: string) {
+function findKnowledgeEntry(
+  knowledge: ProjectKnowledgeBase,
+  category: ProjectKnowledgeReviewCategory,
+  key: string,
+  entryInstanceId?: string,
+) {
+  if (entryInstanceId) {
+    const instance = findProjectKnowledgeEntryInstance(knowledge, entryInstanceId)
+    if (instance?.category === category) return instance.entry as unknown as Record<string, unknown>
+  }
   const target = canonicalKey(key)
   if (category === "module") return knowledge.modules.find((entry) => canonicalKey(entry.id) === target) as Record<string, unknown> | undefined
   if (category === "business_rule") return knowledge.businessRules.find((entry) => canonicalKey(entry.id) === target) as Record<string, unknown> | undefined
@@ -1017,6 +1467,21 @@ function findKnowledgeEntry(knowledge: ProjectKnowledgeBase, category: ProjectKn
   if (category === "glossary") return knowledge.glossary.find((entry) => canonicalKey(entry.term) === target) as Record<string, unknown> | undefined
   if (category === "dependency") return knowledge.crossDependencies.find((entry) => canonicalKey(entry.id) === target) as Record<string, unknown> | undefined
   return undefined
+}
+
+function setKnowledgeEntryField(
+  knowledge: ProjectKnowledgeBase,
+  category: ProjectKnowledgeReviewCategory,
+  key: string,
+  field: string,
+  value: unknown,
+  entryInstanceId?: string,
+) {
+  const next = structuredClone(knowledge)
+  const entry = findKnowledgeEntry(next, category, key, entryInstanceId)
+  if (!entry) return next
+  entry[field] = value
+  return ProjectKnowledgeBaseSchema.parse(next)
 }
 
 function entryTitle(category: ProjectKnowledgeReviewCategory, entry: Record<string, unknown>) {
@@ -1032,9 +1497,10 @@ function setEntryEvidenceRefs(
   category: ProjectKnowledgeReviewCategory,
   key: string,
   refs: ProjectKnowledgeEvidenceRef[],
+  entryInstanceId?: string,
 ) {
   const next = structuredClone(knowledge)
-  const entry = findKnowledgeEntry(next, category, key)
+  const entry = findKnowledgeEntry(next, category, key, entryInstanceId)
   if (!entry) return next
   entry.evidenceRefs = refs
   return ProjectKnowledgeBaseSchema.parse(next)
@@ -1045,11 +1511,18 @@ function setKnowledgeEntryValue(
   category: ProjectKnowledgeReviewCategory,
   key: string,
   value: Record<string, unknown> | null,
+  entryInstanceId?: string,
 ) {
   const next = structuredClone(knowledge) as ProjectKnowledgeBase
   const target = canonicalKey(key)
+  const exactInstance = entryInstanceId ? findProjectKnowledgeEntryInstance(next, entryInstanceId) : null
   const replace = <T extends Record<string, unknown>>(items: T[], itemKey: (item: T) => string) => {
-    const index = items.findIndex((item) => canonicalKey(itemKey(item)) === target)
+    const exactIndex = exactInstance?.category === category
+      ? items.indexOf(exactInstance.entry as unknown as T)
+      : -1
+    const index = exactIndex >= 0
+      ? exactIndex
+      : items.findIndex((item) => canonicalKey(itemKey(item)) === target)
     if (value === null) {
       if (index >= 0) items.splice(index, 1)
       return

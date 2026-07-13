@@ -202,6 +202,50 @@ describe("draft evidence recovery", () => {
     })]);
   });
 
+  it("assigns repeated evidence issues to their matching references without id collisions", async () => {
+    prepareCompletion({ description: "Actual immutable checkout content." });
+    await completeProjectKnowledgeDraft({
+      scope,
+      draftId: "draft-child",
+      provider: "openai",
+      model: "model",
+      rawOutput: "{}",
+      recoverMissingEvidenceRefs: false,
+      knowledgeBase: {
+        ...emptyKnowledge,
+        modules: [{
+          ...proposal.modules[0],
+          evidenceRefs: [
+            {
+              sourceSnapshotId: "snapshot-42",
+              sourceWorkItemId: "42",
+              sourceField: "description",
+              quote: "Missing checkout statement one.",
+              origin: "generated_v2",
+              verification: "unverified",
+            },
+            {
+              sourceSnapshotId: "snapshot-42",
+              sourceWorkItemId: "42",
+              sourceField: "description",
+              quote: "Missing checkout statement two.",
+              origin: "generated_v2",
+              verification: "unverified",
+            },
+          ],
+        }],
+      },
+    });
+
+    const update = database.sqlRun.mock.calls.find(([sql]) => String(sql).includes("SET status = @status"));
+    const blockers = JSON.parse(String((update?.[1] as { blockersJson: string }).blockersJson));
+    expect(blockers).toHaveLength(2);
+    expect(blockers.every((blocker: { type: string }) => blocker.type === "quote_mismatch")).toBe(true);
+    expect(new Set(blockers.map((blocker: { id: string }) => blocker.id)).size).toBe(2);
+    expect(new Set(blockers.map((blocker: { entryInstanceId: string }) => blocker.entryInstanceId)).size).toBe(1);
+    expect(new Set(blockers.map((blocker: { referenceIdentity: string }) => blocker.referenceIdentity)).size).toBe(2);
+  });
+
   it("consolidates only normalization-equivalent identities at the completion boundary", async () => {
     const row = draftRow({
       generation_mode: "automatic",
@@ -277,6 +321,114 @@ describe("draft evidence recovery", () => {
     expect(persisted.modules.slice(2).map((entry: { id: string }) => entry.id)).toEqual(["---", "___"]);
     expect(metrics.automaticDuplicateConsolidationCount).toBe(5);
     expect(metrics.conflictCount).toBe(1);
+  });
+
+  it("suppresses evidence blockers for entries participating in an unresolved hard conflict", async () => {
+    const row = draftRow({ generation_mode: "automatic", status: "generating" });
+    database.sqlGet.mockResolvedValue(row);
+    database.sqlAll.mockResolvedValue([]);
+
+    await completeProjectKnowledgeDraft({
+      scope,
+      draftId: "draft-child",
+      provider: "openai",
+      model: "model",
+      rawOutput: "{}",
+      recoverMissingEvidenceRefs: false,
+      knowledgeBase: {
+        ...emptyKnowledge,
+        glossary: [
+          {
+            term: "Payment Gateway",
+            type: "system",
+            definition: "Routes card payments.",
+            sourceWorkItemIds: ["10"],
+            evidence: "Routes card payments.",
+          },
+          {
+            term: "Payment Gateway",
+            type: "system",
+            definition: "Routes bank transfers.",
+            sourceWorkItemIds: ["11"],
+            evidence: "Routes bank transfers.",
+          },
+        ],
+      },
+    });
+
+    const update = database.sqlRun.mock.calls.find(([sql]) => String(sql).includes("SET status = @status"));
+    const blockers = JSON.parse(String((update?.[1] as { blockersJson: string }).blockersJson));
+    expect(blockers).toEqual([expect.objectContaining({
+      type: "hard_conflict",
+      affectedCategory: "glossary",
+      entryInstanceId: expect.stringMatching(/^pkei_/),
+      participants: expect.arrayContaining([
+        expect.objectContaining({ sourceWorkItemIds: ["10"] }),
+        expect.objectContaining({ sourceWorkItemIds: ["11"] }),
+      ]),
+    })]);
+    expect(blockers.some((blocker: { type: string }) => blocker.type === "missing_evidence_refs")).toBe(false);
+  });
+
+  it.each([
+    {
+      label: "available source fields",
+      manifestEntries: manifest,
+      snapshots: [{
+        id: "snapshot-42",
+        azure_work_item_id: "42",
+        fields_json: { description: "Customers complete checkout securely." },
+      }],
+      expected: "available",
+    },
+    {
+      label: "a missing snapshot",
+      manifestEntries: manifest,
+      snapshots: [],
+      expected: "snapshot_missing",
+    },
+    {
+      label: "an unmatched work item",
+      manifestEntries: [],
+      snapshots: [],
+      expected: "unmatched_work_item",
+    },
+    {
+      label: "a snapshot with no reviewable fields",
+      manifestEntries: manifest,
+      snapshots: [{ id: "snapshot-42", azure_work_item_id: "42", fields_json: {} }],
+      expected: "empty_fields",
+    },
+  ])("reports review source availability for $label", async ({ manifestEntries, snapshots, expected }) => {
+    database.sqlGet.mockResolvedValue(draftRow({
+      status: "blocked",
+      source_manifest_json: manifestEntries,
+      proposed_knowledge_json: proposal,
+      blockers_json: [{
+        type: "missing_evidence_refs",
+        category: "module",
+        entryKey: "checkout",
+        sourceWorkItemIds: ["42"],
+      }],
+    }));
+    database.sqlAll.mockResolvedValue(snapshots);
+
+    const context = await getProjectKnowledgeDraftReviewContext({ scope, draftId: "draft-child" });
+
+    expect(context?.entries).toEqual([expect.objectContaining({
+      category: "module",
+      entryKey: "checkout",
+      entryInstanceId: expect.stringMatching(/^pkei_/),
+      sourceAvailability: expected,
+      affectedWorkItemIds: ["42"],
+    })]);
+    if (expected === "available") {
+      expect(context?.entries[0].sources[0]).toMatchObject({
+        sourceSnapshotId: "snapshot-42",
+        sourceWorkItemId: "42",
+        fields: [{ sourceField: "description", text: "Customers complete checkout securely." }],
+      });
+    }
   });
 
   it("loads friendly source metadata for hard-conflict comparison without exposing storage details", async () => {
