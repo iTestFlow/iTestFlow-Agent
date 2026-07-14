@@ -7,20 +7,21 @@ import {
   ArrowUpDown,
   BookOpen,
   Check,
-  ChevronLeft,
-  ChevronRight,
   Clock3,
   Database,
   Download,
   History,
+  MessageSquareWarning,
   RefreshCw,
   Save,
   Search,
   SearchX,
+  Send,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react"
 
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -90,6 +91,12 @@ type RecentContextItem = {
   updatedDate?: string | null
   lastIndexedAt?: string | null
   chunkCount: number
+}
+
+export function appendUniqueContextItems(current: RecentContextItem[], incoming: RecentContextItem[]) {
+  const itemsById = new Map(current.map((item) => [item.workItemId, item]))
+  for (const item of incoming) itemsById.set(item.workItemId, item)
+  return Array.from(itemsById.values())
 }
 
 type ContextSortBy = "lastIndexedAt" | "type" | "state"
@@ -376,6 +383,8 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [states, setStates] = useState<string[]>(DEFAULT_CONTEXT_STATES)
   const [buildLoading, setBuildLoading] = useState(false)
   const [statusLoading, setStatusLoading] = useState(false)
+  const [contextLoadingMore, setContextLoadingMore] = useState(false)
+  const [contextStatusError, setContextStatusError] = useState<string | null>(null)
   const [buildError, setBuildError] = useState<string | null>(null)
   const [result, setResult] = useState<IndexResult | null>(null)
   const [recentItems, setRecentItems] = useState<RecentContextItem[]>([])
@@ -391,6 +400,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeHealthLoading, setKnowledgeHealthLoading] = useState(false)
   const [knowledgeLogLoading, setKnowledgeLogLoading] = useState(false)
   const [knowledgeExportLoading, setKnowledgeExportLoading] = useState(false)
+  const [knowledgeReportLoading, setKnowledgeReportLoading] = useState(false)
   const [knowledgeCandidates, setKnowledgeCandidates] = useState<KnowledgeCandidate[]>([])
   const [candidateStatus, setCandidateStatus] = useState<KnowledgeCandidateStatus | "all">("all")
   const [candidateLoading, setCandidateLoading] = useState(false)
@@ -428,6 +438,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const manualPreviewStepRef = useRef<HTMLDivElement | null>(null)
   const manualBatchRef = useRef<HTMLDivElement | null>(null)
   const initializedFilterProjectRef = useRef<string | null>(null)
+  const contextRequestIdRef = useRef(0)
   const loadingGame = useLlmLoadingGameSession<KnowledgeGeneratedDraft>((draft) => {
     setGeneratedDraft(draft)
     if (draft.alreadyCurrent) setHasUnfinishedWork(false)
@@ -497,6 +508,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       sortBy?: ContextSortBy
       sortDirection?: ContextSortDirection
       query?: string
+      append?: boolean
     },
   ) => {
     if (!activeScope) return
@@ -504,8 +516,16 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     const nextSortBy = options?.sortBy ?? "lastIndexedAt"
     const nextSortDirection = options?.sortDirection ?? "desc"
     const nextQuery = options?.query ?? ""
+    const append = options?.append ?? false
+    const requestId = ++contextRequestIdRef.current
 
-    setStatusLoading(true)
+    setContextStatusError(null)
+    if (append) {
+      setContextLoadingMore(true)
+    } else {
+      setContextLoadingMore(false)
+      setStatusLoading(true)
+    }
     try {
       const data = await postJson<ContextStatusResult>("/api/context/status", {
         scope: activeScope,
@@ -515,18 +535,26 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         sortDirection: nextSortDirection,
         query: nextQuery,
       })
-      setRecentItems(data.items)
+      if (requestId !== contextRequestIdRef.current) return
+      setRecentItems((current) => append ? appendUniqueContextItems(current, data.items) : data.items)
       setTotalCount(data.totalCount)
       setTotalPages(data.totalPages)
       setPage(data.page)
       setSortBy(data.sortBy)
       setSortDirection(data.sortDirection)
-    } catch {
-      setRecentItems([])
-      setTotalCount(0)
-      setTotalPages(1)
+    } catch (error) {
+      if (requestId !== contextRequestIdRef.current) return
+      if (!append) {
+        setRecentItems([])
+        setTotalCount(0)
+        setTotalPages(1)
+      }
+      setContextStatusError(error instanceof Error ? error.message : "Indexed project context could not be loaded.")
     } finally {
-      setStatusLoading(false)
+      if (requestId === contextRequestIdRef.current) {
+        if (append) setContextLoadingMore(false)
+        else setStatusLoading(false)
+      }
     }
   }, [pageSize])
 
@@ -536,6 +564,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       const custom = event as CustomEvent<ActiveProjectScope>
       cancelKnowledgeGeneration()
       endLoadingGameSession()
+      contextRequestIdRef.current += 1
       setScope(custom.detail ?? readActiveProject())
       setHasUnfinishedWork(false)
     }
@@ -560,7 +589,17 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   }, [filterProjectKey, workItemMetadata])
 
   useEffect(() => {
-    if (!scope) return
+    if (!scope) {
+      contextRequestIdRef.current += 1
+      setRecentItems([])
+      setTotalCount(0)
+      setTotalPages(1)
+      setPage(1)
+      setStatusLoading(false)
+      setContextLoadingMore(false)
+      setContextStatusError(null)
+      return
+    }
     let cancelled = false
 
     setBuildStep("index")
@@ -577,41 +616,23 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setKnowledgeLog([])
     setKnowledgeLogVisible(false)
     setKnowledgeExport(null)
+    setKnowledgeReportLoading(false)
     setKnowledgeCandidates([])
     setCandidateStatus("all")
     setPage(1)
     setSortBy("lastIndexedAt")
     setSortDirection("desc")
     setContextSearch("")
-    setStatusLoading(true)
+    setContextLoadingMore(false)
+    setContextStatusError(null)
     setKnowledgeStatusLoading(true)
 
-    void postJson<ContextStatusResult>("/api/context/status", {
-      scope,
+    void loadStatus(scope, {
       page: 1,
-      pageSize,
       sortBy: "lastIndexedAt",
       sortDirection: "desc",
       query: "",
     })
-      .then((data) => {
-        if (cancelled) return
-        setRecentItems(data.items)
-        setTotalCount(data.totalCount)
-        setTotalPages(data.totalPages)
-        setPage(data.page)
-        setSortBy(data.sortBy)
-        setSortDirection(data.sortDirection)
-      })
-      .catch(() => {
-        if (cancelled) return
-        setRecentItems([])
-        setTotalCount(0)
-        setTotalPages(1)
-      })
-      .finally(() => {
-        if (!cancelled) setStatusLoading(false)
-      })
 
     void postJson<KnowledgeStatusResult>("/api/context/knowledge/status", { scope })
       .then((data) => {
@@ -629,7 +650,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     return () => {
       cancelled = true
     }
-  }, [pageSize, refreshKnowledgeLog, scope])
+  }, [loadStatus, refreshKnowledgeLog, scope])
 
   useEffect(() => {
     if (scope) void refreshKnowledgeCandidates(scope, candidateStatus)
@@ -1131,17 +1152,19 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     title: string
     message: string
   }) {
-    if (!scope) return
-    setKnowledgeHealthLoading(true)
+    if (!scope) return false
+    setKnowledgeReportLoading(true)
     setKnowledgeError(null)
     try {
       await postJson("/api/context/knowledge/lint/report", { scope, ...input })
       setKnowledgeLint(await postJson<KnowledgeLintResult>("/api/context/knowledge/lint", { scope, run: false }))
       await refreshKnowledgeLog(scope)
+      return true
     } catch (error) {
       setKnowledgeError(error instanceof Error ? error.message : "The lint miss could not be reported.")
+      return false
     } finally {
-      setKnowledgeHealthLoading(false)
+      setKnowledgeReportLoading(false)
     }
   }
 
@@ -1183,16 +1206,27 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
 
   function changeSort(nextSortBy: ContextSortBy) {
     const nextDirection = sortBy === nextSortBy && sortDirection === "asc" ? "desc" : "asc"
+    setStatusLoading(true)
     setSortBy(nextSortBy)
     setSortDirection(nextDirection)
     setPage(1)
-    if (scope) void loadStatus(scope, { page: 1, sortBy: nextSortBy, sortDirection: nextDirection, query: contextSearch })
   }
 
-  function changePage(nextPage: number) {
-    const safePage = Math.min(Math.max(1, nextPage), totalPages)
-    setPage(safePage)
-    if (scope) void loadStatus(scope, { page: safePage, sortBy, sortDirection, query: contextSearch })
+  function changeContextSearch(value: string) {
+    setStatusLoading(true)
+    setContextSearch(value)
+    setPage(1)
+  }
+
+  function loadMoreContext() {
+    if (!scope || statusLoading || contextLoadingMore || page >= totalPages) return
+    void loadStatus(scope, {
+      page: page + 1,
+      sortBy,
+      sortDirection,
+      query: contextSearch,
+      append: true,
+    })
   }
 
   function changeBuildMode(nextMode: BuildMode) {
@@ -1208,8 +1242,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const manualKnowledgeAllBatchesValidated = manualKnowledgeDraft
     ? manualKnowledgeValidatedCount === manualKnowledgeDraft.batchCount
     : false
-  const rangeStart = totalCount === 0 ? 0 : (page - 1) * pageSize + 1
-  const rangeEnd = totalCount === 0 ? 0 : Math.min(totalCount, rangeStart + recentItems.length - 1)
+  const hasMoreContext = recentItems.length < totalCount && page < totalPages
   const totalKnowledgeItems = knowledgeSnapshot ? countKnowledgeItems(knowledgeSnapshot.knowledgeBase) : 0
   const canLoadIndex = Boolean(scope)
     && Boolean(workItemMetadata)
@@ -1305,6 +1338,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
             healthLoading={knowledgeHealthLoading}
             logLoading={knowledgeLogLoading}
             exportLoading={knowledgeExportLoading}
+            reportLoading={knowledgeReportLoading}
             canManage={canBuildKnowledge}
             onRunHealthCheck={runKnowledgeHealthCheck}
             onToggleLog={toggleKnowledgeLog}
@@ -1359,18 +1393,17 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                   <IndexedContextView
                     items={recentItems}
                     totalCount={totalCount}
-                    rangeStart={rangeStart}
-                    rangeEnd={rangeEnd}
-                    page={page}
-                    totalPages={totalPages}
                     sortBy={sortBy}
                     sortDirection={sortDirection}
                     search={contextSearch}
                     loading={statusLoading}
+                    loadingMore={contextLoadingMore}
+                    hasMore={hasMoreContext}
+                    error={contextStatusError}
                     emptyMessage={emptyContextMessage}
-                    onSearchChange={setContextSearch}
+                    onSearchChange={changeContextSearch}
                     onSortChange={changeSort}
-                    onPageChange={changePage}
+                    onLoadMore={loadMoreContext}
                   />
                 </TabsContent>
 
@@ -1439,18 +1472,17 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                         <IndexedContextPanel
                           items={recentItems}
                           totalCount={totalCount}
-                          rangeStart={rangeStart}
-                          rangeEnd={rangeEnd}
-                          page={page}
-                          totalPages={totalPages}
                           sortBy={sortBy}
                           sortDirection={sortDirection}
                           search={contextSearch}
                           loading={statusLoading}
+                          loadingMore={contextLoadingMore}
+                          hasMore={hasMoreContext}
+                          error={contextStatusError}
                           emptyMessage="No indexed work items matched the loaded project index."
-                          onSearchChange={setContextSearch}
+                          onSearchChange={changeContextSearch}
                           onSortChange={changeSort}
-                          onPageChange={changePage}
+                          onLoadMore={loadMoreContext}
                         />
                       </>
                     ) : null}
@@ -1547,18 +1579,17 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                         <IndexedContextPanel
                           items={recentItems}
                           totalCount={totalCount}
-                          rangeStart={rangeStart}
-                          rangeEnd={rangeEnd}
-                          page={page}
-                          totalPages={totalPages}
                           sortBy={sortBy}
                           sortDirection={sortDirection}
                           search={contextSearch}
                           loading={statusLoading}
+                          loadingMore={contextLoadingMore}
+                          hasMore={hasMoreContext}
+                          error={contextStatusError}
                           emptyMessage="No indexed work items matched the loaded project index."
-                          onSearchChange={setContextSearch}
+                          onSearchChange={changeContextSearch}
                           onSortChange={changeSort}
-                          onPageChange={changePage}
+                          onLoadMore={loadMoreContext}
                         />
                       </>
                     ) : null}
@@ -2383,47 +2414,46 @@ function IndexedContextPanel(props: IndexedContextViewProps) {
 type IndexedContextViewProps = {
   items: RecentContextItem[]
   totalCount: number
-  rangeStart: number
-  rangeEnd: number
-  page: number
-  totalPages: number
   sortBy: ContextSortBy
   sortDirection: ContextSortDirection
   search: string
   loading: boolean
+  loadingMore: boolean
+  hasMore: boolean
+  error: string | null
   emptyMessage: string
   onSearchChange: (value: string) => void
   onSortChange: (sortBy: ContextSortBy) => void
-  onPageChange: (page: number) => void
+  onLoadMore: () => void
 }
 
-function IndexedContextView({
+export function IndexedContextView({
   items,
   totalCount,
-  rangeStart,
-  rangeEnd,
-  page,
-  totalPages,
   sortBy,
   sortDirection,
   search,
   loading,
+  loadingMore,
+  hasMore,
+  error,
   emptyMessage,
   onSearchChange,
   onSortChange,
-  onPageChange,
+  onLoadMore,
 }: IndexedContextViewProps) {
-  const safeTotalPages = Math.max(1, totalPages)
-  const safePage = Math.min(Math.max(1, page), safeTotalPages)
-  const canGoPrevious = safePage > 1
-  const canGoNext = safePage < safeTotalPages
+  const scrollRegionRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (scrollRegionRef.current) scrollRegionRef.current.scrollTop = 0
+  }, [search, sortBy, sortDirection])
 
   return (
     <>
       <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div role="status" aria-live="polite" className="text-sm text-muted-foreground">
           {totalCount > 0
-            ? `Showing ${rangeStart}-${rangeEnd} of ${totalCount} active source work items available for retrieval.`
+            ? `Showing ${items.length} of ${totalCount} active source work items available for retrieval.${loadingMore ? " Loading more." : ""}`
             : search.trim()
               ? "No active source work items match the current search."
               : "No active source work items are available for retrieval yet."}
@@ -2440,13 +2470,27 @@ function IndexedContextView({
         </div>
       </div>
 
+      {error ? (
+        <div role="alert" className="mb-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span>{error}</span>
+        </div>
+      ) : null}
+
       {!items.length && loading ? (
         <KnowledgeLoadingState label="Loading indexed project context" compact />
       ) : items.length ? (
-        <div className="space-y-3">
-          <div className="content-scroll-region">
-            <Table className={`min-w-[760px] ${loading ? "opacity-60" : ""}`}>
-              <TableHeader>
+        <div
+          ref={scrollRegionRef}
+          role="region"
+          tabIndex={0}
+          aria-label="Scrollable indexed project context"
+          aria-busy={loading || loadingMore}
+          className="max-h-[min(68vh,680px)] overflow-auto overscroll-contain rounded-lg border border-border bg-card outline-none [scrollbar-gutter:stable] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
+          <div className="min-w-[760px]">
+            <Table containerClassName="overflow-visible" className={`transition-opacity duration-ui motion-reduce:transition-none ${loading ? "opacity-60" : ""}`}>
+              <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_hsl(var(--border))]">
                 <TableRow>
                   <TableHead>ID</TableHead>
                   <TableHead aria-sort={sortBy === "type" ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>
@@ -2478,33 +2522,24 @@ function IndexedContextView({
                 ))}
               </TableBody>
             </Table>
-          </div>
-          <div className="flex flex-col gap-3 border-t border-border pt-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-            <span>
-              Page {safePage} of {safeTotalPages}
-              {loading ? " - Loading" : ""}
-            </span>
-            <div className="flex gap-2">
-              <Button
-                size="icon-sm"
-                variant="outline"
-                disabled={!canGoPrevious || loading}
-                onClick={() => onPageChange(safePage - 1)}
-                aria-label="Previous page"
-                title="Previous page"
-              >
-                <ChevronLeft className="size-4" />
-              </Button>
-              <Button
-                size="icon-sm"
-                variant="outline"
-                disabled={!canGoNext || loading}
-                onClick={() => onPageChange(safePage + 1)}
-                aria-label="Next page"
-                title="Next page"
-              >
-                <ChevronRight className="size-4" />
-              </Button>
+            <div className="flex min-h-14 items-center justify-center border-t border-border bg-card/95 px-4 py-3 text-sm text-muted-foreground backdrop-blur-sm">
+              {hasMore ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={loading || loadingMore}
+                  onClick={onLoadMore}
+                  aria-label={`Load more indexed project context. ${items.length} of ${totalCount} currently shown.`}
+                >
+                  {loadingMore ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : null}
+                  {loadingMore ? "Loading more..." : "Load more"}
+                </Button>
+              ) : (
+                <span className="flex items-center gap-2">
+                  <Check className="size-4 text-success" aria-hidden="true" />
+                  All {totalCount} active source work items loaded
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -2623,7 +2658,7 @@ export function KnowledgeCandidatesView({
   )
 }
 
-function KnowledgeOpsPanel({
+export function KnowledgeOpsPanel({
   lint,
   logItems,
   logVisible,
@@ -2631,6 +2666,7 @@ function KnowledgeOpsPanel({
   healthLoading,
   logLoading,
   exportLoading,
+  reportLoading,
   canManage,
   onRunHealthCheck,
   onToggleLog,
@@ -2645,22 +2681,27 @@ function KnowledgeOpsPanel({
   healthLoading: boolean
   logLoading: boolean
   exportLoading: boolean
+  reportLoading: boolean
   canManage: boolean
   onRunHealthCheck: () => void
   onToggleLog: () => void
   onExport: () => void
-  onReportMiss: (input: { missType: "duplicate" | "conflict"; title: string; message: string }) => Promise<void>
+  onReportMiss: (input: { missType: "duplicate" | "conflict"; title: string; message: string }) => Promise<boolean>
   onTransitionIssue: (issueId: string, action: "confirm" | "reject" | "ignore" | "reopen") => Promise<void>
 }) {
   const [missType, setMissType] = useState<"duplicate" | "conflict">("duplicate")
   const [missTitle, setMissTitle] = useState("")
   const [missMessage, setMissMessage] = useState("")
+  const [missSubmitted, setMissSubmitted] = useState(false)
 
   async function submitMiss() {
     if (!missTitle.trim() || !missMessage.trim()) return
-    await onReportMiss({ missType, title: missTitle.trim(), message: missMessage.trim() })
+    setMissSubmitted(false)
+    const reported = await onReportMiss({ missType, title: missTitle.trim(), message: missMessage.trim() })
+    if (!reported) return
     setMissTitle("")
     setMissMessage("")
+    setMissSubmitted(true)
   }
 
   return (
@@ -2736,39 +2777,104 @@ function KnowledgeOpsPanel({
         </div>
       ) : null}
 
-      <div className="space-y-3 rounded-md border border-border bg-muted p-3">
-        <div>
-          <div className="text-sm font-semibold text-foreground">Report a missed duplicate or conflict</div>
-          <div className="text-xs text-muted-foreground">Reports do not change knowledge. Owners or admins must confirm them before they count toward semantic-lint expansion.</div>
-        </div>
-        <div className="grid gap-3 md:grid-cols-[180px_1fr]">
-          <Label className="space-y-1 text-xs">
-            <span>Miss type</span>
-            <select
-              value={missType}
-              onChange={(event) => setMissType(event.target.value as "duplicate" | "conflict")}
-              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+      <Accordion type="single" collapsible>
+        <AccordionItem
+          value="report-missed-knowledge-issue"
+          className="border-primary/25 bg-gradient-to-br from-primary/10 via-card to-info/10 shadow-sm transition-colors duration-ui motion-reduce:transition-none dark:border-primary/30"
+        >
+          <AccordionTrigger className="min-h-16 items-start py-4 hover:bg-primary/5 motion-reduce:transition-none [&>svg]:mt-2">
+            <div className="flex min-w-0 flex-1 items-start gap-3 pr-1">
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-sm">
+                <MessageSquareWarning className="size-5" aria-hidden="true" />
+              </span>
+              <span className="min-w-0 flex-1 text-left">
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-foreground">Report a missed duplicate or conflict</span>
+                </span>
+                <span className="mt-1 block text-xs font-normal leading-5 text-muted-foreground">
+                  Help improve semantic lint by flagging related knowledge that the automated check missed.
+                </span>
+              </span>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="bg-card/90 p-4">
+            <form
+              className="space-y-3"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void submitMiss()
+              }}
             >
-              <option value="duplicate">Duplicate</option>
-              <option value="conflict">Conflict</option>
-            </select>
-          </Label>
-          <Label className="space-y-1 text-xs">
-            <span>Title</span>
-            <Input value={missTitle} onChange={(event) => setMissTitle(event.target.value)} maxLength={200} placeholder="What deterministic lint missed" />
-          </Label>
-        </div>
-        <Label className="space-y-1 text-xs">
-          <span>Evidence and impact</span>
-          <Textarea value={missMessage} onChange={(event) => setMissMessage(event.target.value)} maxLength={2000} placeholder="Describe the entries, concrete mismatch, and relevant source IDs." />
-        </Label>
-        <div className="flex justify-end">
-          <Button size="sm" variant="outline" onClick={() => void submitMiss()} disabled={healthLoading || !missTitle.trim() || !missMessage.trim()}>
-            {healthLoading ? <RefreshCw className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
-            Report miss
-          </Button>
-        </div>
-      </div>
+              <p id="knowledge-miss-description" className="text-xs leading-5 text-muted-foreground">
+                Reports do not change knowledge. Owners or admins must confirm them before they count toward semantic-lint expansion.
+              </p>
+              <div className="grid gap-3 md:grid-cols-[180px_1fr]">
+                <div className="space-y-1">
+                  <Label htmlFor="knowledge-miss-type" className="text-xs">Miss type</Label>
+                  <select
+                    id="knowledge-miss-type"
+                    value={missType}
+                    onChange={(event) => {
+                      setMissType(event.target.value as "duplicate" | "conflict")
+                      setMissSubmitted(false)
+                    }}
+                    disabled={reportLoading}
+                    aria-describedby="knowledge-miss-description"
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none transition-colors duration-ui focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
+                  >
+                    <option value="duplicate">Duplicate</option>
+                    <option value="conflict">Conflict</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="knowledge-miss-title" className="text-xs">Title</Label>
+                  <Input
+                    id="knowledge-miss-title"
+                    value={missTitle}
+                    onChange={(event) => {
+                      setMissTitle(event.target.value)
+                      setMissSubmitted(false)
+                    }}
+                    maxLength={200}
+                    placeholder="What deterministic lint missed"
+                    disabled={reportLoading}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="knowledge-miss-evidence" className="text-xs">Evidence and impact</Label>
+                <Textarea
+                  id="knowledge-miss-evidence"
+                  value={missMessage}
+                  onChange={(event) => {
+                    setMissMessage(event.target.value)
+                    setMissSubmitted(false)
+                  }}
+                  maxLength={2000}
+                  placeholder="Describe the entries, concrete mismatch, and relevant source IDs."
+                  disabled={reportLoading}
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">
+                <div role="status" aria-live="polite" className="min-h-5 text-sm text-success">
+                  {missSubmitted ? (
+                    <span className="flex items-center gap-2">
+                      <Check className="size-4" aria-hidden="true" />
+                      Report submitted for review.
+                    </span>
+                  ) : null}
+                </div>
+                <Button type="submit" size="sm" disabled={reportLoading || !missTitle.trim() || !missMessage.trim()} aria-busy={reportLoading}>
+                  {reportLoading ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Send className="size-4" aria-hidden="true" />}
+                  {reportLoading ? "Reporting..." : "Report miss"}
+                </Button>
+              </div>
+            </form>
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
 
       {exportResult ? (
         <div className="rounded-md border border-primary/40 bg-accent p-3 text-sm text-primary">
@@ -2811,7 +2917,7 @@ function KnowledgeMetric({ label, value, tone }: { label: string; value: number 
   )
 }
 
-function KnowledgeExplorer({
+export function KnowledgeExplorer({
   knowledgeBase,
   compact = false,
   highlightedEntryIdentities = NO_HIGHLIGHTED_KNOWLEDGE_ENTRIES,
@@ -2823,6 +2929,7 @@ function KnowledgeExplorer({
   const [category, setCategory] = useState<KnowledgeExplorerCategory>("all")
   const [query, setQuery] = useState("")
   const [page, setPage] = useState(1)
+  const scrollRegionRef = useRef<HTMLDivElement | null>(null)
   const entries = useMemo(() => flattenKnowledgeEntries(knowledgeBase), [knowledgeBase])
   const counts = useMemo(() => getKnowledgeCategoryCounts(knowledgeBase), [knowledgeBase])
   const normalizedQuery = normalizeSearch(query)
@@ -2831,15 +2938,18 @@ function KnowledgeExplorer({
     const textMatch = !normalizedQuery || normalizeSearch(entry.searchText).includes(normalizedQuery)
     return categoryMatch && textMatch
   })
-  const pageSize = compact ? 5 : 8
+  const pageSize = 5
   const totalPages = Math.max(1, Math.ceil(filteredEntries.length / pageSize))
   const safePage = Math.min(page, totalPages)
   const pageStart = filteredEntries.length === 0 ? 0 : (safePage - 1) * pageSize + 1
   const pageEnd = Math.min(filteredEntries.length, safePage * pageSize)
-  const visibleEntries = filteredEntries.slice((safePage - 1) * pageSize, safePage * pageSize)
+  const visibleEntries = compact
+    ? filteredEntries.slice((safePage - 1) * pageSize, safePage * pageSize)
+    : filteredEntries
 
   useEffect(() => {
     setPage(1)
+    if (scrollRegionRef.current) scrollRegionRef.current.scrollTop = 0
   }, [category, query, compact, knowledgeBase])
 
   useEffect(() => {
@@ -2887,7 +2997,15 @@ function KnowledgeExplorer({
             ))}
           </div>
         </div>
-        <div className={`space-y-3 ${compact ? "max-h-[520px] overflow-y-auto pr-1" : ""}`}>
+        <div
+          ref={scrollRegionRef}
+          role="region"
+          tabIndex={0}
+          aria-label={compact ? "Scrollable knowledge preview" : "Scrollable knowledge explorer results"}
+          className={`space-y-3 overflow-y-auto overscroll-contain pr-2 outline-none [scrollbar-gutter:stable] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+            compact ? "max-h-[520px]" : "max-h-[min(68vh,680px)]"
+          }`}
+        >
           {visibleEntries.length ? (
             visibleEntries.map((entry) => (
               <KnowledgeExplorerEntryCard
@@ -2909,7 +3027,7 @@ function KnowledgeExplorer({
               compact
             />
           )}
-          {filteredEntries.length > pageSize ? (
+          {compact && filteredEntries.length > pageSize ? (
             <div className="flex flex-col gap-3 border-t border-border pt-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
               <span className="tabular-nums">Showing {pageStart}-{pageEnd} of {filteredEntries.length}</span>
               <div className="flex gap-2">

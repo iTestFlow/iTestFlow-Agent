@@ -788,9 +788,9 @@ function nativeRequire(specifier: string): unknown {
 
 function contextSortSql(sortBy: ProjectContextSortBy, direction: ProjectContextSortDirection) {
   const directionSql = direction === "asc" ? "ASC" : "DESC";
-  if (sortBy === "type") return `wi.work_item_type ${directionSql}, wi.last_synced_at DESC, wi.updated_date DESC`;
-  if (sortBy === "state") return `COALESCE(wi.state, '') ${directionSql}, wi.last_synced_at DESC, wi.updated_date DESC`;
-  return `wi.last_synced_at ${directionSql}, wi.updated_date ${directionSql}`;
+  if (sortBy === "type") return `wi.work_item_type ${directionSql}, wi.last_synced_at DESC, wi.updated_date DESC, wi.azure_work_item_id ASC`;
+  if (sortBy === "state") return `COALESCE(wi.state, '') ${directionSql}, wi.last_synced_at DESC, wi.updated_date DESC, wi.azure_work_item_id ASC`;
+  return `wi.last_synced_at ${directionSql}, wi.updated_date ${directionSql}, wi.azure_work_item_id ASC`;
 }
 
 function escapeSqlLike(value: string) {

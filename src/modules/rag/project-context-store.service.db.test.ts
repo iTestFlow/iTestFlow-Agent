@@ -237,6 +237,34 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     expect(snapshots.every((snapshot) => !("raw" in (snapshot.fields_json as Record<string, unknown>)))).toBe(true);
   });
 
+  it("uses work item ID as a deterministic tie-breaker across context batches", async () => {
+    await sqlRun(
+      `UPDATE azure_devops_work_items
+       SET work_item_type = 'User Story',
+           last_synced_at = '2026-07-14T10:00:00.000Z',
+           updated_date = '2026-07-14T10:00:00.000Z'
+       WHERE project_id = @projectId`,
+      { projectId: PROJ_A },
+    );
+
+    const firstBatch = await getRecentProjectContext({
+      scope: scopeA,
+      page: 1,
+      pageSize: 2,
+      sortBy: "type",
+      sortDirection: "asc",
+    });
+    const secondBatch = await getRecentProjectContext({
+      scope: scopeA,
+      page: 2,
+      pageSize: 2,
+      sortBy: "type",
+      sortDirection: "asc",
+    });
+
+    expect([...firstBatch.items, ...secondBatch.items].map((item) => item.workItemId)).toEqual(["101", "102", "103"]);
+  });
+
   it("re-running with unchanged content keeps items active without rewriting rows or chunks", async () => {
     const before = await workItemRows(PROJ_A);
     const chunksBefore = await chunkRows(PROJ_A);
