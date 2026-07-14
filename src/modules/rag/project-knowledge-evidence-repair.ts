@@ -29,8 +29,18 @@ export function repairMissingProjectKnowledgeEvidenceRefs(input: {
   knowledgeBase: ProjectKnowledgeBase;
   snapshots: ProjectKnowledgeEvidenceSnapshot[];
   touchedKeys?: Set<string>;
+  /**
+   * Work items the cross-source fallback may anchor to (typically the draft
+   * manifest's). Without this bound the fallback could re-attribute an entry to a
+   * retired work item found only via another entry's stale refs — and the next
+   * incremental prune would silently drop the entry as source-orphaned.
+   */
+  fallbackSourceWorkItemIds?: Set<string>;
 }): ProjectKnowledgeEvidenceRepairResult {
   const knowledgeBase = structuredClone(ProjectKnowledgeBaseSchema.parse(input.knowledgeBase));
+  const fallbackPool = input.fallbackSourceWorkItemIds
+    ? input.snapshots.filter((snapshot) => input.fallbackSourceWorkItemIds!.has(snapshot.sourceWorkItemId))
+    : input.snapshots;
   let attemptedEntryCount = 0;
   let repairedEntryCount = 0;
   let unresolvedEntryCount = 0;
@@ -42,11 +52,17 @@ export function repairMissingProjectKnowledgeEvidenceRefs(input: {
     attemptedEntryCount += 1;
     const fragments = splitProjectKnowledgeLegacyEvidence(entry.value.evidence);
     const allowedSourceIds = new Set(entry.value.sourceWorkItemIds);
-    const snapshots = input.snapshots.filter((snapshot) => allowedSourceIds.has(snapshot.sourceWorkItemId));
+    const citedSnapshots = input.snapshots.filter((snapshot) => allowedSourceIds.has(snapshot.sourceWorkItemId));
     const allowedFields = entry.category === "business_rule"
       ? PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS
       : PROJECT_KNOWLEDGE_SOURCE_FIELDS;
-    const matches = fragments.map((fragment) => uniqueFragmentMatch(snapshots, allowedFields, fragment));
+    // Cited-source pass first; when a fragment cannot be anchored in the entry's own
+    // cited work items (paraphrased evidence, stale/hallucinated ids), fall back to a
+    // uniqueness-gated search across the manifest-bounded pool. Uniqueness across the
+    // whole pool keeps the fallback from guessing.
+    const matches = fragments.map((fragment) =>
+      findUniqueProjectKnowledgeEvidenceAnchor(citedSnapshots, allowedFields, fragment) ??
+      findUniqueProjectKnowledgeEvidenceAnchor(fallbackPool, allowedFields, fragment));
 
     if (!fragments.length || matches.some((match) => !match)) {
       unresolvedEntryCount += 1;
@@ -65,7 +81,11 @@ export function repairMissingProjectKnowledgeEvidenceRefs(input: {
   };
 }
 
-function uniqueFragmentMatch(
+/**
+ * Anchors one legacy evidence fragment to a snapshot field, but only when the match
+ * is unique across the supplied pool — ambiguity returns null rather than a guess.
+ */
+export function findUniqueProjectKnowledgeEvidenceAnchor(
   snapshots: ProjectKnowledgeEvidenceSnapshot[],
   allowedFields: readonly ProjectKnowledgeEvidenceRef["sourceField"][],
   fragment: string,

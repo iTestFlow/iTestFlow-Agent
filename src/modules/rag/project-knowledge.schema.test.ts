@@ -4,6 +4,10 @@ import {
   ProjectKnowledgeBaseSchema,
   ProjectKnowledgeGlossaryTermSchema,
   ProjectKnowledgeModuleSchema,
+  haveIdenticalNonEmptyEvidenceContent,
+  projectKnowledgeEvidenceContentIdentity,
+  projectKnowledgeEvidenceContentIdentitySet,
+  type ProjectKnowledgeEvidenceRef,
 } from "./project-knowledge.schema";
 
 const glossaryEntry = (overrides: Record<string, unknown>) => ({
@@ -180,5 +184,57 @@ describe("source work item IDs normalization", () => {
   it("defaults a blank description to the evidence text", () => {
     expect(parseModule({ evidence: "From WI 7" }).description).toBe("From WI 7");
     expect(parseModule({ description: "  Trimmed  ", evidence: "From WI 7" }).description).toBe("Trimmed");
+  });
+});
+
+describe("evidence content identity", () => {
+  const ref = (overrides: Partial<ProjectKnowledgeEvidenceRef> = {}): ProjectKnowledgeEvidenceRef => ({
+    sourceSnapshotId: "snapshot-1",
+    sourceWorkItemId: "10",
+    sourceField: "acceptanceCriteria",
+    quote: "Valid code applies discount",
+    origin: "generated_v2",
+    verification: "exact",
+    ...overrides,
+  });
+
+  it("ignores snapshot ids, locators, and quote whitespace", () => {
+    const identity = projectKnowledgeEvidenceContentIdentity(ref());
+    expect(projectKnowledgeEvidenceContentIdentity(ref({
+      sourceSnapshotId: "snapshot-2",
+      locator: { line: 3 },
+      quote: "  Valid code   applies discount ",
+    }))).toBe(identity);
+    expect(projectKnowledgeEvidenceContentIdentity(ref({ sourceWorkItemId: "11" }))).not.toBe(identity);
+    expect(projectKnowledgeEvidenceContentIdentity(ref({ sourceField: "description" }))).not.toBe(identity);
+    expect(projectKnowledgeEvidenceContentIdentity(ref({ quote: "Another quote" }))).not.toBe(identity);
+  });
+
+  it("dedupes and sorts identity sets", () => {
+    const set = projectKnowledgeEvidenceContentIdentitySet([
+      ref({ sourceSnapshotId: "b" }),
+      ref({ sourceSnapshotId: "a" }),
+      ref({ sourceWorkItemId: "11" }),
+    ]);
+    expect(set).toHaveLength(2);
+    expect([...set].sort()).toEqual(set);
+    expect(projectKnowledgeEvidenceContentIdentitySet(undefined)).toEqual([]);
+  });
+
+  it("compares evidence content across snapshot churn and rejects empty sides", () => {
+    expect(haveIdenticalNonEmptyEvidenceContent(
+      [ref({ sourceSnapshotId: "old" })],
+      [ref({ sourceSnapshotId: "new" })],
+    )).toBe(true);
+    expect(haveIdenticalNonEmptyEvidenceContent([], [])).toBe(false);
+    expect(haveIdenticalNonEmptyEvidenceContent([ref()], undefined)).toBe(false);
+    expect(haveIdenticalNonEmptyEvidenceContent(
+      [ref()],
+      [ref(), ref({ sourceWorkItemId: "11" })],
+    )).toBe(false);
+    expect(haveIdenticalNonEmptyEvidenceContent(
+      [ref()],
+      [ref({ quote: "Different" })],
+    )).toBe(false);
   });
 });

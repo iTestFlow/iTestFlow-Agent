@@ -1,4 +1,5 @@
 import type { ProjectKnowledgeBase, ProjectKnowledgeEvidenceRef } from "./project-knowledge.schema";
+import { projectKnowledgeEvidenceContentIdentitySet } from "./project-knowledge.schema";
 import {
   buildEntryProvenanceProjection,
   canonicalizeProjectKnowledgeKey,
@@ -31,7 +32,13 @@ export type ProjectKnowledgeHardConflict = {
   affectedCategory: ProjectKnowledgeEntryCategory;
   conflictType: "incompatible_concrete_value" | "incompatible_transition_target" | "duplicate_identity";
   participants: ProjectKnowledgeHardConflictParticipant[];
+  evidenceIdentical: boolean;
 };
+
+export function sortProjectKnowledgeHardConflictsForReview(conflicts: ProjectKnowledgeHardConflict[]) {
+  return [...conflicts].sort((first, second) =>
+    Number(first.evidenceIdentical) - Number(second.evidenceIdentical));
+}
 
 export function detectProjectKnowledgeHardConflicts(
   knowledgeBase: ProjectKnowledgeBase,
@@ -80,6 +87,7 @@ function detectDuplicateIdentityConflicts(knowledgeBase: ProjectKnowledgeBase) {
       affectedCategory: sortedParticipants[0].category,
       conflictType: "duplicate_identity",
       participants: sortedParticipants,
+      evidenceIdentical: participantsHaveIdenticalEvidence(sortedParticipants),
     });
   }
   return conflicts;
@@ -144,6 +152,7 @@ function conflictsFromGroups(
       affectedCategory: sortedParticipants[0].category,
       conflictType,
       participants: sortedParticipants,
+      evidenceIdentical: participantsHaveIdenticalEvidence(sortedParticipants),
     });
   }
   return conflicts;
@@ -188,7 +197,15 @@ function buildParticipant(
   };
 }
 
-function parseConcreteRule(rule: string) {
+function participantsHaveIdenticalEvidence(participants: ProjectKnowledgeHardConflictParticipant[]) {
+  const identitySets = participants.map((participant) =>
+    projectKnowledgeEvidenceContentIdentitySet(participant.evidenceRefs));
+  if (identitySets.some((identities) => !identities.length)) return false;
+  const reference = identitySets[0].join("\n");
+  return identitySets.every((identities) => identities.join("\n") === reference);
+}
+
+export function parseConcreteRule(rule: string) {
   const match = rule.trim().match(/^(.{2,120}?)\s+(?:must\s+be|shall\s+be|is|equals|=)\s+(.{1,120})$/i);
   if (!match?.[1] || !match[2]) return null;
   const value = canonicalizeProjectKnowledgeKey(match[2].replace(/[.;]+$/g, ""));

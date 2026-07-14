@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertTriangle,
-  Braces,
   CheckCircle2,
   Check,
   ChevronLeft,
@@ -18,7 +17,6 @@ import {
   Trash2,
 } from "lucide-react"
 
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -125,47 +123,53 @@ export function KnowledgeReviewWorkspace({
   const [reviewContext, setReviewContext] = useState<ProjectKnowledgeReviewContext | null>(null)
   const [contextLoading, setContextLoading] = useState(false)
   const [contextError, setContextError] = useState<string | null>(null)
-  const [jsonText, setJsonText] = useState(() => JSON.stringify(proposedKnowledge, null, 2))
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [validationRequested, setValidationRequested] = useState(false)
   const [conflictDecisions, setConflictDecisions] = useState<Record<string, ConflictDecision>>({})
+  const [issueDecisions, setIssueDecisions] = useState<Record<string, string>>({})
   const [regenerateDialogOpen, setRegenerateDialogOpen] = useState(false)
+  const [bulkRemoveDialogOpen, setBulkRemoveDialogOpen] = useState(false)
   const firstIssueRef = useRef<HTMLDivElement | null>(null)
+  const contextRequestSeq = useRef(0)
 
   useEffect(() => {
     setWorkingKnowledge(proposedKnowledge)
-    setJsonText(JSON.stringify(proposedKnowledge, null, 2))
     setSubmitError(null)
     setDirty(false)
     setConflictDecisions({})
+    setIssueDecisions({})
   }, [draftId, proposedKnowledge])
 
   const needsReviewContext = blockers.some((blocker) => isEvidenceBlocker(blocker) || blocker.type === "hard_conflict")
-  const jsonValidation = useMemo(() => parseReviewedKnowledge(jsonText), [jsonText])
-  const appliedJsonText = workingKnowledge ? JSON.stringify(workingKnowledge, null, 2) : ""
-  const jsonDiffersFromApplied = jsonText !== appliedJsonText
-  const canApplyJson = jsonDiffersFromApplied && Boolean(jsonValidation.data)
 
   async function loadReviewContext() {
     if (!needsReviewContext) return
+    // Sequence guard: a slow response for a superseded draft/re-check must never
+    // overwrite the context of the current one.
+    const requestId = ++contextRequestSeq.current
     setContextLoading(true)
     setContextError(null)
     try {
-      setReviewContext(await onLoadReviewContext())
+      const context = await onLoadReviewContext()
+      if (requestId !== contextRequestSeq.current) return
+      setReviewContext(context)
     } catch (error) {
+      if (requestId !== contextRequestSeq.current) return
       setReviewContext(null)
       setContextError(error instanceof Error ? error.message : "Review sources could not be loaded.")
     } finally {
-      setContextLoading(false)
+      if (requestId === contextRequestSeq.current) setContextLoading(false)
     }
   }
 
   useEffect(() => {
     if (needsReviewContext) void loadReviewContext()
     else setReviewContext(null)
+    // Re-checks keep the draftId but replace the blockers array, and availability or
+    // suggestions may have changed with them — refetch on either signal.
     // The endpoint callback is intentionally excluded: callers recreate it as draft state changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftId, needsReviewContext])
+  }, [draftId, needsReviewContext, blockers])
 
   useEffect(() => {
     setPage(1)
@@ -274,10 +278,94 @@ export function KnowledgeReviewWorkspace({
   const categorySummaries = Object.entries(reviewSummary.byCategory)
   const onlyHardConflicts = blockers.every((blocker) => blocker.type === "hard_conflict")
   const hasHardConflicts = blockers.some((blocker) => blocker.type === "hard_conflict")
+  const decidedLocallyCount = Object.keys(conflictDecisions).length + Object.keys(issueDecisions).length
+
+  // Evidence blockers that still have a real decision available in bulk: accept the
+  // server-computed evidence suggestion, or drop entries no source can verify.
+  // Several blockers can point at one entry (one per broken ref), so bulk actions
+  // count and act per ENTRY while decisions are recorded on every sibling blocker.
+  const evidenceBlockersWithEntries = workingKnowledge
+    ? blockers.filter(isEvidenceBlocker).filter((blocker) =>
+        !issueDecisions[blocker.id] &&
+        findKnowledgeEntry(workingKnowledge, blocker.category, blocker.entryKey, blocker.entryInstanceId))
+    : []
+  const suggestibleBlockers = uniqueByEntryIdentity(evidenceBlockersWithEntries.filter((blocker) => {
+    const entry = findKnowledgeEntry(workingKnowledge!, blocker.category, blocker.entryKey, blocker.entryInstanceId)
+    const hasRefs = Array.isArray(entry?.evidenceRefs) && entry.evidenceRefs.length > 0
+    return !hasRefs && Boolean(findContextEntry(reviewContext, blocker)?.suggestedEvidence?.length)
+  }))
+  const unverifiableBlockers = uniqueByEntryIdentity(evidenceBlockersWithEntries.filter((blocker) => {
+    const contextEntry = findContextEntry(reviewContext, blocker)
+    return contextEntry && contextEntry.sourceAvailability !== "available" && !contextEntry.suggestedEvidence?.length
+  }))
+
+  function decisionsForEntryOf(blocker: ProjectKnowledgeDraftBlocker, label: string) {
+    const identity = blockerEntryIdentity(blocker)
+    return Object.fromEntries(blockers
+      .filter(isEvidenceBlocker)
+      .filter((candidate) => blockerEntryIdentity(candidate) === identity)
+      .map((candidate) => [candidate.id, label]))
+  }
+
+  function acceptSuggestedEvidence(blocker: ProjectKnowledgeEvidenceBlocker, base?: ProjectKnowledgeBase) {
+    const suggestions = findContextEntry(reviewContext, blocker)?.suggestedEvidence
+    const knowledge = base ?? workingKnowledge
+    if (!knowledge || !suggestions?.length) return knowledge
+    return setEntryEvidenceRefs(
+      knowledge,
+      blocker.category,
+      blocker.entryKey,
+      suggestions.map((suggestion) => ({
+        sourceSnapshotId: suggestion.sourceSnapshotId,
+        sourceWorkItemId: suggestion.sourceWorkItemId,
+        sourceField: suggestion.sourceField,
+        quote: suggestion.quote,
+        origin: "reviewer_reanchored" as const,
+        verification: suggestion.verification,
+      })),
+      blocker.entryInstanceId,
+    )
+  }
+
+  function acceptAllSuggestions() {
+    if (!workingKnowledge || !suggestibleBlockers.length) return
+    let next: ProjectKnowledgeBase = workingKnowledge
+    let decisions: Record<string, string> = {}
+    for (const blocker of suggestibleBlockers) {
+      next = acceptSuggestedEvidence(blocker, next) ?? next
+      decisions = { ...decisions, ...decisionsForEntryOf(blocker, "Suggested evidence accepted") }
+    }
+    updateWorkingKnowledge(next)
+    setIssueDecisions((current) => ({ ...current, ...decisions }))
+  }
+
+  function removeEntryForBlocker(blocker: ProjectKnowledgeDraftBlocker) {
+    if (!workingKnowledge || blocker.type === "hard_conflict") return
+    updateWorkingKnowledge(setKnowledgeEntryValue(
+      workingKnowledge,
+      blocker.category,
+      blocker.entryKey,
+      null,
+      blocker.entryInstanceId,
+    ))
+    setIssueDecisions((current) => ({ ...current, ...decisionsForEntryOf(blocker, "Entry removed from draft") }))
+  }
+
+  function removeAllUnverifiable() {
+    if (!workingKnowledge || !unverifiableBlockers.length) return
+    let next: ProjectKnowledgeBase = workingKnowledge
+    let decisions: Record<string, string> = {}
+    for (const blocker of unverifiableBlockers) {
+      next = setKnowledgeEntryValue(next, blocker.category, blocker.entryKey, null, blocker.entryInstanceId)
+      decisions = { ...decisions, ...decisionsForEntryOf(blocker, "Entry removed from draft") }
+    }
+    updateWorkingKnowledge(next)
+    setIssueDecisions((current) => ({ ...current, ...decisions }))
+    setBulkRemoveDialogOpen(false)
+  }
 
   function updateWorkingKnowledge(next: ProjectKnowledgeBase) {
     setWorkingKnowledge(next)
-    setJsonText(JSON.stringify(next, null, 2))
     setSubmitError(null)
     setDirty(true)
   }
@@ -285,16 +373,10 @@ export function KnowledgeReviewWorkspace({
   function resetWorkingKnowledge() {
     if (!proposedKnowledge) return
     setWorkingKnowledge(proposedKnowledge)
-    setJsonText(JSON.stringify(proposedKnowledge, null, 2))
     setSubmitError(null)
     setDirty(false)
     setConflictDecisions({})
-  }
-
-  function applyJsonToReview() {
-    if (!jsonValidation.data || !jsonDiffersFromApplied) return
-    updateWorkingKnowledge(jsonValidation.data)
-    setConflictDecisions({})
+    setIssueDecisions({})
   }
 
   async function validateChanges() {
@@ -331,8 +413,40 @@ export function KnowledgeReviewWorkspace({
             </p>
           </div>
         </div>
-        <Badge variant="destructive" className="w-fit tabular-nums">{blockers.length} unresolved</Badge>
+        <div className="flex flex-col items-start gap-2 lg:items-end">
+          <Badge variant="destructive" className="w-fit tabular-nums">{blockers.length} unresolved</Badge>
+          {decidedLocallyCount > 0 ? (
+            <Badge variant="outline" className="w-fit tabular-nums">
+              {decidedLocallyCount} decided locally — re-check to apply
+            </Badge>
+          ) : null}
+        </div>
       </div>
+
+      {suggestibleBlockers.length || unverifiableBlockers.length ? (
+        <div className="flex flex-col gap-2 rounded-md border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between" aria-label="Bulk evidence decisions">
+          <p className="text-xs leading-5 text-muted-foreground">
+            {suggestibleBlockers.length
+              ? `${suggestibleBlockers.length} ${suggestibleBlockers.length === 1 ? "entry has" : "entries have"} suggested evidence ready to accept. `
+              : ""}
+            {unverifiableBlockers.length
+              ? `${unverifiableBlockers.length} ${unverifiableBlockers.length === 1 ? "entry" : "entries"} cannot be verified against any captured source.`
+              : ""}
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            {suggestibleBlockers.length ? (
+              <Button className="min-h-11" size="sm" variant="secondary" onClick={acceptAllSuggestions} disabled={busy}>
+                <FileCheck2 className="size-4" /> Accept all suggested evidence ({suggestibleBlockers.length})
+              </Button>
+            ) : null}
+            {unverifiableBlockers.length ? (
+              <Button className="min-h-11" size="sm" variant="outline" onClick={() => setBulkRemoveDialogOpen(true)} disabled={busy}>
+                <Trash2 className="size-4" /> Remove {unverifiableBlockers.length} unverifiable {unverifiableBlockers.length === 1 ? "entry" : "entries"}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {typeSummaries.length > 1 ? (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Review issue summary">
@@ -385,11 +499,8 @@ export function KnowledgeReviewWorkspace({
       <div className="space-y-3" role="list" aria-label="Unresolved publication issues">
         {visibleWithKeys.length ? visibleWithKeys.map(({ blocker, renderKey }, index) => {
           const entry = workingKnowledge ? findKnowledgeEntry(workingKnowledge, blocker.category, blocker.entryKey, blocker.entryInstanceId) : null
-          const contextEntry = reviewContext?.entries.find((candidate) =>
-            candidate.category === blocker.category &&
-            (blocker.entryInstanceId && candidate.entryInstanceId
-              ? candidate.entryInstanceId === blocker.entryInstanceId
-              : canonicalKey(candidate.entryKey) === canonicalKey(blocker.entryKey)))
+          const contextEntry = findContextEntry(reviewContext, blocker)
+          const issueDecision = issueDecisions[blocker.id]
           const title = blocker.type === "hard_conflict"
             ? friendlyConflictSubject(blocker.subject)
             : entry
@@ -410,6 +521,14 @@ export function KnowledgeReviewWorkspace({
                     <span className="font-semibold text-foreground">
                       {blocker.type === "hard_conflict" ? hardConflictLabel(blocker.conflictType) : BLOCKER_LABELS[blocker.type] ?? friendlyCode(blocker.type)}
                     </span>
+                    {blocker.type === "hard_conflict" && blocker.evidenceIdentical ? (
+                      <Badge variant="outline">Same source evidence</Badge>
+                    ) : null}
+                    {issueDecision ? (
+                      <Badge variant="outline" className="gap-1">
+                        <Check className="size-3.5" aria-hidden="true" />{issueDecision} — pending re-check
+                      </Badge>
+                    ) : null}
                   </div>
                   <div className="mt-2 text-sm font-medium text-foreground">
                     {title}
@@ -426,7 +545,7 @@ export function KnowledgeReviewWorkspace({
                 ) : null}
               </div>
 
-              {entry && isEvidenceBlocker(blocker) ? (
+              {entry && isEvidenceBlocker(blocker) && !issueDecision ? (
                 <EvidenceRepairEditor
                   blocker={blocker}
                   entry={entry}
@@ -443,10 +562,17 @@ export function KnowledgeReviewWorkspace({
                     refs,
                     blocker.entryInstanceId,
                   ))}
+                  onAcceptSuggestion={() => {
+                    const next = acceptSuggestedEvidence(blocker)
+                    if (!next) return
+                    updateWorkingKnowledge(next)
+                    setIssueDecisions((current) => ({ ...current, [blocker.id]: "Suggested evidence accepted" }))
+                  }}
+                  onRemoveEntry={() => removeEntryForBlocker(blocker)}
                 />
               ) : null}
 
-              {!entry && blocker.type !== "hard_conflict" ? (
+              {!entry && blocker.type !== "hard_conflict" && !issueDecision ? (
                 <UnavailableIssueState
                   workItemIds={"sourceWorkItemIds" in blocker ? blocker.sourceWorkItemIds : []}
                   onRequestRegenerate={() => setRegenerateDialogOpen(true)}
@@ -539,48 +665,6 @@ export function KnowledgeReviewWorkspace({
         </div>
       ) : null}
 
-      {workingKnowledge ? (
-        <Accordion type="single" collapsible>
-          <AccordionItem value="advanced-json">
-            <AccordionTrigger className="min-h-11">
-              <span className="flex items-center gap-2"><Braces className="size-4" aria-hidden="true" />Advanced JSON</span>
-            </AccordionTrigger>
-            <AccordionContent className="space-y-3">
-              <p className="text-xs leading-5 text-muted-foreground">
-                Advanced JSON is an expert fallback. Applying edited JSON replaces the guided working state, but does not contact the server until you re-check the review.
-              </p>
-              <Label htmlFor="knowledge-review-json">Complete reviewed proposal</Label>
-              <Textarea
-                id="knowledge-review-json"
-                value={jsonText}
-                onChange={(event) => {
-                  setJsonText(event.target.value)
-                }}
-                aria-invalid={Boolean(jsonValidation.error)}
-                aria-describedby={jsonValidation.error ? "knowledge-review-json-error" : "knowledge-review-json-help"}
-                className="min-h-72 font-mono text-xs"
-                spellCheck={false}
-              />
-              {jsonValidation.error ? (
-                <pre id="knowledge-review-json-error" role="alert" className="whitespace-pre-wrap text-xs text-destructive">{jsonValidation.error}</pre>
-              ) : (
-                <p id="knowledge-review-json-help" className="text-xs text-muted-foreground">
-                  {jsonDiffersFromApplied ? "The edited proposal is valid and ready to apply." : "Edit the JSON to enable Apply edited JSON."}
-                </p>
-              )}
-              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                <Button className="min-h-11" size="sm" variant="outline" onClick={resetWorkingKnowledge} disabled={busy}>
-                  <RotateCcw className="size-4" /> Reset to server proposal
-                </Button>
-                <Button className="min-h-11" size="sm" variant="secondary" onClick={applyJsonToReview} disabled={busy || !canApplyJson}>
-                  <FileCheck2 className="size-4" /> Apply edited JSON
-                </Button>
-              </div>
-            </AccordionContent>
-          </AccordionItem>
-        </Accordion>
-      ) : null}
-
       {submitError ? <div role="alert" className="text-sm text-destructive">{submitError}</div> : null}
       <div aria-live="polite" className="sr-only">
         {dirty ? "Review changes have not been validated." : `${blockers.length} publication issues remain.`}
@@ -588,7 +672,7 @@ export function KnowledgeReviewWorkspace({
       <div className="space-y-2 border-t border-border pt-4">
         {!dirty ? (
           <p id="knowledge-review-action-help" className="text-right text-xs text-muted-foreground">
-            Resolve an issue or apply an edited proposal before re-checking.
+            Resolve an issue below before re-checking.
           </p>
         ) : null}
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -608,6 +692,25 @@ export function KnowledgeReviewWorkspace({
           </Button>
         </div>
       </div>
+      <AlertDialog open={bulkRemoveDialogOpen} onOpenChange={setBulkRemoveDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Remove {unverifiableBlockers.length} unverifiable {unverifiableBlockers.length === 1 ? "entry" : "entries"} from this draft?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              These entries cite sources that cannot be verified in this draft and have no suggested evidence.
+              They will be removed from the working proposal; nothing is saved until you re-check the review.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>Keep entries</AlertDialogCancel>
+            <AlertDialogAction disabled={busy} onClick={removeAllUnverifiable}>
+              Remove entries
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={regenerateDialogOpen} onOpenChange={setRegenerateDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -640,6 +743,8 @@ function EvidenceRepairEditor({
   onRetry,
   onRequestRegenerate,
   onChange,
+  onAcceptSuggestion,
+  onRemoveEntry,
 }: {
   blocker: ProjectKnowledgeEvidenceBlocker
   entry: Record<string, unknown>
@@ -650,6 +755,8 @@ function EvidenceRepairEditor({
   onRetry: () => void
   onRequestRegenerate: () => void
   onChange: (refs: ProjectKnowledgeEvidenceRef[]) => void
+  onAcceptSuggestion: () => void
+  onRemoveEntry: () => void
 }) {
   const refs = Array.isArray(entry.evidenceRefs) ? entry.evidenceRefs as ProjectKnowledgeEvidenceRef[] : []
   const [sourceId, setSourceId] = useState("")
@@ -666,6 +773,7 @@ function EvidenceRepairEditor({
     ? contextEntry.affectedWorkItemIds
     : blocker.sourceWorkItemIds
   const availability = contextEntry?.sourceAvailability ?? (usableSources.length ? "available" : "snapshot_missing")
+  const suggestions = !refs.length ? contextEntry?.suggestedEvidence ?? [] : []
 
   useEffect(() => {
     if (!sourceId && usableSources[0]) setSourceId(usableSources[0].sourceSnapshotId)
@@ -736,6 +844,32 @@ function EvidenceRepairEditor({
               </Button>
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {suggestions.length ? (
+        <div className="space-y-3 rounded-md border border-primary/30 bg-primary/5 p-3" aria-label="Suggested evidence">
+          <div>
+            <div className="text-sm font-semibold text-foreground">Suggested evidence found</div>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              The evidence text was located in the captured sources below. Accepting anchors this entry without regenerating the draft.
+            </p>
+          </div>
+          <div className="space-y-2">
+            {suggestions.map((suggestion, index) => (
+              <div key={`${suggestion.sourceSnapshotId}-${suggestion.sourceField}-${index}`} className="rounded-md border border-border bg-card p-3 text-xs text-muted-foreground">
+                <div className="font-semibold text-foreground">
+                  Work item {suggestion.sourceWorkItemId} · {friendlyCode(suggestion.sourceField)}
+                </div>
+                <blockquote className="mt-1 break-words border-l-2 border-primary/40 pl-3 leading-5">
+                  “{suggestion.quote}”
+                </blockquote>
+              </div>
+            ))}
+          </div>
+          <Button className="min-h-11" size="sm" onClick={onAcceptSuggestion} disabled={busy}>
+            <FileCheck2 className="size-4" /> Accept suggested evidence
+          </Button>
         </div>
       ) : null}
 
@@ -835,12 +969,12 @@ function EvidenceRepairEditor({
             </div>
           </div>
         </div>
-      ) : (
+      ) : suggestions.length ? null : (
         <div className="flex flex-col gap-3 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning-foreground sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div className="font-semibold">{sourceAvailabilityTitle(availability, affectedWorkItemIds)}</div>
             <p className="mt-1 text-xs leading-5">
-              This entry cannot be verified in the current draft. Refresh the indexed sources and create a replacement draft.
+              This entry cannot be verified in the current draft. Remove it from the draft below, or refresh the indexed sources and create a replacement draft.
             </p>
           </div>
           <Button className="min-h-11 shrink-0" size="sm" variant="outline" onClick={onRequestRegenerate} disabled={busy}>
@@ -848,6 +982,14 @@ function EvidenceRepairEditor({
           </Button>
         </div>
       )}
+      <div className="flex flex-col gap-2 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-xs leading-5 text-muted-foreground">
+          If this entry should not be published, remove it from the draft. Nothing is saved until you re-check the review.
+        </p>
+        <Button className="min-h-11 shrink-0" size="sm" variant="outline" onClick={onRemoveEntry} disabled={busy}>
+          <Trash2 className="size-4" /> Remove entry from draft
+        </Button>
+      </div>
     </fieldset>
   )
 }
@@ -1002,6 +1144,9 @@ function HardConflictEditor({
   return (
     <div className="mt-4 space-y-4">
       <p className="text-sm leading-6 text-muted-foreground">
+        {blocker.evidenceIdentical
+          ? "Both versions cite exactly the same source evidence — they differ only in wording. "
+          : ""}
         Compare the values and their source evidence, then keep the version that should be published.
       </p>
       {blocker.participants.length ? (
@@ -1367,21 +1512,29 @@ function singleLineConflictValue(value: unknown) {
   return displayed.length > 100 ? `${displayed.slice(0, 97)}...` : displayed
 }
 
-function parseReviewedKnowledge(value: string): { data?: ProjectKnowledgeBase; error?: string } {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(value)
-  } catch (error) {
-    return { error: error instanceof Error ? `Invalid JSON: ${error.message}` : "Invalid JSON." }
-  }
-  const result = ProjectKnowledgeBaseSchema.safeParse(parsed)
-  if (result.success) return { data: result.data }
-  return {
-    error: result.error.issues.map((issue) => {
-      const path = issue.path.length ? `${issue.path.join(".")}: ` : ""
-      return `${path}${issue.message}`
-    }).join("\n"),
-  }
+function findContextEntry(
+  reviewContext: ProjectKnowledgeReviewContext | null,
+  blocker: ProjectKnowledgeDraftBlocker,
+) {
+  return reviewContext?.entries.find((candidate) =>
+    candidate.category === blocker.category &&
+    (blocker.entryInstanceId && candidate.entryInstanceId
+      ? candidate.entryInstanceId === blocker.entryInstanceId
+      : canonicalKey(candidate.entryKey) === canonicalKey(blocker.entryKey)))
+}
+
+function blockerEntryIdentity(blocker: ProjectKnowledgeDraftBlocker) {
+  return `${blocker.category}:${blocker.entryInstanceId ?? canonicalKey(blocker.entryKey)}`
+}
+
+function uniqueByEntryIdentity<TBlocker extends ProjectKnowledgeDraftBlocker>(blockers: TBlocker[]) {
+  const seen = new Set<string>()
+  return blockers.filter((blocker) => {
+    const identity = blockerEntryIdentity(blocker)
+    if (seen.has(identity)) return false
+    seen.add(identity)
+    return true
+  })
 }
 
 function withUniqueRenderKeys(blockers: ProjectKnowledgeDraftBlocker[]) {

@@ -60,6 +60,7 @@ export type ProjectKnowledgeHardConflictBlocker = BlockerBase & {
   subject: string;
   conflictType: string;
   participants: ProjectKnowledgeHardConflictParticipant[];
+  evidenceIdentical: boolean;
 };
 
 export type ProjectKnowledgeDraftBlocker =
@@ -72,6 +73,7 @@ export type ProjectKnowledgeReviewSummary = {
   attemptedEvidenceRepairs: number;
   automaticEvidenceRepairs: number;
   automaticDuplicateConsolidations: number;
+  wordingCarryOvers: number;
   unresolvedEvidenceEntries: number;
   remainingBlockers: number;
   byType: Record<string, number>;
@@ -95,6 +97,14 @@ export type ProjectKnowledgeReviewSource = {
   fields: ProjectKnowledgeReviewSourceField[];
 };
 
+export type ProjectKnowledgeReviewEvidenceSuggestion = {
+  sourceSnapshotId: string;
+  sourceWorkItemId: string;
+  sourceField: ProjectKnowledgeEvidenceRef["sourceField"];
+  quote: string;
+  verification: "exact" | "normalized";
+};
+
 export type ProjectKnowledgeReviewContextEntry = {
   category: Exclude<ProjectKnowledgeReviewCategory, "hard_conflict">;
   entryKey: string;
@@ -102,6 +112,7 @@ export type ProjectKnowledgeReviewContextEntry = {
   sourceAvailability: "available" | "snapshot_missing" | "unmatched_work_item" | "empty_fields";
   affectedWorkItemIds: string[];
   sources: ProjectKnowledgeReviewSource[];
+  suggestedEvidence?: ProjectKnowledgeReviewEvidenceSuggestion[];
 };
 
 export type ProjectKnowledgeReviewContext = {
@@ -333,6 +344,7 @@ export function normalizeProjectKnowledgeBlockers(values: unknown[]): ProjectKno
         subject: stringValue(blocker.subject) || entryKey,
         conflictType: stringValue(blocker.conflictType) || "contradiction",
         participants,
+        evidenceIdentical: blocker.evidenceIdentical === true,
       } as ProjectKnowledgeHardConflictBlocker];
     }
     if (type === "invalid_business_rule_source_field") {
@@ -376,6 +388,7 @@ export function summarizeProjectKnowledgeReview(
     attemptedEvidenceRepairs: numberValue(metrics.autoEvidenceRepairAttemptedCount),
     automaticEvidenceRepairs: numberValue(metrics.autoEvidenceRepairCount),
     automaticDuplicateConsolidations: numberValue(metrics.automaticDuplicateConsolidationCount),
+    wordingCarryOvers: numberValue(metrics.wordingCarryOverCount),
     unresolvedEvidenceEntries: numberValue(metrics.autoEvidenceRepairUnresolvedCount),
     remainingBlockers: blockers.length,
     byType: countBy(blockers, (blocker) => blocker.type),

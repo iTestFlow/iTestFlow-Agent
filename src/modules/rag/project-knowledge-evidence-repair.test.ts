@@ -98,13 +98,67 @@ describe("repairMissingProjectKnowledgeEvidenceRefs", () => {
     expect(result.knowledgeBase.modules[0].evidenceRefs?.[0].quote).toBe(quote);
   });
 
-  it("never uses a snapshot from an undeclared work item", () => {
+  it("prefers the declared work item when the fragment also exists elsewhere", () => {
     const result = repairMissingProjectKnowledgeEvidenceRefs({
       knowledgeBase: moduleKnowledge("Checkout is secure."),
-      snapshots: [snapshot("snapshot-99", "99", { description: "Checkout is secure." })],
+      snapshots: [
+        snapshot("snapshot-42", "42", { description: "Checkout is secure." }),
+        snapshot("snapshot-99", "99", { description: "Checkout is secure." }),
+      ],
+    });
+
+    expect(result).toMatchObject({ repairedEntryCount: 1, unresolvedEntryCount: 0 });
+    expect(result.knowledgeBase.modules[0].evidenceRefs?.[0]).toMatchObject({
+      sourceSnapshotId: "snapshot-42",
+      sourceWorkItemId: "42",
+    });
+  });
+
+  it("re-anchors to an undeclared work item when the match is unique across the pool", () => {
+    const result = repairMissingProjectKnowledgeEvidenceRefs({
+      knowledgeBase: moduleKnowledge("Checkout is secure."),
+      snapshots: [
+        snapshot("snapshot-42", "42", { description: "Something unrelated." }),
+        snapshot("snapshot-99", "99", { description: "Checkout is secure." }),
+      ],
+    });
+
+    expect(result).toMatchObject({ repairedEntryCount: 1, unresolvedEntryCount: 0 });
+    expect(result.knowledgeBase.modules[0].evidenceRefs?.[0]).toMatchObject({
+      sourceSnapshotId: "snapshot-99",
+      sourceWorkItemId: "99",
+    });
+    expect(result.knowledgeBase.modules[0].sourceWorkItemIds).toEqual(["99"]);
+  });
+
+  it("never fallback-anchors outside the allowed manifest work items", () => {
+    const result = repairMissingProjectKnowledgeEvidenceRefs({
+      knowledgeBase: moduleKnowledge("Checkout is secure."),
+      snapshots: [
+        snapshot("snapshot-42", "42", { description: "Something unrelated." }),
+        // Loadable only because another entry's stale refs cite it — its work item is
+        // retired and absent from the draft manifest.
+        snapshot("snapshot-retired", "77", { description: "Checkout is secure." }),
+      ],
+      fallbackSourceWorkItemIds: new Set(["42"]),
     });
 
     expect(result).toMatchObject({ repairedEntryCount: 0, unresolvedEntryCount: 1 });
+    expect(result.knowledgeBase.modules[0].evidenceRefs).toBeUndefined();
+  });
+
+  it("leaves ambiguous cross-pool matches unresolved instead of guessing", () => {
+    const result = repairMissingProjectKnowledgeEvidenceRefs({
+      knowledgeBase: moduleKnowledge("Checkout is secure."),
+      snapshots: [
+        snapshot("snapshot-42", "42", { description: "Something unrelated." }),
+        snapshot("snapshot-98", "98", { description: "Checkout is secure." }),
+        snapshot("snapshot-99", "99", { description: "Checkout is secure." }),
+      ],
+    });
+
+    expect(result).toMatchObject({ repairedEntryCount: 0, unresolvedEntryCount: 1 });
+    expect(result.knowledgeBase.modules[0].evidenceRefs).toBeUndefined();
   });
 
   it("retains the stricter business-rule source-field allowlist", () => {

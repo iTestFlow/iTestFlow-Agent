@@ -56,6 +56,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/rag/project-knowledge-provenance.ts",
   "src/modules/rag/project-knowledge-review.contracts.ts",
   "src/modules/rag/project-knowledge-reconciliation.ts",
+  "src/modules/rag/project-knowledge-wording-carryover.ts",
   "src/modules/rag/rag-pipeline.service.ts",
   "src/modules/rag/retrieval-config.ts",
   "src/modules/rag/workflow-context-citations.ts",

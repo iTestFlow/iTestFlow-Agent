@@ -47,12 +47,16 @@ import {
 } from "./project-knowledge-compiled.service";
 import {
   detectProjectKnowledgeHardConflicts,
+  sortProjectKnowledgeHardConflictsForReview,
   type ProjectKnowledgeHardConflict,
 } from "./project-knowledge-conflicts";
 import { acquireProjectKnowledgeLock } from "./project-knowledge-lock";
 import { backfillProjectKnowledgeCompilerFoundation } from "./project-knowledge-migration.service";
 import { evaluateAutomaticProvenanceRefresh } from "./project-knowledge-publication-policy";
-import { repairMissingProjectKnowledgeEvidenceRefs } from "./project-knowledge-evidence-repair";
+import {
+  findUniqueProjectKnowledgeEvidenceAnchor,
+  repairMissingProjectKnowledgeEvidenceRefs,
+} from "./project-knowledge-evidence-repair";
 import {
   verifyProjectKnowledgeEvidence,
   type ProjectKnowledgeEvidenceBlocker as ProjectKnowledgeVerificationBlocker,
@@ -78,6 +82,7 @@ import {
   PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE,
   PROJECT_KNOWLEDGE_SOURCE_FIELDS,
   ProjectKnowledgeBaseSchema,
+  splitProjectKnowledgeLegacyEvidence,
   type ProjectKnowledgeBase,
   type ProjectKnowledgeEvidenceRef,
 } from "./project-knowledge.schema";
@@ -545,6 +550,7 @@ export async function completeProjectKnowledgeDraft(input: {
           knowledgeBase: parsedKnowledge,
           snapshots: evidenceSnapshots,
           touchedKeys,
+          fallbackSourceWorkItemIds: new Set(draftManifest.map((entry) => entry.sourceWorkItemId)),
         });
     const verification = verifyProjectKnowledgeEvidence({
       knowledgeBase: repair.knowledgeBase,
@@ -1286,7 +1292,22 @@ export async function getProjectKnowledgeDraftReviewContext(input: {
   const relevantManifest = manifest.filter((entry) =>
     referencedSnapshotIds.has(entry.sourceSnapshotId) || referencedWorkItemIds.has(entry.sourceWorkItemId));
   for (const entry of relevantManifest) referencedSnapshotIds.add(entry.sourceSnapshotId);
+  // Only blocker-referenced snapshots are serialized to the client; the wider pool
+  // loaded below for suggestion search stays server-side.
+  const displaySnapshotIds = new Set(referencedSnapshotIds);
+  // Guided re-anchor needs the whole manifest pool: an entry's legacy evidence may
+  // only exist in a source the LLM never cited, and the suggestion search is gated
+  // on uniqueness across every loadable snapshot of this draft.
+  const wantsEvidenceSuggestions = Array.from(sourceTargets.values())
+    .some((target) => target.value && !target.value.evidenceRefs?.length);
+  if (wantsEvidenceSuggestions) {
+    for (const entry of manifest) referencedSnapshotIds.add(entry.sourceSnapshotId);
+  }
   const snapshots = await loadEvidenceSnapshotsByIds(scope, Array.from(referencedSnapshotIds));
+  // Suggestions must anchor only to the draft's frozen manifest — a blocker-referenced
+  // snapshot can be superseded content the current source contradicts.
+  const manifestSnapshotIds = new Set(manifest.map((entry) => entry.sourceSnapshotId));
+  const suggestionSnapshots = snapshots.filter((snapshot) => manifestSnapshotIds.has(snapshot.id));
   const manifestBySnapshotId = new Map(manifest.map((entry) => [entry.sourceSnapshotId, entry]));
   const reviewSource = (
     snapshot: ProjectKnowledgeEvidenceSnapshot,
@@ -1342,6 +1363,9 @@ export async function getProjectKnowledgeDraftReviewContext(input: {
           : missingExpectedSnapshot
             ? "snapshot_missing" as const
             : "unmatched_work_item" as const;
+      const suggestedEvidence = target.value && !target.value.evidenceRefs?.length
+        ? suggestEvidenceAnchors(target.value.evidence, suggestionSnapshots, allowedFields)
+        : undefined;
       return {
         category: target.category,
         entryKey: target.entryKey,
@@ -1349,10 +1373,36 @@ export async function getProjectKnowledgeDraftReviewContext(input: {
         sourceAvailability,
         affectedWorkItemIds: Array.from(affectedWorkItemIds).sort(),
         sources,
+        ...(suggestedEvidence ? { suggestedEvidence } : {}),
       };
     }),
-    sources: snapshots.map((snapshot) => reviewSource(snapshot)),
+    sources: snapshots
+      .filter((snapshot) => displaySnapshotIds.has(snapshot.id))
+      .map((snapshot) => reviewSource(snapshot)),
   };
+}
+
+// A suggestion is offered only when EVERY legacy evidence fragment anchors uniquely
+// somewhere in the draft's snapshot pool — one accepted suggestion fully resolves the
+// blocker. Partial matches stay manual so the reviewer never publishes half-anchored
+// evidence without seeing it.
+function suggestEvidenceAnchors(
+  evidence: string,
+  snapshots: ProjectKnowledgeEvidenceSnapshot[],
+  allowedFields: readonly ProjectKnowledgeEvidenceRef["sourceField"][],
+) {
+  const fragments = splitProjectKnowledgeLegacyEvidence(evidence);
+  if (!fragments.length) return undefined;
+  const anchors = fragments.map((fragment) =>
+    findUniqueProjectKnowledgeEvidenceAnchor(snapshots, allowedFields, fragment));
+  if (anchors.some((anchor) => !anchor)) return undefined;
+  return anchors.map((anchor) => ({
+    sourceSnapshotId: anchor!.sourceSnapshotId,
+    sourceWorkItemId: anchor!.sourceWorkItemId,
+    sourceField: anchor!.sourceField,
+    quote: anchor!.quote,
+    verification: anchor!.verification,
+  }));
 }
 
 function buildAzureWorkItemUrl(scope: ProjectScope, workItemId: string) {
@@ -2009,7 +2059,9 @@ function hardConflictOperations(conflicts: ProjectKnowledgeHardConflict[]): Proj
 }
 
 function buildHardConflictBlockers(conflicts: ProjectKnowledgeHardConflict[]) {
-  return conflicts.map((conflict) => {
+  // Evidence-identical conflicts are wording drift, not source disagreement — order
+  // them after the conflicts that need a real decision. Stable within each group.
+  return sortProjectKnowledgeHardConflictsForReview(conflicts).map((conflict) => {
     const entryInstanceId = projectKnowledgeEntryInstanceId({
       category: conflict.affectedCategory,
       entryKey: conflict.identityKey,
@@ -2043,7 +2095,10 @@ function buildHardConflictBlockers(conflicts: ProjectKnowledgeHardConflict[]) {
       conflictType: conflict.conflictType,
       affectedCategory: conflict.affectedCategory,
       participants: conflict.participants,
-      message: "These source-backed entries disagree and require a reviewer decision.",
+      evidenceIdentical: conflict.evidenceIdentical,
+      message: conflict.evidenceIdentical
+        ? "These entries cite identical source evidence and differ only in wording. Keep the version that should be published."
+        : "These source-backed entries disagree and require a reviewer decision.",
     };
   });
 }
@@ -2186,6 +2241,11 @@ async function persistProjectKnowledgeHardConflicts(
   }
 }
 
+// Deliberately strict: only normalization-identical entries merge here. This runs on
+// every draft completion, including the resolve/rebase re-check boundary where entries
+// reflect explicit reviewer decisions — an evidence-identity paraphrase fallback (see
+// shouldAutomaticallyConsolidate in project-knowledge.service.ts) would silently
+// override reviewer wording. Compiler-produced paraphrases are merged upstream instead.
 function consolidateSafeProjectKnowledgeDuplicates(knowledgeBase: ProjectKnowledgeBase) {
   const modules = consolidateSafeCategory(
     "module",

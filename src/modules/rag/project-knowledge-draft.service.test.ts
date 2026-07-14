@@ -431,6 +431,83 @@ describe("draft evidence recovery", () => {
     }
   });
 
+  it("suggests a unique re-anchor from the manifest pool when the cited snapshot is gone", async () => {
+    const reviewManifest = [
+      ...manifest,
+      {
+        sourceSnapshotId: "snapshot-99",
+        sourceWorkItemId: "99",
+        workItemType: "User Story",
+        contentHash: "hash-99",
+        adoRevision: 2,
+        sourceUpdatedAt: "2026-07-12T12:00:00.000Z",
+        capturedAt: "2026-07-12T12:00:00.000Z",
+      },
+    ];
+    database.sqlGet.mockResolvedValue(draftRow({
+      status: "blocked",
+      source_manifest_json: reviewManifest,
+      proposed_knowledge_json: proposal,
+      blockers_json: [{
+        type: "missing_evidence_refs",
+        category: "module",
+        entryKey: "checkout",
+        sourceWorkItemIds: ["42"],
+      }],
+    }));
+    database.sqlAll.mockImplementation(async (_sql: string, params: { snapshotIds?: string[] }) => {
+      // Suggestion search widens the load to the whole frozen manifest pool.
+      expect(params.snapshotIds).toEqual(expect.arrayContaining(["snapshot-42", "snapshot-99"]));
+      return [{
+        id: "snapshot-99",
+        azure_work_item_id: "99",
+        fields_json: { description: "Customers complete checkout securely." },
+      }];
+    });
+
+    const context = await getProjectKnowledgeDraftReviewContext({ scope, draftId: "draft-child" });
+
+    expect(context?.entries[0]).toMatchObject({
+      category: "module",
+      entryKey: "checkout",
+      sourceAvailability: "snapshot_missing",
+      suggestedEvidence: [{
+        sourceSnapshotId: "snapshot-99",
+        sourceWorkItemId: "99",
+        sourceField: "description",
+        quote: "Customers complete checkout securely.",
+        verification: "exact",
+      }],
+    });
+  });
+
+  it("offers no suggestion when the evidence text is ambiguous across the pool", async () => {
+    database.sqlGet.mockResolvedValue(draftRow({
+      status: "blocked",
+      source_manifest_json: manifest,
+      proposed_knowledge_json: proposal,
+      blockers_json: [{
+        type: "missing_evidence_refs",
+        category: "module",
+        entryKey: "checkout",
+        sourceWorkItemIds: ["42"],
+      }],
+    }));
+    database.sqlAll.mockResolvedValue([{
+      id: "snapshot-42",
+      azure_work_item_id: "42",
+      fields_json: {
+        title: "Customers complete checkout securely.",
+        description: "Customers complete checkout securely.",
+      },
+    }]);
+
+    const context = await getProjectKnowledgeDraftReviewContext({ scope, draftId: "draft-child" });
+
+    expect(context?.entries[0].sourceAvailability).toBe("available");
+    expect(context?.entries[0].suggestedEvidence).toBeUndefined();
+  });
+
   it("loads friendly source metadata for hard-conflict comparison without exposing storage details", async () => {
     const reviewManifest = [
       ...manifest,

@@ -148,6 +148,7 @@ describe("project knowledge review contracts", () => {
       conflictType: "contradiction",
       affectedCategory: "state_transition",
       participants: [{ entryKey: "paid", category: "state_transition" }],
+      evidenceIdentical: false,
     });
     expect(blockers[2]).toMatchObject({
       id: "source-field-id",
@@ -169,6 +170,18 @@ describe("project knowledge review contracts", () => {
       message: "This entry needs at least one immutable evidence reference.",
       sourceWorkItemIds: [],
     });
+  });
+
+  it("coerces the evidence-identical flag strictly to a boolean", () => {
+    const [truthy, stringly, missing] = normalizeProjectKnowledgeBlockers([
+      { type: "hard_conflict", identityKey: "a", affectedCategory: "glossary", evidenceIdentical: true },
+      { type: "hard_conflict", identityKey: "b", affectedCategory: "glossary", evidenceIdentical: "yes" },
+      { type: "hard_conflict", identityKey: "c", affectedCategory: "glossary" },
+    ]);
+
+    expect(truthy).toMatchObject({ evidenceIdentical: true });
+    expect(stringly).toMatchObject({ evidenceIdentical: false });
+    expect(missing).toMatchObject({ evidenceIdentical: false });
   });
 
   it("normalizes legacy blocker identities and disambiguates persisted duplicate ids", () => {
@@ -206,10 +219,12 @@ describe("project knowledge review contracts", () => {
       autoEvidenceRepairCount: 2,
       autoEvidenceRepairUnresolvedCount: 3,
       automaticDuplicateConsolidationCount: 13,
+      wordingCarryOverCount: 4,
     })).toEqual({
       attemptedEvidenceRepairs: 5,
       automaticEvidenceRepairs: 2,
       automaticDuplicateConsolidations: 13,
+      wordingCarryOvers: 4,
       unresolvedEvidenceEntries: 3,
       remainingBlockers: 3,
       byType: { missing_evidence_refs: 2, hard_conflict: 1 },
@@ -222,10 +237,12 @@ describe("project knowledge review contracts", () => {
       autoEvidenceRepairAttemptedCount: "4",
       autoEvidenceRepairCount: Number.NaN,
       autoEvidenceRepairUnresolvedCount: undefined,
+      wordingCarryOverCount: "many",
     })).toMatchObject({
       attemptedEvidenceRepairs: 0,
       automaticEvidenceRepairs: 0,
       automaticDuplicateConsolidations: 0,
+      wordingCarryOvers: 0,
       unresolvedEvidenceEntries: 0,
     });
   });

@@ -1084,3 +1084,165 @@ describe("saveManualProjectKnowledgeBaseFromBatches", () => {
     expect(writeAuditLog).not.toHaveBeenCalled();
   });
 });
+
+describe("same-evidence paraphrase handling", () => {
+  it("carries previous wording through a full recompile when evidence content is unchanged", async () => {
+    setWorkItems([workItemRow({ azure_work_item_id: "10", content_hash: "h10", current_snapshot_id: "snapshot-new-10" })]);
+    const existing = knowledgeBase({
+      glossary: [kbGlossaryTerm({
+        term: "Discount",
+        definition: "A price reduction applied by a valid promo code and included in order totals.",
+        sourceWorkItemIds: ["10"],
+        evidenceRefs: [kbEvidenceRef("10", "snapshot-old-10", "Valid code applies discount")],
+      })],
+    });
+    stubExistingKnowledge({ snapshot: snapshotRow(existing) });
+    const provider = fakeLlmProvider({
+      structuredOutput: knowledgeBase({
+        glossary: [kbGlossaryTerm({
+          term: "Discount",
+          definition: "A reduction applied by a valid promo code and included in order totals.",
+          sourceWorkItemIds: ["10"],
+          evidenceRefs: [kbEvidenceRef("10", "snapshot-new-10", "Valid code applies discount")],
+        })],
+      }),
+    });
+
+    const draft = await previewGeneratedProjectKnowledgeBase({
+      scope: projectScope(),
+      actor: "qa",
+      provider,
+      mode: "full",
+    });
+
+    expect(draft.wordingCarryOverCount).toBe(1);
+    expect(draft.knowledgeBase.glossary[0]).toMatchObject({
+      term: "Discount",
+      definition: "A price reduction applied by a valid promo code and included in order totals.",
+      evidenceRefs: [expect.objectContaining({ sourceSnapshotId: "snapshot-new-10" })],
+    });
+    expect(draftService.completeProjectKnowledgeDraft).toHaveBeenCalledWith(expect.objectContaining({
+      metrics: expect.objectContaining({ wordingCarryOverCount: 1 }),
+    }));
+  });
+
+  it("auto-merges same-evidence paraphrases across snapshot churn but keeps concrete disagreements", async () => {
+    setWorkItems([workItemRow({ azure_work_item_id: "1", content_hash: "h1" })]);
+    const partials = [
+      knowledgeBase({
+        businessRules: [
+          kbBusinessRule({
+            id: "br-reason",
+            rule: "A reason is required.",
+            evidenceRefs: [kbEvidenceRef("1", "snapshot-run-a", "reason is required")],
+          }),
+          kbBusinessRule({
+            id: "br-retry",
+            rule: "Maximum retry count is 3.",
+            evidenceRefs: [kbEvidenceRef("1", "snapshot-run-a", "retry limit")],
+          }),
+        ],
+        glossary: [kbGlossaryTerm({
+          term: "Discount",
+          definition: "A price reduction applied by a valid promo code.",
+          evidenceRefs: [kbEvidenceRef("1", "snapshot-run-a", "Valid code applies discount")],
+        })],
+      }),
+      knowledgeBase({
+        businessRules: [
+          kbBusinessRule({
+            id: "br-reason",
+            rule: "Providing a reason is required.",
+            evidenceRefs: [kbEvidenceRef("1", "snapshot-run-b", "reason is required")],
+          }),
+          kbBusinessRule({
+            id: "br-retry",
+            rule: "Maximum retry count is 5.",
+            evidenceRefs: [kbEvidenceRef("1", "snapshot-run-b", "retry limit")],
+          }),
+        ],
+        glossary: [kbGlossaryTerm({
+          term: "Discount",
+          definition: "A reduction applied by a valid promo code.",
+          evidenceRefs: [kbEvidenceRef("1", "snapshot-run-b", "Valid code applies discount")],
+        })],
+      }),
+    ];
+
+    const saved = await saveManualProjectKnowledgeBaseFromBatches({
+      scope: projectScope(),
+      actor: "qa",
+      partialKnowledgeBases: partials,
+      mode: "full",
+    });
+
+    // Paraphrases citing identical evidence content merge even though the snapshot
+    // ids differ; the concrete "3 vs 5" disagreement must survive for conflict review.
+    expect(saved.knowledgeBase.glossary).toHaveLength(1);
+    const reasonRules = saved.knowledgeBase.businessRules.filter((rule) => rule.id === "br-reason");
+    const retryRules = saved.knowledgeBase.businessRules.filter((rule) => rule.id === "br-retry");
+    expect(reasonRules).toHaveLength(1);
+    expect(reasonRules[0].evidenceRefs).toHaveLength(2);
+    expect(retryRules).toHaveLength(2);
+    expect(detectProjectKnowledgeHardConflicts(saved.knowledgeBase)).toEqual([
+      expect.objectContaining({
+        conflictType: "incompatible_concrete_value",
+        evidenceIdentical: true,
+      }),
+    ]);
+  });
+
+  it("uses the parent draft's reviewed wording as the carry-over baseline for manual rebase children", async () => {
+    setWorkItems([workItemRow({ azure_work_item_id: "10", content_hash: "h10", current_snapshot_id: "snapshot-new-10" })]);
+    const publishedWording = "Published old wording of the discount definition.";
+    const reviewedWording = "Reviewer-approved wording of the discount definition.";
+    const sharedRef = (snapshotId: string) => kbEvidenceRef("10", snapshotId, "Valid code applies discount");
+    stubExistingKnowledge({
+      snapshot: snapshotRow(knowledgeBase({
+        glossary: [kbGlossaryTerm({
+          term: "Discount",
+          definition: publishedWording,
+          sourceWorkItemIds: ["10"],
+          evidenceRefs: [sharedRef("snapshot-published-10")],
+        })],
+      })),
+    });
+    const parentProposal = knowledgeBase({
+      glossary: [kbGlossaryTerm({
+        term: "Discount",
+        definition: reviewedWording,
+        sourceWorkItemIds: ["10"],
+        evidenceRefs: [sharedRef("snapshot-parent-10")],
+      })],
+    });
+    const baseDraft = await draftService.beginProjectKnowledgeDraft({});
+    draftService.loadProjectKnowledgeManualBatchResults.mockResolvedValue(null);
+    draftService.getProjectKnowledgeDraft.mockImplementation(async ({ draftId }: { draftId: string }) =>
+      draftId === "draft-parent"
+        ? { id: "draft-parent", status: "ready_for_review", proposedKnowledge: parentProposal }
+        : { id: "draft-child", status: "awaiting_input", parentDraftId: "draft-parent", sourceManifest: baseDraft.sourceManifest });
+
+    const saved = await saveManualProjectKnowledgeBaseFromBatches({
+      scope: projectScope(),
+      actor: "qa",
+      draftId: "draft-child",
+      partialKnowledgeBases: [knowledgeBase({
+        glossary: [kbGlossaryTerm({
+          term: "Discount",
+          definition: "A fresh model paraphrase of the discount definition.",
+          sourceWorkItemIds: ["10"],
+          evidenceRefs: [sharedRef("snapshot-new-10")],
+        })],
+      })],
+      mode: "full",
+    });
+
+    expect(saved.knowledgeBase.glossary[0].definition).toBe(reviewedWording);
+    expect(saved.knowledgeBase.glossary[0].evidenceRefs).toEqual([
+      expect.objectContaining({ sourceSnapshotId: "snapshot-new-10" }),
+    ]);
+    expect(draftService.completeProjectKnowledgeDraft).toHaveBeenCalledWith(expect.objectContaining({
+      metrics: expect.objectContaining({ wordingCarryOverCount: 1 }),
+    }));
+  });
+});

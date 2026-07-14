@@ -44,6 +44,7 @@ function summary(blockers: ProjectKnowledgeDraftBlocker[]): ProjectKnowledgeRevi
     attemptedEvidenceRepairs: blockers.length + 2,
     automaticEvidenceRepairs: 2,
     automaticDuplicateConsolidations: 0,
+    wordingCarryOvers: 0,
     unresolvedEvidenceEntries: blockers.length,
     remainingBlockers: blockers.length,
     byType: { missing_evidence_refs: blockers.length },
@@ -91,6 +92,7 @@ function glossaryConflictFixture() {
     subject: "identity:glossary:promo code",
     conflictType: "duplicate_identity",
     participants: [participant("one", firstEntry), participant("two", secondEntry)],
+    evidenceIdentical: false,
     message: "These source-backed entries disagree and require a reviewer decision.",
   };
   return { firstEntry, secondEntry, participant, conflict };
@@ -139,19 +141,16 @@ describe("KnowledgeReviewWorkspace", () => {
     expect(screen.getAllByText("Evidence link required").length).toBeGreaterThan(0);
     expect(screen.getByText("checkout")).toBeTruthy();
     expect(screen.getByText("Showing 1-10 of 12")).toBeTruthy();
-    expect(screen.queryByLabelText("Complete reviewed proposal")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /Next/ }));
     expect(screen.getByText("Showing 11-12 of 12")).toBeTruthy();
   });
 
-  it("keeps JSON advanced and reports path-aware schema errors locally", async () => {
+  it("does not render a raw JSON editing surface", () => {
     renderWorkspace();
-    fireEvent.click(screen.getByRole("button", { name: /Advanced JSON/ }));
-    const editor = await screen.findByLabelText("Complete reviewed proposal");
-    fireEvent.change(editor, { target: { value: '{"modules":[{"id":"invalid"}]}' } });
-    expect(await screen.findByRole("alert")).toHaveTextContent(/modules\.0/);
-    expect(screen.getByRole("button", { name: "Apply edited JSON" })).toBeDisabled();
+    expect(screen.queryByText(/Advanced JSON/)).toBeNull();
+    expect(screen.queryByLabelText("Complete reviewed proposal")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Apply edited JSON" })).toBeNull();
   });
 
   it("adds an exact reviewer reference from immutable source text before validation", async () => {
@@ -384,6 +383,7 @@ describe("KnowledgeReviewWorkspace", () => {
         evidenceRefs: entry.evidenceRefs,
         evidence: "Retry count is 5.",
       }],
+      evidenceIdentical: false,
       message: "These source-backed entries disagree and require a reviewer decision.",
     };
     renderWorkspace({
@@ -441,6 +441,7 @@ describe("KnowledgeReviewWorkspace", () => {
 
     const versionOneButton = screen.getByRole("button", { name: "Keep version 1" });
     const versionTwoButton = screen.getByRole("button", { name: "Keep version 2" });
+    expect(screen.queryByText("Same source evidence")).toBeNull();
     fireEvent.click(versionTwoButton);
     expect(screen.getByText("Version 2 selected")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Version 2 selected" })).toHaveAttribute("aria-pressed", "true");
@@ -457,7 +458,7 @@ describe("KnowledgeReviewWorkspace", () => {
     })]);
   });
 
-  it("replaces logical identity aliases after provenance edits without removing unrelated Unicode entries", async () => {
+  it("replaces logical identity aliases without removing unrelated Unicode entries", async () => {
     const fixture = glossaryConflictFixture();
     const firstEntry = { ...fixture.firstEntry, term: "客户 流程" };
     const secondEntry = { ...fixture.secondEntry, term: "客户_流程" };
@@ -490,19 +491,6 @@ describe("KnowledgeReviewWorkspace", () => {
       onResolve,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Advanced JSON/ }));
-    const editedKnowledge = {
-      ...knowledge,
-      glossary: [
-        { ...firstEntry, sourceWorkItemIds: ["10", "12"], evidence: "Reviewer-updated provenance." },
-        secondEntry,
-        unrelatedEntry,
-      ],
-    };
-    fireEvent.change(screen.getByLabelText("Complete reviewed proposal"), {
-      target: { value: JSON.stringify(editedKnowledge, null, 2) },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Apply edited JSON" }));
     fireEvent.click(screen.getByRole("button", { name: "Keep version 2" }));
     fireEvent.click(screen.getByRole("button", { name: "Save decisions and re-check" }));
 
@@ -569,5 +557,176 @@ describe("KnowledgeReviewWorkspace", () => {
     })]);
     expect(onResolve.mock.calls[0][0].glossary[0].sourceWorkItemIds).not.toContain("12");
     expect(onResolve.mock.calls[0][0].glossary[0].evidence).not.toContain("Unselected third evidence");
+  });
+
+  it("labels evidence-identical conflicts and keeps the decision buttons", () => {
+    const { firstEntry, secondEntry, conflict } = glossaryConflictFixture();
+    renderWorkspace({
+      blockers: [{ ...conflict, evidenceIdentical: true }],
+      proposedKnowledge: { ...knowledge, glossary: [firstEntry, secondEntry] },
+      reviewSummary: {
+        ...summary([]),
+        remainingBlockers: 1,
+        byType: { hard_conflict: 1 },
+        byCategory: { glossary: 1 },
+      },
+    });
+
+    expect(screen.getByText("Same source evidence")).toBeTruthy();
+    expect(screen.getByText(/differ only in wording/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Keep version 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Keep version 2" })).toBeTruthy();
+  });
+
+  it("removes an unpublishable entry from the draft with a guided action", async () => {
+    const onResolve = vi.fn().mockResolvedValue(undefined);
+    renderWorkspace({
+      onResolve,
+      onLoadReviewContext: vi.fn().mockResolvedValue({
+        entries: [{
+          category: "module",
+          entryKey: "checkout",
+          entryInstanceId: "module-instance-0",
+          sourceAvailability: "snapshot_missing",
+          affectedWorkItemIds: ["42"],
+          sources: [],
+        }],
+        sources: [],
+      }),
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove entry from draft" }));
+    expect(screen.getByText(/Entry removed from draft — pending re-check/)).toBeTruthy();
+    expect(screen.getByText("1 decided locally — re-check to apply")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Validate review changes" }));
+
+    await waitFor(() => expect(onResolve).toHaveBeenCalledTimes(1));
+    expect(onResolve.mock.calls[0][0].modules).toEqual([]);
+  });
+
+  it("accepts server-suggested evidence with one click", async () => {
+    const onResolve = vi.fn().mockResolvedValue(undefined);
+    renderWorkspace({
+      onResolve,
+      onLoadReviewContext: vi.fn().mockResolvedValue({
+        entries: [{
+          category: "module",
+          entryKey: "checkout",
+          entryInstanceId: "module-instance-0",
+          sourceAvailability: "snapshot_missing",
+          affectedWorkItemIds: ["42"],
+          sources: [],
+          suggestedEvidence: [{
+            sourceSnapshotId: "snapshot-88",
+            sourceWorkItemId: "8",
+            sourceField: "acceptanceCriteria",
+            quote: "Customers complete checkout securely.",
+            verification: "exact",
+          }],
+        }],
+        sources: [],
+      }),
+    });
+
+    expect(await screen.findByText("Suggested evidence found")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Accept suggested evidence" }));
+    expect(screen.getByText(/Suggested evidence accepted — pending re-check/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Validate review changes" }));
+
+    await waitFor(() => expect(onResolve).toHaveBeenCalledTimes(1));
+    expect(onResolve.mock.calls[0][0].modules[0].evidenceRefs).toEqual([expect.objectContaining({
+      sourceSnapshotId: "snapshot-88",
+      sourceWorkItemId: "8",
+      sourceField: "acceptanceCriteria",
+      quote: "Customers complete checkout securely.",
+      origin: "reviewer_reanchored",
+      verification: "exact",
+    })]);
+  });
+
+  it("bulk-removes entries that cannot be verified against any captured source", async () => {
+    const first = missingBlocker(0);
+    const second = { ...missingBlocker(1), entryKey: "returns", entryInstanceId: "module-instance-1" };
+    const extendedKnowledge = {
+      ...knowledge,
+      modules: [
+        ...knowledge.modules,
+        {
+          id: "returns",
+          name: "Returns",
+          description: "Customers return items.",
+          sourceWorkItemIds: ["43"],
+          evidence: "Customers return items for refunds.",
+        },
+      ],
+    };
+    const onResolve = vi.fn().mockResolvedValue(undefined);
+    renderWorkspace({
+      blockers: [first, second],
+      proposedKnowledge: extendedKnowledge,
+      reviewSummary: summary([first, second]),
+      onResolve,
+      onLoadReviewContext: vi.fn().mockResolvedValue({
+        entries: [
+          {
+            category: "module",
+            entryKey: "checkout",
+            entryInstanceId: "module-instance-0",
+            sourceAvailability: "snapshot_missing",
+            affectedWorkItemIds: ["42"],
+            sources: [],
+          },
+          {
+            category: "module",
+            entryKey: "returns",
+            entryInstanceId: "module-instance-1",
+            sourceAvailability: "snapshot_missing",
+            affectedWorkItemIds: ["43"],
+            sources: [],
+          },
+        ],
+        sources: [],
+      }),
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove 2 unverifiable entries" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove entries" }));
+    expect(screen.getByText("2 decided locally — re-check to apply")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Validate review changes" }));
+
+    await waitFor(() => expect(onResolve).toHaveBeenCalledTimes(1));
+    expect(onResolve.mock.calls[0][0].modules).toEqual([]);
+  });
+
+  it("counts and removes per entry when several blockers cite the same entry", async () => {
+    const first = missingBlocker(0);
+    const second = { ...missingBlocker(1), entryKey: "checkout", entryInstanceId: "module-instance-0" };
+    const onResolve = vi.fn().mockResolvedValue(undefined);
+    renderWorkspace({
+      blockers: [first, second],
+      reviewSummary: summary([first, second]),
+      onResolve,
+      onLoadReviewContext: vi.fn().mockResolvedValue({
+        entries: [{
+          category: "module",
+          entryKey: "checkout",
+          entryInstanceId: "module-instance-0",
+          sourceAvailability: "snapshot_missing",
+          affectedWorkItemIds: ["42"],
+          sources: [],
+        }],
+        sources: [],
+      }),
+    });
+
+    // One underlying entry — the bulk action counts entries, not blockers.
+    fireEvent.click(await screen.findByRole("button", { name: "Remove 1 unverifiable entry" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove entries" }));
+    // Both sibling blocker cards show the decision instead of a dead-end warning.
+    expect(screen.getAllByText(/Entry removed from draft — pending re-check/)).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Validate review changes" }));
+
+    await waitFor(() => expect(onResolve).toHaveBeenCalledTimes(1));
+    expect(onResolve.mock.calls[0][0].modules).toEqual([]);
   });
 });

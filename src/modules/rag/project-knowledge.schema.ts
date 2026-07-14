@@ -346,6 +346,29 @@ export function mergeProjectKnowledgeEvidenceRefs(
   return sortProjectKnowledgeEvidenceRefs(Array.from(refs.values()));
 }
 
+// Content identity deliberately excludes sourceSnapshotId and locator: both churn on
+// re-sync even when the underlying source text is unchanged, and comparisons that need
+// to survive that churn (paraphrase merging, wording carry-over, the evidence-identical
+// conflict flag) must key on what the evidence actually says, not which capture said it.
+export function projectKnowledgeEvidenceContentIdentity(ref: ProjectKnowledgeEvidenceRef) {
+  return [ref.sourceWorkItemId, ref.sourceField, normalizeEvidenceQuote(ref.quote)].join("\u0000");
+}
+
+export function projectKnowledgeEvidenceContentIdentitySet(refs: ProjectKnowledgeEvidenceRef[] | undefined) {
+  return Array.from(new Set((refs ?? []).map(projectKnowledgeEvidenceContentIdentity))).sort(compareCanonicalText);
+}
+
+export function haveIdenticalNonEmptyEvidenceContent(
+  first: ProjectKnowledgeEvidenceRef[] | undefined,
+  second: ProjectKnowledgeEvidenceRef[] | undefined,
+) {
+  const firstIdentities = projectKnowledgeEvidenceContentIdentitySet(first);
+  const secondIdentities = projectKnowledgeEvidenceContentIdentitySet(second);
+  return firstIdentities.length > 0 &&
+    firstIdentities.length === secondIdentities.length &&
+    firstIdentities.every((identity, index) => identity === secondIdentities[index]);
+}
+
 export function renderProjectKnowledgeEvidenceRefs(refs: ProjectKnowledgeEvidenceRef[]) {
   return sortProjectKnowledgeEvidenceRefs(refs)
     .map((ref) => escapeProjectKnowledgeCompatibilityEvidenceFragment(normalizeEvidenceQuote(ref.quote)))

@@ -15,6 +15,7 @@ import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import {
   PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE,
   ProjectKnowledgeBaseSchema,
+  haveIdenticalNonEmptyEvidenceContent,
   type ProjectKnowledgeBase,
 } from "./project-knowledge.schema";
 import {
@@ -22,6 +23,11 @@ import {
   type ProjectKnowledgeConsolidationCategory,
   type ProjectKnowledgeEntryByConsolidationCategory,
 } from "./project-knowledge-consolidation";
+import {
+  carryOverProjectKnowledgeWording,
+  isCompatibleProjectKnowledgeParaphrase,
+  projectKnowledgeConsolidationCandidateKeys,
+} from "./project-knowledge-wording-carryover";
 import { canonicalizeProjectKnowledgeLogicalIdentity } from "./project-knowledge-contracts";
 import {
   recordProjectKnowledgeLog,
@@ -172,6 +178,7 @@ export type ProjectKnowledgeGeneratedDraft = {
   inputTokenLimitSource: string;
   renderedPromptChars: number;
   automaticDuplicateConsolidationCount: number;
+  wordingCarryOverCount: number;
 };
 
 export async function extractAndSaveProjectKnowledgeBase(input: {
@@ -282,6 +289,7 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
       inputTokenLimitSource: input.provider.inputTokenLimitSource ?? "unknown_fallback",
       renderedPromptChars: 0,
       automaticDuplicateConsolidationCount: consolidation.automaticDuplicateConsolidationCount,
+      wordingCarryOverCount: 0,
     };
     return completeGeneratedPreview({
       scope,
@@ -312,6 +320,13 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
   const knowledgeBase = incrementalConsolidation?.knowledgeBase ?? result.validatedOutput;
   const automaticDuplicateConsolidationCount = result.automaticDuplicateConsolidationCount +
     (incrementalConsolidation?.automaticDuplicateConsolidationCount ?? 0);
+  // Runs strictly after consolidation so a later chooseLongerText merge can never
+  // overwrite restored wording. Covers full mode too: the previous KB is available
+  // here even though full extraction otherwise replaces it wholesale.
+  const carryOver = carryOverProjectKnowledgeWording({
+    previousKnowledgeBase: existingKnowledgeBase ?? null,
+    knowledgeBase,
+  });
 
   const generated = {
     promptVersion: projectKnowledgeExtractionPrompt.version,
@@ -333,9 +348,10 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
           retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
           extraction: result.rawOutput,
           automaticDuplicateConsolidationCount,
+          wordingCarryOverCount: carryOver.wordingCarryOverCount,
         })
       : result.rawOutput,
-    knowledgeBase,
+    knowledgeBase: carryOver.knowledgeBase,
     generatedAt: nowIso(),
     warnings: result.warnings,
     tokenUsage: result.tokenUsage,
@@ -344,6 +360,7 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
     inputTokenLimitSource: result.inputTokenLimitSource,
     renderedPromptChars: result.renderedPromptChars,
     automaticDuplicateConsolidationCount,
+    wordingCarryOverCount: carryOver.wordingCarryOverCount,
   };
   return completeGeneratedPreview({
     scope,
@@ -489,6 +506,7 @@ async function completeGeneratedPreview(input: {
       rebaseCount: 0,
       conflictCount: null,
       automaticDuplicateConsolidationCount: input.generated.automaticDuplicateConsolidationCount,
+      wordingCarryOverCount: input.generated.wordingCarryOverCount,
     },
     touchedSourceWorkItemIds: input.generated.mode === "full"
       ? input.sourceWorkItems.map((item) => item.id)
@@ -751,6 +769,7 @@ export async function saveManualProjectKnowledgeBaseSnapshot(input: {
       splitCallCount: 1,
       renderedPromptChars: 0,
       automaticDuplicateConsolidationCount: saveResult.automaticDuplicateConsolidationCount,
+      wordingCarryOverCount: saveResult.wordingCarryOverCount,
     },
     touchedSourceWorkItemIds: saveResult.mode === "full"
       ? workItems.map((item) => item.id)
@@ -778,6 +797,7 @@ export async function saveManualProjectKnowledgeBaseSnapshot(input: {
       sourceWorkItemCount: workItems.length,
       counts: getKnowledgeCounts(saveResult.knowledgeBase),
       automaticDuplicateConsolidationCount: saveResult.automaticDuplicateConsolidationCount,
+      wordingCarryOverCount: saveResult.wordingCarryOverCount,
     },
   });
 
@@ -826,11 +846,15 @@ export async function saveManualProjectKnowledgeBaseFromBatches(input: {
     throw new Error("Validate at least one batch response before saving the knowledge base.");
   }
 
+  const parentDraft = draft.parentDraftId
+    ? await getProjectKnowledgeDraft({ scope, draftId: draft.parentDraftId })
+    : null;
   const saveResult = await prepareProjectKnowledgeManualSave({
     scope,
     sourceWorkItems: workItems,
     partialKnowledgeBases,
     mode: input.mode ?? "full",
+    previousKnowledgeBase: parentDraft?.proposedKnowledge ?? undefined,
   });
   const rawOutput = JSON.stringify({
     consolidationMode: "local-deterministic",
@@ -838,6 +862,7 @@ export async function saveManualProjectKnowledgeBaseFromBatches(input: {
     changedSourceWorkItemIds: saveResult.changedSourceWorkItemIds,
     retiredSourceWorkItemIds: saveResult.retiredSourceWorkItemIds,
     automaticDuplicateConsolidationCount: saveResult.automaticDuplicateConsolidationCount,
+    wordingCarryOverCount: saveResult.wordingCarryOverCount,
     partialKnowledgeBases,
     consolidatedKnowledgeBase: saveResult.knowledgeBase,
   });
@@ -853,6 +878,7 @@ export async function saveManualProjectKnowledgeBaseFromBatches(input: {
       splitCallCount: partialKnowledgeBases.length,
       renderedPromptChars: persistedBatches?.renderedPromptChars ?? 0,
       automaticDuplicateConsolidationCount: saveResult.automaticDuplicateConsolidationCount,
+      wordingCarryOverCount: saveResult.wordingCarryOverCount,
     },
     touchedSourceWorkItemIds: saveResult.mode === "full"
       ? workItems.map((item) => item.id)
@@ -881,6 +907,7 @@ export async function saveManualProjectKnowledgeBaseFromBatches(input: {
       batchCount: partialKnowledgeBases.length,
       counts: getKnowledgeCounts(saveResult.knowledgeBase),
       automaticDuplicateConsolidationCount: saveResult.automaticDuplicateConsolidationCount,
+      wordingCarryOverCount: saveResult.wordingCarryOverCount,
     },
   });
 
@@ -990,6 +1017,12 @@ async function prepareProjectKnowledgeManualSave(input: {
   partialKnowledgeBases: ProjectKnowledgeBase[];
   rawOutput?: string;
   mode: ProjectKnowledgeCompileMode;
+  /**
+   * Wording baseline for the carry-over pass. Rebase children must pass the parent
+   * draft's reviewed proposal here — defaulting to the published snapshot would
+   * silently revert wording the reviewer already fixed on the parent.
+   */
+  previousKnowledgeBase?: ProjectKnowledgeBase | null;
 }) {
   const selection = await selectProjectKnowledgeWorkItemsForCompilation({
     scope: input.scope,
@@ -1001,15 +1034,22 @@ async function prepareProjectKnowledgeManualSave(input: {
     throw new Error("Validate at least one batch response before saving the knowledge base.");
   }
 
-  const consolidation = mode === "incremental"
+  const existingKnowledgeBase = mode === "incremental"
+    ? await getRequiredExistingProjectKnowledgeBase(input.scope)
+    : (await getProjectKnowledgeBaseSnapshot({ scope: input.scope }))?.knowledgeBase ?? null;
+  const consolidation = mode === "incremental" && existingKnowledgeBase
     ? mergeIncrementalProjectKnowledgeBase({
-        existingKnowledgeBase: await getRequiredExistingProjectKnowledgeBase(input.scope),
+        existingKnowledgeBase,
         partialKnowledgeBases: input.partialKnowledgeBases,
         affectedSourceWorkItemIds: selection.affectedSourceWorkItemIds,
         activeSourceWorkItemIds: input.sourceWorkItems.map((item) => item.id),
       })
     : consolidateProjectKnowledgeBases(input.partialKnowledgeBases);
-  const knowledgeBase = consolidation.knowledgeBase;
+  const carryOver = carryOverProjectKnowledgeWording({
+    previousKnowledgeBase: input.previousKnowledgeBase ?? existingKnowledgeBase,
+    knowledgeBase: consolidation.knowledgeBase,
+  });
+  const knowledgeBase = carryOver.knowledgeBase;
   const sourceChangeSummary = buildCompilationSourceChangeSummary({
     knowledgeBase,
     sourceWorkItems: input.sourceWorkItems,
@@ -1028,6 +1068,7 @@ async function prepareProjectKnowledgeManualSave(input: {
           changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
           retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
           automaticDuplicateConsolidationCount: consolidation.automaticDuplicateConsolidationCount,
+          wordingCarryOverCount: carryOver.wordingCarryOverCount,
           externalOutput: input.rawOutput,
           partialKnowledgeBases: input.partialKnowledgeBases,
           consolidatedKnowledgeBase: knowledgeBase,
@@ -1035,6 +1076,7 @@ async function prepareProjectKnowledgeManualSave(input: {
       : input.rawOutput ?? JSON.stringify({
           mode,
           automaticDuplicateConsolidationCount: consolidation.automaticDuplicateConsolidationCount,
+          wordingCarryOverCount: carryOver.wordingCarryOverCount,
           partialKnowledgeBases: input.partialKnowledgeBases,
           consolidatedKnowledgeBase: knowledgeBase,
         }),
@@ -1043,6 +1085,7 @@ async function prepareProjectKnowledgeManualSave(input: {
     changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
     retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
     automaticDuplicateConsolidationCount: consolidation.automaticDuplicateConsolidationCount,
+    wordingCarryOverCount: carryOver.wordingCarryOverCount,
   };
 }
 
@@ -1198,48 +1241,27 @@ function consolidateProjectKnowledgeBases(
   const modules = consolidateCategoryItems(
     "module",
     partialKnowledgeBases.flatMap((knowledgeBase) => knowledgeBase.modules),
-    (item) => [
-      `id:${canonicalizeProjectKnowledgeLogicalIdentity(item.id)}`,
-      `name:${canonicalizeProjectKnowledgeLogicalIdentity(item.name)}`,
-    ],
+    (item) => projectKnowledgeConsolidationCandidateKeys("module", item),
   );
   const businessRules = consolidateCategoryItems(
     "business_rule",
     partialKnowledgeBases.flatMap((knowledgeBase) => knowledgeBase.businessRules),
-    (item) => [
-      `id:${canonicalizeProjectKnowledgeLogicalIdentity(item.id)}`,
-      `rule:${canonicalizeProjectKnowledgeLogicalIdentity(item.rule)}`,
-    ],
+    (item) => projectKnowledgeConsolidationCandidateKeys("business_rule", item),
   );
   const stateTransitions = consolidateCategoryItems(
     "state_transition",
     partialKnowledgeBases.flatMap((knowledgeBase) => knowledgeBase.stateTransitions),
-    (item) => [
-      `id:${canonicalizeProjectKnowledgeLogicalIdentity(item.id)}`,
-      `transition:${canonicalizeProjectKnowledgeLogicalIdentity([
-        item.workflowName,
-        item.fromState,
-        item.toState,
-        item.triggerOrCondition,
-      ].filter(Boolean).join(" "))}`,
-    ],
+    (item) => projectKnowledgeConsolidationCandidateKeys("state_transition", item),
   );
   const glossary = consolidateCategoryItems(
     "glossary",
     partialKnowledgeBases.flatMap((knowledgeBase) => knowledgeBase.glossary),
-    (item) => [`term:${canonicalizeProjectKnowledgeLogicalIdentity(item.term)}`],
+    (item) => projectKnowledgeConsolidationCandidateKeys("glossary", item),
   );
   const crossDependencies = consolidateCategoryItems(
     "dependency",
     partialKnowledgeBases.flatMap((knowledgeBase) => knowledgeBase.crossDependencies),
-    (item) => [
-      `id:${canonicalizeProjectKnowledgeLogicalIdentity(item.id)}`,
-      `dependency:${canonicalizeProjectKnowledgeLogicalIdentity([
-        item.sourceModule,
-        item.targetModule,
-        item.dependencyType,
-      ].join(" "))}`,
-    ],
+    (item) => projectKnowledgeConsolidationCandidateKeys("dependency", item),
   );
 
   return {
@@ -1326,11 +1348,16 @@ function shouldAutomaticallyConsolidate<TCategory extends ProjectKnowledgeConsol
 ) {
   if (normalizedProjection(category, first) === normalizedProjection(category, second)) return true;
 
-  if (category === "module" || category === "glossary") {
-    return haveSameNonEmptySnapshotSet(first, second);
+  if ((category === "module" || category === "glossary") && haveSameNonEmptySnapshotSet(first, second)) {
+    return true;
   }
 
-  return false;
+  // Paraphrase fallback: two same-identity entries whose evidence content (work item +
+  // field + quote, snapshot ids ignored) is identical differ only in LLM wording —
+  // unless a category guard (e.g. differing concrete business-rule values) says the
+  // disagreement is real and must surface as a hard conflict instead.
+  return haveIdenticalNonEmptyEvidenceContent(first.evidenceRefs, second.evidenceRefs) &&
+    isCompatibleProjectKnowledgeParaphrase(category, first, second);
 }
 
 function normalizedProjection<TCategory extends ProjectKnowledgeConsolidationCategory>(

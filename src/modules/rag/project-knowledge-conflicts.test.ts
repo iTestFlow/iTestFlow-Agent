@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { detectProjectKnowledgeHardConflicts } from "./project-knowledge-conflicts";
+import { detectProjectKnowledgeHardConflicts, sortProjectKnowledgeHardConflictsForReview } from "./project-knowledge-conflicts";
 import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeEvidenceRef } from "./project-knowledge.schema";
 
 const evidenceRef = (snapshot: string, workItem: string): ProjectKnowledgeEvidenceRef => ({
@@ -334,5 +334,120 @@ describe("deterministic hard conflicts", () => {
     ]);
     expect(detectProjectKnowledgeHardConflicts(knowledge)[0].participants)
       .toEqual(expect.not.arrayContaining([expect.objectContaining({ concreteValue: expect.anything() })]));
+  });
+
+  it("flags identical-evidence paraphrase conflicts across snapshot churn", () => {
+    const knowledge = ProjectKnowledgeBaseSchema.parse({
+      glossary: [
+        {
+          term: "Discount",
+          type: "term",
+          definition: "A price reduction applied by a valid promo code.",
+          sourceWorkItemIds: ["10"],
+          evidence: "Valid code applies discount",
+          evidenceRefs: [{ ...evidenceRef("snapshot-old", "10"), quote: "Valid code applies discount" }],
+        },
+        {
+          term: "Discount",
+          type: "term",
+          definition: "A reduction applied by a valid promo code.",
+          sourceWorkItemIds: ["10"],
+          evidence: "Valid code applies discount",
+          evidenceRefs: [{ ...evidenceRef("snapshot-new", "10"), quote: "Valid code  applies discount" }],
+        },
+      ],
+    });
+
+    const conflicts = detectProjectKnowledgeHardConflicts(knowledge);
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({
+      conflictType: "duplicate_identity",
+      evidenceIdentical: true,
+    });
+  });
+
+  it("keeps the flag false when quotes differ or evidence is missing", () => {
+    const differentQuotes = ProjectKnowledgeBaseSchema.parse({
+      glossary: [
+        {
+          term: "Discount",
+          type: "term",
+          definition: "First definition.",
+          sourceWorkItemIds: ["10"],
+          evidence: "quote one",
+          evidenceRefs: [{ ...evidenceRef("s1", "10"), quote: "quote one" }],
+        },
+        {
+          term: "Discount",
+          type: "term",
+          definition: "Second definition.",
+          sourceWorkItemIds: ["10"],
+          evidence: "quote two",
+          evidenceRefs: [{ ...evidenceRef("s2", "10"), quote: "quote two" }],
+        },
+      ],
+    });
+    expect(detectProjectKnowledgeHardConflicts(differentQuotes)[0]).toMatchObject({ evidenceIdentical: false });
+
+    const missingRefs = ProjectKnowledgeBaseSchema.parse({
+      modules: [
+        { id: "Payments", name: "Payments", description: "First", sourceWorkItemIds: ["1"], evidence: "First" },
+        { id: " payments ", name: "Payment processing", description: "Second", sourceWorkItemIds: ["2"], evidence: "Second" },
+      ],
+    });
+    expect(detectProjectKnowledgeHardConflicts(missingRefs)[0]).toMatchObject({ evidenceIdentical: false });
+  });
+
+  it("still blocks concrete-value disagreements backed by identical evidence, flagged for the reviewer", () => {
+    const knowledge = ProjectKnowledgeBaseSchema.parse({
+      businessRules: [
+        {
+          id: "br-1",
+          rule: "Maximum retry count must be 3",
+          sourceField: "acceptanceCriteria",
+          moduleName: "Payments",
+          sourceWorkItemIds: ["1"],
+          evidence: "Supported quote",
+          evidenceRefs: [evidenceRef("s-old", "1")],
+        },
+        {
+          id: "br-2",
+          rule: "Maximum retry count must be 5",
+          sourceField: "acceptanceCriteria",
+          moduleName: "Payments",
+          sourceWorkItemIds: ["1"],
+          evidence: "Supported quote",
+          evidenceRefs: [evidenceRef("s-new", "1")],
+        },
+      ],
+    });
+
+    const conflicts = detectProjectKnowledgeHardConflicts(knowledge);
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({
+      conflictType: "incompatible_concrete_value",
+      evidenceIdentical: true,
+    });
+    expect(conflicts[0].participants.map((participant) => participant.concreteValue)).toEqual(["3", "5"]);
+  });
+
+  it("orders evidence-identical conflicts after genuine disagreements for review", () => {
+    const conflictStub = (identityKey: string, evidenceIdentical: boolean) => ({
+      identityKey,
+      subject: identityKey,
+      affectedCategory: "glossary" as const,
+      conflictType: "duplicate_identity" as const,
+      participants: [],
+      evidenceIdentical,
+    });
+    const sorted = sortProjectKnowledgeHardConflictsForReview([
+      conflictStub("a-identical", true),
+      conflictStub("b-real", false),
+      conflictStub("c-identical", true),
+      conflictStub("d-real", false),
+    ]);
+
+    expect(sorted.map((conflict) => conflict.identityKey))
+      .toEqual(["b-real", "d-real", "a-identical", "c-identical"]);
   });
 });
