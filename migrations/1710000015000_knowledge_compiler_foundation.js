@@ -219,33 +219,6 @@ exports.up = (pgm) => {
       updated_at text NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS project_knowledge_rollout_state (
-      project_id text NOT NULL,
-      azure_project_id text NOT NULL,
-      workspace_id text NOT NULL,
-      milestone3_ga_at text,
-      reconciliation_publication_count integer NOT NULL DEFAULT 0,
-      updated_at text NOT NULL,
-      PRIMARY KEY (project_id, azure_project_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS project_knowledge_adrs (
-      id text PRIMARY KEY,
-      workspace_id text NOT NULL,
-      project_id text NOT NULL,
-      azure_project_id text NOT NULL,
-      adr_type text NOT NULL,
-      version integer NOT NULL,
-      status text NOT NULL DEFAULT 'open',
-      metric_snapshot_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-      decision text,
-      decided_by text,
-      decided_at text,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
-      UNIQUE (project_id, azure_project_id, adr_type, version)
-    );
-
     CREATE INDEX IF NOT EXISTS idx_work_item_snapshots_lookup
       ON azure_devops_work_item_snapshots(project_id, azure_project_id, azure_work_item_id, captured_at DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_work_item_snapshots_identity
@@ -270,8 +243,6 @@ exports.up = (pgm) => {
       ON project_knowledge_candidates(project_id, azure_project_id, status, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_knowledge_conflicts_project
       ON project_knowledge_hard_conflicts(project_id, azure_project_id, status, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_knowledge_adrs_project
-      ON project_knowledge_adrs(project_id, azure_project_id, status, created_at DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_lint_fingerprint
       ON project_knowledge_lint_issues(project_id, azure_project_id, issue_fingerprint)
       WHERE issue_fingerprint IS NOT NULL;
@@ -391,7 +362,6 @@ exports.down = (pgm) => {
     DROP INDEX IF EXISTS idx_project_knowledge_revision_number_unique;
     DROP INDEX IF EXISTS idx_knowledge_lint_fingerprint;
     DROP INDEX IF EXISTS idx_knowledge_conflicts_project;
-    DROP INDEX IF EXISTS idx_knowledge_adrs_project;
     DROP INDEX IF EXISTS idx_knowledge_candidates_project;
     DROP INDEX IF EXISTS idx_knowledge_evidence_snapshot;
     DROP INDEX IF EXISTS idx_knowledge_evidence_entry;
@@ -411,8 +381,6 @@ exports.down = (pgm) => {
       AND versions.status = 'migrated';
 
     DROP TABLE IF EXISTS project_knowledge_hard_conflicts;
-    DROP TABLE IF EXISTS project_knowledge_adrs;
-    DROP TABLE IF EXISTS project_knowledge_rollout_state;
     DROP TABLE IF EXISTS project_knowledge_migration_issues;
     DROP TABLE IF EXISTS project_knowledge_candidates;
     DROP TABLE IF EXISTS project_knowledge_entry_evidence_refs;

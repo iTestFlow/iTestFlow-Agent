@@ -304,7 +304,7 @@ type BuildMode = "auto" | "manual"
 type BuildStep = "index" | "prepare" | "preview"
 type TopTab = "hub" | "build"
 type WorkspaceRole = "owner" | "admin" | "member"
-type HubView = "explorer" | "context" | "candidates" | "governance"
+type HubView = "explorer" | "context" | "candidates"
 type KnowledgeCandidateStatus = "legacy_ungrounded" | "grounded" | "rejected" | "integration_requested"
 
 type KnowledgeCandidate = {
@@ -317,33 +317,6 @@ type KnowledgeCandidate = {
   citations: unknown[]
   rejectedReason?: string | null
   updatedAt: string
-}
-
-type KnowledgeGovernance = {
-  rollout: {
-    milestone3GaAt: string | null
-    reconciliationPublicationCount: number
-    measuredDraftCount: number
-    evaluationReady: boolean
-    minimumPercentageSample: boolean
-  }
-  gates: {
-    richerSynthesisEligible: boolean
-    semanticLintEligible: boolean
-    candidateAcceptanceEligible: boolean
-    hardTensionDraftRate: number
-    confirmedLintMissRate: number
-    integrationRequestCount: number
-  }
-  adrs: Array<{
-    id: string
-    type: string
-    status: string
-    metricSnapshot: Record<string, unknown>
-    decision?: string | null
-    createdAt: string
-    decidedAt?: string | null
-  }>
 }
 
 const KNOWLEDGE_CATEGORIES = [
@@ -421,8 +394,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeCandidates, setKnowledgeCandidates] = useState<KnowledgeCandidate[]>([])
   const [candidateStatus, setCandidateStatus] = useState<KnowledgeCandidateStatus | "all">("all")
   const [candidateLoading, setCandidateLoading] = useState(false)
-  const [knowledgeGovernance, setKnowledgeGovernance] = useState<KnowledgeGovernance | null>(null)
-  const [governanceLoading, setGovernanceLoading] = useState(false)
   const [generatedDraft, setGeneratedDraft] = useState<KnowledgeGeneratedDraft | null>(null)
   const [generatedSaveLoading, setGeneratedSaveLoading] = useState(false)
   const [manualKnowledgeDraft, setManualKnowledgeDraft] = useState<KnowledgeManualDraft | null>(null)
@@ -519,18 +490,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     }
   }, [candidateStatus, scope])
 
-  const refreshKnowledgeGovernance = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
-    if (!activeScope) return
-    setGovernanceLoading(true)
-    try {
-      setKnowledgeGovernance(await postJson<KnowledgeGovernance>("/api/context/knowledge/governance", { scope: activeScope }))
-    } catch {
-      setKnowledgeGovernance(null)
-    } finally {
-      setGovernanceLoading(false)
-    }
-  }, [scope])
-
   const loadStatus = useCallback(async (
     activeScope: ActiveProjectScope | null,
     options?: {
@@ -620,7 +579,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setKnowledgeExport(null)
     setKnowledgeCandidates([])
     setCandidateStatus("all")
-    setKnowledgeGovernance(null)
     setPage(1)
     setSortBy("lastIndexedAt")
     setSortDirection("desc")
@@ -676,10 +634,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   useEffect(() => {
     if (scope) void refreshKnowledgeCandidates(scope, candidateStatus)
   }, [candidateStatus, refreshKnowledgeCandidates, scope])
-
-  useEffect(() => {
-    if (scope) void refreshKnowledgeGovernance(scope)
-  }, [refreshKnowledgeGovernance, scope])
 
   useEffect(() => {
     if (!scope) return
@@ -1220,43 +1174,10 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         ...(action === "reject" ? { reason: "Rejected during Knowledge Hub review." } : {}),
       })
       await refreshKnowledgeCandidates(scope, candidateStatus)
-      await refreshKnowledgeGovernance(scope)
     } catch (error) {
       setKnowledgeError(error instanceof Error ? error.message : "The candidate could not be updated.")
     } finally {
       setCandidateLoading(false)
-    }
-  }
-
-  async function startMilestone3Ga() {
-    if (!scope || !canBuildKnowledge) return
-    setGovernanceLoading(true)
-    setKnowledgeError(null)
-    try {
-      setKnowledgeGovernance(await patchJson<KnowledgeGovernance>("/api/context/knowledge/governance", {
-        scope,
-        action: "start_milestone3_ga",
-      }))
-    } catch (error) {
-      setKnowledgeError(error instanceof Error ? error.message : "The GA measurement clock could not be started.")
-    } finally {
-      setGovernanceLoading(false)
-    }
-  }
-
-  async function decideKnowledgeAdr(adrId: string, decision: string) {
-    if (!scope || !canBuildKnowledge || !decision.trim()) return
-    setGovernanceLoading(true)
-    setKnowledgeError(null)
-    try {
-      setKnowledgeGovernance(await patchJson<KnowledgeGovernance>(`/api/context/knowledge/governance/${adrId}`, {
-        scope,
-        decision: decision.trim(),
-      }))
-    } catch (error) {
-      setKnowledgeError(error instanceof Error ? error.message : "The ADR decision could not be saved.")
-    } finally {
-      setGovernanceLoading(false)
     }
   }
 
@@ -1415,7 +1336,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                   <HubViewTab value="explorer" label="Knowledge Explorer" shortLabel="Explorer" count={knowledgeStatusLoading ? "-" : totalKnowledgeItems} />
                   <HubViewTab value="context" label="Indexed Project Context" shortLabel="Indexed Context" count={totalCount} />
                   <HubViewTab value="candidates" label="Candidates" shortLabel="Candidates" count={knowledgeCandidates.length} />
-                  <HubViewTab value="governance" label="Governance" shortLabel="Governance" count={knowledgeGovernance?.adrs.length ?? 0} />
                 </TabsList>
               </div>
 
@@ -1462,16 +1382,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                     canManage={canBuildKnowledge}
                     onStatusChange={setCandidateStatus}
                     onAction={updateKnowledgeCandidate}
-                  />
-                </TabsContent>
-
-                <TabsContent value="governance" className="mt-0">
-                  <KnowledgeGovernanceView
-                    governance={knowledgeGovernance}
-                    loading={governanceLoading}
-                    canManage={canBuildKnowledge}
-                    onStart={startMilestone3Ga}
-                    onDecide={decideKnowledgeAdr}
                   />
                 </TabsContent>
               </CardContent>
@@ -2709,72 +2619,6 @@ export function KnowledgeCandidatesView({
           ) : null}
         </div>
       )) : <KnowledgeEmptyState title="No candidates" message="No knowledge candidates match this status." />}
-    </div>
-  )
-}
-
-export function KnowledgeGovernanceView({
-  governance,
-  loading,
-  canManage,
-  onStart,
-  onDecide,
-}: {
-  governance: KnowledgeGovernance | null
-  loading: boolean
-  canManage: boolean
-  onStart: () => Promise<void>
-  onDecide: (adrId: string, decision: string) => Promise<void>
-}) {
-  const [decisions, setDecisions] = useState<Record<string, string>>({})
-  if (loading && !governance) return <KnowledgeLoadingState label="Loading compiler governance" />
-  if (!governance) return <KnowledgeEmptyState title="Governance unavailable" message="Compiler governance metrics could not be loaded." />
-  const gates = [
-    ["Richer synthesis", governance.gates.richerSynthesisEligible],
-    ["LLM semantic lint", governance.gates.semanticLintEligible],
-    ["Candidate acceptance", governance.gates.candidateAcceptanceEligible],
-  ] as const
-  return (
-    <div className="space-y-4">
-      <div className="rounded-md border border-border bg-card p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <div className="text-sm font-semibold text-foreground">Milestone 3 GA Measurement</div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              {governance.rollout.milestone3GaAt
-                ? `Started ${formatDate(governance.rollout.milestone3GaAt)}`
-                : "Not started. Publications are not counted until an owner starts the clock."}
-            </div>
-          </div>
-          {canManage && !governance.rollout.milestone3GaAt ? <Button size="sm" onClick={() => void onStart()}>Start Milestone 3 GA</Button> : null}
-        </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          <KnowledgeMetric label="Publications" value={governance.rollout.reconciliationPublicationCount} />
-          <KnowledgeMetric label="Measured drafts" value={governance.rollout.measuredDraftCount} />
-          <KnowledgeMetric label="Evaluation ready" value={governance.rollout.evaluationReady ? "Yes" : "No"} />
-        </div>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-3">
-        {gates.map(([label, eligible]) => <KnowledgeMetric key={label} label={label} value={eligible ? "Eligible" : "Deferred"} />)}
-      </div>
-      <div className="rounded-md border border-border bg-muted p-3 text-xs text-muted-foreground">
-        Quote-fidelity and unknown-model fallback checkpoints create ADR review items here when their measured thresholds are crossed.
-      </div>
-      <div className="space-y-2">
-        <div className="text-sm font-semibold text-foreground">Architecture Decision Records</div>
-        {governance.adrs.length ? governance.adrs.map((adr) => (
-          <div key={adr.id} className="rounded-md border border-border bg-card p-3 text-sm">
-            <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{adr.status}</Badge><span className="font-semibold">{adr.type.replaceAll("_", " ")}</span></div>
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 text-xs">{JSON.stringify(adr.metricSnapshot, null, 2)}</pre>
-            {adr.decision ? <div className="mt-2 text-sm">Decision: {adr.decision}</div> : canManage ? (
-              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                <Input value={decisions[adr.id] ?? ""} onChange={(event) => setDecisions((current) => ({ ...current, [adr.id]: event.target.value }))} placeholder="Record the owner decision" maxLength={4000} />
-                <Button size="sm" disabled={!decisions[adr.id]?.trim()} onClick={() => void onDecide(adr.id, decisions[adr.id] ?? "")}>Record decision</Button>
-              </div>
-            ) : null}
-          </div>
-        )) : <div className="text-sm text-muted-foreground">No monitoring ADRs have been created.</div>}
-      </div>
     </div>
   )
 }

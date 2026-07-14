@@ -35,6 +35,7 @@ import {
   beginProjectKnowledgeDraft,
   abandonProjectKnowledgeDraft,
   completeProjectKnowledgeDraft,
+  computeProjectKnowledgePipelineWarnings,
   getProjectKnowledgeDraft,
   getProjectKnowledgeDraftReviewContext,
   listProjectKnowledgeDrafts,
@@ -841,5 +842,51 @@ describe("draft lifecycle", () => {
       }),
       expect.anything(),
     );
+  });
+});
+
+describe("pipeline quality warnings", () => {
+  const metricsRow = (metrics: Record<string, unknown>) => ({ metrics_json: metrics });
+  const fidelityMetrics = (manualReanchorCount: number, quoteExactCount: number) => ({
+    manualReanchorCount,
+    quoteExactCount,
+    quoteNormalizedCount: 0,
+    quoteAutoReanchorCount: 0,
+  });
+
+  it("warns when the residual manual re-anchor rate exceeds 5% over a full window", async () => {
+    database.sqlAll.mockResolvedValue(Array.from({ length: 20 }, () => metricsRow(fidelityMetrics(1, 9))));
+
+    const warnings = await computeProjectKnowledgePipelineWarnings({ scope });
+
+    expect(warnings).toEqual([expect.stringContaining("manual re-anchoring")]);
+  });
+
+  it("stays quiet below the threshold and on an incomplete window", async () => {
+    database.sqlAll.mockResolvedValue(Array.from({ length: 20 }, () => metricsRow(fidelityMetrics(0, 10))));
+    expect(await computeProjectKnowledgePipelineWarnings({ scope })).toEqual([]);
+
+    // High rate, but only 19 drafts — early noise must not trip the alarm.
+    database.sqlAll.mockResolvedValue(Array.from({ length: 19 }, () => metricsRow(fidelityMetrics(5, 5))));
+    expect(await computeProjectKnowledgePipelineWarnings({ scope })).toEqual([]);
+  });
+
+  it("warns about unknown-model token fallback only with heavy splitting", async () => {
+    database.sqlAll.mockResolvedValue([
+      metricsRow({ inputTokenLimitSource: "unknown_fallback", splitCallCount: 6 }),
+    ]);
+    expect(await computeProjectKnowledgePipelineWarnings({ scope })).toEqual([
+      expect.stringContaining("unrecognized model"),
+    ]);
+
+    database.sqlAll.mockResolvedValue([
+      metricsRow({ inputTokenLimitSource: "unknown_fallback", splitCallCount: 2 }),
+    ]);
+    expect(await computeProjectKnowledgePipelineWarnings({ scope })).toEqual([]);
+  });
+
+  it("returns no warnings when no drafts exist", async () => {
+    database.sqlAll.mockResolvedValue([]);
+    expect(await computeProjectKnowledgePipelineWarnings({ scope })).toEqual([]);
   });
 });

@@ -650,7 +650,6 @@ export async function completeProjectKnowledgeDraft(input: {
     );
 
     await persistProjectKnowledgeHardConflicts(scope, row.id, conflicts, now, client);
-    await ensureProjectKnowledgeMonitoringCheckpoints(scope, client);
     return requireDraft(scope, row.id, client);
   });
 }
@@ -878,24 +877,6 @@ export async function publishProjectKnowledgeDraft(input: {
     await sqlRun(
       `UPDATE project_knowledge_base SET active_revision_id = @revisionId WHERE id = @knowledgeBaseId`,
       { revisionId: revision.revisionId, knowledgeBaseId },
-      client,
-    );
-    await sqlRun(
-      `
-        UPDATE project_knowledge_rollout_state
-        SET reconciliation_publication_count = reconciliation_publication_count + 1,
-            updated_at = @now
-        WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-          AND milestone3_ga_at IS NOT NULL
-          AND @compilerContractVersion = @currentCompilerContractVersion
-      `,
-      {
-        projectId: scope.projectId,
-        azureProjectId: scope.azureProjectId,
-        compilerContractVersion: draft.compiler_contract_version,
-        currentCompilerContractVersion: PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
-        now,
-      },
       client,
     );
     await sqlRun(
@@ -1471,221 +1452,6 @@ export async function listProjectKnowledgeDrafts(input: { scope: ProjectScope; l
   return rows.map(toDraft);
 }
 
-export async function getProjectKnowledgeCompilerGovernance(input: { scope: ProjectScope }) {
-  const scope = assertProjectScope(input.scope);
-  const rollout = await sqlGet<{
-    milestone3_ga_at: string | null;
-    reconciliation_publication_count: number;
-  }>(
-    `
-      SELECT milestone3_ga_at, reconciliation_publication_count
-      FROM project_knowledge_rollout_state
-      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-    `,
-    { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
-  );
-  const measuredDrafts = await sqlAll<{ metrics_json: unknown }>(
-    `
-      SELECT metrics_json FROM project_knowledge_drafts
-      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-        AND compiler_contract_version = @compilerContractVersion
-        AND proposed_knowledge_json IS NOT NULL
-        AND @gaAt::text IS NOT NULL AND created_at >= @gaAt
-      ORDER BY created_at ASC
-    `,
-    {
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      compilerContractVersion: PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
-      gaAt: rollout?.milestone3_ga_at ?? null,
-    },
-  );
-  const hardTensions = await sqlGet<{ identities: number; runs: number; drafts: number }>(
-    `
-      SELECT COUNT(DISTINCT identity_key)::int AS identities,
-             COUNT(DISTINCT COALESCE(run_id, draft_id))::int AS runs,
-             COUNT(DISTINCT draft_id)::int AS drafts
-      FROM project_knowledge_hard_conflicts
-       WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-         AND @gaAt::text IS NOT NULL AND created_at >= @gaAt
-    `,
-    { projectId: scope.projectId, azureProjectId: scope.azureProjectId, gaAt: rollout?.milestone3_ga_at ?? null },
-  );
-  const lintMisses = await sqlGet<{ misses: number; runs: number }>(
-    `
-      SELECT COUNT(*) FILTER (WHERE status = 'confirmed')::int AS misses,
-             COUNT(DISTINCT lint_run_id)
-               FILTER (WHERE status = 'confirmed')::int AS runs
-      FROM project_knowledge_lint_issues
-      WHERE project_id = @projectId AND azure_project_id = @azureProjectId AND origin = 'human'
-        AND @gaAt::text IS NOT NULL AND created_at >= @gaAt
-    `,
-    { projectId: scope.projectId, azureProjectId: scope.azureProjectId, gaAt: rollout?.milestone3_ga_at ?? null },
-  );
-  const candidates = await sqlGet<{ requested: number }>(
-    `
-      SELECT COUNT(*)::int AS requested FROM project_knowledge_candidates
-      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-        AND integration_requested_at IS NOT NULL
-        AND @gaAt::text IS NOT NULL AND integration_requested_at >= @gaAt
-    `,
-    { projectId: scope.projectId, azureProjectId: scope.azureProjectId, gaAt: rollout?.milestone3_ga_at ?? null },
-  );
-  const adrs = await sqlAll<{
-    id: string;
-    adr_type: string;
-    version: number;
-    status: string;
-    metric_snapshot_json: unknown;
-    decision: string | null;
-    created_at: string;
-    decided_at: string | null;
-  }>(
-    `
-      SELECT id, adr_type, version, status, metric_snapshot_json, decision, created_at, decided_at
-      FROM project_knowledge_adrs
-      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-      ORDER BY created_at DESC
-    `,
-    { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
-  );
-  const draftCount = measuredDrafts.length;
-  const gaAt = rollout?.milestone3_ga_at ?? null;
-  const elapsedMs = gaAt ? Date.now() - Date.parse(gaAt) : 0;
-  const evaluationReady = (rollout?.reconciliation_publication_count ?? 0) >= 30 || elapsedMs >= 8 * 7 * 24 * 60 * 60 * 1000;
-  const minimumPercentageSample = draftCount >= 10;
-  const tensionDraftRate = draftCount ? (hardTensions?.drafts ?? 0) / draftCount : 0;
-  const lintMissRate = draftCount ? (lintMisses?.misses ?? 0) / draftCount : 0;
-  return {
-    rollout: {
-      milestone3GaAt: gaAt,
-      reconciliationPublicationCount: rollout?.reconciliation_publication_count ?? 0,
-      measuredDraftCount: draftCount,
-      evaluationReady,
-      minimumPercentageSample,
-    },
-    gates: {
-      richerSynthesisEligible: evaluationReady && (
-        ((hardTensions?.identities ?? 0) >= 5 && (hardTensions?.runs ?? 0) >= 3) ||
-        (minimumPercentageSample && tensionDraftRate >= 0.1)
-      ),
-      semanticLintEligible: evaluationReady && (
-        ((lintMisses?.misses ?? 0) >= 5 && (lintMisses?.runs ?? 0) >= 3) ||
-        (minimumPercentageSample && lintMissRate >= 0.1)
-      ),
-      candidateAcceptanceEligible: evaluationReady && (candidates?.requested ?? 0) >= 5,
-      hardTensionDraftRate: tensionDraftRate,
-      confirmedLintMissRate: lintMissRate,
-      integrationRequestCount: candidates?.requested ?? 0,
-    },
-    adrs: adrs.map((adr) => ({
-      id: adr.id,
-      type: adr.adr_type,
-      version: adr.version,
-      status: adr.status,
-      metricSnapshot: asRecord(adr.metric_snapshot_json),
-      decision: adr.decision,
-      createdAt: adr.created_at,
-      decidedAt: adr.decided_at,
-    })),
-  };
-}
-
-export async function startProjectKnowledgeMilestone3Ga(input: {
-  scope: ProjectScope;
-  actor: string;
-}) {
-  const scope = assertProjectScope(input.scope);
-  await withTransaction(async (client) => {
-    await acquireProjectKnowledgeLock(scope, client);
-    const existing = await sqlGet<{ milestone3_ga_at: string | null }>(
-      `
-        SELECT milestone3_ga_at FROM project_knowledge_rollout_state
-        WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-      `,
-      { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
-      client,
-    );
-    if (existing?.milestone3_ga_at) return;
-    const now = nowIso();
-    await sqlRun(
-      `
-        INSERT INTO project_knowledge_rollout_state (
-          project_id, azure_project_id, workspace_id, milestone3_ga_at,
-          reconciliation_publication_count, updated_at
-        ) VALUES (
-          @projectId, @azureProjectId, (SELECT workspace_id FROM projects WHERE id = @projectId),
-          @now, 0, @now
-        )
-        ON CONFLICT (project_id, azure_project_id) DO UPDATE SET
-          milestone3_ga_at = COALESCE(project_knowledge_rollout_state.milestone3_ga_at, EXCLUDED.milestone3_ga_at),
-          updated_at = project_knowledge_rollout_state.updated_at
-      `,
-      { projectId: scope.projectId, azureProjectId: scope.azureProjectId, now },
-      client,
-    );
-    await writeAuditLogTransactional({
-      workspaceId: scope.workspaceId,
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      azureProjectName: scope.azureProjectName,
-      azureOrganizationUrl: scope.azureOrganizationUrl,
-      entityType: "project_knowledge_rollout",
-      entityId: `${scope.projectId}:${scope.azureProjectId}`,
-      action: "rag.knowledge_governance.milestone3_ga_started",
-      status: "Success",
-      actor: input.actor,
-      message: "Started the Milestone 3 GA measurement clock.",
-      details: {},
-    }, client);
-  });
-  return getProjectKnowledgeCompilerGovernance({ scope });
-}
-
-export async function decideProjectKnowledgeAdr(input: {
-  scope: ProjectScope;
-  actor: string;
-  adrId: string;
-  decision: string;
-}) {
-  const scope = assertProjectScope(input.scope);
-  const now = nowIso();
-  const updated = await sqlRun(
-    `
-      UPDATE project_knowledge_adrs
-      SET status = 'decided', decision = @decision, decided_by = @actor,
-          decided_at = @now, updated_at = @now
-      WHERE id = @adrId AND project_id = @projectId AND azure_project_id = @azureProjectId
-        AND status = 'open'
-    `,
-    {
-      adrId: input.adrId,
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      decision: input.decision.trim(),
-      actor: input.actor,
-      now,
-    },
-  );
-  if (!updated) {
-    const existing = await sqlGet<{ status: string }>(
-      `
-        SELECT status FROM project_knowledge_adrs
-        WHERE id = @adrId AND project_id = @projectId AND azure_project_id = @azureProjectId
-      `,
-      { adrId: input.adrId, projectId: scope.projectId, azureProjectId: scope.azureProjectId },
-    );
-    if (!existing) {
-      throw new AppError({
-        code: AppErrorCode.ResourceNotFound,
-        message: "The knowledge compiler ADR was not found in the active project.",
-        userMessage: "The ADR review item was not found.",
-      });
-    }
-    throw draftStateConflict(existing.status);
-  }
-  return getProjectKnowledgeCompilerGovernance({ scope });
-}
 
 export async function markProjectKnowledgeSourceDrift(
   scopeInput: ProjectScope,
@@ -1946,36 +1712,42 @@ function allEvidenceRefs(knowledgeBase: ProjectKnowledgeBase) {
   return allKnowledgeEntryRefs(knowledgeBase).flat();
 }
 
-async function ensureProjectKnowledgeMonitoringCheckpoints(scope: ProjectScope, client: PoolClient) {
-  const rollout = await sqlGet<{ milestone3_ga_at: string | null }>(
-    `
-      SELECT milestone3_ga_at FROM project_knowledge_rollout_state
-      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-    `,
-    { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
-    client,
-  );
-  if (!rollout?.milestone3_ga_at) return;
+// Passive pipeline-quality thresholds surfaced in the knowledge health banner.
+const PIPELINE_WARNING_DRAFT_WINDOW = 20;
+const RESIDUAL_REANCHOR_WARNING_RATE = 0.05;
+const EXCESSIVE_SPLIT_CALL_COUNT = 5;
+const UNKNOWN_MODEL_FALLBACK_TOKENS = 16_000;
+
+/**
+ * Quality alarms computed over the most recent compiled drafts, merged into
+ * snapshot.health.warnings by the knowledge status route. Replaces the former
+ * governance monitoring checkpoints: same thresholds, but computed at read time
+ * with no GA clock and no ADR rows. Quote fidelity is only judged on a full
+ * window so a couple of early drafts cannot trip the alarm.
+ */
+export async function computeProjectKnowledgePipelineWarnings(input: {
+  scope: ProjectScope;
+}): Promise<string[]> {
+  const scope = assertProjectScope(input.scope);
   const rows = await sqlAll<{ metrics_json: unknown }>(
     `
       SELECT metrics_json FROM project_knowledge_drafts
       WHERE project_id = @projectId AND azure_project_id = @azureProjectId
         AND compiler_contract_version = @compilerContractVersion
         AND proposed_knowledge_json IS NOT NULL
-        AND created_at >= @gaAt
-      ORDER BY created_at ASC
-      LIMIT 20
+      ORDER BY created_at DESC
+      LIMIT ${PIPELINE_WARNING_DRAFT_WINDOW}
     `,
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
       compilerContractVersion: PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
-      gaAt: rollout.milestone3_ga_at,
     },
-    client,
   );
-  if (rows.length >= 20) {
-    const metrics = rows.map((row) => asRecord(row.metrics_json));
+  const metrics = rows.map((row) => asRecord(row.metrics_json));
+  const warnings: string[] = [];
+
+  if (metrics.length >= PIPELINE_WARNING_DRAFT_WINDOW) {
     const manualReanchors = metrics.reduce((sum, item) => sum + numberMetric(item.manualReanchorCount), 0);
     const verifiedFragments = metrics.reduce(
       (sum, item) => sum + numberMetric(item.quoteExactCount) + numberMetric(item.quoteNormalizedCount) +
@@ -1983,63 +1755,23 @@ async function ensureProjectKnowledgeMonitoringCheckpoints(scope: ProjectScope, 
       0,
     );
     const residualRate = verifiedFragments ? manualReanchors / verifiedFragments : 0;
-    if (residualRate > 0.05) {
-      await insertMonitoringAdr(scope, "quote_fidelity_review", {
-        measuredDraftCount: 20,
-        manualReanchors,
-        verifiedFragments,
-        residualManualReanchorRate: residualRate,
-        threshold: 0.05,
-      }, client);
+    if (residualRate > RESIDUAL_REANCHOR_WARNING_RATE) {
+      warnings.push(
+        `More than ${RESIDUAL_REANCHOR_WARNING_RATE * 100}% of evidence quotes needed manual re-anchoring across the last ${PIPELINE_WARNING_DRAFT_WINDOW} drafts. Check source snapshot quality.`,
+      );
     }
   }
 
-  const unknownFallback = rows
-    .map((row) => asRecord(row.metrics_json))
-    .filter((metrics) => metrics.inputTokenLimitSource === "unknown_fallback");
-  const excessive = unknownFallback.filter((metrics) => numberMetric(metrics.splitCallCount) >= 5);
-  if (excessive.length) {
-    await insertMonitoringAdr(scope, "unknown_model_input_fallback_review", {
-      fallbackDraftCount: unknownFallback.length,
-      excessiveSplitDraftCount: excessive.length,
-      fallbackTokens: 16_000,
-      maxObservedSplitCallCount: Math.max(...excessive.map((metrics) => numberMetric(metrics.splitCallCount))),
-    }, client);
+  const unknownFallback = metrics.filter((item) => item.inputTokenLimitSource === "unknown_fallback");
+  if (unknownFallback.some((item) => numberMetric(item.splitCallCount) >= EXCESSIVE_SPLIT_CALL_COUNT)) {
+    warnings.push(
+      `Recent drafts used a guessed ${UNKNOWN_MODEL_FALLBACK_TOKENS.toLocaleString("en-US")}-token input limit for an unrecognized model and split extraction heavily. Verify the configured LLM model.`,
+    );
   }
+
+  return warnings;
 }
 
-async function insertMonitoringAdr(
-  scope: ProjectScope,
-  adrType: string,
-  metricSnapshot: Record<string, unknown>,
-  client: PoolClient,
-) {
-  const now = nowIso();
-  await sqlRun(
-    `
-      INSERT INTO project_knowledge_adrs (
-        id, workspace_id, project_id, azure_project_id, adr_type, version,
-        status, metric_snapshot_json, created_at, updated_at
-      ) VALUES (
-        @id, (SELECT workspace_id FROM projects WHERE id = @projectId), @projectId,
-        @azureProjectId, @adrType, 1, 'open', @metricSnapshotJson, @createdAt, @updatedAt
-      )
-      ON CONFLICT (project_id, azure_project_id, adr_type, version)
-      DO UPDATE SET metric_snapshot_json = EXCLUDED.metric_snapshot_json,
-                    updated_at = EXCLUDED.updated_at
-    `,
-    {
-      id: createId("pkadr"),
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      adrType,
-      metricSnapshotJson: JSON.stringify(metricSnapshot),
-      createdAt: now,
-      updatedAt: now,
-    },
-    client,
-  );
-}
 
 function hardConflictOperations(conflicts: ProjectKnowledgeHardConflict[]): ProjectKnowledgeOperation[] {
   return conflicts.map((conflict) => ({

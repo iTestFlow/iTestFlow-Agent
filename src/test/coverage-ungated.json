@@ -32,8 +32,6 @@
     "src/app/api/context/knowledge/drafts/route.ts",
     "src/app/api/context/knowledge/export/route.ts",
     "src/app/api/context/knowledge/extract/route.ts",
-    "src/app/api/context/knowledge/governance/[adrId]/route.ts",
-    "src/app/api/context/knowledge/governance/route.ts",
     "src/app/api/context/knowledge/lint/[issueId]/route.ts",
     "src/app/api/context/knowledge/lint/report/route.ts",
     "src/app/api/context/knowledge/lint/route.ts",

@@ -42,7 +42,6 @@ import {
   beginProjectKnowledgeDraft,
   completeProjectKnowledgeDraft,
   publishProjectKnowledgeDraft,
-  startProjectKnowledgeMilestone3Ga,
 } from "./project-knowledge-draft.service";
 import { backfillProjectKnowledgeCompilerFoundation } from "./project-knowledge-migration.service";
 
@@ -190,8 +189,6 @@ describeDb("source-versioned project knowledge publication", () => {
     await sqlRun(`DELETE FROM project_knowledge_revisions WHERE project_id = @projectId`, { projectId });
     await sqlRun(`DELETE FROM project_knowledge_entries_fts WHERE project_id = @projectId`, { projectId });
     await sqlRun(`DELETE FROM project_knowledge_entries WHERE project_id = @projectId`, { projectId });
-    await sqlRun(`DELETE FROM project_knowledge_rollout_state WHERE project_id = @projectId`, { projectId });
-    await sqlRun(`DELETE FROM project_knowledge_adrs WHERE project_id = @projectId`, { projectId });
     await sqlRun(`DELETE FROM project_knowledge_migration_issues WHERE project_id = @projectId`, { projectId });
     await sqlRun(`DELETE FROM project_knowledge_benchmark_cases WHERE project_id = @projectId`, { projectId });
     await sqlRun(`DELETE FROM project_knowledge_candidates WHERE project_id = @projectId`, { projectId });
@@ -200,6 +197,11 @@ describeDb("source-versioned project knowledge publication", () => {
       `DELETE FROM azure_devops_work_item_snapshots
        WHERE project_id = @projectId AND id <> @baselineSnapshotId`,
       { projectId, baselineSnapshotId },
+    );
+    await sqlRun(
+      `DELETE FROM azure_devops_work_items
+       WHERE project_id = @projectId AND id <> @workItemRowId`,
+      { projectId, workItemRowId },
     );
     await sqlRun(
       `UPDATE azure_devops_work_items
@@ -255,8 +257,6 @@ describeDb("source-versioned project knowledge publication", () => {
       await sqlRun(`DELETE FROM project_knowledge_revisions WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM project_knowledge_entries_fts WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM project_knowledge_entries WHERE project_id = @projectId`, { projectId });
-      await sqlRun(`DELETE FROM project_knowledge_rollout_state WHERE project_id = @projectId`, { projectId });
-      await sqlRun(`DELETE FROM project_knowledge_adrs WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM project_knowledge_migration_issues WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM project_knowledge_benchmark_cases WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM project_knowledge_candidates WHERE project_id = @projectId`, { projectId });
@@ -290,39 +290,6 @@ describeDb("source-versioned project knowledge publication", () => {
        WHERE project_id = @projectId AND event_type = 'knowledge.revision_saved'`,
       { projectId },
     )).toEqual([]);
-  });
-
-  it("counts v2 reconciliation publications only after the explicit Milestone 3 GA start", async () => {
-    const beforeGa = await prepare();
-    await publish(beforeGa.id);
-
-    expect(await sqlGet<{ reconciliation_publication_count: number }>(
-      `SELECT reconciliation_publication_count FROM project_knowledge_rollout_state
-       WHERE project_id = @projectId AND azure_project_id = @projectId`,
-      { projectId },
-    )).toBeUndefined();
-
-    await startProjectKnowledgeMilestone3Ga({ scope, actor: "owner-1" });
-    const started = await sqlGet<{ milestone3_ga_at: string; reconciliation_publication_count: number }>(
-      `SELECT milestone3_ga_at, reconciliation_publication_count FROM project_knowledge_rollout_state
-       WHERE project_id = @projectId AND azure_project_id = @projectId`,
-      { projectId },
-    );
-    expect(started).toMatchObject({ reconciliation_publication_count: 0 });
-    expect(started?.milestone3_ga_at).toBeTruthy();
-
-    const afterGa = await prepare();
-    await publish(afterGa.id);
-    await startProjectKnowledgeMilestone3Ga({ scope, actor: "owner-1" });
-
-    expect(await sqlGet<{ milestone3_ga_at: string; reconciliation_publication_count: number }>(
-      `SELECT milestone3_ga_at, reconciliation_publication_count FROM project_knowledge_rollout_state
-       WHERE project_id = @projectId AND azure_project_id = @projectId`,
-      { projectId },
-    )).toEqual({
-      milestone3_ga_at: started?.milestone3_ga_at,
-      reconciliation_publication_count: 1,
-    });
   });
 
   it("publishes the first draft for a project whose current KB is absent", async () => {
@@ -500,6 +467,9 @@ describeDb("source-versioned project knowledge publication", () => {
       businessRules: [{
         ...initialKnowledgeBase.businessRules[0],
         rule: "Payment and fraud checks must be authorized.",
+        // The wording change must come with changed evidence content: a same-evidence
+        // rewording is paraphrase noise the wording carry-over deliberately reverts.
+        evidenceRefs: [evidenceRef("description", "Checkout description")],
       }],
       glossary: [],
     };
@@ -675,6 +645,10 @@ describeDb("source-versioned project knowledge publication", () => {
       businessRules: [{
         ...initialKnowledgeBase.businessRules[0],
         rule: "Payment and fraud approval are required.",
+        // Changed evidence keeps this a GENUINE semantic change — with identical
+        // evidence the wording carry-over would restore the published rule text and
+        // automatic publication would (correctly) proceed as a provenance refresh.
+        evidenceRefs: [evidenceRef("description", "Checkout description")],
       }],
     };
     const parent = await prepare(changedKnowledge);
@@ -876,6 +850,60 @@ describeDb("source-versioned project knowledge publication", () => {
   });
 
   it("persists duplicate canonical identity and rejects publication without map collapse", async () => {
+    // The duplicate must cite a DIFFERENT source than the original: same-identity
+    // entries with identical snapshot sets or identical evidence content are
+    // auto-merged as paraphrase noise by design, never surfaced as conflicts.
+    const secondSnapshotId = uniqueTestId("snap_returns");
+    const now = nowIso();
+    await sqlRun(
+      `INSERT INTO azure_devops_work_item_snapshots (
+         id, workspace_id, project_id, azure_project_id, azure_project_name,
+         azure_organization_url, azure_work_item_id, work_item_type, content_hash,
+         ado_revision, fields_json, source_updated_at, captured_at, created_at
+       ) VALUES (
+         @id, @workspaceId, @projectId, @projectId, @projectName,
+         @organizationUrl, '43', 'User Story', 'hash-43', 1,
+         @fieldsJson, @now, @now, @now
+       )`,
+      {
+        id: secondSnapshotId,
+        workspaceId,
+        projectId,
+        projectName: "Knowledge Project",
+        organizationUrl,
+        fieldsJson: JSON.stringify({
+          title: "Returns",
+          description: "Returns description",
+          acceptanceCriteria: "Returns succeed",
+          state: "Active",
+          workItemType: "User Story",
+          tags: [],
+          areaPath: null,
+          iterationPath: null,
+          metadata: {},
+        }),
+        now,
+      },
+    );
+    await sqlRun(
+      `INSERT INTO azure_devops_work_items (
+         id, project_id, azure_project_id, azure_project_name, azure_organization_url,
+         azure_work_item_id, work_item_type, title, description, acceptance_criteria,
+         state, content_hash, sync_status, current_snapshot_id, created_at, updated_at
+       ) VALUES (
+         @id, @projectId, @projectId, @projectName, @organizationUrl,
+         '43', 'User Story', 'Returns', 'Returns description', 'Returns succeed',
+         'Active', 'hash-43', 'active', @snapshotId, @now, @now
+       )`,
+      {
+        id: uniqueTestId("wi_returns"),
+        projectId,
+        projectName: "Knowledge Project",
+        organizationUrl,
+        snapshotId: secondSnapshotId,
+        now,
+      },
+    );
     const duplicateKnowledge = {
       ...initialKnowledgeBase,
       modules: [
@@ -884,6 +912,13 @@ describeDb("source-versioned project knowledge publication", () => {
           ...initialKnowledgeBase.modules[0],
           id: " checkout ",
           name: "Checkout duplicate",
+          sourceWorkItemIds: ["43"],
+          evidence: "Returns description",
+          evidenceRefs: [{
+            ...evidenceRef("description", "Returns description"),
+            sourceSnapshotId: secondSnapshotId,
+            sourceWorkItemId: "43",
+          }],
         },
       ],
     };

@@ -4,6 +4,7 @@ import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { getProjectKnowledgeBaseSnapshot } from "@/modules/rag/project-knowledge.service";
+import { computeProjectKnowledgePipelineWarnings } from "@/modules/rag/project-knowledge-draft.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
@@ -21,9 +22,13 @@ export async function POST(request: Request) {
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
-    return NextResponse.json({
-      snapshot: await getProjectKnowledgeBaseSnapshot({ scope: trustedScope }),
-    });
+    const snapshot = await getProjectKnowledgeBaseSnapshot({ scope: trustedScope });
+    if (snapshot) {
+      snapshot.health.warnings.push(
+        ...await computeProjectKnowledgePipelineWarnings({ scope: trustedScope }),
+      );
+    }
+    return NextResponse.json({ snapshot });
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;

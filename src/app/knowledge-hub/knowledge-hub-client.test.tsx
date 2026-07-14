@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   changedKnowledgeEntryIdentities,
   KnowledgeCandidatesView,
-  KnowledgeGovernanceView,
   knowledgePublishBlockedReason,
 } from "./knowledge-hub-client";
 
@@ -23,34 +22,7 @@ const candidate = {
   updatedAt: "2026-07-13T10:00:00.000Z",
 };
 
-const governance = {
-  rollout: {
-    milestone3GaAt: null,
-    reconciliationPublicationCount: 0,
-    measuredDraftCount: 0,
-    evaluationReady: false,
-    minimumPercentageSample: false,
-  },
-  gates: {
-    richerSynthesisEligible: false,
-    semanticLintEligible: false,
-    candidateAcceptanceEligible: false,
-    hardTensionDraftRate: 0,
-    confirmedLintMissRate: 0,
-    integrationRequestCount: 0,
-  },
-  adrs: [{
-    id: "adr-1",
-    type: "quote_fidelity_checkpoint",
-    status: "open",
-    metricSnapshot: { manualReanchorRate: 0.08 },
-    decision: null,
-    createdAt: "2026-07-13T10:00:00.000Z",
-    decidedAt: null,
-  }],
-};
-
-describe("Knowledge Hub candidate governance UI", () => {
+describe("Knowledge Hub candidates UI", () => {
   it("shows candidate evidence to members without mutation actions", () => {
     render(<KnowledgeCandidatesView
       candidates={[candidate]}
@@ -85,38 +57,6 @@ describe("Knowledge Hub candidate governance UI", () => {
 
     expect(onStatusChange).toHaveBeenCalledWith("grounded");
     await waitFor(() => expect(onAction).toHaveBeenCalledWith("candidate-1", "request_integration"));
-  });
-
-  it("restricts GA start and ADR decisions to governance managers", async () => {
-    const onStart = vi.fn().mockResolvedValue(undefined);
-    const onDecide = vi.fn().mockResolvedValue(undefined);
-    const view = render(<KnowledgeGovernanceView
-      governance={governance}
-      loading={false}
-      canManage={false}
-      onStart={onStart}
-      onDecide={onDecide}
-    />);
-
-    expect(screen.getByText(/Publications are not counted/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Start Milestone 3 GA" })).toBeNull();
-    expect(screen.queryByPlaceholderText("Record the owner decision")).toBeNull();
-
-    view.rerender(<KnowledgeGovernanceView
-      governance={governance}
-      loading={false}
-      canManage
-      onStart={onStart}
-      onDecide={onDecide}
-    />);
-    fireEvent.click(screen.getByRole("button", { name: "Start Milestone 3 GA" }));
-    fireEvent.change(screen.getByPlaceholderText("Record the owner decision"), {
-      target: { value: "Keep strict verification enabled." },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Record decision" }));
-
-    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("adr-1", "Keep strict verification enabled."));
   });
 });
 
