@@ -338,10 +338,11 @@ export function normalizeProjectKnowledgeBlockers(values: unknown[]): ProjectKno
       } as ProjectKnowledgeReplayBlocker];
     }
     if (type === "hard_conflict") {
+      const { conflictBasis: rawConflictBasis, ...hardConflictBlocker } = blocker;
       const participants = arrayOfObjects(blocker.participants) as unknown as ProjectKnowledgeHardConflictParticipant[];
-      const conflictBasis = normalizeHardConflictBasis(blocker.conflictBasis);
+      const conflictBasis = normalizeHardConflictBasis(rawConflictBasis);
       return [{
-        ...blocker,
+        ...hardConflictBlocker,
         id,
         type,
         category: "hard_conflict",

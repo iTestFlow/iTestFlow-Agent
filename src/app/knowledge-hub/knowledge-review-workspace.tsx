@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useDeferredValue, useMemo, useState } from "react"
 import {
   AlertTriangle,
   Check,
@@ -145,7 +145,8 @@ export function KnowledgeConflictReview({
   const hasBlockingConflicts = totalCount > 0
   const hasPossibleTensions = Boolean(page?.possibleTensions?.length)
   const allSelected = Boolean(page) && totalCount > 0 && selectedCount === totalCount
-  const normalizedQuery = query.trim().toLowerCase()
+  const deferredQuery = useDeferredValue(query)
+  const normalizedQuery = deferredQuery.trim().toLowerCase()
   const categoryCounts = useMemo(() => {
     const counts = new Map<string, number>()
     for (const conflict of page?.conflicts ?? []) {
@@ -153,10 +154,9 @@ export function KnowledgeConflictReview({
     }
     return Array.from(counts.entries())
   }, [page])
-  const visibleConflicts = (page?.conflicts ?? []).filter((conflict) => {
-    if (category !== "all" && conflict.affectedCategory !== category) return false
-    if (!normalizedQuery) return true
-    return [
+  const searchableConflicts = useMemo(() => (page?.conflicts ?? []).map((conflict) => ({
+    conflict,
+    searchText: [
       conflict.subject,
       conflict.conflictType,
       conflict.affectedCategory,
@@ -169,8 +169,13 @@ export function KnowledgeConflictReview({
         JSON.stringify(participant.fields),
         ...participant.evidence.flatMap((evidence) => [evidence.sourceWorkItemId, evidence.sourceField, evidence.quote]),
       ]),
-    ].join(" ").toLowerCase().includes(normalizedQuery)
-  })
+    ].join(" ").toLowerCase(),
+  })), [page?.conflicts])
+  const visibleConflicts = useMemo(() => searchableConflicts
+    .filter(({ conflict, searchText }) =>
+      (category === "all" || conflict.affectedCategory === category) &&
+      (!normalizedQuery || searchText.includes(normalizedQuery)))
+    .map(({ conflict }) => conflict), [category, normalizedQuery, searchableConflicts])
 
   return (
     <section
@@ -229,7 +234,7 @@ export function KnowledgeConflictReview({
             {page.possibleTensions.map((tension, index) => (
               <li key={`${tension.category}-${tension.subject}-${index}`} className="rounded-md border border-border bg-card/70 p-3">
                 <span className="font-medium text-foreground">{friendlyConflictSubject(tension.subject)}</span>
-                <span className="text-muted-foreground"> â€” {friendlyConflictCode(tension.reason)}</span>
+                <span className="text-muted-foreground"> — {friendlyConflictCode(tension.reason)}</span>
                 {tension.entryKeys.length ? <span className="text-muted-foreground"> ({tension.entryKeys.join(", ")})</span> : null}
               </li>
             ))}

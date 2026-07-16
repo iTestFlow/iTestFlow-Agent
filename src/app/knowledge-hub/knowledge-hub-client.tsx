@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react"
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { DashboardEmptyPanel } from "@/components/dashboard/dashboard-states"
 import {
   AlertTriangle,
@@ -3012,12 +3012,17 @@ export function KnowledgeExplorer({
   const scrollRegionRef = useRef<HTMLDivElement | null>(null)
   const entries = useMemo(() => flattenKnowledgeEntries(knowledgeBase), [knowledgeBase])
   const counts = useMemo(() => getKnowledgeCategoryCounts(knowledgeBase), [knowledgeBase])
-  const normalizedQuery = normalizeSearch(query)
-  const filteredEntries = entries.filter((entry) => {
+  const deferredQuery = useDeferredValue(query)
+  const normalizedQuery = normalizeSearch(deferredQuery)
+  const filteredEntries = useMemo(() => entries.filter((entry) => {
     const categoryMatch = category === "all" || entry.category === category
-    const textMatch = !normalizedQuery || normalizeSearch(entry.searchText).includes(normalizedQuery)
+    const textMatch = !normalizedQuery || entry.searchText.includes(normalizedQuery)
     return categoryMatch && textMatch
-  })
+  }), [category, entries, normalizedQuery])
+  const highlightedEntryIdentitySet = useMemo(
+    () => new Set(highlightedEntryIdentities),
+    [highlightedEntryIdentities],
+  )
   const pageSize = 5
   const totalPages = Math.max(1, Math.ceil(filteredEntries.length / pageSize))
   const safePage = Math.min(page, totalPages)
@@ -3030,7 +3035,7 @@ export function KnowledgeExplorer({
   useEffect(() => {
     setPage(1)
     if (scrollRegionRef.current) scrollRegionRef.current.scrollTop = 0
-  }, [category, query, compact, knowledgeBase])
+  }, [category, deferredQuery, compact, knowledgeBase])
 
   useEffect(() => {
     const highlightedIndex = entries.findIndex((entry) => highlightedEntryIdentities.includes(entry.highlightIdentity))
@@ -3094,7 +3099,7 @@ export function KnowledgeExplorer({
                 key={entry.key}
                 entry={entry}
                 compact={compact}
-                highlighted={highlightedEntryIdentities.includes(entry.highlightIdentity)}
+                highlighted={highlightedEntryIdentitySet.has(entry.highlightIdentity)}
               />
             ))
           ) : (
@@ -3225,7 +3230,7 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
         meta,
         details,
         evidenceItems,
-        searchText: [
+        searchText: normalizeSearch([
           category.label,
           title,
           description,
@@ -3238,7 +3243,7 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
             evidence.sourceField,
             evidence.quote,
           ]),
-        ].join(" "),
+        ].join(" ")),
       }
     })
   })

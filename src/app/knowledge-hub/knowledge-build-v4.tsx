@@ -583,7 +583,7 @@ export function KnowledgeBuildV4({
       ? "index"
       : publishing || workflowPublished
         ? "publish"
-        : conflictDraftId
+        : conflictDraftId && draftHadConflicts
           ? "conflicts"
           : readyDraftId
             ? "review"

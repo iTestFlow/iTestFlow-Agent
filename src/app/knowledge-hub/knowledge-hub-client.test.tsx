@@ -290,7 +290,7 @@ describe("Knowledge Explorer scrolling", () => {
     expect(screen.getAllByText("#98765").length).toBeGreaterThan(0);
   });
 
-  it("searches published structured fields, evidence metadata, quotes, and source IDs", () => {
+  it("searches published structured fields, evidence metadata, quotes, and source IDs", async () => {
     render(<KnowledgeExplorer knowledgeBase={publishedKnowledgeBaseWithEvidence()} />);
     const search = screen.getByRole("textbox", { name: "Search compiled knowledge" });
 
@@ -301,13 +301,17 @@ describe("Knowledge Explorer scrolling", () => {
       "98765",
     ]) {
       fireEvent.change(search, { target: { value: query } });
-      expect(screen.getByText("1 entries match the current filters.")).toBeTruthy();
-      expect(screen.queryByText("Secondary Module")).toBeNull();
+      await waitFor(() => {
+        expect(screen.getByText("1 entries match the current filters.")).toBeTruthy();
+        expect(screen.queryByText("Secondary Module")).toBeNull();
+      });
     }
 
     fireEvent.change(search, { target: { value: "Legacy-only secondary evidence" } });
-    expect(screen.getByText("1 entries match the current filters.")).toBeTruthy();
-    expect(screen.queryByText("Published Checkout")).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByText("1 entries match the current filters.")).toBeTruthy();
+      expect(screen.queryByText("Published Checkout")).toBeNull();
+    });
   });
 });
 

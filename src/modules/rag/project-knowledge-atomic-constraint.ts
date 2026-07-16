@@ -54,6 +54,20 @@ const ProjectKnowledgeAtomicConstraintInputSchema = z
     unit: RawOptionalTextSchema,
   })
   .superRefine((constraint, context) => {
+    if (!canonicalizeAtomicIdentityText(constraint.object)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["object"],
+        message: "Constraint objects require a comparable identity.",
+      });
+    }
+    if (!canonicalizeAtomicIdentityText(constraint.property)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["property"],
+        message: "Constraint properties require a comparable identity.",
+      });
+    }
     if (constraint.valueType === "number" && parseAtomicNumber(constraint.value) === null) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -66,6 +80,16 @@ const ProjectKnowledgeAtomicConstraintInputSchema = z
         code: z.ZodIssueCode.custom,
         path: ["value"],
         message: "Boolean constraints require a supported boolean marker.",
+      });
+    }
+    if (
+      (constraint.valueType === "enum" || constraint.valueType === "state") &&
+      !canonicalizeAtomicValueText(constraint.value)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["value"],
+        message: "Enum and state constraints require a comparable value.",
       });
     }
     if (constraint.valueType !== "number" && constraint.unit) {
@@ -260,14 +284,16 @@ function canonicalizeParsedProjectKnowledgeAtomicConstraint(
   constraint: ProjectKnowledgeAtomicConstraintInput,
 ) {
   const value = canonicalizeAtomicValue(constraint.value, constraint.valueType);
+  const condition = constraint.condition ? canonicalizeAtomicIdentityText(constraint.condition) : "";
+  const unit = constraint.unit ? canonicalizeAtomicUnit(constraint.unit) : "";
   return {
     object: canonicalizeAtomicIdentityText(constraint.object),
     property: canonicalizeAtomicIdentityText(constraint.property),
-    ...(constraint.condition ? { condition: canonicalizeAtomicIdentityText(constraint.condition) } : {}),
+    ...(condition ? { condition } : {}),
     operator: constraint.operator,
     value,
     valueType: constraint.valueType,
-    ...(constraint.unit ? { unit: canonicalizeAtomicUnit(constraint.unit) } : {}),
+    ...(unit ? { unit } : {}),
   };
 }
 
@@ -292,7 +318,7 @@ function canonicalizeAtomicValue(value: string, valueType: ProjectKnowledgeAtomi
   if (valueType === "number") {
     const parsed = parseAtomicNumber(value);
     if (parsed === null) throw new Error("Atomic number constraints require a finite scalar value.");
-    return String(parsed);
+    return canonicalizeAtomicNumber(parsed);
   }
   if (valueType === "boolean") {
     const parsed = canonicalBooleanValue(value);
@@ -300,6 +326,36 @@ function canonicalizeAtomicValue(value: string, valueType: ProjectKnowledgeAtomi
     return parsed;
   }
   return canonicalizeAtomicValueText(value);
+}
+
+function canonicalizeAtomicNumber(value: number) {
+  const serialized = String(value);
+  if (!/[eE]/u.test(serialized)) return serialized;
+
+  if (Number.isInteger(value) && Math.abs(value) >= 1e21) {
+    return BigInt(value).toString();
+  }
+
+  // Expand the shortest round-trippable serialization before falling back to
+  // toFixed: `toFixed(100)` exposes binary noise for values such as 0.0000001.
+  const expanded = expandAtomicScientificNumber(serialized);
+  const fixedPoint = expanded ?? value.toFixed(100);
+  const trimmed = fixedPoint.includes(".")
+    ? fixedPoint.replace(/0+$/u, "").replace(/\.$/u, "")
+    : fixedPoint;
+  return trimmed === "" || trimmed === "-0" ? "0" : trimmed;
+}
+
+function expandAtomicScientificNumber(value: string) {
+  const match = value.match(/^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/u);
+  if (!match) return null;
+
+  const [, sign, integer, fraction = "", exponentText] = match;
+  const digits = `${integer}${fraction}`;
+  const decimalIndex = integer.length + Number(exponentText);
+  if (decimalIndex <= 0) return `${sign}0.${"0".repeat(-decimalIndex)}${digits}`;
+  if (decimalIndex >= digits.length) return `${sign}${digits}${"0".repeat(decimalIndex - digits.length)}`;
+  return `${sign}${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`;
 }
 
 function canonicalizeAtomicValueText(value: string) {
@@ -346,11 +402,11 @@ function valueAppearsInCitedQuote(
   valueType: ProjectKnowledgeAtomicConstraintValueType,
   citedQuotes: readonly string[] | undefined,
 ) {
-  const needle = normalizeProjectKnowledgeAtomicWhitespace(value);
+  const needle = normalizeProjectKnowledgeAtomicWhitespace(value).toLowerCase();
   if (!needle) return false;
   const quotes = (citedQuotes ?? [])
     .filter((quote): quote is string => typeof quote === "string")
-    .map(normalizeProjectKnowledgeAtomicWhitespace);
+    .map((quote) => normalizeProjectKnowledgeAtomicWhitespace(quote).toLowerCase());
   if (quotes.some((quote) => containsCompleteAtomicValue(quote, needle))) return true;
   if (valueType === "boolean") {
     const expected = canonicalBooleanValue(value);
@@ -401,6 +457,7 @@ function isLikelyEnglishAtomicRule(rule: string) {
 
 function hasAmbiguousAtomicSyntax(rule: string) {
   return /[;\n]/.test(rule) ||
+    /\.\s+\S/.test(rule) ||
     /\b(?:between|range)\b/i.test(rule) ||
     /\bfrom\s+[^.]+\s+to\s+/i.test(rule) ||
     /\d\s*(?:-|–|to)\s*\d/.test(rule);
@@ -470,8 +527,11 @@ function atomicBoundOperator(value: string): ProjectKnowledgeAtomicConstraintOpe
 
 function hasAmbiguousAtomicValue(value: string) {
   const normalized = normalizeProjectKnowledgeAtomicWhitespace(value);
+  const numericWithOptionalUnit = /^[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:\s+[A-Za-z%][A-Za-z0-9% /-]*)?$/u.test(normalized) ||
+    /^[+-]?\.\d+(?:\s+[A-Za-z%][A-Za-z0-9% /-]*)?$/u.test(normalized);
   return !normalized ||
-    /[,;]/.test(normalized) ||
+    /;/.test(normalized) ||
+    (/,/.test(normalized) && !numericWithOptionalUnit) ||
     /\b(?:and|or|between|range)\b/i.test(normalized) ||
     /\bfrom\s+.+\s+to\s+/i.test(normalized) ||
     /\d\s*(?:-|–|to)\s*\d/.test(normalized) ||

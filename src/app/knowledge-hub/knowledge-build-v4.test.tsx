@@ -464,6 +464,9 @@ describe("Project Knowledge v4 conflict review", () => {
     expect(screen.getByRole("region", { name: "Possible tensions" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Apply decisions" })).toBeNull();
     expect(screen.getByRole("heading", { name: "Review Knowledge Draft" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: /Review Knowledge Draft, step 3 of 4, current step/ })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: /Resolve Conflicts/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Publish" })).not.toBeDisabled();
   });
 
   it("uses bounded adaptive polling delays", () => {

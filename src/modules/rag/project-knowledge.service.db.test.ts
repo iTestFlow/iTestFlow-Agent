@@ -656,6 +656,77 @@ describeDb("source-versioned project knowledge publication", () => {
     await expect(publish(draft.id)).rejects.toMatchObject({ code: "knowledge_publication_blocked" });
   });
 
+  it("merges business-rule module associations by canonical identity while retaining original casing", async () => {
+    const casingKnowledge = {
+      ...initialKnowledgeBase,
+      businessRules: [
+        {
+          ...initialKnowledgeBase.businessRules[0],
+          id: "BR-MODULE-CASING",
+          moduleName: "Payment Retrials Tab",
+          moduleAssociations: ["Policy Details"],
+        },
+        {
+          ...initialKnowledgeBase.businessRules[0],
+          id: "BR-MODULE-CASING",
+          moduleName: "payment-retrials-tab",
+          moduleAssociations: ["policy-details", "Payment Status"],
+        },
+      ],
+    };
+
+    const draft = await prepare(casingKnowledge);
+
+    expect(draft.persistedStatus).toBe("ready_to_publish");
+    expect(draft.proposedKnowledge?.businessRules).toEqual([
+      expect.objectContaining({
+        id: "BR-MODULE-CASING",
+        moduleName: "Payment Retrials Tab",
+        moduleAssociations: ["Payment Retrials Tab", "Payment Status", "Policy Details"],
+      }),
+    ]);
+    expect(await sqlAll<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM project_knowledge_hard_conflicts
+       WHERE project_id = @projectId AND draft_id = @draftId`,
+      { projectId, draftId: draft.id },
+    )).toEqual([{ count: 0 }]);
+  });
+
+  it("publishes re-keyed hash-suffixed business rules through the canonical uniqueness guard", async () => {
+    const rekeyedKnowledge = {
+      ...initialKnowledgeBase,
+      businessRules: [
+        {
+          ...initialKnowledgeBase.businessRules[0],
+          id: "BR-PURCHASE-NOTIFICATION",
+          rule: "Primary purchase button must be enabled.",
+        },
+        {
+          ...initialKnowledgeBase.businessRules[0],
+          id: "BR-PURCHASE-NOTIFICATION",
+          rule: "Secondary purchase button must be enabled.",
+        },
+      ],
+    };
+
+    const draft = await prepare(rekeyedKnowledge);
+    const entryKeys = draft.proposedKnowledge?.businessRules.map((entry) => entry.id);
+
+    expect(draft.persistedStatus).toBe("ready_to_publish");
+    expect(entryKeys).toEqual([
+      "BR-PURCHASE-NOTIFICATION",
+      expect.stringMatching(/^BR-PURCHASE-NOTIFICATION-[a-f0-9]{8}$/),
+    ]);
+
+    await expect(publish(draft.id)).resolves.toMatchObject({ persistedStatus: "published" });
+    expect(await sqlAll<{ entry_key: string; status: string }>(
+      `SELECT entry_key, status FROM project_knowledge_entry_versions
+       WHERE project_id = @projectId AND category = 'business_rule'
+       ORDER BY entry_key`,
+      { projectId },
+    )).toEqual(entryKeys?.map((entryKey) => ({ entry_key: entryKey, status: "active" })));
+  });
+
   it("auto-merges the frozen Quote Receiving dependency variants before persisting conflicts", async () => {
     const sharedEvidence = [evidenceRef("acceptanceCriteria", "Checkout succeeds")];
     const quoteReceivingKnowledge = {

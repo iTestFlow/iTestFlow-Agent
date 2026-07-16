@@ -69,6 +69,18 @@ describe("automatic provenance refresh publication policy", () => {
       ...source,
       modules: [...source.modules, { ...source.modules[0], name: "Duplicate Payments" }],
     });
-    expect(decision({ child: duplicate })).toMatchObject({ allowed: false });
+    const hashes = computeProjectKnowledgeHashes(duplicate);
+
+    expect(evaluateAutomaticProvenanceRefresh({
+      publishedKnowledgeBase: duplicate,
+      publishedSemanticHash: hashes.semanticKnowledgeHash,
+      parentKnowledgeBase: duplicate,
+      parentSemanticHash: hashes.semanticKnowledgeHash,
+      childKnowledgeBase: duplicate,
+      childSemanticHash: hashes.semanticKnowledgeHash,
+      currentActiveRevisionId: "revision-1",
+      childBaseRevisionId: "revision-1",
+      childBlockers: [],
+    })).toEqual({ allowed: false, reason: "duplicate_logical_identity" });
   });
 });

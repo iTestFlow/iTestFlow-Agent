@@ -83,6 +83,18 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", reasonA, reasonB)).toBe(true);
   });
 
+  it("refuses a paraphrase when only one business rule has an atomic constraint", () => {
+    const base = knowledgeBase({
+      businessRules: [
+        businessRule("br-retry", "Maximum retry count is 3.", [evidenceRef("1", "s1", "q")]),
+        businessRule("br-retry", "Retry behavior varies by account.", [evidenceRef("1", "s2", "q")]),
+      ],
+    });
+
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1]))
+      .toBe(false);
+  });
+
   it("keeps extraction abstentions separate when their fingerprints differ", () => {
     const base = knowledgeBase({
       businessRules: [

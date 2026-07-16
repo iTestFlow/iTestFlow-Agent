@@ -83,6 +83,11 @@ function mergeModules(entries: readonly ProjectKnowledgeEntryByConsolidationCate
 }
 
 function mergeBusinessRules(entries: readonly ProjectKnowledgeEntryByConsolidationCategory["business_rule"][]) {
+  // A singleton has not been consolidated. In particular, do not turn its
+  // original-cased module metadata into canonical slugs merely by routing it
+  // through the generic merge path.
+  if (entries.length === 1) return ProjectKnowledgeBusinessRuleSchema.parse(entries[0]);
+
   const merged = entries.slice(1).reduce((first, second) => ({
     ...first,
     rule: chooseLongerText(first.rule, second.rule),
@@ -133,10 +138,23 @@ function mergeDependencies(entries: readonly ProjectKnowledgeEntryByConsolidatio
 function mergeBusinessRuleModuleAssociations(
   entries: readonly ProjectKnowledgeEntryByConsolidationCategory["business_rule"][],
 ) {
-  const moduleAssociations = Array.from(new Set(entries.flatMap((entry) => [
-    entry.moduleName,
-    ...(entry.moduleAssociations ?? []),
-  ]).map(canonicalizeProjectKnowledgeModuleAssociation).filter(Boolean))).sort(compareCanonicalText);
+  const originalByCanonical = new Map<string, string>();
+  entries.forEach((entry) => {
+    [entry.moduleName, ...(entry.moduleAssociations ?? [])].forEach((value) => {
+      const original = value?.trim();
+      const canonical = canonicalizeProjectKnowledgeModuleAssociation(original);
+      if (!original || !canonical) return;
+
+      const existing = originalByCanonical.get(canonical);
+      if (!existing || compareCanonicalText(original, existing) < 0) {
+        originalByCanonical.set(canonical, original);
+      }
+    });
+  });
+
+  const moduleAssociations = Array.from(originalByCanonical.keys())
+    .sort(compareCanonicalText)
+    .map((canonical) => originalByCanonical.get(canonical)!);
 
   return {
     ...(moduleAssociations[0] ? { moduleName: moduleAssociations[0] } : {}),

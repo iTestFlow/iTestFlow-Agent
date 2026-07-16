@@ -1,6 +1,6 @@
 "use client"
 
-import { useId, useMemo, useState } from "react"
+import { memo, useId, useMemo, useState } from "react"
 import type { LucideIcon } from "lucide-react"
 import {
   BookOpen,
@@ -116,7 +116,7 @@ export function KnowledgeCategoryFilterButton({
   )
 }
 
-export function KnowledgeEntryCard({
+export const KnowledgeEntryCard = memo(function KnowledgeEntryCard({
   entry,
   compact,
   highlighted = false,
@@ -373,7 +373,7 @@ export function KnowledgeEntryCard({
       </Accordion>
     </article>
   )
-}
+})
 
 function SourceWorkItemBadges({
   ids,

@@ -212,6 +212,51 @@ describe("Project Knowledge v4 grounding", () => {
     });
   });
 
+  it("re-grounds persisted canonical enum and state constraints against original quote casing", () => {
+    const sources = buildProjectKnowledgeCitationSources([{
+      ...workItem,
+      id: "43",
+      sourceSnapshotId: "snapshot-43",
+      acceptanceCriteria: "Status must be Pending. Payment method must be Manual.",
+    }]);
+    const acceptanceCriteria = sources.find((source) => source.sourceField === "acceptanceCriteria")!;
+    const grounded = groundGeneratedProjectKnowledge({
+      sources,
+      generated: ProjectKnowledgeGeneratedBaseSchema.parse({
+        ...emptyGenerated(),
+        businessRules: [{
+          id: "br-status-pending",
+          rule: "Status must be Pending.",
+          constraint: {
+            object: "status",
+            property: "value",
+            operator: "eq",
+            value: "pending",
+            valueType: "state",
+          },
+          citations: [{ handle: acceptanceCriteria.handle, quote: "Status must be Pending." }],
+        }, {
+          id: "br-payment-manual",
+          rule: "Payment method must be Manual.",
+          constraint: {
+            object: "payment",
+            property: "method",
+            operator: "eq",
+            value: "manual",
+            valueType: "enum",
+          },
+          citations: [{ handle: acceptanceCriteria.handle, quote: "Payment method must be Manual." }],
+        }],
+      }),
+    });
+
+    expect(grounded.constraintRejectionCount).toBe(0);
+    expect(grounded.knowledgeBase.businessRules.map((entry) => entry.constraint)).toEqual([
+      { object: "status", property: "value", operator: "eq", value: "pending", valueType: "state" },
+      { object: "payment", property: "method", operator: "eq", value: "manual", valueType: "enum" },
+    ]);
+  });
+
   it("converts verified canonical entries back to the citation-only prompt contract", () => {
     const sources = buildProjectKnowledgeCitationSources([workItem]);
     const title = sources[0];

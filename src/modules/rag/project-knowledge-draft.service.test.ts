@@ -38,13 +38,12 @@ import {
   projectKnowledgeCitationHandle,
   type ProjectKnowledgeGeneratedBase,
 } from "./project-knowledge-grounding";
-import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
+import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeBase } from "./project-knowledge.schema";
 import {
   applyProjectKnowledgeConflictDecisions,
   beginProjectKnowledgeDraft,
   abandonProjectKnowledgeDraft,
   completeProjectKnowledgeDraft,
-  computeProjectKnowledgePipelineWarnings,
   getProjectKnowledgeDraft,
   getProjectKnowledgeDraftConflicts,
   listProjectKnowledgeDrafts,
@@ -567,8 +566,8 @@ describe("draft evidence recovery", () => {
     expect(result.persisted.businessRules).toEqual([
       expect.objectContaining({
         id: "br-masked-card-number",
-        moduleName: "payment-retrials-tab",
-        moduleAssociations: ["payment-retrials-tab", "policy-details"],
+        moduleName: "Payment Retrials Tab",
+        moduleAssociations: ["Payment Retrials Tab", "Policy Details"],
         sourceWorkItemIds: ["360500", "367569"],
         evidenceRefs: expect.arrayContaining([
           expect.objectContaining({ quote: paymentRetrials }),
@@ -942,6 +941,371 @@ describe("draft publication guards", () => {
 });
 
 describe("draft lifecycle", () => {
+  function prepareBusinessRuleCombination(input: { ruleWinnerKeepsMetadata: boolean }) {
+    const firstQuote = "Retry count must be 3.";
+    const secondQuote = "Retry count must be 5.";
+    const sourceSnapshotId = "snapshot-decision";
+    const sourceWorkItemId = "decision";
+    const first = {
+      id: "br-retry-first",
+      rule: firstQuote,
+      sourceField: "acceptanceCriteria",
+      moduleName: "Payments",
+      ...(input.ruleWinnerKeepsMetadata ? {} : {
+        moduleAssociations: ["Orders"],
+        constraint: {
+          object: "retry",
+          property: "count",
+          operator: "eq" as const,
+          value: "3",
+          valueType: "number" as const,
+        },
+      }),
+      sourceWorkItemIds: [sourceWorkItemId],
+      evidence: firstQuote,
+      evidenceRefs: [{
+        sourceSnapshotId,
+        sourceWorkItemId,
+        sourceField: "acceptanceCriteria" as const,
+        quote: firstQuote,
+        origin: "generated_v4" as const,
+        verification: "exact" as const,
+      }],
+    };
+    const second = {
+      id: "br-retry-second",
+      rule: secondQuote,
+      sourceField: "acceptanceCriteria",
+      moduleName: "Payments",
+      ...(input.ruleWinnerKeepsMetadata ? {
+        moduleAssociations: ["Orders", "Payments"],
+        constraint: {
+          object: "retry",
+          property: "count",
+          operator: "eq" as const,
+          value: "5",
+          valueType: "number" as const,
+        },
+      } : {}),
+      sourceWorkItemIds: [sourceWorkItemId],
+      evidence: secondQuote,
+      evidenceRefs: [{
+        sourceSnapshotId,
+        sourceWorkItemId,
+        sourceField: "acceptanceCriteria" as const,
+        quote: secondQuote,
+        origin: "generated_v4" as const,
+        verification: "exact" as const,
+      }],
+    };
+    const knowledge = ProjectKnowledgeBaseSchema.parse({ businessRules: [first, second] });
+    const [firstEntry, secondEntry] = knowledge.businessRules;
+    if (!firstEntry || !secondEntry) throw new Error("Expected two business-rule participants.");
+    const hashes = computeProjectKnowledgeHashes(knowledge);
+    const participants = [firstEntry, secondEntry].map((entry, index) => ({
+      participantId: `participant-${index + 1}`,
+      category: "business_rule" as const,
+      entryKey: entry.id,
+      entry,
+      projection: { rule: entry.rule, sourceField: entry.sourceField, moduleName: entry.moduleName ?? null },
+      semanticHash: `semantic-${index + 1}`,
+      concreteValue: index === 0 ? "3" : "5",
+      evidenceRefs: entry.evidenceRefs,
+      sourceSnapshotIds: [sourceSnapshotId],
+      sourceWorkItemIds: [sourceWorkItemId],
+      evidence: entry.evidence,
+    }));
+    const blocker = {
+      id: "conflict-retry",
+      type: "hard_conflict",
+      category: "hard_conflict",
+      entryKey: "retry-count",
+      entryInstanceId: "retry-count-instance",
+      identityKey: "retry-count-conflict",
+      subject: "payments:retry.count",
+      conflictType: "incompatible_concrete_value",
+      affectedCategory: "business_rule",
+      participants,
+      evidenceIdentical: false,
+      message: "Choose a supported version.",
+    };
+    const retainedTension = {
+      category: "business_rule",
+      subject: "identity:business_rule:retry-count",
+      entryKeys: [firstEntry.id, secondEntry.id],
+      reason: "fingerprint_mismatch",
+    };
+    const row = draftRow({
+      generation_mode: "automatic",
+      status: "blocked",
+      source_manifest_json: [{
+        sourceSnapshotId,
+        sourceWorkItemId,
+        workItemType: "User Story",
+        contentHash: "decision-hash",
+        adoRevision: 1,
+        sourceUpdatedAt: "2026-07-12T12:00:00.000Z",
+        capturedAt: "2026-07-12T12:00:00.000Z",
+      }],
+      proposed_knowledge_json: knowledge,
+      blockers_json: [blocker],
+      metrics_json: {
+        preConsolidationDuplicateIdentityCount: 2,
+        paraphraseMergeCount: 3,
+        rekeyCount: 4,
+        atomicExtractionFailureCount: 5,
+        possibleTensionCount: 1,
+        possibleTensions: [retainedTension],
+      },
+      semantic_hash: hashes.semanticKnowledgeHash,
+      provenance_hash: hashes.provenanceHash,
+    });
+    database.sqlGet.mockResolvedValue(row);
+    database.sqlAll.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT id, azure_work_item_id, fields_json")) {
+        return [{
+          id: sourceSnapshotId,
+          azure_work_item_id: sourceWorkItemId,
+          fields_json: { acceptanceCriteria: `${firstQuote} ${secondQuote}` },
+        }];
+      }
+      return [];
+    });
+    return {
+      draftVersion: `pkdv_${hashCanonicalValue({
+        draftId: row.id,
+        semanticHash: hashes.semanticKnowledgeHash,
+        provenanceHash: hashes.provenanceHash,
+        conflicts: [blocker.identityKey],
+      }).slice(0, 32)}`,
+      decision: {
+        conflictId: blocker.id,
+        action: "combine" as const,
+        fieldParticipants: {
+          rule: "participant-2",
+          sourceField: "participant-2",
+          moduleName: "participant-2",
+        },
+      },
+      retainedTension,
+    };
+  }
+
+  async function applyBusinessRuleCombination(input: { ruleWinnerKeepsMetadata: boolean }) {
+    const prepared = prepareBusinessRuleCombination(input);
+    await applyProjectKnowledgeConflictDecisions({
+      scope,
+      actor: "owner-1",
+      draftId: "draft-child",
+      draftVersion: prepared.draftVersion,
+      decisions: [prepared.decision],
+    });
+    const update = database.sqlRun.mock.calls.find(([sql]) => String(sql).includes("SET status = @status"));
+    if (!update) throw new Error("Expected the decision-completion update.");
+    return {
+      persisted: JSON.parse(String((update[1] as { proposedKnowledgeJson: string }).proposedKnowledgeJson)),
+      metrics: JSON.parse(String((update[1] as { metricsJson: string }).metricsJson)),
+      retainedTension: prepared.retainedTension,
+    };
+  }
+
+  it("uses the rule winner's absent metadata instead of retaining a stale atomic constraint", async () => {
+    const result = await applyBusinessRuleCombination({ ruleWinnerKeepsMetadata: false });
+
+    expect(result.persisted.businessRules).toEqual([
+      expect.objectContaining({ id: "br-retry-first", rule: "Retry count must be 5." }),
+    ]);
+    expect(result.persisted.businessRules[0]).not.toHaveProperty("constraint");
+    expect(result.persisted.businessRules[0]).not.toHaveProperty("moduleAssociations");
+    expect(result.metrics).toMatchObject({
+      preConsolidationDuplicateIdentityCount: 2,
+      paraphraseMergeCount: 3,
+      rekeyCount: 4,
+      atomicExtractionFailureCount: 5,
+      possibleTensionCount: 1,
+      possibleTensions: [result.retainedTension],
+    });
+  });
+
+  it("preserves decision metrics and tensions through a second blocked decision lifecycle", async () => {
+    const firstPass = await applyBusinessRuleCombination({ ruleWinnerKeepsMetadata: false });
+    const approvedQuote = "Manager review moves the order to Approved.";
+    const rejectedQuote = "Manager review moves the order to Rejected.";
+    const reentrySnapshotId = "snapshot-reentry";
+    const reentryWorkItemId = "reentry";
+    const reentryKnowledge = ProjectKnowledgeBaseSchema.parse({
+      ...firstPass.persisted,
+      stateTransitions: [
+        {
+          id: "st-order-approved",
+          workflowName: "Order",
+          fromState: "Pending",
+          toState: "Approved",
+          triggerOrCondition: "Manager review",
+          sourceWorkItemIds: [reentryWorkItemId],
+          evidence: approvedQuote,
+          evidenceRefs: [{
+            sourceSnapshotId: reentrySnapshotId,
+            sourceWorkItemId: reentryWorkItemId,
+            sourceField: "acceptanceCriteria" as const,
+            quote: approvedQuote,
+            origin: "generated_v4" as const,
+            verification: "exact" as const,
+          }],
+        },
+        {
+          id: "st-order-rejected",
+          workflowName: "Order",
+          fromState: "Pending",
+          toState: "Rejected",
+          triggerOrCondition: "Manager review",
+          sourceWorkItemIds: [reentryWorkItemId],
+          evidence: rejectedQuote,
+          evidenceRefs: [{
+            sourceSnapshotId: reentrySnapshotId,
+            sourceWorkItemId: reentryWorkItemId,
+            sourceField: "acceptanceCriteria" as const,
+            quote: rejectedQuote,
+            origin: "generated_v4" as const,
+            verification: "exact" as const,
+          }],
+        },
+      ],
+    });
+    const [approved, rejected] = reentryKnowledge.stateTransitions;
+    if (!approved || !rejected) throw new Error("Expected re-entry transition participants.");
+    const reentryBlocker = {
+      id: "conflict-order-review",
+      type: "hard_conflict",
+      category: "hard_conflict",
+      entryKey: "order-review",
+      entryInstanceId: "order-review-instance",
+      identityKey: "order-review-conflict",
+      subject: "order:pending:manager-review",
+      conflictType: "incompatible_transition_target",
+      affectedCategory: "state_transition",
+      participants: [approved, rejected].map((entry, index) => ({
+        participantId: index === 0 ? "transition-approved" : "transition-rejected",
+        category: "state_transition",
+        entryKey: entry.id,
+        entry,
+        projection: {
+          workflowName: entry.workflowName,
+          fromState: entry.fromState ?? null,
+          toState: entry.toState ?? null,
+          triggerOrCondition: entry.triggerOrCondition,
+          actor: entry.actor ?? null,
+          moduleName: entry.moduleName ?? null,
+        },
+        semanticHash: `transition-semantic-${index + 1}`,
+        concreteValue: entry.toState,
+        evidenceRefs: entry.evidenceRefs,
+        sourceSnapshotIds: [reentrySnapshotId],
+        sourceWorkItemIds: [reentryWorkItemId],
+        evidence: entry.evidence,
+      })),
+      evidenceIdentical: false,
+      message: "Choose the supported transition target.",
+    };
+    const reentryManifest = [
+      {
+        sourceSnapshotId: "snapshot-decision",
+        sourceWorkItemId: "decision",
+        workItemType: "User Story",
+        contentHash: "decision-hash",
+        adoRevision: 1,
+        sourceUpdatedAt: "2026-07-12T12:00:00.000Z",
+        capturedAt: "2026-07-12T12:00:00.000Z",
+      },
+      {
+        sourceSnapshotId: reentrySnapshotId,
+        sourceWorkItemId: reentryWorkItemId,
+        workItemType: "User Story",
+        contentHash: "reentry-hash",
+        adoRevision: 1,
+        sourceUpdatedAt: "2026-07-12T12:00:00.000Z",
+        capturedAt: "2026-07-12T12:00:00.000Z",
+      },
+    ];
+    const reentryHashes = computeProjectKnowledgeHashes(reentryKnowledge);
+    const reentryRow = draftRow({
+      generation_mode: "automatic",
+      status: "blocked",
+      source_manifest_json: reentryManifest,
+      source_fingerprint: computeProjectKnowledgeSourceFingerprint(reentryManifest),
+      proposed_knowledge_json: reentryKnowledge,
+      blockers_json: [reentryBlocker],
+      metrics_json: firstPass.metrics,
+      semantic_hash: reentryHashes.semanticKnowledgeHash,
+      provenance_hash: reentryHashes.provenanceHash,
+    });
+    database.sqlGet.mockResolvedValue(reentryRow);
+    database.sqlAll.mockResolvedValue([
+      {
+        id: "snapshot-decision",
+        azure_work_item_id: "decision",
+        fields_json: { acceptanceCriteria: "Retry count must be 3. Retry count must be 5." },
+      },
+      {
+        id: reentrySnapshotId,
+        azure_work_item_id: reentryWorkItemId,
+        fields_json: { acceptanceCriteria: `${approvedQuote} ${rejectedQuote}` },
+      },
+    ]);
+
+    await applyProjectKnowledgeConflictDecisions({
+      scope,
+      actor: "owner-1",
+      draftId: "draft-child",
+      draftVersion: `pkdv_${hashCanonicalValue({
+        draftId: reentryRow.id,
+        semanticHash: reentryHashes.semanticKnowledgeHash,
+        provenanceHash: reentryHashes.provenanceHash,
+        conflicts: [reentryBlocker.identityKey],
+      }).slice(0, 32)}`,
+      decisions: [{
+        conflictId: reentryBlocker.id,
+        action: "keep",
+        participantId: "transition-approved",
+      }],
+    });
+
+    const updates = database.sqlRun.mock.calls.filter(([sql]) => String(sql).includes("SET status = @status"));
+    const reentryUpdate = updates.at(-1);
+    if (!reentryUpdate) throw new Error("Expected the re-entry completion update.");
+    const params = reentryUpdate[1] as { metricsJson: string; proposedKnowledgeJson: string; status: string };
+    const reentryMetrics = JSON.parse(params.metricsJson) as Record<string, unknown>;
+    const persisted = JSON.parse(params.proposedKnowledgeJson) as ProjectKnowledgeBase;
+
+    expect(params.status).toBe("ready_to_publish");
+    expect(persisted.stateTransitions).toEqual([
+      expect.objectContaining({ id: "st-order-approved", toState: "Approved" }),
+    ]);
+    for (const metric of [
+      "preConsolidationDuplicateIdentityCount",
+      "paraphraseMergeCount",
+      "rekeyCount",
+      "atomicExtractionFailureCount",
+    ]) {
+      expect(reentryMetrics[metric]).toBe(firstPass.metrics[metric]);
+    }
+    expect(reentryMetrics.possibleTensions).toEqual([firstPass.retainedTension]);
+    expect(reentryMetrics.possibleTensionCount).toBe(1);
+    expect(reentryMetrics.possibleTensionCount).toBe((reentryMetrics.possibleTensions as unknown[]).length);
+  });
+
+  it("carries the rule winner's atomic constraint and module associations", async () => {
+    const result = await applyBusinessRuleCombination({ ruleWinnerKeepsMetadata: true });
+
+    expect(result.persisted.businessRules).toEqual([
+      expect.objectContaining({
+        id: "br-retry-first",
+        constraint: expect.objectContaining({ value: "5", valueType: "number" }),
+        moduleAssociations: ["Orders", "Payments"],
+      }),
+    ]);
+  });
+
   it("expires inactive manual drafts before beginning a new draft", async () => {
     database.sqlGet.mockImplementation(async (sql: string) => {
       if (sql.includes("FROM project_knowledge_drafts")) {
@@ -1074,48 +1438,3 @@ describe("draft lifecycle", () => {
   });
 });
 
-describe("pipeline quality warnings", () => {
-  const metricsRow = (metrics: Record<string, unknown>) => ({ metrics_json: metrics });
-  const fidelityMetrics = (manualReanchorCount: number, quoteExactCount: number) => ({
-    manualReanchorCount,
-    quoteExactCount,
-    quoteNormalizedCount: 0,
-    quoteAutoReanchorCount: 0,
-  });
-
-  it("warns when the residual manual re-anchor rate exceeds 5% over a full window", async () => {
-    database.sqlAll.mockResolvedValue(Array.from({ length: 20 }, () => metricsRow(fidelityMetrics(1, 9))));
-
-    const warnings = await computeProjectKnowledgePipelineWarnings({ scope });
-
-    expect(warnings).toEqual([expect.stringContaining("manual re-anchoring")]);
-  });
-
-  it("stays quiet below the threshold and on an incomplete window", async () => {
-    database.sqlAll.mockResolvedValue(Array.from({ length: 20 }, () => metricsRow(fidelityMetrics(0, 10))));
-    expect(await computeProjectKnowledgePipelineWarnings({ scope })).toEqual([]);
-
-    // High rate, but only 19 drafts — early noise must not trip the alarm.
-    database.sqlAll.mockResolvedValue(Array.from({ length: 19 }, () => metricsRow(fidelityMetrics(5, 5))));
-    expect(await computeProjectKnowledgePipelineWarnings({ scope })).toEqual([]);
-  });
-
-  it("warns about unknown-model token fallback only with heavy splitting", async () => {
-    database.sqlAll.mockResolvedValue([
-      metricsRow({ inputTokenLimitSource: "unknown_fallback", splitCallCount: 6 }),
-    ]);
-    expect(await computeProjectKnowledgePipelineWarnings({ scope })).toEqual([
-      expect.stringContaining("unrecognized model"),
-    ]);
-
-    database.sqlAll.mockResolvedValue([
-      metricsRow({ inputTokenLimitSource: "unknown_fallback", splitCallCount: 2 }),
-    ]);
-    expect(await computeProjectKnowledgePipelineWarnings({ scope })).toEqual([]);
-  });
-
-  it("returns no warnings when no drafts exist", async () => {
-    database.sqlAll.mockResolvedValue([]);
-    expect(await computeProjectKnowledgePipelineWarnings({ scope })).toEqual([]);
-  });
-});

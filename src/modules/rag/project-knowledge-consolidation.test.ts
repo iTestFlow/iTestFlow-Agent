@@ -82,7 +82,7 @@ describe("mergeProjectKnowledgeConflictEntries", () => {
     });
   });
 
-  it("keeps the longest deterministic rule wording and unions canonical module associations", () => {
+  it("keeps the longest deterministic rule wording and unions original-cased module associations", () => {
     const entries: ProjectKnowledgeBase["businessRules"] = [
       {
         id: "br-notify",
@@ -106,14 +106,11 @@ describe("mergeProjectKnowledgeConflictEntries", () => {
 
     expect(mergeProjectKnowledgeConflictEntries("business_rule", entries)).toMatchObject({
       rule: "A notification is sent to the customer after checkout.",
-      moduleName: "checkout-flow",
-      moduleAssociations: ["checkout-flow", "customer-portal", "notification-center", "payments"],
+      moduleName: "Checkout Flow",
+      moduleAssociations: ["Checkout Flow", "Customer Portal", "Notification Center", "Payments"],
     });
 
-    expect(mergeProjectKnowledgeConflictEntries("business_rule", [entries[1]])).toMatchObject({
-      moduleName: "checkout-flow",
-      moduleAssociations: ["checkout-flow", "notification-center", "payments"],
-    });
+    expect(mergeProjectKnowledgeConflictEntries("business_rule", [entries[1]])).toEqual(entries[1]);
   });
 
   it("retains an available structured constraint deterministically", () => {

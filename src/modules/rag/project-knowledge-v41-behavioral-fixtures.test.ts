@@ -145,8 +145,8 @@ describe("project knowledge v4.1 frozen-draft behavioral fixtures", () => {
     expect(result.knowledgeBase.businessRules).toEqual([
       expect.objectContaining({
         id: "br-masked-card-number",
-        moduleName: "payment-retrials-tab",
-        moduleAssociations: ["payment-retrials-tab", "policy-details"],
+        moduleName: "Payment Retrials Tab",
+        moduleAssociations: ["Payment Retrials Tab", "Policy Details"],
         sourceWorkItemIds: ["360500", "367569"],
       }),
     ]);

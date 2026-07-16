@@ -79,7 +79,13 @@ function detectBusinessRuleConflicts(knowledgeBase: ProjectKnowledgeBase) {
     participant: ProjectKnowledgeHardConflictParticipant;
     constraint: ProjectKnowledgeAtomicConstraint;
   };
-  type Group = { subject: string; members: GroupMember[] };
+  type Group = { subject: string; moduleName?: string; members: GroupMember[] };
+  type ScopedConflict = {
+    conflict: ProjectKnowledgeHardConflict;
+    constraintIdentity: string;
+    constraint: ProjectKnowledgeAtomicConstraint;
+    scopeModuleName?: string;
+  };
 
   const grouped = new Map<string, Group>();
   for (const entry of flattenProjectKnowledgeSemanticEntries(knowledgeBase)) {
@@ -95,6 +101,7 @@ function detectBusinessRuleConflicts(knowledgeBase: ProjectKnowledgeBase) {
       const groupKey = projectKnowledgeAtomicConstraintIdentity(constraint, moduleName);
       const group = grouped.get(groupKey) ?? {
         subject: renderAtomicConflictSubject(constraint, moduleName),
+        moduleName,
         members: [],
       };
       group.members.push(member);
@@ -102,7 +109,7 @@ function detectBusinessRuleConflicts(knowledgeBase: ProjectKnowledgeBase) {
     }
   }
 
-  const conflicts: ProjectKnowledgeHardConflict[] = [];
+  const conflicts: ScopedConflict[] = [];
   for (const [constraintIdentity, group] of grouped) {
     if (!hasAtomicContradiction(group.members)) continue;
     const membersByParticipantId = new Map(group.members.map((member) => [member.participant.participantId, member]));
@@ -111,44 +118,95 @@ function detectBusinessRuleConflicts(knowledgeBase: ProjectKnowledgeBase) {
     if (!basisConstraint) continue;
     const snapshotIds = Array.from(new Set(participants.flatMap((participant) => participant.sourceSnapshotIds))).sort();
     conflicts.push({
-      identityKey: hashCanonicalValue({
-        constraintIdentity,
-        snapshotIds,
-        participantConstraints: participants.map((participant) => {
-          const constraint = membersByParticipantId.get(participant.participantId)?.constraint;
-          return {
-            participantId: participant.participantId,
-            operator: constraint?.operator,
-            value: constraint?.value,
-            valueType: constraint?.valueType,
-            unit: constraint?.unit ?? null,
-          };
+      constraintIdentity,
+      constraint: basisConstraint,
+      scopeModuleName: group.moduleName,
+      conflict: {
+        identityKey: hashCanonicalValue({
+          constraintIdentity,
+          snapshotIds,
+          participantConstraints: participants.map((participant) => {
+            const constraint = membersByParticipantId.get(participant.participantId)?.constraint;
+            return {
+              participantId: participant.participantId,
+              operator: constraint?.operator,
+              value: constraint?.value,
+              valueType: constraint?.valueType,
+              unit: constraint?.unit ?? null,
+            };
+          }),
         }),
-      }),
-      subject: group.subject,
-      affectedCategory: "business_rule",
-      conflictType: "incompatible_concrete_value",
-      participants,
-      evidenceIdentical: participantsHaveIdenticalEvidence(participants),
-      conflictBasis: {
-        object: basisConstraint.object,
-        property: basisConstraint.property,
-        ...(basisConstraint.condition ? { condition: basisConstraint.condition } : {}),
-        values: participants.map((participant) => {
-          const constraint = membersByParticipantId.get(participant.participantId)?.constraint;
-          if (!constraint) throw new Error("Every atomic conflict participant must retain its constraint.");
-          return {
-            participantId: participant.participantId,
-            operator: constraint.operator,
-            value: constraint.value,
-            valueType: constraint.valueType,
-            ...(constraint.unit ? { unit: constraint.unit } : {}),
-          };
-        }),
+        subject: group.subject,
+        affectedCategory: "business_rule",
+        conflictType: "incompatible_concrete_value",
+        participants,
+        evidenceIdentical: participantsHaveIdenticalEvidence(participants),
+        conflictBasis: {
+          object: basisConstraint.object,
+          property: basisConstraint.property,
+          ...(basisConstraint.condition ? { condition: basisConstraint.condition } : {}),
+          values: participants.map((participant) => {
+            const constraint = membersByParticipantId.get(participant.participantId)?.constraint;
+            if (!constraint) throw new Error("Every atomic conflict participant must retain its constraint.");
+            return {
+              participantId: participant.participantId,
+              operator: constraint.operator,
+              value: constraint.value,
+              valueType: constraint.valueType,
+              ...(constraint.unit ? { unit: constraint.unit } : {}),
+            };
+          }),
+        },
       },
     });
   }
-  return conflicts;
+  return deduplicateBusinessRuleConflictScopes(conflicts);
+}
+
+function deduplicateBusinessRuleConflictScopes(
+  conflicts: Array<{
+    conflict: ProjectKnowledgeHardConflict;
+    constraintIdentity: string;
+    constraint: ProjectKnowledgeAtomicConstraint;
+    scopeModuleName?: string;
+  }>,
+) {
+  const groups: Array<typeof conflicts> = [];
+  for (const conflict of conflicts) {
+    const group = groups.find((candidate) => {
+      const representative = candidate[0];
+      return representative?.conflict.affectedCategory === conflict.conflict.affectedCategory &&
+        hasSameParticipantSet(representative.conflict.participants, conflict.conflict.participants);
+    });
+    if (group) group.push(conflict);
+    else groups.push([conflict]);
+  }
+  return groups.map((group) => [...group].sort((first, second) =>
+    Number(scopeMatchesPrimaryModule(second)) - Number(scopeMatchesPrimaryModule(first)) ||
+    compareProjectKnowledgeCanonicalText(first.conflict.identityKey, second.conflict.identityKey))[0]!.conflict);
+}
+
+function scopeMatchesPrimaryModule(input: {
+  conflict: ProjectKnowledgeHardConflict;
+  constraintIdentity: string;
+  constraint: ProjectKnowledgeAtomicConstraint;
+  scopeModuleName?: string;
+}) {
+  return input.conflict.participants.some((participant) => {
+    const entry = participant.entry as ProjectKnowledgeBase["businessRules"][number];
+    return Boolean(entry.moduleName) &&
+      projectKnowledgeAtomicConstraintIdentity(input.constraint, entry.moduleName) ===
+        projectKnowledgeAtomicConstraintIdentity(input.constraint, input.scopeModuleName);
+  });
+}
+
+function hasSameParticipantSet(
+  first: ProjectKnowledgeHardConflictParticipant[],
+  second: ProjectKnowledgeHardConflictParticipant[],
+) {
+  if (first.length !== second.length) return false;
+  const firstIds = new Set(first.map((participant) => participant.participantId));
+  return firstIds.size === second.length && second.every((participant) => firstIds.has(participant.participantId));
 }
 
 function resolveBusinessRuleAtomicConstraint(rule: ProjectKnowledgeBase["businessRules"][number]) {

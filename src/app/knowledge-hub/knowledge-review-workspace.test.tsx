@@ -3,7 +3,11 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ProjectKnowledgeDraftBlocker, ProjectKnowledgeReviewSummary } from "@/modules/rag/project-knowledge-review.contracts";
+import {
+  normalizeProjectKnowledgeBlockers,
+  type ProjectKnowledgeDraftBlocker,
+  type ProjectKnowledgeReviewSummary,
+} from "@/modules/rag/project-knowledge-review.contracts";
 import { KnowledgeConflictReview, KnowledgeReviewWorkspace } from "./knowledge-review-workspace";
 
 const emptyKnowledge = { modules: [], businessRules: [], stateTransitions: [], glossary: [], crossDependencies: [] };
@@ -80,9 +84,80 @@ describe("KnowledgeReviewWorkspace v4 compatibility renderer", () => {
     expect(screen.getByText("2 knowledge conflicts")).toBeTruthy();
     expect(screen.getByText(/v4 conflict-only workspace/)).toBeTruthy();
   });
+
+  it("renders normalized malformed-basis conflicts without crashing", () => {
+    const blockers = normalizeProjectKnowledgeBlockers([{
+      type: "hard_conflict",
+      identityKey: "retry-count",
+      affectedCategory: "business_rule",
+      conflictBasis: { object: "retry", property: "count", values: "oops" },
+    }]);
+
+    renderWorkspace(blockers);
+    expect(screen.getByText("1 knowledge conflict")).toBeTruthy();
+  });
 });
 
 describe("KnowledgeConflictReview", () => {
+  it("renders legacy conflict cards without an atomic basis", () => {
+    render(<KnowledgeConflictReview
+      page={{
+        draftVersion: "legacy-draft",
+        counts: { total: 1, resolved: 0, remaining: 1 },
+        page: 1,
+        pageSize: 50,
+        pageCount: 1,
+        conflicts: [{
+          conflictId: "legacy-conflict",
+          identityKey: "identity:module:checkout",
+          subject: "identity:module:checkout",
+          affectedCategory: "module",
+          conflictType: "duplicate_identity",
+          participants: [],
+        }],
+      }}
+      loading={false}
+      decisions={{}}
+      active={false}
+      onDecision={vi.fn()}
+      onPage={vi.fn()}
+      onReset={vi.fn()}
+      onApply={vi.fn()}
+    />);
+
+    expect(screen.getByText("Different versions")).toBeTruthy();
+    expect(screen.getByText(/These source-backed entries disagree/)).toBeTruthy();
+  });
+
+  it("renders possible-tension labels with a real em dash", () => {
+    render(<KnowledgeConflictReview
+      page={{
+        draftVersion: "tension-draft",
+        counts: { total: 0, resolved: 0, remaining: 0 },
+        page: 1,
+        pageSize: 50,
+        pageCount: 1,
+        conflicts: [],
+        possibleTensions: [{
+          category: "business_rule",
+          subject: "identity:business_rule:purchase-notification",
+          entryKeys: ["purchase-notification", "purchase-notification-a1b2c3d4"],
+          reason: "different_atomic_identity",
+        }],
+      }}
+      loading={false}
+      decisions={{}}
+      active={false}
+      onDecision={vi.fn()}
+      onPage={vi.fn()}
+      onReset={vi.fn()}
+      onApply={vi.fn()}
+    />);
+
+    expect(screen.getByText("Purchase Notification")).toBeTruthy();
+    expect(screen.getByText("— Different Atomic Identity")).toBeTruthy();
+  });
+
   it("restores the established version comparison UI while submitting compact decisions", () => {
     const onDecision = vi.fn();
 

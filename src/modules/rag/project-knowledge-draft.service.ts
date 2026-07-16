@@ -525,6 +525,9 @@ export async function completeProjectKnowledgeDraft(input: {
     const status: ProjectKnowledgeDraftStatus = blockers.length ? "blocked" : "ready_to_publish";
     const statusReason = status === "blocked" ? "hard_conflict" : null;
     const now = nowIso();
+    const possibleTensions = duplicateResolution.possibleTensions.length
+      ? duplicateResolution.possibleTensions
+      : possibleTensionsFromMetrics(input.metrics?.possibleTensions);
     await sqlRun(
       `
         UPDATE project_knowledge_drafts
@@ -557,12 +560,16 @@ export async function completeProjectKnowledgeDraft(input: {
             numberMetric(input.metrics?.automaticDuplicateConsolidationCount) +
             boundaryConsolidation.automaticDuplicateConsolidationCount,
           preConsolidationDuplicateIdentityCount:
+            numberMetric(input.metrics?.preConsolidationDuplicateIdentityCount) +
             duplicateResolution.counters.preConsolidationDuplicateIdentityCount,
-          paraphraseMergeCount: duplicateResolution.counters.paraphraseMergeCount,
-          rekeyCount: duplicateResolution.counters.rekeyCount,
-          atomicExtractionFailureCount: duplicateResolution.counters.atomicExtractionFailureCount,
-          possibleTensionCount: duplicateResolution.counters.possibleTensionCount,
-          possibleTensions: duplicateResolution.possibleTensions,
+          paraphraseMergeCount:
+            numberMetric(input.metrics?.paraphraseMergeCount) + duplicateResolution.counters.paraphraseMergeCount,
+          rekeyCount: numberMetric(input.metrics?.rekeyCount) + duplicateResolution.counters.rekeyCount,
+          atomicExtractionFailureCount:
+            numberMetric(input.metrics?.atomicExtractionFailureCount) +
+            duplicateResolution.counters.atomicExtractionFailureCount,
+          possibleTensionCount: possibleTensions.length,
+          possibleTensions,
           quoteExactCount: verification.counts.exact,
           quoteNormalizedCount: verification.counts.normalized,
           quoteAutoReanchorCount: verification.counts.autoReanchored,
@@ -1042,6 +1049,18 @@ function combineProjectKnowledgeConflictParticipants(
     base[field] = (participant.entry as unknown as Record<string, unknown>)[field];
     selectedParticipants.add(participantId);
   }
+  if (blocker.affectedCategory === "business_rule") {
+    const ruleParticipant = byId.get(fieldParticipants.rule);
+    if (!ruleParticipant) return null;
+    const ruleEntry = ruleParticipant.entry as unknown as Record<string, unknown>;
+    for (const field of ["constraint", "moduleAssociations"] as const) {
+      if (Object.prototype.hasOwnProperty.call(ruleEntry, field)) {
+        base[field] = structuredClone(ruleEntry[field]);
+      } else {
+        delete base[field];
+      }
+    }
+  }
   const evidenceRefs = sortProjectKnowledgeEvidenceRefs(Array.from(new Map(
     Array.from(selectedParticipants).flatMap((participantId) => byId.get(participantId)?.evidenceRefs ?? [])
       .map((ref) => [[ref.sourceSnapshotId, ref.sourceField, ref.quote].join("\u0000"), ref]),
@@ -1405,67 +1424,6 @@ function allKnowledgeEntryRefs(knowledgeBase: ProjectKnowledgeBase) {
 function allEvidenceRefs(knowledgeBase: ProjectKnowledgeBase) {
   return allKnowledgeEntryRefs(knowledgeBase).flat();
 }
-
-// Passive pipeline-quality thresholds surfaced in the knowledge health banner.
-const PIPELINE_WARNING_DRAFT_WINDOW = 20;
-const RESIDUAL_REANCHOR_WARNING_RATE = 0.05;
-const EXCESSIVE_SPLIT_CALL_COUNT = 5;
-const UNKNOWN_MODEL_FALLBACK_TOKENS = 16_000;
-
-/**
- * Quality alarms computed over the most recent compiled drafts, merged into
- * snapshot.health.warnings by the knowledge status route. Replaces the former
- * governance monitoring checkpoints: same thresholds, but computed at read time
- * with no GA clock and no ADR rows. Quote fidelity is only judged on a full
- * window so a couple of early drafts cannot trip the alarm.
- */
-export async function computeProjectKnowledgePipelineWarnings(input: {
-  scope: ProjectScope;
-}): Promise<string[]> {
-  const scope = assertProjectScope(input.scope);
-  const rows = await sqlAll<{ metrics_json: unknown }>(
-    `
-      SELECT metrics_json FROM project_knowledge_drafts
-      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-        AND compiler_contract_version = @compilerContractVersion
-        AND proposed_knowledge_json IS NOT NULL
-      ORDER BY created_at DESC
-      LIMIT ${PIPELINE_WARNING_DRAFT_WINDOW}
-    `,
-    {
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      compilerContractVersion: PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
-    },
-  );
-  const metrics = rows.map((row) => asRecord(row.metrics_json));
-  const warnings: string[] = [];
-
-  if (metrics.length >= PIPELINE_WARNING_DRAFT_WINDOW) {
-    const manualReanchors = metrics.reduce((sum, item) => sum + numberMetric(item.manualReanchorCount), 0);
-    const verifiedFragments = metrics.reduce(
-      (sum, item) => sum + numberMetric(item.quoteExactCount) + numberMetric(item.quoteNormalizedCount) +
-        numberMetric(item.quoteAutoReanchorCount) + numberMetric(item.manualReanchorCount),
-      0,
-    );
-    const residualRate = verifiedFragments ? manualReanchors / verifiedFragments : 0;
-    if (residualRate > RESIDUAL_REANCHOR_WARNING_RATE) {
-      warnings.push(
-        `More than ${RESIDUAL_REANCHOR_WARNING_RATE * 100}% of evidence quotes needed manual re-anchoring across the last ${PIPELINE_WARNING_DRAFT_WINDOW} drafts. Check source snapshot quality.`,
-      );
-    }
-  }
-
-  const unknownFallback = metrics.filter((item) => item.inputTokenLimitSource === "unknown_fallback");
-  if (unknownFallback.some((item) => numberMetric(item.splitCallCount) >= EXCESSIVE_SPLIT_CALL_COUNT)) {
-    warnings.push(
-      `Recent drafts used a guessed ${UNKNOWN_MODEL_FALLBACK_TOKENS.toLocaleString("en-US")}-token input limit for an unrecognized model and split extraction heavily. Verify the configured LLM model.`,
-    );
-  }
-
-  return warnings;
-}
-
 
 function hardConflictOperations(conflicts: ProjectKnowledgeHardConflict[]): ProjectKnowledgeOperation[] {
   return conflicts.map((conflict) => ({

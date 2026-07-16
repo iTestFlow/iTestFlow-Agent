@@ -58,6 +58,71 @@ describe("deterministic hard conflicts", () => {
     expect(conflicts[0]?.participants.map((participant) => participant.concreteValue)).toEqual(["3", "5"]);
   });
 
+  it("does not compare atomic values that apply under different conditions", () => {
+    const knowledge = ProjectKnowledgeBaseSchema.parse({
+      businessRules: [
+        {
+          ...businessRule("br-premium", "Premium retry count must be 3", "s1", "Payments"),
+          constraint: {
+            object: "retry",
+            property: "count",
+            condition: "premium accounts",
+            operator: "eq",
+            value: "3",
+            valueType: "number",
+          },
+        },
+        {
+          ...businessRule("br-standard", "Standard retry count must be 5", "s2", "Payments"),
+          constraint: {
+            object: "retry",
+            property: "count",
+            condition: "standard accounts",
+            operator: "eq",
+            value: "5",
+            valueType: "number",
+          },
+        },
+      ],
+    });
+
+    expect(detectProjectKnowledgeHardConflicts(knowledge)).toEqual([]);
+  });
+
+  it("collapses duplicate module-scope fan-out into the primary-module conflict deterministically", () => {
+    const rules = [
+      {
+        ...businessRule("br-1", "Retry count must be 3", "s1", "Payments"),
+        moduleAssociations: ["Orders"],
+        constraint: {
+          object: "retry",
+          property: "count",
+          operator: "eq",
+          value: "3",
+          valueType: "number",
+        },
+      },
+      {
+        ...businessRule("br-2", "Retry count must be 5", "s2", "Payments"),
+        moduleAssociations: ["Orders"],
+        constraint: {
+          object: "retry",
+          property: "count",
+          operator: "eq",
+          value: "5",
+          valueType: "number",
+        },
+      },
+    ];
+
+    const first = detectProjectKnowledgeHardConflicts(ProjectKnowledgeBaseSchema.parse({ businessRules: rules }));
+    const second = detectProjectKnowledgeHardConflicts(ProjectKnowledgeBaseSchema.parse({ businessRules: [...rules].reverse() }));
+
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({ subject: "payments:retry.count" });
+    expect(second).toEqual(first);
+  });
+
   it("does not manufacture conflicts from compatible bounds or incomparable units", () => {
     const compatible = ProjectKnowledgeBaseSchema.parse({
       businessRules: [

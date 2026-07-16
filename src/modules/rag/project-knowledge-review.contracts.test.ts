@@ -204,6 +204,22 @@ describe("project knowledge review contracts", () => {
     expect(missing).toMatchObject({ evidenceIdentical: false });
   });
 
+  it("drops malformed hard-conflict basis payloads instead of leaking them to the review UI", () => {
+    const [blocker] = normalizeProjectKnowledgeBlockers([{
+      type: "hard_conflict",
+      identityKey: "retry-count",
+      affectedCategory: "business_rule",
+      conflictBasis: {
+        object: "retry",
+        property: "count",
+        values: "oops",
+      },
+    }]);
+
+    expect(blocker).toMatchObject({ type: "hard_conflict", conflictType: "contradiction" });
+    expect(blocker).not.toHaveProperty("conflictBasis");
+  });
+
   it("normalizes legacy blocker identities and disambiguates persisted duplicate ids", () => {
     const blockers = normalizeProjectKnowledgeBlockers([
       {

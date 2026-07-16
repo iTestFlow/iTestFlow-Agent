@@ -162,7 +162,7 @@ describe("project knowledge duplicate resolution", () => {
     }));
 
     expect(result.knowledgeBase.businessRules).toEqual(expect.arrayContaining([
-      expect.objectContaining({ moduleName: "alpha", moduleAssociations: ["alpha", "zulu"] }),
+      expect.objectContaining({ moduleName: "Alpha", moduleAssociations: ["Alpha", "Zulu"] }),
     ]));
     expect(result.counters).toMatchObject({ rekeyCount: 1, possibleTensionCount: 0 });
     expect(detectProjectKnowledgeHardConflicts(result.knowledgeBase)).toEqual([
@@ -171,6 +171,67 @@ describe("project knowledge duplicate resolution", () => {
         subject: "zulu:feature.enabled",
       }),
     ]);
+  });
+
+  it("preserves singleton module casing while deterministically resolving a three-member re-key tie", () => {
+    const stateConstraint = (value: "pending" | "approved" | "rejected") => ({
+      object: "notification",
+      property: "state",
+      operator: "eq" as const,
+      value,
+      valueType: "enum" as const,
+    });
+    const suffix = hashCanonicalValue(projectKnowledgeAtomicConstraintIdentity(
+      stateConstraint("pending"),
+      "Notification Center",
+    )).slice(0, 8);
+    const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
+      businessRules: [
+        {
+          ...rule("notification-state", "Notification state must be pending.", stateConstraint("pending")),
+          moduleName: "Notification Center",
+          moduleAssociations: ["Policy Details"],
+        },
+        {
+          ...rule("notification-state", "Notification state must be approved.", stateConstraint("approved")),
+          moduleName: "notification-center",
+          moduleAssociations: ["policy-details"],
+        },
+        {
+          ...rule("notification-state", "Notification state must be rejected.", stateConstraint("rejected")),
+          moduleName: "Notification Center",
+          moduleAssociations: ["Archive"],
+        },
+      ],
+    }));
+
+    expect(result.knowledgeBase.businessRules.map((entry) => entry.id)).toEqual([
+      "notification-state",
+      `notification-state-${suffix}`,
+      `notification-state-${suffix}-2`,
+    ]);
+    expect(result.knowledgeBase.businessRules).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        constraint: expect.objectContaining({ value: "pending" }),
+        moduleName: "Notification Center",
+        moduleAssociations: ["Policy Details"],
+      }),
+      expect.objectContaining({
+        constraint: expect.objectContaining({ value: "approved" }),
+        moduleName: "notification-center",
+        moduleAssociations: ["policy-details"],
+      }),
+      expect.objectContaining({
+        constraint: expect.objectContaining({ value: "rejected" }),
+        moduleName: "Notification Center",
+        moduleAssociations: ["Archive"],
+      }),
+    ]));
+    expect(result.counters).toMatchObject({
+      preConsolidationDuplicateIdentityCount: 2,
+      paraphraseMergeCount: 0,
+      rekeyCount: 2,
+    });
   });
 
   it("only auto-merges extraction abstentions with equal fingerprints", () => {
