@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { canonicalizeProjectKnowledgeDependencyType } from "./project-knowledge-dependency-type";
+
 const RequiredTextSchema = z.string().trim().min(1);
 const OptionalTextSchema = z
   .string()
@@ -43,7 +45,7 @@ export const ProjectKnowledgeEvidenceRefSchema = z.object({
   sourceField: z.enum(PROJECT_KNOWLEDGE_SOURCE_FIELDS),
   quote: RequiredTextSchema,
   locator: z.record(z.string(), z.unknown()).optional(),
-  origin: z.enum(["generated_v2", "migrated_legacy", "reviewer_reanchored"]),
+  origin: z.enum(["generated_v2", "generated_v4", "migrated_legacy", "reviewer_reanchored"]),
   verification: z.enum(["exact", "normalized", "auto_reanchored", "unverified"]),
 });
 
@@ -132,6 +134,7 @@ export const ProjectKnowledgeCrossDependencySchema = z
     return {
       ...dependency,
       ...provenance,
+      dependencyType: canonicalizeProjectKnowledgeDependencyType(dependency.dependencyType),
       description: dependency.description || provenance.evidence,
     };
   });

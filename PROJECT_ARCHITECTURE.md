@@ -66,7 +66,8 @@ The app intentionally avoids becoming a general Azure DevOps work-item browser. 
 - Framework: Next.js App Router, React, and TypeScript.
 - UI: Tailwind CSS, shadcn/Radix primitives, lucide-react icons, Sonner toasts, and Recharts.
 - Database: PostgreSQL via `pg`, with migrations in `migrations/` managed by `node-pg-migrate`.
-- Background work: `npm run worker`, using the `jobs` table with `FOR UPDATE SKIP LOCKED`, heartbeats, and stale-lock recovery.
+- Runtime supervision: `npm run dev` and `npm start` launch both the web and background processes; split commands remain available for independently scaled deployments.
+- Background work uses the `jobs` table with `FOR UPDATE SKIP LOCKED`, process capability heartbeats, active-job heartbeats, and stale-lock recovery.
 - Authentication: opaque session cookie backed by hashed session tokens in PostgreSQL.
 - External systems: Azure DevOps REST APIs and OpenAI, Gemini, or Anthropic LLM provider APIs.
 
@@ -276,12 +277,15 @@ Database:
 
 The worker entrypoint is `src/worker/main.ts`.
 
-- Run production workers with `npm run worker`.
-- Run local watched workers with `npm run worker:dev`.
+- `npm run dev` and `npm start` use `scripts/run-app.mjs` to supervise both web and background child processes by default.
+- The supervisor stops both children when the web process exits and restarts an unexpectedly exited background process after 1, 2, 5, 15, then 30 seconds.
+- Advanced split deployments run production processes with `npm run web:start` and `npm run worker`, or watched development processes with `npm run web:dev` and `npm run worker:dev`.
 - Job handlers are registered in `src/modules/jobs/register-handlers.ts`.
 - The queue is implemented in `src/modules/jobs/job-queue.service.ts`.
 - Scheduled workspace sync is implemented in `src/modules/jobs/sync-schedule.service.ts` and `workspace-sync.handler.ts`.
-- Workers claim jobs with row locks, heartbeat active jobs, and mark stale locks retryable according to environment settings.
+- Background processes register capabilities in `worker_instances` and heartbeat with PostgreSQL time. Automatic Knowledge Hub builds are rejected before enqueue when no healthy `project_knowledge_v4` capability is available.
+- Only automatic AI knowledge compilation uses the Knowledge Hub queue. Project indexing, external-LLM finalization, conflict decisions, and publication execute as normal server requests.
+- Background processes claim jobs with row locks, heartbeat active jobs, and mark stale locks retryable according to environment settings.
 
 Multiple worker processes may run against the same database. A job should be written to tolerate retries because failed or stale jobs can be requeued.
 

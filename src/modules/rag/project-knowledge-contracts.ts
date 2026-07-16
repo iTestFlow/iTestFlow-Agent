@@ -10,20 +10,20 @@ import {
   type ProjectKnowledgeEvidenceRef,
 } from "./project-knowledge.schema";
 
-export const PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION = "3.0.0";
-export const PROJECT_KNOWLEDGE_WORDING_VERSION = "3.0.0";
+export const PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION = "4.0.0";
+export const PROJECT_KNOWLEDGE_WORDING_VERSION = "4.0.0";
 export const PROJECT_KNOWLEDGE_SEMANTIC_HASH_VERSION = "semantic-v2";
 export const PROJECT_KNOWLEDGE_PROVENANCE_HASH_VERSION = "provenance-v2";
 export const PROJECT_KNOWLEDGE_LEGACY_SEMANTIC_HASH_VERSION = "semantic-v1-backfill";
 export const PROJECT_KNOWLEDGE_LEGACY_PROVENANCE_HASH_VERSION = "provenance-v1-legacy";
 export const PROJECT_KNOWLEDGE_DRAFT_HEARTBEAT_TTL_MS = 10 * 60 * 1000;
 export const PROJECT_KNOWLEDGE_MANUAL_DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-export const PROJECT_KNOWLEDGE_MAX_REBASE_DEPTH = 3;
 
 export const PROJECT_KNOWLEDGE_DRAFT_STATUSES = [
   "generating",
   "awaiting_input",
   "ready_for_review",
+  "ready_to_publish",
   "blocked",
   "rebase_required",
   "superseded",
@@ -73,17 +73,6 @@ export const ProjectKnowledgeOperationSchema = z.object({
 });
 
 export type ProjectKnowledgeOperation = z.infer<typeof ProjectKnowledgeOperationSchema>;
-
-export const PROJECT_KNOWLEDGE_REPLAY_RESULTS = {
-  create: ["applied", "key_collision"],
-  update: ["applied", "target_missing", "target_retired", "target_changed"],
-  confirm: ["applied", "target_missing", "target_retired", "target_changed"],
-  retire: ["applied", "already_applied", "target_missing", "target_changed"],
-  flag_contradiction: ["applied", "participants_changed"],
-} as const;
-
-export type ProjectKnowledgeReplayResult =
-  (typeof PROJECT_KNOWLEDGE_REPLAY_RESULTS)[keyof typeof PROJECT_KNOWLEDGE_REPLAY_RESULTS][number];
 
 export type ProjectKnowledgeEntryCategory =
   | "module"

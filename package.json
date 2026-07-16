@@ -5,9 +5,11 @@
   "private": true,
   "description": "Local-first test intelligence command center for Azure DevOps testing workflows.",
   "scripts": {
-    "dev": "node scripts/next-dev.mjs",
+    "dev": "node scripts/run-app.mjs dev",
+    "web:dev": "node scripts/next-dev.mjs",
     "build": "next build",
-    "start": "next start",
+    "start": "node scripts/run-app.mjs start",
+    "web:start": "next start",
     "lint": "next lint",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run --config vitest.unit.config.ts",

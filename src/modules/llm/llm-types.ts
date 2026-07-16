@@ -20,6 +20,7 @@ export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTy
   schemaName: string;
   maxTokens?: number;
   metadata?: LLMRequestLogMetadata;
+  signal?: AbortSignal;
 };
 
 export type GenerateTextInput = {
@@ -27,6 +28,7 @@ export type GenerateTextInput = {
   user: string;
   maxTokens?: number;
   metadata?: LLMRequestLogMetadata;
+  signal?: AbortSignal;
 };
 
 export type TokenUsage = {

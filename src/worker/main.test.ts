@@ -1,17 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const jobQueue = vi.hoisted(() => ({
+  cancelRunningJob: vi.fn(),
   claimNextJob: vi.fn(),
   completeJob: vi.fn(),
   failJob: vi.fn(),
   heartbeatJob: vi.fn(),
+  isJobCancellationRequested: vi.fn(),
+  updateJobProgress: vi.fn(),
 }));
 const registry = vi.hoisted(() => ({
   getJobHandler: vi.fn(),
-  registeredJobTypes: vi.fn(() => []),
+  registeredJobTypes: vi.fn((): string[] => []),
 }));
 const registration = vi.hoisted(() => ({ registerAllJobHandlers: vi.fn() }));
 const schedule = vi.hoisted(() => ({ enqueueDueScheduledSyncs: vi.fn() }));
+const workerRegistry = vi.hoisted(() => ({
+  heartbeatWorkerInstance: vi.fn(),
+  registerWorkerInstance: vi.fn(),
+  removeStaleWorkerInstances: vi.fn(),
+  unregisterWorkerInstance: vi.fn(),
+  WORKER_REGISTRY_HEARTBEAT_MS: 5000,
+}));
 
 // main.ts reads the heartbeat cadence from env at module load; pin it before import.
 const HEARTBEAT_MS = vi.hoisted(() => {
@@ -23,12 +33,12 @@ vi.mock("@/modules/jobs/job-queue.service", () => jobQueue);
 vi.mock("@/modules/jobs/job-handlers", () => registry);
 vi.mock("@/modules/jobs/register-handlers", () => registration);
 vi.mock("@/modules/jobs/sync-schedule.service", () => schedule);
+vi.mock("@/modules/jobs/worker-registry.service", () => workerRegistry);
 
 import type { Job } from "@/modules/jobs/job-queue.service";
-import { processNextJob } from "./main";
+import { processNextJob, WORKER_ID } from "./main";
 
 // Ownership token the worker passes to every queue mutation.
-const WORKER_ID = `worker-${process.pid}`;
 
 function makeJob(overrides: Partial<Job> = {}): Job {
   return {
@@ -60,8 +70,12 @@ describe("processNextJob", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     jobQueue.completeJob.mockResolvedValue(true);
+    jobQueue.cancelRunningJob.mockResolvedValue(true);
     jobQueue.failJob.mockResolvedValue(true);
     jobQueue.heartbeatJob.mockResolvedValue(true);
+    jobQueue.isJobCancellationRequested.mockResolvedValue(false);
+    jobQueue.updateJobProgress.mockResolvedValue(true);
+    registry.registeredJobTypes.mockReturnValue(["workspace_context_sync"]);
   });
 
   it("importing the module does not start the worker loops", () => {
@@ -74,7 +88,7 @@ describe("processNextJob", () => {
   it("reports idle without touching job state when no job is claimed", async () => {
     jobQueue.claimNextJob.mockResolvedValue(null);
     await expect(processNextJob()).resolves.toBe(false);
-    expect(jobQueue.claimNextJob).toHaveBeenCalledWith(WORKER_ID);
+    expect(jobQueue.claimNextJob).toHaveBeenCalledWith(WORKER_ID, ["workspace_context_sync"]);
     expect(registry.getJobHandler).not.toHaveBeenCalled();
     expect(jobQueue.failJob).not.toHaveBeenCalled();
     expect(jobQueue.completeJob).not.toHaveBeenCalled();
@@ -120,7 +134,7 @@ describe("processNextJob", () => {
 
     finish();
     await expect(running).resolves.toBe(true);
-    expect(jobQueue.completeJob).toHaveBeenCalledWith("job-1", WORKER_ID);
+    expect(jobQueue.completeJob).toHaveBeenCalledWith("job-1", WORKER_ID, null);
     expect(jobQueue.failJob).not.toHaveBeenCalled();
 
     // Completion clears the interval: no further heartbeats fire.

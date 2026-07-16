@@ -17,7 +17,6 @@ import { refreshProjectKnowledgeSearchIndex } from "./context-chatbot-retrieval.
 import {
   PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
   PROJECT_KNOWLEDGE_MANUAL_DRAFT_TTL_MS,
-  PROJECT_KNOWLEDGE_MAX_REBASE_DEPTH,
   PROJECT_KNOWLEDGE_PROVENANCE_HASH_VERSION,
   PROJECT_KNOWLEDGE_SEMANTIC_HASH_VERSION,
   PROJECT_KNOWLEDGE_WORDING_VERSION,
@@ -32,6 +31,7 @@ import {
   flattenProjectKnowledgeSemanticEntries,
   type ProjectKnowledgeDraftStatus,
   type ProjectKnowledgeEntryCategory,
+  type ProjectKnowledgeEntryValue,
   type ProjectKnowledgeOperation,
   type ProjectKnowledgeSourceManifestEntry,
 } from "./project-knowledge-contracts";
@@ -52,40 +52,37 @@ import {
 } from "./project-knowledge-conflicts";
 import { acquireProjectKnowledgeLock } from "./project-knowledge-lock";
 import { backfillProjectKnowledgeCompilerFoundation } from "./project-knowledge-migration.service";
-import { evaluateAutomaticProvenanceRefresh } from "./project-knowledge-publication-policy";
-import {
-  findUniqueProjectKnowledgeEvidenceAnchor,
-  repairMissingProjectKnowledgeEvidenceRefs,
-} from "./project-knowledge-evidence-repair";
 import {
   verifyProjectKnowledgeEvidence,
-  type ProjectKnowledgeEvidenceBlocker as ProjectKnowledgeVerificationBlocker,
   type ProjectKnowledgeEvidenceSnapshot,
 } from "./project-knowledge-provenance";
 import {
   normalizeProjectKnowledgeBlockers,
   projectKnowledgeBlockerId,
   projectKnowledgeEntryInstanceId,
-  projectKnowledgeEntryInstances,
   summarizeProjectKnowledgeReview,
   type ProjectKnowledgeDraftBlocker,
-  type ProjectKnowledgeReviewContext,
   type ProjectKnowledgeReviewSummary,
 } from "./project-knowledge-review.contracts";
 import {
   buildProjectKnowledgeOperations,
-  replayProjectKnowledgeOperations,
   type ProjectKnowledgeVersionPrecondition,
 } from "./project-knowledge-reconciliation";
 import {
-  PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS,
   PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE,
-  PROJECT_KNOWLEDGE_SOURCE_FIELDS,
   ProjectKnowledgeBaseSchema,
-  splitProjectKnowledgeLegacyEvidence,
+  renderProjectKnowledgeEvidenceRefs,
+  sortProjectKnowledgeEvidenceRefs,
   type ProjectKnowledgeBase,
-  type ProjectKnowledgeEvidenceRef,
 } from "./project-knowledge.schema";
+import {
+  buildProjectKnowledgeDraftPreview,
+  type ProjectKnowledgeDraftPreviewCategory,
+} from "./project-knowledge-draft-preview";
+import {
+  hasStrictProjectKnowledgeGrounding,
+  omitUnsupportedProjectKnowledgeEntries,
+} from "./project-knowledge-grounding";
 
 type DraftRow = {
   id: string;
@@ -126,8 +123,6 @@ type CurrentKnowledgeRow = {
   semantic_hash: string | null;
   provenance_hash: string | null;
 };
-
-export type ProjectKnowledgePublicationIntent = "human_reviewed" | "automatic_provenance_refresh";
 
 type SourceManifestRow = {
   source_snapshot_id: string;
@@ -189,31 +184,18 @@ export async function beginProjectKnowledgeDraft(input: {
   parentDraftId?: string | null;
 }) {
   const scope = assertProjectScope(input.scope);
-  try {
-    return await withTransaction(async (client) => {
+  if (input.parentDraftId) {
+    throw new AppError({
+      code: AppErrorCode.KnowledgeDraftConflict,
+      message: "Project Knowledge v4 does not create rebased child drafts.",
+      userMessage: "Rebase is no longer used. Start a new build from the latest publication.",
+    });
+  }
+  return withTransaction(async (client) => {
     await acquireProjectKnowledgeLock(scope, client);
     await backfillProjectKnowledgeCompilerFoundation(scope, client);
     await expireManualProjectKnowledgeDrafts(scope, client);
-    const parent = input.parentDraftId
-      ? await getDraftRow(scope, input.parentDraftId, client, true)
-      : undefined;
-    if (input.parentDraftId && !parent) throw draftNotFound();
-    if (parent && parent.status !== "rebase_required") throw draftStateConflict(parent.status);
-    if (parent && parent.generation_mode !== input.generationMode) {
-      throw new AppError({
-        code: AppErrorCode.KnowledgeDraftConflict,
-        message: "A rebased draft must preserve its generation mode.",
-        userMessage: "Regenerate this draft using the same automatic or manual workflow.",
-      });
-    }
-    const rebaseDepth = parent ? parent.rebase_depth + 1 : 0;
-    if (rebaseDepth > PROJECT_KNOWLEDGE_MAX_REBASE_DEPTH) {
-      throw new AppError({
-        code: AppErrorCode.KnowledgeDraftConflict,
-        message: "Knowledge draft rebase depth exceeded.",
-        userMessage: "This draft has drifted too many times. Generate a fresh full preview.",
-      });
-    }
+    const rebaseDepth = 0;
 
     const manifest = await loadCurrentProjectKnowledgeSourceManifest(scope, client);
     const current = await loadCurrentKnowledge(scope, client);
@@ -282,11 +264,7 @@ export async function beginProjectKnowledgeDraft(input: {
       details: { generationMode: input.generationMode, compilationMode: input.compilationMode },
     }, client);
     return requireDraft(scope, id, client);
-    });
-  } catch (error) {
-    if (input.parentDraftId && isLiveChildUniqueViolation(error)) throw liveChildConflict();
-    throw error;
-  }
+  });
 }
 
 export async function heartbeatProjectKnowledgeDraft(input: { scope: ProjectScope; draftId: string }) {
@@ -344,28 +322,6 @@ export async function storeProjectKnowledgeManualDraftBatches(input: {
     if (draft.generation_mode !== "manual" || draft.status !== "awaiting_input") {
       throw draftStateConflict(draft.status);
     }
-    const carryCandidates = draft.parent_draft_id
-      ? await sqlAll<{
-          prompt_hash: string;
-          compiler_contract_version: string;
-          raw_output: string | null;
-          validated_output: unknown;
-        }>(
-          `
-            SELECT prompt_hash, compiler_contract_version, raw_output, validated_output
-            FROM project_knowledge_draft_batches
-            WHERE draft_id = @parentDraftId AND status = 'validated'
-          `,
-          { parentDraftId: draft.parent_draft_id },
-          client,
-        )
-      : [];
-    const carryByPromptHash = new Map(carryCandidates
-      .filter((candidate) =>
-        candidate.compiler_contract_version === draft.compiler_contract_version &&
-        candidate.raw_output !== null && candidate.validated_output !== null,
-      )
-      .map((candidate) => [candidate.prompt_hash, candidate]));
     await sqlRun("DELETE FROM project_knowledge_draft_batches WHERE draft_id = @draftId", { draftId: draft.id }, client);
     const now = nowIso();
     const carriedBatches: Array<{
@@ -375,10 +331,6 @@ export async function storeProjectKnowledgeManualDraftBatches(input: {
     }> = [];
     for (const batch of input.batches) {
       const promptHash = hashCanonicalValue({ system: batch.systemPrompt, user: batch.userPrompt });
-      const carried = carryByPromptHash.get(promptHash);
-      const validatedOutput = carried?.validated_output
-        ? ProjectKnowledgeBaseSchema.parse(carried.validated_output)
-        : null;
       await sqlRun(
         `
           INSERT INTO project_knowledge_draft_batches (
@@ -395,26 +347,19 @@ export async function storeProjectKnowledgeManualDraftBatches(input: {
           id: createId("pkdb"),
           draftId: draft.id,
           batchIndex: batch.batchIndex,
-          status: validatedOutput ? "validated" : "awaiting_input",
+          status: "awaiting_input",
           promptHash,
           compilerContractVersion: draft.compiler_contract_version,
           systemPrompt: batch.systemPrompt,
           userPrompt: batch.userPrompt,
-          rawOutput: validatedOutput ? carried!.raw_output : null,
-          validatedOutputJson: validatedOutput ? JSON.stringify(validatedOutput) : null,
+          rawOutput: null,
+          validatedOutputJson: null,
           heartbeatAt: now,
           createdAt: now,
           updatedAt: now,
         },
         client,
       );
-      if (validatedOutput) {
-        carriedBatches.push({
-          batchIndex: batch.batchIndex,
-          rawOutput: carried!.raw_output!,
-          validatedOutput,
-        });
-      }
     }
     return {
       draft: await requireDraft(scope, draft.id, client),
@@ -523,7 +468,7 @@ export async function completeProjectKnowledgeDraft(input: {
     await acquireProjectKnowledgeLock(scope, client);
     const row = await getDraftRow(scope, input.draftId, client, true);
     if (!row) throw draftNotFound();
-    if (!["generating", "awaiting_input", "ready_for_review", "blocked"].includes(row.status)) {
+    if (!["generating", "awaiting_input", "ready_for_review", "ready_to_publish", "blocked"].includes(row.status)) {
       throw draftStateConflict(row.status);
     }
     const generationData = asRecord(row.generation_data_json);
@@ -539,61 +484,39 @@ export async function completeProjectKnowledgeDraft(input: {
       : undefined;
     const draftManifest = ProjectKnowledgeSourceManifestSchema.parse(asArray(row.source_manifest_json));
     const evidenceSnapshots = await loadEvidenceSnapshots(scope, parsedKnowledge, draftManifest, client);
-    const repair = input.recoverMissingEvidenceRefs === false
-      ? {
-          knowledgeBase: parsedKnowledge,
-          attemptedEntryCount: 0,
-          repairedEntryCount: 0,
-          unresolvedEntryCount: 0,
-        }
-      : repairMissingProjectKnowledgeEvidenceRefs({
-          knowledgeBase: parsedKnowledge,
-          snapshots: evidenceSnapshots,
-          touchedKeys,
-          fallbackSourceWorkItemIds: new Set(draftManifest.map((entry) => entry.sourceWorkItemId)),
-        });
     const verification = verifyProjectKnowledgeEvidence({
-      knowledgeBase: repair.knowledgeBase,
+      knowledgeBase: parsedKnowledge,
       snapshots: evidenceSnapshots,
     });
-    const conflicts = detectProjectKnowledgeHardConflicts(verification.knowledgeBase);
-    const hashes = computeProjectKnowledgeHashes(verification.knowledgeBase);
+    const strictGrounding = omitUnsupportedProjectKnowledgeEntries(verification.knowledgeBase);
+    if (flattenProjectKnowledgeSemanticEntries(parsedKnowledge).length > 0 &&
+        flattenProjectKnowledgeSemanticEntries(strictGrounding.knowledgeBase).length === 0) {
+      throw new AppError({
+        code: AppErrorCode.SchemaValidation,
+        message: "Every proposed project-knowledge entry failed frozen-source evidence validation.",
+        userMessage: "The build produced no grounded knowledge. The active publication was not changed.",
+      });
+    }
+    if (!hasStrictProjectKnowledgeGrounding(strictGrounding.knowledgeBase)) {
+      throw new AppError({
+        code: AppErrorCode.KnowledgePublicationBlocked,
+        message: "The v4 draft contains unsupported project-knowledge entries after validation.",
+        userMessage: "The draft failed grounding validation. Start a new build.",
+      });
+    }
+    const conflicts = detectProjectKnowledgeHardConflicts(strictGrounding.knowledgeBase);
+    const hashes = computeProjectKnowledgeHashes(strictGrounding.knowledgeBase);
     const operations: ProjectKnowledgeOperation[] = buildProjectKnowledgeOperations({
       baseKnowledgeBase,
-      proposedKnowledgeBase: verification.knowledgeBase,
+      proposedKnowledgeBase: strictGrounding.knowledgeBase,
       baseVersions,
       touchedKeys,
     });
     operations.push(...hardConflictOperations(conflicts));
-    const currentManifest = await loadCurrentProjectKnowledgeSourceManifest(scope, client);
-    const sourceDrifted = computeProjectKnowledgeSourceFingerprint(currentManifest) !== row.source_fingerprint;
     const hardConflictBlockers = buildHardConflictBlockers(conflicts);
-    const suppressedEntryInstanceIds = hardConflictParticipantInstanceIds(conflicts);
-    const v2Blockers = validateTouchedV2Knowledge(
-      verification.knowledgeBase,
-      touchedKeys,
-      suppressedEntryInstanceIds,
-    );
-    const evidenceBlockers = buildEvidenceReviewBlockers(
-      verification.knowledgeBase,
-      verification.blockers,
-      conflicts,
-    );
-    const blockers = normalizeProjectKnowledgeBlockers([
-      ...evidenceBlockers,
-      ...v2Blockers,
-      ...hardConflictBlockers,
-    ]);
-    const status: ProjectKnowledgeDraftStatus = row.pending_drift || sourceDrifted
-      ? "rebase_required"
-      : blockers.length
-        ? "blocked"
-        : "ready_for_review";
-    const statusReason = status === "rebase_required"
-      ? "source_drift"
-      : status === "blocked"
-        ? conflicts.length ? "hard_conflict" : "publication_blockers"
-        : null;
+    const blockers = normalizeProjectKnowledgeBlockers(hardConflictBlockers);
+    const status: ProjectKnowledgeDraftStatus = blockers.length ? "blocked" : "ready_to_publish";
+    const statusReason = status === "blocked" ? "hard_conflict" : null;
     const now = nowIso();
     await sqlRun(
       `
@@ -604,7 +527,6 @@ export async function completeProjectKnowledgeDraft(input: {
             operations_json = @operationsJson, blockers_json = @blockersJson,
             metrics_json = @metricsJson, semantic_hash = @semanticHash,
             provenance_hash = @provenanceHash, heartbeat_at = @heartbeatAt,
-            pending_drift = CASE WHEN @sourceDrifted THEN true ELSE pending_drift END,
             review_ready_at = CASE
               WHEN @reviewReady THEN COALESCE(review_ready_at, @updatedAt)
               ELSE review_ready_at
@@ -619,7 +541,7 @@ export async function completeProjectKnowledgeDraft(input: {
         provider: input.provider,
         model: input.model,
         rawOutput: input.rawOutput,
-        proposedKnowledgeJson: JSON.stringify(verification.knowledgeBase),
+        proposedKnowledgeJson: JSON.stringify(strictGrounding.knowledgeBase),
         operationsJson: JSON.stringify(operations),
         blockersJson: JSON.stringify(blockers),
         metricsJson: JSON.stringify({
@@ -631,19 +553,19 @@ export async function completeProjectKnowledgeDraft(input: {
           quoteNormalizedCount: verification.counts.normalized,
           quoteAutoReanchorCount: verification.counts.autoReanchored,
           quoteMismatchCount: verification.counts.mismatch,
-          autoEvidenceRepairAttemptedCount: repair.attemptedEntryCount,
-          autoEvidenceRepairCount: repair.repairedEntryCount,
-          autoEvidenceRepairUnresolvedCount: repair.unresolvedEntryCount,
-          manualReanchorCount: allEvidenceRefs(verification.knowledgeBase)
-            .filter((ref) => ref.origin === "reviewer_reanchored").length,
+          omittedEntryCount:
+            numberMetric(input.metrics?.omittedEntryCount) + strictGrounding.omittedEntryCount,
+          autoEvidenceRepairAttemptedCount: 0,
+          autoEvidenceRepairCount: 0,
+          autoEvidenceRepairUnresolvedCount: 0,
+          manualReanchorCount: 0,
           touchedEntryCount: operations.length,
           conflictCount: conflicts.length,
         }),
         semanticHash: hashes.semanticKnowledgeHash,
         provenanceHash: hashes.provenanceHash,
         heartbeatAt: now,
-        sourceDrifted,
-        reviewReady: status === "ready_for_review" || status === "blocked",
+        reviewReady: status === "ready_to_publish" || status === "blocked",
         updatedAt: now,
       },
       client,
@@ -682,87 +604,54 @@ export async function publishProjectKnowledgeDraft(input: {
   scope: ProjectScope;
   actor: string;
   draftId: string;
-  publicationIntent?: ProjectKnowledgePublicationIntent;
 }) {
   const scope = assertProjectScope(input.scope);
-  const publicationIntent = input.publicationIntent ?? "human_reviewed";
   const result = await withTransaction(async (client) => {
     await acquireProjectKnowledgeLock(scope, client);
-    await backfillProjectKnowledgeCompilerFoundation(scope, client);
     const draft = await getDraftRow(scope, input.draftId, client, true);
     if (!draft) return { kind: "not_found" as const };
     if (draft.status === "published") return { kind: "published" as const, draft: toDraft(draft) };
     if (draft.compiler_contract_version !== PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION) {
       return { kind: "contract_mismatch" as const };
     }
-    if (publicationIntent === "human_reviewed" && (draft.status === "blocked" || asArray(draft.blockers_json).length)) {
+    if (draft.status === "blocked" || asArray(draft.blockers_json).length) {
       return { kind: "blocked" as const };
     }
-    if (draft.status !== "ready_for_review") {
-      return publicationIntent === "automatic_provenance_refresh"
-        ? { kind: "automatic_denied" as const, draft: toDraft(draft) }
-        : { kind: "invalid_state" as const, status: draft.status };
+    if (draft.status !== "ready_to_publish") {
+      return { kind: "invalid_state" as const, status: draft.status };
     }
 
-    const currentManifest = await loadCurrentProjectKnowledgeSourceManifest(scope, client);
-    const currentFingerprint = computeProjectKnowledgeSourceFingerprint(currentManifest);
-    const current = await loadCurrentKnowledge(scope, client);
-    if (publicationIntent === "automatic_provenance_refresh") {
-      const parent = draft.parent_draft_id
-        ? await getDraftRow(scope, draft.parent_draft_id, client, true)
-        : undefined;
-      const childKnowledge = ProjectKnowledgeBaseSchema.parse(draft.proposed_knowledge_json);
-      const publishedKnowledge = current
-        ? ProjectKnowledgeBaseSchema.parse(JSON.parse(current.validated_output))
-        : null;
-      const parentKnowledge = parent?.proposed_knowledge_json
-        ? ProjectKnowledgeBaseSchema.parse(parent.proposed_knowledge_json)
-        : null;
-      const decision = current && parent && publishedKnowledge && parentKnowledge &&
-          currentFingerprint === draft.source_fingerprint
-        ? evaluateAutomaticProvenanceRefresh({
-            publishedKnowledgeBase: publishedKnowledge,
-            publishedSemanticHash: current.semantic_hash,
-            parentKnowledgeBase: parentKnowledge,
-            parentSemanticHash: parent.semantic_hash,
-            childKnowledgeBase: childKnowledge,
-            childSemanticHash: draft.semantic_hash,
-            currentActiveRevisionId: current.active_revision_id,
-            childBaseRevisionId: draft.base_revision_id,
-            childBlockers: asArray(draft.blockers_json),
-          })
-        : { allowed: false as const, reason: "missing_or_stale_publication_context" };
-      if (!decision.allowed) {
-        await sqlRun(
-          `
-            UPDATE project_knowledge_drafts
-            SET status = 'ready_for_review', status_reason = 'automatic_publication_denied',
-                review_ready_at = COALESCE(review_ready_at, @now), updated_at = @now
-            WHERE id = @draftId
-          `,
-          { draftId: draft.id, now: nowIso() },
-          client,
-        );
-        return { kind: "automatic_denied" as const, draft: await requireDraft(scope, draft.id, client) };
-      }
-    }
-    if (currentFingerprint !== draft.source_fingerprint || (current?.active_revision_id ?? null) !== draft.base_revision_id) {
+    const current = await loadCurrentKnowledge(scope, client, true);
+    if ((current?.active_revision_id ?? null) !== draft.base_revision_id) {
       const now = nowIso();
       await sqlRun(
         `
           UPDATE project_knowledge_drafts
-          SET status = 'rebase_required', status_reason = @reason,
-              pending_drift = true, updated_at = @now
+          SET status = 'superseded', status_reason = 'active_revision_changed',
+              pending_drift = false, updated_at = @now
           WHERE id = @draftId
         `,
-        {
-          draftId: draft.id,
-          reason: currentFingerprint !== draft.source_fingerprint ? "source_drift" : "active_revision_drift",
-          now,
-        },
+        { draftId: draft.id, now },
         client,
       );
-      return { kind: "stale" as const };
+      await writeAuditLogTransactional({
+        workspaceId: scope.workspaceId,
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        azureProjectName: scope.azureProjectName,
+        azureOrganizationUrl: scope.azureOrganizationUrl,
+        entityType: "project_knowledge_draft",
+        entityId: draft.id,
+        action: "rag.knowledge_draft.outdated",
+        status: "Info",
+        actor: input.actor,
+        message: "Did not publish an outdated project knowledge draft because another revision is active.",
+        details: {
+          baseRevisionId: draft.base_revision_id,
+          activeRevisionId: current?.active_revision_id ?? null,
+        },
+      }, client);
+      return { kind: "outdated" as const, draft: await requireDraft(scope, draft.id, client) };
     }
 
     const knowledgeBase = ProjectKnowledgeBaseSchema.parse(draft.proposed_knowledge_json);
@@ -770,9 +659,21 @@ export async function publishProjectKnowledgeDraft(input: {
     if (hashes.semanticKnowledgeHash !== draft.semantic_hash || hashes.provenanceHash !== draft.provenance_hash) {
       return { kind: "invalid_payload" as const };
     }
+    if (!hasStrictProjectKnowledgeGrounding(knowledgeBase)) {
+      return { kind: "invalid_grounding" as const };
+    }
+    const frozenManifest = ProjectKnowledgeSourceManifestSchema.parse(asArray(draft.source_manifest_json));
     const now = nowIso();
     const knowledgeBaseId = current?.id ?? createId("pkb");
     const provenanceStatus = wholeKnowledgeProvenanceStatus(knowledgeBase);
+    const freshnessStatus = draft.pending_drift ? "stale" : "current";
+    const staleReasons = draft.pending_drift
+      ? [{
+          type: "source_updates_after_build",
+          detectedAt: now,
+          message: "Newer source updates will be included in the next build.",
+        }]
+      : [];
     await sqlRun(
       `
         INSERT INTO project_knowledge_base (
@@ -789,8 +690,8 @@ export async function publishProjectKnowledgeDraft(input: {
           @validatedOutput, 'Success', NULL, @extractedAt, @createdAt, @updatedAt,
           @sourceManifestJson, @sourceFingerprint, @semanticHash, @provenanceHash,
           @semanticHashVersion, @provenanceHashVersion,
-          @compilerContractVersion, @wordingVersion, 'current',
-          @provenanceStatus, 'current', NULL, '[]'::jsonb
+          @compilerContractVersion, @wordingVersion, @freshnessStatus,
+          @provenanceStatus, 'current', @staleSince, @staleReasonJson
         )
         ON CONFLICT (project_id, azure_project_id) DO UPDATE SET
           azure_project_name = EXCLUDED.azure_project_name,
@@ -813,11 +714,11 @@ export async function publishProjectKnowledgeDraft(input: {
           provenance_hash_version = EXCLUDED.provenance_hash_version,
           compiler_contract_version = EXCLUDED.compiler_contract_version,
           wording_version = EXCLUDED.wording_version,
-          freshness_status = 'current',
+          freshness_status = EXCLUDED.freshness_status,
           provenance_status = EXCLUDED.provenance_status,
           compiler_compatibility = 'current',
-          stale_since = NULL,
-          stale_reason_json = '[]'::jsonb
+          stale_since = EXCLUDED.stale_since,
+          stale_reason_json = EXCLUDED.stale_reason_json
       `,
       {
         id: knowledgeBaseId,
@@ -828,20 +729,23 @@ export async function publishProjectKnowledgeDraft(input: {
         promptVersion: draft.wording_version,
         provider: draft.provider,
         model: draft.model_name,
-        sourceWorkItemCount: currentManifest.length,
+        sourceWorkItemCount: frozenManifest.length,
         rawOutput: draft.raw_output,
         validatedOutput: JSON.stringify(knowledgeBase),
         extractedAt: now,
         createdAt: now,
         updatedAt: now,
-        sourceManifestJson: JSON.stringify(currentManifest),
-        sourceFingerprint: currentFingerprint,
+        sourceManifestJson: JSON.stringify(frozenManifest),
+        sourceFingerprint: draft.source_fingerprint,
         semanticHash: hashes.semanticKnowledgeHash,
         provenanceHash: hashes.provenanceHash,
         semanticHashVersion: PROJECT_KNOWLEDGE_SEMANTIC_HASH_VERSION,
         provenanceHashVersion: PROJECT_KNOWLEDGE_PROVENANCE_HASH_VERSION,
         compilerContractVersion: draft.compiler_contract_version,
         wordingVersion: draft.wording_version,
+        freshnessStatus,
+        staleSince: draft.pending_drift ? now : null,
+        staleReasonJson: JSON.stringify(staleReasons),
         provenanceStatus,
       },
       client,
@@ -854,15 +758,16 @@ export async function publishProjectKnowledgeDraft(input: {
       provider: draft.provider,
       model: draft.model_name,
       rawOutput: draft.raw_output,
-      sourceWorkItemCount: currentManifest.length,
+      sourceWorkItemCount: frozenManifest.length,
       mode: draft.compilation_mode,
       sourceChangeSummary: {
         draftId: draft.id,
         operationCount: asArray(draft.operations_json).length,
+        freshnessStatus,
       },
       baseRevisionId: draft.base_revision_id,
-      sourceManifest: currentManifest,
-      sourceFingerprint: currentFingerprint,
+      sourceManifest: frozenManifest,
+      sourceFingerprint: draft.source_fingerprint,
       compilerContractVersion: draft.compiler_contract_version,
       wordingVersion: draft.wording_version,
       metrics: {
@@ -888,24 +793,6 @@ export async function publishProjectKnowledgeDraft(input: {
       { draftId: draft.id, now },
       client,
     );
-    await sqlRun(
-      `
-        WITH RECURSIVE ancestors AS (
-          SELECT parent_draft_id FROM project_knowledge_drafts WHERE id = @draftId
-          UNION ALL
-          SELECT drafts.parent_draft_id
-          FROM project_knowledge_drafts drafts
-          JOIN ancestors ON drafts.id = ancestors.parent_draft_id
-          WHERE ancestors.parent_draft_id IS NOT NULL
-        )
-        UPDATE project_knowledge_drafts
-        SET status = 'superseded', status_reason = 'descendant_published', updated_at = @now
-        WHERE id IN (SELECT parent_draft_id FROM ancestors WHERE parent_draft_id IS NOT NULL)
-          AND status <> 'published'
-      `,
-      { draftId: draft.id, now },
-      client,
-    );
     await writeAuditLogTransactional({
       workspaceId: scope.workspaceId,
       projectId: scope.projectId,
@@ -917,14 +804,18 @@ export async function publishProjectKnowledgeDraft(input: {
       action: "rag.knowledge_draft.published",
       status: "Success",
       actor: input.actor,
-      message: `Published project knowledge revision ${revision.revisionNumber}.`,
-      details: { draftId: draft.id, revisionNumber: revision.revisionNumber },
+      message: `Published the exact reviewed project knowledge draft as revision ${revision.revisionNumber}.`,
+      details: {
+        draftId: draft.id,
+        revisionNumber: revision.revisionNumber,
+        freshnessStatus,
+        semanticHash: hashes.semanticKnowledgeHash,
+      },
     }, client);
-    return { kind: "success" as const, knowledgeBaseId, revision, draftId: draft.id };
+    return { kind: "success" as const, knowledgeBaseId, revision, draftId: draft.id, freshnessStatus };
   });
 
   if (result.kind === "not_found") throw draftNotFound();
-  if (result.kind === "stale") throw staleDraftError();
   if (result.kind === "blocked") throw publicationBlocked();
   if (result.kind === "contract_mismatch") throw contractMismatch();
   if (result.kind === "invalid_payload") {
@@ -934,9 +825,16 @@ export async function publishProjectKnowledgeDraft(input: {
       userMessage: "The draft failed integrity validation. Regenerate it before publishing.",
     });
   }
+  if (result.kind === "invalid_grounding") {
+    throw new AppError({
+      code: AppErrorCode.KnowledgePublicationBlocked,
+      message: "A v4 publication requires verified immutable evidence for every entry.",
+      userMessage: "The draft failed grounding validation. Start a new build.",
+    });
+  }
   if (result.kind === "invalid_state") throw draftStateConflict(result.status);
   if (result.kind === "published") return result.draft;
-  if (result.kind === "automatic_denied") return result.draft;
+  if (result.kind === "outdated") return result.draft;
 
   try {
     await runProjectKnowledgeLint({ scope });
@@ -946,253 +844,224 @@ export async function publishProjectKnowledgeDraft(input: {
   return getProjectKnowledgeDraft({ scope, draftId: result.draftId });
 }
 
-export async function tryDeterministicProjectKnowledgeRebase(input: {
+
+
+export type ProjectKnowledgeConflictDecision =
+  | {
+      conflictId: string;
+      action: "keep";
+      participantId: string;
+    }
+  | {
+      conflictId: string;
+      action: "combine";
+      fieldParticipants: Record<string, string>;
+    };
+
+export async function getProjectKnowledgeDraftConflicts(input: {
   scope: ProjectScope;
-  actor: string;
-  parentDraftId: string;
+  draftId: string;
+  page?: number;
+  pageSize?: number;
 }) {
-  const scope = assertProjectScope(input.scope);
-  try {
-    return await withTransaction(async (client) => {
-    await acquireProjectKnowledgeLock(scope, client);
-    const parent = await getDraftRow(scope, input.parentDraftId, client, true);
-    if (!parent) throw draftNotFound();
-    if (parent.status !== "rebase_required") throw draftStateConflict(parent.status);
-    if (parent.rebase_depth >= PROJECT_KNOWLEDGE_MAX_REBASE_DEPTH) {
-      return { kind: "full_preview_required" as const, reason: "depth_limit" as const };
-    }
-    const currentManifest = await loadCurrentProjectKnowledgeSourceManifest(scope, client);
-    const currentFingerprint = computeProjectKnowledgeSourceFingerprint(currentManifest);
-    if (currentFingerprint !== parent.source_fingerprint) {
-      return { kind: "generation_required" as const, reason: "source_drift" as const };
-    }
-    const current = await loadCurrentKnowledge(scope, client);
-    if (!current || current.active_revision_id === parent.base_revision_id) {
-      return { kind: "generation_required" as const, reason: "no_revision_delta" as const };
-    }
-    const parentKnowledge = parent.proposed_knowledge_json
-      ? ProjectKnowledgeBaseSchema.parse(parent.proposed_knowledge_json)
-      : null;
-    if (!parentKnowledge) return { kind: "generation_required" as const, reason: "missing_proposal" as const };
-    const latestKnowledge = ProjectKnowledgeBaseSchema.parse(JSON.parse(current.validated_output));
-    const latestVersions = await loadActiveEntryVersions(scope, client);
-    const operations = asArray(parent.operations_json) as ProjectKnowledgeOperation[];
-    const expectedVersionIds = operations
-      .map((operation) => operation.expectedEntryVersionId)
-      .filter((value): value is string => Boolean(value));
-    const versionHistory = expectedVersionIds.length
-      ? await sqlAll<{
-          category: string;
-          entry_key: string;
-          id: string;
-          entry_semantic_hash: string | null;
-          status: string;
-        }>(
-          `
-            SELECT category, entry_key, id, entry_semantic_hash, status
-            FROM project_knowledge_entry_versions
-            WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-              AND id = ANY(@versionIds::text[])
-          `,
-          {
-            projectId: scope.projectId,
-            azureProjectId: scope.azureProjectId,
-            versionIds: expectedVersionIds,
-          },
-          client,
-        ).then((rows) => rows.filter((row) => row.entry_semantic_hash).map((row) => ({
-          category: row.category,
-          entryKey: row.entry_key,
-          entryVersionId: row.id,
-          entrySemanticHash: row.entry_semantic_hash!,
-          status: row.status,
-        })))
-      : [];
-    const generationData = asRecord(parent.generation_data_json);
-    const baseKnowledge = generationData.baseKnowledgeBase
-      ? ProjectKnowledgeBaseSchema.parse(generationData.baseKnowledgeBase)
-      : null;
-    const currentConflictParticipants: Record<string, Array<Record<string, unknown>>> = {};
-    for (const conflict of detectProjectKnowledgeHardConflicts(latestKnowledge)) {
-      currentConflictParticipants[conflict.subject] = conflict.participants;
-      currentConflictParticipants[conflict.identityKey] = conflict.participants;
-    }
-    const replay = replayProjectKnowledgeOperations({
-      baseKnowledgeBase: baseKnowledge,
-      latestKnowledgeBase: latestKnowledge,
-      operations,
-      latestVersions,
-      versionHistory,
-      currentContradictionParticipants: currentConflictParticipants,
-    });
-    const proposedKnowledge = replay.knowledgeBase ?? parentKnowledge;
-    const mergedConflicts = detectProjectKnowledgeHardConflicts(proposedKnowledge);
-    const hashes = computeProjectKnowledgeHashes(proposedKnowledge);
-    const nextOperations = replay.knowledgeBase
-      ? buildProjectKnowledgeOperations({
-          baseKnowledgeBase: latestKnowledge,
-          proposedKnowledgeBase: proposedKnowledge,
-          baseVersions: latestVersions,
-        })
-      : operations;
-    nextOperations.push(...hardConflictOperations(mergedConflicts));
-    const replayBlockers = replay.failed.map((outcome) => {
-      const entryInstanceId = projectKnowledgeEntryInstanceId({
-        category: outcome.operation.category,
-        entryKey: outcome.operation.entryKey,
-        projection: outcome.proposed ?? outcome.latest ?? outcome.base,
-        provenance: { operationId: outcome.operation.id, result: outcome.result },
-      });
-      return {
-        id: projectKnowledgeBlockerId({
-          type: "replay_conflict",
-          category: outcome.operation.category,
-          entryKey: outcome.operation.entryKey,
-          entryInstanceId,
-          operationId: outcome.operation.id,
-        }),
-        type: "replay_conflict",
-        category: outcome.operation.category,
-        entryKey: outcome.operation.entryKey,
-        entryInstanceId,
-        message: "The published entry changed after this draft was prepared. Choose the value to keep.",
-        operationId: outcome.operation.id,
-        result: outcome.result,
-        base: outcome.base,
-        latest: outcome.latest,
-        proposed: outcome.proposed,
-        actions: ["keep_latest", "use_proposed", "edit_proposed"],
-      };
-    });
-    const hardConflictBlockers = buildHardConflictBlockers(mergedConflicts);
-    const blockers = normalizeProjectKnowledgeBlockers([...replayBlockers, ...hardConflictBlockers]);
-    const childStatus: ProjectKnowledgeDraftStatus = blockers.length ? "blocked" : "ready_for_review";
-    const childStatusReason = mergedConflicts.length
-      ? "hard_conflict"
-      : replay.failed.length
-        ? "replay_conflict"
-        : "revision_replayed";
-    const now = nowIso();
-    const childId = createId("pkd");
-    await sqlRun(
-      `
-        INSERT INTO project_knowledge_drafts (
-          id, workspace_id, project_id, azure_project_id, azure_project_name,
-          azure_organization_url, generation_mode, compilation_mode, status,
-          status_reason, parent_draft_id, rebase_depth, base_revision_id,
-          source_manifest_json, source_fingerprint, compiler_contract_version,
-          wording_version, provider, model_name, raw_output,
-          proposed_knowledge_json, operations_json, generation_data_json,
-          blockers_json, metrics_json, semantic_hash, provenance_hash,
-          pending_drift, heartbeat_at, review_ready_at, created_by, created_at, updated_at
-        ) VALUES (
-          @id, (SELECT workspace_id FROM projects WHERE id = @projectId), @projectId,
-          @azureProjectId, @azureProjectName, @azureOrganizationUrl, @generationMode,
-          @compilationMode, @status, @statusReason, @parentDraftId,
-          @rebaseDepth, @baseRevisionId, @sourceManifestJson, @sourceFingerprint,
-          @compilerContractVersion, @wordingVersion, @provider, @model,
-          @rawOutput, @proposedKnowledgeJson, @operationsJson, @generationDataJson,
-          @blockersJson, @metricsJson, @semanticHash, @provenanceHash,
-          false, @heartbeatAt, @reviewReadyAt, @createdBy, @createdAt, @updatedAt
-        )
-      `,
-      {
-        id: childId,
-        projectId: scope.projectId,
-        azureProjectId: scope.azureProjectId,
-        azureProjectName: scope.azureProjectName,
-        azureOrganizationUrl: scope.azureOrganizationUrl,
-        generationMode: parent.generation_mode,
-        compilationMode: parent.compilation_mode,
-        status: childStatus,
-        statusReason: childStatusReason,
-        parentDraftId: parent.id,
-        rebaseDepth: parent.rebase_depth + 1,
-        baseRevisionId: current.active_revision_id,
-        sourceManifestJson: JSON.stringify(currentManifest),
-        sourceFingerprint: currentFingerprint,
-        compilerContractVersion: PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
-        wordingVersion: PROJECT_KNOWLEDGE_WORDING_VERSION,
-        provider: parent.provider,
-        model: parent.model_name,
-        rawOutput: parent.raw_output,
-        proposedKnowledgeJson: JSON.stringify(proposedKnowledge),
-        operationsJson: JSON.stringify(nextOperations),
-        generationDataJson: JSON.stringify({ baseKnowledgeBase: latestKnowledge, baseVersions: latestVersions }),
-        blockersJson: JSON.stringify(blockers),
-        metricsJson: JSON.stringify({
-          ...asRecord(parent.metrics_json),
-          rebaseCount: Number(asRecord(parent.metrics_json).rebaseCount ?? 0) + 1,
-          replayConflictCount: replay.failed.length,
-          conflictCount: mergedConflicts.length,
-        }),
-        semanticHash: hashes.semanticKnowledgeHash,
-        provenanceHash: hashes.provenanceHash,
-        heartbeatAt: now,
-        reviewReadyAt: now,
-        createdBy: input.actor,
-        createdAt: now,
-        updatedAt: now,
-      },
-      client,
-    );
-    await persistProjectKnowledgeHardConflicts(scope, childId, mergedConflicts, now, client);
-    await writeAuditLogTransactional({
-      workspaceId: scope.workspaceId,
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      azureProjectName: scope.azureProjectName,
-      azureOrganizationUrl: scope.azureOrganizationUrl,
-      entityType: "project_knowledge_draft",
-      entityId: childId,
-      action: "rag.knowledge_draft.rebased",
-      status: replay.failed.length || mergedConflicts.length ? "Partial failure" : "Success",
-      actor: input.actor,
-      message: replay.failed.length
-        ? "Replayed a knowledge draft with conflicts requiring three-way review."
-        : mergedConflicts.length
-          ? "Replayed a knowledge draft and blocked it on merged hard conflicts."
-        : "Replayed a knowledge draft against the latest published revision.",
-      details: {
-        parentDraftId: parent.id,
-        replayConflictCount: replay.failed.length,
-        hardConflictCount: mergedConflicts.length,
-      },
-    }, client);
-    return { kind: "replayed" as const, draft: await requireDraft(scope, childId, client) };
-    });
-  } catch (error) {
-    if (isLiveChildUniqueViolation(error)) throw liveChildConflict();
-    throw error;
-  }
+  const draft = await getProjectKnowledgeDraft({ scope: input.scope, draftId: input.draftId });
+  if (!draft) throw draftNotFound();
+  const conflicts = draft.blockers.filter((blocker) => blocker.type === "hard_conflict");
+  const pageSize = Math.min(50, Math.max(1, input.pageSize ?? 50));
+  const page = Math.max(1, input.page ?? 1);
+  const start = (page - 1) * pageSize;
+  return {
+    draftVersion: projectKnowledgeDraftVersion(draft),
+    counts: {
+      total: conflicts.length,
+      resolved: 0,
+      remaining: conflicts.length,
+    },
+    page,
+    pageSize,
+    pageCount: Math.max(1, Math.ceil(conflicts.length / pageSize)),
+    conflicts: conflicts.slice(start, start + pageSize).map((conflict) => ({
+      conflictId: conflict.id,
+      identityKey: conflict.identityKey,
+      subject: conflict.subject,
+      affectedCategory: conflict.affectedCategory,
+      conflictType: conflict.conflictType,
+      participants: conflict.participants.map((participant) => ({
+        participantId: participant.participantId,
+        entryKey: participant.entryKey,
+        fields: participant.projection,
+        evidence: participant.evidenceRefs.map((ref) => ({
+          sourceField: ref.sourceField,
+          quote: ref.quote,
+          sourceWorkItemId: ref.sourceWorkItemId,
+        })),
+      })),
+    })),
+  };
 }
 
-export async function resolveProjectKnowledgeDraft(input: {
+export async function getProjectKnowledgeDraftPreview(input: {
+  scope: ProjectScope;
+  draftId: string;
+  category?: ProjectKnowledgeDraftPreviewCategory;
+  query?: string;
+  page?: number;
+  pageSize?: number;
+}) {
+  const draft = await getProjectKnowledgeDraft({ scope: input.scope, draftId: input.draftId });
+  if (!draft) throw draftNotFound();
+  if (draft.persistedStatus !== "ready_to_publish" || !draft.proposedKnowledge) {
+    throw draftStateConflict(draft.persistedStatus);
+  }
+  return buildProjectKnowledgeDraftPreview({
+    draftId: draft.id,
+    draftVersion: projectKnowledgeDraftVersion(draft),
+    status: draft.persistedStatus,
+    knowledgeBase: draft.proposedKnowledge,
+    category: input.category,
+    query: input.query,
+    page: input.page,
+    pageSize: input.pageSize,
+  });
+}
+
+export async function applyProjectKnowledgeConflictDecisions(input: {
   scope: ProjectScope;
   actor: string;
   draftId: string;
-  proposedKnowledge: ProjectKnowledgeBase;
+  draftVersion: string;
+  decisions: ProjectKnowledgeConflictDecision[];
 }) {
-  const scope = assertProjectScope(input.scope);
-  const draft = await getProjectKnowledgeDraft({ scope, draftId: input.draftId });
+  const draft = await getProjectKnowledgeDraft({ scope: input.scope, draftId: input.draftId });
   if (!draft) throw draftNotFound();
-  if (!["ready_for_review", "blocked"].includes(draft.persistedStatus)) {
+  if (draft.persistedStatus !== "blocked" || !draft.proposedKnowledge) {
     throw draftStateConflict(draft.persistedStatus);
   }
-  const resolved = await completeProjectKnowledgeDraft({
-    scope,
+  if (projectKnowledgeDraftVersion(draft) !== input.draftVersion) {
+    throw new AppError({
+      code: AppErrorCode.KnowledgeDraftConflict,
+      message: "The compact conflict decisions target an outdated draft version.",
+      userMessage: "This conflict list changed. Reload it before applying decisions.",
+    });
+  }
+
+  const blockers = draft.blockers.filter((blocker) => blocker.type === "hard_conflict");
+  const blockersById = new Map(blockers.map((blocker) => [blocker.id, blocker]));
+  const decisionsById = new Map(input.decisions.map((decision) => [decision.conflictId, decision]));
+  if (decisionsById.size !== blockers.length || blockers.some((blocker) => !decisionsById.has(blocker.id))) {
+    throw new AppError({
+      code: AppErrorCode.KnowledgeDraftConflict,
+      message: "Every current semantic conflict requires exactly one compact decision.",
+      userMessage: "Choose an option for every conflict before applying decisions.",
+    });
+  }
+
+  let resolvedKnowledge = structuredClone(draft.proposedKnowledge);
+  for (const decision of input.decisions) {
+    const blocker = blockersById.get(decision.conflictId);
+    if (!blocker) throw draftStateConflict("unknown_conflict");
+    const participantById = new Map(blocker.participants.map((participant) => [participant.participantId, participant]));
+    const resolvedEntry = decision.action === "keep"
+      ? participantById.get(decision.participantId)?.entry
+      : combineProjectKnowledgeConflictParticipants(blocker, decision.fieldParticipants);
+    if (!resolvedEntry) {
+      throw new AppError({
+        code: AppErrorCode.KnowledgeDraftConflict,
+        message: "A conflict decision referenced an unknown participant.",
+        userMessage: "One selected conflict version is no longer available. Reload the conflicts.",
+      });
+    }
+    resolvedKnowledge = replaceProjectKnowledgeConflictParticipants({
+      knowledgeBase: resolvedKnowledge,
+      category: blocker.affectedCategory,
+      participants: blocker.participants,
+      resolvedEntry,
+    });
+  }
+
+  return completeProjectKnowledgeDraft({
+    scope: input.scope,
     draftId: draft.id,
     provider: draft.provider ?? "reviewer",
-    model: draft.model ?? "reviewer-edited",
-    rawOutput: draft.rawOutput ?? JSON.stringify(input.proposedKnowledge),
-    knowledgeBase: input.proposedKnowledge,
+    model: draft.model ?? "compact-conflict-decisions",
+    rawOutput: draft.rawOutput ?? "",
+    knowledgeBase: resolvedKnowledge,
     recoverMissingEvidenceRefs: false,
     metrics: {
       ...draft.metrics,
-      manualResolutionCount: Number(draft.metrics.manualResolutionCount ?? 0) + 1,
+      compactDecisionCount: input.decisions.length,
+      decisionApplyCount: Number(draft.metrics.decisionApplyCount ?? 0) + 1,
     },
   });
-  return resolved;
+}
+
+function projectKnowledgeDraftVersion(draft: ProjectKnowledgeDraft) {
+  return `pkdv_${hashCanonicalValue({
+    draftId: draft.id,
+    semanticHash: draft.semanticHash,
+    provenanceHash: draft.provenanceHash,
+    conflicts: draft.blockers.filter((blocker) => blocker.type === "hard_conflict")
+      .map((blocker) => blocker.identityKey),
+  }).slice(0, 32)}`;
+}
+
+function combineProjectKnowledgeConflictParticipants(
+  blocker: Extract<ProjectKnowledgeDraftBlocker, { type: "hard_conflict" }>,
+  fieldParticipants: Record<string, string>,
+) {
+  const allowedFields = projectKnowledgeConflictFields(blocker.affectedCategory);
+  if (Object.keys(fieldParticipants).some((field) => !allowedFields.includes(field))) return null;
+  if (!allowedFields.every((field) => typeof fieldParticipants[field] === "string")) return null;
+  const byId = new Map(blocker.participants.map((participant) => [participant.participantId, participant]));
+  const base = structuredClone(blocker.participants[0]?.entry) as Record<string, unknown> | undefined;
+  if (!base) return null;
+  const selectedParticipants = new Set<string>();
+  for (const field of allowedFields) {
+    const participantId = fieldParticipants[field];
+    const participant = byId.get(participantId);
+    if (!participant) return null;
+    base[field] = (participant.entry as unknown as Record<string, unknown>)[field];
+    selectedParticipants.add(participantId);
+  }
+  const evidenceRefs = sortProjectKnowledgeEvidenceRefs(Array.from(new Map(
+    Array.from(selectedParticipants).flatMap((participantId) => byId.get(participantId)?.evidenceRefs ?? [])
+      .map((ref) => [[ref.sourceSnapshotId, ref.sourceField, ref.quote].join("\u0000"), ref]),
+  ).values()));
+  base.evidenceRefs = evidenceRefs;
+  base.sourceWorkItemIds = Array.from(new Set(evidenceRefs.map((ref) => ref.sourceWorkItemId)));
+  base.evidence = renderProjectKnowledgeEvidenceRefs(evidenceRefs);
+  return base as unknown as ProjectKnowledgeEntryValue;
+}
+
+function projectKnowledgeConflictFields(category: ProjectKnowledgeEntryCategory) {
+  const fields: Record<ProjectKnowledgeEntryCategory, string[]> = {
+    module: ["name", "description"],
+    business_rule: ["rule", "sourceField", "moduleName"],
+    state_transition: ["workflowName", "fromState", "toState", "triggerOrCondition", "actor", "moduleName"],
+    glossary: ["term", "type", "definition"],
+    dependency: ["sourceModule", "targetModule", "dependencyType", "description"],
+  };
+  return fields[category];
+}
+
+function replaceProjectKnowledgeConflictParticipants(input: {
+  knowledgeBase: ProjectKnowledgeBase;
+  category: ProjectKnowledgeEntryCategory;
+  participants: ProjectKnowledgeHardConflict["participants"];
+  resolvedEntry: ProjectKnowledgeEntryValue;
+}) {
+  const participantHashes = new Set(input.participants.map((participant) => hashCanonicalValue(participant.entry)));
+  const replace = <T>(entries: T[]) => [
+    ...entries.filter((entry) => !participantHashes.has(hashCanonicalValue(entry))),
+    input.resolvedEntry as unknown as T,
+  ];
+  return ProjectKnowledgeBaseSchema.parse({
+    modules: input.category === "module" ? replace(input.knowledgeBase.modules) : input.knowledgeBase.modules,
+    businessRules: input.category === "business_rule" ? replace(input.knowledgeBase.businessRules) : input.knowledgeBase.businessRules,
+    stateTransitions: input.category === "state_transition" ? replace(input.knowledgeBase.stateTransitions) : input.knowledgeBase.stateTransitions,
+    glossary: input.category === "glossary" ? replace(input.knowledgeBase.glossary) : input.knowledgeBase.glossary,
+    crossDependencies: input.category === "dependency" ? replace(input.knowledgeBase.crossDependencies) : input.knowledgeBase.crossDependencies,
+  });
 }
 
 export async function getProjectKnowledgeDraft(input: { scope: ProjectScope; draftId: string }) {
@@ -1202,194 +1071,6 @@ export async function getProjectKnowledgeDraft(input: { scope: ProjectScope; dra
   return row ? toDraft(row) : null;
 }
 
-export async function getProjectKnowledgeDraftReviewContext(input: {
-  scope: ProjectScope;
-  draftId: string;
-}): Promise<ProjectKnowledgeReviewContext | null> {
-  const scope = assertProjectScope(input.scope);
-  const row = await getDraftRow(scope, input.draftId);
-  if (!row) return null;
-  const knowledgeBase = row.proposed_knowledge_json
-    ? ProjectKnowledgeBaseSchema.parse(row.proposed_knowledge_json)
-    : null;
-  if (!knowledgeBase) return { entries: [], sources: [] };
-  const blockers = normalizeProjectKnowledgeBlockers(asArray(row.blockers_json));
-  const sourceBlockers = blockers.filter((blocker) =>
-    blocker.type !== "replay_conflict" && blocker.type !== "hard_conflict");
-  const reviewableEntries = reviewableKnowledgeEntries(knowledgeBase);
-  const entriesByInstanceId = new Map(reviewableEntries.map((entry) => [entry.entryInstanceId, entry]));
-  const sourceTargets = new Map<string, {
-    category: Exclude<ProjectKnowledgeDraftBlocker["category"], "hard_conflict">;
-    entryKey: string;
-    entryInstanceId: string;
-    value?: (typeof reviewableEntries)[number]["value"];
-    blockers: typeof sourceBlockers;
-  }>();
-  for (const blocker of sourceBlockers) {
-    const exactEntry = blocker.entryInstanceId
-      ? entriesByInstanceId.get(blocker.entryInstanceId)
-      : undefined;
-    const logicalMatches = exactEntry ? [] : reviewableEntries.filter((entry) =>
-      entry.category === blocker.category && entry.entryKey === canonicalReviewKey(blocker.entryKey));
-    const entry = exactEntry ?? (logicalMatches.length === 1 ? logicalMatches[0] : undefined);
-    const targetKey = entry?.entryInstanceId ?? blocker.entryInstanceId ?? blocker.id;
-    const existing = sourceTargets.get(targetKey);
-    if (existing) {
-      existing.blockers.push(blocker);
-      continue;
-    }
-    sourceTargets.set(targetKey, {
-      category: blocker.category as Exclude<ProjectKnowledgeDraftBlocker["category"], "hard_conflict">,
-      entryKey: entry?.entryKey ?? canonicalReviewKey(blocker.entryKey),
-      entryInstanceId: targetKey,
-      ...(entry ? { value: entry.value } : {}),
-      blockers: [blocker],
-    });
-  }
-  const hardConflictBlockers = blockers.filter((blocker) => blocker.type === "hard_conflict");
-  if (!sourceTargets.size && !hardConflictBlockers.length) return { entries: [], sources: [] };
-
-  const referencedSnapshotIds = new Set<string>();
-  const referencedWorkItemIds = new Set<string>();
-  for (const blocker of blockers) {
-    if (blocker.type === "replay_conflict") continue;
-    if (blocker.type === "hard_conflict") {
-      for (const participant of blocker.participants) {
-        for (const snapshotId of participant.sourceSnapshotIds ?? []) referencedSnapshotIds.add(snapshotId);
-        for (const workItemId of participant.sourceWorkItemIds ?? []) referencedWorkItemIds.add(workItemId);
-        for (const ref of participant.evidenceRefs ?? []) {
-          referencedSnapshotIds.add(ref.sourceSnapshotId);
-          referencedWorkItemIds.add(ref.sourceWorkItemId);
-        }
-      }
-      continue;
-    }
-    for (const workItemId of blocker.sourceWorkItemIds) referencedWorkItemIds.add(workItemId);
-    if ("sourceSnapshotId" in blocker && blocker.sourceSnapshotId) {
-      referencedSnapshotIds.add(blocker.sourceSnapshotId);
-    }
-  }
-  const manifest = ProjectKnowledgeSourceManifestSchema.parse(asArray(row.source_manifest_json));
-  const relevantManifest = manifest.filter((entry) =>
-    referencedSnapshotIds.has(entry.sourceSnapshotId) || referencedWorkItemIds.has(entry.sourceWorkItemId));
-  for (const entry of relevantManifest) referencedSnapshotIds.add(entry.sourceSnapshotId);
-  // Only blocker-referenced snapshots are serialized to the client; the wider pool
-  // loaded below for suggestion search stays server-side.
-  const displaySnapshotIds = new Set(referencedSnapshotIds);
-  // Guided re-anchor needs the whole manifest pool: an entry's legacy evidence may
-  // only exist in a source the LLM never cited, and the suggestion search is gated
-  // on uniqueness across every loadable snapshot of this draft.
-  const wantsEvidenceSuggestions = Array.from(sourceTargets.values())
-    .some((target) => target.value && !target.value.evidenceRefs?.length);
-  if (wantsEvidenceSuggestions) {
-    for (const entry of manifest) referencedSnapshotIds.add(entry.sourceSnapshotId);
-  }
-  const snapshots = await loadEvidenceSnapshotsByIds(scope, Array.from(referencedSnapshotIds));
-  // Suggestions must anchor only to the draft's frozen manifest — a blocker-referenced
-  // snapshot can be superseded content the current source contradicts.
-  const manifestSnapshotIds = new Set(manifest.map((entry) => entry.sourceSnapshotId));
-  const suggestionSnapshots = snapshots.filter((snapshot) => manifestSnapshotIds.has(snapshot.id));
-  const manifestBySnapshotId = new Map(manifest.map((entry) => [entry.sourceSnapshotId, entry]));
-  const reviewSource = (
-    snapshot: ProjectKnowledgeEvidenceSnapshot,
-    allowedFields: readonly ProjectKnowledgeEvidenceRef["sourceField"][] = PROJECT_KNOWLEDGE_SOURCE_FIELDS,
-  ) => {
-    const metadata = manifestBySnapshotId.get(snapshot.id);
-    return {
-      sourceSnapshotId: snapshot.id,
-      sourceWorkItemId: snapshot.sourceWorkItemId,
-      workItemType: metadata?.workItemType ?? "Work item",
-      workItemTitle: reviewSourceFieldText(snapshot.fields, "title") || `Work item ${snapshot.sourceWorkItemId}`,
-      workItemUrl: buildAzureWorkItemUrl(scope, snapshot.sourceWorkItemId),
-      adoRevision: metadata?.adoRevision ?? null,
-      sourceUpdatedAt: metadata?.sourceUpdatedAt ?? null,
-      capturedAt: metadata?.capturedAt ?? null,
-      fields: allowedFields.flatMap((sourceField) => {
-        const text = reviewSourceFieldText(snapshot.fields, sourceField);
-        return text ? [{ sourceField, text }] : [];
-      }),
-    };
-  };
-  return {
-    entries: Array.from(sourceTargets.values()).map((target) => {
-      const allowedFields = target.category === "business_rule"
-        ? PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS
-        : PROJECT_KNOWLEDGE_SOURCE_FIELDS;
-      const affectedWorkItemIds = new Set([
-        ...(target.value?.sourceWorkItemIds ?? []),
-        ...(target.value?.evidenceRefs ?? []).map((ref) => ref.sourceWorkItemId),
-        ...target.blockers.flatMap((blocker) => blocker.sourceWorkItemIds),
-      ].filter(Boolean));
-      const expectedSnapshotIds = new Set([
-        ...(target.value?.evidenceRefs ?? []).map((ref) => ref.sourceSnapshotId),
-        ...target.blockers.flatMap((blocker) =>
-          "sourceSnapshotId" in blocker && blocker.sourceSnapshotId ? [blocker.sourceSnapshotId] : []),
-      ]);
-      for (const manifestEntry of manifest) {
-        if (affectedWorkItemIds.has(manifestEntry.sourceWorkItemId)) {
-          expectedSnapshotIds.add(manifestEntry.sourceSnapshotId);
-        }
-      }
-      const matchingSnapshots = snapshots.filter((snapshot) =>
-        affectedWorkItemIds.size
-          ? affectedWorkItemIds.has(snapshot.sourceWorkItemId)
-          : expectedSnapshotIds.has(snapshot.id));
-      const sources = matchingSnapshots.map((snapshot) => reviewSource(snapshot, allowedFields));
-      const missingExpectedSnapshot = Array.from(expectedSnapshotIds)
-        .some((snapshotId) => !snapshots.some((snapshot) => snapshot.id === snapshotId));
-      const sourceAvailability = sources.some((source) => source.fields.length)
-        ? "available" as const
-        : sources.length
-          ? "empty_fields" as const
-          : missingExpectedSnapshot
-            ? "snapshot_missing" as const
-            : "unmatched_work_item" as const;
-      const suggestedEvidence = target.value && !target.value.evidenceRefs?.length
-        ? suggestEvidenceAnchors(target.value.evidence, suggestionSnapshots, allowedFields)
-        : undefined;
-      return {
-        category: target.category,
-        entryKey: target.entryKey,
-        entryInstanceId: target.entryInstanceId,
-        sourceAvailability,
-        affectedWorkItemIds: Array.from(affectedWorkItemIds).sort(),
-        sources,
-        ...(suggestedEvidence ? { suggestedEvidence } : {}),
-      };
-    }),
-    sources: snapshots
-      .filter((snapshot) => displaySnapshotIds.has(snapshot.id))
-      .map((snapshot) => reviewSource(snapshot)),
-  };
-}
-
-// A suggestion is offered only when EVERY legacy evidence fragment anchors uniquely
-// somewhere in the draft's snapshot pool — one accepted suggestion fully resolves the
-// blocker. Partial matches stay manual so the reviewer never publishes half-anchored
-// evidence without seeing it.
-function suggestEvidenceAnchors(
-  evidence: string,
-  snapshots: ProjectKnowledgeEvidenceSnapshot[],
-  allowedFields: readonly ProjectKnowledgeEvidenceRef["sourceField"][],
-) {
-  const fragments = splitProjectKnowledgeLegacyEvidence(evidence);
-  if (!fragments.length) return undefined;
-  const anchors = fragments.map((fragment) =>
-    findUniqueProjectKnowledgeEvidenceAnchor(snapshots, allowedFields, fragment));
-  if (anchors.some((anchor) => !anchor)) return undefined;
-  return anchors.map((anchor) => ({
-    sourceSnapshotId: anchor!.sourceSnapshotId,
-    sourceWorkItemId: anchor!.sourceWorkItemId,
-    sourceField: anchor!.sourceField,
-    quote: anchor!.quote,
-    verification: anchor!.verification,
-  }));
-}
-
-function buildAzureWorkItemUrl(scope: ProjectScope, workItemId: string) {
-  const organizationUrl = scope.azureOrganizationUrl.replace(/\/+$/, "");
-  return `${organizationUrl}/${encodeURIComponent(scope.azureProjectName)}/_workitems/edit/${encodeURIComponent(workItemId)}`;
-}
 
 export async function abandonProjectKnowledgeDraft(input: {
   scope: ProjectScope;
@@ -1478,18 +1159,9 @@ export async function markProjectKnowledgeSourceDrift(
   await sqlRun(
     `
       UPDATE project_knowledge_drafts
-      SET pending_drift = true,
-          status = CASE
-            WHEN status IN ('awaiting_input', 'ready_for_review') THEN 'rebase_required'
-            ELSE status
-          END,
-          status_reason = CASE
-            WHEN status IN ('awaiting_input', 'ready_for_review') THEN 'source_drift'
-            ELSE status_reason
-          END,
-          updated_at = @now
+      SET pending_drift = true, updated_at = @now
       WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-        AND status IN ('generating', 'awaiting_input', 'ready_for_review')
+        AND status IN ('generating', 'awaiting_input', 'ready_for_review', 'ready_to_publish', 'blocked')
     `,
     { projectId: scope.projectId, azureProjectId: scope.azureProjectId, now },
     client,
@@ -1529,13 +1201,14 @@ export async function loadCurrentProjectKnowledgeSourceManifest(
   })));
 }
 
-async function loadCurrentKnowledge(scope: ProjectScope, client?: PoolClient) {
+async function loadCurrentKnowledge(scope: ProjectScope, client?: PoolClient, forUpdate = false) {
   return sqlGet<CurrentKnowledgeRow>(
     `
       SELECT id, active_revision_id, validated_output, semantic_hash, provenance_hash
       FROM project_knowledge_base
       WHERE project_id = @projectId AND azure_project_id = @azureProjectId
       LIMIT 1
+      ${forUpdate ? "FOR UPDATE" : ""}
     `,
     { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
     client,
@@ -1835,103 +1508,6 @@ function buildHardConflictBlockers(conflicts: ProjectKnowledgeHardConflict[]) {
   });
 }
 
-function hardConflictParticipantInstanceIds(conflicts: ProjectKnowledgeHardConflict[]) {
-  return new Set(conflicts.flatMap((conflict) => conflict.participants.map((participant) =>
-    projectKnowledgeEntryInstanceId({
-      category: participant.category,
-      entryKey: participant.entryKey,
-      projection: participant.projection,
-      evidence: participant.evidence,
-      sourceWorkItemIds: participant.sourceWorkItemIds,
-      evidenceRefs: participant.evidenceRefs,
-    }))));
-}
-
-function hardConflictParticipantIdentities(conflicts: ProjectKnowledgeHardConflict[]) {
-  return new Set(conflicts.flatMap((conflict) => conflict.participants.map((participant) =>
-    `${participant.category}:${canonicalReviewKey(participant.entryKey)}`)));
-}
-
-function buildEvidenceReviewBlockers(
-  knowledgeBase: ProjectKnowledgeBase,
-  verificationBlockers: ProjectKnowledgeVerificationBlocker[],
-  conflicts: ProjectKnowledgeHardConflict[],
-) {
-  const entries = projectKnowledgeEntryInstances(knowledgeBase);
-  const suppressedIdentities = hardConflictParticipantIdentities(conflicts);
-  const occurrences = new Map<string, number>();
-
-  return verificationBlockers.flatMap((blocker) => {
-    const logicalIdentity = `${blocker.category}:${canonicalReviewKey(blocker.entryKey)}`;
-    if (suppressedIdentities.has(logicalIdentity)) return [];
-
-    const candidates = entries.filter((entry) =>
-      entry.category === blocker.category && canonicalReviewKey(entry.entryKey) === canonicalReviewKey(blocker.entryKey));
-    const matchingCandidateRefs = candidates.flatMap((entry) =>
-      (entry.entry.evidenceRefs ?? []).filter((ref) =>
-        ref.sourceSnapshotId === blocker.sourceSnapshotId &&
-        ref.sourceWorkItemId === blocker.sourceWorkItemId &&
-        ref.sourceField === blocker.sourceField)
-        .map((ref) => ({
-          entryInstanceId: entry.entryInstanceId,
-          referenceIdentity: hashCanonicalValue({
-            sourceSnapshotId: ref.sourceSnapshotId,
-            sourceWorkItemId: ref.sourceWorkItemId,
-            sourceField: ref.sourceField,
-            quote: ref.quote,
-            origin: ref.origin,
-          }),
-        })));
-    const candidateRefs = matchingCandidateRefs.length
-      ? matchingCandidateRefs
-      : candidates.map((entry) => ({
-          entryInstanceId: entry.entryInstanceId,
-          referenceIdentity: hashCanonicalValue({
-            sourceSnapshotId: blocker.sourceSnapshotId,
-            sourceWorkItemId: blocker.sourceWorkItemId,
-            sourceField: blocker.sourceField,
-          }),
-        }));
-    const occurrenceKey = [
-      logicalIdentity,
-      blocker.type,
-      blocker.sourceSnapshotId,
-      blocker.sourceWorkItemId,
-      blocker.sourceField,
-    ].join(":");
-    const occurrence = occurrences.get(occurrenceKey) ?? 0;
-    occurrences.set(occurrenceKey, occurrence + 1);
-    const candidate = candidateRefs[occurrence % Math.max(1, candidateRefs.length)];
-    const entryInstanceId = candidate?.entryInstanceId ?? projectKnowledgeEntryInstanceId({
-      category: blocker.category as ProjectKnowledgeEntryCategory,
-      entryKey: blocker.entryKey,
-      projection: null,
-      provenance: {
-        sourceSnapshotId: blocker.sourceSnapshotId,
-        sourceWorkItemId: blocker.sourceWorkItemId,
-        sourceField: blocker.sourceField,
-      },
-    });
-    const referenceIdentity = candidate?.referenceIdentity ?? hashCanonicalValue({
-      sourceSnapshotId: blocker.sourceSnapshotId,
-      sourceWorkItemId: blocker.sourceWorkItemId,
-      sourceField: blocker.sourceField,
-    });
-    return [{
-      ...blocker,
-      id: projectKnowledgeBlockerId({
-        ...blocker,
-        entryInstanceId,
-        referenceIdentity,
-        detailDiscriminator: String(occurrence + 1),
-      }),
-      entryInstanceId,
-      referenceIdentity,
-      sourceWorkItemIds: [blocker.sourceWorkItemId],
-    }];
-  });
-}
-
 async function persistProjectKnowledgeHardConflicts(
   scope: ProjectScope,
   draftId: string,
@@ -1974,7 +1550,7 @@ async function persistProjectKnowledgeHardConflicts(
 }
 
 // Deliberately strict: only normalization-identical entries merge here. This runs on
-// every draft completion, including the resolve/rebase re-check boundary where entries
+// every draft completion, including the compact-decision boundary where entries
 // reflect explicit reviewer decisions — an evidence-identity paraphrase fallback (see
 // shouldAutomaticallyConsolidate in project-knowledge.service.ts) would silently
 // override reviewer wording. Compiler-produced paraphrases are merged upstream instead.
@@ -2073,26 +1649,6 @@ function comparableProjection(...values: Array<string | undefined>) {
     value?.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ") ?? ""));
 }
 
-function reviewableKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase) {
-  return flattenProjectKnowledgeSemanticEntries(knowledgeBase).map((entry) => ({
-    category: entry.category,
-    entryKey: canonicalReviewKey(entry.entryKey),
-    entryInstanceId: projectKnowledgeEntryInstanceId(entry),
-    value: entry.entry,
-  }));
-}
-
-function canonicalReviewKey(value: string) {
-  return value.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-function reviewSourceFieldText(fields: Record<string, unknown>, sourceField: string) {
-  const value = fields[sourceField];
-  if (typeof value === "string") return value;
-  if (value === undefined || value === null) return "";
-  return sourceField === "metadata" ? JSON.stringify(value) : String(value);
-}
-
 function numberMetric(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -2109,59 +1665,6 @@ function knowledgeEntryKeysForSources(
     }
   }
   return keys;
-}
-
-function validateTouchedV2Knowledge(
-  knowledgeBase: ProjectKnowledgeBase,
-  touchedKeys?: Set<string>,
-  suppressedEntryInstanceIds = new Set<string>(),
-) {
-  const blockers: ProjectKnowledgeDraftBlocker[] = [];
-  for (const entry of flattenProjectKnowledgeSemanticEntries(knowledgeBase)) {
-    const identity = `${entry.category}:${entry.entryKey}`;
-    if (touchedKeys && !touchedKeys.has(identity)) continue;
-    const entryInstanceId = projectKnowledgeEntryInstanceId(entry);
-    const suppressEvidenceBlocker = suppressedEntryInstanceIds.has(entryInstanceId);
-    if (!suppressEvidenceBlocker && !entry.evidenceRefs.length) {
-      blockers.push({
-        id: projectKnowledgeBlockerId({
-          type: "missing_evidence_refs",
-          category: entry.category,
-          entryKey: entry.entryKey,
-          entryInstanceId,
-          detailDiscriminator: "missing-evidence",
-        }),
-        type: "missing_evidence_refs",
-        category: entry.category,
-        entryKey: entry.entryKey,
-        entryInstanceId,
-        sourceWorkItemIds: entry.sourceWorkItemIds,
-        message: "This entry needs at least one immutable evidence reference before it can be published.",
-      });
-    }
-    if (entry.category === "business_rule") {
-      const rule = entry.entry as ProjectKnowledgeBase["businessRules"][number];
-      if (PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS.includes(
-        rule.sourceField as (typeof PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS)[number],
-      )) continue;
-      blockers.push({
-        id: projectKnowledgeBlockerId({
-          type: "invalid_business_rule_source_field",
-          category: "business_rule",
-          entryKey: entry.entryKey,
-          entryInstanceId,
-          sourceField: rule.sourceField,
-        }),
-        type: "invalid_business_rule_source_field",
-        category: "business_rule",
-        entryKey: entry.entryKey,
-        entryInstanceId,
-        sourceWorkItemIds: entry.sourceWorkItemIds,
-        message: "A v2 business rule sourceField must be title, description, acceptanceCriteria, or metadata.",
-      });
-    }
-  }
-  return blockers;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -2196,27 +1699,19 @@ function draftNotFound() {
   });
 }
 
-function staleDraftError() {
-  return new AppError({
-    code: AppErrorCode.KnowledgeDraftConflict,
-    message: "Project knowledge changed after draft generation.",
-    userMessage: "The sources or published knowledge changed after this preview. Rebase or regenerate the draft.",
-  });
-}
-
 function draftStateConflict(status: string) {
   return new AppError({
     code: AppErrorCode.KnowledgeDraftConflict,
     message: `Project knowledge draft cannot transition from ${status}.`,
-    userMessage: "This draft is no longer publishable. Refresh its status and regenerate or rebase it.",
+    userMessage: "This draft is no longer publishable. Refresh its status and start a new build.",
   });
 }
 
 function publicationBlocked() {
   return new AppError({
     code: AppErrorCode.KnowledgePublicationBlocked,
-    message: "Project knowledge draft has unresolved publication blockers.",
-    userMessage: "Resolve the draft's evidence or contradiction blockers before publishing.",
+    message: "Project knowledge draft has unresolved semantic conflicts.",
+    userMessage: "Resolve every knowledge conflict before publishing.",
   });
 }
 
@@ -2225,20 +1720,5 @@ function contractMismatch() {
     code: AppErrorCode.KnowledgeContractMismatch,
     message: "Project knowledge draft uses an incompatible compiler contract.",
     userMessage: "The compiler contract changed after this draft was created. Regenerate the draft.",
-  });
-}
-
-function isLiveChildUniqueViolation(error: unknown) {
-  if (!error || typeof error !== "object") return false;
-  const databaseError = error as { code?: unknown; constraint?: unknown };
-  return databaseError.code === "23505" &&
-    (databaseError.constraint === "idx_knowledge_drafts_one_live_child" || !databaseError.constraint);
-}
-
-function liveChildConflict() {
-  return new AppError({
-    code: AppErrorCode.KnowledgeDraftConflict,
-    message: "A non-terminal child draft already exists for this parent.",
-    userMessage: "This draft has already been rebased. Open its existing child draft.",
   });
 }

@@ -13,11 +13,20 @@ import {
 import { nowIso, sqlAll, sqlGet } from "@/modules/shared/infrastructure/database/db";
 import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import {
-  PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE,
   ProjectKnowledgeBaseSchema,
-  haveIdenticalNonEmptyEvidenceContent,
   type ProjectKnowledgeBase,
 } from "./project-knowledge.schema";
+import {
+  buildProjectKnowledgeCitationSources,
+  generatedProjectKnowledgeForOmissions,
+  groundGeneratedProjectKnowledge,
+  PROJECT_KNOWLEDGE_GENERATED_OUTPUT_SHAPE,
+  ProjectKnowledgeGeneratedBaseSchema,
+  projectKnowledgeBaseToGeneratedPrompt,
+  type ProjectKnowledgeGeneratedBase,
+  type ProjectKnowledgeGroundingOmission,
+} from "./project-knowledge-grounding";
+import { projectKnowledgeCanonicalSourceText } from "./project-knowledge-source-text";
 import {
   mergeProjectKnowledgeConflictEntries,
   type ProjectKnowledgeConsolidationCategory,
@@ -28,7 +37,10 @@ import {
   isCompatibleProjectKnowledgeParaphrase,
   projectKnowledgeConsolidationCandidateKeys,
 } from "./project-knowledge-wording-carryover";
-import { canonicalizeProjectKnowledgeLogicalIdentity } from "./project-knowledge-contracts";
+import {
+  canonicalizeProjectKnowledgeLogicalIdentity,
+  PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
+} from "./project-knowledge-contracts";
 import {
   recordProjectKnowledgeLog,
   type ProjectKnowledgeCompilationMode,
@@ -41,13 +53,11 @@ import {
   failProjectKnowledgeDraft,
   getProjectKnowledgeDraft,
   heartbeatProjectKnowledgeDraft,
-  loadCurrentProjectKnowledgeSourceManifest,
   loadProjectKnowledgeManualBatchResults,
   publishProjectKnowledgeDraft,
   setProjectKnowledgeDraftCompilationMode,
   storeProjectKnowledgeManualDraftBatches,
   saveProjectKnowledgeManualBatchResult,
-  tryDeterministicProjectKnowledgeRebase,
   type ProjectKnowledgeDraft,
 } from "./project-knowledge-draft.service";
 
@@ -179,6 +189,9 @@ export type ProjectKnowledgeGeneratedDraft = {
   renderedPromptChars: number;
   automaticDuplicateConsolidationCount: number;
   wordingCarryOverCount: number;
+  omittedEntryCount: number;
+  omissionReasons: Record<string, number>;
+  citationRepairCallCount: number;
 };
 
 export async function extractAndSaveProjectKnowledgeBase(input: {
@@ -218,18 +231,35 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
   actor: string;
   provider: LLMProvider;
   mode?: ProjectKnowledgeCompileMode;
-  parentDraftId?: string;
   baseKnowledgeBase?: ProjectKnowledgeBase;
+  signal?: AbortSignal;
+  onProgress?: (progress: { phase: string; completed?: number; total?: number; draftId?: string }) => Promise<void>;
+  existingDraftId?: string;
+  preserveDraftOnError?: boolean;
+  batchCache?: {
+    load: (batchIndex: number) => Promise<unknown | null>;
+    save: (batchIndex: number, result: Record<string, unknown>) => Promise<void>;
+  };
 }): Promise<ProjectKnowledgeGeneratedDraft> {
   const scope = assertProjectScope(input.scope);
   const startedAt = Date.now();
-  const persistedDraft = await beginProjectKnowledgeDraft({
-    scope,
-    actor: input.actor,
-    generationMode: "automatic",
-    compilationMode: input.mode ?? "incremental",
-    parentDraftId: input.parentDraftId,
-  });
+  const persistedDraft = input.existingDraftId
+    ? await getProjectKnowledgeDraft({ scope, draftId: input.existingDraftId })
+    : await beginProjectKnowledgeDraft({
+        scope,
+        actor: input.actor,
+        generationMode: "automatic",
+        compilationMode: input.mode ?? "incremental",
+      });
+  if (!persistedDraft || (input.existingDraftId && persistedDraft.persistedStatus !== "generating")) {
+    throw new AppError({
+      code: AppErrorCode.KnowledgeDraftConflict,
+      message: "The resumable frozen draft is unavailable or no longer generating.",
+      userMessage: "The background build can no longer resume this draft. Start a new build.",
+    });
+  }
+  await input.onProgress?.({ phase: "loading_frozen_sources", draftId: persistedDraft.id });
+  input.signal?.throwIfAborted();
   const workItems = await loadProjectKnowledgeWorkItemsFromManifest(scope, persistedDraft.sourceManifest);
   if (!workItems.length) {
     await failProjectKnowledgeDraft({ scope, draftId: persistedDraft.id, reason: "missing_source_snapshots" });
@@ -243,6 +273,8 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
     workItems,
     mode: input.mode ?? "incremental",
   });
+  await input.onProgress?.({ phase: "preparing_frozen_build", draftId: persistedDraft.id });
+  input.signal?.throwIfAborted();
 
   if (selection.mode === "incremental" && !selection.workItems.length) {
     const existingSnapshot = await getProjectKnowledgeBaseSnapshot({ scope });
@@ -290,6 +322,9 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
       renderedPromptChars: 0,
       automaticDuplicateConsolidationCount: consolidation.automaticDuplicateConsolidationCount,
       wordingCarryOverCount: 0,
+      omittedEntryCount: 0,
+      omissionReasons: {},
+      citationRepairCallCount: 0,
     };
     return completeGeneratedPreview({
       scope,
@@ -307,7 +342,17 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
     workItems: selection.workItems,
     mode: selection.mode,
     existingKnowledgeBase,
-    onBatchCompleted: () => heartbeatProjectKnowledgeDraft({ scope, draftId: persistedDraft.id }),
+    signal: input.signal,
+    batchCache: input.batchCache,
+    onBatchCompleted: async (completed, total) => {
+      await heartbeatProjectKnowledgeDraft({ scope, draftId: persistedDraft.id });
+      await input.onProgress?.({
+        phase: "compiling_batches",
+        completed,
+        total,
+        draftId: persistedDraft.id,
+      });
+    },
   });
   const incrementalConsolidation = selection.mode === "incremental"
     ? mergeIncrementalProjectKnowledgeBase({
@@ -361,7 +406,12 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
     renderedPromptChars: result.renderedPromptChars,
     automaticDuplicateConsolidationCount,
     wordingCarryOverCount: carryOver.wordingCarryOverCount,
+    omittedEntryCount: result.omittedEntryCount,
+    omissionReasons: result.omissionReasons,
+    citationRepairCallCount: result.citationRepairCallCount,
   };
+  await input.onProgress?.({ phase: "validating_citations", draftId: persistedDraft.id });
+  input.signal?.throwIfAborted();
   return completeGeneratedPreview({
     scope,
     draftId: persistedDraft.id,
@@ -370,106 +420,17 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
     startedAt,
   });
   } catch (error) {
-    await failProjectKnowledgeDraft({
-      scope,
-      draftId: persistedDraft.id,
-      reason: error instanceof Error ? error.message : "generation_failed",
-    });
+    if (input.signal?.aborted || !input.preserveDraftOnError) {
+      await failProjectKnowledgeDraft({
+        scope,
+        draftId: persistedDraft.id,
+        reason: input.signal?.aborted
+          ? "cancelled"
+          : error instanceof Error ? error.message : "generation_failed",
+      });
+    }
     throw error;
   }
-}
-
-export async function rebaseProjectKnowledgeDraft(input: {
-  scope: ProjectScope;
-  actor: string;
-  provider: LLMProvider;
-  parentDraftId: string;
-}) {
-  const parent = await getProjectKnowledgeDraft({ scope: input.scope, draftId: input.parentDraftId });
-  if (!parent) {
-    throw new AppError({
-      code: AppErrorCode.ResourceNotFound,
-      message: "The parent knowledge draft was not found in the active project.",
-      userMessage: "The parent knowledge draft was not found.",
-    });
-  }
-  if (parent.generationMode === "manual") {
-    const preparation = await buildProjectKnowledgeManualDraft({
-      scope: input.scope,
-      actor: input.actor,
-      mode: parent.compilationMode === "incremental" ? "incremental" : "full",
-      parentDraftId: parent.id,
-    });
-    const child = await getProjectKnowledgeDraft({ scope: input.scope, draftId: preparation.draftId });
-    if (!child) throw new Error("The manual rebased child draft was not persisted.");
-    return { ...child, manualPreparation: preparation };
-  }
-  const replay = await tryDeterministicProjectKnowledgeRebase({
-    scope: input.scope,
-    actor: input.actor,
-    parentDraftId: input.parentDraftId,
-  });
-  if (replay.kind === "replayed") {
-    if (replay.draft.persistedStatus !== "ready_for_review") return replay.draft;
-    return publishProjectKnowledgeDraft({
-      scope: input.scope,
-      actor: input.actor,
-      draftId: replay.draft.id,
-      publicationIntent: "automatic_provenance_refresh",
-    });
-  }
-  if (!parent.proposedKnowledge) {
-    throw new AppError({
-      code: AppErrorCode.KnowledgeDraftConflict,
-      message: "The parent draft has no proposal to reconcile.",
-      userMessage: "This draft has no proposal to rebase. Regenerate it.",
-    });
-  }
-  const currentManifest = await loadCurrentProjectKnowledgeSourceManifest(input.scope);
-  const refreshedParentKnowledge = refreshUnchangedProjectKnowledgeProvenance({
-    knowledgeBase: parent.proposedKnowledge,
-    previousManifest: parent.sourceManifest,
-    currentManifest,
-  });
-  const generated = await previewGeneratedProjectKnowledgeBase({
-    scope: input.scope,
-    actor: input.actor,
-    provider: input.provider,
-    mode: "incremental",
-    parentDraftId: input.parentDraftId,
-    baseKnowledgeBase: refreshedParentKnowledge,
-  });
-  const child = await getProjectKnowledgeDraft({ scope: input.scope, draftId: generated.draftId });
-  if (!child) throw new Error("The rebased child draft was not persisted.");
-  if (child.persistedStatus !== "ready_for_review") return child;
-  return publishProjectKnowledgeDraft({
-    scope: input.scope,
-    actor: input.actor,
-    draftId: child.id,
-    publicationIntent: "automatic_provenance_refresh",
-  });
-}
-
-function refreshUnchangedProjectKnowledgeProvenance(input: {
-  knowledgeBase: ProjectKnowledgeBase;
-  previousManifest: ProjectKnowledgeDraft["sourceManifest"];
-  currentManifest: ProjectKnowledgeDraft["sourceManifest"];
-}) {
-  const previousBySnapshot = new Map(input.previousManifest.map((entry) => [entry.sourceSnapshotId, entry]));
-  const currentByWorkItem = new Map(input.currentManifest.map((entry) => [entry.sourceWorkItemId, entry]));
-  const refreshRefs = (refs: ProjectKnowledgeBase["modules"][number]["evidenceRefs"]) => refs?.map((ref) => {
-    const previous = previousBySnapshot.get(ref.sourceSnapshotId);
-    const current = currentByWorkItem.get(ref.sourceWorkItemId);
-    if (!previous || !current || previous.contentHash !== current.contentHash) return ref;
-    return { ...ref, sourceSnapshotId: current.sourceSnapshotId };
-  });
-  return ProjectKnowledgeBaseSchema.parse({
-    modules: input.knowledgeBase.modules.map((entry) => ({ ...entry, evidenceRefs: refreshRefs(entry.evidenceRefs) })),
-    businessRules: input.knowledgeBase.businessRules.map((entry) => ({ ...entry, evidenceRefs: refreshRefs(entry.evidenceRefs) })),
-    stateTransitions: input.knowledgeBase.stateTransitions.map((entry) => ({ ...entry, evidenceRefs: refreshRefs(entry.evidenceRefs) })),
-    glossary: input.knowledgeBase.glossary.map((entry) => ({ ...entry, evidenceRefs: refreshRefs(entry.evidenceRefs) })),
-    crossDependencies: input.knowledgeBase.crossDependencies.map((entry) => ({ ...entry, evidenceRefs: refreshRefs(entry.evidenceRefs) })),
-  });
 }
 
 export async function saveGeneratedProjectKnowledgeBaseDraft(input: {
@@ -507,6 +468,9 @@ async function completeGeneratedPreview(input: {
       conflictCount: null,
       automaticDuplicateConsolidationCount: input.generated.automaticDuplicateConsolidationCount,
       wordingCarryOverCount: input.generated.wordingCarryOverCount,
+      omittedEntryCount: input.generated.omittedEntryCount,
+      omissionReasons: input.generated.omissionReasons,
+      citationRepairCallCount: input.generated.citationRepairCallCount,
     },
     touchedSourceWorkItemIds: input.generated.mode === "full"
       ? input.sourceWorkItems.map((item) => item.id)
@@ -607,7 +571,6 @@ export async function buildProjectKnowledgeManualDraft(input: {
   scope: ProjectScope;
   actor?: string;
   mode?: ProjectKnowledgeCompileMode;
-  parentDraftId?: string;
 }) {
   const scope = assertProjectScope(input.scope);
   const persistedDraft = await beginProjectKnowledgeDraft({
@@ -615,7 +578,6 @@ export async function buildProjectKnowledgeManualDraft(input: {
     actor: input.actor ?? "system",
     generationMode: "manual",
     compilationMode: input.mode ?? "full",
-    parentDraftId: input.parentDraftId,
   });
   const workItems = await loadProjectKnowledgeWorkItemsFromManifest(scope, persistedDraft.sourceManifest);
   if (!workItems.length) {
@@ -632,10 +594,7 @@ export async function buildProjectKnowledgeManualDraft(input: {
     compilationMode: selection.mode,
   });
 
-  const parent = input.parentDraftId
-    ? await getProjectKnowledgeDraft({ scope, draftId: input.parentDraftId })
-    : null;
-  const existingKnowledgeBase = parent?.proposedKnowledge ?? await getSavedProjectKnowledgeBase({ scope });
+  const existingKnowledgeBase = await getSavedProjectKnowledgeBase({ scope });
   const batches = selection.workItems.length
     ? buildProjectKnowledgeExtractionJobs({
         scope,
@@ -679,7 +638,7 @@ export async function buildProjectKnowledgeManualDraft(input: {
   return {
     draftId: persistedDraft.id,
     draftStatus: persistedDraft.status,
-    schemaName: "ProjectKnowledgeBase",
+    schemaName: "ProjectKnowledgeGeneratedBase",
     promptName: projectKnowledgeExtractionPrompt.name,
     promptVersion: projectKnowledgeExtractionPrompt.version,
     requestedMode: selection.requestedMode,
@@ -710,7 +669,7 @@ export function buildProjectKnowledgeManualConsolidationPrompt(input: {
   });
 
   return {
-    schemaName: "ProjectKnowledgeBase",
+    schemaName: "ProjectKnowledgeGeneratedBase",
     promptName: projectKnowledgeConsolidationPrompt.name,
     promptVersion: projectKnowledgeConsolidationPrompt.version,
     systemPrompt: projectKnowledgeConsolidationPrompt.system,
@@ -727,6 +686,14 @@ export function validateProjectKnowledgeExternalOutput(rawOutput: string) {
   return parseExternalStructuredOutput({
     schemaName: "ProjectKnowledgeBase",
     schema: ProjectKnowledgeBaseSchema,
+    rawOutput,
+  });
+}
+
+export function validateProjectKnowledgeGeneratedExternalOutput(rawOutput: string) {
+  return parseExternalStructuredOutput({
+    schemaName: "ProjectKnowledgeGeneratedBase",
+    schema: ProjectKnowledgeGeneratedBaseSchema,
     rawOutput,
   });
 }
@@ -749,7 +716,11 @@ export async function saveManualProjectKnowledgeBaseSnapshot(input: {
     throw new Error("Fetch and index project context before saving the knowledge base.");
   }
 
-  const knowledgeBase = validateProjectKnowledgeExternalOutput(input.rawOutput);
+  const manualGrounding = groundManualProjectKnowledgeOutput({
+    rawOutput: input.rawOutput,
+    workItems,
+  });
+  const knowledgeBase = manualGrounding.knowledgeBase;
   const saveResult = await prepareProjectKnowledgeManualSave({
     scope,
     sourceWorkItems: workItems,
@@ -770,6 +741,9 @@ export async function saveManualProjectKnowledgeBaseSnapshot(input: {
       renderedPromptChars: 0,
       automaticDuplicateConsolidationCount: saveResult.automaticDuplicateConsolidationCount,
       wordingCarryOverCount: saveResult.wordingCarryOverCount,
+      omittedEntryCount: manualGrounding.omissions.length,
+      omissionReasons: manualGrounding.omissionReasons,
+      citationRepairCallCount: 0,
     },
     touchedSourceWorkItemIds: saveResult.mode === "full"
       ? workItems.map((item) => item.id)
@@ -798,6 +772,8 @@ export async function saveManualProjectKnowledgeBaseSnapshot(input: {
       counts: getKnowledgeCounts(saveResult.knowledgeBase),
       automaticDuplicateConsolidationCount: saveResult.automaticDuplicateConsolidationCount,
       wordingCarryOverCount: saveResult.wordingCarryOverCount,
+      omittedEntryCount: manualGrounding.omissions.length,
+      omissionReasons: manualGrounding.omissionReasons,
     },
   });
 
@@ -846,15 +822,11 @@ export async function saveManualProjectKnowledgeBaseFromBatches(input: {
     throw new Error("Validate at least one batch response before saving the knowledge base.");
   }
 
-  const parentDraft = draft.parentDraftId
-    ? await getProjectKnowledgeDraft({ scope, draftId: draft.parentDraftId })
-    : null;
   const saveResult = await prepareProjectKnowledgeManualSave({
     scope,
     sourceWorkItems: workItems,
     partialKnowledgeBases,
     mode: input.mode ?? "full",
-    previousKnowledgeBase: parentDraft?.proposedKnowledge ?? undefined,
   });
   const rawOutput = JSON.stringify({
     consolidationMode: "local-deterministic",
@@ -954,6 +926,18 @@ async function selectProjectKnowledgeWorkItemsForCompilation(input: {
     };
   }
 
+  if (existingSnapshot.compilerContractVersion !== PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION) {
+    return {
+      requestedMode: input.mode,
+      mode: "full",
+      fallbackReason: "This is the first v4 build, so every active source must be grounded with immutable citation handles.",
+      workItems: input.workItems,
+      changedSourceWorkItemIds: input.workItems.map((item) => item.id),
+      retiredSourceWorkItemIds: [],
+      affectedSourceWorkItemIds: input.workItems.map((item) => item.id),
+    };
+  }
+
   const previousSourceHashes = await loadLatestProjectKnowledgeSourceHashes(input.scope);
   if (!previousSourceHashes) {
     return selectProjectKnowledgeWorkItemsFromSnapshotTimestamp({
@@ -1017,12 +1001,6 @@ async function prepareProjectKnowledgeManualSave(input: {
   partialKnowledgeBases: ProjectKnowledgeBase[];
   rawOutput?: string;
   mode: ProjectKnowledgeCompileMode;
-  /**
-   * Wording baseline for the carry-over pass. Rebase children must pass the parent
-   * draft's reviewed proposal here — defaulting to the published snapshot would
-   * silently revert wording the reviewer already fixed on the parent.
-   */
-  previousKnowledgeBase?: ProjectKnowledgeBase | null;
 }) {
   const selection = await selectProjectKnowledgeWorkItemsForCompilation({
     scope: input.scope,
@@ -1046,7 +1024,7 @@ async function prepareProjectKnowledgeManualSave(input: {
       })
     : consolidateProjectKnowledgeBases(input.partialKnowledgeBases);
   const carryOver = carryOverProjectKnowledgeWording({
-    previousKnowledgeBase: input.previousKnowledgeBase ?? existingKnowledgeBase,
+    previousKnowledgeBase: existingKnowledgeBase,
     knowledgeBase: consolidation.knowledgeBase,
   });
   const knowledgeBase = carryOver.knowledgeBase;
@@ -1214,19 +1192,16 @@ function buildManualKnowledgePromptTitle(mode: ProjectKnowledgeCompileMode, batc
   return batchCount > 1 ? `${title} - Batch ${batchIndex} of ${batchCount}` : title;
 }
 
-function toPromptWorkItem(item: ProjectKnowledgeWorkItem) {
+function toPromptWorkItem(item: ProjectKnowledgeWorkItem, index: number) {
+  const citationSources = buildProjectKnowledgeCitationSources([item]);
   return {
-    id: item.id,
-    sourceSnapshotId: item.sourceSnapshotId,
+    sourceGroup: `source_${index + 1}`,
     workItemType: item.workItemType,
-    title: item.title,
-    state: item.state,
-    description: item.description,
-    acceptanceCriteria: item.acceptanceCriteria,
-    tags: item.tags,
-    areaPath: item.areaPath,
-    iterationPath: item.iterationPath,
-    updatedDate: item.updatedDate,
+    citationSources: citationSources.map(({ handle, sourceField, text }) => ({
+      handle,
+      sourceField,
+      text,
+    })),
   };
 }
 
@@ -1348,16 +1323,12 @@ function shouldAutomaticallyConsolidate<TCategory extends ProjectKnowledgeConsol
 ) {
   if (normalizedProjection(category, first) === normalizedProjection(category, second)) return true;
 
-  if ((category === "module" || category === "glossary") && haveSameNonEmptySnapshotSet(first, second)) {
-    return true;
-  }
-
-  // Paraphrase fallback: two same-identity entries whose evidence content (work item +
-  // field + quote, snapshot ids ignored) is identical differ only in LLM wording —
-  // unless a category guard (e.g. differing concrete business-rule values) says the
-  // disagreement is real and must surface as a hard conflict instead.
-  return haveIdenticalNonEmptyEvidenceContent(first.evidenceRefs, second.evidenceRefs) &&
-    isCompatibleProjectKnowledgeParaphrase(category, first, second);
+  // Candidate keys already establish that these entries describe the same logical
+  // subject. Different sources commonly express that subject at different levels of
+  // detail, so evidence identity is not required for consolidation. Category guards
+  // keep provable disagreements separate: concrete rule values, transition targets,
+  // and dependency endpoint/type tuples must still agree.
+  return isCompatibleProjectKnowledgeParaphrase(category, first, second);
 }
 
 function normalizedProjection<TCategory extends ProjectKnowledgeConsolidationCategory>(
@@ -1422,34 +1393,27 @@ function normalizeBusinessRuleSourceField(value: string) {
   return normalized;
 }
 
-function haveSameNonEmptySnapshotSet(
-  first: Pick<ProjectKnowledgeBase["modules"][number], "evidenceRefs">,
-  second: Pick<ProjectKnowledgeBase["modules"][number], "evidenceRefs">,
-) {
-  const firstSnapshotIds = sourceSnapshotIds(first);
-  const secondSnapshotIds = sourceSnapshotIds(second);
-  return firstSnapshotIds.length > 0 &&
-    firstSnapshotIds.length === secondSnapshotIds.length &&
-    firstSnapshotIds.every((snapshotId, index) => snapshotId === secondSnapshotIds[index]);
-}
-
-function sourceSnapshotIds(entry: Pick<ProjectKnowledgeBase["modules"][number], "evidenceRefs">) {
-  return Array.from(new Set((entry.evidenceRefs ?? []).map((ref) => ref.sourceSnapshotId))).sort();
-}
-
 async function extractProjectKnowledgeBase(input: {
   scope: ProjectScope;
   provider: LLMProvider;
   workItems: ProjectKnowledgeWorkItem[];
   mode: ProjectKnowledgeCompileMode;
   existingKnowledgeBase: ProjectKnowledgeBase | null;
-  onBatchCompleted?: () => Promise<void>;
+  signal?: AbortSignal;
+  onBatchCompleted?: (completed: number, total: number) => Promise<void>;
+  batchCache?: {
+    load: (batchIndex: number) => Promise<unknown | null>;
+    save: (batchIndex: number, result: Record<string, unknown>) => Promise<void>;
+  };
 }): Promise<LLMResult<ProjectKnowledgeBase> & {
   splitCallCount: number;
   modelInputTokenLimit: number;
   inputTokenLimitSource: string;
   renderedPromptChars: number;
   automaticDuplicateConsolidationCount: number;
+  omittedEntryCount: number;
+  omissionReasons: Record<string, number>;
+  citationRepairCallCount: number;
 }> {
   const jobs = buildProjectKnowledgeExtractionJobs({
     scope: input.scope,
@@ -1467,14 +1431,13 @@ async function extractProjectKnowledgeBase(input: {
     batchCount: jobs.length > 1 ? jobs.length : undefined,
   }), 0);
   if (jobs.length === 1) {
-    const result = await extractProjectKnowledgeBatch({
-      scope: input.scope,
-      provider: input.provider,
-      workItems: jobs[0].workItems,
-      relevantExistingKnowledge: jobs[0].relevantExistingKnowledge,
-      mode: input.mode,
+    const result = await loadOrExtractProjectKnowledgeBatch({
+      input,
+      job: jobs[0],
+      batchIndex: 1,
+      batchCount: 1,
     });
-    await input.onBatchCompleted?.();
+    await input.onBatchCompleted?.(1, 1);
     const consolidation = consolidateProjectKnowledgeBases([result.validatedOutput]);
     return {
       ...result,
@@ -1486,14 +1449,19 @@ async function extractProjectKnowledgeBase(input: {
         splitCallCount: 1,
         modelInputTokenLimit: input.provider.maxInputTokens ?? 16_000,
         inputTokenLimitSource: input.provider.inputTokenLimitSource ?? "unknown_fallback",
-        automaticDuplicateConsolidationCount: consolidation.automaticDuplicateConsolidationCount,
+        automaticDuplicateConsolidationCount:
+          result.automaticDuplicateConsolidationCount + consolidation.automaticDuplicateConsolidationCount,
         consolidatedKnowledgeBase: consolidation.knowledgeBase,
       }),
       splitCallCount: 1,
       modelInputTokenLimit: input.provider.maxInputTokens ?? 16_000,
       inputTokenLimitSource: input.provider.inputTokenLimitSource ?? "unknown_fallback",
       renderedPromptChars,
-      automaticDuplicateConsolidationCount: consolidation.automaticDuplicateConsolidationCount,
+      automaticDuplicateConsolidationCount:
+        result.automaticDuplicateConsolidationCount + consolidation.automaticDuplicateConsolidationCount,
+      omittedEntryCount: result.omittedEntryCount,
+      omissionReasons: result.omissionReasons,
+      citationRepairCallCount: result.citationRepairCallCount,
     };
   }
 
@@ -1503,16 +1471,13 @@ async function extractProjectKnowledgeBase(input: {
     const chunk = jobs.slice(start, start + KNOWLEDGE_BATCH_CONCURRENCY);
     const chunkResults = await Promise.all(
       chunk.map(async (job, offset) => {
-        const result = await extractProjectKnowledgeBatch({
-          scope: input.scope,
-          provider: input.provider,
-          workItems: job.workItems,
-          relevantExistingKnowledge: job.relevantExistingKnowledge,
-          mode: input.mode,
+        const result = await loadOrExtractProjectKnowledgeBatch({
+          input,
+          job,
           batchIndex: start + offset + 1,
           batchCount: jobs.length,
         });
-        await input.onBatchCompleted?.();
+        await input.onBatchCompleted?.(start + offset + 1, jobs.length);
         return result;
       }),
     );
@@ -1547,14 +1512,97 @@ async function extractProjectKnowledgeBase(input: {
       splitCallCount: jobs.length,
       modelInputTokenLimit: input.provider.maxInputTokens ?? 16_000,
       inputTokenLimitSource: input.provider.inputTokenLimitSource ?? "unknown_fallback",
-      automaticDuplicateConsolidationCount: consolidation.automaticDuplicateConsolidationCount,
+      automaticDuplicateConsolidationCount:
+        partialResults.reduce((total, result) => total + result.automaticDuplicateConsolidationCount, 0) +
+        consolidation.automaticDuplicateConsolidationCount,
       consolidatedKnowledgeBase: consolidation.knowledgeBase,
     }),
     splitCallCount: jobs.length,
     modelInputTokenLimit: input.provider.maxInputTokens ?? 16_000,
     inputTokenLimitSource: input.provider.inputTokenLimitSource ?? "unknown_fallback",
     renderedPromptChars,
-    automaticDuplicateConsolidationCount: consolidation.automaticDuplicateConsolidationCount,
+    automaticDuplicateConsolidationCount:
+      partialResults.reduce((total, result) => total + result.automaticDuplicateConsolidationCount, 0) +
+      consolidation.automaticDuplicateConsolidationCount,
+    omittedEntryCount: partialResults.reduce((total, result) => total + result.omittedEntryCount, 0),
+    omissionReasons: mergeCountMaps(partialResults.map((result) => result.omissionReasons)),
+    citationRepairCallCount: partialResults.reduce((total, result) => total + result.citationRepairCallCount, 0),
+  };
+}
+
+type ProjectKnowledgeExtractionBatchResult = LLMResult<ProjectKnowledgeBase> & {
+  automaticDuplicateConsolidationCount: number;
+  omittedEntryCount: number;
+  omissionReasons: Record<string, number>;
+  citationRepairCallCount: number;
+};
+
+async function loadOrExtractProjectKnowledgeBatch(input: {
+  input: {
+    scope: ProjectScope;
+    provider: LLMProvider;
+    mode: ProjectKnowledgeCompileMode;
+    signal?: AbortSignal;
+    batchCache?: {
+      load: (batchIndex: number) => Promise<unknown | null>;
+      save: (batchIndex: number, result: Record<string, unknown>) => Promise<void>;
+    };
+  };
+  job: ProjectKnowledgeExtractionJob;
+  batchIndex: number;
+  batchCount: number;
+}) {
+  const cached = parseCachedProjectKnowledgeBatch(
+    await input.input.batchCache?.load(input.batchIndex),
+  );
+  if (cached) return cached;
+  input.input.signal?.throwIfAborted();
+  const result = await extractProjectKnowledgeBatch({
+    scope: input.input.scope,
+    provider: input.input.provider,
+    workItems: input.job.workItems,
+    relevantExistingKnowledge: input.job.relevantExistingKnowledge,
+    mode: input.input.mode,
+    batchIndex: input.batchCount > 1 ? input.batchIndex : undefined,
+    batchCount: input.batchCount > 1 ? input.batchCount : undefined,
+    signal: input.input.signal,
+  });
+  await input.input.batchCache?.save(
+    input.batchIndex,
+    JSON.parse(JSON.stringify(result)) as Record<string, unknown>,
+  );
+  return result;
+}
+
+function parseCachedProjectKnowledgeBatch(value: unknown): ProjectKnowledgeExtractionBatchResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const validated = ProjectKnowledgeBaseSchema.safeParse(record.validatedOutput);
+  if (!validated.success) return null;
+  if (!["openai", "gemini", "anthropic"].includes(String(record.provider))) return null;
+  if (typeof record.model !== "string" || typeof record.rawOutput !== "string") return null;
+  const omissionReasons = record.omissionReasons && typeof record.omissionReasons === "object" && !Array.isArray(record.omissionReasons)
+    ? Object.fromEntries(Object.entries(record.omissionReasons as Record<string, unknown>)
+        .filter((entry): entry is [string, number] => typeof entry[1] === "number"))
+    : {};
+  const tokenUsage = record.tokenUsage && typeof record.tokenUsage === "object" && !Array.isArray(record.tokenUsage)
+    ? record.tokenUsage as LLMResult["tokenUsage"]
+    : undefined;
+  return {
+    provider: record.provider as LLMResult["provider"],
+    model: record.model,
+    rawOutput: record.rawOutput,
+    validatedOutput: validated.data,
+    tokenUsage,
+    warnings: Array.isArray(record.warnings)
+      ? record.warnings.filter((warning): warning is string => typeof warning === "string")
+      : undefined,
+    omittedEntryCount: typeof record.omittedEntryCount === "number" ? record.omittedEntryCount : 0,
+    omissionReasons,
+    citationRepairCallCount: typeof record.citationRepairCallCount === "number" ? record.citationRepairCallCount : 0,
+    automaticDuplicateConsolidationCount: typeof record.automaticDuplicateConsolidationCount === "number"
+      ? record.automaticDuplicateConsolidationCount
+      : 0,
   };
 }
 
@@ -1566,10 +1614,12 @@ async function extractProjectKnowledgeBatch(input: {
   mode: ProjectKnowledgeCompileMode;
   batchIndex?: number;
   batchCount?: number;
-}) {
-  return input.provider.generateStructuredOutput({
-    schemaName: "ProjectKnowledgeBase",
-    schema: ProjectKnowledgeBaseSchema,
+  signal?: AbortSignal;
+}): Promise<ProjectKnowledgeExtractionBatchResult> {
+  const citationSources = buildProjectKnowledgeCitationSources(input.workItems);
+  const generated = await input.provider.generateStructuredOutput({
+    schemaName: "ProjectKnowledgeGeneratedBase",
+    schema: ProjectKnowledgeGeneratedBaseSchema,
     system: projectKnowledgeExtractionPrompt.system,
     user: buildProjectKnowledgeExtractionUserPrompt({
       scope: input.scope,
@@ -1588,7 +1638,130 @@ async function extractProjectKnowledgeBatch(input: {
       azureProjectName: input.scope.azureProjectName,
       azureOrganizationUrl: input.scope.azureOrganizationUrl,
     },
+    signal: input.signal,
   });
+  const initialGrounding = groundGeneratedProjectKnowledge({
+    generated: generated.validatedOutput,
+    sources: citationSources,
+  });
+  let repaired: LLMResult<ProjectKnowledgeGeneratedBase> | null = null;
+  let repairGrounding: ReturnType<typeof groundGeneratedProjectKnowledge> | null = null;
+
+  if (initialGrounding.omissions.length) {
+    repaired = await input.provider.generateStructuredOutput({
+      schemaName: "ProjectKnowledgeGeneratedBase",
+      schema: ProjectKnowledgeGeneratedBaseSchema,
+      system: projectKnowledgeExtractionPrompt.system,
+      user: buildProjectKnowledgeCitationRepairPrompt({
+        generated: generated.validatedOutput,
+        omissions: initialGrounding.omissions,
+        citationSources,
+      }),
+      metadata: {
+        action: "project_knowledge.repair_citations",
+        promptName: projectKnowledgeExtractionPrompt.name,
+        promptVersion: projectKnowledgeExtractionPrompt.version,
+        projectId: input.scope.projectId,
+        azureProjectId: input.scope.azureProjectId,
+        azureProjectName: input.scope.azureProjectName,
+        azureOrganizationUrl: input.scope.azureOrganizationUrl,
+      },
+      signal: input.signal,
+    });
+    repairGrounding = groundGeneratedProjectKnowledge({
+      generated: generatedProjectKnowledgeForOmissions(repaired.validatedOutput, initialGrounding.omissions),
+      sources: citationSources,
+    });
+  }
+
+  const repairedKeys = new Set(repairGrounding?.groundedEntryKeys ?? []);
+  const repairOmissionByKey = new Map((repairGrounding?.omissions ?? []).map((omission) => [
+    `${omission.category}:${omission.entryKey}`,
+    omission,
+  ]));
+  const unresolvedOmissions = initialGrounding.omissions.flatMap((omission) => {
+    const key = `${omission.category}:${omission.entryKey}`;
+    if (repairedKeys.has(key)) return [];
+    return [repairOmissionByKey.get(key) ?? omission];
+  });
+  const consolidation = consolidateProjectKnowledgeBases([
+    initialGrounding.knowledgeBase,
+    ...(repairGrounding ? [repairGrounding.knowledgeBase] : []),
+  ]);
+  const groundedEntryCount = countProjectKnowledgeEntries(consolidation.knowledgeBase);
+  if (initialGrounding.candidateCount > 0 && groundedEntryCount === 0) {
+    throw new AppError({
+      code: AppErrorCode.SchemaValidation,
+      message: "Every generated project-knowledge entry failed immutable citation validation.",
+      userMessage: "The build produced no grounded knowledge. The active publication was not changed.",
+      technicalContext: {
+        schemaName: "ProjectKnowledgeGeneratedBase",
+        upstreamCause: JSON.stringify(countGroundingOmissionReasons(unresolvedOmissions)),
+      },
+    });
+  }
+
+  const omissionReasons = countGroundingOmissionReasons(unresolvedOmissions);
+  const omissionWarning = unresolvedOmissions.length
+    ? `${unresolvedOmissions.length} unsupported knowledge ${unresolvedOmissions.length === 1 ? "entry was" : "entries were"} omitted automatically.`
+    : null;
+  const warnings = Array.from(new Set([
+    ...(generated.warnings ?? []),
+    ...(repaired?.warnings ?? []),
+    omissionWarning,
+  ].filter((warning): warning is string => Boolean(warning))));
+
+  return {
+    provider: generated.provider,
+    model: generated.model,
+    validatedOutput: consolidation.knowledgeBase,
+    rawOutput: JSON.stringify({
+      generated: generated.rawOutput,
+      repaired: repaired?.rawOutput ?? null,
+      unresolvedOmissions,
+      omissionReasons,
+    }),
+    tokenUsage: addTokenUsage(generated.tokenUsage, repaired?.tokenUsage),
+    costEstimate: (generated.costEstimate ?? 0) + (repaired?.costEstimate ?? 0) || undefined,
+    warnings: warnings.length ? warnings : undefined,
+    omittedEntryCount: unresolvedOmissions.length,
+    omissionReasons,
+    citationRepairCallCount: repaired ? 1 : 0,
+    automaticDuplicateConsolidationCount: consolidation.automaticDuplicateConsolidationCount,
+  };
+}
+
+function buildProjectKnowledgeCitationRepairPrompt(input: {
+  generated: ProjectKnowledgeGeneratedBase;
+  omissions: ProjectKnowledgeGroundingOmission[];
+  citationSources: ReturnType<typeof buildProjectKnowledgeCitationSources>;
+}) {
+  return JSON.stringify({
+    repairOnly: true,
+    instruction: "Return only the failed entries with corrected citation handles and quotes. Use the supplied canonical source text verbatim. Omit any entry that cannot be supported. Do not invent IDs or source metadata.",
+    failedEntries: generatedProjectKnowledgeForOmissions(input.generated, input.omissions),
+    citationSources: input.citationSources.map(({ handle, sourceField, text }) => ({ handle, sourceField, text })),
+    requiredOutputShape: PROJECT_KNOWLEDGE_GENERATED_OUTPUT_SHAPE,
+  }, null, 2);
+}
+
+function countProjectKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase) {
+  const counts = getKnowledgeCounts(knowledgeBase);
+  return Object.values(counts).reduce((total, count) => total + count, 0);
+}
+
+function countGroundingOmissionReasons(omissions: ProjectKnowledgeGroundingOmission[]) {
+  return omissions.reduce<Record<string, number>>((counts, omission) => {
+    for (const reason of omission.reasons) counts[reason] = (counts[reason] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+function mergeCountMaps(maps: Record<string, number>[]) {
+  return maps.reduce<Record<string, number>>((merged, counts) => {
+    for (const [key, count] of Object.entries(counts)) merged[key] = (merged[key] ?? 0) + count;
+    return merged;
+  }, {});
 }
 
 function buildProjectKnowledgeExtractionUserPrompt(input: {
@@ -1607,8 +1780,11 @@ function buildProjectKnowledgeExtractionUserPrompt(input: {
       : undefined,
     batchIndex: input.batchIndex,
     batchCount: input.batchCount,
-    workItems: input.workItems.map(toPromptWorkItem),
-    relevantExistingKnowledge: input.relevantExistingKnowledge,
+    sources: input.workItems.map(toPromptWorkItem),
+    relevantExistingKnowledge: input.relevantExistingKnowledge
+      ? projectKnowledgeBaseToGeneratedPrompt(input.relevantExistingKnowledge)
+      : undefined,
+    requiredOutputShape: PROJECT_KNOWLEDGE_GENERATED_OUTPUT_SHAPE,
     projectScope: {
       azureProjectId: input.scope.azureProjectId,
       azureProjectName: input.scope.azureProjectName,
@@ -1621,7 +1797,8 @@ function buildProjectKnowledgeConsolidationUserPrompt(input: {
   partialKnowledgeBases: ProjectKnowledgeBase[];
 }) {
   return JSON.stringify({
-    partialKnowledgeBases: input.partialKnowledgeBases,
+    partialKnowledgeBases: input.partialKnowledgeBases.map(projectKnowledgeBaseToGeneratedPrompt),
+    requiredOutputShape: PROJECT_KNOWLEDGE_GENERATED_OUTPUT_SHAPE,
     projectScope: {
       azureProjectId: input.scope.azureProjectId,
       azureProjectName: input.scope.azureProjectName,
@@ -1655,19 +1832,19 @@ function loadProjectKnowledgeWorkItemsFromManifest(
       .sort((first, second) => (manifestOrder.get(first.id) ?? 0) - (manifestOrder.get(second.id) ?? 0))
       .map((row) => {
         const fields = snapshotFields(row.fields_json);
-        const description = optionalStringField(fields.description);
-        const acceptanceCriteria = optionalStringField(fields.acceptanceCriteria);
+        const projected = (sourceField: Parameters<typeof projectKnowledgeCanonicalSourceText>[1]) =>
+          projectKnowledgeCanonicalSourceText(fields[sourceField], sourceField) || undefined;
         return {
           id: row.azure_work_item_id,
           sourceSnapshotId: row.id,
           workItemType: row.work_item_type,
-          title: stringField(fields.title),
-          state: optionalStringField(fields.state),
-          description: description ? stripHtml(description) : undefined,
-          acceptanceCriteria: acceptanceCriteria ? stripHtml(acceptanceCriteria) : undefined,
+          title: projected("title") ?? "",
+          state: projected("state"),
+          description: projected("description"),
+          acceptanceCriteria: projected("acceptanceCriteria"),
           tags: snapshotTags(fields.tags),
-          areaPath: optionalStringField(fields.areaPath),
-          iterationPath: optionalStringField(fields.iterationPath),
+          areaPath: projected("areaPath"),
+          iterationPath: projected("iterationPath"),
           updatedDate: row.source_updated_at ?? undefined,
           contentHash: row.content_hash,
         };
@@ -1685,14 +1862,6 @@ function snapshotFields(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-}
-
-function stringField(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-
-function optionalStringField(value: unknown) {
-  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function snapshotTags(value: unknown) {
@@ -1808,7 +1977,7 @@ function renderedKnowledgeJobChars(input: {
   });
   return projectKnowledgeExtractionPrompt.system.length +
     user.length +
-    JSON.stringify(PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE).length;
+    JSON.stringify(PROJECT_KNOWLEDGE_GENERATED_OUTPUT_SHAPE).length;
 }
 
 function assertKnowledgeExtractionJobFits(input: Parameters<typeof knowledgeExtractionJobFits>[0]) {
@@ -1902,12 +2071,45 @@ export async function validateProjectKnowledgeManualBatch(input: {
   batchIndex: number;
   rawOutput: string;
 }) {
-  const knowledgeBase = validateProjectKnowledgeExternalOutput(input.rawOutput);
+  const draft = await getProjectKnowledgeDraft({ scope: input.scope, draftId: input.draftId });
+  if (!draft) {
+    throw new AppError({
+      code: AppErrorCode.ResourceNotFound,
+      message: "The knowledge draft was not found while validating a manual batch.",
+      userMessage: "The knowledge draft was not found.",
+    });
+  }
+  const workItems = await loadProjectKnowledgeWorkItemsFromManifest(input.scope, draft.sourceManifest);
+  const grounding = groundManualProjectKnowledgeOutput({ rawOutput: input.rawOutput, workItems });
+  const knowledgeBase = grounding.knowledgeBase;
   await saveProjectKnowledgeManualBatchResult({
     ...input,
     validatedOutput: knowledgeBase,
   });
   return knowledgeBase;
+}
+
+function groundManualProjectKnowledgeOutput(input: {
+  rawOutput: string;
+  workItems: ProjectKnowledgeWorkItem[];
+}) {
+  const generated = validateProjectKnowledgeGeneratedExternalOutput(input.rawOutput);
+  const grounding = groundGeneratedProjectKnowledge({
+    generated,
+    sources: buildProjectKnowledgeCitationSources(input.workItems),
+  });
+  if (grounding.candidateCount > 0 && grounding.groundedEntryCount === 0) {
+    throw new AppError({
+      code: AppErrorCode.SchemaValidation,
+      message: "Every manually generated project-knowledge entry failed immutable citation validation.",
+      userMessage: "No supported knowledge entries were found. Check the citation handles and quotes, then try again.",
+      technicalContext: {
+        schemaName: "ProjectKnowledgeGeneratedBase",
+        upstreamCause: JSON.stringify(grounding.omissionReasons),
+      },
+    });
+  }
+  return grounding;
 }
 
 function parseUnknownArray(value: unknown) {
@@ -1938,8 +2140,4 @@ function parseTags(value: string | null) {
     .map((tag) => tag.trim())
     .filter(Boolean);
   return tags.length ? tags : undefined;
-}
-
-function stripHtml(value: string) {
-  return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }

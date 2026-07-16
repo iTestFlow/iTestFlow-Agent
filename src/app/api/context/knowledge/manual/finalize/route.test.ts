@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
   requireWorkflowContext: vi.fn(),
   requireWorkflowRole: vi.fn(),
   resolveProjectScope: vi.fn(),
-  saveManualProjectKnowledgeBaseFromBatches: vi.fn(),
+  finalizeManualProjectKnowledge: vi.fn(),
 }));
 
 vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal) => {
@@ -12,104 +12,55 @@ vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal
   return { ...actual, requireWorkflowContext: mocks.requireWorkflowContext, requireWorkflowRole: mocks.requireWorkflowRole };
 });
 vi.mock("@/modules/projects/workspace-projects.service", () => ({ resolveProjectScope: mocks.resolveProjectScope }));
-vi.mock("@/modules/rag/project-knowledge.service", () => ({
-  saveManualProjectKnowledgeBaseFromBatches: mocks.saveManualProjectKnowledgeBaseFromBatches,
+vi.mock("@/modules/rag/project-knowledge-actions.service", () => ({
+  finalizeManualProjectKnowledge: mocks.finalizeManualProjectKnowledge,
 }));
 
 import { WorkflowAuthError } from "@/modules/credentials/scoped-resolution.service";
-import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import { jsonRequest, projectScope } from "@/test/factories";
 import { POST } from "./route";
 
 const trustedScope = projectScope();
 const body = {
   scope: { ...trustedScope, workspaceId: "ws-1" },
-  mode: "full",
+  mode: "full" as const,
   draftId: "draft-1",
-  partialKnowledgeBases: [{}],
+  partialKnowledgeBases: [{ untrusted: "ignored" }],
 };
 
-describe("POST /api/context/knowledge/manual/finalize", () => {
+describe("POST /api/context/knowledge/manual/finalize compatibility adapter", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.requireWorkflowContext.mockResolvedValue({ userId: "user-1", workspace: { id: "ws-1" } });
     mocks.requireWorkflowRole.mockResolvedValue(undefined);
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
-    mocks.saveManualProjectKnowledgeBaseFromBatches.mockResolvedValue({
-      id: "kb-1",
-      knowledgeBase: { modules: [] },
-    });
+    mocks.finalizeManualProjectKnowledge.mockResolvedValue({ outcome: "ready_to_publish", draftId: "draft-1" });
   });
 
   it("rejects malformed requests before authentication", async () => {
-    const malformed = await POST(new Request("http://localhost/api/context/knowledge/manual/finalize", {
-      method: "POST",
-      body: "{",
-      headers: { "content-type": "application/json" },
+    const response = await POST(new Request("http://localhost/api/context/knowledge/manual/finalize", {
+      method: "POST", body: "{", headers: { "content-type": "application/json" },
     }));
-    expect(malformed.status).toBe(400);
+    expect(response.status).toBe(400);
     expect(mocks.requireWorkflowContext).not.toHaveBeenCalled();
   });
 
-  it("finalizes from persisted batches without client-supplied knowledge copies", async () => {
-    const response = await POST(jsonRequest("/api/context/knowledge/manual/finalize", {
-      scope: body.scope,
-      mode: "full",
-      draftId: "draft-1",
-    }));
-    expect(response.status).toBe(200);
-    expect(mocks.saveManualProjectKnowledgeBaseFromBatches).toHaveBeenCalledWith({
-      scope: trustedScope,
-      actor: "user-1",
-      draftId: "draft-1",
-      mode: "full",
-      partialKnowledgeBases: [],
-    });
-  });
-
-  it("requires owner/admin before saving batches", async () => {
+  it("requires owner or admin", async () => {
     mocks.requireWorkflowRole.mockRejectedValue(new WorkflowAuthError("Admin required.", 403));
     const response = await POST(jsonRequest("/api/context/knowledge/manual/finalize", body));
     expect(response.status).toBe(403);
-    expect(mocks.saveManualProjectKnowledgeBaseFromBatches).not.toHaveBeenCalled();
+    expect(mocks.finalizeManualProjectKnowledge).not.toHaveBeenCalled();
   });
 
-  it("finalizes batches under trusted scope and authenticated actor", async () => {
+  it("finalizes validated batches synchronously and ignores client knowledge copies", async () => {
     const response = await POST(jsonRequest("/api/context/knowledge/manual/finalize", body));
     expect(response.status).toBe(200);
-    expect(mocks.saveManualProjectKnowledgeBaseFromBatches).toHaveBeenCalledWith({
+    expect(mocks.finalizeManualProjectKnowledge).toHaveBeenCalledWith({
       scope: trustedScope,
       actor: "user-1",
       draftId: "draft-1",
       mode: "full",
-      partialKnowledgeBases: [{
-        modules: [],
-        businessRules: [],
-        stateTransitions: [],
-        glossary: [],
-        crossDependencies: [],
-      }],
     });
-    expect(await response.json()).toMatchObject({ draft: { id: "kb-1" } });
-  });
-
-  it("does not flatten unexpected finalization failures into 422", async () => {
-    mocks.saveManualProjectKnowledgeBaseFromBatches.mockRejectedValue(new Error("Batch conflict"));
-    const response = await POST(jsonRequest("/api/context/knowledge/manual/finalize", body));
-    expect(response.status).toBe(500);
-    expect(await response.json()).toMatchObject({
-      error: "External LLM knowledge base finalization failed.",
-      technicalDetails: expect.stringContaining("Batch conflict"),
-    });
-  });
-
-  it("preserves AppError state conflicts as 409", async () => {
-    mocks.saveManualProjectKnowledgeBaseFromBatches.mockRejectedValue(new AppError({
-      code: AppErrorCode.KnowledgeDraftConflict,
-      message: "Draft changed.",
-      userMessage: "Refresh the draft.",
-    }));
-    const response = await POST(jsonRequest("/api/context/knowledge/manual/finalize", body));
-    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ outcome: "ready_to_publish", draftId: "draft-1" });
   });
 });

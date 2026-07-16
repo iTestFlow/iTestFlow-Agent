@@ -66,6 +66,11 @@ describeDb("worker cycle (DB-backed)", () => {
         payload: { workItemId: "101" },
         attempts: 1,
       }),
+      expect.objectContaining({
+        signal: expect.anything(),
+        updateProgress: expect.any(Function),
+        workerId: expect.any(String),
+      }),
     );
     expect(await sqlGet<{ status: string; locked_by: string | null }>(
       `SELECT status, locked_by FROM jobs WHERE id = @id`,
@@ -109,7 +114,7 @@ describeDb("worker cycle (DB-backed)", () => {
     expect(new Date(row!.run_after).getTime()).toBeGreaterThan(Date.now());
   });
 
-  it("marks a job failed when no handler exists and retries are exhausted", async () => {
+  it("leaves unsupported job types pending for a capable worker", async () => {
     const jobType = uniqueTestId("worker_missing");
     jobTypes.push(jobType);
     const jobId = await enqueueJob({
@@ -120,14 +125,20 @@ describeDb("worker cycle (DB-backed)", () => {
     });
     vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    await expect(processNextJob()).resolves.toBe(true);
+    await expect(processNextJob()).resolves.toBe(false);
 
-    expect(await sqlGet<{ status: string; error_message: string; locked_by: string | null }>(
-      `SELECT status, error_message, locked_by FROM jobs WHERE id = @id`,
+    expect(await sqlGet<{
+      status: string;
+      attempts: number;
+      error_message: string | null;
+      locked_by: string | null;
+    }>(
+      `SELECT status, attempts, error_message, locked_by FROM jobs WHERE id = @id`,
       { id: jobId },
     )).toEqual({
-      status: "failed",
-      error_message: `No handler registered for job type "${jobType}".`,
+      status: "pending",
+      attempts: 0,
+      error_message: null,
       locked_by: null,
     });
   });

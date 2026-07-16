@@ -8,6 +8,10 @@ import {
   canonicalizeProjectKnowledgeLogicalIdentity,
 } from "./project-knowledge-contracts";
 import { parseConcreteRule } from "./project-knowledge-conflicts";
+import {
+  areProjectKnowledgeDependencyTypesEquivalent,
+  canonicalizeProjectKnowledgeDependencyType,
+} from "./project-knowledge-dependency-type";
 import type {
   ProjectKnowledgeConsolidationCategory,
   ProjectKnowledgeEntryByConsolidationCategory,
@@ -63,7 +67,7 @@ export function projectKnowledgeConsolidationCandidateKeys<
         `dependency:${canonicalizeProjectKnowledgeLogicalIdentity([
           dependency.sourceModule,
           dependency.targetModule,
-          dependency.dependencyType,
+          canonicalizeProjectKnowledgeDependencyType(dependency.dependencyType),
         ].join(" "))}`,
       ];
     }
@@ -71,13 +75,15 @@ export function projectKnowledgeConsolidationCandidateKeys<
 }
 
 /**
- * Whether two same-identity entries whose evidence content is identical differ only
- * in safe-to-merge wording. Callers must have already established evidence-content
- * identity (haveIdenticalNonEmptyEvidenceContent) — this gate adds the category
- * guards that keep genuine disagreements out of automatic merges:
- * business rules with differing concrete values stay unmerged so
- * incompatible_concrete_value conflicts remain intact, and transitions must agree
- * on the target state.
+ * Whether two entries already matched to the same logical subject are structurally
+ * safe to consolidate. Module and glossary text may add supported detail without
+ * becoming a conflict. Structured categories retain category-specific guards:
+ * business rules with differing concrete values remain separate, transitions must
+ * agree on their target state, and dependency endpoints/types must match.
+ *
+ * Wording carry-over additionally requires identical evidence content. Draft
+ * consolidation intentionally does not, because different sources commonly express
+ * the same subject at different levels of detail.
  */
 export function isCompatibleProjectKnowledgeParaphrase<
   TCategory extends ProjectKnowledgeConsolidationCategory,
@@ -91,9 +97,9 @@ export function isCompatibleProjectKnowledgeParaphrase<
     case "glossary":
       return true;
     case "business_rule": {
-      // Value-only comparison: the candidate-key precondition (same id or same
-      // normalized rule text) plus full evidence identity bound the risk of two
-      // different subjects sharing a value.
+      // Value-only comparison: the candidate-key precondition has already matched
+      // the entries to the same rule identity; differing concrete values must still
+      // remain separate so the hard-conflict detector can surface them.
       const firstRule = first as ProjectKnowledgeEntryByConsolidationCategory["business_rule"];
       const secondRule = second as ProjectKnowledgeEntryByConsolidationCategory["business_rule"];
       const firstConcrete = parseConcreteRule(firstRule.rule);
@@ -114,14 +120,26 @@ export function isCompatibleProjectKnowledgeParaphrase<
     case "dependency": {
       const firstDependency = first as ProjectKnowledgeEntryByConsolidationCategory["dependency"];
       const secondDependency = second as ProjectKnowledgeEntryByConsolidationCategory["dependency"];
-      return dependencyTupleKey(firstDependency) === dependencyTupleKey(secondDependency);
+      if (dependencyEndpointTupleKey(firstDependency) !== dependencyEndpointTupleKey(secondDependency)) {
+        return false;
+      }
+      return areProjectKnowledgeDependencyTypesEquivalent(
+        firstDependency.dependencyType,
+        secondDependency.dependencyType,
+        {
+          identicalEvidence: haveIdenticalNonEmptyEvidenceContent(
+            firstDependency.evidenceRefs,
+            secondDependency.evidenceRefs,
+          ),
+        },
+      );
     }
   }
 }
 
-function dependencyTupleKey(dependency: ProjectKnowledgeEntryByConsolidationCategory["dependency"]) {
+function dependencyEndpointTupleKey(dependency: ProjectKnowledgeEntryByConsolidationCategory["dependency"]) {
   return canonicalizeProjectKnowledgeLogicalIdentity(
-    [dependency.sourceModule, dependency.targetModule, dependency.dependencyType].join(" "),
+    [dependency.sourceModule, dependency.targetModule].join(" "),
   );
 }
 

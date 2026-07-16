@@ -43,6 +43,13 @@ describeDb("job queue (DB-backed)", () => {
     expect(row?.status).toBe("completed");
   });
 
+  it("claims only job types the worker advertises", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS });
+
+    await expect(claimNextJob("wrong-capability", ["different_job_type"])).resolves.toBeNull();
+    await expect(claimNextJob("capable", [TYPE])).resolves.toMatchObject({ id, jobType: TYPE });
+  });
+
   it("never hands the same job to two workers (FOR UPDATE SKIP LOCKED)", async () => {
     const a = await enqueueJob({ jobType: TYPE, workspaceId: WS, payload: { k: "a" }, priority: 10 });
     const b = await enqueueJob({ jobType: TYPE, workspaceId: WS, payload: { k: "b" }, priority: 20 });

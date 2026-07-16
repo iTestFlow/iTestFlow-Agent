@@ -5,6 +5,10 @@ import {
   type ProjectKnowledgeBase,
   type ProjectKnowledgeEvidenceRef,
 } from "./project-knowledge.schema";
+import {
+  normalizeProjectKnowledgeSourceWhitespace,
+  projectKnowledgeSourceFieldText,
+} from "./project-knowledge-source-text";
 
 export type ProjectKnowledgeEvidenceSnapshot = {
   id: string;
@@ -52,7 +56,7 @@ export function verifyProjectKnowledgeEvidence(input: {
           category: entry.category,
           entryKey: entry.entryKey,
         };
-        if (ref.origin === "generated_v2" || ref.origin === "reviewer_reanchored") blockers.push(issue);
+        if (["generated_v2", "generated_v4", "reviewer_reanchored"].includes(ref.origin)) blockers.push(issue);
         else warnings.push(issue);
       }
       return result.ref;
@@ -81,10 +85,10 @@ function verifyEvidenceRef(
     return unresolved(ref, "work_item_mismatch", "The snapshot belongs to a different source work item.");
   }
 
-  const fieldValue = snapshotFieldText(snapshot.fields, ref.sourceField);
+  const fieldValue = projectKnowledgeSourceFieldText(snapshot.fields, ref.sourceField);
   if (!fieldValue) return unresolved(ref, "source_field_missing", "The cited strict source field is empty or missing.");
   if (fieldValue.includes(ref.quote)) return { ref: { ...ref, verification: "exact" } };
-  if (normalizeWhitespace(fieldValue).includes(normalizeWhitespace(ref.quote))) {
+  if (normalizeProjectKnowledgeSourceWhitespace(fieldValue).includes(normalizeProjectKnowledgeSourceWhitespace(ref.quote))) {
     return { ref: { ...ref, verification: "normalized" } };
   }
 
@@ -117,17 +121,6 @@ function unresolved(
       message,
     },
   };
-}
-
-function snapshotFieldText(fields: Record<string, unknown>, sourceField: string) {
-  const value = fields[sourceField];
-  if (typeof value === "string") return value;
-  if (value === undefined || value === null) return "";
-  return sourceField === "metadata" ? JSON.stringify(value) : String(value);
-}
-
-function normalizeWhitespace(value: string) {
-  return value.trim().replace(/\s+/g, " ");
 }
 
 function uniqueTokenReanchor(fieldValue: string, quote: string) {

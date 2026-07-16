@@ -14,7 +14,6 @@ vi.mock("@/modules/rag/context-chatbot-retrieval.service", async (importOriginal
 
 import {
   flushBackgroundWrites,
-  getPool,
   nowIso,
   resetDatabaseForTests,
   sqlAll,
@@ -22,8 +21,7 @@ import {
   sqlRun,
 } from "@/modules/shared/infrastructure/database/db";
 import { indexAzureWorkItemsAsProjectContext } from "./project-context-store.service";
-import { acquireProjectKnowledgeLock } from "./project-knowledge-lock";
-import { fakeAzureAdapter, fakeLlmProvider, requirement } from "@/test/factories";
+import { fakeAzureAdapter, requirement } from "@/test/factories";
 import {
   cleanupFixtures,
   describeDb,
@@ -32,17 +30,12 @@ import {
   uniqueTestId,
 } from "@/test/db";
 import {
-  rebaseProjectKnowledgeDraft,
   saveGeneratedProjectKnowledgeBaseDraft,
   saveManualProjectKnowledgeBaseSnapshot,
 } from "./project-knowledge.service";
+import { projectKnowledgeBaseToGeneratedPrompt } from "./project-knowledge-grounding";
 import { recordProjectKnowledgeBenchmarkQuestion } from "./project-knowledge-benchmark.service";
 import { regroundLegacyProjectKnowledgeCandidates } from "./project-knowledge-compiled.service";
-import {
-  beginProjectKnowledgeDraft,
-  completeProjectKnowledgeDraft,
-  publishProjectKnowledgeDraft,
-} from "./project-knowledge-draft.service";
 import { backfillProjectKnowledgeCompilerFoundation } from "./project-knowledge-migration.service";
 
 describeDb("source-versioned project knowledge publication", () => {
@@ -104,7 +97,7 @@ describeDb("source-versioned project knowledge publication", () => {
     return saveManualProjectKnowledgeBaseSnapshot({
       scope,
       actor: "user-1",
-      rawOutput: JSON.stringify(knowledgeBase),
+      rawOutput: JSON.stringify(projectKnowledgeBaseToGeneratedPrompt(knowledgeBase)),
       mode: "full",
     });
   }
@@ -271,7 +264,7 @@ describeDb("source-versioned project knowledge publication", () => {
 
   it("rolls back revision, active knowledge, and critical logs when search indexing fails", async () => {
     const draft = await prepare();
-    expect(draft.persistedStatus).toBe("ready_for_review");
+    expect(draft.persistedStatus).toBe("ready_to_publish");
     retrieval.refreshProjectKnowledgeSearchIndex.mockRejectedValueOnce(new Error("search index write failed"));
 
     await expect(publish(draft.id)).rejects.toThrow("search index write failed");
@@ -326,7 +319,7 @@ describeDb("source-versioned project knowledge publication", () => {
 
     expect(published?.persistedStatus).toBe("published");
     expect(retrieval.refreshProjectKnowledgeSearchIndex).toHaveBeenCalledExactlyOnceWith(
-      { scope, knowledgeBaseId: originalKnowledgeBaseId, knowledgeBase: initialKnowledgeBase },
+      { scope, knowledgeBaseId: originalKnowledgeBaseId, knowledgeBase: draft.knowledgeBase },
       expect.anything(),
     );
     const persisted = await sqlGet<{
@@ -353,7 +346,7 @@ describeDb("source-versioned project knowledge publication", () => {
       freshness_status: "current",
       provenance_status: "verified",
     });
-    expect(JSON.parse(persisted!.validated_output)).toEqual(initialKnowledgeBase);
+    expect(JSON.parse(persisted!.validated_output)).toEqual(draft.knowledgeBase);
     expect(await sqlAll<{ revision_number: number; mode: string; validated_output: string }>(
       `SELECT revision_number, mode, validated_output
        FROM project_knowledge_revisions WHERE project_id = @projectId`,
@@ -361,7 +354,7 @@ describeDb("source-versioned project knowledge publication", () => {
     )).toEqual([{
       revision_number: 1,
       mode: "full",
-      validated_output: JSON.stringify(initialKnowledgeBase),
+      validated_output: JSON.stringify(draft.knowledgeBase),
     }]);
     expect(await sqlAll<{ category: string; entry_key: string; status: string }>(
       `SELECT category, entry_key, status FROM project_knowledge_entry_versions
@@ -386,33 +379,31 @@ describeDb("source-versioned project knowledge publication", () => {
     )).toEqual({ count: 1 });
   });
 
-  it("serializes concurrent publications so exactly one stale-base draft publishes", async () => {
+  it("publishes one concurrent draft and marks the other outdated without merging", async () => {
     const first = await prepare();
     const second = await prepare();
-    const outcomes = await Promise.allSettled([publish(first.id), publish(second.id)]);
+    const outcomes = await Promise.all([publish(first.id), publish(second.id)]);
 
-    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
-    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
-    expect(rejected).toMatchObject({
-      status: "rejected",
-      reason: expect.objectContaining({ code: "knowledge_draft_conflict" }),
-    });
+    expect(outcomes.map((outcome) => outcome?.persistedStatus).sort()).toEqual([
+      "published",
+      "superseded",
+    ]);
     expect(await sqlAll<{ revision_number: number }>(
       `SELECT revision_number FROM project_knowledge_revisions WHERE project_id = @projectId`,
       { projectId },
     )).toEqual([{ revision_number: 1 }]);
-    expect(await sqlAll<{ status: string }>(
-      `SELECT status FROM project_knowledge_drafts
+    expect(await sqlAll<{ status: string; status_reason: string | null }>(
+      `SELECT status, status_reason FROM project_knowledge_drafts
        WHERE id IN (@firstId, @secondId) ORDER BY status`,
       { firstId: first.id, secondId: second.id },
-    )).toEqual([{ status: "published" }, { status: "rebase_required" }]);
+    )).toEqual([
+      { status: "published", status_reason: null },
+      { status: "superseded", status_reason: "active_revision_changed" },
+    ]);
   });
 
-  it("serializes sync before publication and rejects the waiting stale draft", async () => {
+  it("publishes the exact frozen draft as stale when sources change after build", async () => {
     const draft = await prepare();
-    const blocker = await getPool().connect();
-    await blocker.query("BEGIN");
-    await acquireProjectKnowledgeLock(scope, blocker);
     const fetchWorkItems = vi.fn(async () => [requirement({
       id: "42",
       azureProjectId: projectId,
@@ -423,36 +414,47 @@ describeDb("source-versioned project knowledge publication", () => {
       state: "Active",
       revision: 2,
     })]);
-    const syncPromise = indexAzureWorkItemsAsProjectContext({
+    const syncResult = await indexAzureWorkItemsAsProjectContext({
       scope,
       actor: "sync-worker",
       adapter: fakeAzureAdapter({ fetchWorkItems }),
       workItemTypes: ["User Story"],
       states: ["Active"],
     });
-    await vi.waitFor(() => expect(fetchWorkItems).toHaveBeenCalledTimes(1));
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    const publicationOutcome = publish(draft.id).then(
-      (value) => ({ status: "fulfilled" as const, value }),
-      (reason) => ({ status: "rejected" as const, reason }),
-    );
-    await blocker.query("COMMIT");
-    blocker.release();
+    const publication = await publish(draft.id);
 
-    const [syncResult, publication] = await Promise.all([syncPromise, publicationOutcome]);
     expect(syncResult.updatedCount).toBe(1);
-    expect(publication).toMatchObject({
-      status: "rejected",
-      reason: expect.objectContaining({ code: "knowledge_draft_conflict" }),
-    });
-    expect(await sqlAll(
-      `SELECT id FROM project_knowledge_revisions WHERE project_id = @projectId`,
+    expect(publication?.persistedStatus).toBe("published");
+    expect(await sqlAll<{
+      semantic_hash: string;
+      source_fingerprint: string;
+    }>(
+      `SELECT semantic_hash, source_fingerprint
+       FROM project_knowledge_revisions WHERE project_id = @projectId`,
       { projectId },
-    )).toEqual([]);
+    )).toEqual([{
+      semantic_hash: draft.semanticHash,
+      source_fingerprint: draft.sourceFingerprint,
+    }]);
     expect(await sqlGet<{ status: string; pending_drift: boolean }>(
       `SELECT status, pending_drift FROM project_knowledge_drafts WHERE id = @draftId`,
       { draftId: draft.id },
-    )).toEqual({ status: "rebase_required", pending_drift: true });
+    )).toEqual({ status: "published", pending_drift: true });
+    expect(await sqlGet<{
+      freshness_status: string;
+      stale_reason_json: Array<{ type: string; message: string }>;
+    }>(
+      `SELECT freshness_status, stale_reason_json
+       FROM project_knowledge_base WHERE project_id = @projectId`,
+      { projectId },
+    )).toEqual({
+      freshness_status: "stale",
+      stale_reason_json: [{
+        type: "source_updates_after_build",
+        message: "Newer source updates will be included in the next build.",
+        detectedAt: expect.any(String),
+      }],
+    });
   });
 
   it("versions only semantic or provenance changes and retires removed entries", async () => {
@@ -518,7 +520,7 @@ describeDb("source-versioned project knowledge publication", () => {
     )).toEqual([{ category: "business_rule", entry_key: "BR-1", status: "active" }]);
   });
 
-  it("creates a fingerprint-advance revision without entry versions", async () => {
+  it("versions immutable provenance when a source snapshot advances without semantic changes", async () => {
     await publish((await prepare()).id);
     const replacementSnapshotId = uniqueTestId("awis_revision");
     const baseline = await sqlGet<{ fields_json: unknown }>(
@@ -550,7 +552,22 @@ describeDb("source-versioned project knowledge publication", () => {
       { snapshotId: replacementSnapshotId, workItemRowId },
     );
 
-    await publish((await prepare()).id);
+    const replacementKnowledgeBase = {
+      ...initialKnowledgeBase,
+      modules: initialKnowledgeBase.modules.map((entry) => ({
+        ...entry,
+        evidenceRefs: entry.evidenceRefs.map((ref) => ({ ...ref, sourceSnapshotId: replacementSnapshotId })),
+      })),
+      businessRules: initialKnowledgeBase.businessRules.map((entry) => ({
+        ...entry,
+        evidenceRefs: entry.evidenceRefs.map((ref) => ({ ...ref, sourceSnapshotId: replacementSnapshotId })),
+      })),
+      glossary: initialKnowledgeBase.glossary.map((entry) => ({
+        ...entry,
+        evidenceRefs: entry.evidenceRefs.map((ref) => ({ ...ref, sourceSnapshotId: replacementSnapshotId })),
+      })),
+    };
+    await publish((await prepare(replacementKnowledgeBase)).id);
 
     const revisions = await sqlAll<{
       revision_number: number;
@@ -565,11 +582,11 @@ describeDb("source-versioned project knowledge publication", () => {
     expect(revisions).toHaveLength(2);
     expect(revisions[1].source_fingerprint).not.toBe(revisions[0].source_fingerprint);
     expect(revisions[1].semantic_hash).toBe(revisions[0].semantic_hash);
-    expect(revisions[1].provenance_hash).toBe(revisions[0].provenance_hash);
+    expect(revisions[1].provenance_hash).not.toBe(revisions[0].provenance_hash);
     expect(await sqlGet<{ count: number }>(
       `SELECT COUNT(*)::int AS count FROM project_knowledge_entry_versions WHERE project_id = @projectId`,
       { projectId },
-    )).toEqual({ count: 3 });
+    )).toEqual({ count: 6 });
   });
 
   it("creates a new version only for an entry whose provenance changes", async () => {
@@ -598,217 +615,6 @@ describeDb("source-versioned project knowledge publication", () => {
        WHERE versions.project_id = @projectId AND revisions.revision_number = 2`,
       { projectId },
     )).toEqual([{ category: "module", status: "active" }]);
-  });
-
-  it("automatically publishes a verified provenance-only rebase child", async () => {
-    await publish((await prepare()).id);
-    const parent = await prepare();
-    const provenanceOnly = {
-      ...initialKnowledgeBase,
-      modules: [{
-        ...initialKnowledgeBase.modules[0],
-        evidence: "Checkout description",
-        evidenceRefs: [evidenceRef("description", "Checkout description")],
-      }],
-    };
-    const child = await prepare(provenanceOnly);
-    await sqlRun(
-      `UPDATE project_knowledge_drafts SET status = 'rebase_required', status_reason = 'source_drift'
-       WHERE id = @parentId`,
-      { parentId: parent.id },
-    );
-    await sqlRun(
-      `UPDATE project_knowledge_drafts SET parent_draft_id = @parentId, rebase_depth = 1
-       WHERE id = @childId`,
-      { parentId: parent.id, childId: child.id },
-    );
-
-    const result = await publishProjectKnowledgeDraft({
-      scope,
-      actor: "rebase-worker",
-      draftId: child.id,
-      publicationIntent: "automatic_provenance_refresh",
-    });
-
-    expect(result?.persistedStatus).toBe("published");
-    expect(await sqlAll<{ revision_number: number }>(
-      `SELECT revision_number FROM project_knowledge_revisions
-       WHERE project_id = @projectId ORDER BY revision_number`,
-      { projectId },
-    )).toEqual([{ revision_number: 1 }, { revision_number: 2 }]);
-  });
-
-  it("denies automatic publication after a semantic change and preserves the reviewable child", async () => {
-    await publish((await prepare()).id);
-    const changedKnowledge = {
-      ...initialKnowledgeBase,
-      businessRules: [{
-        ...initialKnowledgeBase.businessRules[0],
-        rule: "Payment and fraud approval are required.",
-        // Changed evidence keeps this a GENUINE semantic change — with identical
-        // evidence the wording carry-over would restore the published rule text and
-        // automatic publication would (correctly) proceed as a provenance refresh.
-        evidenceRefs: [evidenceRef("description", "Checkout description")],
-      }],
-    };
-    const parent = await prepare(changedKnowledge);
-    const child = await prepare(changedKnowledge);
-    await sqlRun(
-      `UPDATE project_knowledge_drafts SET status = 'rebase_required', status_reason = 'source_drift'
-       WHERE id = @parentId`,
-      { parentId: parent.id },
-    );
-    await sqlRun(
-      `UPDATE project_knowledge_drafts SET parent_draft_id = @parentId, rebase_depth = 1
-       WHERE id = @childId`,
-      { parentId: parent.id, childId: child.id },
-    );
-
-    const result = await publishProjectKnowledgeDraft({
-      scope,
-      actor: "rebase-worker",
-      draftId: child.id,
-      publicationIntent: "automatic_provenance_refresh",
-    });
-
-    expect(result).toMatchObject({
-      persistedStatus: "ready_for_review",
-      statusReason: "automatic_publication_denied",
-    });
-    expect(await sqlAll<{ revision_number: number }>(
-      `SELECT revision_number FROM project_knowledge_revisions WHERE project_id = @projectId`,
-      { projectId },
-    )).toEqual([{ revision_number: 1 }]);
-  });
-
-  it("replays a clean automatic rebase child and publishes it through the orchestration service", async () => {
-    await publish((await prepare()).id);
-    const parent = await beginProjectKnowledgeDraft({
-      scope,
-      actor: "rebase-worker",
-      generationMode: "automatic",
-      compilationMode: "full",
-    });
-    const completedParent = await completeProjectKnowledgeDraft({
-      scope,
-      draftId: parent.id,
-      provider: "openai",
-      model: "test-model",
-      rawOutput: JSON.stringify(initialKnowledgeBase),
-      knowledgeBase: initialKnowledgeBase,
-      touchedSourceWorkItemIds: ["42"],
-    });
-    expect(completedParent.persistedStatus).toBe("ready_for_review");
-
-    // Advance only the active revision. Entry versions and the source manifest
-    // remain unchanged, so deterministic replay preconditions still match.
-    await publish((await prepare()).id);
-    await sqlRun(
-      `UPDATE project_knowledge_drafts
-       SET status = 'rebase_required', status_reason = 'base_revision_drift'
-       WHERE id = @parentId`,
-      { parentId: parent.id },
-    );
-
-    const result = await rebaseProjectKnowledgeDraft({
-      scope,
-      actor: "rebase-worker",
-      provider: fakeLlmProvider(),
-      parentDraftId: parent.id,
-    });
-    if (!result) throw new Error("Expected the deterministic rebase child to be returned.");
-
-    expect(result.persistedStatus).toBe("published");
-    expect(result.parentDraftId).toBe(parent.id);
-    expect(await sqlAll<{ revision_number: number }>(
-      `SELECT revision_number FROM project_knowledge_revisions
-       WHERE project_id = @projectId ORDER BY revision_number`,
-      { projectId },
-    )).toEqual([
-      { revision_number: 1 },
-      { revision_number: 2 },
-      { revision_number: 3 },
-    ]);
-    expect(await sqlGet<{ status: string; status_reason: string | null }>(
-      `SELECT status, status_reason FROM project_knowledge_drafts WHERE id = @parentId`,
-      { parentId: parent.id },
-    )).toEqual({ status: "superseded", status_reason: "descendant_published" });
-  });
-
-  it("blocks a deterministic rebase child when replay produces a merged hard conflict", async () => {
-    await publish((await prepare()).id);
-    const conflictingKnowledge = {
-      ...initialKnowledgeBase,
-      businessRules: [
-        {
-          id: "BR-RETRY-3",
-          rule: "Maximum retry count must be 3",
-          sourceField: "acceptanceCriteria" as const,
-          moduleName: "Checkout",
-          sourceWorkItemIds: ["42"],
-          evidence: "Checkout succeeds",
-          evidenceRefs: [evidenceRef("acceptanceCriteria", "Checkout succeeds")],
-        },
-        {
-          id: "BR-RETRY-5",
-          rule: "Maximum retry count must be 5",
-          sourceField: "acceptanceCriteria" as const,
-          moduleName: "checkout",
-          sourceWorkItemIds: ["42"],
-          evidence: "Checkout succeeds",
-          evidenceRefs: [evidenceRef("acceptanceCriteria", "Checkout succeeds")],
-        },
-      ],
-    };
-    const parent = await beginProjectKnowledgeDraft({
-      scope,
-      actor: "rebase-worker",
-      generationMode: "automatic",
-      compilationMode: "full",
-    });
-    const completedParent = await completeProjectKnowledgeDraft({
-      scope,
-      draftId: parent.id,
-      provider: "openai",
-      model: "test-model",
-      rawOutput: JSON.stringify(conflictingKnowledge),
-      knowledgeBase: conflictingKnowledge,
-      touchedSourceWorkItemIds: ["42"],
-    });
-    expect(completedParent.persistedStatus).toBe("blocked");
-
-    await publish((await prepare()).id);
-    await sqlRun(
-      `UPDATE project_knowledge_drafts
-       SET status = 'rebase_required', status_reason = 'base_revision_drift'
-       WHERE id = @parentId`,
-      { parentId: parent.id },
-    );
-
-    const result = await rebaseProjectKnowledgeDraft({
-      scope,
-      actor: "rebase-worker",
-      provider: fakeLlmProvider(),
-      parentDraftId: parent.id,
-    });
-    if (!result) throw new Error("Expected the blocked deterministic rebase child to be returned.");
-
-    expect(result).toMatchObject({
-      persistedStatus: "blocked",
-      statusReason: "hard_conflict",
-      parentDraftId: parent.id,
-      blockers: [expect.objectContaining({ type: "hard_conflict" })],
-    });
-    expect(await sqlAll<{ conflict_type: string }>(
-      `SELECT conflict_type FROM project_knowledge_hard_conflicts
-       WHERE project_id = @projectId AND draft_id = @draftId`,
-      { projectId, draftId: result.id },
-    )).toEqual([{ conflict_type: "incompatible_concrete_value" }]);
-    expect(await sqlAll<{ revision_number: number }>(
-      `SELECT revision_number FROM project_knowledge_revisions
-       WHERE project_id = @projectId ORDER BY revision_number`,
-      { projectId },
-    )).toEqual([{ revision_number: 1 }, { revision_number: 2 }]);
   });
 
   it("persists and blocks an incompatible concrete-value conflict", async () => {
@@ -849,10 +655,7 @@ describeDb("source-versioned project knowledge publication", () => {
     await expect(publish(draft.id)).rejects.toMatchObject({ code: "knowledge_publication_blocked" });
   });
 
-  it("persists duplicate canonical identity and rejects publication without map collapse", async () => {
-    // The duplicate must cite a DIFFERENT source than the original: same-identity
-    // entries with identical snapshot sets or identical evidence content are
-    // auto-merged as paraphrase noise by design, never surfaced as conflicts.
+  it("consolidates compatible duplicate canonical identity before publication", async () => {
     const secondSnapshotId = uniqueTestId("snap_returns");
     const now = nowIso();
     await sqlRun(
@@ -924,20 +727,28 @@ describeDb("source-versioned project knowledge publication", () => {
     };
 
     const draft = await prepare(duplicateKnowledge);
-    expect(draft.persistedStatus).toBe("blocked");
+    expect(draft.persistedStatus).toBe("ready_to_publish");
+    expect(draft.knowledgeBase.modules).toHaveLength(1);
+    expect(draft.knowledgeBase.modules[0]).toMatchObject({
+      id: "checkout",
+      sourceWorkItemIds: expect.arrayContaining(["42", "43"]),
+      evidenceRefs: expect.arrayContaining([
+        expect.objectContaining({ sourceSnapshotId: baselineSnapshotId }),
+        expect.objectContaining({ sourceSnapshotId: secondSnapshotId }),
+      ]),
+    });
     expect(await sqlAll<{ conflict_type: string; subject: string }>(
       `SELECT conflict_type, subject FROM project_knowledge_hard_conflicts
        WHERE project_id = @projectId AND draft_id = @draftId`,
       { projectId, draftId: draft.id },
-    )).toEqual([{
-      conflict_type: "duplicate_identity",
-      subject: "identity:module:checkout",
-    }]);
-    await expect(publish(draft.id)).rejects.toMatchObject({ code: "knowledge_publication_blocked" });
-    expect(await sqlAll(
-      `SELECT id FROM project_knowledge_entry_versions WHERE project_id = @projectId`,
-      { projectId },
     )).toEqual([]);
+
+    await expect(publish(draft.id)).resolves.toMatchObject({ persistedStatus: "published" });
+    expect(await sqlAll<{ category: string; entry_key: string; status: string }>(
+      `SELECT category, entry_key, status FROM project_knowledge_entry_versions
+       WHERE project_id = @projectId AND category = 'module'`,
+      { projectId },
+    )).toEqual([{ category: "module", entry_key: "checkout", status: "active" }]);
   });
 
   it("stores only sanitized, deduplicated real benchmark questions", async () => {

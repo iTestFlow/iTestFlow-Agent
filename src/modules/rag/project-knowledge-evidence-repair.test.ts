@@ -50,7 +50,7 @@ describe("repairMissingProjectKnowledgeEvidenceRefs", () => {
     }]);
   });
 
-  it("records a unique whitespace-normalized match without changing the quote", () => {
+  it("records a canonical-projection match without changing the quote", () => {
     const result = repairMissingProjectKnowledgeEvidenceRefs({
       knowledgeBase: moduleKnowledge("Customers can complete checkout securely."),
       snapshots: [snapshot("snapshot-42", "42", {
@@ -59,7 +59,7 @@ describe("repairMissingProjectKnowledgeEvidenceRefs", () => {
     });
 
     expect(result.knowledgeBase.modules[0].evidenceRefs?.[0]).toMatchObject({
-      verification: "normalized",
+      verification: "exact",
       quote: "Customers can complete checkout securely.",
     });
   });

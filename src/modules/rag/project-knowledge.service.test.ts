@@ -27,7 +27,6 @@ const draftService = vi.hoisted(() => ({
   saveProjectKnowledgeManualBatchResult: vi.fn(),
   setProjectKnowledgeDraftCompilationMode: vi.fn(),
   storeProjectKnowledgeManualDraftBatches: vi.fn(),
-  tryDeterministicProjectKnowledgeRebase: vi.fn(),
 }));
 
 vi.mock("@/modules/shared/infrastructure/database/db", () => database);
@@ -43,6 +42,7 @@ import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import { fakeLlmProvider, projectScope } from "@/test/factories";
 import type { ProjectKnowledgeBase, ProjectKnowledgeEvidenceRef } from "./project-knowledge.schema";
 import { detectProjectKnowledgeHardConflicts } from "./project-knowledge-conflicts";
+import { projectKnowledgeCitationHandle } from "./project-knowledge-grounding";
 import {
   buildProjectKnowledgeManualDraft,
   loadProjectKnowledgeContext,
@@ -199,7 +199,7 @@ function snapshotRow(kb: ProjectKnowledgeBase, overrides: Record<string, unknown
     source_fingerprint: "fingerprint-1",
     semantic_hash: "semantic-1",
     provenance_hash: "provenance-1",
-    compiler_contract_version: "2.0.0",
+    compiler_contract_version: "4.0.0",
     freshness_status: "current",
     provenance_status: "verified",
     compiler_compatibility: "current",
@@ -371,17 +371,20 @@ describe("buildProjectKnowledgeManualDraft batching", () => {
     // Single batch: no batch metadata, extraction mode mirrors the compile mode.
     expect(userPrompt.batchIndex).toBeUndefined();
     expect(userPrompt.extractionMode).toBe("full");
-    // HTML is stripped, tags split on ";", and the content hash never reaches the prompt.
-    expect(userPrompt.workItems).toEqual([{
-      id: "1",
-      sourceSnapshotId: "snapshot-1",
+    // HTML is stripped, tags normalized, and immutable/internal IDs never reach the prompt.
+    expect(userPrompt.sources).toEqual([{
+      sourceGroup: "source_1",
       workItemType: "User Story",
-      title: "Customer checks out",
-      state: "Active",
-      description: "Allow checkout",
-      acceptanceCriteria: "Given cart",
-      tags: ["checkout", "payments"],
+      citationSources: [
+        { handle: projectKnowledgeCitationHandle("snapshot-1", "title"), sourceField: "title", text: "Customer checks out" },
+        { handle: projectKnowledgeCitationHandle("snapshot-1", "description"), sourceField: "description", text: "Allow checkout" },
+        { handle: projectKnowledgeCitationHandle("snapshot-1", "acceptanceCriteria"), sourceField: "acceptanceCriteria", text: "Given cart" },
+        { handle: projectKnowledgeCitationHandle("snapshot-1", "state"), sourceField: "state", text: "Active" },
+        { handle: projectKnowledgeCitationHandle("snapshot-1", "tags"), sourceField: "tags", text: "checkout; payments" },
+      ],
     }]);
+    expect(draft.batches[0].userPrompt).not.toContain("snapshot-1");
+    expect(draft.batches[0].userPrompt).not.toContain('"id": "1"');
   });
 
   it("splits into a new batch only when the accumulated input exceeds the size cap", async () => {
@@ -398,8 +401,10 @@ describe("buildProjectKnowledgeManualDraft batching", () => {
     expect(draft.batches.map((batch) => batch.workItemCount)).toEqual([2, 1]);
     const firstBatch = JSON.parse(draft.batches[0].userPrompt);
     const secondBatch = JSON.parse(draft.batches[1].userPrompt);
-    expect(firstBatch.workItems.map((item: { id: string }) => item.id)).toEqual(["1", "2"]);
-    expect(secondBatch.workItems.map((item: { id: string }) => item.id)).toEqual(["3"]);
+    expect(firstBatch.sources.map((item: { sourceGroup: string }) => item.sourceGroup)).toEqual(["source_1", "source_2"]);
+    expect(secondBatch.sources.map((item: { sourceGroup: string }) => item.sourceGroup)).toEqual(["source_1"]);
+    expect(firstBatch.sources.map((item: { citationSources: Array<{ text: string }> }) => item.citationSources[0].text)).toEqual(["Item 1", "Item 2"]);
+    expect(secondBatch.sources[0].citationSources[0].text).toBe("Item 3");
     // Multi-batch prompts carry batch metadata and a batch-numbered title.
     expect(firstBatch).toMatchObject({ extractionMode: "batch", batchIndex: 1, batchCount: 2 });
     expect(draft.batches[0].prompt).toContain("Batch 1 of 2");
@@ -478,7 +483,7 @@ describe("work item selection for compilation", () => {
     expect(draft.retiredSourceWorkItemCount).toBe(1);
 
     const userPrompt = JSON.parse(draft.batches[0].userPrompt);
-    expect(userPrompt.workItems.map((item: { id: string }) => item.id)).toEqual(["2"]);
+    expect(userPrompt.sources.map((item: { citationSources: Array<{ text: string }> }) => item.citationSources[0].text)).toEqual(["Changed item"]);
     expect(userPrompt.knowledgeCompileMode).toBe("incremental");
     expect(userPrompt.incrementalInstruction).toContain("Reconcile every relevantExistingKnowledge entry");
   });
@@ -504,7 +509,8 @@ describe("work item selection for compilation", () => {
     expect(draft.changedSourceWorkItemCount).toBe(1);
     expect(draft.retiredSourceWorkItemCount).toBe(1);
     const userPrompt = JSON.parse(draft.batches[0].userPrompt);
-    expect(userPrompt.workItems.map((item: { id: string }) => item.id)).toEqual(["2"]);
+    expect(userPrompt.sources.map((item: { sourceGroup: string }) => item.sourceGroup)).toEqual(["source_1"]);
+    expect(userPrompt.sources[0].citationSources[0].text).toBe("Customer checks out");
   });
 });
 
@@ -543,21 +549,36 @@ describe("loadProjectKnowledgeContext", () => {
   });
 });
 
-describe("automatic v2 reconciliation prompts", () => {
+describe("automatic v4 reconciliation prompts", () => {
   it("consolidates duplicates produced inside one automatic extraction batch", async () => {
     setWorkItems([workItemRow({ azure_work_item_id: "1", content_hash: "h1" })]);
     const provider = fakeLlmProvider({
-      structuredOutput: knowledgeBase({
+      structuredOutput: {
         modules: [
-          kbModule({ evidence: "Login story" }),
-          kbModule({
+          {
+            id: "mod-auth",
+            name: "Authentication",
+            description: "Handles login.",
+            citations: [{
+              handle: projectKnowledgeCitationHandle("snapshot-1", "title"),
+              quote: "Customer checks out",
+            }],
+          },
+          {
             id: "MOD_AUTH",
             name: " authentication ",
             description: " handles login. ",
-            evidence: "Session story",
-          }),
+            citations: [{
+              handle: projectKnowledgeCitationHandle("snapshot-1", "state"),
+              quote: "Active",
+            }],
+          },
         ],
-      }),
+        businessRules: [],
+        stateTransitions: [],
+        glossary: [],
+        crossDependencies: [],
+      },
     });
 
     const draft = await previewGeneratedProjectKnowledgeBase({
@@ -572,7 +593,7 @@ describe("automatic v2 reconciliation prompts", () => {
       id: "mod-auth",
       name: "Authentication",
       description: "Handles login.",
-      evidence: "Login story | Session story",
+      evidence: "Active | Customer checks out",
     });
     expect(draft.automaticDuplicateConsolidationCount).toBe(1);
     expect(JSON.parse(draft.rawOutput)).toMatchObject({
@@ -846,7 +867,7 @@ describe("saveManualProjectKnowledgeBaseFromBatches", () => {
     }));
   });
 
-  it("preserves materially different and different-source variants for hard-conflict review", async () => {
+  it("merges compatible descriptions from different sources while preserving structured conflicts", async () => {
     setWorkItems([
       workItemRow({ azure_work_item_id: "1" }),
       workItemRow({ azure_work_item_id: "2" }),
@@ -887,23 +908,139 @@ describe("saveManualProjectKnowledgeBaseFromBatches", () => {
       ],
     });
 
-    expect(snapshot.knowledgeBase.modules).toHaveLength(2);
+    expect(snapshot.knowledgeBase.modules).toHaveLength(1);
     expect(snapshot.knowledgeBase.businessRules).toHaveLength(2);
     expect(snapshot.knowledgeBase.stateTransitions).toHaveLength(2);
-    expect(snapshot.knowledgeBase.glossary).toHaveLength(2);
+    expect(snapshot.knowledgeBase.glossary).toHaveLength(1);
     expect(snapshot.knowledgeBase.crossDependencies).toHaveLength(2);
     expect(snapshot.blockers).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "hard_conflict", conflictType: "duplicate_identity" }),
     ]));
     expect(snapshot.blockers.filter((blocker) =>
       "conflictType" in blocker && blocker.conflictType === "duplicate_identity",
-    )).toHaveLength(3);
+    )).toHaveLength(1);
     expect(snapshot.blockers).toEqual(expect.arrayContaining([
       expect.objectContaining({ conflictType: "incompatible_concrete_value" }),
       expect.objectContaining({ conflictType: "incompatible_transition_target" }),
     ]));
     expect(draftService.completeProjectKnowledgeDraft).toHaveBeenCalledWith(expect.objectContaining({
-      metrics: expect.objectContaining({ automaticDuplicateConsolidationCount: 0 }),
+      metrics: expect.objectContaining({ automaticDuplicateConsolidationCount: 2 }),
+    }));
+  });
+
+  it("auto-merges broad and narrow glossary definitions and retains every source", async () => {
+    setWorkItems([
+      workItemRow({ azure_work_item_id: "1" }),
+      workItemRow({ azure_work_item_id: "2" }),
+    ]);
+    const glossary = (sourceWorkItemId: string, entries: Array<[string, string]>) => entries.map(([term, definition]) => ({
+      term,
+      type: "business_entity" as const,
+      definition,
+      sourceWorkItemIds: [sourceWorkItemId],
+      evidence: `${term} evidence from ${sourceWorkItemId}`,
+      evidenceRefs: [kbEvidenceRef(
+        sourceWorkItemId,
+        `snapshot-${sourceWorkItemId}`,
+        `${term} evidence from ${sourceWorkItemId}`,
+      )],
+    }));
+
+    const result = await saveManualProjectKnowledgeBaseFromBatches({
+      scope: projectScope(),
+      actor: "qa",
+      partialKnowledgeBases: [
+        knowledgeBase({ glossary: glossary("1", [
+          ["Customer", "A customer can discover products, purchase securely, manage orders, and use ecommerce features such as checkout, cart, catalog browsing, order history, and returns/refunds."],
+          ["Order", "A purchase record created after successful payment, shown in order history with date, status, total, and items, and tracked through defined statuses."],
+          ["Cart", "A collection of products a customer can add to, update, or remove from before purchase."],
+        ]) }),
+        knowledgeBase({ glossary: glossary("2", [
+          ["Customer", "A user who discovers products, purchases them securely, and manages orders after checkout."],
+          ["Order", "A purchase record created by successful payment and viewable in order history and status tracking."],
+          ["Cart", "A place where customers add products, update quantities, remove items, apply discounts, and see totals."],
+        ]) }),
+      ],
+    });
+
+    expect(result.knowledgeBase.glossary).toHaveLength(3);
+    expect(result.knowledgeBase.glossary).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        term: "Customer",
+        definition: expect.stringContaining("returns/refunds"),
+        sourceWorkItemIds: ["1", "2"],
+        evidenceRefs: expect.arrayContaining([
+          expect.objectContaining({ sourceWorkItemId: "1" }),
+          expect.objectContaining({ sourceWorkItemId: "2" }),
+        ]),
+      }),
+      expect.objectContaining({
+        term: "Order",
+        definition: expect.stringContaining("date, status, total, and items"),
+        sourceWorkItemIds: ["1", "2"],
+      }),
+      expect.objectContaining({
+        term: "Cart",
+        definition: expect.stringContaining("apply discounts"),
+        sourceWorkItemIds: ["1", "2"],
+      }),
+    ]));
+    expect(detectProjectKnowledgeHardConflicts(result.knowledgeBase)).toEqual([]);
+    expect(draftService.completeProjectKnowledgeDraft).toHaveBeenCalledWith(expect.objectContaining({
+      metrics: expect.objectContaining({ automaticDuplicateConsolidationCount: 3 }),
+    }));
+  });
+
+  it("auto-merges synonymous dependency types backed by the same immutable evidence", async () => {
+    setWorkItems([workItemRow({ azure_work_item_id: "15" })]);
+    const quote = "Payment gateway is called; successful payment creates order; confirmation page and email are generated.";
+    const evidenceRefs = [kbEvidenceRef("15", "snapshot-15", quote)];
+
+    const result = await saveManualProjectKnowledgeBaseFromBatches({
+      scope: projectScope(),
+      actor: "qa",
+      partialKnowledgeBases: [
+        knowledgeBase({
+          crossDependencies: [kbDependency({
+            id: "checkout-payment-service-dependency",
+            sourceModule: "Checkout",
+            targetModule: "Payment Gateway",
+            dependencyType: "external service call",
+            description: "Checkout calls the payment gateway.",
+            sourceWorkItemIds: ["15"],
+            evidence: quote,
+            evidenceRefs,
+          })],
+        }),
+        knowledgeBase({
+          crossDependencies: [kbDependency({
+            id: "Dep Checkout Payment Gateway",
+            sourceModule: "Checkout",
+            targetModule: "Payment Gateway",
+            dependencyType: "external service dependency",
+            description: "Checkout depends on the payment gateway.",
+            sourceWorkItemIds: ["15"],
+            evidence: quote,
+            evidenceRefs,
+          })],
+        }),
+      ],
+    });
+
+    expect(result.knowledgeBase.crossDependencies).toEqual([
+      expect.objectContaining({
+        dependencyType: "external service dependency",
+        sourceWorkItemIds: ["15"],
+        evidenceRefs: [expect.objectContaining({
+          sourceSnapshotId: "snapshot-15",
+          sourceWorkItemId: "15",
+          quote,
+        })],
+      }),
+    ]);
+    expect(detectProjectKnowledgeHardConflicts(result.knowledgeBase)).toEqual([]);
+    expect(draftService.completeProjectKnowledgeDraft).toHaveBeenCalledWith(expect.objectContaining({
+      metrics: expect.objectContaining({ automaticDuplicateConsolidationCount: 1 }),
     }));
   });
 
@@ -1087,7 +1224,12 @@ describe("saveManualProjectKnowledgeBaseFromBatches", () => {
 
 describe("same-evidence paraphrase handling", () => {
   it("carries previous wording through a full recompile when evidence content is unchanged", async () => {
-    setWorkItems([workItemRow({ azure_work_item_id: "10", content_hash: "h10", current_snapshot_id: "snapshot-new-10" })]);
+    setWorkItems([workItemRow({
+      azure_work_item_id: "10",
+      content_hash: "h10",
+      current_snapshot_id: "snapshot-new-10",
+      description: "Valid code applies discount",
+    })]);
     const existing = knowledgeBase({
       glossary: [kbGlossaryTerm({
         term: "Discount",
@@ -1098,14 +1240,21 @@ describe("same-evidence paraphrase handling", () => {
     });
     stubExistingKnowledge({ snapshot: snapshotRow(existing) });
     const provider = fakeLlmProvider({
-      structuredOutput: knowledgeBase({
-        glossary: [kbGlossaryTerm({
+      structuredOutput: {
+        modules: [],
+        businessRules: [],
+        stateTransitions: [],
+        glossary: [{
           term: "Discount",
+          type: "term",
           definition: "A reduction applied by a valid promo code and included in order totals.",
-          sourceWorkItemIds: ["10"],
-          evidenceRefs: [kbEvidenceRef("10", "snapshot-new-10", "Valid code applies discount")],
-        })],
-      }),
+          citations: [{
+            handle: projectKnowledgeCitationHandle("snapshot-new-10", "description"),
+            quote: "Valid code applies discount",
+          }],
+        }],
+        crossDependencies: [],
+      },
     });
 
     const draft = await previewGeneratedProjectKnowledgeBase({
@@ -1192,57 +1341,4 @@ describe("same-evidence paraphrase handling", () => {
     ]);
   });
 
-  it("uses the parent draft's reviewed wording as the carry-over baseline for manual rebase children", async () => {
-    setWorkItems([workItemRow({ azure_work_item_id: "10", content_hash: "h10", current_snapshot_id: "snapshot-new-10" })]);
-    const publishedWording = "Published old wording of the discount definition.";
-    const reviewedWording = "Reviewer-approved wording of the discount definition.";
-    const sharedRef = (snapshotId: string) => kbEvidenceRef("10", snapshotId, "Valid code applies discount");
-    stubExistingKnowledge({
-      snapshot: snapshotRow(knowledgeBase({
-        glossary: [kbGlossaryTerm({
-          term: "Discount",
-          definition: publishedWording,
-          sourceWorkItemIds: ["10"],
-          evidenceRefs: [sharedRef("snapshot-published-10")],
-        })],
-      })),
-    });
-    const parentProposal = knowledgeBase({
-      glossary: [kbGlossaryTerm({
-        term: "Discount",
-        definition: reviewedWording,
-        sourceWorkItemIds: ["10"],
-        evidenceRefs: [sharedRef("snapshot-parent-10")],
-      })],
-    });
-    const baseDraft = await draftService.beginProjectKnowledgeDraft({});
-    draftService.loadProjectKnowledgeManualBatchResults.mockResolvedValue(null);
-    draftService.getProjectKnowledgeDraft.mockImplementation(async ({ draftId }: { draftId: string }) =>
-      draftId === "draft-parent"
-        ? { id: "draft-parent", status: "ready_for_review", proposedKnowledge: parentProposal }
-        : { id: "draft-child", status: "awaiting_input", parentDraftId: "draft-parent", sourceManifest: baseDraft.sourceManifest });
-
-    const saved = await saveManualProjectKnowledgeBaseFromBatches({
-      scope: projectScope(),
-      actor: "qa",
-      draftId: "draft-child",
-      partialKnowledgeBases: [knowledgeBase({
-        glossary: [kbGlossaryTerm({
-          term: "Discount",
-          definition: "A fresh model paraphrase of the discount definition.",
-          sourceWorkItemIds: ["10"],
-          evidenceRefs: [sharedRef("snapshot-new-10")],
-        })],
-      })],
-      mode: "full",
-    });
-
-    expect(saved.knowledgeBase.glossary[0].definition).toBe(reviewedWording);
-    expect(saved.knowledgeBase.glossary[0].evidenceRefs).toEqual([
-      expect.objectContaining({ sourceSnapshotId: "snapshot-new-10" }),
-    ]);
-    expect(draftService.completeProjectKnowledgeDraft).toHaveBeenCalledWith(expect.objectContaining({
-      metrics: expect.objectContaining({ wordingCarryOverCount: 1 }),
-    }));
-  });
 });

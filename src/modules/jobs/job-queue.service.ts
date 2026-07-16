@@ -7,8 +7,11 @@ export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancel
 export type Job = {
   id: string;
   workspaceId: string | null;
+  projectId?: string | null;
   jobType: string;
   payload: Record<string, unknown>;
+  progress?: Record<string, unknown>;
+  result?: Record<string, unknown> | null;
   dedupeKey: string | null;
   status: JobStatus;
   priority: number;
@@ -18,6 +21,7 @@ export type Job = {
   lockedAt: string | null;
   runAfter: string;
   errorMessage: string | null;
+  cancelRequestedAt?: string | null;
   createdByUserId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -26,8 +30,11 @@ export type Job = {
 type JobRow = {
   id: string;
   workspace_id: string | null;
+  project_id: string | null;
   job_type: string;
   payload_json: string;
+  progress_json: unknown;
+  result_json: unknown;
   dedupe_key: string | null;
   status: JobStatus;
   priority: number;
@@ -37,6 +44,7 @@ type JobRow = {
   locked_at: string | null;
   run_after: string;
   error_message: string | null;
+  cancel_requested_at: string | null;
   created_by_user_id: string | null;
   created_at: string;
   updated_at: string;
@@ -51,18 +59,15 @@ function staleLockMs() {
 }
 
 function mapJob(row: JobRow): Job {
-  let payload: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(row.payload_json);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) payload = parsed as Record<string, unknown>;
-  } catch {
-    payload = {};
-  }
+  const payload = parseRecord(row.payload_json);
   return {
     id: row.id,
     workspaceId: row.workspace_id,
+    projectId: row.project_id,
     jobType: row.job_type,
     payload,
+    progress: parseRecord(row.progress_json),
+    result: row.result_json === null ? null : parseRecord(row.result_json),
     dedupeKey: row.dedupe_key,
     status: row.status,
     priority: row.priority,
@@ -72,6 +77,7 @@ function mapJob(row: JobRow): Job {
     lockedAt: row.locked_at,
     runAfter: row.run_after,
     errorMessage: row.error_message,
+    cancelRequestedAt: row.cancel_requested_at,
     createdByUserId: row.created_by_user_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -92,8 +98,25 @@ function mapJob(row: JobRow): Job {
  * one attempt and also bounds poison-pill retries. `running -> pending` keeps the
  * uq_jobs_active_dedupe slot; `running -> failed` frees it (both intended).
  */
-async function reapStaleJobsWithClient(client: Parameters<typeof sqlRun>[2], now: string): Promise<number> {
+function normalizeSupportedJobTypes(supportedJobTypes?: readonly string[]): string[] | undefined {
+  if (supportedJobTypes === undefined) return undefined;
+  return Array.from(new Set(supportedJobTypes.map((jobType) => jobType.trim()).filter(Boolean)));
+}
+
+async function reapStaleJobsWithClient(
+  client: Parameters<typeof sqlRun>[2],
+  now: string,
+  supportedJobTypes?: readonly string[],
+): Promise<number> {
   const cutoff = new Date(Date.now() - staleLockMs()).toISOString();
+  const jobTypeClause = supportedJobTypes
+    ? "\n       AND job_type = ANY(@supportedJobTypes)"
+    : "";
+  const params = {
+    now,
+    cutoff,
+    ...(supportedJobTypes ? { supportedJobTypes: [...supportedJobTypes] } : {}),
+  };
   const requeued = await sqlRun(
     `UPDATE jobs
      SET status = 'pending',
@@ -105,8 +128,8 @@ async function reapStaleJobsWithClient(client: Parameters<typeof sqlRun>[2], now
      WHERE status = 'running'
        AND locked_at IS NOT NULL
        AND locked_at < @cutoff
-       AND attempts < max_attempts`,
-    { now, cutoff },
+       AND attempts < max_attempts${jobTypeClause}`,
+    params,
     client,
   );
   const failed = await sqlRun(
@@ -120,8 +143,8 @@ async function reapStaleJobsWithClient(client: Parameters<typeof sqlRun>[2], now
      WHERE status = 'running'
        AND locked_at IS NOT NULL
        AND locked_at < @cutoff
-       AND attempts >= max_attempts`,
-    { now, cutoff },
+       AND attempts >= max_attempts${jobTypeClause}`,
+    params,
     client,
   );
   return requeued + failed;
@@ -134,7 +157,9 @@ export async function reapStaleJobs(): Promise<number> {
 export async function enqueueJob(input: {
   jobType: string;
   workspaceId?: string | null;
+  projectId?: string | null;
   payload?: Record<string, unknown>;
+  progress?: Record<string, unknown>;
   dedupeKey?: string | null;
   priority?: number;
   maxAttempts?: number;
@@ -147,10 +172,10 @@ export async function enqueueJob(input: {
   // active jobs) makes enqueue idempotent — a duplicate active job is skipped.
   const inserted = await sqlGet<{ id: string }>(
     `INSERT INTO jobs (
-       id, workspace_id, job_type, payload_json, dedupe_key, status, priority,
+       id, workspace_id, project_id, job_type, payload_json, progress_json, dedupe_key, status, priority,
        attempts, max_attempts, run_after, created_by_user_id, created_at, updated_at
      ) VALUES (
-       @id, @workspaceId, @jobType, @payloadJson, @dedupeKey, 'pending', @priority,
+       @id, @workspaceId, @projectId, @jobType, @payloadJson, @progressJson::jsonb, @dedupeKey, 'pending', @priority,
        0, @maxAttempts, @runAfter, @createdByUserId, @now, @now
      )
      ON CONFLICT (workspace_id, job_type, dedupe_key) WHERE status IN ('pending', 'running')
@@ -159,8 +184,10 @@ export async function enqueueJob(input: {
     {
       id,
       workspaceId: input.workspaceId ?? null,
+      projectId: input.projectId ?? null,
       jobType: input.jobType,
       payloadJson: JSON.stringify(input.payload ?? {}),
+      progressJson: JSON.stringify(input.progress ?? { phase: "queued", percent: 0 }),
       dedupeKey: input.dedupeKey ?? null,
       priority: input.priority ?? 100,
       maxAttempts: input.maxAttempts ?? 3,
@@ -177,18 +204,30 @@ export async function enqueueJob(input: {
  * workers never select the same row. Marks it running, bumps attempts, and
  * stamps the worker id — all in one transaction.
  */
-export async function claimNextJob(workerId: string): Promise<Job | null> {
+export async function claimNextJob(
+  workerId: string,
+  supportedJobTypes?: readonly string[],
+): Promise<Job | null> {
+  const normalizedJobTypes = normalizeSupportedJobTypes(supportedJobTypes);
+  if (normalizedJobTypes?.length === 0) return null;
+
   return withTransaction(async (client) => {
     const now = nowIso();
-    await reapStaleJobsWithClient(client, now);
+    await reapStaleJobsWithClient(client, now, normalizedJobTypes);
+    const jobTypeClause = normalizedJobTypes
+      ? " AND job_type = ANY(@supportedJobTypes)"
+      : "";
 
     const row = await sqlGet<JobRow>(
       `SELECT * FROM jobs
-       WHERE status = 'pending' AND run_after <= @now
+       WHERE status = 'pending' AND run_after <= @now${jobTypeClause}
        ORDER BY priority ASC, created_at ASC
        FOR UPDATE SKIP LOCKED
        LIMIT 1`,
-      { now },
+      {
+        now,
+        ...(normalizedJobTypes ? { supportedJobTypes: normalizedJobTypes } : {}),
+      },
       client,
     );
     if (!row) return null;
@@ -216,14 +255,20 @@ export async function heartbeatJob(id: string, workerId: string): Promise<boolea
   return changed > 0;
 }
 
-export async function completeJob(id: string, workerId: string): Promise<boolean> {
+export async function completeJob(
+  id: string,
+  workerId: string,
+  result?: Record<string, unknown> | null,
+): Promise<boolean> {
   const now = nowIso();
   const changed = await sqlRun(
     `UPDATE jobs
      SET status = 'completed', finished_at = @now, locked_by = NULL, locked_at = NULL,
-         error_message = NULL, updated_at = @now
+         error_message = NULL, result_json = @resultJson::jsonb,
+         progress_json = progress_json || '{"phase":"completed","percent":100}'::jsonb,
+         updated_at = @now
      WHERE id = @id AND locked_by = @workerId AND status = 'running'`,
-    { id, workerId, now },
+    { id, workerId, now, resultJson: JSON.stringify(result ?? {}) },
   );
   return changed > 0;
 }
@@ -271,4 +316,165 @@ export async function listJobs(workspaceId: string, limit = 50): Promise<Job[]> 
     { workspaceId, limit: Math.min(200, Math.max(1, limit)) },
   );
   return rows.map(mapJob);
+}
+
+export async function failPendingJob(id: string, errorMessage: string): Promise<boolean> {
+  const now = nowIso();
+  return (await sqlRun(
+    `UPDATE jobs
+     SET status = 'failed', finished_at = @now, error_message = @message,
+         locked_by = NULL, locked_at = NULL, updated_at = @now
+     WHERE id = @id AND status = 'pending'`,
+    { id, now, message: errorMessage.slice(0, 2000) },
+  )) > 0;
+}
+
+export async function getJob(input: {
+  id: string;
+  workspaceId?: string;
+  projectId?: string;
+}) {
+  const row = await sqlGet<JobRow>(
+    `SELECT * FROM jobs
+     WHERE id = @id
+       AND (@workspaceId::text IS NULL OR workspace_id = @workspaceId)
+       AND (@projectId::text IS NULL OR project_id = @projectId)
+     LIMIT 1`,
+    {
+      id: input.id,
+      workspaceId: input.workspaceId ?? null,
+      projectId: input.projectId ?? null,
+    },
+  );
+  return row ? mapJob(row) : null;
+}
+
+export async function findActiveJob(input: {
+  workspaceId: string;
+  projectId: string;
+  jobType: string;
+  dedupeKey: string;
+}) {
+  const row = await sqlGet<JobRow>(
+    `SELECT * FROM jobs
+     WHERE workspace_id = @workspaceId AND project_id = @projectId
+       AND job_type = @jobType AND dedupe_key = @dedupeKey
+       AND status IN ('pending', 'running')
+     ORDER BY created_at ASC
+     LIMIT 1`,
+    input,
+  );
+  return row ? mapJob(row) : null;
+}
+
+export async function updateJobProgress(
+  id: string,
+  workerId: string,
+  progress: Record<string, unknown>,
+) {
+  const now = nowIso();
+  return (await sqlRun(
+    `UPDATE jobs
+     SET progress_json = @progressJson::jsonb, updated_at = @now, locked_at = @now
+     WHERE id = @id AND locked_by = @workerId AND status = 'running'`,
+    { id, workerId, progressJson: JSON.stringify(progress), now },
+  )) > 0;
+}
+
+export async function requestJobCancellation(input: {
+  id: string;
+  workspaceId: string;
+  projectId: string;
+}) {
+  return withTransaction(async (client) => {
+    const row = await sqlGet<JobRow>(
+      `SELECT * FROM jobs
+       WHERE id = @id AND workspace_id = @workspaceId AND project_id = @projectId
+       FOR UPDATE`,
+      input,
+      client,
+    );
+    if (!row) return null;
+    const now = nowIso();
+    if (row.status === "pending") {
+      await sqlRun(
+        `UPDATE jobs SET status = 'cancelled', cancel_requested_at = @now,
+           finished_at = @now, updated_at = @now
+         WHERE id = @id`,
+        { id: input.id, now },
+        client,
+      );
+    } else if (row.status === "running" && !row.cancel_requested_at) {
+      await sqlRun(
+        `UPDATE jobs SET cancel_requested_at = @now, updated_at = @now WHERE id = @id`,
+        { id: input.id, now },
+        client,
+      );
+    }
+    const updated = await sqlGet<JobRow>(`SELECT * FROM jobs WHERE id = @id`, { id: input.id }, client);
+    return updated ? mapJob(updated) : null;
+  });
+}
+
+export async function isJobCancellationRequested(id: string, workerId: string) {
+  const row = await sqlGet<{ cancel_requested_at: string | null }>(
+    `SELECT cancel_requested_at FROM jobs
+     WHERE id = @id AND locked_by = @workerId AND status = 'running'`,
+    { id, workerId },
+  );
+  return Boolean(row?.cancel_requested_at);
+}
+
+export async function cancelRunningJob(id: string, workerId: string) {
+  const now = nowIso();
+  return (await sqlRun(
+    `UPDATE jobs SET status = 'cancelled', finished_at = @now,
+       locked_by = NULL, locked_at = NULL, updated_at = @now
+     WHERE id = @id AND locked_by = @workerId AND status = 'running'`,
+    { id, workerId, now },
+  )) > 0;
+}
+
+export async function loadCompletedJobBatch(jobId: string, batchKey: string) {
+  const row = await sqlGet<{ result_json: unknown }>(
+    `SELECT result_json FROM project_knowledge_job_batches
+     WHERE job_id = @jobId AND batch_key = @batchKey AND status = 'completed'`,
+    { jobId, batchKey },
+  );
+  return row ? parseRecord(row.result_json) : null;
+}
+
+export async function completeJobBatch(input: {
+  jobId: string;
+  batchKey: string;
+  result: Record<string, unknown>;
+}) {
+  const now = nowIso();
+  await sqlRun(
+    `INSERT INTO project_knowledge_job_batches (
+       id, job_id, batch_key, status, result_json, created_at, updated_at
+     ) VALUES (@id, @jobId, @batchKey, 'completed', @resultJson::jsonb, @now, @now)
+     ON CONFLICT (job_id, batch_key) DO UPDATE SET
+       status = 'completed', result_json = EXCLUDED.result_json, updated_at = EXCLUDED.updated_at`,
+    {
+      id: createId("pkjb"),
+      jobId: input.jobId,
+      batchKey: input.batchKey,
+      resultJson: JSON.stringify(input.result),
+      now,
+    },
+  );
+}
+
+function parseRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }

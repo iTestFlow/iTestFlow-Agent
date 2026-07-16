@@ -46,6 +46,7 @@ export class AnthropicProvider extends BaseJsonProvider {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(requestBody),
+      signal: input.signal,
     }, this.config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS);
 
     if (!response.ok) {
@@ -83,13 +84,13 @@ export class AnthropicProvider extends BaseJsonProvider {
         }
       : undefined;
     const requestBody = this.structuredRequestBody(input, outputConfig);
-    const response = await this.postMessages(requestBody);
+    const response = await this.postMessages(requestBody, input.signal);
 
     if (!response.ok) {
       const errorText = await response.text();
       if (outputConfig && isAnthropicGrammarTooLargeError(errorText)) {
         const fallbackRequestBody = this.structuredRequestBody(input);
-        const fallbackResponse = await this.postMessages(fallbackRequestBody);
+        const fallbackResponse = await this.postMessages(fallbackRequestBody, input.signal);
         return anthropicStructuredCallResult(fallbackResponse, fallbackRequestBody);
       }
       return {
@@ -116,7 +117,7 @@ export class AnthropicProvider extends BaseJsonProvider {
     };
   }
 
-  private postMessages(requestBody: Record<string, unknown>) {
+  private postMessages(requestBody: Record<string, unknown>, signal?: AbortSignal) {
     if (!this.config.apiKey) throw new Error("Anthropic API key is not configured.");
     return fetchWithTransientRetry(`${this.baseUrl()}/messages`, {
       method: "POST",
@@ -126,6 +127,7 @@ export class AnthropicProvider extends BaseJsonProvider {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(requestBody),
+      signal,
     }, this.config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS);
   }
 

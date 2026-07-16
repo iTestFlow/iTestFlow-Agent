@@ -7,6 +7,10 @@ import {
   type ProjectKnowledgeEvidenceRef,
 } from "./project-knowledge.schema";
 import type { ProjectKnowledgeEvidenceSnapshot } from "./project-knowledge-provenance";
+import {
+  normalizeProjectKnowledgeSourceWhitespace,
+  projectKnowledgeSourceFieldText,
+} from "./project-knowledge-source-text";
 
 type RepairableEntry = {
   category: "module" | "business_rule" | "state_transition" | "glossary" | "dependency";
@@ -91,11 +95,11 @@ export function findUniqueProjectKnowledgeEvidenceAnchor(
   fragment: string,
 ) {
   const matches = snapshots.flatMap((snapshot) => allowedFields.flatMap((sourceField) => {
-    const fieldText = snapshotFieldText(snapshot.fields, sourceField);
+    const fieldText = projectKnowledgeSourceFieldText(snapshot.fields, sourceField);
     if (!fieldText) return [];
     const verification = fieldText.includes(fragment)
       ? "exact" as const
-      : normalizeWhitespace(fieldText).includes(normalizeWhitespace(fragment))
+      : normalizeProjectKnowledgeSourceWhitespace(fieldText).includes(normalizeProjectKnowledgeSourceWhitespace(fragment))
         ? "normalized" as const
         : null;
     if (!verification) return [];
@@ -123,15 +127,4 @@ function repairableEntries(knowledgeBase: ProjectKnowledgeBase): RepairableEntry
 
 function canonicalKey(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-function snapshotFieldText(fields: Record<string, unknown>, sourceField: string) {
-  const value = fields[sourceField];
-  if (typeof value === "string") return value;
-  if (value === undefined || value === null) return "";
-  return sourceField === "metadata" ? JSON.stringify(value) : String(value);
-}
-
-function normalizeWhitespace(value: string) {
-  return value.trim().replace(/\s+/g, " ");
 }

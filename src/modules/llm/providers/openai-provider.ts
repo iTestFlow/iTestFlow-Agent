@@ -34,7 +34,7 @@ export class OpenAIProvider extends BaseJsonProvider {
         { role: "user", content: input.user },
       ],
     };
-    const response = await this.requestChatCompletion(requestBody);
+    const response = await this.requestChatCompletion(requestBody, input.signal);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -66,7 +66,7 @@ export class OpenAIProvider extends BaseJsonProvider {
         { role: "user", content: input.user },
       ],
     };
-    const response = await this.requestChatCompletion(requestBody);
+    const response = await this.requestChatCompletion(requestBody, input.signal);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -91,7 +91,7 @@ export class OpenAIProvider extends BaseJsonProvider {
     return this.maxTokensRenamed ? withMaxCompletionTokens(requestBody) : requestBody;
   }
 
-  private async requestChatCompletion(requestBody: Record<string, unknown>): Promise<Response> {
+  private async requestChatCompletion(requestBody: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
     const url = `${this.config.baseUrl ?? "https://api.openai.com/v1"}/chat/completions`;
     const headers = {
       ...this.headers(),
@@ -102,7 +102,7 @@ export class OpenAIProvider extends BaseJsonProvider {
 
     const response = await fetchWithTransientRetry(
       url,
-      { method: "POST", headers, body: JSON.stringify(body) },
+      { method: "POST", headers, body: JSON.stringify(body), signal },
       retryAttempts,
     );
 
@@ -117,7 +117,7 @@ export class OpenAIProvider extends BaseJsonProvider {
       this.maxTokensRenamed = true;
       return fetchWithTransientRetry(
         url,
-        { method: "POST", headers, body: JSON.stringify(withMaxCompletionTokens(body)) },
+        { method: "POST", headers, body: JSON.stringify(withMaxCompletionTokens(body)), signal },
         retryAttempts,
       );
     }

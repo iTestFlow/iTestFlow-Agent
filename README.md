@@ -95,11 +95,7 @@ After starting:
 4. Select a project from the top bar.
 5. Open [Dashboards](http://127.0.0.1:3000/dashboards).
 
-Run the background worker in a second terminal when testing scheduled sync or workspace jobs:
-
-```bash
-npm run worker:dev
-```
+`npm run dev` supervises both the web application and its background processing. No second terminal is required. Advanced split-process development can use `npm run web:dev` and `npm run worker:dev`.
 
 ## App Links
 
@@ -263,11 +259,7 @@ npm run build
 npm start -- --hostname 127.0.0.1 --port 3000
 ```
 
-Run the worker as a separate process:
-
-```bash
-npm run worker
-```
+`npm start` supervises both runtime processes. Deployments that scale them independently can instead run `npm run web:start` and `npm run worker` as separate services.
 
 Open [http://127.0.0.1:3000](http://127.0.0.1:3000). The root route redirects to `/dashboards`.
 

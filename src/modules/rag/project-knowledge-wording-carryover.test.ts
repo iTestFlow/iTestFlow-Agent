@@ -111,17 +111,30 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
     expect(isCompatibleProjectKnowledgeParaphrase("state_transition", paid, missingA)).toBe(false);
   });
 
-  it("requires dependencies to agree on the endpoint tuple", () => {
+  it("requires dependency endpoints and transport semantics to agree while accepting synonyms", () => {
+    const sharedGatewayEvidence = evidenceRef(
+      "15",
+      "snapshot-15",
+      "Payment gateway is called; successful payment creates order.",
+    );
     const base = knowledgeBase({
       crossDependencies: [
         { id: "dep-1", sourceModule: "Cart", targetModule: "Payments", dependencyType: "api", description: "Cart calls payments.", sourceWorkItemIds: ["1"], evidence: "seed", evidenceRefs: [evidenceRef("1", "s1", "q")] },
         { id: "dep-1", sourceModule: "Cart", targetModule: "Payments", dependencyType: "api", description: "The cart module invokes payments.", sourceWorkItemIds: ["1"], evidence: "seed", evidenceRefs: [evidenceRef("1", "s2", "q")] },
         { id: "dep-1", sourceModule: "Cart", targetModule: "Payments", dependencyType: "event", description: "Cart calls payments.", sourceWorkItemIds: ["1"], evidence: "seed", evidenceRefs: [evidenceRef("1", "s3", "q")] },
+        { id: "dep-2", sourceModule: "Checkout", targetModule: "Payment Gateway", dependencyType: "external service call", description: "Checkout calls the gateway.", sourceWorkItemIds: ["15"], evidence: "seed", evidenceRefs: [sharedGatewayEvidence] },
+        { id: "dep-2", sourceModule: "Checkout", targetModule: "Payment Gateway", dependencyType: "external service dependency", description: "Checkout depends on the gateway.", sourceWorkItemIds: ["15"], evidence: "seed", evidenceRefs: [sharedGatewayEvidence] },
+        { id: "dep-3", sourceModule: "Checkout", targetModule: "Payment Gateway", dependencyType: "payment gateway call", description: "Checkout calls the gateway.", sourceWorkItemIds: ["15"], evidence: "seed", evidenceRefs: [sharedGatewayEvidence] },
+        { id: "dep-3", sourceModule: "Checkout", targetModule: "Payment Gateway", dependencyType: "payment gateway dependency", description: "Checkout depends on the gateway.", sourceWorkItemIds: ["15"], evidence: "seed", evidenceRefs: [sharedGatewayEvidence] },
       ],
     });
-    const [api, apiReworded, event] = base.crossDependencies;
+    const [api, apiReworded, event, externalCall, externalDependency, gatewayCall, gatewayDependency] = base.crossDependencies;
     expect(isCompatibleProjectKnowledgeParaphrase("dependency", api, apiReworded)).toBe(true);
     expect(isCompatibleProjectKnowledgeParaphrase("dependency", api, event)).toBe(false);
+    expect(externalCall.dependencyType).toBe("external service dependency");
+    expect(externalDependency.dependencyType).toBe("external service dependency");
+    expect(isCompatibleProjectKnowledgeParaphrase("dependency", externalCall, externalDependency)).toBe(true);
+    expect(isCompatibleProjectKnowledgeParaphrase("dependency", gatewayCall, gatewayDependency)).toBe(true);
   });
 });
 

@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   appendUniqueContextItems,
   changedKnowledgeEntryIdentities,
+  IndexSummary,
   IndexedContextView,
   KnowledgeCandidatesView,
   KnowledgeExplorer,
@@ -15,6 +16,30 @@ import {
 } from "./knowledge-hub-client";
 
 afterEach(cleanup);
+
+describe("Knowledge Hub project indexing summary", () => {
+  it("shows the original source synchronization metrics", () => {
+    render(<IndexSummary result={{
+      mode: "incremental",
+      fetchedCount: 87,
+      storedWorkItemCount: 84,
+      indexedWorkItemCount: 12,
+      indexedChunkCount: 48,
+      createdCount: 3,
+      updatedCount: 9,
+      unchangedCount: 72,
+      inactiveCount: 3,
+      skippedEmptyCount: 1,
+      workItemTypes: ["Feature", "User Story"],
+      states: ["Active"],
+    }} />);
+
+    expect(screen.getByText("Latest Indexing Summary")).toBeTruthy();
+    for (const label of ["Fetched", "New", "Updated", "Unchanged", "Inactive", "Reindexed", "Chunks indexed", "Skipped empty"]) {
+      expect(screen.getByText(label)).toBeTruthy();
+    }
+  });
+});
 
 const candidate = {
   id: "candidate-1",
@@ -36,6 +61,36 @@ function knowledgeBaseWithModules(count: number) {
       evidence: `Evidence for module ${index + 1}`,
       sourceWorkItemIds: [`${index + 1}`],
     })),
+    businessRules: [],
+    stateTransitions: [],
+    glossary: [],
+    crossDependencies: [],
+  };
+}
+
+function publishedKnowledgeBaseWithEvidence() {
+  return {
+    modules: [{
+      id: "mod-private-checkout",
+      name: "Published Checkout",
+      description: "Coordinates checkout processing.",
+      evidence: "Legacy checkout evidence.",
+      sourceWorkItemIds: ["98765"],
+      evidenceRefs: [{
+        sourceSnapshotId: "snapshot-98765",
+        sourceWorkItemId: "98765",
+        sourceField: "iterationPath" as const,
+        quote: "Sponsor confirms the identity document before checkout.",
+        origin: "generated_v4" as const,
+        verification: "exact" as const,
+      }],
+    }, {
+      id: "module-secondary",
+      name: "Secondary Module",
+      description: "A separate published module.",
+      evidence: "Legacy-only secondary evidence.",
+      sourceWorkItemIds: ["200"],
+    }],
     businessRules: [],
     stateTransitions: [],
     glossary: [],
@@ -173,9 +228,36 @@ describe("Knowledge Explorer scrolling", () => {
     expect(screen.queryByRole("button", { name: "Next" })).toBeNull();
 
     const results = screen.getByRole("region", { name: "Scrollable knowledge explorer results" });
+    const categoryGroup = screen.getByRole("group", { name: "Knowledge categories" });
+    const expectedCategories = [
+      ["All", 8, "all"],
+      ["Modules", 8, "module"],
+      ["Business Rules", 0, "businessRule"],
+      ["State Transitions", 0, "stateTransition"],
+      ["Glossary", 0, "glossary"],
+      ["Dependencies", 0, "dependency"],
+    ] as const;
+
+    for (const [label, count, iconKey] of expectedCategories) {
+      const button = within(categoryGroup).getByRole("button", { name: new RegExp(`${label}\\s*${count}`, "i") });
+      const icon = button.querySelector(`svg[data-knowledge-category-icon="${iconKey}"]`);
+      expect(icon).not.toBeNull();
+      expect(icon).toHaveAttribute("aria-hidden", "true");
+    }
+
+    const allButton = within(categoryGroup).getByRole("button", { name: /All\s*8/i });
+    const modulesButton = within(categoryGroup).getByRole("button", { name: /Modules\s*8/i });
+    expect(allButton).toHaveAttribute("aria-pressed", "true");
+    expect(modulesButton).toHaveAttribute("aria-pressed", "false");
+    expect(categoryGroup).toHaveClass("min-w-0", "max-w-full");
+    expect(results).toHaveClass("min-w-0", "max-w-full", "overflow-x-clip");
+    expect(results.parentElement).toHaveClass("grid-cols-[minmax(0,1fr)]", "lg:grid-cols-[216px_minmax(0,1fr)]");
+
     results.scrollTop = 140;
-    fireEvent.click(screen.getByRole("button", { name: /Modules\s*8/i }));
+    fireEvent.click(modulesButton);
     expect(results.scrollTop).toBe(0);
+    expect(allButton).toHaveAttribute("aria-pressed", "false");
+    expect(modulesButton).toHaveAttribute("aria-pressed", "true");
   });
 
   it("keeps five-item pagination and highlighted-entry navigation in compact previews", async () => {
@@ -193,6 +275,39 @@ describe("Knowledge Explorer scrolling", () => {
     expect(screen.getByRole("button", { name: "Next" })).toBeTruthy();
     expect(await screen.findByText("Module 6")).toBeTruthy();
     expect(screen.getByText("Updated review result")).toBeTruthy();
+    const results = screen.getByRole("region", { name: "Scrollable knowledge preview" });
+    expect(results).toHaveClass("min-w-0", "max-w-full", "overflow-x-clip");
+    expect(results.parentElement).toHaveClass("grid-cols-[minmax(0,1fr)]");
+  });
+
+  it("shows the published entry fields and verified evidence through the shared details disclosure", () => {
+    render(<KnowledgeExplorer knowledgeBase={publishedKnowledgeBaseWithEvidence()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show details for Published Checkout" }));
+
+    expect(screen.getByText("mod-private-checkout")).toBeTruthy();
+    expect(screen.getByText(/Sponsor confirms the identity document before checkout\./)).toBeTruthy();
+    expect(screen.getAllByText("#98765").length).toBeGreaterThan(0);
+  });
+
+  it("searches published structured fields, evidence metadata, quotes, and source IDs", () => {
+    render(<KnowledgeExplorer knowledgeBase={publishedKnowledgeBaseWithEvidence()} />);
+    const search = screen.getByRole("textbox", { name: "Search compiled knowledge" });
+
+    for (const query of [
+      "mod-private-checkout",
+      "iterationPath",
+      "identity document",
+      "98765",
+    ]) {
+      fireEvent.change(search, { target: { value: query } });
+      expect(screen.getByText("1 entries match the current filters.")).toBeTruthy();
+      expect(screen.queryByText("Secondary Module")).toBeNull();
+    }
+
+    fireEvent.change(search, { target: { value: "Legacy-only secondary evidence" } });
+    expect(screen.getByText("1 entries match the current filters.")).toBeTruthy();
+    expect(screen.queryByText("Published Checkout")).toBeNull();
   });
 });
 

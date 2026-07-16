@@ -61,6 +61,13 @@ import type {
   ProjectKnowledgeReviewSummary,
 } from "@/modules/rag/project-knowledge-review.contracts"
 import { KnowledgeReviewWorkspace } from "./knowledge-review-workspace"
+import { KnowledgeBuildV4 } from "./knowledge-build-v4"
+import {
+  KnowledgeCategoryFilterButton,
+  KnowledgeEntryCard,
+  type KnowledgeCategoryVisualKey,
+  type KnowledgeDisplayEntry,
+} from "./knowledge-entry-card"
 import {
   projectScopeKey,
   selectAvailableDefaults,
@@ -327,12 +334,17 @@ type KnowledgeCandidate = {
 }
 
 const KNOWLEDGE_CATEGORIES = [
-  { key: "modules", label: "Modules", badge: "Module" },
-  { key: "businessRules", label: "Business Rules", badge: "Business Rule" },
-  { key: "stateTransitions", label: "State Transitions", badge: "State Transition" },
-  { key: "glossary", label: "Glossary", badge: "Glossary" },
-  { key: "crossDependencies", label: "Dependencies", badge: "Dependency" },
-] as const
+  { key: "modules", label: "Modules", badge: "Module", iconKey: "module" },
+  { key: "businessRules", label: "Business Rules", badge: "Business Rule", iconKey: "businessRule" },
+  { key: "stateTransitions", label: "State Transitions", badge: "State Transition", iconKey: "stateTransition" },
+  { key: "glossary", label: "Glossary", badge: "Glossary", iconKey: "glossary" },
+  { key: "crossDependencies", label: "Dependencies", badge: "Dependency", iconKey: "dependency" },
+] as const satisfies ReadonlyArray<{
+  key: string
+  label: string
+  badge: string
+  iconKey: KnowledgeCategoryVisualKey
+}>
 
 type KnowledgeCategoryKey = (typeof KNOWLEDGE_CATEGORIES)[number]["key"]
 type KnowledgeExplorerCategory = KnowledgeCategoryKey | "all"
@@ -358,19 +370,7 @@ type AnyKnowledgeItem = KnowledgeSource & {
   dependencyType?: string
 }
 
-type KnowledgeExplorerEntry = {
-  key: string
-  highlightIdentity: string
-  category: KnowledgeCategoryKey
-  categoryLabel: string
-  badge: string
-  title: string
-  description: string
-  evidence: string
-  sourceWorkItemIds: string[]
-  meta: string[]
-  searchText: string
-}
+type KnowledgeExplorerEntry = KnowledgeDisplayEntry<KnowledgeCategoryKey>
 
 export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: WorkspaceRole | null }) {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null)
@@ -1373,7 +1373,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                 </TabsList>
               </div>
 
-              <CardContent className="pt-4">
+              <CardContent className="min-w-0 max-w-full pt-4">
                 <TabsContent value="explorer" className="mt-0">
                   {knowledgeStatusLoading ? (
                     <KnowledgeLoadingState label="Loading saved knowledge base" />
@@ -1424,6 +1424,81 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
 
         {canBuildKnowledge ? (
         <TabsContent value="build" className="space-y-4">
+          {scope ? (
+            <>
+              <KnowledgeBuildV4
+                key={`${scope.workspaceId ?? "workspace"}:${scope.projectId}`}
+                scope={scope}
+                sourceIndexReady={Boolean(result)}
+                sourceIndexLoading={buildLoading}
+                sourceIndexContent={(
+                  <>
+                    <Card className="qa-card">
+                      <CardHeader>
+                        <CardTitle className="text-base" role="heading" aria-level={2}>Load Project Index</CardTitle>
+                        <p className="text-sm leading-6 text-muted-foreground">
+                          Sync the selected Azure DevOps work items, review what changed, then build project knowledge from that index.
+                        </p>
+                      </CardHeader>
+                      <CardContent>
+                        <IndexLoadPanel
+                          workItemTypes={workItemTypes}
+                          states={states}
+                          workItemTypeOptions={workItemMetadata?.workItemTypes ?? []}
+                          stateOptions={workItemMetadata?.states ?? []}
+                          metadataLoading={workItemMetadataLoading}
+                          metadataError={workItemMetadataError}
+                          canLoad={canLoadIndex}
+                          loading={buildLoading}
+                          onWorkItemTypesChange={changeWorkItemTypes}
+                          onStatesChange={changeStates}
+                          onRetryMetadata={retryWorkItemMetadata}
+                          onLoad={loadProjectIndexForBuild}
+                        />
+                      </CardContent>
+                    </Card>
+
+                    {buildError ? (
+                      <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+                        <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                        <span>{buildError}</span>
+                      </div>
+                    ) : null}
+
+                    {result ? (
+                      <>
+                        <IndexSummary result={result} />
+                        <IndexedContextPanel
+                          items={recentItems}
+                          totalCount={totalCount}
+                          sortBy={sortBy}
+                          sortDirection={sortDirection}
+                          search={contextSearch}
+                          loading={statusLoading}
+                          loadingMore={contextLoadingMore}
+                          hasMore={hasMoreContext}
+                          error={contextStatusError}
+                          emptyMessage="No indexed work items matched the loaded project index."
+                          onSearchChange={changeContextSearch}
+                          onSortChange={changeSort}
+                          onLoadMore={loadMoreContext}
+                        />
+                      </>
+                    ) : null}
+                  </>
+                )}
+                onActivityChange={setHasUnfinishedWork}
+                onPublished={async () => {
+                  await Promise.all([
+                    refreshKnowledgeStatus(scope),
+                    refreshKnowledgeLog(scope),
+                    loadStatus(scope, { page: 1, sortBy, sortDirection, query: contextSearch }),
+                  ])
+                }}
+              />
+            </>
+          ) : null}
+          {legacyBuildUiEnabled() ? (
           <Card className="qa-card">
             <CardHeader>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1675,11 +1750,16 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
               </Tabs>
             </CardContent>
           </Card>
+          ) : null}
         </TabsContent>
         ) : null}
       </Tabs>
     </div>
   )
+}
+
+function legacyBuildUiEnabled() {
+  return false
 }
 
 function HubSummary({
@@ -2556,7 +2636,7 @@ export function IndexedContextView({
   )
 }
 
-function IndexSummary({ result }: { result: IndexResult }) {
+export function IndexSummary({ result }: { result: IndexResult }) {
   const metrics = [
     ["Fetched", result.fetchedCount],
     ["New", result.createdCount],
@@ -2961,8 +3041,8 @@ export function KnowledgeExplorer({
   }, [entries, highlightedEntryIdentities, pageSize])
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <div className="w-full min-w-0 max-w-full space-y-3">
+      <div className="flex min-w-0 max-w-full flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div role="status" aria-live="polite" className="text-sm text-muted-foreground">
           {filteredEntries.length} entries match the current filters.
         </div>
@@ -2977,19 +3057,21 @@ export function KnowledgeExplorer({
           />
         </div>
       </div>
-      <div className={`grid gap-4 ${compact ? "lg:grid-cols-[180px_1fr]" : "lg:grid-cols-[190px_1fr]"}`}>
-        <div className="-mx-1 px-1 lg:mx-0 lg:px-0">
-          <div role="group" aria-label="Knowledge categories" className="flex flex-wrap gap-1 lg:block lg:space-y-1">
-            <KnowledgeCategoryButton
+      <div className={`grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)] gap-4 ${compact ? "lg:grid-cols-[208px_minmax(0,1fr)]" : "lg:grid-cols-[216px_minmax(0,1fr)]"}`}>
+        <div className="-mx-1 min-w-0 max-w-full px-1 lg:mx-0 lg:px-0">
+          <div role="group" aria-label="Knowledge categories" className="flex min-w-0 max-w-full flex-wrap gap-1 lg:block lg:space-y-1">
+            <KnowledgeCategoryFilterButton
               label="All"
+              iconKey="all"
               count={entries.length}
               active={category === "all"}
               onClick={() => setCategory("all")}
             />
             {KNOWLEDGE_CATEGORIES.map((item) => (
-              <KnowledgeCategoryButton
+              <KnowledgeCategoryFilterButton
                 key={item.key}
                 label={item.label}
+                iconKey={item.iconKey}
                 count={counts[item.key]}
                 active={category === item.key}
                 onClick={() => setCategory(item.key)}
@@ -3002,13 +3084,13 @@ export function KnowledgeExplorer({
           role="region"
           tabIndex={0}
           aria-label={compact ? "Scrollable knowledge preview" : "Scrollable knowledge explorer results"}
-          className={`space-y-3 overflow-y-auto overscroll-contain pr-2 outline-none [scrollbar-gutter:stable] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+          className={`w-full min-w-0 max-w-full space-y-3 overflow-x-clip overflow-y-auto overscroll-contain pr-2 outline-none [scrollbar-gutter:stable] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
             compact ? "max-h-[520px]" : "max-h-[min(68vh,680px)]"
           }`}
         >
           {visibleEntries.length ? (
             visibleEntries.map((entry) => (
-              <KnowledgeExplorerEntryCard
+              <KnowledgeEntryCard
                 key={entry.key}
                 entry={entry}
                 compact={compact}
@@ -3046,109 +3128,28 @@ export function KnowledgeExplorer({
   )
 }
 
-function KnowledgeCategoryButton({
-  label,
-  count,
-  active,
-  onClick,
-}: {
-  label: string
-  count: number
-  active: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={`flex min-h-10 w-auto shrink-0 items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm font-medium outline-none transition-colors duration-ui focus-visible:ring-2 focus-visible:ring-ring lg:w-full ${
-        active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"
-      }`}
-    >
-      <span>{label}</span>
-      <span className="rounded-sm border border-border bg-card px-1.5 py-0.5 text-xs text-muted-foreground">{count}</span>
-    </button>
-  )
-}
-
-function KnowledgeExplorerEntryCard({
-  entry,
-  compact,
-  highlighted = false,
-}: {
-  entry: KnowledgeExplorerEntry
-  compact?: boolean
-  highlighted?: boolean
-}) {
-  const description = entry.description.trim()
-
-  return (
-    <article
-      aria-label={highlighted ? `${entry.title}, updated review result` : undefined}
-      className={`knowledge-entry rounded-lg border-2 p-4 transition-colors duration-ui motion-reduce:transition-none focus-within:ring-2 focus-within:ring-ring ${
-        highlighted
-          ? "border-primary bg-primary/5 ring-2 ring-primary/20"
-          : "border-border bg-muted/60 hover:border-primary/40 hover:bg-muted"
-      }`}
-    >
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary">{entry.badge}</Badge>
-            {highlighted ? <Badge className="gap-1"><Check className="size-3.5" aria-hidden="true" />Updated review result</Badge> : null}
-            <span className="font-semibold text-foreground">{entry.title}</span>
-          </div>
-          {description ? (
-            <div className={`mt-2 text-sm text-muted-foreground ${compact ? "line-clamp-2" : ""}`}>
-              {description}
-            </div>
-          ) : null}
-        </div>
-        <div role="group" aria-label="Source work item IDs" className="flex max-w-[420px] flex-wrap gap-1">
-          {entry.sourceWorkItemIds.slice(0, compact ? 6 : 10).map((id) => (
-            <Badge key={id} variant="outline" className="font-mono text-xs tabular-nums">{id}</Badge>
-          ))}
-          {entry.sourceWorkItemIds.length > (compact ? 6 : 10) ? (
-            <Badge
-              variant="outline"
-              className="font-mono text-xs tabular-nums text-muted-foreground"
-              aria-label={`${entry.sourceWorkItemIds.length - (compact ? 6 : 10)} more source work items`}
-              title={entry.sourceWorkItemIds.slice(compact ? 6 : 10).join(", ")}
-            >
-              +{entry.sourceWorkItemIds.length - (compact ? 6 : 10)}
-            </Badge>
-          ) : null}
-        </div>
-      </div>
-      {entry.meta.length ? (
-        <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
-          {entry.meta.map((meta) => <Badge key={meta} variant="secondary">{meta}</Badge>)}
-        </div>
-      ) : null}
-      <div className={`mt-3 rounded-md bg-card p-3 text-sm text-muted-foreground ${compact ? "line-clamp-2" : ""}`}>
-        <span className="font-semibold text-foreground">Evidence:</span> {entry.evidence}
-      </div>
-    </article>
-  )
-}
-
 function KnowledgeLoadingState({ label, compact = false }: { label: string; compact?: boolean }) {
   const rows = Array.from({ length: compact ? 2 : 4 }).map((_, index) => (
-    <div key={index} className="rounded-lg border border-border bg-muted/30 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 space-y-3">
-          <Skeleton className="h-4 w-2/5" />
-          <Skeleton className="h-3 w-full" />
-          <Skeleton className="h-3 w-4/5" />
+    <div key={index} className="rounded-lg border border-border bg-muted/30 p-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-5 w-16 rounded-full" />
+            <Skeleton className="h-4 w-2/5" />
+          </div>
+          <Skeleton className="mt-2 h-3 w-3/5" />
         </div>
-        <Skeleton className="h-6 w-12" />
+        <div className="flex shrink-0 items-center gap-2">
+          <Skeleton className="h-5 w-16 rounded-full" />
+          <Skeleton className="h-5 w-24 rounded-full" />
+          <Skeleton className="size-5 rounded-sm" />
+        </div>
       </div>
     </div>
   ))
 
   return (
-    <div role="status" aria-live="polite" aria-label={label} className="space-y-3">
+    <div role="status" aria-live="polite" aria-label={label} className="min-w-0 max-w-full space-y-3">
       <span className="sr-only">{label}</span>
       {compact ? (
         <div className="space-y-3">{rows}</div>
@@ -3158,13 +3159,13 @@ function KnowledgeLoadingState({ label, compact = false }: { label: string; comp
             <Skeleton className="h-4 w-48" />
             <Skeleton className="h-9 w-full lg:w-[420px]" />
           </div>
-          <div className="grid gap-4 lg:grid-cols-[190px_1fr]">
-            <div className="space-y-1">
+          <div className="grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[216px_minmax(0,1fr)]">
+            <div className="min-w-0 max-w-full space-y-1">
               {Array.from({ length: 5 }).map((_, index) => (
                 <Skeleton key={index} className="h-10 w-full" />
               ))}
             </div>
-            <div className="space-y-3">{rows}</div>
+            <div className="min-w-0 max-w-full space-y-3">{rows}</div>
           </div>
         </>
       )}
@@ -3205,6 +3206,12 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
       const title = knowledgeTitle(category.key, item)
       const description = knowledgeDescription(category.key, item)
       const meta = knowledgeMeta(category.key, item)
+      const details = knowledgeDetails(category.key, item)
+      const evidenceItems = item.evidenceRefs?.map((evidence) => ({
+        sourceWorkItemId: evidence.sourceWorkItemId,
+        sourceField: evidence.sourceField,
+        quote: evidence.quote,
+      }))
       return {
         key: knowledgeItemKey(category.key, item, index),
         highlightIdentity: knowledgeHighlightIdentity(category.key, item),
@@ -3216,13 +3223,21 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
         evidence: item.evidence,
         sourceWorkItemIds: item.sourceWorkItemIds,
         meta,
+        details,
+        evidenceItems,
         searchText: [
           category.label,
           title,
           description,
           item.evidence,
-          item.sourceWorkItemIds.join(" "),
-          meta.join(" "),
+          ...item.sourceWorkItemIds,
+          ...meta,
+          ...details.flatMap((detail) => [detail.id, detail.label, detail.value]),
+          ...(evidenceItems ?? []).flatMap((evidence) => [
+            evidence.sourceWorkItemId,
+            evidence.sourceField,
+            evidence.quote,
+          ]),
         ].join(" "),
       }
     })
@@ -3293,6 +3308,52 @@ function knowledgeMeta(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) {
     item.dependencyType,
     item.actor ? `Actor: ${item.actor}` : undefined,
   ].filter((value): value is string => Boolean(value))
+}
+
+function knowledgeDetails(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) {
+  const details = category === "modules"
+    ? [
+        knowledgeDetail("id", "ID", item.id),
+        knowledgeDetail("name", "Name", item.name),
+        knowledgeDetail("description", "Description", item.description),
+      ]
+    : category === "businessRules"
+      ? [
+          knowledgeDetail("id", "ID", item.id),
+          knowledgeDetail("rule", "Rule", item.rule),
+          knowledgeDetail("sourceField", "Source field", item.sourceField),
+          knowledgeDetail("moduleName", "Module", item.moduleName),
+        ]
+      : category === "stateTransitions"
+        ? [
+            knowledgeDetail("id", "ID", item.id),
+            knowledgeDetail("workflowName", "Workflow", item.workflowName),
+            knowledgeDetail("fromState", "From state", item.fromState),
+            knowledgeDetail("toState", "To state", item.toState),
+            knowledgeDetail("triggerOrCondition", "Trigger or condition", item.triggerOrCondition),
+            knowledgeDetail("actor", "Actor", item.actor),
+            knowledgeDetail("moduleName", "Module", item.moduleName),
+          ]
+        : category === "glossary"
+          ? [
+              knowledgeDetail("term", "Term", item.term),
+              knowledgeDetail("type", "Type", formatGlossaryType(item.type)),
+              knowledgeDetail("definition", "Definition", item.definition),
+            ]
+          : [
+              knowledgeDetail("id", "ID", item.id),
+              knowledgeDetail("sourceModule", "Source", item.sourceModule),
+              knowledgeDetail("targetModule", "Target", item.targetModule),
+              knowledgeDetail("dependencyType", "Dependency type", item.dependencyType),
+              knowledgeDetail("description", "Description", item.description),
+            ]
+
+  return details.filter((detail): detail is NonNullable<typeof detail> => Boolean(detail))
+}
+
+function knowledgeDetail(id: string, label: string, value?: string) {
+  const normalized = value?.trim()
+  return normalized ? { id, label, value: normalized } : null
 }
 
 function getKnowledgeCategoryCounts(knowledgeBase: ProjectKnowledgeBase) {

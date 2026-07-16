@@ -32,13 +32,18 @@ export async function POST(request: Request) {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can build project knowledge.");
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
-    return NextResponse.json({
-      knowledgeBase: await validateProjectKnowledgeManualBatch({
+    const knowledgeBase = await validateProjectKnowledgeManualBatch({
         scope: trustedScope,
         draftId: parsed.data.draftId,
         batchIndex: parsed.data.batchIndex,
         rawOutput: parsed.data.rawOutput,
-      }),
+      });
+    return NextResponse.json({
+      validated: true,
+      batchIndex: parsed.data.batchIndex,
+      entryCount: knowledgeBase.modules.length + knowledgeBase.businessRules.length +
+        knowledgeBase.stateTransitions.length + knowledgeBase.glossary.length +
+        knowledgeBase.crossDependencies.length,
     });
   } catch (error) {
     const authResponse = authErrorResponse(error);
