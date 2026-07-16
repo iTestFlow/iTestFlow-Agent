@@ -38,9 +38,9 @@ import {
   projectKnowledgeConsolidationCandidateKeys,
 } from "./project-knowledge-wording-carryover";
 import {
-  canonicalizeProjectKnowledgeLogicalIdentity,
   PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
 } from "./project-knowledge-contracts";
+import { canonicalizeProjectKnowledgeDependencyType } from "./project-knowledge-dependency-type";
 import {
   recordProjectKnowledgeLog,
   type ProjectKnowledgeCompilationMode,
@@ -930,7 +930,7 @@ async function selectProjectKnowledgeWorkItemsForCompilation(input: {
     return {
       requestedMode: input.mode,
       mode: "full",
-      fallbackReason: "This is the first v4 build, so every active source must be grounded with immutable citation handles.",
+      fallbackReason: "The compiler contract changed, so every active source must be grounded with immutable citation handles.",
       workItems: input.workItems,
       changedSourceWorkItemIds: input.workItems.map((item) => item.id),
       retiredSourceWorkItemIds: [],
@@ -1306,9 +1306,16 @@ function consolidateCategoryItems<TCategory extends ProjectKnowledgeConsolidatio
     group.push(item);
     groups.set(root, group);
   });
-  const consolidatedItems = Array.from(groups.values()).map((entries) =>
-    mergeProjectKnowledgeConflictEntries(category, entries),
-  );
+  const consolidatedItems = Array.from(groups.values()).flatMap((entries) => {
+    const compatibleGroups = category === "dependency"
+      ? partitionCompatibleDependencyEntries(
+        entries as ProjectKnowledgeEntryByConsolidationCategory["dependency"][],
+      )
+      : [entries];
+    return compatibleGroups.map((group) =>
+      mergeProjectKnowledgeConflictEntries(category, group as ProjectKnowledgeEntryByConsolidationCategory[TCategory][]),
+    );
+  });
 
   return {
     items: consolidatedItems,
@@ -1321,76 +1328,55 @@ function shouldAutomaticallyConsolidate<TCategory extends ProjectKnowledgeConsol
   first: ProjectKnowledgeEntryByConsolidationCategory[TCategory],
   second: ProjectKnowledgeEntryByConsolidationCategory[TCategory],
 ) {
-  if (normalizedProjection(category, first) === normalizedProjection(category, second)) return true;
-
-  // Candidate keys already establish that these entries describe the same logical
-  // subject. Different sources commonly express that subject at different levels of
-  // detail, so evidence identity is not required for consolidation. Category guards
-  // keep provable disagreements separate: concrete rule values, transition targets,
-  // and dependency endpoint/type tuples must still agree.
   return isCompatibleProjectKnowledgeParaphrase(category, first, second);
 }
 
-function normalizedProjection<TCategory extends ProjectKnowledgeConsolidationCategory>(
-  category: TCategory,
-  entry: ProjectKnowledgeEntryByConsolidationCategory[TCategory],
+/**
+ * Pairwise hierarchy compatibility is not transitive: `dependency` can match
+ * both API and event entries even though API and event cannot merge with one
+ * another. The initial candidate-key union intentionally discovers this whole
+ * neighborhood; before reducing it to one entry, split it into deterministic
+ * all-compatible groups so a generic link cannot bridge incompatible transports.
+ */
+function partitionCompatibleDependencyEntries(
+  entries: ProjectKnowledgeEntryByConsolidationCategory["dependency"][],
 ) {
-  switch (category) {
-    case "module": {
-      const moduleEntry = entry as ProjectKnowledgeEntryByConsolidationCategory["module"];
-      return projectionKey(moduleEntry.name, moduleEntry.description);
+  const groups: ProjectKnowledgeEntryByConsolidationCategory["dependency"][][] = [];
+  const orderedEntries = [...entries].sort(compareDependencyConsolidationEntries);
+
+  orderedEntries.forEach((entry) => {
+    const compatibleGroup = groups.find((group) =>
+      group.every((existing) => isCompatibleProjectKnowledgeParaphrase("dependency", existing, entry)));
+    if (compatibleGroup) {
+      compatibleGroup.push(entry);
+    } else {
+      groups.push([entry]);
     }
-    case "business_rule": {
-      const rule = entry as ProjectKnowledgeEntryByConsolidationCategory["business_rule"];
-      return projectionKey(rule.rule, normalizeBusinessRuleSourceField(rule.sourceField), rule.moduleName);
-    }
-    case "state_transition": {
-      const transition = entry as ProjectKnowledgeEntryByConsolidationCategory["state_transition"];
-      return projectionKey(
-        transition.workflowName,
-        transition.fromState,
-        transition.toState,
-        transition.triggerOrCondition,
-        transition.actor,
-        transition.moduleName,
-      );
-    }
-    case "glossary": {
-      const term = entry as ProjectKnowledgeEntryByConsolidationCategory["glossary"];
-      return projectionKey(
-        canonicalizeProjectKnowledgeLogicalIdentity(term.term),
-        term.type,
-        term.definition,
-      );
-    }
-    case "dependency": {
-      const dependency = entry as ProjectKnowledgeEntryByConsolidationCategory["dependency"];
-      return projectionKey(
-        dependency.sourceModule,
-        dependency.targetModule,
-        dependency.dependencyType,
-        dependency.description,
-      );
-    }
-  }
+  });
+
+  return groups;
 }
 
-function projectionKey(...values: Array<string | undefined>) {
-  return values.map(normalizeComparableText).join("\u0000");
+function compareDependencyConsolidationEntries(
+  first: ProjectKnowledgeEntryByConsolidationCategory["dependency"],
+  second: ProjectKnowledgeEntryByConsolidationCategory["dependency"],
+) {
+  return compareConsolidationText(
+    canonicalizeProjectKnowledgeDependencyType(first.dependencyType),
+    canonicalizeProjectKnowledgeDependencyType(second.dependencyType),
+  ) ||
+    compareConsolidationText(first.sourceModule, second.sourceModule) ||
+    compareConsolidationText(first.targetModule, second.targetModule) ||
+    compareConsolidationText(first.id, second.id) ||
+    compareConsolidationText(first.description, second.description) ||
+    compareConsolidationText(JSON.stringify(first), JSON.stringify(second));
 }
 
-function normalizeComparableText(value: string | undefined) {
-  return value?.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ") ?? "";
-}
-
-function normalizeBusinessRuleSourceField(value: string) {
-  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, "");
-  if (["acceptancecriterion", "acceptancecriteria", "criteria", "ac"].includes(normalized)) {
-    return "acceptanceCriteria";
-  }
-  if (["desc", "systemdescription"].includes(normalized)) return "description";
-  if (["name", "systemtitle"].includes(normalized)) return "title";
-  return normalized;
+function compareConsolidationText(first: string, second: string) {
+  const firstCanonical = first.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
+  const secondCanonical = second.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
+  if (firstCanonical !== secondCanonical) return firstCanonical < secondCanonical ? -1 : 1;
+  return first < second ? -1 : first > second ? 1 : 0;
 }
 
 async function extractProjectKnowledgeBase(input: {

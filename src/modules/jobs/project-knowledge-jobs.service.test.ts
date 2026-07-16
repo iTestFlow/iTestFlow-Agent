@@ -151,6 +151,7 @@ describe("project knowledge background job contract", () => {
       result: {
         outcome: "ready_to_publish",
         draftId: "draft-1",
+        possibleTensionCount: 2,
         omittedEntryCount: 2,
         proposedKnowledge: { modules: [{ secret: true }] },
         rawOutput: "secret",
@@ -159,7 +160,7 @@ describe("project knowledge background job contract", () => {
     expect(sanitized).toMatchObject({
       phase: "validating_citations",
       progress: { phase: "validating_citations", percent: 80, draftId: "draft-1" },
-      result: { outcome: "ready_to_publish", draftId: "draft-1", omittedEntryCount: 2 },
+      result: { outcome: "ready_to_publish", draftId: "draft-1", possibleTensionCount: 2, omittedEntryCount: 2 },
       error: "provider failed",
     });
     expect(JSON.stringify(sanitized)).not.toMatch(/proposedKnowledge|rawOutput|tokenUsage|secret/);

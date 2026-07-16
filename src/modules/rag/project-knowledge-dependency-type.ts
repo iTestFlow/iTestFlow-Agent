@@ -48,6 +48,19 @@ const TYPE_SUBJECT_STOP_WORDS = new Set([
   "to",
 ]);
 
+/**
+ * The only dependency types that form a specificity hierarchy. All other
+ * canonical types (API, event, named-subject, and pass-through labels) retain
+ * their transport/subject meaning and therefore do not collapse into one
+ * another. A generic dependency is intentionally compatible with every type:
+ * it carries no competing transport assertion and may be upgraded safely.
+ */
+const DEPENDENCY_TYPE_HIERARCHY_RANK: Readonly<Record<string, number>> = {
+  dependency: 0,
+  "service dependency": 1,
+  "external service dependency": 2,
+};
+
 export function normalizeProjectKnowledgeDependencyType(value: string) {
   return value
     .normalize("NFKC")
@@ -111,6 +124,53 @@ export function projectKnowledgeDependencyTypeSubject(value: string) {
     .join(" ");
 }
 
+/**
+ * Returns whether two labels can represent the same dependency at different
+ * levels of specificity. This deliberately does not make API, event, named
+ * subject, or pass-through labels interchangeable with each other.
+ */
+export function areProjectKnowledgeDependencyTypesHierarchyCompatible(
+  first: string,
+  second: string,
+) {
+  const firstCanonical = canonicalizeProjectKnowledgeDependencyType(first);
+  const secondCanonical = canonicalizeProjectKnowledgeDependencyType(second);
+  if (firstCanonical === secondCanonical) return true;
+
+  // An unqualified dependency may safely be refined to any more informative
+  // type, including an API/event/named-subject/pass-through type.
+  if (firstCanonical === "dependency" || secondCanonical === "dependency") return true;
+
+  return hasDependencyTypeHierarchyRank(firstCanonical) &&
+    hasDependencyTypeHierarchyRank(secondCanonical);
+}
+
+/**
+ * Chooses the canonical, most-specific representation for a compatible pair.
+ * Callers should only pass hierarchy-compatible labels. The lexical fallback
+ * keeps this helper deterministic even if it is called defensively for an
+ * incompatible pair.
+ */
+export function mostSpecificProjectKnowledgeDependencyType(first: string, second: string) {
+  const firstCanonical = canonicalizeProjectKnowledgeDependencyType(first);
+  const secondCanonical = canonicalizeProjectKnowledgeDependencyType(second);
+  if (firstCanonical === secondCanonical) return firstCanonical;
+  if (firstCanonical === "dependency") return secondCanonical;
+  if (secondCanonical === "dependency") return firstCanonical;
+
+  const firstRank = DEPENDENCY_TYPE_HIERARCHY_RANK[firstCanonical];
+  const secondRank = DEPENDENCY_TYPE_HIERARCHY_RANK[secondCanonical];
+  if (firstRank !== undefined && secondRank !== undefined) {
+    return firstRank >= secondRank ? firstCanonical : secondCanonical;
+  }
+
+  return firstCanonical <= secondCanonical ? firstCanonical : secondCanonical;
+}
+
+function hasDependencyTypeHierarchyRank(value: string) {
+  return Object.prototype.hasOwnProperty.call(DEPENDENCY_TYPE_HIERARCHY_RANK, value);
+}
+
 export function areProjectKnowledgeDependencyTypesEquivalent(
   first: string,
   second: string,
@@ -123,6 +183,7 @@ export function areProjectKnowledgeDependencyTypesEquivalent(
     return true;
   }
   if (!options.identicalEvidence) return false;
+  if (areProjectKnowledgeDependencyTypesHierarchyCompatible(first, second)) return true;
   const firstSubject = projectKnowledgeDependencyTypeSubject(first);
   const secondSubject = projectKnowledgeDependencyTypeSubject(second);
   return Boolean(firstSubject && firstSubject === secondSubject);

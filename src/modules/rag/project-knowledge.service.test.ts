@@ -41,6 +41,7 @@ import { projectKnowledgeExtractionPrompt } from "@/modules/llm/prompts";
 import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import { fakeLlmProvider, projectScope } from "@/test/factories";
 import type { ProjectKnowledgeBase, ProjectKnowledgeEvidenceRef } from "./project-knowledge.schema";
+import { PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION } from "./project-knowledge-contracts";
 import { detectProjectKnowledgeHardConflicts } from "./project-knowledge-conflicts";
 import { projectKnowledgeCitationHandle } from "./project-knowledge-grounding";
 import {
@@ -49,6 +50,7 @@ import {
   previewGeneratedProjectKnowledgeBase,
   saveManualProjectKnowledgeBaseFromBatches,
   validateProjectKnowledgeExternalOutput,
+  validateProjectKnowledgeManualBatch,
 } from "./project-knowledge.service";
 
 type WorkItemRow = {
@@ -199,7 +201,7 @@ function snapshotRow(kb: ProjectKnowledgeBase, overrides: Record<string, unknown
     source_fingerprint: "fingerprint-1",
     semantic_hash: "semantic-1",
     provenance_hash: "provenance-1",
-    compiler_contract_version: "4.0.0",
+    compiler_contract_version: PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
     freshness_status: "current",
     provenance_status: "verified",
     compiler_compatibility: "current",
@@ -350,6 +352,56 @@ describe("validateProjectKnowledgeExternalOutput", () => {
   });
 });
 
+describe("validateProjectKnowledgeManualBatch", () => {
+  it("keeps a quote-backed structured constraint from pasted external output", async () => {
+    setWorkItems([workItemRow({ acceptance_criteria: "Payment is required." })]);
+    const acceptanceHandle = projectKnowledgeCitationHandle("snapshot-1", "acceptanceCriteria");
+    const rawOutput = `External response:\n\n\`\`\`json\n${JSON.stringify({
+      modules: [],
+      businessRules: [{
+        id: "br-payment-required",
+        rule: "Payment is required.",
+        moduleAssociations: ["Checkout", "Payments"],
+        constraint: {
+          object: "payment",
+          property: "required",
+          operator: "eq",
+          value: "required",
+          valueType: "boolean",
+        },
+        citations: [{ handle: acceptanceHandle, quote: "Payment is required." }],
+      }],
+      stateTransitions: [],
+      glossary: [],
+      crossDependencies: [],
+    })}\n\`\`\``;
+
+    const knowledgeBase = await validateProjectKnowledgeManualBatch({
+      scope: projectScope(),
+      draftId: "draft-1",
+      batchIndex: 1,
+      rawOutput,
+    });
+
+    expect(knowledgeBase.businessRules[0]).toMatchObject({
+      id: "br-payment-required",
+      moduleAssociations: ["Checkout", "Payments"],
+      constraint: {
+        object: "payment",
+        property: "required",
+        operator: "eq",
+        value: "true",
+        valueType: "boolean",
+      },
+    });
+    expect(draftService.saveProjectKnowledgeManualBatchResult).toHaveBeenCalledWith(expect.objectContaining({
+      draftId: "draft-1",
+      batchIndex: 1,
+      validatedOutput: knowledgeBase,
+    }));
+  });
+});
+
 describe("buildProjectKnowledgeManualDraft batching", () => {
   it("keeps small work items in a single batch and normalizes row content into the prompt", async () => {
     setWorkItems([workItemRow({
@@ -459,6 +511,27 @@ describe("work item selection for compilation", () => {
     expect(draft.requestedMode).toBe("incremental");
     expect(draft.mode).toBe("full");
     expect(draft.fallbackReason).toContain("first compile must include every active work item");
+    expect(draft.sourceWorkItemCount).toBe(2);
+  });
+
+  it("falls back to a full compile when the saved compiler contract is outdated", async () => {
+    setWorkItems([
+      workItemRow({ azure_work_item_id: "1", content_hash: "h1" }),
+      workItemRow({ azure_work_item_id: "2", content_hash: "h2" }),
+    ]);
+    stubExistingKnowledge({
+      snapshot: snapshotRow(
+        knowledgeBase({ modules: [kbModule()] }),
+        { compiler_contract_version: "4.0.0" },
+      ),
+      sourceWorkItemHashes: { "1": "h1", "2": "h2" },
+    });
+
+    const draft = await buildProjectKnowledgeManualDraft({ scope: projectScope(), mode: "incremental" });
+
+    expect(draft.requestedMode).toBe("incremental");
+    expect(draft.mode).toBe("full");
+    expect(draft.fallbackReason).toContain("compiler contract changed");
     expect(draft.sourceWorkItemCount).toBe(2);
   });
 
@@ -914,14 +987,21 @@ describe("saveManualProjectKnowledgeBaseFromBatches", () => {
     expect(snapshot.knowledgeBase.glossary).toHaveLength(1);
     expect(snapshot.knowledgeBase.crossDependencies).toHaveLength(2);
     expect(snapshot.blockers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "hard_conflict", conflictType: "duplicate_identity" }),
-    ]));
-    expect(snapshot.blockers.filter((blocker) =>
-      "conflictType" in blocker && blocker.conflictType === "duplicate_identity",
-    )).toHaveLength(1);
-    expect(snapshot.blockers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ conflictType: "incompatible_concrete_value" }),
+      expect.objectContaining({
+        conflictType: "incompatible_concrete_value",
+        conflictBasis: expect.objectContaining({
+          object: "retry",
+          property: "limit",
+          values: expect.arrayContaining([
+            expect.objectContaining({ operator: "eq", value: "3", valueType: "number" }),
+            expect.objectContaining({ operator: "eq", value: "5", valueType: "number" }),
+          ]),
+        }),
+      }),
       expect.objectContaining({ conflictType: "incompatible_transition_target" }),
+    ]));
+    expect(snapshot.blockers).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ conflictType: "duplicate_identity" }),
     ]));
     expect(draftService.completeProjectKnowledgeDraft).toHaveBeenCalledWith(expect.objectContaining({
       metrics: expect.objectContaining({ automaticDuplicateConsolidationCount: 2 }),
@@ -1044,7 +1124,81 @@ describe("saveManualProjectKnowledgeBaseFromBatches", () => {
     }));
   });
 
-  it("consolidates normalization-equivalent duplicates in every knowledge category", async () => {
+  it("does not bridge incompatible dependency transports through a generic dependency", async () => {
+    setWorkItems([workItemRow({ azure_work_item_id: "15" })]);
+    const quote = "Checkout communicates with the payment service.";
+    const evidenceRefs = [kbEvidenceRef("15", "snapshot-15", quote)];
+    const dependency = (dependencyType: string) => kbDependency({
+      id: "dep-checkout-payment",
+      sourceModule: "Checkout",
+      targetModule: "Payment Service",
+      dependencyType,
+      description: "Checkout communicates with the payment service.",
+      sourceWorkItemIds: ["15"],
+      evidence: quote,
+      evidenceRefs,
+    });
+
+    const result = await saveManualProjectKnowledgeBaseFromBatches({
+      scope: projectScope(),
+      actor: "qa",
+      partialKnowledgeBases: [
+        knowledgeBase({ crossDependencies: [dependency("event")] }),
+        knowledgeBase({ crossDependencies: [dependency("dependency")] }),
+        knowledgeBase({ crossDependencies: [dependency("api")] }),
+      ],
+    });
+
+    expect(result.knowledgeBase.crossDependencies).toHaveLength(2);
+    expect(result.knowledgeBase.crossDependencies.map((entry) => entry.dependencyType).sort())
+      .toEqual(["api dependency", "event dependency"]);
+  });
+
+  it("always applies business-constraint and dependency-evidence compatibility gates", async () => {
+    setWorkItems([workItemRow({ azure_work_item_id: "16" })]);
+    const sharedRule = "Retry limit must be configured.";
+    const dependencyDescription = "Checkout calls the payment service.";
+    const partial = (constraintValue: string, dependencyQuote: string) => knowledgeBase({
+      businessRules: [kbBusinessRule({
+        id: "br-retry",
+        rule: sharedRule,
+        constraint: {
+          object: "retry",
+          property: "limit",
+          operator: "eq",
+          value: constraintValue,
+          valueType: "number",
+        },
+        sourceWorkItemIds: ["16"],
+        evidence: sharedRule,
+        evidenceRefs: [kbEvidenceRef("16", `snapshot-rule-${constraintValue}`, sharedRule)],
+      })],
+      crossDependencies: [kbDependency({
+        id: "dep-checkout-payment",
+        sourceModule: "Checkout",
+        targetModule: "Payment Service",
+        dependencyType: "api",
+        description: dependencyDescription,
+        sourceWorkItemIds: ["16"],
+        evidence: dependencyQuote,
+        evidenceRefs: [kbEvidenceRef("16", `snapshot-dependency-${constraintValue}`, dependencyQuote)],
+      })],
+    });
+
+    const result = await saveManualProjectKnowledgeBaseFromBatches({
+      scope: projectScope(),
+      actor: "qa",
+      partialKnowledgeBases: [
+        partial("3", "Checkout calls the first payment endpoint."),
+        partial("5", "Checkout calls the second payment endpoint."),
+      ],
+    });
+
+    expect(result.knowledgeBase.businessRules).toHaveLength(2);
+    expect(result.knowledgeBase.crossDependencies).toHaveLength(2);
+  });
+
+  it("does not merge normalization-equivalent dependencies when their evidence differs", async () => {
     setWorkItems([
       workItemRow({ azure_work_item_id: "1" }),
       workItemRow({ azure_work_item_id: "2" }),
@@ -1075,9 +1229,9 @@ describe("saveManualProjectKnowledgeBaseFromBatches", () => {
     expect(snapshot.knowledgeBase.businessRules).toHaveLength(1);
     expect(snapshot.knowledgeBase.stateTransitions).toHaveLength(1);
     expect(snapshot.knowledgeBase.glossary).toHaveLength(1);
-    expect(snapshot.knowledgeBase.crossDependencies).toHaveLength(1);
+    expect(snapshot.knowledgeBase.crossDependencies).toHaveLength(2);
     expect(draftService.completeProjectKnowledgeDraft).toHaveBeenCalledWith(expect.objectContaining({
-      metrics: expect.objectContaining({ automaticDuplicateConsolidationCount: 5 }),
+      metrics: expect.objectContaining({ automaticDuplicateConsolidationCount: 4 }),
     }));
   });
 
@@ -1287,7 +1441,7 @@ describe("same-evidence paraphrase handling", () => {
           }),
           kbBusinessRule({
             id: "br-retry",
-            rule: "Maximum retry count is 3.",
+            rule: "Retry count is 3.",
             evidenceRefs: [kbEvidenceRef("1", "snapshot-run-a", "retry limit")],
           }),
         ],
@@ -1301,12 +1455,12 @@ describe("same-evidence paraphrase handling", () => {
         businessRules: [
           kbBusinessRule({
             id: "br-reason",
-            rule: "Providing a reason is required.",
+            rule: "The reason is required.",
             evidenceRefs: [kbEvidenceRef("1", "snapshot-run-b", "reason is required")],
           }),
           kbBusinessRule({
             id: "br-retry",
-            rule: "Maximum retry count is 5.",
+            rule: "Retry count is 5.",
             evidenceRefs: [kbEvidenceRef("1", "snapshot-run-b", "retry limit")],
           }),
         ],

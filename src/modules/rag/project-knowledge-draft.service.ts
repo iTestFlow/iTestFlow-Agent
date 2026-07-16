@@ -50,6 +50,10 @@ import {
   sortProjectKnowledgeHardConflictsForReview,
   type ProjectKnowledgeHardConflict,
 } from "./project-knowledge-conflicts";
+import {
+  resolveProjectKnowledgeDuplicateIdentities,
+  type ProjectKnowledgePossibleTension,
+} from "./project-knowledge-duplicate-resolution";
 import { acquireProjectKnowledgeLock } from "./project-knowledge-lock";
 import { backfillProjectKnowledgeCompilerFoundation } from "./project-knowledge-migration.service";
 import {
@@ -83,6 +87,7 @@ import {
   hasStrictProjectKnowledgeGrounding,
   omitUnsupportedProjectKnowledgeEntries,
 } from "./project-knowledge-grounding";
+import { isCompatibleProjectKnowledgeParaphrase } from "./project-knowledge-wording-carryover";
 
 type DraftRow = {
   id: string;
@@ -504,11 +509,13 @@ export async function completeProjectKnowledgeDraft(input: {
         userMessage: "The draft failed grounding validation. Start a new build.",
       });
     }
-    const conflicts = detectProjectKnowledgeHardConflicts(strictGrounding.knowledgeBase);
-    const hashes = computeProjectKnowledgeHashes(strictGrounding.knowledgeBase);
+    const duplicateResolution = resolveProjectKnowledgeDuplicateIdentities(strictGrounding.knowledgeBase);
+    const resolvedKnowledgeBase = duplicateResolution.knowledgeBase;
+    const conflicts = detectProjectKnowledgeHardConflicts(resolvedKnowledgeBase);
+    const hashes = computeProjectKnowledgeHashes(resolvedKnowledgeBase);
     const operations: ProjectKnowledgeOperation[] = buildProjectKnowledgeOperations({
       baseKnowledgeBase,
-      proposedKnowledgeBase: strictGrounding.knowledgeBase,
+      proposedKnowledgeBase: resolvedKnowledgeBase,
       baseVersions,
       touchedKeys,
     });
@@ -541,7 +548,7 @@ export async function completeProjectKnowledgeDraft(input: {
         provider: input.provider,
         model: input.model,
         rawOutput: input.rawOutput,
-        proposedKnowledgeJson: JSON.stringify(strictGrounding.knowledgeBase),
+        proposedKnowledgeJson: JSON.stringify(resolvedKnowledgeBase),
         operationsJson: JSON.stringify(operations),
         blockersJson: JSON.stringify(blockers),
         metricsJson: JSON.stringify({
@@ -549,6 +556,13 @@ export async function completeProjectKnowledgeDraft(input: {
           automaticDuplicateConsolidationCount:
             numberMetric(input.metrics?.automaticDuplicateConsolidationCount) +
             boundaryConsolidation.automaticDuplicateConsolidationCount,
+          preConsolidationDuplicateIdentityCount:
+            duplicateResolution.counters.preConsolidationDuplicateIdentityCount,
+          paraphraseMergeCount: duplicateResolution.counters.paraphraseMergeCount,
+          rekeyCount: duplicateResolution.counters.rekeyCount,
+          atomicExtractionFailureCount: duplicateResolution.counters.atomicExtractionFailureCount,
+          possibleTensionCount: duplicateResolution.counters.possibleTensionCount,
+          possibleTensions: duplicateResolution.possibleTensions,
           quoteExactCount: verification.counts.exact,
           quoteNormalizedCount: verification.counts.normalized,
           quoteAutoReanchorCount: verification.counts.autoReanchored,
@@ -886,6 +900,7 @@ export async function getProjectKnowledgeDraftConflicts(input: {
       subject: conflict.subject,
       affectedCategory: conflict.affectedCategory,
       conflictType: conflict.conflictType,
+      ...(conflict.conflictBasis ? { conflictBasis: conflict.conflictBasis } : {}),
       participants: conflict.participants.map((participant) => ({
         participantId: participant.participantId,
         entryKey: participant.entryKey,
@@ -897,6 +912,7 @@ export async function getProjectKnowledgeDraftConflicts(input: {
         })),
       })),
     })),
+    possibleTensions: possibleTensionsFromMetrics(draft.metrics.possibleTensions),
   };
 }
 
@@ -934,6 +950,9 @@ export async function applyProjectKnowledgeConflictDecisions(input: {
 }) {
   const draft = await getProjectKnowledgeDraft({ scope: input.scope, draftId: input.draftId });
   if (!draft) throw draftNotFound();
+  if (draft.compilerContractVersion !== PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION) {
+    throw contractMismatch();
+  }
   if (draft.persistedStatus !== "blocked" || !draft.proposedKnowledge) {
     throw draftStateConflict(draft.persistedStatus);
   }
@@ -1067,6 +1086,7 @@ function replaceProjectKnowledgeConflictParticipants(input: {
 export async function getProjectKnowledgeDraft(input: { scope: ProjectScope; draftId: string }) {
   const scope = assertProjectScope(input.scope);
   await expireManualProjectKnowledgeDrafts(scope);
+  await supersedeOutdatedContractDrafts(scope);
   const row = await getDraftRow(scope, input.draftId);
   return row ? toDraft(row) : null;
 }
@@ -1117,6 +1137,7 @@ export async function abandonProjectKnowledgeDraft(input: {
 export async function listProjectKnowledgeDrafts(input: { scope: ProjectScope; limit?: number }) {
   const scope = assertProjectScope(input.scope);
   await expireManualProjectKnowledgeDrafts(scope);
+  await supersedeOutdatedContractDrafts(scope);
   const rows = await sqlAll<DraftRow>(
     `
       SELECT * FROM project_knowledge_drafts
@@ -1501,6 +1522,7 @@ function buildHardConflictBlockers(conflicts: ProjectKnowledgeHardConflict[]) {
       affectedCategory: conflict.affectedCategory,
       participants: conflict.participants,
       evidenceIdentical: conflict.evidenceIdentical,
+      ...(conflict.conflictBasis ? { conflictBasis: conflict.conflictBasis } : {}),
       message: conflict.evidenceIdentical
         ? "These entries cite identical source evidence and differ only in wording. Keep the version that should be published."
         : "These source-backed entries disagree and require a reviewer decision.",
@@ -1636,8 +1658,9 @@ function consolidateSafeCategory<TCategory extends ProjectKnowledgeConsolidation
     entries.push(item);
     groups.set(key, entries);
   }
-  const consolidatedItems = Array.from(groups.values()).map((entries) =>
-    mergeProjectKnowledgeConflictEntries(category, entries));
+  const consolidatedItems = Array.from(groups.values()).flatMap((entries) =>
+    partitionSafeDuplicateEntries(category, entries).map((compatibleEntries) =>
+      mergeProjectKnowledgeConflictEntries(category, compatibleEntries)));
   return {
     items: consolidatedItems,
     removedCount: items.length - consolidatedItems.length,
@@ -1651,6 +1674,49 @@ function comparableProjection(...values: Array<string | undefined>) {
 
 function numberMetric(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * Boundary consolidation must never erase hash-neutral constraint metadata or
+ * distinct dependency evidence merely because the old semantic projection is
+ * identical. Requiring every pair to pass the category gate preserves those
+ * survivors for the duplicate-resolution/re-key pass immediately downstream.
+ */
+function partitionSafeDuplicateEntries<TCategory extends ProjectKnowledgeConsolidationCategory>(
+  category: TCategory,
+  entries: ProjectKnowledgeEntryByConsolidationCategory[TCategory][],
+) {
+  const groups: ProjectKnowledgeEntryByConsolidationCategory[TCategory][][] = [];
+  for (const entry of entries) {
+    const compatibleGroup = groups.find((group) =>
+      group.every((candidate) => isCompatibleProjectKnowledgeParaphrase(category, candidate, entry)));
+    if (compatibleGroup) compatibleGroup.push(entry);
+    else groups.push([entry]);
+  }
+  return groups;
+}
+
+function possibleTensionsFromMetrics(value: unknown): ProjectKnowledgePossibleTension[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const tension = item as Record<string, unknown>;
+    const category = typeof tension.category === "string" ? tension.category : "";
+    const subject = typeof tension.subject === "string" ? tension.subject : "";
+    const reason = typeof tension.reason === "string" ? tension.reason : "";
+    const entryKeys = Array.isArray(tension.entryKeys)
+      ? tension.entryKeys.filter((entryKey): entryKey is string => typeof entryKey === "string")
+      : [];
+    if (
+      !["module", "business_rule", "state_transition", "glossary", "dependency"].includes(category) ||
+      !subject ||
+      !reason ||
+      !entryKeys.length
+    ) {
+      return [];
+    }
+    return [{ category: category as ProjectKnowledgePossibleTension["category"], subject, entryKeys, reason }];
+  });
 }
 
 function knowledgeEntryKeysForSources(
@@ -1721,4 +1787,29 @@ function contractMismatch() {
     message: "Project knowledge draft uses an incompatible compiler contract.",
     userMessage: "The compiler contract changed after this draft was created. Regenerate the draft.",
   });
+}
+
+/**
+ * A compiler-contract change invalidates every live draft without mutating its
+ * frozen proposal. The update runs lazily on reads, so old blocked drafts are
+ * never recompiled or re-detected just to display their current status.
+ */
+async function supersedeOutdatedContractDrafts(scope: ProjectScope, client?: PoolClient) {
+  const now = nowIso();
+  await sqlRun(
+    `
+      UPDATE project_knowledge_drafts
+      SET status = 'superseded', status_reason = 'compiler_contract_upgraded', updated_at = @now
+      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
+        AND compiler_contract_version <> @compilerContractVersion
+        AND status IN ('generating', 'awaiting_input', 'ready_for_review', 'ready_to_publish', 'blocked', 'rebase_required')
+    `,
+    {
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      compilerContractVersion: PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
+      now,
+    },
+    client,
+  );
 }

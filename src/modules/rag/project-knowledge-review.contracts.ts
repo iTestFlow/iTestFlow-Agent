@@ -1,6 +1,9 @@
 import type { ProjectKnowledgeBase, ProjectKnowledgeEvidenceRef } from "./project-knowledge.schema";
 import type { ProjectKnowledgeEntryCategory, ProjectKnowledgeEntryValue } from "./project-knowledge-contracts";
-import type { ProjectKnowledgeHardConflictParticipant } from "./project-knowledge-conflicts";
+import type {
+  ProjectKnowledgeHardConflictBasis,
+  ProjectKnowledgeHardConflictParticipant,
+} from "./project-knowledge-conflicts";
 
 export const PROJECT_KNOWLEDGE_REVIEW_CATEGORIES = [
   "module",
@@ -61,6 +64,7 @@ export type ProjectKnowledgeHardConflictBlocker = BlockerBase & {
   conflictType: string;
   participants: ProjectKnowledgeHardConflictParticipant[];
   evidenceIdentical: boolean;
+  conflictBasis?: ProjectKnowledgeHardConflictBasis;
 };
 
 export type ProjectKnowledgeDraftBlocker =
@@ -73,6 +77,11 @@ export type ProjectKnowledgeReviewSummary = {
   attemptedEvidenceRepairs: number;
   automaticEvidenceRepairs: number;
   automaticDuplicateConsolidations: number;
+  preConsolidationDuplicateIdentities: number;
+  paraphraseMerges: number;
+  rekeys: number;
+  atomicExtractionFailures: number;
+  possibleTensions: number;
   wordingCarryOvers: number;
   unresolvedEvidenceEntries: number;
   remainingBlockers: number;
@@ -330,6 +339,7 @@ export function normalizeProjectKnowledgeBlockers(values: unknown[]): ProjectKno
     }
     if (type === "hard_conflict") {
       const participants = arrayOfObjects(blocker.participants) as unknown as ProjectKnowledgeHardConflictParticipant[];
+      const conflictBasis = normalizeHardConflictBasis(blocker.conflictBasis);
       return [{
         ...blocker,
         id,
@@ -345,6 +355,9 @@ export function normalizeProjectKnowledgeBlockers(values: unknown[]): ProjectKno
         conflictType: stringValue(blocker.conflictType) || "contradiction",
         participants,
         evidenceIdentical: blocker.evidenceIdentical === true,
+        ...(conflictBasis
+          ? { conflictBasis }
+          : {}),
       } as ProjectKnowledgeHardConflictBlocker];
     }
     if (type === "invalid_business_rule_source_field") {
@@ -388,6 +401,11 @@ export function summarizeProjectKnowledgeReview(
     attemptedEvidenceRepairs: numberValue(metrics.autoEvidenceRepairAttemptedCount),
     automaticEvidenceRepairs: numberValue(metrics.autoEvidenceRepairCount),
     automaticDuplicateConsolidations: numberValue(metrics.automaticDuplicateConsolidationCount),
+    preConsolidationDuplicateIdentities: numberValue(metrics.preConsolidationDuplicateIdentityCount),
+    paraphraseMerges: numberValue(metrics.paraphraseMergeCount),
+    rekeys: numberValue(metrics.rekeyCount),
+    atomicExtractionFailures: numberValue(metrics.atomicExtractionFailureCount),
+    possibleTensions: numberValue(metrics.possibleTensionCount),
     wordingCarryOvers: numberValue(metrics.wordingCarryOverCount),
     unresolvedEvidenceEntries: numberValue(metrics.autoEvidenceRepairUnresolvedCount),
     remainingBlockers: blockers.length,
@@ -436,6 +454,42 @@ function arrayOfObjects(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function normalizeHardConflictBasis(value: unknown): ProjectKnowledgeHardConflictBasis | null {
+  const basis = objectValue(value);
+  if (!basis) return null;
+  const object = stringValue(basis.object);
+  const property = stringValue(basis.property);
+  if (!object || !property) return null;
+  const values = arrayOfObjects(basis.values).flatMap((item) => {
+    const participantId = stringValue(item.participantId);
+    const operator = stringValue(item.operator);
+    const atomicValue = stringValue(item.value);
+    const valueType = stringValue(item.valueType);
+    if (
+      !participantId ||
+      !["eq", "lte", "gte", "lt", "gt", "ne"].includes(operator) ||
+      !atomicValue ||
+      !["number", "boolean", "enum", "state"].includes(valueType)
+    ) {
+      return [];
+    }
+    return [{
+      participantId,
+      operator: operator as ProjectKnowledgeHardConflictBasis["values"][number]["operator"],
+      value: atomicValue,
+      valueType: valueType as ProjectKnowledgeHardConflictBasis["values"][number]["valueType"],
+      ...(stringValue(item.unit) ? { unit: stringValue(item.unit) } : {}),
+    }];
+  });
+  if (!values.length) return null;
+  return {
+    object,
+    property,
+    ...(stringValue(basis.condition) ? { condition: stringValue(basis.condition) } : {}),
+    values,
+  };
 }
 
 function countBy(

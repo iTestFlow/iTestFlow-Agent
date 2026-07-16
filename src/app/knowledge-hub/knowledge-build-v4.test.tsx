@@ -372,7 +372,7 @@ describe("Project Knowledge v4 conflict review", () => {
     render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
     fireEvent.click(screen.getByRole("button", { name: "Build knowledge" }));
 
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Review Knowledge Draft" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: /All\s*12/i })).toBeTruthy());
     const categoryGroup = screen.getByRole("group", { name: "Draft knowledge categories" });
     const expectedCategories = [
       ["All", 12, "all"],
@@ -426,6 +426,44 @@ describe("Project Knowledge v4 conflict review", () => {
         request.page === 1;
     })).toBe(true));
     await waitFor(() => expect(screen.getByRole("button", { name: "Publish" })).not.toBeDisabled());
+  });
+
+  it("shows non-blocking possible tensions for a ready-to-publish draft", async () => {
+    api.postJson.mockImplementation(async (url: string) => {
+      if (url === "/api/context/knowledge/jobs") {
+        return {
+          job: completedJob({ outcome: "ready_to_publish", draftId: "draft-1", possibleTensionCount: 1 }),
+          reused: false,
+        };
+      }
+      if (url.endsWith("/conflicts")) {
+        return {
+          draftVersion: "pkdv_test",
+          counts: { total: 0, resolved: 0, remaining: 0 },
+          page: 1,
+          pageSize: 50,
+          pageCount: 1,
+          conflicts: [],
+          possibleTensions: [{
+            category: "business_rule",
+            subject: "identity:business_rule:purchase-notification",
+            entryKeys: ["notification", "notification-a1b2c3d4"],
+            reason: "different_atomic_identity",
+          }],
+        };
+      }
+      if (url.endsWith("/preview")) return draftPreview();
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Build knowledge" }));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "No blocking knowledge conflicts" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/These entries were kept separately/)).toBeTruthy());
+    expect(screen.getByRole("region", { name: "Possible tensions" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Apply decisions" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Review Knowledge Draft" })).toBeTruthy();
   });
 
   it("uses bounded adaptive polling delays", () => {

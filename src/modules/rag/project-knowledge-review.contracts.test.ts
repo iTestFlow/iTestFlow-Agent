@@ -106,6 +106,16 @@ describe("project knowledge review contracts", () => {
         identityKey: "order-status",
         affectedCategory: "state_transition",
         participants: [{ entryKey: "paid", category: "state_transition" }, null, [], "bad"],
+        conflictBasis: {
+          object: "order",
+          property: "status",
+          values: [{
+            participantId: "participant-1",
+            operator: "eq",
+            value: "paid",
+            valueType: "state",
+          }],
+        },
       },
       {
         id: "source-field-id",
@@ -149,6 +159,16 @@ describe("project knowledge review contracts", () => {
       affectedCategory: "state_transition",
       participants: [{ entryKey: "paid", category: "state_transition" }],
       evidenceIdentical: false,
+      conflictBasis: {
+        object: "order",
+        property: "status",
+        values: [{
+          participantId: "participant-1",
+          operator: "eq",
+          value: "paid",
+          valueType: "state",
+        }],
+      },
     });
     expect(blockers[2]).toMatchObject({
       id: "source-field-id",
@@ -219,11 +239,21 @@ describe("project knowledge review contracts", () => {
       autoEvidenceRepairCount: 2,
       autoEvidenceRepairUnresolvedCount: 3,
       automaticDuplicateConsolidationCount: 13,
+      preConsolidationDuplicateIdentityCount: 7,
+      paraphraseMergeCount: 6,
+      rekeyCount: 5,
+      atomicExtractionFailureCount: 4,
+      possibleTensionCount: 3,
       wordingCarryOverCount: 4,
     })).toEqual({
       attemptedEvidenceRepairs: 5,
       automaticEvidenceRepairs: 2,
       automaticDuplicateConsolidations: 13,
+      preConsolidationDuplicateIdentities: 7,
+      paraphraseMerges: 6,
+      rekeys: 5,
+      atomicExtractionFailures: 4,
+      possibleTensions: 3,
       wordingCarryOvers: 4,
       unresolvedEvidenceEntries: 3,
       remainingBlockers: 3,
@@ -242,6 +272,11 @@ describe("project knowledge review contracts", () => {
       attemptedEvidenceRepairs: 0,
       automaticEvidenceRepairs: 0,
       automaticDuplicateConsolidations: 0,
+      preConsolidationDuplicateIdentities: 0,
+      paraphraseMerges: 0,
+      rekeys: 0,
+      atomicExtractionFailures: 0,
+      possibleTensions: 0,
       wordingCarryOvers: 0,
       unresolvedEvidenceEntries: 0,
     });

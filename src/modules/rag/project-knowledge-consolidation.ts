@@ -8,6 +8,7 @@ import {
   splitProjectKnowledgeLegacyEvidence,
   type ProjectKnowledgeBase,
 } from "./project-knowledge.schema";
+import { mostSpecificProjectKnowledgeDependencyType } from "./project-knowledge-dependency-type";
 
 export type ProjectKnowledgeConsolidationCategory =
   | "module"
@@ -82,13 +83,19 @@ function mergeModules(entries: readonly ProjectKnowledgeEntryByConsolidationCate
 }
 
 function mergeBusinessRules(entries: readonly ProjectKnowledgeEntryByConsolidationCategory["business_rule"][]) {
-  return ProjectKnowledgeBusinessRuleSchema.parse(entries.slice(1).reduce((first, second) => ({
+  const merged = entries.slice(1).reduce((first, second) => ({
     ...first,
     rule: chooseLongerText(first.rule, second.rule),
-    moduleName: first.moduleName ?? second.moduleName,
     sourceField: first.sourceField || second.sourceField,
     ...mergeProvenance(first, second),
-  }), entries[0]));
+  }), entries[0]);
+
+  const constraint = chooseBusinessRuleConstraint(entries);
+  return ProjectKnowledgeBusinessRuleSchema.parse({
+    ...merged,
+    ...mergeBusinessRuleModuleAssociations(entries),
+    ...(constraint ? { constraint } : {}),
+  });
 }
 
 function mergeStateTransitions(entries: readonly ProjectKnowledgeEntryByConsolidationCategory["state_transition"][]) {
@@ -117,10 +124,48 @@ function mergeDependencies(entries: readonly ProjectKnowledgeEntryByConsolidatio
     ...first,
     sourceModule: first.sourceModule || second.sourceModule,
     targetModule: first.targetModule || second.targetModule,
-    dependencyType: first.dependencyType || second.dependencyType,
+    dependencyType: mostSpecificProjectKnowledgeDependencyType(first.dependencyType, second.dependencyType),
     description: chooseLongerText(first.description, second.description),
     ...mergeProvenance(first, second),
   }), entries[0]));
+}
+
+function mergeBusinessRuleModuleAssociations(
+  entries: readonly ProjectKnowledgeEntryByConsolidationCategory["business_rule"][],
+) {
+  const moduleAssociations = Array.from(new Set(entries.flatMap((entry) => [
+    entry.moduleName,
+    ...(entry.moduleAssociations ?? []),
+  ]).map(canonicalizeProjectKnowledgeModuleAssociation).filter(Boolean))).sort(compareCanonicalText);
+
+  return {
+    ...(moduleAssociations[0] ? { moduleName: moduleAssociations[0] } : {}),
+    ...(moduleAssociations.length ? { moduleAssociations } : {}),
+  };
+}
+
+function chooseBusinessRuleConstraint(
+  entries: readonly ProjectKnowledgeEntryByConsolidationCategory["business_rule"][],
+) {
+  return [...entries]
+    .sort(compareBusinessRuleConstraintCandidates)
+    .find((entry) => entry.constraint)?.constraint;
+}
+
+function compareBusinessRuleConstraintCandidates(
+  first: ProjectKnowledgeEntryByConsolidationCategory["business_rule"],
+  second: ProjectKnowledgeEntryByConsolidationCategory["business_rule"],
+) {
+  const firstLength = first.rule.trim().length;
+  const secondLength = second.rule.trim().length;
+  if (firstLength !== secondLength) return secondLength - firstLength;
+
+  const ruleComparison = compareCanonicalText(first.rule, second.rule);
+  if (ruleComparison) return ruleComparison;
+  return compareCanonicalText(
+    JSON.stringify(first.constraint ?? null),
+    JSON.stringify(second.constraint ?? null),
+  );
 }
 
 function mergeProvenance(
@@ -136,7 +181,27 @@ function mergeProvenance(
 }
 
 function chooseLongerText(first: string, second: string) {
-  return second.trim().length > first.trim().length ? second : first;
+  const firstLength = first.trim().length;
+  const secondLength = second.trim().length;
+  if (firstLength !== secondLength) return firstLength > secondLength ? first : second;
+  return compareCanonicalText(first, second) <= 0 ? first : second;
+}
+
+// Mirrors the project's logical-identity canonicalization without importing the
+// server-only contracts module (which imports node:crypto). These associations
+// are metadata, so canonical names make their union and primary selection stable.
+function canonicalizeProjectKnowledgeModuleAssociation(value: string | undefined) {
+  return value
+    ?.normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") ?? "";
+}
+
+function compareCanonicalText(first: string, second: string) {
+  return first < second ? -1 : first > second ? 1 : 0;
 }
 
 function preferGlossaryType(

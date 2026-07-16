@@ -16,6 +16,7 @@ import {
   PROJECT_KNOWLEDGE_SOURCE_PROJECTION_VERSION,
   projectKnowledgeCanonicalSourceText,
 } from "./project-knowledge-source-text";
+import { validateProjectKnowledgeAtomicConstraint } from "./project-knowledge-atomic-constraint";
 
 const RequiredText = z.string().trim().min(1);
 const OptionalText = z.string().optional().transform((value) => value?.trim() || undefined);
@@ -42,6 +43,10 @@ export const ProjectKnowledgeGeneratedBaseSchema = z.object({
     id: RequiredText,
     rule: RequiredText,
     moduleName: OptionalText,
+    moduleAssociations: z.array(RequiredText).optional(),
+    // Generated constraints are intentionally untyped here: an invalid LLM payload
+    // must not reject the entire envelope before quote-backed grounding can drop it.
+    constraint: z.unknown().optional(),
     citations: CitationsSchema,
   })).default([]),
   stateTransitions: z.array(z.object({
@@ -88,7 +93,14 @@ export type ProjectKnowledgeGroundingOmission = {
 
 export const PROJECT_KNOWLEDGE_GENERATED_OUTPUT_SHAPE = {
   modules: [{ id: "string", name: "string", description: "string", citations: [{ handle: "cite_...", quote: "exact quote" }] }],
-  businessRules: [{ id: "string", rule: "string", moduleName: "optional string", citations: [{ handle: "cite_...", quote: "exact quote" }] }],
+  businessRules: [{
+    id: "string",
+    rule: "string",
+    moduleName: "optional string",
+    moduleAssociations: "optional string[]",
+    constraint: "optional { object: string, property: string, condition?: string, operator: eq | lte | gte | lt | gt | ne, value: string, valueType: number | boolean | enum | state, unit?: string }",
+    citations: [{ handle: "cite_...", quote: "exact quote" }],
+  }],
   stateTransitions: [{
     id: "string",
     workflowName: "string",
@@ -159,6 +171,7 @@ export function groundGeneratedProjectKnowledge(input: {
   const omissions: ProjectKnowledgeGroundingOmission[] = [];
   const groundedEntryKeys: string[] = [];
   let candidateCount = 0;
+  let constraintRejectionCount = 0;
 
   const provenance = (
     category: ProjectKnowledgeGroundingOmission["category"],
@@ -221,8 +234,27 @@ export function groundGeneratedProjectKnowledge(input: {
       return refs ? [{ ...entry, ...refs, description: entry.description || refs.evidence, citations: undefined }] : [];
     }),
     businessRules: input.generated.businessRules.flatMap((entry) => {
+      const { constraint: rawConstraint, moduleAssociations, ...businessRule } = entry;
       const refs = provenance("business_rule", entry.id, entry.citations ?? []);
-      return refs ? [{ ...entry, ...refs, sourceField: refs.evidenceRefs[0].sourceField, citations: undefined }] : [];
+      if (!refs) {
+        if (rawConstraint !== undefined) constraintRejectionCount += 1;
+        return [];
+      }
+      const constraint = rawConstraint === undefined
+        ? null
+        : validateProjectKnowledgeAtomicConstraint(
+          rawConstraint,
+          refs.evidenceRefs.map((ref) => ref.quote),
+        );
+      if (rawConstraint !== undefined && !constraint) constraintRejectionCount += 1;
+      return [{
+        ...businessRule,
+        ...refs,
+        ...(moduleAssociations ? { moduleAssociations } : {}),
+        ...(constraint ? { constraint } : {}),
+        sourceField: refs.evidenceRefs[0].sourceField,
+        citations: undefined,
+      }];
     }),
     stateTransitions: input.generated.stateTransitions.flatMap((entry) => {
       const refs = provenance("state_transition", entry.id, entry.citations ?? []);
@@ -244,6 +276,7 @@ export function groundGeneratedProjectKnowledge(input: {
     candidateCount,
     groundedEntryCount: candidateCount - omissions.length,
     groundedEntryKeys,
+    constraintRejectionCount,
     omissionReasons: omissions.reduce<Record<string, number>>((counts, omission) => {
       for (const reason of omission.reasons) counts[reason] = (counts[reason] ?? 0) + 1;
       return counts;
@@ -267,6 +300,8 @@ export function projectKnowledgeBaseToGeneratedPrompt(knowledgeBase: ProjectKnow
       id: entry.id,
       rule: entry.rule,
       moduleName: entry.moduleName,
+      ...(entry.moduleAssociations ? { moduleAssociations: entry.moduleAssociations } : {}),
+      ...(entry.constraint ? { constraint: entry.constraint } : {}),
       citations: citations(entry.evidenceRefs),
     })),
     stateTransitions: knowledgeBase.stateTransitions.map((entry) => ({

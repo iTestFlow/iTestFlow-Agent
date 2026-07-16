@@ -106,8 +106,8 @@ describe("project knowledge canonical hashes", () => {
     });
   });
 
-  it("uses compiler contract v4 without changing the hash algorithm versions", () => {
-    expect(PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION).toBe("4.0.0");
+  it("uses compiler contract v4.1 without changing the hash algorithm versions", () => {
+    expect(PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION).toBe("4.1.0");
     expect(PROJECT_KNOWLEDGE_WORDING_VERSION).toBe("4.0.0");
     expect(PROJECT_KNOWLEDGE_SEMANTIC_HASH_VERSION).toBe("semantic-v2");
     expect(PROJECT_KNOWLEDGE_PROVENANCE_HASH_VERSION).toBe("provenance-v2");
@@ -130,6 +130,44 @@ describe("project knowledge canonical hashes", () => {
     expect(secondHashes.provenanceHash).not.toBe(firstHashes.provenanceHash);
     expect(secondHashes.entries.find((entry) => entry.category === "module")?.entrySemanticHash)
       .toBe(firstHashes.entries.find((entry) => entry.category === "module")?.entrySemanticHash);
+  });
+
+  it("keeps hashes stable when business-rule constraints and module associations differ", () => {
+    const first = baseKnowledge();
+    const second = ProjectKnowledgeBaseSchema.parse({
+      ...first,
+      businessRules: [{
+        ...first.businessRules[0],
+        moduleAssociations: ["Checkout", "Payments"],
+        constraint: {
+          object: "checkout",
+          property: "payment",
+          operator: "eq",
+          value: "required",
+          valueType: "boolean",
+        },
+      }],
+    });
+
+    expect(second.businessRules[0]).toMatchObject({
+      moduleAssociations: ["Checkout", "Payments"],
+      constraint: {
+        object: "checkout",
+        property: "payment",
+        operator: "eq",
+        value: "true",
+        valueType: "boolean",
+      },
+    });
+
+    const firstHashes = computeProjectKnowledgeHashes(first);
+    const secondHashes = computeProjectKnowledgeHashes(second);
+    expect(secondHashes.semanticKnowledgeHash).toBe(firstHashes.semanticKnowledgeHash);
+    expect(secondHashes.provenanceHash).toBe(firstHashes.provenanceHash);
+    expect(secondHashes.entries.find((entry) => entry.category === "business_rule")?.entrySemanticHash)
+      .toBe(firstHashes.entries.find((entry) => entry.category === "business_rule")?.entrySemanticHash);
+    expect(secondHashes.entries.find((entry) => entry.category === "business_rule")?.entryProvenanceHash)
+      .toBe(firstHashes.entries.find((entry) => entry.category === "business_rule")?.entryProvenanceHash);
   });
 
   it("treats evidence-derived default descriptions as semantic", () => {

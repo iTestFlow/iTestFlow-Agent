@@ -4,6 +4,7 @@ import {
   getEntryProvenanceStatus,
 } from "./project-knowledge-contracts";
 import { detectProjectKnowledgeHardConflicts } from "./project-knowledge-conflicts";
+import { hasProjectKnowledgeDuplicateLogicalIdentities } from "./project-knowledge-duplicate-resolution";
 import { buildProjectKnowledgeOperations } from "./project-knowledge-reconciliation";
 
 export type AutomaticProvenanceRefreshDecision =
@@ -44,6 +45,9 @@ export function evaluateAutomaticProvenanceRefresh(input: {
   }
   if (detectProjectKnowledgeHardConflicts(input.childKnowledgeBase).length) {
     return { allowed: false, reason: "hard_conflict" };
+  }
+  if (hasProjectKnowledgeDuplicateLogicalIdentities(input.childKnowledgeBase)) {
+    return { allowed: false, reason: "duplicate_logical_identity" };
   }
 
   const operations = buildProjectKnowledgeOperations({

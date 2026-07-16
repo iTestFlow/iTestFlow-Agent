@@ -134,6 +134,84 @@ describe("Project Knowledge v4 grounding", () => {
     expect(hasStrictProjectKnowledgeGrounding(grounded.knowledgeBase)).toBe(true);
   });
 
+  it("keeps only quote-backed atomic constraints and round-trips retained constraints", () => {
+    const sources = buildProjectKnowledgeCitationSources([workItem]);
+    const acceptanceCriteria = sources.find((source) => source.sourceField === "acceptanceCriteria")!;
+    const grounded = groundGeneratedProjectKnowledge({
+      sources,
+      generated: ProjectKnowledgeGeneratedBaseSchema.parse({
+        ...emptyGenerated(),
+        businessRules: [{
+          id: "br-payment-required",
+          rule: "Payment is required.",
+          moduleAssociations: ["Checkout", "Payments"],
+          constraint: {
+            object: "Payment",
+            property: "required",
+            operator: "eq",
+            value: "required",
+            valueType: "boolean",
+          },
+          citations: [{ handle: acceptanceCriteria.handle, quote: "Given a cart, payment is required." }],
+        }, {
+          id: "br-malformed-constraint",
+          rule: "Payment is required.",
+          constraint: { object: "payment" },
+          citations: [{ handle: acceptanceCriteria.handle, quote: "Given a cart, payment is required." }],
+        }, {
+          id: "br-unquoted-constraint",
+          rule: "Payment is required.",
+          constraint: {
+            object: "retry",
+            property: "limit",
+            operator: "eq",
+            value: "5",
+            valueType: "number",
+          },
+          citations: [{ handle: acceptanceCriteria.handle, quote: "Given a cart, payment is required." }],
+        }],
+      }),
+    });
+
+    expect(grounded.constraintRejectionCount).toBe(2);
+    expect(grounded.knowledgeBase.businessRules[0]).toMatchObject({
+      moduleAssociations: ["Checkout", "Payments"],
+      constraint: {
+        object: "payment",
+        property: "required",
+        operator: "eq",
+        value: "true",
+        valueType: "boolean",
+      },
+    });
+    expect(grounded.knowledgeBase.businessRules[1]).not.toHaveProperty("constraint");
+    expect(grounded.knowledgeBase.businessRules[2]).not.toHaveProperty("constraint");
+
+    const prompt = projectKnowledgeBaseToGeneratedPrompt(grounded.knowledgeBase);
+    expect(prompt.businessRules[0]?.constraint).toEqual({
+      object: "payment",
+      property: "required",
+      operator: "eq",
+      value: "true",
+      valueType: "boolean",
+    });
+    expect(prompt.businessRules[0]?.moduleAssociations).toEqual(["Checkout", "Payments"]);
+    expect(prompt.businessRules[1]).not.toHaveProperty("constraint");
+
+    const reGrounded = groundGeneratedProjectKnowledge({ generated: prompt, sources });
+    expect(reGrounded.constraintRejectionCount).toBe(0);
+    expect(reGrounded.knowledgeBase.businessRules[0]).toMatchObject({
+      moduleAssociations: ["Checkout", "Payments"],
+      constraint: {
+        object: "payment",
+        property: "required",
+        operator: "eq",
+        value: "true",
+        valueType: "boolean",
+      },
+    });
+  });
+
   it("converts verified canonical entries back to the citation-only prompt contract", () => {
     const sources = buildProjectKnowledgeCitationSources([workItem]);
     const title = sources[0];

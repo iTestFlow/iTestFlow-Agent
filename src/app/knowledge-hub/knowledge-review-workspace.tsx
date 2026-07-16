@@ -85,6 +85,18 @@ export type CompactKnowledgeConflict = {
   subject: string
   affectedCategory: string
   conflictType: string
+  conflictBasis?: {
+    object: string
+    property: string
+    condition?: string
+    values: Array<{
+      participantId: string
+      operator: "eq" | "lte" | "gte" | "lt" | "gt" | "ne"
+      value: string
+      valueType: "number" | "boolean" | "enum" | "state"
+      unit?: string
+    }>
+  }
   participants: CompactConflictParticipant[]
 }
 
@@ -95,6 +107,12 @@ export type CompactConflictPage = {
   pageSize: number
   pageCount: number
   conflicts: CompactKnowledgeConflict[]
+  possibleTensions?: Array<{
+    category: string
+    subject: string
+    entryKeys: string[]
+    reason: string
+  }>
 }
 
 export type CompactConflictDecision =
@@ -124,6 +142,8 @@ export function KnowledgeConflictReview({
   const [category, setCategory] = useState("all")
   const selectedCount = Object.keys(decisions).length
   const totalCount = page?.counts.total ?? 0
+  const hasBlockingConflicts = totalCount > 0
+  const hasPossibleTensions = Boolean(page?.possibleTensions?.length)
   const allSelected = Boolean(page) && totalCount > 0 && selectedCount === totalCount
   const normalizedQuery = query.trim().toLowerCase()
   const categoryCounts = useMemo(() => {
@@ -140,6 +160,10 @@ export function KnowledgeConflictReview({
       conflict.subject,
       conflict.conflictType,
       conflict.affectedCategory,
+      conflict.conflictBasis?.object,
+      conflict.conflictBasis?.property,
+      conflict.conflictBasis?.condition,
+      ...(conflict.conflictBasis?.values.flatMap((value) => [value.operator, value.value, value.unit ?? ""]) ?? []),
       ...conflict.participants.flatMap((participant) => [
         participant.entryKey,
         JSON.stringify(participant.fields),
@@ -149,23 +173,40 @@ export function KnowledgeConflictReview({
   })
 
   return (
-    <section className="space-y-4 rounded-lg border border-destructive/30 bg-destructive/5 p-4" aria-labelledby="knowledge-conflicts-title">
+    <section
+      className={`space-y-4 rounded-lg border p-4 ${
+        hasBlockingConflicts ? "border-destructive/30 bg-destructive/5" : "border-warning/30 bg-warning/5"
+      }`}
+      aria-labelledby="knowledge-conflicts-title"
+    >
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex min-w-0 gap-3">
-          <AlertTriangle className="mt-0.5 size-5 shrink-0 text-destructive" aria-hidden="true" />
+          {hasBlockingConflicts ? (
+            <AlertTriangle className="mt-0.5 size-5 shrink-0 text-destructive" aria-hidden="true" />
+          ) : (
+            <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" aria-hidden="true" />
+          )}
           <div>
-            <h2 id="knowledge-conflicts-title" className="text-sm font-semibold text-destructive">
-              {totalCount
+            <h2 id="knowledge-conflicts-title" className={`text-sm font-semibold ${hasBlockingConflicts ? "text-destructive" : "text-foreground"}`}>
+              {hasBlockingConflicts
                 ? `${totalCount} knowledge ${totalCount === 1 ? "conflict needs" : "conflicts need"} review before publishing`
-                : "Knowledge conflicts need review before publishing"}
+                : "No blocking knowledge conflicts"}
             </h2>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              Compare the supported versions and their evidence. Keep one version or review and combine supported fields.
+              {hasBlockingConflicts
+                ? "Compare the supported versions and their evidence. Keep one version or review and combine supported fields."
+                : hasPossibleTensions
+                  ? "The draft can be published. The items below are informational and do not require a decision."
+                  : "The draft can be published without a conflict decision."}
             </p>
           </div>
         </div>
         <div className="flex flex-col items-start gap-2 lg:items-end">
-          <Badge variant="destructive" className="w-fit tabular-nums">{page?.counts.remaining ?? totalCount} unresolved</Badge>
+          {hasBlockingConflicts ? (
+            <Badge variant="destructive" className="w-fit tabular-nums">{page?.counts.remaining ?? totalCount} unresolved</Badge>
+          ) : (
+            <Badge variant="secondary" className="w-fit">No action required</Badge>
+          )}
           {selectedCount > 0 ? (
             <Badge variant="outline" className="w-fit gap-1 tabular-nums">
               <Check className="size-3.5" aria-hidden="true" />
@@ -174,6 +215,27 @@ export function KnowledgeConflictReview({
           ) : null}
         </div>
       </div>
+
+      {page?.possibleTensions?.length ? (
+        <section aria-label="Possible tensions" className="rounded-lg border border-warning/30 bg-warning/5 p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary">Possible tensions</Badge>
+            <span className="text-sm font-semibold text-foreground">{page.possibleTensions.length} non-blocking {page.possibleTensions.length === 1 ? "item" : "items"}</span>
+          </div>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            These entries were kept separately because equivalence was not proven. They do not block publication.
+          </p>
+          <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
+            {page.possibleTensions.map((tension, index) => (
+              <li key={`${tension.category}-${tension.subject}-${index}`} className="rounded-md border border-border bg-card/70 p-3">
+                <span className="font-medium text-foreground">{friendlyConflictSubject(tension.subject)}</span>
+                <span className="text-muted-foreground"> â€” {friendlyConflictCode(tension.reason)}</span>
+                {tension.entryKeys.length ? <span className="text-muted-foreground"> ({tension.entryKeys.join(", ")})</span> : null}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {page && page.conflicts.length ? (
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -224,11 +286,11 @@ export function KnowledgeConflictReview({
             )
           })}
         </div>
-      ) : (
+      ) : hasBlockingConflicts ? (
         <div className="rounded-md border border-border bg-muted p-4 text-sm text-muted-foreground">
           No unresolved conflicts match the current page filters.
         </div>
-      )}
+      ) : null}
 
       {page && page.pageCount > 1 ? (
         <div className="flex flex-col gap-3 border-t border-border pt-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
@@ -247,7 +309,8 @@ export function KnowledgeConflictReview({
         </div>
       ) : null}
 
-      <div className="space-y-2 border-t border-border pt-4">
+      {hasBlockingConflicts ? (
+        <div className="space-y-2 border-t border-border pt-4">
         {!allSelected ? (
           <p id="knowledge-conflict-action-help" className="text-right text-xs text-muted-foreground">
             Resolve every conflict before applying the decisions.
@@ -269,7 +332,8 @@ export function KnowledgeConflictReview({
             {active ? "Applying…" : "Apply decisions"}
           </Button>
         </div>
-      </div>
+        </div>
+      ) : null}
     </section>
   )
 }
@@ -338,9 +402,13 @@ function KnowledgeConflictCard({
           <h3 id={`conflict-${conflict.conflictId}`} className="mt-2 text-sm font-medium text-foreground">
             {friendlyConflictSubject(conflict.subject)}
           </h3>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Conflict {ordinal}. These source-backed entries disagree and require a reviewer decision.
-          </p>
+          {conflict.conflictBasis ? (
+            <AtomicConflictBasis basis={conflict.conflictBasis} participants={conflict.participants} />
+          ) : (
+            <p className="mt-2 text-sm text-muted-foreground">
+              Conflict {ordinal}. These source-backed entries disagree and require a reviewer decision.
+            </p>
+          )}
         </div>
         {sourceWorkItemIds.length ? (
           <div className="flex flex-wrap gap-1" aria-label="Source work item IDs">
@@ -488,6 +556,32 @@ function KnowledgeConflictCard({
   )
 }
 
+function AtomicConflictBasis({
+  basis,
+  participants,
+}: {
+  basis: NonNullable<CompactKnowledgeConflict["conflictBasis"]>
+  participants: CompactConflictParticipant[]
+}) {
+  const participantIndexes = new Map(participants.map((participant, index) => [participant.participantId, index + 1]))
+  return (
+    <div className="mt-2 rounded-md border border-destructive/20 bg-destructive/5 p-3 text-sm">
+      <div className="font-medium text-foreground">
+        Atomic claim: {friendlyConflictCode(basis.object)} · {friendlyConflictCode(basis.property)}
+        {basis.condition ? ` when ${friendlyConflictCode(basis.condition)}` : ""}
+      </div>
+      <ul className="mt-2 space-y-1 text-muted-foreground">
+        {basis.values.map((value) => (
+          <li key={value.participantId}>
+            Version {participantIndexes.get(value.participantId) ?? "?"}: {atomicOperatorLabel(value.operator)} {value.value}
+            {value.unit ? ` ${value.unit}` : ""} <span className="text-xs">({value.valueType})</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function CompactConflictEvidence({ participant }: { participant: CompactConflictParticipant }) {
   return (
     <div className="mt-4 border-t border-border pt-3">
@@ -618,6 +712,18 @@ function conflictTypeLabel(value: string) {
   if (value === "incompatible_transition_target") return "Conflicting transition targets"
   if (value === "incompatible_concrete_value") return "Conflicting values"
   return "Knowledge conflict"
+}
+
+function atomicOperatorLabel(operator: NonNullable<CompactKnowledgeConflict["conflictBasis"]>["values"][number]["operator"]) {
+  const labels: Record<typeof operator, string> = {
+    eq: "equals",
+    lte: "at most",
+    gte: "at least",
+    lt: "less than",
+    gt: "greater than",
+    ne: "not equal to",
+  }
+  return labels[operator]
 }
 
 function conflictFields(conflict: CompactKnowledgeConflict) {

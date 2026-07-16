@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { ProjectKnowledgeAtomicConstraintSchema } from "./project-knowledge-atomic-constraint";
 import { canonicalizeProjectKnowledgeDependencyType } from "./project-knowledge-dependency-type";
 
 const RequiredTextSchema = z.string().trim().min(1);
@@ -87,6 +88,8 @@ export const ProjectKnowledgeBusinessRuleSchema = z.object({
   rule: RequiredTextSchema,
   sourceField: RequiredTextSchema,
   moduleName: OptionalTextSchema,
+  moduleAssociations: z.array(RequiredTextSchema).optional(),
+  constraint: ProjectKnowledgeAtomicConstraintSchema.optional(),
   sourceWorkItemIds: SourceIdsSchema,
   evidence: RequiredTextSchema,
   evidenceRefs: EvidenceRefsSchema,

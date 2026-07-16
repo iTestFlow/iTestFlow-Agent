@@ -33,6 +33,14 @@ import {
   hashCanonicalValue,
 } from "./project-knowledge-contracts";
 import {
+  buildProjectKnowledgeCitationSources,
+  groundGeneratedProjectKnowledge,
+  projectKnowledgeCitationHandle,
+  type ProjectKnowledgeGeneratedBase,
+} from "./project-knowledge-grounding";
+import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
+import {
+  applyProjectKnowledgeConflictDecisions,
   beginProjectKnowledgeDraft,
   abandonProjectKnowledgeDraft,
   completeProjectKnowledgeDraft,
@@ -161,6 +169,105 @@ describe("draft evidence recovery", () => {
     });
   }
 
+  type FrozenFixtureSource = {
+    id: string;
+    workItemId: string;
+    acceptanceCriteria: string;
+  };
+
+  function frozenFixtureCitation(snapshotId: string, quote: string) {
+    return {
+      handle: projectKnowledgeCitationHandle(snapshotId, "acceptanceCriteria"),
+      quote,
+    };
+  }
+
+  function prepareCompletionForFrozenFixture(snapshots: FrozenFixtureSource[]) {
+    const fixtureManifest = snapshots.map((snapshot, index) => ({
+      sourceSnapshotId: snapshot.id,
+      sourceWorkItemId: snapshot.workItemId,
+      workItemType: "User Story",
+      contentHash: `frozen-${index + 1}`,
+      adoRevision: 1,
+      sourceUpdatedAt: "2026-07-12T12:00:00.000Z",
+      capturedAt: "2026-07-12T12:00:00.000Z",
+    }));
+    const row = draftRow({
+      generation_mode: "automatic",
+      status: "generating",
+      source_manifest_json: fixtureManifest,
+      source_fingerprint: computeProjectKnowledgeSourceFingerprint(fixtureManifest),
+    });
+    database.sqlGet.mockImplementation(async (sql: string) =>
+      sql.includes("project_knowledge_drafts") ? row : undefined);
+    database.sqlAll.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT id, azure_work_item_id, fields_json")) {
+        return snapshots.map((snapshot) => ({
+          id: snapshot.id,
+          azure_work_item_id: snapshot.workItemId,
+          fields_json: { acceptanceCriteria: snapshot.acceptanceCriteria },
+        }));
+      }
+      if (sql.includes("JOIN azure_devops_work_item_snapshots")) {
+        return fixtureManifest.map((snapshot) => ({
+          source_snapshot_id: snapshot.sourceSnapshotId,
+          source_work_item_id: snapshot.sourceWorkItemId,
+          work_item_type: snapshot.workItemType,
+          content_hash: snapshot.contentHash,
+          ado_revision: snapshot.adoRevision,
+          source_updated_at: snapshot.sourceUpdatedAt,
+          captured_at: snapshot.capturedAt,
+        }));
+      }
+      return [];
+    });
+  }
+
+  async function completeGroundedFrozenFixture(input: {
+    snapshots: FrozenFixtureSource[];
+    generated: ProjectKnowledgeGeneratedBase;
+  }) {
+    const grounding = groundGeneratedProjectKnowledge({
+      generated: input.generated,
+      sources: buildProjectKnowledgeCitationSources(input.snapshots.map((snapshot) => ({
+        id: snapshot.workItemId,
+        sourceSnapshotId: snapshot.id,
+        workItemType: "User Story",
+        title: `Frozen v4.1 fixture ${snapshot.workItemId}`,
+        acceptanceCriteria: snapshot.acceptanceCriteria,
+      }))),
+    });
+    prepareCompletionForFrozenFixture(input.snapshots);
+
+    await completeProjectKnowledgeDraft({
+      scope,
+      draftId: "draft-child",
+      provider: "openai",
+      model: "model",
+      rawOutput: JSON.stringify(input.generated),
+      knowledgeBase: grounding.knowledgeBase,
+    });
+
+    const update = database.sqlRun.mock.calls.find(([sql]) => String(sql).includes("SET status = @status"));
+    if (!update) throw new Error("Expected the grounded draft completion update.");
+    const params = update[1] as {
+      blockersJson: string;
+      metricsJson: string;
+      proposedKnowledgeJson: string;
+      status: string;
+      statusReason: string | null;
+    };
+    const blockers = JSON.parse(params.blockersJson) as unknown[];
+    const metrics = JSON.parse(params.metricsJson) as Record<string, unknown>;
+    const persisted = JSON.parse(params.proposedKnowledgeJson) as ProjectKnowledgeBase;
+
+    expect(grounding.omissions).toEqual([]);
+    expect(params).toMatchObject({ status: "ready_to_publish", statusReason: null });
+    expect(blockers).toEqual([]);
+    expect(metrics.conflictCount).toBe(0);
+    return { grounding, metrics, persisted };
+  }
+
   it("validates frozen v4 evidence once and persists ready_to_publish", async () => {
     prepareCompletion({ description: "Customers complete checkout securely." });
     await completeProjectKnowledgeDraft({
@@ -281,7 +388,7 @@ describe("draft evidence recovery", () => {
     expect(metrics.conflictCount).toBe(0);
   });
 
-  it("blocks only on grounded semantic conflicts", async () => {
+  it("merges duplicate glossary identities before detecting grounded semantic conflicts", async () => {
     prepareCompletion({
       title: "Routes card payments.",
       description: "Routes bank transfers.",
@@ -331,16 +438,281 @@ describe("draft evidence recovery", () => {
     });
 
     const update = database.sqlRun.mock.calls.find(([sql]) => String(sql).includes("SET status = @status"));
+    expect(update?.[1]).toMatchObject({ status: "ready_to_publish", statusReason: null });
+    const persisted = JSON.parse(String((update?.[1] as { proposedKnowledgeJson: string }).proposedKnowledgeJson));
     const blockers = JSON.parse(String((update?.[1] as { blockersJson: string }).blockersJson));
-    expect(blockers).toEqual([expect.objectContaining({
-      type: "hard_conflict",
-      affectedCategory: "glossary",
-      participants: expect.arrayContaining([
-        expect.objectContaining({ sourceWorkItemIds: ["42"] }),
-        expect.objectContaining({ sourceWorkItemIds: ["42"] }),
+    const metrics = JSON.parse(String((update?.[1] as { metricsJson: string }).metricsJson));
+
+    expect(persisted.glossary).toEqual([expect.objectContaining({
+      term: "Payment Gateway",
+      type: "system",
+      definition: "Routes bank transfers.",
+      sourceWorkItemIds: ["42"],
+      evidenceRefs: expect.arrayContaining([
+        expect.objectContaining({ quote: "Routes card payments." }),
+        expect.objectContaining({ quote: "Routes bank transfers." }),
       ]),
     })]);
-    expect(blockers.some((blocker: { type: string }) => blocker.type === "missing_evidence_refs")).toBe(false);
+    expect(persisted.glossary[0].evidenceRefs).toHaveLength(2);
+    expect(blockers).toEqual([]);
+    expect(metrics).toMatchObject({
+      preConsolidationDuplicateIdentityCount: 1,
+      paraphraseMergeCount: 1,
+      rekeyCount: 0,
+      possibleTensionCount: 0,
+      conflictCount: 0,
+    });
+  });
+
+  it("grounds and merges the frozen Quote Timeout Popup variants without collapsing its trigger", async () => {
+    const nonDismissible = "The quote timeout popup must be non-dismissible, with no close X and no overlay click-through; the user must select one of the available actions.";
+    const equivalentNonDismissible = "The quote timeout popup is non-dismissible; it has no close X and no overlay click-through, and the user must select one of the available actions.";
+    const trigger = "The quote timeout popup must be triggered exclusively by the front-end timer reaching zero on Step 4 or Step 5, and not by backend errors.";
+    const result = await completeGroundedFrozenFixture({
+      snapshots: [
+        { id: "snapshot-366149-a", workItemId: "366149-a", acceptanceCriteria: nonDismissible },
+        { id: "snapshot-366149-b", workItemId: "366149-b", acceptanceCriteria: equivalentNonDismissible },
+        { id: "snapshot-366149-c", workItemId: "366149-c", acceptanceCriteria: trigger },
+      ],
+      generated: {
+        modules: [],
+        businessRules: [
+          {
+            id: "br-quote-timeout-popup-non-dismissible",
+            rule: nonDismissible,
+            moduleName: "Quote Expiry Management",
+            constraint: {
+              object: "quote timeout popup", property: "dismissible", operator: "eq", value: "non-dismissible", valueType: "enum",
+            },
+            citations: [frozenFixtureCitation("snapshot-366149-a", nonDismissible)],
+          },
+          {
+            id: "br-quote-timeout-popup-non-dismissible",
+            rule: equivalentNonDismissible,
+            moduleName: "Quote Expiry Management",
+            constraint: {
+              object: "quote timeout popup", property: "dismissible", operator: "eq", value: "non-dismissible", valueType: "enum",
+            },
+            citations: [frozenFixtureCitation("snapshot-366149-b", equivalentNonDismissible)],
+          },
+          {
+            id: "br-timeout-trigger-frontend-only",
+            rule: trigger,
+            moduleName: "Quote Expiry Management",
+            citations: [frozenFixtureCitation("snapshot-366149-c", trigger)],
+          },
+        ],
+        stateTransitions: [],
+        glossary: [],
+        crossDependencies: [],
+      },
+    });
+
+    expect(result.grounding.constraintRejectionCount).toBe(0);
+    expect(result.persisted.businessRules).toHaveLength(2);
+    expect(result.persisted.businessRules).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "br-quote-timeout-popup-non-dismissible",
+        evidenceRefs: expect.arrayContaining([
+          expect.objectContaining({ sourceWorkItemId: "366149-a" }),
+          expect.objectContaining({ sourceWorkItemId: "366149-b" }),
+        ]),
+      }),
+      expect.objectContaining({ id: "br-timeout-trigger-frontend-only" }),
+    ]));
+    expect(result.metrics).toMatchObject({
+      paraphraseMergeCount: 1,
+      rekeyCount: 0,
+      possibleTensionCount: 0,
+    });
+  });
+
+  it("grounds and merges the frozen Masked Card Number variants with module associations", async () => {
+    const paymentRetrials = "Card numbers must be displayed with all but the last 4 digits masked, for example **** **** **** 1234.";
+    const policyDetails = "Card numbers are displayed with all but the last 4 digits masked, for example **** **** **** 1234.";
+    const result = await completeGroundedFrozenFixture({
+      snapshots: [
+        { id: "snapshot-367569", workItemId: "367569", acceptanceCriteria: paymentRetrials },
+        { id: "snapshot-360500", workItemId: "360500", acceptanceCriteria: policyDetails },
+      ],
+      generated: {
+        modules: [],
+        businessRules: [
+          {
+            id: "br-masked-card-number",
+            rule: paymentRetrials,
+            moduleName: "Payment Retrials Tab",
+            constraint: {
+              object: "card number", property: "masking", operator: "eq", value: "masked", valueType: "enum",
+            },
+            citations: [frozenFixtureCitation("snapshot-367569", paymentRetrials)],
+          },
+          {
+            id: "br-masked-card-number",
+            rule: policyDetails,
+            moduleName: "Policy Details",
+            constraint: {
+              object: "card number", property: "masking", operator: "eq", value: "masked", valueType: "enum",
+            },
+            citations: [frozenFixtureCitation("snapshot-360500", policyDetails)],
+          },
+        ],
+        stateTransitions: [],
+        glossary: [],
+        crossDependencies: [],
+      },
+    });
+
+    expect(result.grounding.constraintRejectionCount).toBe(0);
+    expect(result.persisted.businessRules).toEqual([
+      expect.objectContaining({
+        id: "br-masked-card-number",
+        moduleName: "payment-retrials-tab",
+        moduleAssociations: ["payment-retrials-tab", "policy-details"],
+        sourceWorkItemIds: ["360500", "367569"],
+        evidenceRefs: expect.arrayContaining([
+          expect.objectContaining({ quote: paymentRetrials }),
+          expect.objectContaining({ quote: policyDetails }),
+        ]),
+      }),
+    ]);
+    expect(result.metrics).toMatchObject({
+      paraphraseMergeCount: 1,
+      rekeyCount: 0,
+      possibleTensionCount: 0,
+    });
+  });
+
+  it("grounds the frozen Purchase Notification variants, re-keys them, and keeps their tension non-blocking", async () => {
+    const issuedDocument = "Download Policy is enabled only when the policy document has been issued and the document URL is available; if policy status is Pending, it is disabled with a tooltip explaining that the document is not yet available.";
+    const notificationResponse = "Download Policy is enabled only when the policy document URL has been received and stored from the insurance company's purchase notification response; otherwise it is disabled with a tooltip.";
+    const result = await completeGroundedFrozenFixture({
+      snapshots: [
+        { id: "snapshot-360014-a", workItemId: "360014-a", acceptanceCriteria: issuedDocument },
+        { id: "snapshot-360014-b", workItemId: "360014-b", acceptanceCriteria: notificationResponse },
+      ],
+      generated: {
+        modules: [],
+        businessRules: [
+          {
+            id: "br-download-policy-availability",
+            rule: issuedDocument,
+            moduleName: "Policy Document Downloads",
+            citations: [frozenFixtureCitation("snapshot-360014-a", issuedDocument)],
+          },
+          {
+            id: "br-download-policy-availability",
+            rule: notificationResponse,
+            moduleName: "Policy Document Downloads",
+            citations: [frozenFixtureCitation("snapshot-360014-b", notificationResponse)],
+          },
+        ],
+        stateTransitions: [],
+        glossary: [],
+        crossDependencies: [],
+      },
+    });
+
+    const ids = result.persisted.businessRules.map((entry) => entry.id);
+    expect(ids).toContain("br-download-policy-availability");
+    expect(ids.some((id) => id.startsWith("br-download-policy-availability-"))).toBe(true);
+    expect(result.persisted.businessRules).toHaveLength(2);
+    expect(result.metrics).toMatchObject({
+      rekeyCount: 1,
+      possibleTensionCount: 1,
+      possibleTensions: [expect.objectContaining({
+        category: "business_rule",
+        reason: "fingerprint_mismatch",
+      })],
+    });
+  });
+
+  it("grounds the frozen Download Loading variants, re-keys them, and keeps their tension non-blocking", async () => {
+    const skeleton = "While quotes are being fetched from the aggregator, a loading skeleton or spinner is displayed in place of the quote list; the sort dropdown and expiry timer are hidden until at least one quote is received.";
+    const loading = "While quotes are being fetched from the aggregator, display a loading skeleton/spinner in place of the quote list, and hide the sort dropdown and expiry timer until at least one quote is received.";
+    const result = await completeGroundedFrozenFixture({
+      snapshots: [
+        { id: "snapshot-358867-a", workItemId: "358867-a", acceptanceCriteria: skeleton },
+        { id: "snapshot-358867-b", workItemId: "358867-b", acceptanceCriteria: loading },
+      ],
+      generated: {
+        modules: [],
+        businessRules: [
+          {
+            id: "br-loading-quotes-state",
+            rule: skeleton,
+            moduleName: "Quote List",
+            citations: [frozenFixtureCitation("snapshot-358867-a", skeleton)],
+          },
+          {
+            id: "br-loading-quotes-state",
+            rule: loading,
+            moduleName: "Quote List",
+            citations: [frozenFixtureCitation("snapshot-358867-b", loading)],
+          },
+        ],
+        stateTransitions: [],
+        glossary: [],
+        crossDependencies: [],
+      },
+    });
+
+    const ids = result.persisted.businessRules.map((entry) => entry.id);
+    expect(ids).toContain("br-loading-quotes-state");
+    expect(ids.some((id) => id.startsWith("br-loading-quotes-state-"))).toBe(true);
+    expect(result.persisted.businessRules).toHaveLength(2);
+    expect(result.metrics).toMatchObject({
+      rekeyCount: 1,
+      possibleTensionCount: 1,
+      possibleTensions: [expect.objectContaining({
+        category: "business_rule",
+        reason: "fingerprint_mismatch",
+      })],
+    });
+  });
+
+  it("grounds the frozen Political Declaration dependency variants and re-keys their non-hierarchical types", async () => {
+    const quote = "Political Declaration answers are not sent to the unified payment service.";
+    const result = await completeGroundedFrozenFixture({
+      snapshots: [{
+        id: "snapshot-political-declaration-payment-service",
+        workItemId: "political-declaration-payment-service",
+        acceptanceCriteria: quote,
+      }],
+      generated: {
+        modules: [],
+        businessRules: [],
+        stateTransitions: [],
+        glossary: [],
+        crossDependencies: [
+          {
+            id: "dep-political-declaration-unified-payment-service",
+            sourceModule: "Political Declaration",
+            targetModule: "Unified payment service",
+            dependencyType: "data_exclusion",
+            description: "Political Declaration answers are saved against the application record and are not sent to the unified payment service.",
+            citations: [frozenFixtureCitation("snapshot-political-declaration-payment-service", quote)],
+          },
+          {
+            id: "dep-political-declaration-unified-payment-service",
+            sourceModule: "Political Declaration",
+            targetModule: "Unified payment service",
+            dependencyType: "exclusion",
+            description: quote,
+            citations: [frozenFixtureCitation("snapshot-political-declaration-payment-service", quote)],
+          },
+        ],
+      },
+    });
+
+    const ids = result.persisted.crossDependencies.map((entry) => entry.id);
+    expect(ids).toContain("dep-political-declaration-unified-payment-service");
+    expect(ids.some((id) => id.startsWith("dep-political-declaration-unified-payment-service-"))).toBe(true);
+    expect(result.persisted.crossDependencies).toHaveLength(2);
+    expect(result.metrics).toMatchObject({
+      rekeyCount: 1,
+      possibleTensionCount: 0,
+    });
   });
 
 });
@@ -608,6 +980,15 @@ describe("draft lifecycle", () => {
       expect.objectContaining({ projectId: scope.projectId, azureProjectId: scope.azureProjectId }),
       undefined,
     );
+    expect(database.sqlRun).toHaveBeenCalledWith(
+      expect.stringContaining("compiler_contract_upgraded"),
+      expect.objectContaining({
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        compilerContractVersion: PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
+      }),
+      undefined,
+    );
   });
 
   it("expires inactive manual drafts in every nonterminal lifecycle state before direct reads", async () => {
@@ -627,19 +1008,47 @@ describe("draft lifecycle", () => {
     );
   });
 
-  it("marks an open v2 draft for explicit regeneration under the v3 compiler contract", async () => {
+  it("supersedes stale compiler-contract drafts lazily on read", async () => {
     database.sqlGet.mockResolvedValue(draftRow({
-      status: "blocked",
-      compiler_contract_version: "2.0.0",
+      status: "superseded",
+      status_reason: "compiler_contract_upgraded",
+      compiler_contract_version: "4.0.0",
     }));
 
     const result = await getProjectKnowledgeDraft({ scope, draftId: "draft-child" });
 
     expect(result).toMatchObject({
-      persistedStatus: "blocked",
-      compilerContractVersion: "2.0.0",
+      persistedStatus: "superseded",
+      statusReason: "compiler_contract_upgraded",
+      compilerContractVersion: "4.0.0",
       regenerateRequired: true,
     });
+    expect(database.sqlRun).toHaveBeenCalledWith(
+      expect.stringContaining("status_reason = 'compiler_contract_upgraded'"),
+      expect.objectContaining({
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        compilerContractVersion: PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
+      }),
+      undefined,
+    );
+  });
+
+  it("rejects decisions for a stale compiler-contract draft", async () => {
+    database.sqlGet.mockResolvedValue(draftRow({
+      status: "superseded",
+      status_reason: "compiler_contract_upgraded",
+      compiler_contract_version: "4.0.0",
+      proposed_knowledge_json: emptyKnowledge,
+    }));
+
+    await expect(applyProjectKnowledgeConflictDecisions({
+      scope,
+      actor: "owner-1",
+      draftId: "draft-child",
+      draftVersion: "stale-version",
+      decisions: [],
+    })).rejects.toMatchObject({ code: AppErrorCode.KnowledgeContractMismatch });
   });
 
   it("abandons a live draft under the project lock and records the prior state", async () => {

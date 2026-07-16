@@ -11,6 +11,11 @@ const summary: ProjectKnowledgeReviewSummary = {
   attemptedEvidenceRepairs: 0,
   automaticEvidenceRepairs: 0,
   automaticDuplicateConsolidations: 0,
+  preConsolidationDuplicateIdentities: 0,
+  paraphraseMerges: 0,
+  rekeys: 0,
+  atomicExtractionFailures: 0,
+  possibleTensions: 0,
   wordingCarryOvers: 0,
   unresolvedEvidenceEntries: 0,
   remainingBlockers: 0,
@@ -94,6 +99,14 @@ describe("KnowledgeConflictReview", () => {
           subject: "Retry policy",
           affectedCategory: "business_rule",
           conflictType: "incompatible_concrete_value",
+          conflictBasis: {
+            object: "retry",
+            property: "count",
+            values: [
+              { participantId: "participant-1", operator: "eq", value: "3", valueType: "number" },
+              { participantId: "participant-2", operator: "eq", value: "5", valueType: "number" },
+            ],
+          },
           participants: [{
             participantId: "participant-1",
             entryKey: "retry-three-times",
@@ -121,6 +134,8 @@ describe("KnowledgeConflictReview", () => {
     expect(screen.getByRole("group", { name: "Version 2" })).toBeTruthy();
     expect(screen.getAllByText("Source evidence")).toHaveLength(2);
     expect(screen.getByText(/Retry failed payments three times/)).toBeTruthy();
+    expect(screen.getByText(/Atomic claim: Retry · Count/)).toBeTruthy();
+    expect(screen.getByText(/Version 1: equals 3/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Keep version 2" }));
     expect(onDecision).toHaveBeenCalledWith({

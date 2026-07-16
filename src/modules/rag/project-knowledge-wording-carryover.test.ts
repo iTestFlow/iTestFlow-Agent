@@ -65,7 +65,7 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
     expect(isCompatibleProjectKnowledgeParaphrase("glossary", base.glossary[0], base.glossary[1])).toBe(true);
   });
 
-  it("refuses business rules whose concrete values differ", () => {
+  it("uses atomic constraints and abstention fingerprints for business rules", () => {
     const base = knowledgeBase({
       businessRules: [
         businessRule("br-1", "Maximum retry count is 3.", [evidenceRef("1", "s1", "q")]),
@@ -78,18 +78,64 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
     const [three, five, alsoThree, reasonA, reasonB] = base.businessRules;
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", three, five)).toBe(false);
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", three, alsoThree)).toBe(true);
-    // Both parse concrete ("required for ...") with differing tails — stays a conflict.
-    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", reasonA, reasonB)).toBe(false);
+    // Both conservative extractions abstain; request/requests folds in the closed
+    // fingerprint table and is therefore safe to carry over.
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", reasonA, reasonB)).toBe(true);
   });
 
-  it("accepts business rules when neither parses to a concrete value", () => {
+  it("keeps extraction abstentions separate when their fingerprints differ", () => {
     const base = knowledgeBase({
       businessRules: [
         businessRule("br-1", "Customers can request refunds through support.", [evidenceRef("1", "s1", "q")]),
         businessRule("br-1", "Refunds can be requested by customers through support.", [evidenceRef("1", "s2", "q")]),
       ],
     });
-    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1])).toBe(true);
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1])).toBe(false);
+  });
+
+  it("prefers supplied atomic constraints and refuses a proven contradiction", () => {
+    const refs = [evidenceRef("1", "s1", "The submit button is enabled.")];
+    const base = knowledgeBase({
+      businessRules: [
+        {
+          ...businessRule("br-submit", "The submit button is enabled.", refs),
+          moduleName: "Checkout",
+          constraint: {
+            object: "submit",
+            property: "button",
+            operator: "eq",
+            value: "enabled",
+            valueType: "boolean",
+          },
+        },
+        {
+          ...businessRule("br-submit", "The submit button is shown as enabled.", refs),
+          moduleName: "Checkout",
+          constraint: {
+            object: "submit",
+            property: "button",
+            operator: "eq",
+            value: "true",
+            valueType: "boolean",
+          },
+        },
+        {
+          ...businessRule("br-submit", "The submit button is disabled.", refs),
+          moduleName: "Checkout",
+          constraint: {
+            object: "submit",
+            property: "button",
+            operator: "eq",
+            value: "disabled",
+            valueType: "boolean",
+          },
+        },
+      ],
+    });
+    const [enabled, alsoEnabled, disabled] = base.businessRules;
+
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", enabled, alsoEnabled)).toBe(true);
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", enabled, disabled)).toBe(false);
   });
 
   it("requires state transitions to agree on the target state", () => {
@@ -131,6 +177,10 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
     const [api, apiReworded, event, externalCall, externalDependency, gatewayCall, gatewayDependency] = base.crossDependencies;
     expect(isCompatibleProjectKnowledgeParaphrase("dependency", api, apiReworded)).toBe(true);
     expect(isCompatibleProjectKnowledgeParaphrase("dependency", api, event)).toBe(false);
+    expect(isCompatibleProjectKnowledgeParaphrase("dependency", api, {
+      ...api,
+      evidenceRefs: [evidenceRef("99", "s99", "A different relationship.")],
+    })).toBe(false);
     expect(externalCall.dependencyType).toBe("external service dependency");
     expect(externalDependency.dependencyType).toBe("external service dependency");
     expect(isCompatibleProjectKnowledgeParaphrase("dependency", externalCall, externalDependency)).toBe(true);
@@ -177,7 +227,7 @@ describe("carryOverProjectKnowledgeWording", () => {
     const next = knowledgeBase({
       businessRules: [businessRule(
         "br-refund-reason",
-        "Providing a reason is required.",
+        "The reason is required.",
         [evidenceRef("20", "snapshot-new-20", "reason is required")],
       )],
     });
@@ -203,6 +253,42 @@ describe("carryOverProjectKnowledgeWording", () => {
 
     expect(result.wordingCarryOverCount).toBe(0);
     expect(result.knowledgeBase.businessRules[0].rule).toBe("Maximum retry count is 5.");
+  });
+
+  it("does not downgrade hierarchy-compatible dependency types during carry-over", () => {
+    const quote = "Checkout depends on an external payment service.";
+    const previous = knowledgeBase({
+      crossDependencies: [{
+        id: "dep-payment",
+        sourceModule: "Checkout",
+        targetModule: "Payment Service",
+        dependencyType: "dependency",
+        description: "Checkout depends on payment.",
+        sourceWorkItemIds: ["1"],
+        evidence: quote,
+        evidenceRefs: [evidenceRef("1", "s-old", quote)],
+      }],
+    });
+    const next = knowledgeBase({
+      crossDependencies: [{
+        id: "dep-payment",
+        sourceModule: "Checkout",
+        targetModule: "Payment Service",
+        dependencyType: "external service dependency",
+        description: "Checkout calls its payment service.",
+        sourceWorkItemIds: ["1"],
+        evidence: quote,
+        evidenceRefs: [evidenceRef("1", "s-new", quote)],
+      }],
+    });
+
+    const result = carryOverProjectKnowledgeWording({ previousKnowledgeBase: previous, knowledgeBase: next });
+
+    expect(result.wordingCarryOverCount).toBe(1);
+    expect(result.knowledgeBase.crossDependencies[0]).toMatchObject({
+      dependencyType: "external service dependency",
+      description: "Checkout depends on payment.",
+    });
   });
 
   it("matches a module through its name when the id churned", () => {

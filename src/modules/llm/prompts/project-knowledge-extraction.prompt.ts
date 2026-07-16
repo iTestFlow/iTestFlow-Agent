@@ -2,7 +2,7 @@ import type { SystemPromptDefinition } from "./prompt.types";
 
 export const projectKnowledgeExtractionPrompt: SystemPromptDefinition = {
   name: "project-knowledge-extraction",
-  version: "3.0.0",
+  version: "3.1.0",
   purpose: "Extract a reusable project knowledge base from already indexed Azure DevOps project context.",
   system: [
     "You extract a reusable project knowledge base from already indexed Azure DevOps work items.",
@@ -26,11 +26,13 @@ export const projectKnowledgeExtractionPrompt: SystemPromptDefinition = {
     "- modules: major functional areas supported by related work items. Do not create a module from a single vague mention unless it represents a clear product area.",
     "- businessRules: specific testable rules only. A valid rule states behavior, validation, permission, threshold, condition, data constraint, integration obligation, error handling, or workflow requirement. Do not output generic QA advice.",
     "- businessRules must retain concrete values such as numeric limits, durations, date windows, sort order, rounding, price/tax rules, retry counts, timer formulas, disabled-state behavior, visibility conditions, and source/target integrations.",
+    "- Split businessRules so each entry represents one atomic object/property/condition claim. Keep independently supported claims as separate rules.",
     "- stateTransitions: supported workflows and state movement only. Include a transition only when the input supports a from state, to state, trigger, condition, actor, or workflow step. If unsupported, return an empty array.",
     "- glossary: typed domain vocabulary found in the input, including terms, actors, roles, systems, external services, business entities, data entities, and processes. Do not include common software words unless they have domain-specific meaning.",
     "- crossDependencies: supported module-to-module or system-to-module dependencies only. Do not infer architecture from names alone.",
     "- crossDependencies.sourceModule and targetModule must be canonical module names, glossary terms, external systems/services, or workflow names. Do not use step-specific endpoints such as Purchase Flow Step 1; put the step detail in description instead.",
     "- crossDependencies.dependencyType must use stable wording: dependency, service dependency, API dependency, external service dependency, or event dependency. Do not create separate entries for synonymous dependency labels.",
+    "- Use the most-specific supported crossDependencies.dependencyType; never downgrade an explicit external service or service dependency to generic dependency.",
     "",
     "Field rules:",
     "- Return exactly one JSON object with all five root arrays: modules, businessRules, stateTransitions, glossary, crossDependencies.",
@@ -44,6 +46,10 @@ export const projectKnowledgeExtractionPrompt: SystemPromptDefinition = {
     "- Copy citation handles exactly. Never create a handle and never return sourceSnapshotId, sourceWorkItemId, sourceField, locator, evidenceRefs, sourceWorkItemIds, evidence, origin, or verification; the server derives them.",
     "- Copy each quote verbatim from the text belonging to that handle. Keep it concise while retaining enough exact context to support the claim; never paraphrase inside a quote.",
     "- Business rules may cite only handles whose field is acceptanceCriteria, description, title, or metadata.",
+    "- Preserve supplied businessRules.moduleAssociations as an optional list of canonical module names when a supported rule is associated with more than one module.",
+    "- A businessRules entry may include constraint only for one single comparable value, with { object, property, condition?, operator, value, valueType, unit? }. operator must be eq, lte, gte, lt, gt, or ne; valueType must be number, boolean, enum, or state.",
+    "- Copy constraint.value verbatim from a cited quote. Omit constraint when unsure, when the claim has multiple values or a range, or when it is not a single comparable English claim.",
+    "- Reuse a businessRules.id only for the same atomic claim. Assign separate stable ids to distinct atomic claims, even when they come from the same source sentence.",
     "- If the source includes a named rule ID or work item reference, include it in the businessRules.id when stable and readable, or in the rule/evidence text if the generated id must remain normalized.",
     "- ids should be stable, lowercase, and category-prefixed, such as mod-payments, br-refund-approval, st-order-submitted-approved.",
     "- Do not return blank required fields. If a required field cannot be filled from evidence, omit that item.",
@@ -54,7 +60,7 @@ export const projectKnowledgeExtractionPrompt: SystemPromptDefinition = {
 
 export const projectKnowledgeConsolidationPrompt: SystemPromptDefinition = {
   name: "project-knowledge-consolidation",
-  version: "3.0.0",
+  version: "3.1.0",
   purpose: "Consolidate batch-level project knowledge extraction output into one deduplicated project knowledge base.",
   system: [
     "You consolidate partial project knowledge bases extracted from Azure DevOps work item batches.",
@@ -69,6 +75,8 @@ export const projectKnowledgeConsolidationPrompt: SystemPromptDefinition = {
     "",
     "Do not broaden a rule while merging. Do not convert examples into rules. Do not infer cross dependencies from module names alone.",
     "When two rules overlap, keep concrete values, formulas, limits, durations, source systems, UI states, and named identifiers from the most specific partial input.",
+    "Preserve supplied businessRules.moduleAssociations when consolidating matching rules.",
+    "Preserve a supplied businessRules.constraint object verbatim from the most specific partial input. Never invent, normalize, combine, or alter constraint values.",
     "For crossDependencies, keep sourceModule and targetModule as canonical module names, glossary terms, external systems/services, or workflow names. If a partial dependency endpoint names a workflow step, normalize the endpoint to the parent workflow and keep the step detail in description.",
     "Return exactly one JSON object with all five root arrays: modules, businessRules, stateTransitions, glossary, crossDependencies. Use [] for empty categories.",
     "Do not return an entities root key. Put entity-like items into glossary with the correct type.",

@@ -97,6 +97,7 @@ export const runProjectKnowledgeJob: JobHandler = async (job, context) => {
         draftId: draft.draftId,
         draftStatus: draft.draftStatus,
         conflictCount: draft.blockers.filter((blocker) => blocker.type === "hard_conflict").length,
+        possibleTensionCount: Number(draft.reviewSummary?.possibleTensions ?? 0),
         omittedEntryCount: draft.omittedEntryCount,
         omissionReasons: draft.omissionReasons,
         warnings: draft.warnings ?? [],
@@ -203,6 +204,7 @@ function draftSummary(draft: ProjectKnowledgeDraft) {
     draftId: draft.id,
     draftStatus: draft.persistedStatus,
     conflictCount: draft.blockers.filter((blocker) => blocker.type === "hard_conflict").length,
+    possibleTensionCount: Number(draft.metrics.possibleTensionCount ?? 0),
     omittedEntryCount: Number(draft.metrics.omittedEntryCount ?? 0),
     omissionReasons: draft.metrics.omissionReasons ?? {},
   };

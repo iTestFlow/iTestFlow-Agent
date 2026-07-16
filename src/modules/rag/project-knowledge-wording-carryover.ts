@@ -7,10 +7,17 @@ import {
   canonicalizeProjectKnowledgeKey,
   canonicalizeProjectKnowledgeLogicalIdentity,
 } from "./project-knowledge-contracts";
-import { parseConcreteRule } from "./project-knowledge-conflicts";
+import {
+  compareProjectKnowledgeAtomicConstraintValues,
+  extractAtomicConstraint,
+  normalizeProjectKnowledgeRuleFingerprint,
+  projectKnowledgeAtomicConstraintIdentity,
+} from "./project-knowledge-atomic-constraint";
 import {
   areProjectKnowledgeDependencyTypesEquivalent,
+  areProjectKnowledgeDependencyTypesHierarchyCompatible,
   canonicalizeProjectKnowledgeDependencyType,
+  mostSpecificProjectKnowledgeDependencyType,
 } from "./project-knowledge-dependency-type";
 import type {
   ProjectKnowledgeConsolidationCategory,
@@ -78,12 +85,14 @@ export function projectKnowledgeConsolidationCandidateKeys<
  * Whether two entries already matched to the same logical subject are structurally
  * safe to consolidate. Module and glossary text may add supported detail without
  * becoming a conflict. Structured categories retain category-specific guards:
- * business rules with differing concrete values remain separate, transitions must
- * agree on their target state, and dependency endpoints/types must match.
+ * business rules only merge when their atomic claim or abstention fingerprint
+ * agrees, transitions must agree on their target state, and dependency
+ * endpoints/types must match.
  *
- * Wording carry-over additionally requires identical evidence content. Draft
- * consolidation intentionally does not, because different sources commonly express
- * the same subject at different levels of detail.
+ * Dependencies require identical non-empty evidence content even during draft
+ * consolidation: a generic dependency may only be upgraded when both entries
+ * describe the same evidenced relationship. Wording carry-over additionally
+ * requires identical evidence content for every category.
  */
 export function isCompatibleProjectKnowledgeParaphrase<
   TCategory extends ProjectKnowledgeConsolidationCategory,
@@ -97,15 +106,32 @@ export function isCompatibleProjectKnowledgeParaphrase<
     case "glossary":
       return true;
     case "business_rule": {
-      // Value-only comparison: the candidate-key precondition has already matched
-      // the entries to the same rule identity; differing concrete values must still
-      // remain separate so the hard-conflict detector can surface them.
       const firstRule = first as ProjectKnowledgeEntryByConsolidationCategory["business_rule"];
       const secondRule = second as ProjectKnowledgeEntryByConsolidationCategory["business_rule"];
-      const firstConcrete = parseConcreteRule(firstRule.rule);
-      const secondConcrete = parseConcreteRule(secondRule.rule);
-      if (!firstConcrete && !secondConcrete) return true;
-      return Boolean(firstConcrete && secondConcrete && firstConcrete.value === secondConcrete.value);
+      const firstConstraint = firstRule.constraint ?? extractAtomicConstraint(firstRule.rule);
+      const secondConstraint = secondRule.constraint ?? extractAtomicConstraint(secondRule.rule);
+
+      if (firstConstraint && secondConstraint) {
+        // Module qualification is a conflict concern, not a duplicate-merge
+        // concern. Equivalent claims can span surfaces; consolidation retains
+        // every source module in moduleAssociations and chooses a stable primary.
+        if (
+          projectKnowledgeAtomicConstraintIdentity(firstConstraint) !==
+          projectKnowledgeAtomicConstraintIdentity(secondConstraint)
+        ) {
+          return false;
+        }
+        return compareProjectKnowledgeAtomicConstraintValues(firstConstraint, secondConstraint) === "equivalent";
+      }
+
+      // Extraction abstention is not proof of equivalence. It can only retain
+      // wording when the closed, language-agnostic fingerprint agrees exactly.
+      if (!firstConstraint && !secondConstraint) {
+        return normalizeProjectKnowledgeRuleFingerprint(firstRule.rule) ===
+          normalizeProjectKnowledgeRuleFingerprint(secondRule.rule);
+      }
+
+      return false;
     }
     case "state_transition": {
       const firstTransition = first as ProjectKnowledgeEntryByConsolidationCategory["state_transition"];
@@ -123,15 +149,15 @@ export function isCompatibleProjectKnowledgeParaphrase<
       if (dependencyEndpointTupleKey(firstDependency) !== dependencyEndpointTupleKey(secondDependency)) {
         return false;
       }
+      const identicalEvidence = haveIdenticalNonEmptyEvidenceContent(
+        firstDependency.evidenceRefs,
+        secondDependency.evidenceRefs,
+      );
+      if (!identicalEvidence) return false;
       return areProjectKnowledgeDependencyTypesEquivalent(
         firstDependency.dependencyType,
         secondDependency.dependencyType,
-        {
-          identicalEvidence: haveIdenticalNonEmptyEvidenceContent(
-            firstDependency.evidenceRefs,
-            secondDependency.evidenceRefs,
-          ),
-        },
+        { identicalEvidence },
       );
     }
   }
@@ -265,8 +291,9 @@ function carryOverCategory<TCategory extends ProjectKnowledgeConsolidationCatego
     let changed = false;
     for (const field of CARRY_OVER_FIELDS[category]) {
       const previousValue = (previous as Record<string, unknown>)[field];
-      if (restored[field] !== previousValue) changed = true;
-      restored[field] = previousValue;
+      const carryOverValue = resolveCarryOverFieldValue(category, field, previous, next, previousValue);
+      if (restored[field] !== carryOverValue) changed = true;
+      restored[field] = carryOverValue;
     }
     consumed.add(previous);
     if (!changed) return next;
@@ -284,6 +311,30 @@ function carryOverCategory<TCategory extends ProjectKnowledgeConsolidationCatego
   });
 
   return { entries, carryOverCount };
+}
+
+function resolveCarryOverFieldValue<TCategory extends ProjectKnowledgeConsolidationCategory>(
+  category: TCategory,
+  field: keyof ProjectKnowledgeEntryByConsolidationCategory[TCategory] & string,
+  previous: ProjectKnowledgeEntryByConsolidationCategory[TCategory],
+  next: ProjectKnowledgeEntryByConsolidationCategory[TCategory],
+  previousValue: unknown,
+) {
+  if (category !== "dependency" || field !== "dependencyType") return previousValue;
+
+  const previousDependency = previous as ProjectKnowledgeEntryByConsolidationCategory["dependency"];
+  const nextDependency = next as ProjectKnowledgeEntryByConsolidationCategory["dependency"];
+  const previousType = previousDependency.dependencyType;
+  const nextType = nextDependency.dependencyType;
+  if (
+    canonicalizeProjectKnowledgeDependencyType(previousType) ===
+    canonicalizeProjectKnowledgeDependencyType(nextType) ||
+    !areProjectKnowledgeDependencyTypesHierarchyCompatible(previousType, nextType)
+  ) {
+    return previousValue;
+  }
+
+  return mostSpecificProjectKnowledgeDependencyType(previousType, nextType);
 }
 
 function hasCompatibleReferenceNames<TCategory extends ProjectKnowledgeConsolidationCategory>(

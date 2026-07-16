@@ -34,6 +34,7 @@ import {
   saveManualProjectKnowledgeBaseSnapshot,
 } from "./project-knowledge.service";
 import { projectKnowledgeBaseToGeneratedPrompt } from "./project-knowledge-grounding";
+import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
 import { recordProjectKnowledgeBenchmarkQuestion } from "./project-knowledge-benchmark.service";
 import { regroundLegacyProjectKnowledgeCandidates } from "./project-knowledge-compiled.service";
 import { backfillProjectKnowledgeCompilerFoundation } from "./project-knowledge-migration.service";
@@ -93,7 +94,7 @@ describeDb("source-versioned project knowledge publication", () => {
     crossDependencies: [],
   };
 
-  async function prepare(knowledgeBase = initialKnowledgeBase) {
+  async function prepare(knowledgeBase: ProjectKnowledgeBase = initialKnowledgeBase) {
     return saveManualProjectKnowledgeBaseSnapshot({
       scope,
       actor: "user-1",
@@ -623,7 +624,7 @@ describeDb("source-versioned project knowledge publication", () => {
       businessRules: [
         {
           id: "BR-RETRY-3",
-          rule: "Maximum retry count must be 3",
+          rule: "Retry count must be 3.",
           sourceField: "acceptanceCriteria" as const,
           moduleName: "Checkout",
           sourceWorkItemIds: ["42"],
@@ -632,7 +633,7 @@ describeDb("source-versioned project knowledge publication", () => {
         },
         {
           id: "BR-RETRY-5",
-          rule: "Maximum retry count must be 5",
+          rule: "Retry count must be 5.",
           sourceField: "acceptanceCriteria" as const,
           moduleName: "checkout",
           sourceWorkItemIds: ["42"],
@@ -650,9 +651,71 @@ describeDb("source-versioned project knowledge publication", () => {
       { projectId, draftId: draft.id },
     )).toEqual([{
       conflict_type: "incompatible_concrete_value",
-      subject: "checkout:maximum retry count",
+      subject: "checkout:retry.count",
     }]);
     await expect(publish(draft.id)).rejects.toMatchObject({ code: "knowledge_publication_blocked" });
+  });
+
+  it("auto-merges the frozen Quote Receiving dependency variants before persisting conflicts", async () => {
+    const sharedEvidence = [evidenceRef("acceptanceCriteria", "Checkout succeeds")];
+    const quoteReceivingKnowledge = {
+      ...initialKnowledgeBase,
+      crossDependencies: [
+        {
+          id: "dep-quote-receiving-aggregator",
+          sourceModule: "Quote Receiving",
+          targetModule: "Aggregator",
+          dependencyType: "quote request dependency",
+          description: "The quote receiving waiting period starts immediately after the request is sent to the aggregator.",
+          sourceWorkItemIds: ["42"],
+          evidence: "Checkout succeeds",
+          evidenceRefs: sharedEvidence,
+        },
+        {
+          id: "dep-quote-receiving-aggregator",
+          sourceModule: "Quote Receiving",
+          targetModule: "Aggregator",
+          dependencyType: "integration",
+          description: "The quote receiving waiting period starts immediately after the quote request is sent to the aggregator.",
+          sourceWorkItemIds: ["42"],
+          evidence: "Checkout succeeds",
+          evidenceRefs: sharedEvidence,
+        },
+        {
+          id: "dep-quote-receiving-insurance-company",
+          sourceModule: "Quote Receiving",
+          targetModule: "Insurance company",
+          dependencyType: "quote response dependency",
+          description: "The waiting period can end when all active insurance companies have returned their quotes.",
+          sourceWorkItemIds: ["42"],
+          evidence: "Checkout succeeds",
+          evidenceRefs: sharedEvidence,
+        },
+        {
+          id: "dep-quote-receiving-insurance-company",
+          sourceModule: "Quote Receiving",
+          targetModule: "Insurance company",
+          dependencyType: "integration",
+          description: "Quote Receiving waiting period can end when all active insurance companies have returned their quotes.",
+          sourceWorkItemIds: ["42"],
+          evidence: "Checkout succeeds",
+          evidenceRefs: sharedEvidence,
+        },
+      ],
+    };
+
+    const draft = await prepare(quoteReceivingKnowledge);
+
+    expect(draft.persistedStatus).toBe("ready_to_publish");
+    expect(draft.proposedKnowledge?.crossDependencies).toEqual([
+      expect.objectContaining({ id: "dep-quote-receiving-aggregator", dependencyType: "quote request dependency" }),
+      expect.objectContaining({ id: "dep-quote-receiving-insurance-company", dependencyType: "quote response dependency" }),
+    ]);
+    expect(await sqlAll<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM project_knowledge_hard_conflicts
+       WHERE project_id = @projectId AND draft_id = @draftId`,
+      { projectId, draftId: draft.id },
+    )).toEqual([{ count: 0 }]);
   });
 
   it("consolidates compatible duplicate canonical identity before publication", async () => {
