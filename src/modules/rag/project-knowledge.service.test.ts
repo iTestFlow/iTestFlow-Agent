@@ -38,7 +38,6 @@ vi.mock("@/modules/rag/project-knowledge-draft.service", () => draftService);
 vi.mock("@/modules/rag/project-knowledge-migration.service", () => ({ backfillProjectKnowledgeCompilerFoundation: vi.fn() }));
 
 import { projectKnowledgeExtractionPrompt } from "@/modules/llm/prompts";
-import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import { fakeLlmProvider, projectScope } from "@/test/factories";
 import type { ProjectKnowledgeBase, ProjectKnowledgeEvidenceRef } from "./project-knowledge.schema";
 import { PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION } from "./project-knowledge-contracts";
@@ -251,16 +250,6 @@ function stubExistingKnowledge(input: {
     }
     return undefined;
   });
-}
-
-function expectAppError(run: () => unknown): AppError {
-  try {
-    run();
-  } catch (error) {
-    expect(error).toBeInstanceOf(AppError);
-    return error as AppError;
-  }
-  throw new Error("Expected the call to throw an AppError.");
 }
 
 beforeEach(() => {

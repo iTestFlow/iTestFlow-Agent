@@ -6,8 +6,8 @@ import { hasHealthyWorkerCapability } from "@/modules/jobs/worker-registry.servi
 
 export const runtime = "nodejs";
 
-export const WORKSPACE_SYNC_UNAVAILABLE_CODE = "workspace_sync_unavailable";
-export const WORKSPACE_SYNC_UNAVAILABLE_MESSAGE = "Workspace sync is temporarily unavailable. Please try again shortly.";
+const WORKSPACE_SYNC_UNAVAILABLE_CODE = "workspace_sync_unavailable";
+const WORKSPACE_SYNC_UNAVAILABLE_MESSAGE = "Workspace sync is temporarily unavailable. Please try again shortly.";
 
 /**
  * Enqueues a scheduled context-sync job for each active project in the workspace
