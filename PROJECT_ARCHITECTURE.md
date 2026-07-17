@@ -183,7 +183,7 @@ Knowledge Hub and RAG:
 
 - `/knowledge-hub` indexes filtered Azure DevOps work items, compiles project knowledge, reports knowledge health, and exports a Markdown wiki.
 - `/api/context/index`, `/api/context/status`, and `/api/context/suggestions` manage project context indexing and retrieval.
-- `/api/context/knowledge/*` manages extraction, preview, save, lint, log, promotion, manual drafting/finalization/validation/consolidation, status, and export.
+- `/api/context/knowledge/*` manages background build jobs, draft review (conflicts/decisions/preview/publish), lint, log, candidates, promotion, manual drafting/finalization/validation, status, and export.
 - RAG storage, compiled knowledge, retrieval, linting, and citations live under `src/modules/rag`.
 - The compiled knowledge design is documented in `docs/knowledge-wiki-rag-enhancement.md`.
 

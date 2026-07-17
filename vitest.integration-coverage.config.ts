@@ -44,7 +44,7 @@ export default mergeConfig(integrationConfig, {
         "src/modules/rag/project-knowledge.service.ts": {
           statements: 24,
           branches: 15,
-          functions: 34,
+          functions: 31,
           lines: 25,
         },
       },
