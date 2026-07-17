@@ -46,9 +46,7 @@ import {
 } from "./knowledge-entry-card"
 
 type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled"
-// Non-build operations remain readable for one compatibility release, but the
-// current UI only creates build jobs.
-type JobOperation = "build" | "manual_finalize" | "apply_decisions" | "publish"
+type JobOperation = "build"
 
 type KnowledgeOperationResult = NonNullable<JobView["result"]>
 

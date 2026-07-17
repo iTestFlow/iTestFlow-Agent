@@ -48,15 +48,6 @@ export const ProjectKnowledgeConflictDecisionSchema = z.discriminatedUnion("acti
   }),
 ]);
 
-export const ProjectKnowledgeJobOperationSchema = z.enum([
-  "build",
-  "manual_finalize",
-  "apply_decisions",
-  "publish",
-]);
-
-export type ProjectKnowledgeJobOperation = z.infer<typeof ProjectKnowledgeJobOperationSchema>;
-
 export async function enqueueProjectKnowledgeJob(input: {
   scope: ProjectScope;
   workspaceId: string;
@@ -168,8 +159,6 @@ function sanitizeResult(result: Record<string, unknown> | null | undefined) {
     "omittedEntryCount",
     "omissionReasons",
     "warnings",
-    "freshness",
-    "message",
   ];
   return Object.fromEntries(Object.entries(result).filter(([key]) => allowed.includes(key)));
 }

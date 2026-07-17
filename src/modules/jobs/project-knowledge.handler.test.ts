@@ -3,10 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   resolveUserLlmConfig: vi.fn(),
   createLLMProvider: vi.fn(),
-  applyDecisions: vi.fn(),
-  publishDraft: vi.fn(),
   preview: vi.fn(),
-  manualFinalize: vi.fn(),
   sqlGet: vi.fn(),
   getWorkspaceSettings: vi.fn(),
   completeJobBatch: vi.fn(),
@@ -15,13 +12,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/modules/credentials/credential.service", () => ({ resolveUserLlmConfig: mocks.resolveUserLlmConfig }));
 vi.mock("@/modules/llm/llm-provider.factory", () => ({ createLLMProvider: mocks.createLLMProvider }));
-vi.mock("@/modules/rag/project-knowledge-draft.service", () => ({
-  applyProjectKnowledgeConflictDecisions: mocks.applyDecisions,
-  publishProjectKnowledgeDraft: mocks.publishDraft,
-}));
 vi.mock("@/modules/rag/project-knowledge.service", () => ({
   previewGeneratedProjectKnowledgeBase: mocks.preview,
-  saveManualProjectKnowledgeBaseFromBatches: mocks.manualFinalize,
 }));
 vi.mock("@/modules/shared/infrastructure/database/db", () => ({ sqlGet: mocks.sqlGet }));
 vi.mock("@/modules/workspace/workspace-settings.service", () => ({ getWorkspaceSettings: mocks.getWorkspaceSettings }));
@@ -68,16 +60,6 @@ function context() {
   };
 }
 
-function draft(status: "blocked" | "ready_to_publish" | "superseded" | "published", pendingDrift = false) {
-  return {
-    id: "draft-1",
-    persistedStatus: status,
-    pendingDrift,
-    blockers: status === "blocked" ? [{ type: "hard_conflict" }] : [],
-    metrics: { omittedEntryCount: 2, omissionReasons: { quote_not_found: 2 } },
-  };
-}
-
 describe("Project Knowledge v4 worker handler", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -99,7 +81,7 @@ describe("Project Knowledge v4 worker handler", () => {
     await expect(runProjectKnowledgeJob(job({ projectId: "project-1", operation: "build" }, { createdByUserId: null }), context()))
       .rejects.toThrow("initiating user and workspace");
     mocks.sqlGet.mockResolvedValue(null);
-    await expect(runProjectKnowledgeJob(job({ projectId: "project-1", operation: "publish", draftId: "draft-1" }), context()))
+    await expect(runProjectKnowledgeJob(job({ projectId: "project-1", operation: "build" }), context()))
       .rejects.toThrow("not found in its workspace");
   });
 
@@ -147,48 +129,12 @@ describe("Project Knowledge v4 worker handler", () => {
       .resolves.toMatchObject({ outcome: "no_changes" });
   });
 
-  it("finalizes manual batches and applies compact conflict decisions", async () => {
-    mocks.manualFinalize.mockResolvedValue(draft("ready_to_publish"));
-    await expect(runProjectKnowledgeJob(job({
-      projectId: "project-1", operation: "manual_finalize", draftId: "draft-1", mode: "full",
-    }), context())).resolves.toMatchObject({ outcome: "ready_to_publish", omittedEntryCount: 2 });
-    expect(mocks.manualFinalize).toHaveBeenCalledWith(expect.objectContaining({ partialKnowledgeBases: [] }));
-
-    mocks.applyDecisions.mockResolvedValue(draft("blocked"));
-    const decisions = [{ conflictId: "c1", action: "keep", participantId: "p1" }];
-    await expect(runProjectKnowledgeJob(job({
-      projectId: "project-1", operation: "apply_decisions", draftId: "draft-1", draftVersion: "v1", decisions,
-    }), context())).resolves.toMatchObject({ outcome: "conflicts_required", conflictCount: 1 });
-    expect(mocks.applyDecisions).toHaveBeenCalledWith(expect.objectContaining({ decisions }));
-  });
-
-  it.each([
-    ["manual_finalize", { draftVersion: "v1" }, "manual_finalize requires draftId"],
-    ["apply_decisions", { draftId: "draft-1" }, "apply_decisions requires"],
-    ["publish", {}, "publish requires draftId"],
-  ])("validates required payload fields for %s", async (operation, extra, message) => {
-    await expect(runProjectKnowledgeJob(job({ projectId: "project-1", operation, ...extra }), context()))
-      .rejects.toThrow(message);
-  });
-
-  it("returns outdated without merging when another revision won", async () => {
-    mocks.publishDraft.mockResolvedValue(draft("superseded"));
-    const result = await runProjectKnowledgeJob(job({ projectId: "project-1", operation: "publish", draftId: "draft-1" }), context());
-    expect(result).toMatchObject({ outcome: "outdated", draftStatus: "superseded" });
-    expect(mocks.resolveUserLlmConfig).not.toHaveBeenCalled();
-  });
-
-  it("reports stale freshness after committing the exact reviewed draft", async () => {
-    mocks.publishDraft.mockResolvedValue(draft("published", true));
-    const result = await runProjectKnowledgeJob(job({ projectId: "project-1", operation: "publish", draftId: "draft-1" }), context());
-    expect(result).toEqual({
-      outcome: "published",
-      draftId: "draft-1",
-      draftStatus: "published",
-      freshness: "stale",
-      message: "Newer source updates will be included in the next build.",
-    });
-    expect(mocks.resolveUserLlmConfig).not.toHaveBeenCalled();
+  it("rejects retired non-build operations at payload validation", async () => {
+    for (const operation of ["manual_finalize", "apply_decisions", "publish"]) {
+      await expect(runProjectKnowledgeJob(job({ projectId: "project-1", operation, draftId: "draft-1" }), context()))
+        .rejects.toThrow();
+    }
     expect(mocks.preview).not.toHaveBeenCalled();
+    expect(mocks.resolveUserLlmConfig).not.toHaveBeenCalled();
   });
 });
