@@ -20,58 +20,6 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
-import type { ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema"
-import type {
-  ProjectKnowledgeDraftBlocker,
-  ProjectKnowledgeReviewContext,
-  ProjectKnowledgeReviewSummary,
-} from "@/modules/rag/project-knowledge-review.contracts"
-
-type Props = {
-  draftId: string
-  status: string
-  blockers: ProjectKnowledgeDraftBlocker[]
-  reviewSummary: ProjectKnowledgeReviewSummary
-  regenerateRequired?: boolean
-  proposedKnowledge: ProjectKnowledgeBase | null
-  busy: boolean
-  onLoadReviewContext: () => Promise<ProjectKnowledgeReviewContext>
-  onResolve: (knowledgeBase: ProjectKnowledgeBase) => Promise<void>
-  onRebase: () => Promise<void>
-  onRegenerate: () => Promise<void>
-}
-
-/**
- * Compatibility renderer for one release. The active v4 flow lives in
- * KnowledgeBuildV4 and submits compact conflict decisions. This component
- * intentionally exposes no evidence editor, source selector, re-check, or
- * rebase action if an older client state reaches it.
- */
-export function KnowledgeReviewWorkspace(props: Props) {
-  const conflicts = props.blockers.filter((blocker) => blocker.type === "hard_conflict")
-  if (!conflicts.length) {
-    return (
-      <div role="status" aria-live="polite" className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 p-4 text-sm">
-        <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" aria-hidden="true" />
-        <div>
-          <div className="font-semibold text-foreground">Draft checks passed</div>
-          <p className="mt-1 text-xs text-muted-foreground">Publication still requires one explicit Publish action.</p>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div role="status" className="flex items-start gap-3 rounded-md border border-warning/30 bg-warning/10 p-4 text-sm">
-      <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning-foreground" aria-hidden="true" />
-      <div>
-        <div className="font-semibold text-foreground">{conflicts.length} knowledge {conflicts.length === 1 ? "conflict" : "conflicts"}</div>
-        <p className="mt-1 text-xs text-muted-foreground">Reload the v4 conflict-only workspace to choose or combine supported versions.</p>
-      </div>
-    </div>
-  )
-}
-
 export type CompactConflictParticipant = {
   participantId: string
   entryKey: string
