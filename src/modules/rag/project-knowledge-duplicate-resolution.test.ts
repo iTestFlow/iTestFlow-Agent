@@ -234,7 +234,7 @@ describe("project knowledge duplicate resolution", () => {
     });
   });
 
-  it("only auto-merges extraction abstentions with equal fingerprints", () => {
+  it("keeps distinct-evidence abstentions separate while merging equal fingerprints", () => {
     const merged = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
       businessRules: [
         rule("refund-reason", "A reason is required for a return/refund request."),
@@ -255,6 +255,69 @@ describe("project knowledge duplicate resolution", () => {
       rekeyCount: 1,
       possibleTensionCount: 1,
     });
+  });
+
+  it("merges same-evidence word-order paraphrases that abstain from extraction", () => {
+    const sharedEvidence = [evidenceRef("Allowed status values and badge colours: Draft (grey); Quoting (blue)")];
+    const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
+      businessRules: [
+        { ...rule("status-colours", "Allowed Application Status values and badge colours are Draft (grey), and Quoting (blue)."), evidenceRefs: sharedEvidence },
+        { ...rule("status-colours", "Application Status allowed values and badge colours are Draft (grey), and Quoting (blue)."), evidenceRefs: sharedEvidence },
+      ],
+    }));
+
+    expect(result.knowledgeBase.businessRules).toHaveLength(1);
+    expect(result.knowledgeBase.businessRules[0].id).toBe("status-colours");
+    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0, possibleTensionCount: 0 });
+  });
+
+  it("heals a previously rekeyed same-evidence twin back into its base id", () => {
+    const sharedEvidence = [evidenceRef("Allowed status values and badge colours: Draft (grey); Quoting (blue)")];
+    const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
+      businessRules: [
+        { ...rule("status-colours", "Allowed Application Status values and badge colours are Draft (grey), and Quoting (blue)."), evidenceRefs: sharedEvidence },
+        { ...rule("status-colours-d501f6b2", "Application Status allowed values and badge colours are Draft (grey), and Quoting (blue)."), evidenceRefs: sharedEvidence },
+      ],
+    }));
+
+    expect(result.knowledgeBase.businessRules).toHaveLength(1);
+    expect(result.knowledgeBase.businessRules[0].id).toBe("status-colours");
+    expect(result.knowledgeBase.businessRules[0].evidenceRefs).toHaveLength(1);
+    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0 });
+  });
+
+  it("keeps a genuinely distinct rekeyed twin without re-rekeying it", () => {
+    const base = knowledgeBase({
+      businessRules: [
+        rule("checkout", "Checkout should be intuitive."),
+        rule("checkout-0a1b2c3d", "Checkout must expose an express lane for returning customers."),
+      ],
+    });
+    const first = resolveProjectKnowledgeDuplicateIdentities(base);
+    const second = resolveProjectKnowledgeDuplicateIdentities(first.knowledgeBase);
+
+    expect(first.knowledgeBase.businessRules.map((entry) => entry.id).sort()).toEqual([
+      "checkout",
+      "checkout-0a1b2c3d",
+    ]);
+    expect(first.counters).toMatchObject({ paraphraseMergeCount: 0, rekeyCount: 0, possibleTensionCount: 1 });
+    expect(second.knowledgeBase).toEqual(first.knowledgeBase);
+    expect(second.counters).toMatchObject({ rekeyCount: 0 });
+  });
+
+  it("never strips an author id that merely looks rekeyed", () => {
+    const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
+      businessRules: [
+        rule("audit-deadbeef", "Audit entries are retained for review."),
+        rule("audit-cafebabe", "Audit exports include reviewer names."),
+      ],
+    }));
+
+    expect(result.knowledgeBase.businessRules.map((entry) => entry.id).sort()).toEqual([
+      "audit-cafebabe",
+      "audit-deadbeef",
+    ]);
+    expect(result.counters).toMatchObject({ paraphraseMergeCount: 0, rekeyCount: 0, possibleTensionCount: 0 });
   });
 
   it("merges hierarchy-compatible dependencies with identical evidence", () => {

@@ -123,7 +123,8 @@ function resolveBusinessRules(
   counters: ProjectKnowledgeDuplicateResolutionCounters,
   possibleTensions: ProjectKnowledgePossibleTension[],
 ) {
-  const grouped = groupByLogicalIdentity(entries, (entry) => entry.id);
+  const canonicalIds = new Set(entries.map((entry) => canonicalizeProjectKnowledgeLogicalIdentity(entry.id)));
+  const grouped = groupByLogicalIdentity(entries, (entry) => suffixHealedIdentity(entry.id, canonicalIds));
   const resolved: BusinessRule[] = [];
   const tensionIntents: Array<{ subject: string; entries: BusinessRule[]; reason: string }> = [];
 
@@ -379,6 +380,22 @@ function groupByLogicalIdentity<TEntry>(entries: TEntry[], identity: (entry: TEn
     grouped.set(key, bucket);
   }
   return grouped;
+}
+
+const REKEY_SUFFIX_PATTERN = /-[0-9a-f]{8}(-\d+)?$/;
+
+/**
+ * Buckets a previously rekeyed id (base-xxxxxxxx or base-xxxxxxxx-n) with its
+ * base id so a published near-duplicate can heal once the pair becomes
+ * paraphrase-compatible, but ONLY when that base is itself present as another
+ * entry's full canonical id. Collision-conditioning prevents stripping author
+ * ids that merely look suffixed. Rekeying stays keyed on the full id, so a
+ * genuinely distinct healed bucket is never re-rekeyed.
+ */
+function suffixHealedIdentity(id: string, canonicalIds: ReadonlySet<string>) {
+  const canonical = canonicalizeProjectKnowledgeLogicalIdentity(id);
+  const stripped = canonical.replace(REKEY_SUFFIX_PATTERN, "");
+  return stripped !== canonical && stripped.length > 0 && canonicalIds.has(stripped) ? stripped : id;
 }
 
 function sortCategoryEntries<TEntry>(category: ProjectKnowledgeConsolidationCategory, entries: TEntry[]) {
