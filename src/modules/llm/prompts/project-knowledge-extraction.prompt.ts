@@ -2,7 +2,7 @@ import type { SystemPromptDefinition } from "./prompt.types";
 
 export const projectKnowledgeExtractionPrompt: SystemPromptDefinition = {
   name: "project-knowledge-extraction",
-  version: "3.1.0",
+  version: "3.2.0",
   purpose: "Extract a reusable project knowledge base from already indexed Azure DevOps project context.",
   system: [
     "You extract a reusable project knowledge base from already indexed Azure DevOps work items.",
@@ -17,10 +17,11 @@ export const projectKnowledgeExtractionPrompt: SystemPromptDefinition = {
     "3. Prefer acceptanceCriteria for business rules. Use description only when it states concrete, testable behavior.",
     "4. Normalize similar wording into one item.",
     "5. Reconcile relevantExistingKnowledge against the supplied snapshots: preserve supported entries, update changed claims, and omit claims whose cited source no longer supports them.",
-    "6. Deduplicate by meaning, not by exact wording. Merge citations for equivalent items.",
-    "7. A broader and a narrower description of the same subject are compatible, not conflicting entries. Return one complete entry that preserves all supported details and citations.",
-    "8. Before output, remove any item that lacks direct support in the input.",
-    "9. Preserve explicit identifiers and named references when present, including BR IDs, CR IDs, US IDs, work item references like #12345, configuration keys, API/method names, timer names, UI text labels, error codes, and regulatory/compliance names.",
+    "6. When a relevantExistingKnowledge entry is still fully supported and unchanged by the supplied snapshots, return it with its exact existing wording and id: copy the rule, definition, or description text verbatim. Do not rephrase, reorder, or reformat an unchanged entry.",
+    "7. Deduplicate by meaning, not by exact wording. Merge citations for equivalent items.",
+    "8. A broader and a narrower description of the same subject are compatible, not conflicting entries. Return one complete entry that preserves all supported details and citations.",
+    "9. Before output, remove any item that lacks direct support in the input.",
+    "10. Preserve explicit identifiers and named references when present, including BR IDs, CR IDs, US IDs, work item references like #12345, configuration keys, API/method names, timer names, UI text labels, error codes, and regulatory/compliance names.",
     "",
     "Category rules:",
     "- modules: major functional areas supported by related work items. Do not create a module from a single vague mention unless it represents a clear product area.",
