@@ -22,14 +22,10 @@ const AUTH_MARKERS = [
 
 const KNOWLEDGE_BUILD_ROUTES = [
   "context/index/route.ts",
-  "context/knowledge/extract/route.ts",
-  "context/knowledge/manual/consolidation/route.ts",
   "context/knowledge/manual/draft/route.ts",
   "context/knowledge/manual/finalize/route.ts",
   "context/knowledge/manual/validate/route.ts",
-  "context/knowledge/preview/route.ts",
   "context/knowledge/promote/route.ts",
-  "context/knowledge/save/route.ts",
 ];
 
 const WORKSPACE_ADMIN_ROUTES = [
