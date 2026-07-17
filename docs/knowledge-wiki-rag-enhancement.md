@@ -63,8 +63,9 @@ queries the same two FTS mirror tables via PostgreSQL's `pg_trgm` extension
 word-prefix FTS matching misses (e.g. "flow" matching "workflow"). Queries under 3
 characters skip trigram entirely (too little signal to compare).
 
-**Semantic retrieval** (optional, deployment-configured via `EMBEDDINGS_PROVIDER` in
-`.env`, off by default). When enabled, context indexing embeds work-item chunks
+**Semantic retrieval** (deployment-configured via `EMBEDDINGS_PROVIDER` in `.env`; on
+by default via the zero-setup local backend, set to `off` to disable). When enabled,
+context indexing embeds work-item chunks
 through `src/modules/rag/embedding-provider.ts` into the `embeddings` table
 (`source_type = 'azure_work_item_chunk'`), and every knowledge base save embeds the
 compiled knowledge entries into the same table under a separate

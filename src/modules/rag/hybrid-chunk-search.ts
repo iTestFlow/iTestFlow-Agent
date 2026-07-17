@@ -106,10 +106,10 @@ export async function searchProjectChunksHybrid(input: {
     console.error("Hybrid chunk search: trigram search failed; continuing without it.", error);
   }
 
-  // Most deployments run with EMBEDDINGS_PROVIDER=off, so this is the common path.
-  // Keep the raw ts_rank_cd ordering here instead of running a single-list fusion
-  // through RRF, which would flatten its real score spread into near-identical
-  // normalized scores for no reason.
+  // Neither extra signal contributed (trigram found nothing, or semantic is off/
+  // unavailable/failed) — keep the raw ts_rank_cd ordering instead of running a
+  // single-list fusion through RRF, which would flatten its real score spread into
+  // near-identical normalized scores for no reason.
   if (!semanticRows.length && !trigramRows.length) {
     return applyPerWorkItemCap(
       ftsRows.map((row) => ({ row, score: row.rank })),

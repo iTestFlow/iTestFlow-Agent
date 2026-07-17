@@ -5,7 +5,7 @@ import { assertProjectScope, type ProjectScope } from "@/modules/projects/projec
 import { createId, nowIso, sqlAll, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeBase } from "./project-knowledge.schema";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
-import { buildFtsQuery } from "./full-text-search";
+import { buildFtsQueryWithDynamicSynonyms } from "./full-text-search";
 import { searchProjectKnowledgeByTrigram } from "./trigram-search";
 import { fuseByReciprocalRank } from "./hybrid-ranking";
 import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
@@ -341,7 +341,11 @@ export async function retrieveContextChatbotEvidence(input: {
   const knowledgeLimit = input.knowledgeLimit ?? 10;
   const maxContextChunksPerWorkItem = input.maxContextChunksPerWorkItem ?? 2;
 
-  const ftsQuery = buildFtsQuery(input.query);
+  // Resolved once and reused for dynamic synonym resolution here; searchContext and
+  // searchKnowledge independently resolve their own provider for semantic search
+  // (createEmbeddingProvider is a cheap, stateless env-read, not worth threading
+  // through every call for reuse).
+  const ftsQuery = await buildFtsQueryWithDynamicSynonyms(input.query, createEmbeddingProvider());
   if (!ftsQuery) {
     return { context: [], knowledge: await getFallbackKnowledge({ scope, limit: knowledgeLimit }) };
   }
@@ -466,7 +470,7 @@ async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; r
 
   // No trigram or semantic signal: keep FTS's own ts_rank_cd order rather than
   // running a single-list fusion through RRF, which would flatten its real score
-  // spread. Also the common case, since EMBEDDINGS_PROVIDER is off by default.
+  // spread.
   if (!trigramRows.length && !semanticRows.length) {
     const results = ftsRows.map(toKnowledgeEvidence);
     return results.length ? results : getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });

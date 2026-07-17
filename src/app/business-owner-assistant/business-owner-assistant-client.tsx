@@ -63,6 +63,7 @@ type ChatMessage = {
   metadata?: {
     retrievedContextCount: number;
     retrievedKnowledgeCount: number;
+    linkedWorkItemCount: number;
     provider: string;
     model: string;
   };
@@ -75,6 +76,7 @@ type ContextChatbotResponse = {
   citations: ContextChatbotCitation[];
   retrievedContextCount: number;
   retrievedKnowledgeCount: number;
+  linkedWorkItemCount: number;
   provider: string;
   model: string;
 };
@@ -307,6 +309,7 @@ export function BusinessOwnerAssistantClient({ workspaceRole }: { workspaceRole:
         metadata: {
           retrievedContextCount: data.retrievedContextCount,
           retrievedKnowledgeCount: data.retrievedKnowledgeCount,
+          linkedWorkItemCount: data.linkedWorkItemCount,
           provider: data.provider,
           model: data.model,
         },
@@ -981,12 +984,9 @@ function ResponseDetails({
 }: {
   metadata: NonNullable<ChatMessage["metadata"]>;
 }) {
-  // Deliberately not citations.length: the citations list also includes work items
-  // fanned out from a knowledge entry's provenance (see buildCitations in
-  // context-chatbot.service.ts) so inline mentions of those IDs can be linked, which
-  // makes it larger than what was actually retrieved for this turn. This header
-  // reports the real retrieval counts, so it always matches the breakdown below it.
-  const sourceCount = metadata.retrievedContextCount + metadata.retrievedKnowledgeCount;
+  // Sum of every citation bucket (see buildCitations in context-chatbot.service.ts),
+  // so this always equals citations.length / the "Sources (N)" button below.
+  const sourceCount = metadata.retrievedContextCount + metadata.retrievedKnowledgeCount + metadata.linkedWorkItemCount;
   return (
     <details className="group w-full text-xs text-muted-foreground">
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-lg px-2 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -999,6 +999,12 @@ function ResponseDetails({
         <dd className="font-medium text-foreground">{metadata.retrievedContextCount}</dd>
         <dt>Saved knowledge</dt>
         <dd className="font-medium text-foreground">{metadata.retrievedKnowledgeCount}</dd>
+        {metadata.linkedWorkItemCount > 0 ? (
+          <>
+            <dt>Linked work items</dt>
+            <dd className="font-medium text-foreground">{metadata.linkedWorkItemCount}</dd>
+          </>
+        ) : null}
         <dt>Model</dt>
         <dd className="break-all font-medium text-foreground">{metadata.provider} / {metadata.model}</dd>
       </dl>
@@ -1032,7 +1038,9 @@ function SourceDialog({
         <DialogHeader>
           <DialogTitle>{selectedSourceId ? "Source details" : `Sources (${citations.length})`}</DialogTitle>
           <DialogDescription>
-            Project evidence used to ground this answer. Work-item links open in Azure DevOps.
+            Project evidence used to ground this answer, plus linked work items
+            referenced by that saved knowledge so mentions of them are clickable.
+            Work-item links open in Azure DevOps.
           </DialogDescription>
         </DialogHeader>
         <div className="max-h-[min(65vh,36rem)] space-y-3 overflow-y-auto pr-2">

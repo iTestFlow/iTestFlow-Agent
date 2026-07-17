@@ -76,7 +76,7 @@ describeDb("hybrid chunk search (DB-backed)", () => {
     await resetDatabaseForTests();
   });
 
-  it("keeps raw FTS rank ordering when neither semantic nor trigram contribute (the common EMBEDDINGS_PROVIDER=off case)", async () => {
+  it("keeps raw FTS rank ordering when neither semantic nor trigram contribute (embeddings unavailable)", async () => {
     const results = await searchProjectChunksHybrid({
       scope,
       ftsQuery: buildFtsQuery("checkout payment"),

@@ -7,7 +7,7 @@ import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azu
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { chunkText } from "./rag-pipeline.service";
 import { ensureProjectContextSearchIndex, refreshProjectContextSearchIndex } from "./context-chatbot-retrieval.service";
-import { buildFtsQuery } from "./full-text-search";
+import { buildFtsQueryWithDynamicSynonyms } from "./full-text-search";
 import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
 import { syncProjectChunkEmbeddings } from "./embedding-store.service";
 import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
@@ -588,7 +588,12 @@ export async function retrieveStoredProjectContext(input: {
     return rows.map((row) => toLlmContextSource(row, 1));
   }
 
-  const ftsQuery = buildFtsQuery(input.query);
+  // Resolve the embedding provider once and reuse it both for dynamic synonym
+  // resolution (see buildFtsQueryWithDynamicSynonyms) and for semantic search below,
+  // instead of letting searchProjectChunksHybrid re-resolve it independently.
+  const embeddingProvider =
+    input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
+  const ftsQuery = await buildFtsQueryWithDynamicSynonyms(input.query, embeddingProvider);
   if (!ftsQuery) return [];
   await ensureProjectContextSearchIndex({ scope });
 
@@ -599,7 +604,7 @@ export async function retrieveStoredProjectContext(input: {
     rawQuery: input.query,
     topK,
     maxChunksPerWorkItem,
-    embeddingProvider: input.embeddingProvider,
+    embeddingProvider,
   });
   const maxScore = fused[0]?.score ?? 0;
   return fused.map(({ row, score }) => toLlmContextSource(row, normalizeRank(score, maxScore)));

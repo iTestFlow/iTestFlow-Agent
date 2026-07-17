@@ -5,8 +5,9 @@ import { embedWithLocalModel, type LocalEmbeddingDtype } from "./local-embedding
 
 /**
  * Deployment-configured embedding backend for semantic retrieval. Configured by
- * environment (see .env.example), defaulting to "off" so deployments without an
- * embedding model keep today's full-text-search-only behavior:
+ * environment (see .env.example), defaulting to "local" so semantic search works
+ * out of the box with no setup. Set EMBEDDINGS_PROVIDER=off to disable it and run
+ * full-text/trigram search only.
  *
  * - EMBEDDINGS_PROVIDER: off | local | ollama | openai | gemini
  * - EMBEDDINGS_MODEL:    model name (per-provider default when unset)
@@ -18,10 +19,12 @@ import { embedWithLocalModel, type LocalEmbeddingDtype } from "./local-embedding
  * - EMBEDDINGS_LOCAL_DTYPE: local only — ONNX weight precision, default "q8"
  *                        (quantized ~70MB download); "fp32" for full precision
  *
- * "local" is the zero-setup option: nomic-embed-text runs in-process via
+ * "local" is the zero-setup default: nomic-embed-text runs in-process via
  * transformers.js/ONNX, auto-downloading the model on first use — nothing to
  * install or run beside the app. "ollama" suits hosts that already run a local
- * model server.
+ * model server. An explicit, unrecognized EMBEDDINGS_PROVIDER value still falls
+ * back to "off" rather than silently assuming "local" — only a genuinely unset
+ * value gets the zero-setup default.
  */
 
 export type EmbeddingProviderName = "local" | "ollama" | "openai" | "gemini";
@@ -84,7 +87,10 @@ const MAX_EMBED_INPUT_CHARS = 8000;
 const EMBED_RETRY_ATTEMPTS = 2;
 
 export function getEmbeddingConfigFromEnv(env: Record<string, string | undefined> = process.env): EmbeddingConfig {
-  const provider = (env.EMBEDDINGS_PROVIDER ?? "off").trim().toLowerCase();
+  const raw = env.EMBEDDINGS_PROVIDER?.trim().toLowerCase();
+  // Unset/empty gets the zero-setup default; an explicit but unrecognized value is
+  // treated as a misconfiguration and falls back to "off" instead.
+  const provider = raw || "local";
   if (provider !== "local" && provider !== "ollama" && provider !== "openai" && provider !== "gemini") {
     return { provider: "off" };
   }

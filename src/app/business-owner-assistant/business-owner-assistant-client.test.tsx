@@ -55,6 +55,7 @@ function installFetch(options?: {
   citations?: typeof defaultCitations;
   retrievedContextCount?: number;
   retrievedKnowledgeCount?: number;
+  linkedWorkItemCount?: number;
 }) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     void _init;
@@ -89,6 +90,7 @@ function installFetch(options?: {
         citations,
         retrievedContextCount: options?.retrievedContextCount ?? citations.length,
         retrievedKnowledgeCount: options?.retrievedKnowledgeCount ?? 0,
+        linkedWorkItemCount: options?.linkedWorkItemCount ?? 0,
         provider: "test-provider",
         model: "test-model",
       });
@@ -143,13 +145,12 @@ describe("BusinessOwnerAssistantClient", () => {
     expect(screen.getByText("test-provider / test-model").closest("details")).not.toHaveAttribute("open");
   });
 
-  it("reports the retrieved evidence count, not the larger citation list, as 'Based on N project sources'", async () => {
-    // Regression: the citations list can be larger than what was actually
-    // retrieved, because it also fans out work items cited only via a knowledge
-    // entry's provenance (see buildCitations in context-chatbot.service.ts) so
-    // those mentions are clickable. The "Sources (N)" button legitimately shows
-    // that larger, browsable count; "Based on N project sources" must instead
-    // match the Indexed context + Saved knowledge breakdown shown right below it.
+  it("reports 'Based on N project sources' matching the full citation list, broken down by bucket", async () => {
+    // The citations list can include work items fanned out from a knowledge entry's
+    // provenance (see buildCitations in context-chatbot.service.ts) so those inline
+    // mentions are clickable, on top of what was directly retrieved. "Based on N"
+    // must count all of it (retrieved context + saved knowledge + linked work items)
+    // so it always matches "Sources (N)" instead of silently under-reporting.
     const manyCitations = Array.from({ length: 3 }, (_, index) => ({
       sourceType: "project_context" as const,
       sourceId: `WI:${index}`,
@@ -162,6 +163,7 @@ describe("BusinessOwnerAssistantClient", () => {
       citations: manyCitations,
       retrievedContextCount: 1,
       retrievedKnowledgeCount: 1,
+      linkedWorkItemCount: 1,
     });
     const user = userEvent.setup();
     render(<BusinessOwnerAssistantClient workspaceRole="owner" />);
@@ -170,8 +172,10 @@ describe("BusinessOwnerAssistantClient", () => {
     await screen.findByText(/Grounded in indexed and saved sources/i);
 
     expect(screen.getByRole("button", { name: "Sources (3)" })).toBeInTheDocument();
-    expect(screen.getByText("Based on 2 project sources")).toBeInTheDocument();
-    expect(screen.queryByText("Based on 3 project sources")).not.toBeInTheDocument();
+    expect(screen.getByText("Based on 3 project sources")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Based on 3 project sources"));
+    expect(screen.getByText("Linked work items")).toBeInTheDocument();
   });
 
   it("opens inline source details and builds an encoded Azure DevOps link", async () => {

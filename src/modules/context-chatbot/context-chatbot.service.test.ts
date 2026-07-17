@@ -79,6 +79,16 @@ describe("context chatbot service", () => {
       system: expect.stringContaining("Use ONLY"),
       user: expect.stringContaining("Checkout requires payment"),
     }));
+    // Regression: two context chunks share sourceId "WI:1" (same work item, different
+    // chunks) and dedupe to one citation card, so retrievedContextCount must reflect
+    // the deduped count (1), not the raw chunk count (2) — otherwise the sum of the
+    // breakdown overshoots citations.length.
+    expect(result.retrievedContextCount).toBe(1);
+    expect(result.retrievedKnowledgeCount).toBe(1);
+    expect(result.linkedWorkItemCount).toBe(0);
+    expect(result.retrievedContextCount + result.retrievedKnowledgeCount + result.linkedWorkItemCount).toBe(
+      result.citations.length,
+    );
   });
 
   it("adds knowledge source work items as clickable work-item citations", async () => {
@@ -129,5 +139,11 @@ describe("context chatbot service", () => {
       }),
     ]));
     expect(result.citations).toHaveLength(4);
+    expect(result.retrievedContextCount).toBe(1);
+    expect(result.retrievedKnowledgeCount).toBe(1);
+    expect(result.linkedWorkItemCount).toBe(2);
+    expect(result.retrievedContextCount + result.retrievedKnowledgeCount + result.linkedWorkItemCount).toBe(
+      result.citations.length,
+    );
   });
 });

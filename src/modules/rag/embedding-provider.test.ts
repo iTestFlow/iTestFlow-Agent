@@ -26,11 +26,19 @@ afterEach(() => {
 });
 
 describe("getEmbeddingConfigFromEnv", () => {
-  it("defaults to off when unset or unknown", () => {
-    expect(getEmbeddingConfigFromEnv({})).toEqual({ provider: "off" });
+  it("defaults to the zero-setup local backend when unset", () => {
+    expect(getEmbeddingConfigFromEnv({})).toMatchObject({ provider: "local" });
+    expect(getEmbeddingConfigFromEnv({ EMBEDDINGS_PROVIDER: "" })).toMatchObject({ provider: "local" });
+  });
+
+  it("falls back to off for an explicit but unrecognized provider value", () => {
     expect(getEmbeddingConfigFromEnv({ EMBEDDINGS_PROVIDER: "something-else" })).toEqual({
       provider: "off",
     });
+  });
+
+  it("disables semantic search when explicitly set to off", () => {
+    expect(getEmbeddingConfigFromEnv({ EMBEDDINGS_PROVIDER: "off" })).toEqual({ provider: "off" });
   });
 
   it("normalizes provider casing and trims values, dropping empties", () => {
