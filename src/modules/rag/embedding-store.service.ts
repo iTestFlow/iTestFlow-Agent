@@ -2,7 +2,7 @@ import "server-only";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { createId, nowIso, sqlAll, sqlRun } from "@/modules/shared/infrastructure/database/db";
-import type { EmbeddingProvider } from "./embedding-provider";
+import { MAX_EMBED_BATCH_SIZE, type EmbeddingProvider } from "./embedding-provider";
 import { cosineSimilarity } from "./hybrid-ranking";
 
 /**
@@ -65,6 +65,13 @@ export async function syncProjectChunkEmbeddings(input: {
     },
   );
 
+  // A chunk is pending when it has no embedding at the current vector_reference, OR
+  // its embedding predates the chunk's own last content change (document_chunks.id is
+  // deterministic and reused across a content edit that doesn't change the chunk
+  // count, so existence alone isn't enough — the stale vector would otherwise be
+  // reused forever). document_chunks.updated_at only advances on a real content
+  // change (unchanged content takes an early-continue in the indexing loop that never
+  // touches the row), so this comparison is safe.
   const pending = await sqlAll<{ id: string; content: string }>(
     `
       SELECT dc.id, dc.content
@@ -73,7 +80,7 @@ export async function syncProjectChunkEmbeddings(input: {
         ON e.chunk_id = dc.id
        AND e.vector_reference = @vectorReference
       WHERE ${ACTIVE_CHUNK_FILTER_SQL}
-        AND e.id IS NULL
+        AND (e.id IS NULL OR e.updated_at < dc.updated_at)
       ORDER BY dc.id
     `,
     {
@@ -83,10 +90,15 @@ export async function syncProjectChunkEmbeddings(input: {
     },
   );
 
-  if (pending.length) {
-    const vectors = await input.provider.embed(pending.map((chunk) => chunk.content), "document");
+  // Embed and persist one batch at a time instead of embedding the whole pending list
+  // and inserting only after everything succeeds: if a later batch fails, every batch
+  // before it is already durably saved and won't be redone (or lost) on the next sync.
+  let embeddedChunkCount = 0;
+  for (let start = 0; start < pending.length; start += MAX_EMBED_BATCH_SIZE) {
+    const batch = pending.slice(start, start + MAX_EMBED_BATCH_SIZE);
+    const vectors = await input.provider.embed(batch.map((chunk) => chunk.content), "document");
     const now = nowIso();
-    for (const [index, chunk] of pending.entries()) {
+    for (const [index, chunk] of batch.entries()) {
       await sqlRun(
         `
           INSERT INTO embeddings (
@@ -116,11 +128,12 @@ export async function syncProjectChunkEmbeddings(input: {
           updatedAt: now,
         },
       );
+      embeddedChunkCount += 1;
     }
   }
 
   return {
-    embeddedChunkCount: pending.length,
+    embeddedChunkCount,
     removedEmbeddingCount: removedCount,
   };
 }

@@ -14,7 +14,7 @@ import {
   searchProjectContextByEmbedding,
   syncProjectChunkEmbeddings,
 } from "@/modules/rag/embedding-store.service";
-import type { EmbeddingProvider } from "@/modules/rag/embedding-provider";
+import { MAX_EMBED_BATCH_SIZE, type EmbeddingProvider } from "@/modules/rag/embedding-provider";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { fakeAzureAdapter, requirement } from "@/test/factories";
@@ -141,14 +141,17 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
     expect(rows.every((row) => row.vector_reference === "ollama:other-model")).toBe(true);
   });
 
-  it("removes embeddings whose chunks were deleted by a rebuild", async () => {
+  it("removes embeddings whose chunks were deleted by a rebuild, and re-embeds surviving ones", async () => {
     // Rebuild with only the telemetry item: the payment chunk disappears, and its
-    // embedding row must go with it. The surviving chunk keeps its deterministic id,
-    // so its still-current vector is not re-embedded.
+    // embedding row must go with it. Rebuild unconditionally deletes and reinserts
+    // every chunk (even byte-identical content), which bumps document_chunks.updated_at
+    // for the surviving telemetry chunk too -- so its pre-rebuild embedding is now
+    // stale by the staleness check and legitimately gets re-embedded. This is an
+    // accepted cost of an explicit full rebuild, not a bug.
     await sync([telemetryItem()], "rebuild");
     const result = await syncProjectChunkEmbeddings({ scope, provider: fakeEmbeddingProvider("other-model") });
 
-    expect(result).toEqual({ embeddedChunkCount: 0, removedEmbeddingCount: 1 });
+    expect(result).toEqual({ embeddedChunkCount: 1, removedEmbeddingCount: 1 });
     const rows = await embeddingRows();
     expect(rows).toHaveLength(1);
     expect(rows[0]!.chunk_id).toContain("_202_");
@@ -232,5 +235,83 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
     expect(sources[0]?.workItemId).toBe("202");
     expect(consoleError).toHaveBeenCalled();
     consoleError.mockRestore();
+  });
+
+  it("re-embeds a chunk whose content changed without the chunk count changing", async () => {
+    // A single short item -> exactly one chunk, so an edit keeps the same
+    // deterministic chunk id. Regression for staleness: existence-only pending
+    // checks would never re-embed this, silently keeping the pre-edit vector.
+    const editableItem = (description: string) =>
+      requirement({
+        id: "301",
+        azureProjectId: PROJ,
+        title: "Editable item",
+        description,
+        acceptanceCriteria: "Given a case, when it changes, then re-embed.",
+        tags: [],
+      });
+    await sync([editableItem("Initial payment description.")]);
+    const provider = fakeEmbeddingProvider("staleness-model");
+    const first = await syncProjectChunkEmbeddings({ scope, provider });
+    expect(first.embeddedChunkCount).toBeGreaterThanOrEqual(1);
+
+    const beforeRow = (await embeddingRows()).find((row) => row.chunk_id.includes("_301_"));
+    const beforeVectorJson = await sqlAll<{ vector_json: string }>(
+      `SELECT vector_json FROM embeddings WHERE chunk_id = @chunkId`,
+      { chunkId: beforeRow!.chunk_id },
+    );
+
+    // Same chunk count (still one short chunk), different content -> same chunk id,
+    // fresh document_chunks.updated_at.
+    await sync([editableItem("Now this talks about telemetry devices instead.")]);
+    const second = await syncProjectChunkEmbeddings({ scope, provider });
+    expect(second.embeddedChunkCount).toBeGreaterThanOrEqual(1);
+
+    const afterVectorJson = await sqlAll<{ vector_json: string }>(
+      `SELECT vector_json FROM embeddings WHERE chunk_id = @chunkId`,
+      { chunkId: beforeRow!.chunk_id },
+    );
+    expect(afterVectorJson[0]!.vector_json).not.toBe(beforeVectorJson[0]!.vector_json);
+  });
+
+  it("persists already-embedded batches when a later batch's embedding call fails", async () => {
+    // Enough active chunks to force at least two provider.embed() calls, so a
+    // failure on the second batch is distinguishable from the first.
+    const items = Array.from({ length: MAX_EMBED_BATCH_SIZE + 1 }, (_, index) =>
+      requirement({
+        id: `4${String(index).padStart(3, "0")}`,
+        azureProjectId: PROJ,
+        title: `Batch item ${index}`,
+        description: `Batch content ${index}.`,
+        acceptanceCriteria: "Given a batch, when embedded, then persist.",
+        tags: [],
+      }),
+    );
+    await sync(items, "rebuild");
+
+    let call = 0;
+    const failingOnSecondBatch: EmbeddingProvider = {
+      name: "ollama",
+      model: "batch-fail-model",
+      vectorReference: "ollama:batch-fail-model",
+      embed: async (texts) => {
+        call += 1;
+        if (call === 2) throw new Error("simulated transient failure on batch 2");
+        return texts.map(() => [1, 0, 0]);
+      },
+    };
+
+    await expect(
+      syncProjectChunkEmbeddings({ scope, provider: failingOnSecondBatch }),
+    ).rejects.toThrow("simulated transient failure on batch 2");
+
+    const persisted = await sqlAll<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM embeddings WHERE project_id = @projectId AND vector_reference = @vectorReference`,
+      { projectId: PROJ, vectorReference: "ollama:batch-fail-model" },
+    );
+    // The first batch's chunks were persisted before the second batch's failure;
+    // without the fix this would be 0 (the whole call's work discarded).
+    expect(persisted[0]!.count).toBe(MAX_EMBED_BATCH_SIZE);
+    expect(persisted[0]!.count).toBeLessThan(items.length);
   });
 });

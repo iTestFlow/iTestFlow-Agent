@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createId, nowIso, sqlAll, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
+import { createId, getPool, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
@@ -9,8 +9,8 @@ import { chunkText } from "./rag-pipeline.service";
 import { ensureProjectContextSearchIndex, refreshProjectContextSearchIndex } from "./context-chatbot-retrieval.service";
 import { buildFtsQuery } from "./full-text-search";
 import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
-import { searchProjectContextByEmbedding, syncProjectChunkEmbeddings } from "./embedding-store.service";
-import { fuseByReciprocalRank } from "./hybrid-ranking";
+import { syncProjectChunkEmbeddings } from "./embedding-store.service";
+import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 import { recordProjectKnowledgeLog } from "./project-knowledge-compiled.service";
 
@@ -322,12 +322,33 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
 
   // Embedding sync is best-effort and outside the transaction: a missing or failing
   // embedding backend must never fail or roll back context indexing, it only means
-  // retrieval stays lexical until the next successful sync.
+  // retrieval stays lexical until the next successful sync. An advisory lock guards
+  // against two overlapping calls for the same project (e.g. a manual "Index Now"
+  // double-click racing a scheduled sync — the manual route has no job-queue dedup)
+  // redundantly re-embedding the same content; a lock miss just skips this call's
+  // embedding sync rather than duplicating the work.
   const embeddingProvider = createEmbeddingProvider();
   let embeddingSummary: { embeddedChunkCount: number; removedEmbeddingCount: number } | undefined;
   if (embeddingProvider) {
     try {
-      embeddingSummary = await syncProjectChunkEmbeddings({ scope, provider: embeddingProvider });
+      const lockOutcome = await withEmbeddingSyncLock(scope.projectId, () =>
+        syncProjectChunkEmbeddings({ scope, provider: embeddingProvider }),
+      );
+      if (lockOutcome.acquired) {
+        embeddingSummary = lockOutcome.result;
+      } else {
+        recordProjectKnowledgeLog({
+          scope,
+          eventType: "context.embedding_sync_skipped",
+          severity: "info",
+          title: "Embedding sync skipped (already running)",
+          message: "Another embedding sync for this project was already in progress; this call left retrieval on the existing vectors.",
+          metadata: {
+            provider: embeddingProvider.name,
+            model: embeddingProvider.model,
+          },
+        });
+      }
     } catch (error) {
       console.error("Chunk embedding sync failed; retrieval continues with full-text search only.", error);
       recordProjectKnowledgeLog({
@@ -571,84 +592,17 @@ export async function retrieveStoredProjectContext(input: {
   if (!ftsQuery) return [];
   await ensureProjectContextSearchIndex({ scope });
 
-  // Rank with Postgres FTS instead of scoring every chunk in application code. The
-  // per-work-item ROW_NUMBER cap keeps one verbose work item from consuming the whole
-  // topK budget: callers dedupe to distinct work items, so by default only each work
-  // item's best chunk competes for a slot.
   const maxChunksPerWorkItem = Math.max(1, Math.trunc(input.maxChunksPerWorkItem ?? 1));
-  const ftsRows = await sqlAll<ContextChunkRow & { rank: number }>(
-    `
-      WITH ranked AS (
-        SELECT chunk_id, azure_work_item_id, work_item_type, title, content, metadata_json,
-               ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) AS rank,
-               ROW_NUMBER() OVER (
-                 PARTITION BY azure_work_item_id
-                 ORDER BY ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) DESC, chunk_id ASC
-               ) AS work_item_rank
-        FROM document_chunks_fts
-        WHERE tsv @@ to_tsquery('simple', @ftsQuery)
-          AND project_id = @projectId
-          AND azure_project_id = @azureProjectId
-      )
-      SELECT chunk_id AS id, azure_work_item_id, work_item_type, title AS document_name,
-             content, metadata_json, rank
-      FROM ranked
-      WHERE work_item_rank <= @maxChunksPerWorkItem
-      ORDER BY rank DESC, azure_work_item_id ASC, chunk_id ASC
-      LIMIT @limit
-    `,
-    {
-      ftsQuery,
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      maxChunksPerWorkItem,
-      limit: topK,
-    },
-  );
-
-  // Hybrid retrieval: when an embedding backend is configured (EMBEDDINGS_PROVIDER),
-  // fuse the lexical list with cosine-ranked semantic hits via reciprocal rank
-  // fusion. Any semantic failure degrades to the full-text list — retrieval must
-  // never hard-fail because an embedding backend is down.
-  const embeddingProvider =
-    input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
-  if (!embeddingProvider) return toRankedContextSources(ftsRows);
-
-  let semanticRows: ContextChunkRow[] = [];
-  try {
-    semanticRows = await searchProjectContextByEmbedding({
-      scope,
-      provider: embeddingProvider,
-      query: input.query,
-      topK,
-      maxChunksPerWorkItem,
-    });
-  } catch (error) {
-    console.error("Semantic retrieval failed; continuing with full-text results only.", error);
-  }
-  if (!semanticRows.length) return toRankedContextSources(ftsRows);
-
-  const fused = fuseByReciprocalRank<ContextChunkRow>({
-    lists: [ftsRows, semanticRows],
-    getKey: (row) => row.id,
+  const fused = await searchProjectChunksHybrid({
+    scope,
+    ftsQuery,
+    rawQuery: input.query,
+    topK,
+    maxChunksPerWorkItem,
+    embeddingProvider: input.embeddingProvider,
   });
-  const countsByWorkItem = new Map<string, number>();
-  const selected: Array<{ row: ContextChunkRow; score: number }> = [];
-  for (const { item, score } of fused) {
-    if (selected.length >= topK) break;
-    const key = item.azure_work_item_id ?? "__missing_work_item_id__";
-    const count = countsByWorkItem.get(key) ?? 0;
-    if (count >= maxChunksPerWorkItem) continue;
-    countsByWorkItem.set(key, count + 1);
-    selected.push({ row: item, score });
-  }
-  const maxFusedScore = selected[0]?.score ?? 0;
-  return selected.map(({ row, score }) => toLlmContextSource(row, normalizeRank(score, maxFusedScore)));
-}
-
-function toRankedContextSources(rows: Array<ContextChunkRow & { rank: number }>) {
-  const maxRank = rows[0]?.rank ?? 0;
-  return rows.map((row) => toLlmContextSource(row, normalizeRank(row.rank, maxRank)));
+  const maxScore = fused[0]?.score ?? 0;
+  return fused.map(({ row, score }) => toLlmContextSource(row, normalizeRank(score, maxScore)));
 }
 
 // LlmContextSource.relevanceScore stays 0..1 (prompt renderers and the LLM context
@@ -747,6 +701,44 @@ function parseMetadata(value: string | null): {
 
 function stableHash(value: string) {
   return getCrypto().createHash("sha256").update(value).digest("hex");
+}
+
+/** Exported for tests only; production callers go through withEmbeddingSyncLock. */
+export function advisoryLockKeyForProject(projectId: string): [number, number] {
+  const digest = getCrypto().createHash("sha256").update(`context_embedding_sync:${projectId}`).digest();
+  return [digest.readInt32BE(0), digest.readInt32BE(4)];
+}
+
+/**
+ * Runs `fn` while holding a session-scoped Postgres advisory lock keyed on the
+ * project, so two overlapping calls for the same project don't both redo the same
+ * work. pg_try_advisory_lock/pg_advisory_unlock are scoped to the physical
+ * connection, not a logical transaction, so both calls must run on the exact same
+ * PoolClient — never let sqlGet/sqlRun fall back to the shared pool here, or the
+ * "unlock" can silently target a different session and never release the lock.
+ * A lock miss returns { acquired: false } without running fn; it never blocks/waits.
+ */
+export async function withEmbeddingSyncLock<T>(
+  projectId: string,
+  fn: () => Promise<T>,
+): Promise<{ acquired: boolean; result?: T }> {
+  const [key1, key2] = advisoryLockKeyForProject(projectId);
+  const client = await getPool().connect();
+  try {
+    const lockRow = await sqlGet<{ locked: boolean }>(
+      "SELECT pg_try_advisory_lock(@key1, @key2) AS locked",
+      { key1, key2 },
+      client,
+    );
+    if (!lockRow?.locked) return { acquired: false };
+    try {
+      return { acquired: true, result: await fn() };
+    } finally {
+      await sqlRun("SELECT pg_advisory_unlock(@key1, @key2)", { key1, key2 }, client);
+    }
+  } finally {
+    client.release();
+  }
 }
 
 function stripHtml(value: string) {

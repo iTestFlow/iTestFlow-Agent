@@ -75,7 +75,9 @@ const NOMIC_TASK_PREFIXES: Record<EmbeddingInputKind, string> = {
 
 // Bounded so one request cannot exceed provider batch limits (Gemini caps batch
 // requests at 100) and a single failure loses at most one batch of work.
-const MAX_EMBED_BATCH_SIZE = 64;
+// Exported so callers that need to persist partial progress (e.g. embedding-store's
+// per-batch insert) can slice work the same way embedInBatches does internally.
+export const MAX_EMBED_BATCH_SIZE = 64;
 // Embedding models have modest context windows; chunks are ~2000 chars, but
 // query-side text (a whole requirement) can be much longer.
 const MAX_EMBED_INPUT_CHARS = 8000;

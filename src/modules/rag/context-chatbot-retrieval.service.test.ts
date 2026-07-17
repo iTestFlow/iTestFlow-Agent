@@ -84,10 +84,11 @@ describe("retrieveContextChatbotEvidence", () => {
     });
   });
 
-  it("falls back instead of throwing when the FTS queries error", async () => {
+  it("falls back instead of throwing when the FTS and trigram queries both error/miss", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     db.sqlAll.mockImplementation(async (sql) => {
       if (sql.includes("to_tsquery")) throw new Error("syntax error in tsquery");
+      if (sql.includes("word_similarity")) return [];
       return [knowledgeRow];
     });
 
@@ -104,12 +105,16 @@ describe("retrieveContextChatbotEvidence", () => {
     }
 
     // The error fallback caps knowledge at 4 even though the requested limit is 10.
-    const fallbackCall = db.sqlAll.mock.calls.find(([sql]) => !sql.includes("to_tsquery"));
+    const fallbackCall = db.sqlAll.mock.calls.find(
+      ([sql]) => !sql.includes("to_tsquery") && !sql.includes("word_similarity"),
+    );
     expect(fallbackCall?.[1]).toMatchObject({ limit: 4 });
   });
 
-  it("falls back to browse-order knowledge when FTS matches nothing", async () => {
-    db.sqlAll.mockImplementation(async (sql) => (sql.includes("to_tsquery") ? [] : [knowledgeRow]));
+  it("falls back to browse-order knowledge when FTS and trigram both match nothing", async () => {
+    db.sqlAll.mockImplementation(async (sql) =>
+      sql.includes("to_tsquery") || sql.includes("word_similarity") ? [] : [knowledgeRow],
+    );
 
     const result = await retrieveContextChatbotEvidence({
       scope: projectScope(),
@@ -119,16 +124,20 @@ describe("retrieveContextChatbotEvidence", () => {
 
     expect(result).toEqual({ context: [], knowledge: [knowledgeEvidence] });
     // Fallback limit is min(4, knowledgeLimit).
-    const fallbackCall = db.sqlAll.mock.calls.find(([sql]) => !sql.includes("to_tsquery"));
+    const fallbackCall = db.sqlAll.mock.calls.find(
+      ([sql]) => !sql.includes("to_tsquery") && !sql.includes("word_similarity"),
+    );
     expect(fallbackCall?.[1]).toMatchObject({ limit: 2 });
   });
 
   it("does not run the fallback when FTS returns matches", async () => {
+    // Field names match the hybrid helper's SQL aliasing (chunk_id AS id, title AS
+    // document_name), not document_chunks_fts's raw column names.
     const chunkRow = {
-      chunk_id: "chunk-1",
+      id: "chunk-1",
       azure_work_item_id: "100",
       work_item_type: "User Story",
-      title: "Login",
+      document_name: "Login",
       content: "Login flow details",
       metadata_json: JSON.stringify({ chunkIndex: 0 }),
     };
@@ -151,7 +160,11 @@ describe("retrieveContextChatbotEvidence", () => {
         metadata: { chunkIndex: 0 },
       },
     ]);
+    // FTS and trigram both query document_chunks_fts / project_knowledge_entries_fts
+    // and, under this mock, both return the same row -- fusion dedupes each side to
+    // one item by id/entry_id. context's FTS+trigram calls (2) + knowledge's
+    // FTS+trigram calls (2) = 4 (search only, no fallback query needed).
     expect(result.knowledge).toEqual([knowledgeEvidence]);
-    expect(db.sqlAll).toHaveBeenCalledTimes(2);
+    expect(db.sqlAll).toHaveBeenCalledTimes(4);
   });
 });

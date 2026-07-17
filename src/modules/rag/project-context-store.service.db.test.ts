@@ -2,15 +2,18 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 
 import {
   flushBackgroundWrites,
+  getPool,
   resetDatabaseForTests,
   sqlAll,
   sqlGet,
   sqlRun,
 } from "@/modules/shared/infrastructure/database/db";
 import {
+  advisoryLockKeyForProject,
   getRecentProjectContext,
   indexAzureWorkItemsAsProjectContext,
   retrieveStoredProjectContext,
+  withEmbeddingSyncLock,
 } from "@/modules/rag/project-context-store.service";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
@@ -388,5 +391,31 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     // the per-work-item cap, 104's chunks would fill the result before 105 appears.
     const sources = await retrieveStoredProjectContext({ scope: scopeA, query: "inventory warehouse", embeddingProvider: null });
     expect(sources.map((source) => source.workItemId)).toEqual(["104", "105"]);
+  });
+
+  it("skips embedding sync work when another sync already holds the project's advisory lock", async () => {
+    const lockTestProjectId = uniqueTestId("lock_project");
+    const [key1, key2] = advisoryLockKeyForProject(lockTestProjectId);
+    const holderClient = await getPool().connect();
+    try {
+      const held = await sqlGet<{ locked: boolean }>(
+        "SELECT pg_try_advisory_lock(@key1, @key2) AS locked",
+        { key1, key2 },
+        holderClient,
+      );
+      expect(held?.locked).toBe(true);
+
+      const fn = vi.fn(async () => "should not run");
+      const outcome = await withEmbeddingSyncLock(lockTestProjectId, fn);
+      expect(outcome).toEqual({ acquired: false });
+      expect(fn).not.toHaveBeenCalled();
+    } finally {
+      await sqlRun("SELECT pg_advisory_unlock(@key1, @key2)", { key1, key2 }, holderClient);
+      holderClient.release();
+    }
+
+    // Once released, the next call proceeds and runs fn normally.
+    const outcome = await withEmbeddingSyncLock(lockTestProjectId, async () => "ran");
+    expect(outcome).toEqual({ acquired: true, result: "ran" });
   });
 });

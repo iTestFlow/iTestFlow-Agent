@@ -6,6 +6,9 @@ import { createId, nowIso, sqlAll, sqlGet, sqlRun } from "@/modules/shared/infra
 import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeBase } from "./project-knowledge.schema";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 import { buildFtsQuery } from "./full-text-search";
+import { searchProjectKnowledgeByTrigram } from "./trigram-search";
+import { fuseByReciprocalRank } from "./hybrid-ranking";
+import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
 
 export type ContextChatbotContextEvidence = {
   sourceType: "project_context";
@@ -37,15 +40,6 @@ export type ContextChatbotKnowledgeEvidence = {
 export type ContextChatbotEvidence = {
   context: ContextChatbotContextEvidence[];
   knowledge: ContextChatbotKnowledgeEvidence[];
-};
-
-type ChunkFtsRow = {
-  chunk_id: string;
-  azure_work_item_id: string;
-  work_item_type: string;
-  title: string;
-  content: string;
-  metadata_json: string | null;
 };
 
 type KnowledgeFtsRow = {
@@ -354,66 +348,46 @@ export async function retrieveContextChatbotEvidence(input: {
     context: await searchContext({
       scope,
       ftsQuery,
+      rawQuery: input.query,
       limit: contextLimit,
       maxChunksPerWorkItem: maxContextChunksPerWorkItem,
     }),
     knowledge: await searchKnowledge({
       scope,
       ftsQuery,
+      rawQuery: input.query,
       limit: knowledgeLimit,
     }),
   };
 }
 
-async function searchContext(input: { scope: ProjectScope; ftsQuery: string; limit: number; maxChunksPerWorkItem?: number }) {
+async function searchContext(input: {
+  scope: ProjectScope;
+  ftsQuery: string;
+  rawQuery: string;
+  limit: number;
+  maxChunksPerWorkItem?: number;
+}) {
   const maxChunksPerWorkItem = positiveIntegerOrDefault(input.maxChunksPerWorkItem, input.limit);
-  try {
-    const rows = await sqlAll<ChunkFtsRow>(
-      `
-        WITH ranked AS (
-          SELECT chunk_id, azure_work_item_id, work_item_type, title, content, metadata_json,
-                 ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) AS rank,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY azure_work_item_id
-                   ORDER BY ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) DESC, chunk_id ASC
-                 ) AS work_item_rank
-          FROM document_chunks_fts
-          WHERE tsv @@ to_tsquery('simple', @ftsQuery)
-            AND project_id = @projectId
-            AND azure_project_id = @azureProjectId
-        )
-        SELECT chunk_id, azure_work_item_id, work_item_type, title, content, metadata_json
-        FROM ranked
-        WHERE work_item_rank <= @maxChunksPerWorkItem
-        ORDER BY rank DESC
-        LIMIT @limit
-      `,
-      {
-        ftsQuery: input.ftsQuery,
-        projectId: input.scope.projectId,
-        azureProjectId: input.scope.azureProjectId,
-        limit: input.limit,
-        maxChunksPerWorkItem,
-      },
-    );
-
-    const evidence = rows.map((row) => ({
-      sourceType: "project_context" as const,
-      sourceId: `WI:${row.azure_work_item_id}`,
-      workItemId: row.azure_work_item_id,
-      workItemType: row.work_item_type,
-      title: row.title,
-      content: row.content,
-      metadata: parseChunkMetadata(row.metadata_json),
-    }));
-    return limitContextEvidenceByWorkItem(evidence, {
-      limit: input.limit,
-      maxChunksPerWorkItem,
-    });
-  } catch (error) {
-    console.error("Project chat context FTS search failed", error);
-    return [];
-  }
+  // searchProjectChunksHybrid never throws (every source is independently caught
+  // inside it) and already enforces the per-work-item cap on its fused output, so
+  // no outer try/catch or second cap pass is needed here.
+  const fused = await searchProjectChunksHybrid({
+    scope: input.scope,
+    ftsQuery: input.ftsQuery,
+    rawQuery: input.rawQuery,
+    topK: input.limit,
+    maxChunksPerWorkItem,
+  });
+  return fused.map(({ row }) => ({
+    sourceType: "project_context" as const,
+    sourceId: `WI:${row.azure_work_item_id ?? ""}`,
+    workItemId: row.azure_work_item_id ?? "",
+    workItemType: row.work_item_type ?? "Unknown",
+    title: row.document_name ?? "Untitled work item",
+    content: row.content,
+    metadata: parseChunkMetadata(row.metadata_json),
+  }));
 }
 
 export function limitContextEvidenceByWorkItem<TItem extends { workItemId: string }>(
@@ -437,9 +411,10 @@ export function limitContextEvidenceByWorkItem<TItem extends { workItemId: strin
   return selected;
 }
 
-async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; limit: number }) {
+async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; rawQuery: string; limit: number }) {
+  let ftsRows: KnowledgeFtsRow[] = [];
   try {
-    const rows = await sqlAll<KnowledgeFtsRow>(
+    ftsRows = await sqlAll<KnowledgeFtsRow>(
       `
         SELECT entry_id, category, entry_key, title, content, source_work_item_ids,
                evidence, ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) AS rank
@@ -457,13 +432,34 @@ async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; l
         limit: input.limit,
       },
     );
-
-    const results = rows.map(toKnowledgeEvidence);
-    return results.length ? results : await getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
   } catch (error) {
     console.error("Project chat knowledge FTS search failed", error);
-    return getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
   }
+
+  let trigramRows: KnowledgeFtsRow[] = [];
+  try {
+    trigramRows = await searchProjectKnowledgeByTrigram({
+      scope: input.scope,
+      query: input.rawQuery,
+      topK: input.limit,
+    });
+  } catch (error) {
+    console.error("Project chat knowledge trigram search failed", error);
+  }
+
+  // No trigram signal: keep FTS's own ts_rank_cd order rather than running a
+  // single-list fusion through RRF, which would flatten its real score spread.
+  if (!trigramRows.length) {
+    const results = ftsRows.map(toKnowledgeEvidence);
+    return results.length ? results : getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
+  }
+
+  const fused = fuseByReciprocalRank({
+    lists: [ftsRows, trigramRows],
+    getKey: (row) => row.entry_id,
+  });
+  if (!fused.length) return getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
+  return fused.slice(0, input.limit).map(({ item }) => toKnowledgeEvidence(item));
 }
 
 async function getFallbackKnowledge(input: { scope: ProjectScope; limit: number }) {
