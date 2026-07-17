@@ -6,7 +6,11 @@ import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { chunkText } from "./rag-pipeline.service";
-import { refreshProjectContextSearchIndex } from "./context-chatbot-retrieval.service";
+import { ensureProjectContextSearchIndex, refreshProjectContextSearchIndex } from "./context-chatbot-retrieval.service";
+import { buildFtsQuery } from "./full-text-search";
+import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
+import { searchProjectContextByEmbedding, syncProjectChunkEmbeddings } from "./embedding-store.service";
+import { fuseByReciprocalRank } from "./hybrid-ranking";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 import { recordProjectKnowledgeLog } from "./project-knowledge-compiled.service";
 
@@ -316,6 +320,30 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
     await refreshProjectContextSearchIndex({ scope }, client);
   });
 
+  // Embedding sync is best-effort and outside the transaction: a missing or failing
+  // embedding backend must never fail or roll back context indexing, it only means
+  // retrieval stays lexical until the next successful sync.
+  const embeddingProvider = createEmbeddingProvider();
+  let embeddingSummary: { embeddedChunkCount: number; removedEmbeddingCount: number } | undefined;
+  if (embeddingProvider) {
+    try {
+      embeddingSummary = await syncProjectChunkEmbeddings({ scope, provider: embeddingProvider });
+    } catch (error) {
+      console.error("Chunk embedding sync failed; retrieval continues with full-text search only.", error);
+      recordProjectKnowledgeLog({
+        scope,
+        eventType: "context.embedding_failed",
+        severity: "warning",
+        title: "Chunk embedding sync failed",
+        message: error instanceof Error ? error.message : "Unknown embedding error.",
+        metadata: {
+          provider: embeddingProvider.name,
+          model: embeddingProvider.model,
+        },
+      });
+    }
+  }
+
   writeAuditLog({
     projectId: scope.projectId,
     azureProjectId: scope.azureProjectId,
@@ -336,6 +364,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
       unchangedCount,
       inactiveCount,
       skippedEmptyCount,
+      embeddingSummary,
       workItemTypes: input.workItemTypes,
       states: input.states,
     },
@@ -374,6 +403,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
     unchangedCount,
     inactiveCount,
     skippedEmptyCount,
+    embeddingSummary,
     workItemTypes: input.workItemTypes,
     states: input.states,
   };
@@ -492,66 +522,141 @@ export async function retrieveStoredProjectContext(input: {
   query: string;
   topK?: number;
   workItemIds?: string[];
+  maxChunksPerWorkItem?: number;
+  /**
+   * Semantic-retrieval override, mainly for tests: undefined resolves the
+   * deployment-configured backend (EMBEDDINGS_PROVIDER env), null disables
+   * semantic retrieval for this call.
+   */
+  embeddingProvider?: EmbeddingProvider | null;
 }): Promise<LlmContextSource[]> {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
   const topK = input.topK ?? 8;
 
-  const rows = input.workItemIds?.length
-    ? await sqlAll<ContextChunkRow>(
-        `
-          SELECT id, azure_work_item_id, work_item_type, document_name, content, metadata_json
-          FROM document_chunks
-          WHERE project_id = @projectId
-            AND azure_project_id = @azureProjectId
-            AND source_type = 'azure_work_item'
-            AND azure_work_item_id IN (${input.workItemIds.map((_, index) => `@id${index}`).join(", ")})
-            AND EXISTS (
-              SELECT 1
-              FROM azure_devops_work_items wi
-              WHERE wi.project_id = document_chunks.project_id
-                AND wi.azure_project_id = document_chunks.azure_project_id
-                AND wi.azure_work_item_id = document_chunks.azure_work_item_id
-                AND COALESCE(wi.sync_status, 'active') = 'active'
-            )
-          ORDER BY azure_work_item_id, chunk_index
-          LIMIT @limit
-        `,
-        {
-          projectId: scope.projectId,
-          azureProjectId: scope.azureProjectId,
-          limit: Math.max(topK, input.workItemIds.length * 3),
-          ...Object.fromEntries(input.workItemIds.map((id, index) => [`id${index}`, id])),
-        },
-      )
-    : await sqlAll<ContextChunkRow>(
-        `
-          SELECT id, azure_work_item_id, work_item_type, document_name, content, metadata_json
-          FROM document_chunks
-          WHERE project_id = @projectId
-            AND azure_project_id = @azureProjectId
-            AND source_type = 'azure_work_item'
-            AND EXISTS (
-              SELECT 1
-              FROM azure_devops_work_items wi
-              WHERE wi.project_id = document_chunks.project_id
-                AND wi.azure_project_id = document_chunks.azure_project_id
-                AND wi.azure_work_item_id = document_chunks.azure_work_item_id
-                AND COALESCE(wi.sync_status, 'active') = 'active'
-            )
-        `,
-        {
-          projectId: scope.projectId,
-          azureProjectId: scope.azureProjectId,
-        },
-      );
+  if (input.workItemIds?.length) {
+    // Explicit selection is a targeted fetch, not a relevance search: the caller
+    // asked for these work items, so every chunk is returned in document order with
+    // full relevance.
+    const rows = await sqlAll<ContextChunkRow>(
+      `
+        SELECT id, azure_work_item_id, work_item_type, document_name, content, metadata_json
+        FROM document_chunks
+        WHERE project_id = @projectId
+          AND azure_project_id = @azureProjectId
+          AND source_type = 'azure_work_item'
+          AND azure_work_item_id IN (${input.workItemIds.map((_, index) => `@id${index}`).join(", ")})
+          AND EXISTS (
+            SELECT 1
+            FROM azure_devops_work_items wi
+            WHERE wi.project_id = document_chunks.project_id
+              AND wi.azure_project_id = document_chunks.azure_project_id
+              AND wi.azure_work_item_id = document_chunks.azure_work_item_id
+              AND COALESCE(wi.sync_status, 'active') = 'active'
+          )
+        ORDER BY azure_work_item_id, chunk_index
+        LIMIT @limit
+      `,
+      {
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        limit: Math.max(topK, input.workItemIds.length * 3),
+        ...Object.fromEntries(input.workItemIds.map((id, index) => [`id${index}`, id])),
+      },
+    );
+    return rows.map((row) => toLlmContextSource(row, 1));
+  }
 
-  const terms = tokenize(input.query);
-  return rows
-    .map((row) => toLlmContextSource(row, scoreContent(row.content, terms)))
-    .filter((source) => input.workItemIds?.length || source.relevanceScore > 0)
-    .sort((a, b) => b.relevanceScore - a.relevanceScore)
-    .slice(0, topK);
+  const ftsQuery = buildFtsQuery(input.query);
+  if (!ftsQuery) return [];
+  await ensureProjectContextSearchIndex({ scope });
+
+  // Rank with Postgres FTS instead of scoring every chunk in application code. The
+  // per-work-item ROW_NUMBER cap keeps one verbose work item from consuming the whole
+  // topK budget: callers dedupe to distinct work items, so by default only each work
+  // item's best chunk competes for a slot.
+  const maxChunksPerWorkItem = Math.max(1, Math.trunc(input.maxChunksPerWorkItem ?? 1));
+  const ftsRows = await sqlAll<ContextChunkRow & { rank: number }>(
+    `
+      WITH ranked AS (
+        SELECT chunk_id, azure_work_item_id, work_item_type, title, content, metadata_json,
+               ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) AS rank,
+               ROW_NUMBER() OVER (
+                 PARTITION BY azure_work_item_id
+                 ORDER BY ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) DESC, chunk_id ASC
+               ) AS work_item_rank
+        FROM document_chunks_fts
+        WHERE tsv @@ to_tsquery('simple', @ftsQuery)
+          AND project_id = @projectId
+          AND azure_project_id = @azureProjectId
+      )
+      SELECT chunk_id AS id, azure_work_item_id, work_item_type, title AS document_name,
+             content, metadata_json, rank
+      FROM ranked
+      WHERE work_item_rank <= @maxChunksPerWorkItem
+      ORDER BY rank DESC, azure_work_item_id ASC, chunk_id ASC
+      LIMIT @limit
+    `,
+    {
+      ftsQuery,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      maxChunksPerWorkItem,
+      limit: topK,
+    },
+  );
+
+  // Hybrid retrieval: when an embedding backend is configured (EMBEDDINGS_PROVIDER),
+  // fuse the lexical list with cosine-ranked semantic hits via reciprocal rank
+  // fusion. Any semantic failure degrades to the full-text list — retrieval must
+  // never hard-fail because an embedding backend is down.
+  const embeddingProvider =
+    input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
+  if (!embeddingProvider) return toRankedContextSources(ftsRows);
+
+  let semanticRows: ContextChunkRow[] = [];
+  try {
+    semanticRows = await searchProjectContextByEmbedding({
+      scope,
+      provider: embeddingProvider,
+      query: input.query,
+      topK,
+      maxChunksPerWorkItem,
+    });
+  } catch (error) {
+    console.error("Semantic retrieval failed; continuing with full-text results only.", error);
+  }
+  if (!semanticRows.length) return toRankedContextSources(ftsRows);
+
+  const fused = fuseByReciprocalRank<ContextChunkRow>({
+    lists: [ftsRows, semanticRows],
+    getKey: (row) => row.id,
+  });
+  const countsByWorkItem = new Map<string, number>();
+  const selected: Array<{ row: ContextChunkRow; score: number }> = [];
+  for (const { item, score } of fused) {
+    if (selected.length >= topK) break;
+    const key = item.azure_work_item_id ?? "__missing_work_item_id__";
+    const count = countsByWorkItem.get(key) ?? 0;
+    if (count >= maxChunksPerWorkItem) continue;
+    countsByWorkItem.set(key, count + 1);
+    selected.push({ row: item, score });
+  }
+  const maxFusedScore = selected[0]?.score ?? 0;
+  return selected.map(({ row, score }) => toLlmContextSource(row, normalizeRank(score, maxFusedScore)));
+}
+
+function toRankedContextSources(rows: Array<ContextChunkRow & { rank: number }>) {
+  const maxRank = rows[0]?.rank ?? 0;
+  return rows.map((row) => toLlmContextSource(row, normalizeRank(row.rank, maxRank)));
+}
+
+// LlmContextSource.relevanceScore stays 0..1 (prompt renderers and the LLM context
+// selection contract present it that way), so raw ranking values (ts_rank_cd or RRF
+// scores) are normalized against the best match in the result set.
+function normalizeRank(rank: number, maxRank: number) {
+  if (!(maxRank > 0)) return 1;
+  return Math.max(0.01, Math.round((rank / maxRank) * 100) / 100);
 }
 
 export function workItemToContextText(item: Requirement) {
@@ -638,17 +743,6 @@ function parseMetadata(value: string | null): {
   } catch {
     return {};
   }
-}
-
-function tokenize(value: string) {
-  return value.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 2);
-}
-
-function scoreContent(content: string, terms: string[]) {
-  if (!terms.length) return 0;
-  const haystack = content.toLowerCase();
-  const hits = terms.reduce((count, term) => count + (haystack.includes(term) ? 1 : 0), 0);
-  return Math.round((hits / terms.length) * 100) / 100;
 }
 
 function stableHash(value: string) {

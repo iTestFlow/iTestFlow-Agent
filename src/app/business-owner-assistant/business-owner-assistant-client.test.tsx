@@ -49,7 +49,13 @@ const defaultCitations = [{
   workItemType: "User Story",
 }];
 
-function installFetch(options?: { statusFailure?: boolean; answer?: string; citations?: typeof defaultCitations }) {
+function installFetch(options?: {
+  statusFailure?: boolean;
+  answer?: string;
+  citations?: typeof defaultCitations;
+  retrievedContextCount?: number;
+  retrievedKnowledgeCount?: number;
+}) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     void _init;
     const url = String(input);
@@ -81,8 +87,8 @@ function installFetch(options?: { statusFailure?: boolean; answer?: string; cita
       return jsonResponse({
         answer: options?.answer ?? "The approval rule is grounded in [WI:123]. Unknown text [UNKNOWN] stays plain.",
         citations,
-        retrievedContextCount: citations.length,
-        retrievedKnowledgeCount: 0,
+        retrievedContextCount: options?.retrievedContextCount ?? citations.length,
+        retrievedKnowledgeCount: options?.retrievedKnowledgeCount ?? 0,
         provider: "test-provider",
         model: "test-model",
       });
@@ -135,6 +141,37 @@ describe("BusinessOwnerAssistantClient", () => {
     expect(screen.getByRole("button", { name: "Sources (1)" })).toBeInTheDocument();
     expect(screen.getByText("Based on 1 project source")).toBeInTheDocument();
     expect(screen.getByText("test-provider / test-model").closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("reports the retrieved evidence count, not the larger citation list, as 'Based on N project sources'", async () => {
+    // Regression: the citations list can be larger than what was actually
+    // retrieved, because it also fans out work items cited only via a knowledge
+    // entry's provenance (see buildCitations in context-chatbot.service.ts) so
+    // those mentions are clickable. The "Sources (N)" button legitimately shows
+    // that larger, browsable count; "Based on N project sources" must instead
+    // match the Indexed context + Saved knowledge breakdown shown right below it.
+    const manyCitations = Array.from({ length: 3 }, (_, index) => ({
+      sourceType: "project_context" as const,
+      sourceId: `WI:${index}`,
+      title: `Work item ${index}`,
+      workItemId: String(index),
+      workItemType: "User Story",
+    }));
+    installFetch({
+      answer: "Grounded in indexed and saved sources.",
+      citations: manyCitations,
+      retrievedContextCount: 1,
+      retrievedKnowledgeCount: 1,
+    });
+    const user = userEvent.setup();
+    render(<BusinessOwnerAssistantClient workspaceRole="owner" />);
+
+    await user.click(await screen.findByRole("button", { name: /Project overview/i }));
+    await screen.findByText(/Grounded in indexed and saved sources/i);
+
+    expect(screen.getByRole("button", { name: "Sources (3)" })).toBeInTheDocument();
+    expect(screen.getByText("Based on 2 project sources")).toBeInTheDocument();
+    expect(screen.queryByText("Based on 3 project sources")).not.toBeInTheDocument();
   });
 
   it("opens inline source details and builds an encoded Azure DevOps link", async () => {

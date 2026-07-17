@@ -715,7 +715,7 @@ function ChatBubble({
             ) : null}
           </div>
         ) : null}
-        {!isUser && message.metadata ? <ResponseDetails metadata={message.metadata} sourceCount={citations.length} /> : null}
+        {!isUser && message.metadata ? <ResponseDetails metadata={message.metadata} /> : null}
       </div>
       {isUser ? (
         <div className="mt-1 flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
@@ -978,11 +978,15 @@ function tableCellAlignment(alignment: "left" | "center" | "right" | undefined) 
 
 function ResponseDetails({
   metadata,
-  sourceCount,
 }: {
   metadata: NonNullable<ChatMessage["metadata"]>;
-  sourceCount: number;
 }) {
+  // Deliberately not citations.length: the citations list also includes work items
+  // fanned out from a knowledge entry's provenance (see buildCitations in
+  // context-chatbot.service.ts) so inline mentions of those IDs can be linked, which
+  // makes it larger than what was actually retrieved for this turn. This header
+  // reports the real retrieval counts, so it always matches the breakdown below it.
+  const sourceCount = metadata.retrievedContextCount + metadata.retrievedKnowledgeCount;
   return (
     <details className="group w-full text-xs text-muted-foreground">
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-lg px-2 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">

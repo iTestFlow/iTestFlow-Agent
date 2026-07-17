@@ -184,6 +184,8 @@ Knowledge Hub and RAG:
 - `/api/context/index`, `/api/context/status`, and `/api/context/suggestions` manage project context indexing and retrieval.
 - `/api/context/knowledge/*` manages extraction, preview, save, lint, log, promotion, manual drafting/finalization/validation/consolidation, status, and export.
 - RAG storage, compiled knowledge, retrieval, linting, and citations live under `src/modules/rag`.
+- Retrieval is PostgreSQL full-text search (shared query builder with QA-domain synonym expansion in `src/modules/rag/full-text-search.ts`) for both workflow context and the Business Owner Assistant.
+- Semantic retrieval is optional and deployment-configured via `EMBEDDINGS_PROVIDER` (off by default). The `local` backend runs nomic-embed-text in-process via transformers.js/ONNX with zero user setup (quantized weights auto-download to `data/model-cache`); Ollama, OpenAI-compatible servers, and Gemini are alternatives. Context indexing embeds chunks into the `embeddings` table and workflow retrieval fuses semantic and full-text results by reciprocal rank fusion; embedding failures degrade to full-text-only retrieval.
 - The compiled knowledge design is documented in `docs/knowledge-wiki-rag-enhancement.md`.
 
 Business Owner Assistant:

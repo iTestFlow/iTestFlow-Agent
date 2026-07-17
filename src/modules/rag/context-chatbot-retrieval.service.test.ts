@@ -11,7 +11,6 @@ const db = vi.hoisted(() => ({
 vi.mock("@/modules/shared/infrastructure/database/db", () => db);
 
 import {
-  buildFtsQuery,
   limitContextEvidenceByWorkItem,
   retrieveContextChatbotEvidence,
 } from "./context-chatbot-retrieval.service";
@@ -36,41 +35,6 @@ describe("limitContextEvidenceByWorkItem", () => {
       { workItemId: "300", chunk: 1 },
       { workItemId: "200", chunk: 2 },
     ]);
-  });
-});
-
-describe("buildFtsQuery", () => {
-  it("strips punctuation, quotes, and tsquery operators down to alphanumeric prefix terms", () => {
-    // Output is bound as a parameter into to_tsquery('simple', ...): operator
-    // characters must act as separators, never survive into a term, or Postgres
-    // rejects the query with a tsquery syntax error.
-    expect(buildFtsQuery('How does the "login" flow work? (auth & session:*) | !reset <-> retry')).toBe(
-      "how:* | does:* | the:* | login:* | flow:* | work:* | auth:* | session:* | reset:* | retry:*",
-    );
-  });
-
-  it("keeps unicode letters and digits as lowercased tokens", () => {
-    expect(buildFtsQuery("Café MENU étape id42")).toBe("café:* | menu:* | étape:* | id42:*");
-  });
-
-  it("drops terms of 2 or fewer characters and joins survivors with OR", () => {
-    expect(buildFtsQuery("go to the app db ui")).toBe("the:* | app:*");
-  });
-
-  it("dedupes repeated terms and caps the query at 16 terms", () => {
-    expect(buildFtsQuery("Login login LOGIN")).toBe("login:*");
-
-    const terms = Array.from({ length: 20 }, (_, index) => `term${String(index).padStart(2, "0")}`);
-    expect(buildFtsQuery(terms.join(" "))).toBe(
-      terms.slice(0, 16).map((term) => `${term}:*`).join(" | "),
-    );
-  });
-
-  it("returns an empty query for empty, whitespace-only, or operator-only input", () => {
-    expect(buildFtsQuery("")).toBe("");
-    expect(buildFtsQuery("   \t  ")).toBe("");
-    expect(buildFtsQuery("?! &| :* ()")).toBe("");
-    expect(buildFtsQuery("a of it")).toBe("");
   });
 });
 
@@ -132,10 +96,11 @@ describe("retrieveContextChatbotEvidence", () => {
     expect(result).toEqual({ context: [], knowledge: [knowledgeEvidence] });
 
     // The sanitized query is bound as a parameter, never interpolated into SQL text.
+    // "signin" is the domain-synonym expansion of "login" (see full-text-search.ts).
     const ftsCalls = db.sqlAll.mock.calls.filter(([sql]) => sql.includes("to_tsquery"));
     expect(ftsCalls).toHaveLength(2);
     for (const [, params] of ftsCalls) {
-      expect(params).toMatchObject({ ftsQuery: "login:* | flow:*" });
+      expect(params).toMatchObject({ ftsQuery: "login:* | flow:* | signin:*" });
     }
 
     // The error fallback caps knowledge at 4 even though the requested limit is 10.

@@ -40,6 +40,33 @@ The deterministic lint pass checks for:
 
 Future LLM lint can add contradiction detection, missing glossary links, and broader consistency checks.
 
+## Retrieval
+
+Baseline retrieval is PostgreSQL full-text search: workflow context retrieval and
+the Business Owner Assistant both query the `document_chunks_fts` /
+`project_knowledge_entries_fts` tables through the shared query builder in
+`src/modules/rag/full-text-search.ts` (prefix-matched terms plus a small QA-domain
+synonym expansion).
+
+Semantic retrieval is optional and deployment-configured (`EMBEDDINGS_PROVIDER` in
+`.env`, off by default). When enabled, context indexing embeds chunks through
+`src/modules/rag/embedding-provider.ts` into the `embeddings` table, and workflow
+retrieval fuses cosine-ranked semantic hits with the full-text list via reciprocal
+rank fusion (`src/modules/rag/hybrid-ranking.ts`). The recommended backend is
+`local`: nomic-embed-text runs in-process via transformers.js/ONNX
+(`src/modules/rag/local-embedding.ts`), auto-downloading quantized weights (~70MB)
+into `data/model-cache` on first use — zero user setup. Server/cloud alternatives:
+local Ollama, any OpenAI-compatible server, or Gemini. Nomic models get retrieval
+task prefixes and Gemini gets retrieval task types (document vs. query) applied
+automatically. Every embedding failure degrades to full-text-only retrieval;
+semantic search augments lexical search, it never replaces it. The Business Owner
+Assistant currently remains full-text-only.
+
+The `VectorStore` interface (`src/modules/rag/rag-types.ts`) and its in-memory
+`LocalKeywordVectorStore` are a currently-unused port kept for a future pluggable
+vector backend (e.g. pgvector at larger scale); production semantic search goes
+through `src/modules/rag/embedding-store.service.ts` directly.
+
 ## Impacted Areas
 
 - Project Context / RAG: incremental sync replaces full delete-and-rebuild as the default.

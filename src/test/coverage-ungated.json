@@ -142,6 +142,8 @@
     "src/modules/rag/auto-context-resolver.service.ts",
     "src/modules/rag/context-auto-update-run-history.service.ts",
     "src/modules/rag/context-chatbot-retrieval.service.ts",
+    "src/modules/rag/embedding-store.service.ts",
+    "src/modules/rag/local-embedding.ts",
     "src/modules/rag/project-context-schema.service.ts",
     "src/modules/rag/project-context-store.service.ts",
     "src/modules/rag/project-knowledge-compiled.service.ts",

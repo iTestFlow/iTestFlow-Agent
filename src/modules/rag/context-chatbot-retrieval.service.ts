@@ -5,6 +5,7 @@ import { assertProjectScope, type ProjectScope } from "@/modules/projects/projec
 import { createId, nowIso, sqlAll, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeBase } from "./project-knowledge.schema";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
+import { buildFtsQuery } from "./full-text-search";
 
 export type ContextChatbotContextEvidence = {
   sourceType: "project_context";
@@ -247,7 +248,12 @@ export async function refreshProjectKnowledgeSearchIndex(
   }
 }
 
-export async function ensureContextChatbotSearchIndexes(input: { scope: ProjectScope }) {
+/**
+ * Self-heals the chunk FTS table when it drifts from the active chunk set (e.g. a
+ * database restored from before the FTS table was populated). Cheap when consistent:
+ * two COUNT queries against indexed columns.
+ */
+export async function ensureProjectContextSearchIndex(input: { scope: ProjectScope }) {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
   const chunkCount = await countRows(
@@ -277,6 +283,11 @@ export async function ensureContextChatbotSearchIndexes(input: { scope: ProjectS
   if (chunkCount > 0 && chunkCount !== chunkFtsCount) {
     await refreshProjectContextSearchIndex({ scope });
   }
+}
+
+export async function ensureContextChatbotSearchIndexes(input: { scope: ProjectScope }) {
+  const scope = assertProjectScope(input.scope);
+  await ensureProjectContextSearchIndex({ scope });
 
   const knowledgeSnapshot = await sqlGet<KnowledgeSnapshotRow>(
     `
@@ -598,24 +609,4 @@ async function countRows(sql: string, scope: ProjectScope) {
     azureProjectId: scope.azureProjectId,
   });
   return row?.count ?? 0;
-}
-
-// Builds a PostgreSQL to_tsquery string from free text: lowercased alphanumeric
-// terms (>2 chars, max 16) become prefix matches joined with OR, e.g.
-// "login flow" -> "login:* | flow:*". Terms are alphanumeric-only by
-// construction, so they are safe to interpolate into to_tsquery('simple', ...).
-// Exported for unit tests only; production callers go through
-// retrieveContextChatbotEvidence.
-export function buildFtsQuery(value: string) {
-  const terms = Array.from(
-    new Set(
-      value
-        .toLowerCase()
-        .split(/[^\p{L}\p{N}]+/u)
-        .map((term) => term.trim())
-        .filter((term) => term.length > 2),
-    ),
-  ).slice(0, 16);
-
-  return terms.map((term) => `${term}:*`).join(" | ");
 }
