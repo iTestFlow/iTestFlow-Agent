@@ -1518,6 +1518,9 @@ export function KnowledgeOpsPanel({
               ) : null}
             </div>
           ))}
+          {lint.issues.length > 5 ? (
+            <p className="text-xs text-muted-foreground">Showing 5 of {lint.issues.length} issues.</p>
+          ) : null}
         </div>
       ) : lint ? (
         <div className="rounded-md border border-success/30 bg-success/10 p-3 text-sm text-success">
