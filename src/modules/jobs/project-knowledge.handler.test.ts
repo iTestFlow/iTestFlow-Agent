@@ -74,7 +74,7 @@ describe("Project Knowledge v4 worker handler", () => {
     mocks.getWorkspaceSettings.mockResolvedValue({ maxOutputTokenCap: 8000, llmRetryAttempts: 2 });
     mocks.createLLMProvider.mockReturnValue(fakeLlmProvider());
     mocks.loadCompletedJobBatch.mockResolvedValue(null);
-    mocks.completeJobBatch.mockResolvedValue(undefined);
+    mocks.completeJobBatch.mockResolvedValue(true);
   });
 
   it("requires the initiating user and a project inside the workspace", async () => {
@@ -114,8 +114,8 @@ describe("Project Knowledge v4 worker handler", () => {
       preserveDraftOnError: true,
       signal: ctx.signal,
     }));
-    expect(mocks.loadCompletedJobBatch).toHaveBeenCalledWith("job-1", "extraction:1");
-    expect(mocks.completeJobBatch).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-1", batchKey: "extraction:1" }));
+    expect(mocks.loadCompletedJobBatch).toHaveBeenCalledWith("job-1", "extraction:1", "worker-1");
+    expect(mocks.completeJobBatch).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-1", batchKey: "extraction:1", workerId: "worker-1" }));
     expect(ctx.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: "compiling_batches", percent: 49 }));
     expect(result).toMatchObject({ outcome: "conflicts_required", conflictCount: 1, omittedEntryCount: 3 });
   });
@@ -127,6 +127,16 @@ describe("Project Knowledge v4 worker handler", () => {
     });
     await expect(runProjectKnowledgeJob(job({ projectId: "project-1", operation: "build" }), context()))
       .resolves.toMatchObject({ outcome: "no_changes" });
+  });
+
+  it("aborts the build when a batch-cache save is fenced out by lost job ownership", async () => {
+    mocks.completeJobBatch.mockResolvedValue(false);
+    mocks.preview.mockImplementation(async (input: { batchCache: { save: (index: number, value: Record<string, unknown>) => Promise<void> } }) => {
+      await input.batchCache.save(1, { validatedOutput: {} });
+      throw new Error("unreachable: the fenced save must throw first");
+    });
+    await expect(runProjectKnowledgeJob(job({ projectId: "project-1", operation: "build" }), context()))
+      .rejects.toThrow("The worker no longer owns this job.");
   });
 
   it("rejects retired non-build operations at payload validation", async () => {

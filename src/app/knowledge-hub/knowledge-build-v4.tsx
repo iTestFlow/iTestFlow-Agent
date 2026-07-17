@@ -1192,7 +1192,7 @@ function aiStatusForBuildJob(job: JobView): AiGenerationStatus {
 
 function buildJobProgressDescription(job: JobView) {
   if (job.cancellation.requested) return "Stopping the build."
-  if (job.phase === "queued") return "Waiting for generation capacity."
+  if (job.phase === "queued") return "Starting the project knowledge build."
 
   const label = jobPhaseLabel(job)
   const batch = job.progress.total

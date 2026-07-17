@@ -45,12 +45,16 @@ export const runProjectKnowledgeJob: JobHandler = async (job, context) => {
     existingDraftId: typeof job.progress?.draftId === "string" ? job.progress.draftId : undefined,
     preserveDraftOnError: job.attempts < job.maxAttempts,
     batchCache: {
-      load: (batchIndex) => loadCompletedJobBatch(job.id, `extraction:${batchIndex}`),
-      save: (batchIndex, result) => completeJobBatch({
-        jobId: job.id,
-        batchKey: `extraction:${batchIndex}`,
-        result,
-      }),
+      load: (batchIndex) => loadCompletedJobBatch(job.id, `extraction:${batchIndex}`, context.workerId),
+      save: async (batchIndex, result) => {
+        const saved = await completeJobBatch({
+          jobId: job.id,
+          batchKey: `extraction:${batchIndex}`,
+          result,
+          workerId: context.workerId,
+        });
+        if (!saved) throw new Error("The worker no longer owns this job.");
+      },
     },
     onProgress: async (progress) => {
       const percent = progress.phase === "loading_frozen_sources"

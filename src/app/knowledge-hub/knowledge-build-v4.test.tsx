@@ -262,7 +262,7 @@ describe("Project Knowledge v4 conflict review", () => {
     fireEvent.click(screen.getByRole("button", { name: "Build knowledge" }));
 
     await waitFor(() => expect(screen.getByText("Building project knowledge")).toBeTruthy());
-    expect(screen.getByText("Waiting for generation capacity.")).toBeTruthy();
+    expect(screen.getByText("Starting the project knowledge build.")).toBeTruthy();
     expect(screen.queryByText("Queued. 0% complete.")).toBeNull();
     expect(screen.getByRole("button", { name: "Play while waiting?" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Stop generation" })).toBeTruthy();

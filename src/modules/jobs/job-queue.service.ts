@@ -207,13 +207,18 @@ export async function enqueueJob(input: {
 export async function claimNextJob(
   workerId: string,
   supportedJobTypes?: readonly string[],
+  options?: { reapStale?: boolean },
 ): Promise<Job | null> {
   const normalizedJobTypes = normalizeSupportedJobTypes(supportedJobTypes);
   if (normalizedJobTypes?.length === 0) return null;
 
   return withTransaction(async (client) => {
     const now = nowIso();
-    await reapStaleJobsWithClient(client, now, normalizedJobTypes);
+    // reapStale=false lets a caller draining many claims in one tick reap once
+    // up front instead of once per claim.
+    if (options?.reapStale !== false) {
+      await reapStaleJobsWithClient(client, now, normalizedJobTypes);
+    }
     const jobTypeClause = normalizedJobTypes
       ? " AND job_type = ANY(@supportedJobTypes)"
       : "";
@@ -253,6 +258,23 @@ export async function heartbeatJob(id: string, workerId: string): Promise<boolea
     { id, workerId, now },
   );
   return changed > 0;
+}
+
+/**
+ * Batched heartbeat for every job a worker is running. Returns the ids that
+ * were actually refreshed, so the caller can detect jobs whose lock it lost.
+ */
+export async function heartbeatJobs(ids: readonly string[], workerId: string): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const now = nowIso();
+  const rows = await sqlAll<{ id: string }>(
+    `UPDATE jobs
+     SET locked_at = @now, updated_at = @now
+     WHERE id = ANY(@ids) AND locked_by = @workerId AND status = 'running'
+     RETURNING id`,
+    { ids: [...ids], workerId, now },
+  );
+  return rows.map((row) => row.id);
 }
 
 export async function completeJob(
@@ -425,6 +447,25 @@ export async function isJobCancellationRequested(id: string, workerId: string) {
   return Boolean(row?.cancel_requested_at);
 }
 
+/**
+ * Batched cancellation read for every job a worker is running. Returns the
+ * subset of ids that are still owned by the worker and have a pending
+ * cancellation request.
+ */
+export async function getRequestedJobCancellations(
+  ids: readonly string[],
+  workerId: string,
+): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const rows = await sqlAll<{ id: string }>(
+    `SELECT id FROM jobs
+     WHERE id = ANY(@ids) AND locked_by = @workerId AND status = 'running'
+       AND cancel_requested_at IS NOT NULL`,
+    { ids: [...ids], workerId },
+  );
+  return rows.map((row) => row.id);
+}
+
 export async function cancelRunningJob(id: string, workerId: string) {
   const now = nowIso();
   return (await sqlRun(
@@ -435,11 +476,42 @@ export async function cancelRunningJob(id: string, workerId: string) {
   )) > 0;
 }
 
-export async function loadCompletedJobBatch(jobId: string, batchKey: string) {
+/**
+ * Graceful-shutdown requeue: returns the worker's own running jobs to 'pending'
+ * WITHOUT consuming a retry (claim incremented attempts; this refunds it).
+ * run_after is immediate so a surviving worker picks the job up right away.
+ * error_message is left untouched (shutdown is not an error path) and
+ * progress_json is preserved, so the resumed run reuses its draft and cached
+ * batches. `running -> pending` keeps the uq_jobs_active_dedupe slot.
+ */
+export async function requeueOwnedJobs(ids: readonly string[], workerId: string): Promise<number> {
+  if (ids.length === 0) return 0;
+  const now = nowIso();
+  return sqlRun(
+    `UPDATE jobs
+     SET status = 'pending',
+         locked_by = NULL, locked_at = NULL,
+         attempts = GREATEST(attempts - 1, 0),
+         run_after = @now,
+         updated_at = @now
+     WHERE id = ANY(@ids) AND locked_by = @workerId AND status = 'running'`,
+    { ids: [...ids], workerId, now },
+  );
+}
+
+/**
+ * Batch-cache reads/writes are fenced by current job ownership so a stale
+ * worker cannot serve or overwrite cached batches of a job that was reclaimed
+ * (or requeued) since. A fence-failed load is just a cache miss.
+ */
+export async function loadCompletedJobBatch(jobId: string, batchKey: string, workerId: string) {
   const row = await sqlGet<{ result_json: unknown }>(
-    `SELECT result_json FROM project_knowledge_job_batches
-     WHERE job_id = @jobId AND batch_key = @batchKey AND status = 'completed'`,
-    { jobId, batchKey },
+    `SELECT b.result_json
+     FROM project_knowledge_job_batches b
+     JOIN jobs j ON j.id = b.job_id
+     WHERE b.job_id = @jobId AND b.batch_key = @batchKey AND b.status = 'completed'
+       AND j.locked_by = @workerId AND j.status = 'running'`,
+    { jobId, batchKey, workerId },
   );
   return row ? parseRecord(row.result_json) : null;
 }
@@ -448,12 +520,18 @@ export async function completeJobBatch(input: {
   jobId: string;
   batchKey: string;
   result: Record<string, unknown>;
-}) {
+  workerId: string;
+}): Promise<boolean> {
   const now = nowIso();
-  await sqlRun(
+  // INSERT ... SELECT makes the ownership fence and the upsert one atomic
+  // statement: a worker that no longer owns the job inserts zero rows.
+  const changed = await sqlRun(
     `INSERT INTO project_knowledge_job_batches (
        id, job_id, batch_key, status, result_json, created_at, updated_at
-     ) VALUES (@id, @jobId, @batchKey, 'completed', @resultJson::jsonb, @now, @now)
+     )
+     SELECT @id, @jobId, @batchKey, 'completed', @resultJson::jsonb, @now, @now
+     FROM jobs
+     WHERE id = @jobId AND locked_by = @workerId AND status = 'running'
      ON CONFLICT (job_id, batch_key) DO UPDATE SET
        status = 'completed', result_json = EXCLUDED.result_json, updated_at = EXCLUDED.updated_at`,
     {
@@ -461,9 +539,11 @@ export async function completeJobBatch(input: {
       jobId: input.jobId,
       batchKey: input.batchKey,
       resultJson: JSON.stringify(input.result),
+      workerId: input.workerId,
       now,
     },
   );
+  return changed > 0;
 }
 
 function parseRecord(value: unknown): Record<string, unknown> {

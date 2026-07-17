@@ -53,7 +53,11 @@ function parseRetryAfterMs(value: string | null) {
 }
 
 function exponentialDelayMs(retryIndex: number) {
-  return Math.min(BASE_RETRY_DELAY_MS * (2 ** retryIndex), MAX_RETRY_DELAY_MS);
+  const base = Math.min(BASE_RETRY_DELAY_MS * (2 ** retryIndex), MAX_RETRY_DELAY_MS);
+  // Equal jitter: keep half the deterministic backoff as a floor and randomize
+  // the rest, so concurrent builds throttled by the same provider decorrelate
+  // their retries instead of hammering it again in lockstep.
+  return base / 2 + Math.random() * (base / 2);
 }
 
 function delay(durationMs: number, signal?: AbortSignal | null) {

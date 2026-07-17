@@ -320,6 +320,41 @@ describe("provider HTTP adapters", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("keeps half the exponential backoff as the jitter floor", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("busy", { status: 503 }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    // Equal jitter over the 750ms base: floor at 375ms, never zero-delay.
+    vi.spyOn(Math, "random").mockReturnValue(0);
+
+    const pending = fetchWithTransientRetry("https://example.test", {}, 1);
+    await vi.advanceTimersByTimeAsync(374);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toMatchObject({ status: 200 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("caps the jittered backoff at the deterministic exponential delay", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("busy", { status: 503 }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    // Mocked upper bound of the jitter window: 375 + 1 * 375 = the deterministic
+    // 750ms base. Real Math.random() stays strictly below it.
+    vi.spyOn(Math, "random").mockReturnValue(1);
+
+    const pending = fetchWithTransientRetry("https://example.test", {}, 1);
+    await vi.advanceTimersByTimeAsync(749);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toMatchObject({ status: 200 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("honors a numeric Retry-After header before retrying a 503", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn<typeof fetch>()

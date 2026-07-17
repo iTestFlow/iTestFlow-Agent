@@ -285,7 +285,10 @@ The worker entrypoint is `src/worker/main.ts`.
 - Scheduled workspace sync is implemented in `src/modules/jobs/sync-schedule.service.ts` and `workspace-sync.handler.ts`.
 - Background processes register capabilities in `worker_instances` and heartbeat with PostgreSQL time. Automatic Knowledge Hub builds are rejected before enqueue when no healthy `project_knowledge_v4` capability is available.
 - Only automatic AI knowledge compilation uses the Knowledge Hub queue. Project indexing, external-LLM finalization, conflict decisions, and publication execute as normal server requests.
-- Background processes claim jobs with row locks, heartbeat active jobs, and mark stale locks retryable according to environment settings.
+- The worker runs two execution lanes: a Knowledge Hub dispatcher that claims every ready `project_knowledge_v4` job and runs those builds concurrently (no process-wide cap; one active build per project is enforced by the queue dedupe key), and a serial lane that processes workspace sync and all other job types one at a time.
+- Active jobs are tracked in a process-level registry with one batched heartbeat (`WORKER_HEARTBEAT_MS`) and one cancellation poll covering all running jobs; a cancellation request aborts only the requested job.
+- Background processes claim jobs with row locks and mark stale locks retryable according to environment settings. Progress, completion, failure, and knowledge batch-cache reads/writes are additionally fenced by job id and current worker ownership, so a stale worker cannot modify a job that was reclaimed or requeued.
+- Graceful shutdown stops claiming, unregisters worker capacity, allows three seconds for active jobs to finish, then aborts and atomically requeues unfinished owned jobs without consuming a retry.
 
 Multiple worker processes may run against the same database. A job should be written to tolerate retries because failed or stale jobs can be requeued.
 

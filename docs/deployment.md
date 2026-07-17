@@ -41,14 +41,14 @@ iTestFlow supports two bootstrap modes:
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | yes | PostgreSQL connection string |
-| `DATABASE_POOL_MAX` | optional | Max PostgreSQL connections per process, default `10` |
+| `DATABASE_POOL_MAX` | optional | Max PostgreSQL connections per process, default `10`. Consider raising it on background processes expected to run many simultaneous knowledge builds |
 | `APP_ENCRYPTION_KEY` | yes | Base64-encoded 32-byte key used to encrypt stored PATs and LLM keys |
 | `SESSION_SECRET` | optional | Reserved for cookie HMAC hardening; stateful sessions do not require it today |
 | `CREDENTIAL_STALE_DAYS` | optional | Age threshold for credential freshness warnings, default from app code |
 | `WORKER_SCHEDULER` | optional | Set `false` to disable worker cron scheduling, default enabled |
 | `WORKER_SCHEDULER_TICK_MS` | optional | How often due schedules are evaluated, default `60000` |
 | `WORKER_POLL_MS` | optional | Worker idle poll interval, default `2000` |
-| `WORKER_HEARTBEAT_MS` | optional | Active-job heartbeat interval, default `30000` |
+| `WORKER_HEARTBEAT_MS` | optional | Active-job heartbeat interval, default `30000`; one batched heartbeat covers all of a worker's active jobs |
 | `JOB_STALE_LOCK_MS` | optional | Stale lock recovery threshold, default `300000` |
 | `RATE_LIMIT_BACKEND` | optional | `postgres` (shared multi-replica) or `memory` (per-process). Defaults to `postgres` when `NODE_ENV=production`, else `memory` |
 | `RATE_LIMIT_TRUSTED_PROXY_HOPS` | optional | Reverse proxies in front of the app; login throttling reads the client IP this many hops from the right of `X-Forwarded-For`. Default `0` |
@@ -184,7 +184,9 @@ Use `RATE_LIMIT_BACKEND=postgres` with multiple web replicas so login and creden
 
 The default supervised application can scale horizontally. Queue locking prevents replicas from intentionally claiming the same live job. Use the split `web:start` and `worker` topology when web and background capacity need to scale independently. Keep job handlers idempotent because failed or stale jobs can be retried.
 
-Before redeploying split background services, drain or gracefully stop the old pool so in-flight sync jobs can finish. If one is terminated mid-job, its replacement recovers the job through stale-lock requeue after `JOB_STALE_LOCK_MS` (5 minutes by default), so scheduled sync can appear delayed during that window.
+Knowledge Hub builds (`project_knowledge_v4`) for different projects and organizations do not block one another: each background process starts every ready build immediately and runs them concurrently, while workspace sync and other job types stay on a separate serial lane. One active build per project is still enforced through the queue's dedupe key. LLM provider throttling (429/`Retry-After`) can delay individual LLM requests inside a build, but it does not stall sibling projects' builds; transient retries are jittered so concurrent builds do not retry a throttled provider in lockstep.
+
+Before redeploying split background services, gracefully stop the old pool (SIGTERM). A stopping process unregisters its capacity, gives active jobs three seconds to finish, then aborts and atomically requeues the unfinished ones without consuming a retry, so a surviving process picks them up immediately. If a process is killed without the graceful path, its replacement recovers the job through stale-lock requeue after `JOB_STALE_LOCK_MS` (5 minutes by default) — that recovery consumes one attempt, and scheduled sync can appear delayed during the window.
 
 ## Backups And Restore
 
