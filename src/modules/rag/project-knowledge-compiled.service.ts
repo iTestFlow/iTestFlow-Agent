@@ -21,6 +21,7 @@ import {
   type ProjectKnowledgeSourceManifestEntry,
 } from "./project-knowledge-contracts";
 import { listProjectKnowledgeBenchmarkCases } from "./project-knowledge-benchmark.service";
+import { addNameSimilarityIssues } from "./project-knowledge-lint-similarity";
 import { matchLegacyEvidenceFragmentUniquely } from "./project-knowledge-migration.service";
 
 type FsModule = typeof import("fs");
@@ -1353,61 +1354,6 @@ function addDuplicateEntryKeyIssues(
       sourceWorkItemIds: Array.from(new Set(items.flatMap((item) => item.sourceWorkItemIds))),
     });
   });
-}
-
-function addNameSimilarityIssues(
-  knowledgeBase: ProjectKnowledgeBase,
-  issues: Array<Omit<ProjectKnowledgeLintIssue, "id" | "createdAt" | "updatedAt" | "status" | "origin">>,
-) {
-  const names = [
-    ...knowledgeBase.modules.map((entry) => ({
-      category: "module",
-      entryKey: entry.id,
-      name: entry.name,
-      sourceWorkItemIds: entry.sourceWorkItemIds,
-    })),
-    ...knowledgeBase.glossary.map((entry) => ({
-      category: "glossary",
-      entryKey: entry.term,
-      name: entry.term,
-      sourceWorkItemIds: entry.sourceWorkItemIds,
-    })),
-  ];
-  for (let firstIndex = 0; firstIndex < names.length; firstIndex += 1) {
-    for (let secondIndex = firstIndex + 1; secondIndex < names.length; secondIndex += 1) {
-      const first = names[firstIndex];
-      const second = names[secondIndex];
-      const firstKey = similarityKey(first.name);
-      const secondKey = similarityKey(second.name);
-      if (firstKey === secondKey || !areNamesSimilar(firstKey, secondKey)) continue;
-      issues.push({
-        issueType: "similar_name",
-        severity: "warning",
-        title: `Potential duplicate names: ${first.name} / ${second.name}`,
-        message: "Canonical name similarity indicates that these entries may represent the same subject. Review before merging.",
-        category: first.category === second.category ? first.category : "cross_category",
-        entryKey: [first.entryKey, second.entryKey].sort().join(" | "),
-        sourceWorkItemIds: Array.from(new Set([...first.sourceWorkItemIds, ...second.sourceWorkItemIds])),
-      });
-    }
-  }
-}
-
-function similarityKey(value: string) {
-  return normalizeKey(value)
-    .replace(/[^a-z0-9 ]+/g, " ")
-    .replace(/\b(the|a|an|module|system|service)\b/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function areNamesSimilar(first: string, second: string) {
-  if (first.length < 5 || second.length < 5) return false;
-  if (first.includes(second) || second.includes(first)) return true;
-  const firstWords = new Set(first.split(" "));
-  const secondWords = new Set(second.split(" "));
-  const overlap = Array.from(firstWords).filter((word) => secondWords.has(word)).length;
-  return overlap >= 2 && overlap / Math.max(firstWords.size, secondWords.size) >= 0.66;
 }
 
 function flattenProjectKnowledge(knowledgeBase: ProjectKnowledgeBase): KnowledgeEntry[] {
