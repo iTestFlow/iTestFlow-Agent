@@ -182,6 +182,7 @@ type ProjectKnowledgeSnapshot = {
 
 type KnowledgeStatusResult = {
   snapshot: ProjectKnowledgeSnapshot | null
+  generationAvailable?: boolean
 }
 
 type KnowledgeLintIssue = {
@@ -303,6 +304,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeStatusLoading, setKnowledgeStatusLoading] = useState(false)
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null)
   const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<ProjectKnowledgeSnapshot | null>(null)
+  const [generationAvailable, setGenerationAvailable] = useState<boolean | null>(null)
   const [knowledgeLint, setKnowledgeLint] = useState<KnowledgeLintResult | null>(null)
   const [knowledgeLog, setKnowledgeLog] = useState<KnowledgeLogItem[]>([])
   const [knowledgeLogVisible, setKnowledgeLogVisible] = useState(false)
@@ -354,8 +356,10 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     try {
       const data = await postJson<KnowledgeStatusResult>("/api/context/knowledge/status", { scope: activeScope })
       setKnowledgeSnapshot(data.snapshot)
+      setGenerationAvailable(typeof data.generationAvailable === "boolean" ? data.generationAvailable : null)
     } catch {
       setKnowledgeSnapshot(null)
+      setGenerationAvailable(null)
     } finally {
       setKnowledgeStatusLoading(false)
     }
@@ -507,10 +511,14 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
 
     void postJson<KnowledgeStatusResult>("/api/context/knowledge/status", { scope })
       .then((data) => {
-        if (!cancelled) setKnowledgeSnapshot(data.snapshot)
+        if (cancelled) return
+        setKnowledgeSnapshot(data.snapshot)
+        setGenerationAvailable(typeof data.generationAvailable === "boolean" ? data.generationAvailable : null)
       })
       .catch(() => {
-        if (!cancelled) setKnowledgeSnapshot(null)
+        if (cancelled) return
+        setKnowledgeSnapshot(null)
+        setGenerationAvailable(null)
       })
       .finally(() => {
         if (!cancelled) setKnowledgeStatusLoading(false)
@@ -892,6 +900,8 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                 scope={scope}
                 sourceIndexReady={Boolean(result)}
                 sourceIndexLoading={buildLoading}
+                generationAvailable={generationAvailable ?? undefined}
+                onRefreshAvailability={() => refreshKnowledgeStatus(scope)}
                 sourceIndexContent={(
                   <>
                     <Card className="qa-card">

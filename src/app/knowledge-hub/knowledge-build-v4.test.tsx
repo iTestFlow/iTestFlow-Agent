@@ -215,6 +215,32 @@ describe("Project Knowledge v4 conflict review", () => {
     expect(screen.queryByText("Generation service unavailable")).toBeNull();
   });
 
+  it("pre-disables the build with an offline banner when generation capacity is unavailable", () => {
+    const onRefreshAvailability = vi.fn();
+    render(
+      <KnowledgeBuildV4
+        scope={scope}
+        generationAvailable={false}
+        onRefreshAvailability={onRefreshAvailability}
+        onPublished={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Build knowledge" })).toBeDisabled();
+    expect(screen.getByText("Generation service offline")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    expect(onRefreshAvailability).toHaveBeenCalledTimes(1);
+    expect(api.postJson).not.toHaveBeenCalled();
+  });
+
+  it("treats unknown generation availability as buildable", () => {
+    render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(screen.getByRole("button", { name: "Build knowledge" })).not.toBeDisabled();
+    expect(screen.queryByText("Generation service offline")).toBeNull();
+  });
+
   it("uses the shared LLM progress and loading-game experience for active builds", async () => {
     api.postJson.mockResolvedValue({
       job: {

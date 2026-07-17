@@ -102,6 +102,8 @@ type Props = {
   sourceIndexReady?: boolean
   sourceIndexLoading?: boolean
   sourceIndexContent?: ReactNode
+  generationAvailable?: boolean
+  onRefreshAvailability?: () => void
 }
 
 type KnowledgeDraftPreviewCategory =
@@ -158,6 +160,8 @@ export function KnowledgeBuildV4({
   sourceIndexReady = true,
   sourceIndexLoading = false,
   sourceIndexContent,
+  generationAvailable,
+  onRefreshAvailability,
 }: Props) {
   const [generationMode, setGenerationMode] = useState<"automatic" | "external">("automatic")
   const [compileMode, setCompileMode] = useState<"incremental" | "full">("incremental")
@@ -676,6 +680,26 @@ export function KnowledgeBuildV4({
 
           <Tabs value={generationMode}>
             <TabsContent value="automatic" className="mt-5">
+              {generationAvailable === false ? (
+                <div role="status" className="mb-4 flex flex-col gap-3 rounded-md border border-warning/40 bg-warning/10 p-4 text-sm text-warning-foreground sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                    <div>
+                      <div className="font-semibold">Generation service offline</div>
+                      <p className="mt-1 text-xs leading-5">
+                        Automatic builds are rejected while no generation worker is healthy.
+                        Start the app with <code>npm run dev</code> (web and worker together), or run{" "}
+                        <code>npm run worker:dev</code> alongside <code>npm run web:dev</code>.
+                      </p>
+                    </div>
+                  </div>
+                  {onRefreshAvailability ? (
+                    <Button size="sm" variant="outline" onClick={onRefreshAvailability}>
+                      Check again
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
               <section
                 aria-labelledby="automatic-knowledge-build-title"
                 className="rounded-md border border-border bg-card p-4"
@@ -695,7 +719,8 @@ export function KnowledgeBuildV4({
                   <Button
                     className="min-h-11 shrink-0 sm:min-w-40"
                     onClick={() => void startAutomaticBuild()}
-                    disabled={!sourceIndexReady || sourceIndexLoading || Boolean(activeOperation) || decisionsBusy || publishing}
+                    disabled={!sourceIndexReady || sourceIndexLoading || generationAvailable === false || Boolean(activeOperation) || decisionsBusy || publishing}
+                    title={generationAvailable === false ? "The generation service is not running." : undefined}
                   >
                     {activeOperation === "build" ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <ShieldCheck className="size-4" aria-hidden="true" />}
                     {activeOperation === "build" ? "Building…" : "Build knowledge"}
