@@ -2,15 +2,18 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 
 import {
   flushBackgroundWrites,
+  getPool,
   resetDatabaseForTests,
   sqlAll,
   sqlGet,
   sqlRun,
 } from "@/modules/shared/infrastructure/database/db";
 import {
+  advisoryLockKeyForProject,
   getRecentProjectContext,
   indexAzureWorkItemsAsProjectContext,
   retrieveStoredProjectContext,
+  withEmbeddingSyncLock,
 } from "@/modules/rag/project-context-store.service";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
@@ -266,7 +269,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       { projectId: PROJ_A },
     );
     expect(orphanChunks?.count).toBe(1);
-    expect(await retrieveStoredProjectContext({ scope: scopeA, query: "payment gateway" })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ scope: scopeA, query: "payment gateway", embeddingProvider: null })).toEqual([]);
 
     const recent = await getRecentProjectContext({ scope: scopeA });
     expect(recent.totalCount).toBe(2);
@@ -282,7 +285,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     const rows = await workItemRows(PROJ_A);
     expect(rows.filter((row) => row.sync_status === "active").map((row) => row.azure_work_item_id)).toEqual(["101", "102", "103"]);
 
-    const sources = await retrieveStoredProjectContext({ scope: scopeA, query: "payment gateway" });
+    const sources = await retrieveStoredProjectContext({ scope: scopeA, query: "payment gateway", embeddingProvider: null });
     expect(sources.map((source) => source.workItemId)).toEqual(["101"]);
   });
 
@@ -290,14 +293,14 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     const result = await sync(scopeB, [telemetryItem()]);
     expect(result).toMatchObject({ createdCount: 1 });
 
-    const fromB = await retrieveStoredProjectContext({ scope: scopeB, query: "zebra telemetry ingest" });
+    const fromB = await retrieveStoredProjectContext({ scope: scopeB, query: "zebra telemetry ingest", embeddingProvider: null });
     expect(fromB).toHaveLength(1);
     expect(fromB[0]).toMatchObject({ workItemId: "101", title: "Telemetry pipeline" });
     expect(fromB[0]?.content).toContain("zebra");
 
     // No leakage in either direction, even though both projects hold an item "101".
-    expect(await retrieveStoredProjectContext({ scope: scopeA, query: "zebra telemetry ingest" })).toEqual([]);
-    expect(await retrieveStoredProjectContext({ scope: scopeB, query: "payment gateway" })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ scope: scopeA, query: "zebra telemetry ingest", embeddingProvider: null })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ scope: scopeB, query: "payment gateway", embeddingProvider: null })).toEqual([]);
 
     const recentA = await getRecentProjectContext({ scope: scopeA });
     expect(recentA.totalCount).toBe(3);
@@ -325,5 +328,94 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     const wildcards = await getRecentProjectContext({ scope: scopeA, query: "1__%" });
     expect(wildcards.totalCount).toBe(0);
     expect(wildcards.items).toEqual([]);
+  });
+
+  it("ranks chunks matching more query terms above weaker matches with 0..1 bounded scores", async () => {
+    // 102 matches refund + delivered + order; 101 matches only "checkout"; 103 matches nothing.
+    const sources = await retrieveStoredProjectContext({
+      scope: scopeA,
+      query: "refund delivered order checkout",
+      embeddingProvider: null,
+    });
+
+    expect(sources.map((source) => source.workItemId)).toEqual(["102", "101"]);
+    expect(sources[0]?.relevanceScore).toBe(1);
+    for (const source of sources) {
+      expect(source.relevanceScore).toBeGreaterThan(0);
+      expect(source.relevanceScore).toBeLessThanOrEqual(1);
+    }
+    expect(sources[0]!.relevanceScore).toBeGreaterThanOrEqual(sources[1]!.relevanceScore);
+  });
+
+  it("returns nothing for empty or unmatched queries instead of scanning the corpus", async () => {
+    expect(await retrieveStoredProjectContext({ scope: scopeA, query: "", embeddingProvider: null })).toEqual([]);
+    // Every term is 2 chars or fewer, so the built tsquery is empty.
+    expect(await retrieveStoredProjectContext({ scope: scopeA, query: "zz qq ab", embeddingProvider: null })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ scope: scopeA, query: "nonexistentterm", embeddingProvider: null })).toEqual([]);
+  });
+
+  it("explicit workItemIds fetch returns those items regardless of query match, scored 1", async () => {
+    const sources = await retrieveStoredProjectContext({
+      scope: scopeA,
+      query: "words matching nothing indexed",
+      workItemIds: ["102"],
+    });
+    expect(sources.map((source) => source.workItemId)).toEqual(["102"]);
+    expect(sources[0]?.relevanceScore).toBe(1);
+  });
+
+  it("caps retrieval at one chunk per work item so a verbose item cannot crowd out weaker matches", async () => {
+    const longInventory = requirement({
+      id: "104",
+      azureProjectId: PROJ_A,
+      title: "Inventory sync",
+      description: "Inventory warehouse reconciliation keeps counts aligned. ".repeat(100),
+      acceptanceCriteria: "Given warehouse stock, when inventory syncs, then reconcile counts.",
+      tags: [],
+    });
+    const shortInventory = requirement({
+      id: "105",
+      azureProjectId: PROJ_A,
+      title: "Shelf counter",
+      description: "Track inventory counts for each shelf.",
+      acceptanceCriteria: "Given a shelf, when counts change, then update the display.",
+      tags: [],
+    });
+    await sync(scopeA, [checkoutItem(CHANGED_DESCRIPTION), refundItem(), rolloutItem(), longInventory, shortInventory]);
+
+    // The long item must genuinely span multiple chunks for this test to prove anything.
+    const chunks104 = (await chunkRows(PROJ_A)).filter((chunk) => chunk.azure_work_item_id === "104");
+    expect(chunks104.length).toBeGreaterThan(1);
+
+    // Every 104 chunk matches both terms strongly; 105 matches only "inventory". Without
+    // the per-work-item cap, 104's chunks would fill the result before 105 appears.
+    const sources = await retrieveStoredProjectContext({ scope: scopeA, query: "inventory warehouse", embeddingProvider: null });
+    expect(sources.map((source) => source.workItemId)).toEqual(["104", "105"]);
+  });
+
+  it("skips embedding sync work when another sync already holds the project's advisory lock", async () => {
+    const lockTestProjectId = uniqueTestId("lock_project");
+    const [key1, key2] = advisoryLockKeyForProject(lockTestProjectId);
+    const holderClient = await getPool().connect();
+    try {
+      const held = await sqlGet<{ locked: boolean }>(
+        "SELECT pg_try_advisory_lock(@key1, @key2) AS locked",
+        { key1, key2 },
+        holderClient,
+      );
+      expect(held?.locked).toBe(true);
+
+      const fn = vi.fn(async () => "should not run");
+      const outcome = await withEmbeddingSyncLock(lockTestProjectId, fn);
+      expect(outcome).toEqual({ acquired: false });
+      expect(fn).not.toHaveBeenCalled();
+    } finally {
+      await sqlRun("SELECT pg_advisory_unlock(@key1, @key2)", { key1, key2 }, holderClient);
+      holderClient.release();
+    }
+
+    // Once released, the next call proceeds and runs fn normally.
+    const outcome = await withEmbeddingSyncLock(lockTestProjectId, async () => "ran");
+    expect(outcome).toEqual({ acquired: true, result: "ran" });
   });
 });

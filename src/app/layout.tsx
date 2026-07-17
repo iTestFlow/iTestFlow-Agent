@@ -29,7 +29,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={cn("font-sans", inter.variable)} suppressHydrationWarning>
-      <body className="font-sans antialiased">
+      {/* suppressHydrationWarning: browser extensions (Grammarly, password managers, etc.)
+          inject attributes like data-gr-ext-installed onto <body> before React hydrates;
+          harmless and outside the app's control, so silence the resulting mismatch. */}
+      <body className="font-sans antialiased" suppressHydrationWarning>
         <ThemeProvider>
           <TooltipProvider>
             <UnsavedChangesProvider>

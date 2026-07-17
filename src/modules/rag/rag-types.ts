@@ -24,6 +24,11 @@ export type RagSearchResult = RagChunk & {
   score: number;
 };
 
+/**
+ * Port for a future pluggable vector backend (e.g. pgvector). No production code
+ * path uses it yet: production retrieval is Postgres full-text search plus the
+ * optional embedding-based semantic search in embedding-store.service.ts.
+ */
 export interface VectorStore {
   upsert(chunks: RagChunk[]): Promise<void>;
   search(input: {

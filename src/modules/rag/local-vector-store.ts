@@ -2,6 +2,13 @@ import "server-only";
 
 import type { RagChunk, RagSearchResult, VectorStore } from "./rag-types";
 
+/**
+ * Placeholder VectorStore implementation, not used by any production retrieval path.
+ * Production retrieval is Postgres full-text search plus optional embedding-based
+ * semantic search (embedding-store.service.ts). This in-memory keyword store only
+ * exercises the VectorStore port, kept for a future pluggable vector backend such
+ * as pgvector. See docs/knowledge-wiki-rag-enhancement.md.
+ */
 export class LocalKeywordVectorStore implements VectorStore {
   private chunks: RagChunk[] = [];
 

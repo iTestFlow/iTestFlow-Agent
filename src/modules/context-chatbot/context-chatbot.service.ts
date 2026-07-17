@@ -42,7 +42,7 @@ export async function answerContextChatbot(input: {
     knowledgeLimit: 10,
     maxContextChunksPerWorkItem: 2,
   });
-  const citations = buildCitations(evidence.context, evidence.knowledge);
+  const { citations, contextCitationCount, linkedWorkItemCount } = buildCitations(evidence.context, evidence.knowledge);
 
   if (!citations.length) {
     const answer = [
@@ -54,6 +54,7 @@ export async function answerContextChatbot(input: {
       citations,
       retrievedContextCount: 0,
       retrievedKnowledgeCount: 0,
+      linkedWorkItemCount: 0,
       provider: input.provider.name,
       model: input.provider.model,
     };
@@ -92,8 +93,9 @@ export async function answerContextChatbot(input: {
     details: {
       provider: result.provider,
       model: result.model,
-      retrievedContextCount: evidence.context.length,
+      retrievedContextCount: contextCitationCount,
       retrievedKnowledgeCount: evidence.knowledge.length,
+      linkedWorkItemCount,
       citationCount: citations.length,
     },
   });
@@ -101,8 +103,9 @@ export async function answerContextChatbot(input: {
   return {
     answer: result.text,
     citations,
-    retrievedContextCount: evidence.context.length,
+    retrievedContextCount: contextCitationCount,
     retrievedKnowledgeCount: evidence.knowledge.length,
+    linkedWorkItemCount,
     provider: result.provider,
     model: result.model,
   };
@@ -201,6 +204,10 @@ function renderKnowledge(knowledge: ContextChatbotKnowledgeEvidence[]) {
     .join("\n\n");
 }
 
+// Counts are derived by direct construction here, never by comparing array lengths
+// afterward: context can legitimately contain multiple chunks for the same work item
+// (see maxContextChunksPerWorkItem), which this dedups to one citation card, so a
+// naive `citations.length - context.length` subtraction can go negative.
 function buildCitations(context: ContextChatbotContextEvidence[], knowledge: ContextChatbotKnowledgeEvidence[]) {
   const byId = new Map<string, ContextChatbotCitation>();
 
@@ -213,7 +220,9 @@ function buildCitations(context: ContextChatbotContextEvidence[], knowledge: Con
       workItemType: item.workItemType,
     });
   });
+  const contextCitationCount = byId.size;
 
+  let linkedWorkItemCount = 0;
   knowledge.forEach((item) => {
     item.sourceWorkItemIds.forEach((sourceWorkItemId) => {
       const workItemId = normalizeWorkItemId(sourceWorkItemId);
@@ -227,6 +236,7 @@ function buildCitations(context: ContextChatbotContextEvidence[], knowledge: Con
           workItemId,
           workItemType: "Work item",
         });
+        linkedWorkItemCount += 1;
       }
     });
 
@@ -239,7 +249,7 @@ function buildCitations(context: ContextChatbotContextEvidence[], knowledge: Con
     });
   });
 
-  return Array.from(byId.values());
+  return { citations: Array.from(byId.values()), contextCitationCount, linkedWorkItemCount };
 }
 
 function normalizeWorkItemId(value: string) {
