@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type RefObject } from "react"
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 import { DashboardEmptyPanel } from "@/components/dashboard/dashboard-states"
 import {
   AlertTriangle,
@@ -13,7 +13,6 @@ import {
   History,
   MessageSquareWarning,
   RefreshCw,
-  Save,
   Search,
   SearchX,
   Send,
@@ -26,14 +25,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector"
-import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle"
-import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress"
-import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics"
 import { patchJson, postJson } from "@/components/workflow/post-json"
-import { ManualLLMFields } from "@/components/workflow/manual-llm-panel"
-import { WorkflowStepper } from "@/components/workflow/workflow-stepper"
-import { useAiGeneration } from "@/components/workflow/use-ai-generation"
-import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session"
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -53,14 +45,7 @@ import {
   DEFAULT_CONTEXT_WORK_ITEM_TYPES,
 } from "@/lib/project-context-defaults"
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project"
-import type { TokenUsage } from "@/modules/llm/llm-types"
 import type { ProjectKnowledgeEvidenceRef } from "@/modules/rag/project-knowledge.schema"
-import type {
-  ProjectKnowledgeDraftBlocker,
-  ProjectKnowledgeReviewContext,
-  ProjectKnowledgeReviewSummary,
-} from "@/modules/rag/project-knowledge-review.contracts"
-import { KnowledgeReviewWorkspace } from "./knowledge-review-workspace"
 import { KnowledgeBuildV4 } from "./knowledge-build-v4"
 import {
   KnowledgeCategoryFilterButton,
@@ -119,8 +104,6 @@ type ContextStatusResult = {
   sortDirection: ContextSortDirection
   query?: string
 }
-
-type KnowledgeCompileMode = "incremental" | "full"
 
 type KnowledgeSource = {
   sourceWorkItemIds: string[]
@@ -197,43 +180,6 @@ type ProjectKnowledgeSnapshot = {
   }
 }
 
-type KnowledgeGeneratedDraft = {
-  draftId: string
-  draftStatus: string
-  blockers: ProjectKnowledgeDraftBlocker[]
-  reviewSummary: ProjectKnowledgeReviewSummary
-  regenerateRequired?: boolean
-  promptVersion: string
-  provider: string
-  model: string
-  requestedMode: KnowledgeCompileMode
-  mode: KnowledgeCompileMode
-  fallbackReason?: string
-  sourceWorkItemCount: number
-  promptedSourceWorkItemCount: number
-  changedSourceWorkItemCount: number
-  changedSourceWorkItemIds: string[]
-  retiredSourceWorkItemCount: number
-  retiredSourceWorkItemIds: string[]
-  rawOutput: string
-  knowledgeBase: ProjectKnowledgeBase
-  generatedAt: string
-  alreadyCurrent?: boolean
-  tokenUsage?: TokenUsage
-}
-
-type KnowledgePersistedDraft = {
-  id: string
-  status: string
-  persistedStatus?: string
-  statusReason?: string | null
-  blockers: ProjectKnowledgeDraftBlocker[]
-  reviewSummary: ProjectKnowledgeReviewSummary
-  regenerateRequired?: boolean
-  proposedKnowledge?: ProjectKnowledgeBase | null
-  knowledgeBase?: ProjectKnowledgeBase | null
-}
-
 type KnowledgeStatusResult = {
   snapshot: ProjectKnowledgeSnapshot | null
 }
@@ -283,39 +229,6 @@ type KnowledgeExportResult = {
   fileCount: number
 }
 
-type KnowledgeManualBatchPrompt = {
-  batchIndex: number
-  batchCount: number
-  workItemCount: number
-  prompt: string
-  carriedForward?: boolean
-  carriedRawOutput?: string
-  carriedKnowledgeBase?: ProjectKnowledgeBase
-}
-
-type KnowledgeManualDraft = {
-  draftId: string
-  draftStatus: string
-  promptVersion: string
-  requestedMode: KnowledgeCompileMode
-  mode: KnowledgeCompileMode
-  fallbackReason?: string
-  sourceWorkItemCount: number
-  totalSourceWorkItemCount: number
-  changedSourceWorkItemCount: number
-  retiredSourceWorkItemCount: number
-  batchCount: number
-  batches: KnowledgeManualBatchPrompt[]
-}
-
-type KnowledgeManualValidationResult = {
-  knowledgeBase: ProjectKnowledgeBase
-  snapshot?: ProjectKnowledgeSnapshot
-  draft?: KnowledgePersistedDraft
-}
-
-type BuildMode = "auto" | "manual"
-type BuildStep = "index" | "prepare" | "preview"
 type TopTab = "hub" | "build"
 type WorkspaceRole = "owner" | "admin" | "member"
 type HubView = "explorer" | "context" | "candidates"
@@ -376,9 +289,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [scope, setScope] = useState<ActiveProjectScope | null>(null)
   const [activeTab, setActiveTab] = useState<TopTab>("hub")
   const [hubView, setHubView] = useState<HubView>("explorer")
-  const [buildMode, setBuildMode] = useState<BuildMode>("auto")
-  const [buildStep, setBuildStep] = useState<BuildStep>("index")
-  const [compileMode, setCompileMode] = useState<KnowledgeCompileMode>("incremental")
   const [workItemTypes, setWorkItemTypes] = useState<string[]>(DEFAULT_CONTEXT_WORK_ITEM_TYPES)
   const [states, setStates] = useState<string[]>(DEFAULT_CONTEXT_STATES)
   const [buildLoading, setBuildLoading] = useState(false)
@@ -404,48 +314,18 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeCandidates, setKnowledgeCandidates] = useState<KnowledgeCandidate[]>([])
   const [candidateStatus, setCandidateStatus] = useState<KnowledgeCandidateStatus | "all">("all")
   const [candidateLoading, setCandidateLoading] = useState(false)
-  const [generatedDraft, setGeneratedDraft] = useState<KnowledgeGeneratedDraft | null>(null)
-  const [generatedSaveLoading, setGeneratedSaveLoading] = useState(false)
-  const [manualKnowledgeDraft, setManualKnowledgeDraft] = useState<KnowledgeManualDraft | null>(null)
-  const [manualKnowledgeReviewDraft, setManualKnowledgeReviewDraft] = useState<KnowledgePersistedDraft | null>(null)
-  const [manualKnowledgeCurrentBatch, setManualKnowledgeCurrentBatch] = useState(1)
-  const [manualKnowledgeBatchResponses, setManualKnowledgeBatchResponses] = useState<Record<number, string>>({})
-  const [manualKnowledgeValidatedBatches, setManualKnowledgeValidatedBatches] = useState<Record<number, ProjectKnowledgeBase>>({})
-  const [manualKnowledgeValidationLoading, setManualKnowledgeValidationLoading] = useState(false)
-  const [manualKnowledgeSaveLoading, setManualKnowledgeSaveLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(25)
   const [totalPages, setTotalPages] = useState(1)
-  const gen = useAiGeneration()
-  const cancelKnowledgeGeneration = gen.cancel
   const [sortBy, setSortBy] = useState<ContextSortBy>("lastIndexedAt")
   const [sortDirection, setSortDirection] = useState<ContextSortDirection>("desc")
   const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false)
   useUnsavedChangesGuard({
     dirty: hasUnfinishedWork,
-    busy:
-      buildLoading ||
-      gen.isRunning ||
-      generatedSaveLoading ||
-      manualKnowledgeValidationLoading ||
-      manualKnowledgeSaveLoading,
+    busy: buildLoading,
   })
-  const autoIndexStepRef = useRef<HTMLDivElement | null>(null)
-  const autoPrepareStepRef = useRef<HTMLDivElement | null>(null)
-  const autoPreviewStepRef = useRef<HTMLDivElement | null>(null)
-  const manualIndexStepRef = useRef<HTMLDivElement | null>(null)
-  const manualPrepareStepRef = useRef<HTMLDivElement | null>(null)
-  const manualPreviewStepRef = useRef<HTMLDivElement | null>(null)
-  const manualBatchRef = useRef<HTMLDivElement | null>(null)
   const initializedFilterProjectRef = useRef<string | null>(null)
   const contextRequestIdRef = useRef(0)
-  const loadingGame = useLlmLoadingGameSession<KnowledgeGeneratedDraft>((draft) => {
-    setGeneratedDraft(draft)
-    if (draft.alreadyCurrent) setHasUnfinishedWork(false)
-    setBuildStep(draft.alreadyCurrent ? "prepare" : "preview")
-    scrollBuildSection(draft.alreadyCurrent ? autoPrepareStepRef : autoPreviewStepRef)
-  })
-  const endLoadingGameSession = loadingGame.endSession
   const filterProjectKey = projectScopeKey(scope)
   const {
     metadata: workItemMetadata,
@@ -562,15 +442,13 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setScope(readActiveProject())
     const onChange = (event: Event) => {
       const custom = event as CustomEvent<ActiveProjectScope>
-      cancelKnowledgeGeneration()
-      endLoadingGameSession()
       contextRequestIdRef.current += 1
       setScope(custom.detail ?? readActiveProject())
       setHasUnfinishedWork(false)
     }
     window.addEventListener("itestflow:active-project-changed", onChange)
     return () => window.removeEventListener("itestflow:active-project-changed", onChange)
-  }, [cancelKnowledgeGeneration, endLoadingGameSession])
+  }, [])
 
   useEffect(() => {
     if (!canBuildKnowledge && activeTab === "build") setActiveTab("hub")
@@ -602,15 +480,8 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     }
     let cancelled = false
 
-    setBuildStep("index")
     setBuildError(null)
     setResult(null)
-    setGeneratedDraft(null)
-    setManualKnowledgeDraft(null)
-    setManualKnowledgeReviewDraft(null)
-    setManualKnowledgeCurrentBatch(1)
-    setManualKnowledgeBatchResponses({})
-    setManualKnowledgeValidatedBatches({})
     setKnowledgeError(null)
     setKnowledgeLint(null)
     setKnowledgeLog([])
@@ -666,43 +537,9 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     return () => window.clearTimeout(timeoutId)
   }, [contextSearch, loadStatus, scope, sortBy, sortDirection])
 
-  function scrollBuildSection(ref: RefObject<HTMLDivElement | null>) {
-    window.requestAnimationFrame(() => {
-      ref.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-    })
-  }
-
-  function activeIndexStepRef() {
-    return buildMode === "manual" ? manualIndexStepRef : autoIndexStepRef
-  }
-
-  function activePrepareStepRef() {
-    return buildMode === "manual" ? manualPrepareStepRef : autoPrepareStepRef
-  }
-
-  function clearPreparedKnowledge() {
-    setGeneratedDraft(null)
-    setManualKnowledgeDraft(null)
-    setManualKnowledgeReviewDraft(null)
-    setManualKnowledgeCurrentBatch(1)
-    setManualKnowledgeBatchResponses({})
-    setManualKnowledgeValidatedBatches({})
-  }
-
-  function resetBuildState() {
-    gen.cancel()
-    loadingGame.endSession()
-    setBuildStep("index")
-    setBuildError(null)
-    setResult(null)
-    clearPreparedKnowledge()
-  }
-
   function invalidateBuildIndex() {
-    setBuildStep("index")
     setBuildError(null)
     setResult(null)
-    clearPreparedKnowledge()
   }
 
   function changeWorkItemTypes(values: string[]) {
@@ -715,16 +552,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setHasUnfinishedWork(true)
     setStates(values)
     invalidateBuildIndex()
-  }
-
-  function changeCompileMode(nextMode: KnowledgeCompileMode) {
-    gen.cancel()
-    loadingGame.endSession()
-    setHasUnfinishedWork(true)
-    setCompileMode(nextMode)
-    setBuildError(null)
-    clearPreparedKnowledge()
-    if (buildStep === "preview") setBuildStep(result ? "prepare" : "index")
   }
 
   async function indexContextForBuild() {
@@ -746,364 +573,12 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setHasUnfinishedWork(true)
     setBuildLoading(true)
     setBuildError(null)
-    clearPreparedKnowledge()
     try {
       await indexContextForBuild()
-      setBuildStep("prepare")
-      scrollBuildSection(activePrepareStepRef())
     } catch (indexError) {
-      setBuildStep("index")
       setBuildError(indexError instanceof Error ? indexError.message : "Project index loading failed.")
     } finally {
       setBuildLoading(false)
-    }
-  }
-
-  async function prepareAutoKnowledge() {
-    if (!scope) return
-    if (!result) {
-      setBuildStep("index")
-      setBuildError("Load the project index before preparing a knowledge preview.")
-      scrollBuildSection(activeIndexStepRef())
-      return
-    }
-    if (gen.isRunning) return
-
-    loadingGame.startSession()
-    setHasUnfinishedWork(true)
-    setBuildError(null)
-    setGeneratedDraft(null)
-    setManualKnowledgeDraft(null)
-    setManualKnowledgeReviewDraft(null)
-    setManualKnowledgeValidatedBatches({})
-    const draft = await gen.start((signal) =>
-      postJson<KnowledgeGeneratedDraft>("/api/context/knowledge/preview", { scope, mode: compileMode }, signal),
-    )
-    if (!draft) {
-      loadingGame.endSession()
-      return // cancelled or failed: the progress panel owns the message
-    }
-    loadingGame.completeSession(draft)
-  }
-
-  async function regenerateAutoKnowledge() {
-    if (!scope || gen.isRunning || buildLoading) return
-
-    setHasUnfinishedWork(true)
-    setBuildLoading(true)
-    setBuildError(null)
-    try {
-      await indexContextForBuild()
-      loadingGame.startSession()
-      const replacement = await gen.start((signal) =>
-        postJson<KnowledgeGeneratedDraft>("/api/context/knowledge/preview", { scope, mode: compileMode }, signal),
-      )
-      if (!replacement) {
-        loadingGame.endSession()
-        return
-      }
-      loadingGame.completeSession(replacement)
-    } catch (regenerationError) {
-      loadingGame.endSession()
-      const detail = regenerationError instanceof Error
-        ? regenerationError.message
-        : "Source refresh or draft regeneration failed."
-      setBuildError(`The knowledge draft could not be regenerated. Your current draft was kept; retry when the source is available. ${detail}`)
-    } finally {
-      setBuildLoading(false)
-    }
-  }
-
-  function applyManualKnowledgePreparation(data: KnowledgeManualDraft) {
-    setManualKnowledgeDraft(data)
-    setManualKnowledgeReviewDraft(null)
-    setManualKnowledgeCurrentBatch(1)
-    setManualKnowledgeBatchResponses(Object.fromEntries(
-      data.batches.filter((batch) => batch.carriedForward && batch.carriedRawOutput !== undefined)
-        .map((batch) => [batch.batchIndex, batch.carriedRawOutput!]),
-    ))
-    setManualKnowledgeValidatedBatches(Object.fromEntries(
-      data.batches.filter((batch) => batch.carriedForward && batch.carriedKnowledgeBase)
-        .map((batch) => [batch.batchIndex, batch.carriedKnowledgeBase!]),
-    ))
-    const nextStep = data.batchCount === 0 && data.retiredSourceWorkItemCount > 0 ? "preview" : "prepare"
-    setBuildStep(nextStep)
-    scrollBuildSection(nextStep === "preview" ? manualPreviewStepRef : manualPrepareStepRef)
-  }
-
-  async function prepareExternalKnowledge() {
-    if (!scope) return
-    if (!result) {
-      setBuildStep("index")
-      setBuildError("Load the project index before preparing an external LLM prompt.")
-      scrollBuildSection(activeIndexStepRef())
-      return
-    }
-
-    setHasUnfinishedWork(true)
-    setBuildLoading(true)
-    setBuildError(null)
-    setGeneratedDraft(null)
-    setManualKnowledgeDraft(null)
-    setManualKnowledgeReviewDraft(null)
-    setManualKnowledgeCurrentBatch(1)
-    setManualKnowledgeBatchResponses({})
-    setManualKnowledgeValidatedBatches({})
-    scrollBuildSection(manualPrepareStepRef)
-    try {
-      const data = await postJson<KnowledgeManualDraft>("/api/context/knowledge/manual/draft", { scope, mode: compileMode })
-      applyManualKnowledgePreparation(data)
-    } catch (prepareError) {
-      setBuildError(prepareError instanceof Error ? prepareError.message : "External LLM knowledge prompt preparation failed.")
-    } finally {
-      setBuildLoading(false)
-    }
-  }
-
-  async function regenerateExternalKnowledge() {
-    if (!scope || buildLoading) return
-
-    setHasUnfinishedWork(true)
-    setBuildLoading(true)
-    setBuildError(null)
-    try {
-      await indexContextForBuild()
-      const replacement = await postJson<KnowledgeManualDraft>("/api/context/knowledge/manual/draft", {
-        scope,
-        mode: compileMode,
-      })
-      applyManualKnowledgePreparation(replacement)
-    } catch (regenerationError) {
-      const detail = regenerationError instanceof Error
-        ? regenerationError.message
-        : "Source refresh or prompt regeneration failed."
-      setBuildError(`The external LLM draft could not be regenerated. Your current draft was kept; retry when the source is available. ${detail}`)
-    } finally {
-      setBuildLoading(false)
-    }
-  }
-
-  async function validateManualKnowledgeBatch() {
-    if (!scope || !manualKnowledgeDraft) return
-    const batch = manualKnowledgeDraft.batches.find((item) => item.batchIndex === manualKnowledgeCurrentBatch)
-    if (!batch) return
-    const rawOutput = manualKnowledgeBatchResponses[batch.batchIndex]?.trim()
-    if (!rawOutput) return
-
-    setManualKnowledgeValidationLoading(true)
-    setBuildError(null)
-    try {
-      const data = await postJson<KnowledgeManualValidationResult>("/api/context/knowledge/manual/validate", {
-        scope,
-        rawOutput,
-        draftId: manualKnowledgeDraft.draftId,
-        batchIndex: batch.batchIndex,
-      })
-
-      const nextValidated = {
-        ...manualKnowledgeValidatedBatches,
-        [batch.batchIndex]: data.knowledgeBase,
-      }
-      setManualKnowledgeValidatedBatches(nextValidated)
-      const nextBatch = manualKnowledgeDraft.batches.find((item) => !nextValidated[item.batchIndex])
-      if (nextBatch) {
-        setManualKnowledgeCurrentBatch(nextBatch.batchIndex)
-        scrollBuildSection(manualBatchRef)
-      } else {
-        setBuildStep("preview")
-        scrollBuildSection(manualPreviewStepRef)
-      }
-    } catch (validationError) {
-      setBuildError(validationError instanceof Error ? validationError.message : "External LLM knowledge response validation failed.")
-    } finally {
-      setManualKnowledgeValidationLoading(false)
-    }
-  }
-
-  async function saveGeneratedKnowledge() {
-    if (!scope || !generatedDraft) return
-    setGeneratedSaveLoading(true)
-    setBuildError(null)
-    try {
-      await postJson("/api/context/knowledge/save", {
-        scope,
-        draftId: generatedDraft.draftId,
-      })
-      setHasUnfinishedWork(false)
-      resetBuildState()
-      setActiveTab("hub")
-      await Promise.all([
-        loadStatus(scope, { page: 1, sortBy, sortDirection, query: contextSearch }),
-        refreshKnowledgeStatus(scope),
-        refreshKnowledgeLog(scope),
-      ])
-    } catch (saveError) {
-      setBuildError(saveError instanceof Error ? saveError.message : "Project knowledge save failed.")
-      try {
-        const current = await postJson<{ draft: KnowledgePersistedDraft }>(
-          `/api/context/knowledge/drafts/${generatedDraft.draftId}`,
-          { scope },
-        )
-        applyPersistedDraftToGenerated(current.draft)
-      } catch {
-        // Keep the original publication error; draft refresh is best effort.
-      }
-    } finally {
-      setGeneratedSaveLoading(false)
-    }
-  }
-
-  function applyPersistedDraftToGenerated(draft: KnowledgePersistedDraft) {
-    setGeneratedDraft((current) => current ? ({
-      ...current,
-      draftId: draft.id,
-      draftStatus: draft.persistedStatus ?? draft.status,
-      blockers: draft.blockers ?? [],
-      reviewSummary: draft.reviewSummary,
-      regenerateRequired: draft.regenerateRequired ?? false,
-      knowledgeBase: draft.proposedKnowledge ?? draft.knowledgeBase ?? current.knowledgeBase,
-    }) : current)
-  }
-
-  async function loadKnowledgeReviewContext(draftId: string) {
-    if (!scope) throw new Error("Select an active project before reviewing knowledge evidence.")
-    const data = await postJson<{ reviewContext: ProjectKnowledgeReviewContext }>(
-      `/api/context/knowledge/drafts/${draftId}/review-context`,
-      { scope },
-    )
-    return data.reviewContext
-  }
-
-  async function resolveGeneratedKnowledgeDraft(proposedKnowledge: ProjectKnowledgeBase) {
-    if (!scope || !generatedDraft) return
-    setGeneratedSaveLoading(true)
-    setBuildError(null)
-    try {
-      const data = await postJson<{ draft: KnowledgePersistedDraft }>(
-        `/api/context/knowledge/drafts/${generatedDraft.draftId}/resolve`,
-        { scope, proposedKnowledge },
-      )
-      applyPersistedDraftToGenerated(data.draft)
-      return data.draft
-    } catch (error) {
-      setBuildError(error instanceof Error ? error.message : "Project knowledge resolution failed.")
-      throw error
-    } finally {
-      setGeneratedSaveLoading(false)
-    }
-  }
-
-  async function rebaseGeneratedKnowledgeDraft() {
-    if (!scope || !generatedDraft) return
-    setGeneratedSaveLoading(true)
-    setBuildError(null)
-    try {
-      const data = await postJson<{ draft: KnowledgePersistedDraft }>(
-        `/api/context/knowledge/drafts/${generatedDraft.draftId}/rebase`,
-        { scope },
-      )
-      applyPersistedDraftToGenerated(data.draft)
-      if ((data.draft.persistedStatus ?? data.draft.status) === "published") {
-        setHasUnfinishedWork(false)
-        setActiveTab("hub")
-        await Promise.all([refreshKnowledgeStatus(scope), refreshKnowledgeLog(scope)])
-      }
-    } catch (error) {
-      setBuildError(error instanceof Error ? error.message : "Project knowledge rebase failed.")
-    } finally {
-      setGeneratedSaveLoading(false)
-    }
-  }
-
-  async function saveManualKnowledgeBatches() {
-    if (!scope || !manualKnowledgeDraft) return
-    const partialKnowledgeBases = manualKnowledgeDraft.batches
-      .map((batch) => manualKnowledgeValidatedBatches[batch.batchIndex])
-      .filter(Boolean)
-    if (manualKnowledgeDraft.batchCount > 0 && partialKnowledgeBases.length !== manualKnowledgeDraft.batchCount) return
-    if (manualKnowledgeDraft.batchCount === 0 && manualKnowledgeDraft.mode !== "incremental") return
-
-    setManualKnowledgeSaveLoading(true)
-    setBuildError(null)
-    try {
-      if (!manualKnowledgeReviewDraft) {
-        const data = await postJson<KnowledgeManualValidationResult>("/api/context/knowledge/manual/finalize", {
-          scope,
-          mode: manualKnowledgeDraft.mode,
-          draftId: manualKnowledgeDraft.draftId,
-          partialKnowledgeBases,
-        })
-        if (!data.draft) throw new Error("Manual finalization did not return a reviewable draft.")
-        setManualKnowledgeReviewDraft(data.draft)
-        setHasUnfinishedWork(true)
-        return
-      }
-      const status = manualKnowledgeReviewDraft.persistedStatus ?? manualKnowledgeReviewDraft.status
-      if (status !== "ready_for_review" || manualKnowledgeReviewDraft.blockers.length || manualKnowledgeReviewDraft.regenerateRequired) return
-      await postJson("/api/context/knowledge/save", { scope, draftId: manualKnowledgeReviewDraft.id })
-      setHasUnfinishedWork(false)
-      resetBuildState()
-      setActiveTab("hub")
-      await Promise.all([
-        loadStatus(scope, { page: 1, sortBy, sortDirection, query: contextSearch }),
-        refreshKnowledgeStatus(scope),
-        refreshKnowledgeLog(scope),
-      ])
-    } catch (saveError) {
-      setBuildError(saveError instanceof Error ? saveError.message : "External LLM knowledge base save failed.")
-    } finally {
-      setManualKnowledgeSaveLoading(false)
-    }
-  }
-
-  async function resolveManualKnowledgeDraft(proposedKnowledge: ProjectKnowledgeBase) {
-    if (!scope || !manualKnowledgeReviewDraft) return
-    setManualKnowledgeSaveLoading(true)
-    setBuildError(null)
-    try {
-      const data = await postJson<{ draft: KnowledgePersistedDraft }>(
-        `/api/context/knowledge/drafts/${manualKnowledgeReviewDraft.id}/resolve`,
-        { scope, proposedKnowledge },
-      )
-      setManualKnowledgeReviewDraft(data.draft)
-      return data.draft
-    } catch (error) {
-      setBuildError(error instanceof Error ? error.message : "Manual knowledge resolution failed.")
-      throw error
-    } finally {
-      setManualKnowledgeSaveLoading(false)
-    }
-  }
-
-  async function rebaseManualKnowledgeDraft() {
-    if (!scope || !manualKnowledgeReviewDraft) return
-    setManualKnowledgeSaveLoading(true)
-    setBuildError(null)
-    try {
-      const data = await postJson<{ draft: KnowledgePersistedDraft & { manualPreparation?: KnowledgeManualDraft } }>(
-        `/api/context/knowledge/drafts/${manualKnowledgeReviewDraft.id}/rebase`,
-        { scope },
-      )
-      if (data.draft.manualPreparation) {
-        const preparation = data.draft.manualPreparation
-        setManualKnowledgeDraft(preparation)
-        setManualKnowledgeReviewDraft(null)
-        setManualKnowledgeBatchResponses(Object.fromEntries(
-          preparation.batches.filter((batch) => batch.carriedForward && batch.carriedRawOutput !== undefined)
-            .map((batch) => [batch.batchIndex, batch.carriedRawOutput!]),
-        ))
-        setManualKnowledgeValidatedBatches(Object.fromEntries(
-          preparation.batches.filter((batch) => batch.carriedForward && batch.carriedKnowledgeBase)
-            .map((batch) => [batch.batchIndex, batch.carriedKnowledgeBase!]),
-        ))
-        setBuildStep(preparation.batches.every((batch) => batch.carriedForward) ? "preview" : "prepare")
-      } else {
-        setManualKnowledgeReviewDraft(data.draft)
-      }
-    } catch (error) {
-      setBuildError(error instanceof Error ? error.message : "Manual knowledge rebase failed.")
-    } finally {
-      setManualKnowledgeSaveLoading(false)
     }
   }
 
@@ -1229,19 +704,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     })
   }
 
-  function changeBuildMode(nextMode: BuildMode) {
-    setHasUnfinishedWork(true)
-    setBuildMode(nextMode)
-    resetBuildState()
-  }
-
-  const currentManualKnowledgeBatch = manualKnowledgeDraft?.batches.find((batch) => batch.batchIndex === manualKnowledgeCurrentBatch)
-  const manualKnowledgeValidatedCount = manualKnowledgeDraft
-    ? manualKnowledgeDraft.batches.filter((batch) => manualKnowledgeValidatedBatches[batch.batchIndex]).length
-    : 0
-  const manualKnowledgeAllBatchesValidated = manualKnowledgeDraft
-    ? manualKnowledgeValidatedCount === manualKnowledgeDraft.batchCount
-    : false
   const hasMoreContext = recentItems.length < totalCount && page < totalPages
   const totalKnowledgeItems = knowledgeSnapshot ? countKnowledgeItems(knowledgeSnapshot.knowledgeBase) : 0
   const canLoadIndex = Boolean(scope)
@@ -1251,7 +713,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     && workItemTypes.length > 0
     && states.length > 0
     && !buildLoading
-  const canPrepareKnowledge = Boolean(scope) && Boolean(result) && !buildLoading
   const emptyKnowledgeMessage = canBuildKnowledge
     ? "No knowledge base has been saved yet. Use Build Knowledge to compile source-backed project knowledge."
     : "No knowledge base has been saved yet."
@@ -1498,268 +959,11 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
               />
             </>
           ) : null}
-          {legacyBuildUiEnabled() ? (
-          <Card className="qa-card">
-            <CardHeader>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="flex items-center gap-2">
-                  <CardTitle className="text-base" role="heading" aria-level={2}>Build Knowledge</CardTitle>
-                  {knowledgeSnapshot ? <Badge variant="outline">Prompt {knowledgeSnapshot.promptVersion}</Badge> : null}
-                </div>
-                <GenerationModeToggle
-                  mode={buildMode}
-                  onChange={changeBuildMode}
-                  ariaLabel="Knowledge build mode"
-                />
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <Tabs value={buildMode} className="flex-col gap-4">
-                <BuildStepper step={buildStep} />
-
-                {buildError ? (
-                  <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-                    <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-                    <span>{buildError}</span>
-                  </div>
-                ) : null}
-
-                <TabsContent value="auto" className="space-y-4">
-                  <div ref={autoIndexStepRef} className="scroll-mt-4 space-y-4">
-                    <IndexLoadPanel
-                      workItemTypes={workItemTypes}
-                      states={states}
-                      workItemTypeOptions={workItemMetadata?.workItemTypes ?? []}
-                      stateOptions={workItemMetadata?.states ?? []}
-                      metadataLoading={workItemMetadataLoading}
-                      metadataError={workItemMetadataError}
-                      canLoad={canLoadIndex}
-                      loading={buildLoading}
-                      onWorkItemTypesChange={changeWorkItemTypes}
-                      onStatesChange={changeStates}
-                      onRetryMetadata={retryWorkItemMetadata}
-                      onLoad={loadProjectIndexForBuild}
-                    />
-
-                    {result ? (
-                      <>
-                        <IndexSummary result={result} />
-                        <IndexedContextPanel
-                          items={recentItems}
-                          totalCount={totalCount}
-                          sortBy={sortBy}
-                          sortDirection={sortDirection}
-                          search={contextSearch}
-                          loading={statusLoading}
-                          loadingMore={contextLoadingMore}
-                          hasMore={hasMoreContext}
-                          error={contextStatusError}
-                          emptyMessage="No indexed work items matched the loaded project index."
-                          onSearchChange={changeContextSearch}
-                          onSortChange={changeSort}
-                          onLoadMore={loadMoreContext}
-                        />
-                      </>
-                    ) : null}
-                  </div>
-
-                  {result ? (
-                    <div ref={autoPrepareStepRef} className="scroll-mt-4 space-y-4">
-                      <KnowledgePreparePanel
-                        compileMode={compileMode}
-                        canPrepare={canPrepareKnowledge && !gen.isRunning}
-                        loading={buildLoading || gen.isRunning}
-                        onCompileModeChange={changeCompileMode}
-                        onPrepare={prepareAutoKnowledge}
-                        actionLabel={buildLoading || gen.isRunning ? "Preparing..." : "Prepare Knowledge Preview"}
-                      />
-
-                      {gen.status !== "idle" && (gen.status !== "completed" || loadingGame.shouldKeepPanelMounted) ? (
-                        <AiGenerationProgress
-                          variant="generic"
-                          title="Building project knowledge"
-                          status={gen.status}
-                          elapsedSeconds={gen.elapsedSeconds}
-                          error={gen.error}
-                          errorMessage={gen.errorMessage}
-                          canCancel
-                          onCancel={gen.cancel}
-                          onRetry={() => {
-                            gen.retry()
-                            void (generatedDraft ? regenerateAutoKnowledge() : prepareAutoKnowledge())
-                          }}
-                          loadingGame={loadingGame.panel}
-                        />
-                      ) : null}
-
-                      {generatedDraft?.alreadyCurrent ? (
-                        <div className="space-y-2">
-                          {gen.status === "completed" ? (
-                            <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
-                          ) : null}
-                          <GeneratedPreviewPanel
-                            draft={generatedDraft}
-                            saving={generatedSaveLoading}
-                            regenerating={buildLoading || gen.isRunning || loadingGame.shouldKeepPanelMounted}
-                            onSave={saveGeneratedKnowledge}
-                            onResolve={resolveGeneratedKnowledgeDraft}
-                            onLoadReviewContext={loadKnowledgeReviewContext}
-                            onRebase={rebaseGeneratedKnowledgeDraft}
-                            onRegenerate={regenerateAutoKnowledge}
-                          />
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {generatedDraft && !generatedDraft.alreadyCurrent ? (
-                    <div ref={autoPreviewStepRef} className="scroll-mt-4 space-y-2">
-                      {gen.status === "completed" ? (
-                        <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
-                      ) : null}
-                      <GeneratedPreviewPanel
-                        draft={generatedDraft}
-                        saving={generatedSaveLoading}
-                        regenerating={buildLoading || gen.isRunning || loadingGame.shouldKeepPanelMounted}
-                        onSave={saveGeneratedKnowledge}
-                        onResolve={resolveGeneratedKnowledgeDraft}
-                        onLoadReviewContext={loadKnowledgeReviewContext}
-                        onRebase={rebaseGeneratedKnowledgeDraft}
-                        onRegenerate={regenerateAutoKnowledge}
-                      />
-                    </div>
-                  ) : null}
-                </TabsContent>
-
-                <TabsContent value="manual" className="space-y-4">
-                  <div ref={manualIndexStepRef} className="scroll-mt-4 space-y-4">
-                    <IndexLoadPanel
-                      workItemTypes={workItemTypes}
-                      states={states}
-                      workItemTypeOptions={workItemMetadata?.workItemTypes ?? []}
-                      stateOptions={workItemMetadata?.states ?? []}
-                      metadataLoading={workItemMetadataLoading}
-                      metadataError={workItemMetadataError}
-                      canLoad={canLoadIndex}
-                      loading={buildLoading}
-                      onWorkItemTypesChange={changeWorkItemTypes}
-                      onStatesChange={changeStates}
-                      onRetryMetadata={retryWorkItemMetadata}
-                      onLoad={loadProjectIndexForBuild}
-                    />
-
-                    {result ? (
-                      <>
-                        <IndexSummary result={result} />
-                        <IndexedContextPanel
-                          items={recentItems}
-                          totalCount={totalCount}
-                          sortBy={sortBy}
-                          sortDirection={sortDirection}
-                          search={contextSearch}
-                          loading={statusLoading}
-                          loadingMore={contextLoadingMore}
-                          hasMore={hasMoreContext}
-                          error={contextStatusError}
-                          emptyMessage="No indexed work items matched the loaded project index."
-                          onSearchChange={changeContextSearch}
-                          onSortChange={changeSort}
-                          onLoadMore={loadMoreContext}
-                        />
-                      </>
-                    ) : null}
-                  </div>
-
-                  {result ? (
-                    <div ref={manualPrepareStepRef} className="scroll-mt-4 space-y-4">
-                      <KnowledgePreparePanel
-                        compileMode={compileMode}
-                        canPrepare={canPrepareKnowledge}
-                        loading={buildLoading}
-                        onCompileModeChange={changeCompileMode}
-                        onPrepare={prepareExternalKnowledge}
-                        actionLabel={buildLoading ? "Preparing prompt..." : "Prepare Knowledge Preview Prompt"}
-                      />
-
-                      {manualKnowledgeDraft && buildStep === "prepare" ? (
-                        <ExternalPromptPanel
-                          draft={manualKnowledgeDraft}
-                          currentBatch={currentManualKnowledgeBatch}
-                          responses={manualKnowledgeBatchResponses}
-                          validatedCount={manualKnowledgeValidatedCount}
-                          allValidated={manualKnowledgeAllBatchesValidated}
-                          validationLoading={manualKnowledgeValidationLoading}
-                          saveLoading={manualKnowledgeSaveLoading}
-                          regenerating={buildLoading}
-                          validatedBatches={manualKnowledgeValidatedBatches}
-                          reviewDraft={manualKnowledgeReviewDraft}
-                          batchRef={manualBatchRef}
-                          showPrompt
-                          showPreview={false}
-                          onResponseChange={(batchIndex, value) => {
-                            setHasUnfinishedWork(true)
-                            setManualKnowledgeBatchResponses((current) => ({
-                              ...current,
-                              [batchIndex]: value,
-                            }))
-                          }}
-                          onValidate={validateManualKnowledgeBatch}
-                          onSave={saveManualKnowledgeBatches}
-                          onResolve={resolveManualKnowledgeDraft}
-                          onLoadReviewContext={loadKnowledgeReviewContext}
-                          onRebase={rebaseManualKnowledgeDraft}
-                          onRegenerate={regenerateExternalKnowledge}
-                        />
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {manualKnowledgeDraft && buildStep === "preview" ? (
-                    <div ref={manualPreviewStepRef} className="scroll-mt-4">
-                      <ExternalPromptPanel
-                        draft={manualKnowledgeDraft}
-                        currentBatch={currentManualKnowledgeBatch}
-                        responses={manualKnowledgeBatchResponses}
-                        validatedCount={manualKnowledgeValidatedCount}
-                        allValidated={manualKnowledgeAllBatchesValidated}
-                        validationLoading={manualKnowledgeValidationLoading}
-                        saveLoading={manualKnowledgeSaveLoading}
-                        regenerating={buildLoading}
-                        validatedBatches={manualKnowledgeValidatedBatches}
-                        reviewDraft={manualKnowledgeReviewDraft}
-                        batchRef={manualBatchRef}
-                        showPrompt={false}
-                        showPreview
-                        onResponseChange={(batchIndex, value) => {
-                          setHasUnfinishedWork(true)
-                          setManualKnowledgeBatchResponses((current) => ({
-                            ...current,
-                            [batchIndex]: value,
-                          }))
-                        }}
-                        onValidate={validateManualKnowledgeBatch}
-                        onSave={saveManualKnowledgeBatches}
-                        onResolve={resolveManualKnowledgeDraft}
-                        onLoadReviewContext={loadKnowledgeReviewContext}
-                        onRebase={rebaseManualKnowledgeDraft}
-                        onRegenerate={regenerateExternalKnowledge}
-                      />
-                    </div>
-                  ) : null}
-                </TabsContent>
-              </Tabs>
-            </CardContent>
-          </Card>
-          ) : null}
         </TabsContent>
         ) : null}
       </Tabs>
     </div>
   )
-}
-
-function legacyBuildUiEnabled() {
-  return false
 }
 
 function HubSummary({
@@ -1836,40 +1040,6 @@ function HubViewTab({
   )
 }
 
-function BuildStepper({ step }: { step: BuildStep }) {
-  const steps = [
-    {
-      id: "index",
-      label: "Load Project Index",
-      description: "Select and sync source work items.",
-      icon: Database,
-    },
-    {
-      id: "prepare",
-      label: "Prepare Knowledge Preview",
-      description: "Compile source-backed project knowledge.",
-      icon: BookOpen,
-    },
-    {
-      id: "preview",
-      label: "Preview & Save",
-      description: "Inspect and save the prepared knowledge.",
-      icon: Save,
-    },
-  ] as const
-  const activeIndex = steps.findIndex((item) => item.id === step)
-
-  return (
-    <WorkflowStepper
-      steps={steps}
-      activeStepId={step}
-      completedStepIds={steps.slice(0, activeIndex).map((item) => item.id)}
-      enabledStepIds={[step]}
-      ariaLabel="Build Knowledge workflow"
-    />
-  )
-}
-
 function IndexLoadPanel({
   workItemTypes,
   states,
@@ -1936,518 +1106,6 @@ function IndexLoadPanel({
           </Button>
         </div>
       </div>
-    </div>
-  )
-}
-
-function KnowledgePreparePanel({
-  compileMode,
-  canPrepare,
-  loading,
-  onCompileModeChange,
-  onPrepare,
-  actionLabel,
-}: {
-  compileMode: KnowledgeCompileMode
-  canPrepare: boolean
-  loading: boolean
-  onCompileModeChange: (mode: KnowledgeCompileMode) => void
-  onPrepare: () => void
-  actionLabel: string
-}) {
-  return (
-    <div className="space-y-4 rounded-md border border-border bg-card p-4">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0 flex-1">
-          <Label className="text-sm font-semibold text-foreground">Compile mode</Label>
-          <div className="mt-2 grid gap-2 rounded-md border border-border bg-muted p-1 sm:grid-cols-2">
-            <button
-              type="button"
-              aria-pressed={compileMode === "incremental"}
-              className={`rounded-md border px-3 py-2 text-sm font-semibold outline-none transition-colors duration-ui focus-visible:ring-2 focus-visible:ring-ring ${
-                compileMode === "incremental"
-                  ? "border-primary bg-accent text-primary shadow-sm"
-                  : "border-transparent bg-card text-foreground hover:border-primary/40 hover:bg-accent"
-              }`}
-              onClick={() => onCompileModeChange("incremental")}
-            >
-              Incremental
-            </button>
-            <button
-              type="button"
-              aria-pressed={compileMode === "full"}
-              className={`rounded-md border px-3 py-2 text-sm font-semibold outline-none transition-colors duration-ui focus-visible:ring-2 focus-visible:ring-ring ${
-                compileMode === "full"
-                  ? "border-primary bg-accent text-primary shadow-sm"
-                  : "border-transparent bg-card text-foreground hover:border-primary/40 hover:bg-accent"
-              }`}
-              onClick={() => onCompileModeChange("full")}
-            >
-              Full recompile
-            </button>
-          </div>
-          <div className="mt-2 text-xs leading-5 text-muted-foreground">
-            Prepare the knowledge preview from the project index loaded in step 1.
-          </div>
-        </div>
-        <div className="rounded-md border border-border bg-muted p-3 lg:w-[360px]">
-          <div className="mb-3 text-xs leading-5 text-muted-foreground">
-            Review the compile mode, then prepare the next knowledge preview.
-          </div>
-          <Button className="h-11 w-full justify-center" onClick={onPrepare} disabled={!canPrepare} aria-busy={loading}>
-            {loading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-            {actionLabel}
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function KnowledgeDraftGate({
-  draftId,
-  status,
-  blockers,
-  reviewSummary,
-  regenerateRequired,
-  proposedKnowledge,
-  busy,
-  onLoadReviewContext,
-  onResolve,
-  onRebase,
-  onRegenerate,
-}: {
-  draftId: string
-  status: string
-  blockers: ProjectKnowledgeDraftBlocker[]
-  reviewSummary: ProjectKnowledgeReviewSummary
-  regenerateRequired?: boolean
-  proposedKnowledge: ProjectKnowledgeBase | null
-  busy: boolean
-  onLoadReviewContext: (draftId: string) => Promise<ProjectKnowledgeReviewContext>
-  onResolve: (knowledgeBase: ProjectKnowledgeBase) => Promise<void>
-  onRebase: () => Promise<void>
-  onRegenerate: () => Promise<void>
-}) {
-  return (
-    <KnowledgeReviewWorkspace
-      draftId={draftId}
-      status={status}
-      blockers={blockers}
-      reviewSummary={reviewSummary}
-      regenerateRequired={regenerateRequired}
-      proposedKnowledge={proposedKnowledge as import("@/modules/rag/project-knowledge.schema").ProjectKnowledgeBase | null}
-      busy={busy}
-      onLoadReviewContext={() => onLoadReviewContext(draftId)}
-      onResolve={onResolve}
-      onRebase={onRebase}
-      onRegenerate={onRegenerate}
-    />
-  )
-}
-
-export function knowledgePublishBlockedReason({
-  status,
-  blockerCount,
-  regenerateRequired,
-}: {
-  status: string | null
-  blockerCount: number
-  regenerateRequired?: boolean
-}) {
-  if (blockerCount > 0) {
-    return `Blocked: ${blockerCount} review ${blockerCount === 1 ? "issue remains" : "issues remain"}.`
-  }
-  if (regenerateRequired) {
-    return "Blocked: Source changes require refreshing sources and regenerating this draft."
-  }
-  if (status !== "ready_for_review") {
-    return "Blocked: Complete and re-check the review before publishing."
-  }
-  return null
-}
-
-function GeneratedPreviewPanel({
-  draft,
-  saving,
-  regenerating,
-  onSave,
-  onLoadReviewContext,
-  onResolve,
-  onRebase,
-  onRegenerate,
-}: {
-  draft: KnowledgeGeneratedDraft
-  saving: boolean
-  regenerating: boolean
-  onSave: () => void
-  onLoadReviewContext: (draftId: string) => Promise<ProjectKnowledgeReviewContext>
-  onResolve: (knowledgeBase: ProjectKnowledgeBase) => Promise<KnowledgePersistedDraft | void>
-  onRebase: () => Promise<void>
-  onRegenerate: () => Promise<void>
-}) {
-  const isIncremental = draft.mode === "incremental"
-  const displayBase = useMemo(
-    () =>
-      isIncremental
-        ? filterKnowledgeBaseBySource(draft.knowledgeBase, new Set(draft.changedSourceWorkItemIds))
-        : draft.knowledgeBase,
-    [isIncremental, draft.knowledgeBase, draft.changedSourceWorkItemIds],
-  )
-  const totalItems = countKnowledgeItems(draft.knowledgeBase)
-  const displayCount = countKnowledgeItems(displayBase)
-  const canPublish = draft.draftStatus === "ready_for_review" && draft.blockers.length === 0 && !draft.regenerateRequired
-  const publishBlockedReason = regenerating
-    ? "Refreshing sources and regenerating the draft. Your current draft will remain available until its replacement is ready."
-    : knowledgePublishBlockedReason({
-        status: draft.draftStatus,
-        blockerCount: draft.blockers.length,
-        regenerateRequired: draft.regenerateRequired,
-      })
-  const publishReasonId = `generated-publish-reason-${draft.draftId}`
-  const [highlightedEntryIdentities, setHighlightedEntryIdentities] = useState<string[]>([])
-
-  useEffect(() => {
-    setHighlightedEntryIdentities([])
-  }, [draft.draftId])
-
-  async function resolveAndHighlight(proposedKnowledge: ProjectKnowledgeBase) {
-    const changedEntries = changedKnowledgeEntryIdentities(draft.knowledgeBase, proposedKnowledge)
-    const resolved = await onResolve(proposedKnowledge)
-    const resolvedStatus = resolved ? resolved.persistedStatus ?? resolved.status : null
-    if (resolved && resolvedStatus === "ready_for_review" && !resolved.blockers.length && !resolved.regenerateRequired) {
-      setHighlightedEntryIdentities(changedEntries)
-    }
-  }
-
-  if (draft.alreadyCurrent) {
-    return (
-      <div className="rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success">
-        <div className="font-semibold">No Knowledge Changes Needed</div>
-        <div className="mt-1">
-          The current incremental baseline has no changed work items, so there is no generated preview to save.
-        </div>
-      </div>
-    )
-  }
-
-  const showRetiredOnlyNote = isIncremental && displayCount === 0
-
-  return (
-    <div className="space-y-4 rounded-md border border-border bg-card p-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-foreground" role="heading" aria-level={3}>Generated Knowledge Preview</div>
-          <div className="text-xs text-muted-foreground">
-            {isIncremental ? (
-              <>
-                {displayCount} new/updated {displayCount === 1 ? "entry" : "entries"} from {draft.changedSourceWorkItemCount} changed source work {draft.changedSourceWorkItemCount === 1 ? "item" : "items"}. {draft.retiredSourceWorkItemCount} retired. Saving updates the full knowledge base ({totalItems} entries total).
-              </>
-            ) : (
-              <>{totalItems} entries from {draft.sourceWorkItemCount} active source work items.</>
-            )}
-          </div>
-        </div>
-        <Badge variant="outline">Prompt {draft.promptVersion}</Badge>
-      </div>
-      {draft.fallbackReason ? (
-        <div className="rounded-md border border-warning/40 bg-warning/15 p-3 text-xs text-warning-foreground dark:text-warning">
-          {draft.fallbackReason}
-        </div>
-      ) : null}
-      {showRetiredOnlyNote ? (
-        <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
-          No new or updated knowledge entries were generated.
-          {draft.retiredSourceWorkItemCount > 0
-            ? ` ${draft.retiredSourceWorkItemCount} retired source work item${
-                draft.retiredSourceWorkItemCount === 1 ? "" : "s"
-              } will be pruned from the saved knowledge base on save.`
-            : ""}
-        </div>
-      ) : (
-        <KnowledgeExplorer knowledgeBase={displayBase} compact highlightedEntryIdentities={highlightedEntryIdentities} />
-      )}
-      <KnowledgeDraftGate
-        draftId={draft.draftId}
-        status={draft.draftStatus}
-        blockers={draft.blockers}
-        reviewSummary={draft.reviewSummary}
-        regenerateRequired={draft.regenerateRequired}
-        proposedKnowledge={draft.knowledgeBase}
-        busy={saving || regenerating}
-        onLoadReviewContext={onLoadReviewContext}
-        onResolve={resolveAndHighlight}
-        onRebase={onRebase}
-        onRegenerate={onRegenerate}
-      />
-      <div className="flex flex-col gap-2 border-t border-border pt-3 sm:flex-row sm:items-center">
-        {publishBlockedReason ? (
-          <p id={publishReasonId} className="text-xs leading-5 text-muted-foreground">
-            {publishBlockedReason}
-          </p>
-        ) : null}
-        <Button
-          className="sm:ml-auto"
-          onClick={onSave}
-          disabled={saving || regenerating || !canPublish}
-          aria-busy={saving || regenerating}
-          aria-describedby={publishBlockedReason ? publishReasonId : undefined}
-        >
-          {saving || regenerating ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" /> : <Save className="size-4" />}
-          {regenerating ? "Refreshing draft..." : saving ? "Publishing..." : "Publish Knowledge Base"}
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function ExternalPromptPanel({
-  draft,
-  currentBatch,
-  responses,
-  validatedCount,
-  allValidated,
-  validationLoading,
-  saveLoading,
-  regenerating,
-  validatedBatches,
-  reviewDraft,
-  batchRef,
-  showPrompt = true,
-  showPreview = true,
-  onResponseChange,
-  onValidate,
-  onSave,
-  onLoadReviewContext,
-  onResolve,
-  onRebase,
-  onRegenerate,
-}: {
-  draft: KnowledgeManualDraft
-  currentBatch?: KnowledgeManualBatchPrompt
-  responses: Record<number, string>
-  validatedCount: number
-  allValidated: boolean
-  validationLoading: boolean
-  saveLoading: boolean
-  regenerating: boolean
-  validatedBatches: Record<number, ProjectKnowledgeBase>
-  reviewDraft: KnowledgePersistedDraft | null
-  batchRef: RefObject<HTMLDivElement | null>
-  showPrompt?: boolean
-  showPreview?: boolean
-  onResponseChange: (batchIndex: number, value: string) => void
-  onValidate: () => void
-  onSave: () => void
-  onLoadReviewContext: (draftId: string) => Promise<ProjectKnowledgeReviewContext>
-  onResolve: (knowledgeBase: ProjectKnowledgeBase) => Promise<KnowledgePersistedDraft | void>
-  onRebase: () => Promise<void>
-  onRegenerate: () => Promise<void>
-}) {
-  const hasRetiredOnlyUpdate = draft.batchCount === 0 && draft.retiredSourceWorkItemCount > 0
-  const previewKnowledgeBase = useMemo(() => {
-    const reviewed = reviewDraft?.proposedKnowledge ?? reviewDraft?.knowledgeBase
-    if (reviewed) return reviewed
-    const bases = Object.values(validatedBatches)
-    if (bases.length === 1) return bases[0]
-    if (!bases.length) return null
-    return combineKnowledgeBasesForPreview(bases)
-  }, [reviewDraft, validatedBatches])
-  const reviewStatus = reviewDraft ? reviewDraft.persistedStatus ?? reviewDraft.status : null
-  const canPublishReview = reviewStatus === "ready_for_review" && !reviewDraft?.blockers.length && !reviewDraft?.regenerateRequired
-  const actionLabel = reviewDraft ? "Publish Knowledge Base" : "Create Review Draft"
-  const publishBlockedReason = regenerating
-    ? "Refreshing sources and regenerating the draft. Your current draft will remain available until its replacement is ready."
-    : reviewDraft
-      ? knowledgePublishBlockedReason({
-          status: reviewStatus,
-          blockerCount: reviewDraft.blockers.length,
-          regenerateRequired: reviewDraft.regenerateRequired,
-        })
-      : null
-  const publishReasonId = `manual-publish-reason-${reviewDraft?.id ?? draft.draftId}`
-  const [highlightedEntryIdentities, setHighlightedEntryIdentities] = useState<string[]>([])
-
-  useEffect(() => {
-    setHighlightedEntryIdentities([])
-  }, [draft.draftId, reviewDraft?.id])
-
-  async function resolveAndHighlight(proposedKnowledge: ProjectKnowledgeBase) {
-    const changedEntries = previewKnowledgeBase
-      ? changedKnowledgeEntryIdentities(previewKnowledgeBase, proposedKnowledge)
-      : []
-    const resolved = await onResolve(proposedKnowledge)
-    const resolvedStatus = resolved ? resolved.persistedStatus ?? resolved.status : null
-    if (resolved && resolvedStatus === "ready_for_review" && !resolved.blockers.length && !resolved.regenerateRequired) {
-      setHighlightedEntryIdentities(changedEntries)
-    }
-  }
-
-  if (draft.batchCount === 0) {
-    return (
-      <div
-        className={`rounded-md border p-4 text-sm ${
-          hasRetiredOnlyUpdate
-            ? "border-warning/40 bg-warning/15 text-warning-foreground dark:text-warning"
-            : "border-success/30 bg-success/10 text-success"
-        }`}
-      >
-        <div className="font-semibold">
-          {hasRetiredOnlyUpdate ? "Knowledge Baseline Update Needed" : "No Knowledge Changes Needed"}
-        </div>
-        <div className="mt-1">
-          {hasRetiredOnlyUpdate
-            ? `${draft.retiredSourceWorkItemCount} retired source work item${
-                draft.retiredSourceWorkItemCount === 1 ? "" : "s"
-              } should be removed from the saved knowledge base. No external prompt is needed.`
-            : "The current incremental baseline has no changed work items, so there is no external prompt to copy or save."}
-        </div>
-        {draft.fallbackReason ? <div className="mt-2 text-xs">{draft.fallbackReason}</div> : null}
-        {hasRetiredOnlyUpdate ? (
-          <div className="mt-4 space-y-3">
-            {reviewDraft ? (
-              <KnowledgeDraftGate
-                draftId={reviewDraft.id}
-                status={reviewStatus ?? reviewDraft.status}
-                blockers={reviewDraft.blockers}
-                reviewSummary={reviewDraft.reviewSummary}
-                regenerateRequired={reviewDraft.regenerateRequired}
-                proposedKnowledge={reviewDraft.proposedKnowledge ?? reviewDraft.knowledgeBase ?? null}
-                busy={saveLoading || regenerating}
-                onLoadReviewContext={onLoadReviewContext}
-                onResolve={resolveAndHighlight}
-                onRebase={onRebase}
-                onRegenerate={onRegenerate}
-              />
-            ) : null}
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              {publishBlockedReason ? (
-                <p id={publishReasonId} className="text-xs leading-5 text-muted-foreground">
-                  {publishBlockedReason}
-                </p>
-              ) : null}
-              <Button
-                className="sm:ml-auto"
-                onClick={onSave}
-                disabled={saveLoading || regenerating || (Boolean(reviewDraft) && !canPublishReview)}
-                aria-busy={saveLoading || regenerating}
-                aria-describedby={publishBlockedReason ? publishReasonId : undefined}
-              >
-                {saveLoading || regenerating ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" /> : <Save className="size-4" />}
-                {regenerating ? "Refreshing draft..." : saveLoading ? "Working..." : actionLabel}
-              </Button>
-            </div>
-          </div>
-        ) : null}
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-4">
-      {showPrompt ? (
-        <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="font-semibold text-foreground">
-                {draft.mode === "incremental" ? "Compile Knowledge Prompt" : "Full Recompile Prompt"}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {draft.sourceWorkItemCount} of {draft.totalSourceWorkItemCount} active work items in prompt input.
-                {draft.mode === "incremental"
-                  ? ` ${draft.changedSourceWorkItemCount} changed, ${draft.retiredSourceWorkItemCount} retired.`
-                  : null}
-              </div>
-            </div>
-            <Badge variant="outline">{draft.batchCount} {draft.batchCount === 1 ? "batch" : "batches"}</Badge>
-          </div>
-          {draft.fallbackReason ? (
-            <div className="mt-3 rounded-md border border-warning/40 bg-warning/15 p-3 text-xs text-warning-foreground dark:text-warning">
-              {draft.fallbackReason}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      {showPrompt && currentBatch ? (
-        <div ref={batchRef} className="space-y-4 rounded-md border border-border bg-muted p-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="text-sm font-semibold text-foreground">
-                Batch {currentBatch.batchIndex} of {draft.batchCount}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {currentBatch.workItemCount} work items in this prompt. {validatedCount} validated.
-              </div>
-            </div>
-          </div>
-          <ManualLLMFields
-            key={currentBatch.batchIndex}
-            prompt={currentBatch.prompt}
-            response={responses[currentBatch.batchIndex] ?? ""}
-            onResponseChange={(value) => onResponseChange(currentBatch.batchIndex, value)}
-            onSubmit={onValidate}
-            submitting={validationLoading}
-            submitLabel="Validate Batch"
-            submittingLabel="Validating..."
-            responseLabel="External LLM Response"
-            responsePlaceholder="Paste the JSON response for this batch."
-            promptMinHeightClass="min-h-[320px]"
-            responseMinHeightClass="min-h-[220px]"
-          />
-        </div>
-      ) : null}
-
-      {showPreview && allValidated && previewKnowledgeBase ? (
-        <div className="space-y-4 rounded-md border border-border bg-card p-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <div className="text-sm font-semibold text-foreground">Validated Knowledge Preview</div>
-              <div className="text-xs text-muted-foreground">
-                {validatedCount} batch {validatedCount === 1 ? "response" : "responses"} validated. Save to persist the final knowledge base.
-              </div>
-            </div>
-            <Badge variant="outline">{countKnowledgeItems(previewKnowledgeBase)} entries</Badge>
-          </div>
-          <KnowledgeExplorer knowledgeBase={previewKnowledgeBase} compact highlightedEntryIdentities={highlightedEntryIdentities} />
-          {reviewDraft ? (
-            <KnowledgeDraftGate
-              draftId={reviewDraft.id}
-              status={reviewStatus ?? reviewDraft.status}
-              blockers={reviewDraft.blockers}
-              reviewSummary={reviewDraft.reviewSummary}
-              regenerateRequired={reviewDraft.regenerateRequired}
-              proposedKnowledge={reviewDraft.proposedKnowledge ?? reviewDraft.knowledgeBase ?? null}
-              busy={saveLoading || regenerating}
-              onLoadReviewContext={onLoadReviewContext}
-              onResolve={resolveAndHighlight}
-              onRebase={onRebase}
-              onRegenerate={onRegenerate}
-            />
-          ) : (
-            <div className="rounded-md border border-border bg-muted p-3 text-xs text-muted-foreground">
-              Finalization creates a persisted review draft. Publishing is a separate explicit action.
-            </div>
-          )}
-          <div className="flex flex-col gap-2 border-t border-border pt-3 sm:flex-row sm:items-center">
-            {publishBlockedReason ? (
-              <p id={publishReasonId} className="text-xs leading-5 text-muted-foreground">
-                {publishBlockedReason}
-              </p>
-            ) : null}
-            <Button
-              className="sm:ml-auto"
-              onClick={onSave}
-              disabled={saveLoading || regenerating || (Boolean(reviewDraft) && !canPublishReview)}
-              aria-busy={saveLoading || regenerating}
-              aria-describedby={publishBlockedReason ? publishReasonId : undefined}
-            >
-              {saveLoading || regenerating ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" /> : <Save className="size-4" />}
-              {regenerating ? "Refreshing draft..." : saveLoading ? "Working..." : actionLabel}
-            </Button>
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }
@@ -3249,34 +1907,6 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
   })
 }
 
-export function changedKnowledgeEntryIdentities(
-  previous: ProjectKnowledgeBase,
-  next: ProjectKnowledgeBase,
-) {
-  const previousCounts = new Map<string, number>()
-  for (const category of KNOWLEDGE_CATEGORIES) {
-    for (const item of previous[category.key] as AnyKnowledgeItem[]) {
-      const identity = `${category.key}:${JSON.stringify(item)}`
-      previousCounts.set(identity, (previousCounts.get(identity) ?? 0) + 1)
-    }
-  }
-
-  const changed: string[] = []
-  for (const category of KNOWLEDGE_CATEGORIES) {
-    const items = next[category.key] as AnyKnowledgeItem[]
-    items.forEach((item) => {
-      const identity = `${category.key}:${JSON.stringify(item)}`
-      const available = previousCounts.get(identity) ?? 0
-      if (available > 0) {
-        previousCounts.set(identity, available - 1)
-      } else {
-        changed.push(knowledgeHighlightIdentity(category.key, item))
-      }
-    })
-  }
-  return changed
-}
-
 function knowledgeHighlightIdentity(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) {
   return `${category}:${JSON.stringify(item)}`
 }
@@ -3373,28 +2003,6 @@ function getKnowledgeCategoryCounts(knowledgeBase: ProjectKnowledgeBase) {
 
 function countKnowledgeItems(knowledgeBase: ProjectKnowledgeBase) {
   return Object.values(getKnowledgeCategoryCounts(knowledgeBase)).reduce((sum, count) => sum + count, 0)
-}
-
-function combineKnowledgeBasesForPreview(knowledgeBases: ProjectKnowledgeBase[]): ProjectKnowledgeBase {
-  return {
-    modules: knowledgeBases.flatMap((base) => base.modules),
-    businessRules: knowledgeBases.flatMap((base) => base.businessRules),
-    stateTransitions: knowledgeBases.flatMap((base) => base.stateTransitions),
-    glossary: knowledgeBases.flatMap((base) => base.glossary),
-    crossDependencies: knowledgeBases.flatMap((base) => base.crossDependencies),
-  }
-}
-
-function filterKnowledgeBaseBySource(knowledgeBase: ProjectKnowledgeBase, sourceIds: Set<string>): ProjectKnowledgeBase {
-  const keep = <TItem extends KnowledgeSource>(items: TItem[]) =>
-    items.filter((item) => item.sourceWorkItemIds.some((id) => sourceIds.has(id.trim())))
-  return {
-    modules: keep(knowledgeBase.modules),
-    businessRules: keep(knowledgeBase.businessRules),
-    stateTransitions: keep(knowledgeBase.stateTransitions),
-    glossary: keep(knowledgeBase.glossary),
-    crossDependencies: keep(knowledgeBase.crossDependencies),
-  }
 }
 
 function syncStatusToneClass(status?: string | null) {
