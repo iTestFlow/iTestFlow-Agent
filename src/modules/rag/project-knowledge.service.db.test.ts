@@ -30,10 +30,9 @@ import {
   uniqueTestId,
 } from "@/test/db";
 import {
-  saveGeneratedProjectKnowledgeBaseDraft,
-  saveManualProjectKnowledgeBaseSnapshot,
+  saveManualProjectKnowledgeBaseFromBatches,
 } from "./project-knowledge.service";
-import { projectKnowledgeBaseToGeneratedPrompt } from "./project-knowledge-grounding";
+import { publishProjectKnowledgeDraft } from "./project-knowledge-draft.service";
 import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
 import { recordProjectKnowledgeBenchmarkQuestion } from "./project-knowledge-benchmark.service";
 import { regroundLegacyProjectKnowledgeCandidates } from "./project-knowledge-compiled.service";
@@ -95,16 +94,16 @@ describeDb("source-versioned project knowledge publication", () => {
   };
 
   async function prepare(knowledgeBase: ProjectKnowledgeBase = initialKnowledgeBase) {
-    return saveManualProjectKnowledgeBaseSnapshot({
+    return saveManualProjectKnowledgeBaseFromBatches({
       scope,
       actor: "user-1",
-      rawOutput: JSON.stringify(projectKnowledgeBaseToGeneratedPrompt(knowledgeBase)),
+      partialKnowledgeBases: [knowledgeBase],
       mode: "full",
     });
   }
 
   async function publish(draftId: string) {
-    return saveGeneratedProjectKnowledgeBaseDraft({ scope, actor: "user-1", draftId });
+    return publishProjectKnowledgeDraft({ scope, actor: "user-1", draftId });
   }
 
   beforeAll(async () => {
