@@ -95,11 +95,43 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
       .toBe(false);
   });
 
-  it("keeps extraction abstentions separate when their fingerprints differ", () => {
+  it("merges extraction abstentions with identical evidence even when fingerprints differ", () => {
     const base = knowledgeBase({
       businessRules: [
         businessRule("br-1", "Customers can request refunds through support.", [evidenceRef("1", "s1", "q")]),
         businessRule("br-1", "Refunds can be requested by customers through support.", [evidenceRef("1", "s2", "q")]),
+      ],
+    });
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1])).toBe(true);
+  });
+
+  it("merges word-order paraphrases of an enumeration citing the same quote", () => {
+    // Enumerations always abstain from atomic extraction (multi-value lists), so
+    // this pair used to split on the word-order-sensitive fingerprint and publish
+    // as two records, one rekeyed with a hash suffix.
+    const quote = "Allowed status values and badge colours: Draft (grey); Quoting (blue); Completed (green)";
+    const base = knowledgeBase({
+      businessRules: [
+        businessRule(
+          "br-status-colours",
+          "Allowed Application Status values and badge colours are Draft (grey), Quoting (blue), and Completed (green).",
+          [evidenceRef("385392", "s1", quote)],
+        ),
+        businessRule(
+          "br-status-colours",
+          "Application Status allowed values and badge colours are Draft (grey), Quoting (blue), and Completed (green).",
+          [evidenceRef("385392", "s2", quote)],
+        ),
+      ],
+    });
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1])).toBe(true);
+  });
+
+  it("keeps extraction abstentions separate when fingerprints and evidence both differ", () => {
+    const base = knowledgeBase({
+      businessRules: [
+        businessRule("br-1", "Customers can request refunds through support.", [evidenceRef("1", "s1", "Refunds go through support.")]),
+        businessRule("br-1", "Support agents can escalate refund disputes.", [evidenceRef("1", "s2", "Disputes may be escalated.")]),
       ],
     });
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1])).toBe(false);

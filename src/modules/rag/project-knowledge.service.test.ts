@@ -1417,4 +1417,41 @@ describe("same-evidence paraphrase handling", () => {
     ]);
   });
 
+  it("auto-merges same-evidence enumeration paraphrases whose word order differs", async () => {
+    setWorkItems([workItemRow({ azure_work_item_id: "385392", content_hash: "h385392" })]);
+    const quote = "Allowed status values and badge colours: Draft (grey); Quoting (blue); Completed (green)";
+    const partials = [
+      knowledgeBase({
+        businessRules: [kbBusinessRule({
+          id: "br-status-colours",
+          rule: "Allowed Application Status values and badge colours are Draft (grey), Quoting (blue), and Completed (green).",
+          sourceWorkItemIds: ["385392"],
+          evidenceRefs: [kbEvidenceRef("385392", "snapshot-run-a", quote)],
+        })],
+      }),
+      knowledgeBase({
+        businessRules: [kbBusinessRule({
+          id: "br-status-colours",
+          rule: "Application Status allowed values and badge colours are Draft (grey), Quoting (blue), and Completed (green).",
+          sourceWorkItemIds: ["385392"],
+          evidenceRefs: [kbEvidenceRef("385392", "snapshot-run-b", quote)],
+        })],
+      }),
+    ];
+
+    const saved = await saveManualProjectKnowledgeBaseFromBatches({
+      scope: projectScope(),
+      actor: "qa",
+      partialKnowledgeBases: partials,
+      mode: "full",
+    });
+
+    // Enumerations abstain from atomic extraction, so the word-order-sensitive
+    // fingerprint differs — identical evidence content must merge the pair anyway
+    // instead of publishing a rekeyed near-duplicate.
+    expect(saved.knowledgeBase.businessRules).toHaveLength(1);
+    expect(saved.knowledgeBase.businessRules[0].id).toBe("br-status-colours");
+    expect(saved.knowledgeBase.businessRules[0].evidenceRefs).toHaveLength(2);
+  });
+
 });

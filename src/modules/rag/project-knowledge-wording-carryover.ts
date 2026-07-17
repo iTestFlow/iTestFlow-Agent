@@ -85,9 +85,11 @@ export function projectKnowledgeConsolidationCandidateKeys<
  * Whether two entries already matched to the same logical subject are structurally
  * safe to consolidate. Module and glossary text may add supported detail without
  * becoming a conflict. Structured categories retain category-specific guards:
- * business rules only merge when their atomic claim or abstention fingerprint
- * agrees, transitions must agree on their target state, and dependency
- * endpoints/types must match.
+ * business rules only merge when their atomic claim agrees, or — when both
+ * extractions abstain — when the fingerprint agrees or both cite identical
+ * non-empty evidence content (same-identity rewording of one source claim is
+ * paraphrase noise, not a disagreement). Transitions must agree on their target
+ * state, and dependency endpoints/types must match.
  *
  * Dependencies require identical non-empty evidence content even during draft
  * consolidation: a generic dependency may only be upgraded when both entries
@@ -124,11 +126,14 @@ export function isCompatibleProjectKnowledgeParaphrase<
         return compareProjectKnowledgeAtomicConstraintValues(firstConstraint, secondConstraint) === "equivalent";
       }
 
-      // Extraction abstention is not proof of equivalence. It can only retain
-      // wording when the closed, language-agnostic fingerprint agrees exactly.
+      // Extraction abstention is not proof of equivalence. Wording may only be
+      // treated as paraphrase noise when the closed, language-agnostic
+      // fingerprint agrees exactly, or when both entries cite identical
+      // non-empty evidence content — the same source claim reworded.
       if (!firstConstraint && !secondConstraint) {
         return normalizeProjectKnowledgeRuleFingerprint(firstRule.rule) ===
-          normalizeProjectKnowledgeRuleFingerprint(secondRule.rule);
+            normalizeProjectKnowledgeRuleFingerprint(secondRule.rule) ||
+          haveIdenticalNonEmptyEvidenceContent(firstRule.evidenceRefs, secondRule.evidenceRefs);
       }
 
       return false;
