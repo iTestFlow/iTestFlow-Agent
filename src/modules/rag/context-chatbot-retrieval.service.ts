@@ -9,6 +9,8 @@ import { buildFtsQuery } from "./full-text-search";
 import { searchProjectKnowledgeByTrigram } from "./trigram-search";
 import { fuseByReciprocalRank } from "./hybrid-ranking";
 import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
+import { createEmbeddingProvider } from "./embedding-provider";
+import { searchProjectKnowledgeByEmbedding } from "./embedding-store.service";
 
 export type ContextChatbotContextEvidence = {
   sourceType: "project_context";
@@ -447,15 +449,31 @@ async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; r
     console.error("Project chat knowledge trigram search failed", error);
   }
 
-  // No trigram signal: keep FTS's own ts_rank_cd order rather than running a
-  // single-list fusion through RRF, which would flatten its real score spread.
-  if (!trigramRows.length) {
+  const embeddingProvider = createEmbeddingProvider();
+  let semanticRows: KnowledgeFtsRow[] = [];
+  if (embeddingProvider) {
+    try {
+      semanticRows = await searchProjectKnowledgeByEmbedding({
+        scope: input.scope,
+        provider: embeddingProvider,
+        query: input.rawQuery,
+        topK: input.limit,
+      });
+    } catch (error) {
+      console.error("Project chat knowledge semantic search failed", error);
+    }
+  }
+
+  // No trigram or semantic signal: keep FTS's own ts_rank_cd order rather than
+  // running a single-list fusion through RRF, which would flatten its real score
+  // spread. Also the common case, since EMBEDDINGS_PROVIDER is off by default.
+  if (!trigramRows.length && !semanticRows.length) {
     const results = ftsRows.map(toKnowledgeEvidence);
     return results.length ? results : getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
   }
 
   const fused = fuseByReciprocalRank({
-    lists: [ftsRows, trigramRows],
+    lists: [ftsRows, trigramRows, semanticRows].filter((list) => list.length > 0),
     getKey: (row) => row.entry_id,
   });
   if (!fused.length) return getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
