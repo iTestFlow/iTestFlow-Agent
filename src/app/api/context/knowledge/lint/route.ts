@@ -3,7 +3,7 @@ import { z } from "zod";
 import { authErrorResponse, requireWorkflowContext, requireWorkflowRole } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
-import { getProjectKnowledgeLintIssues, runProjectKnowledgeLint } from "@/modules/rag/project-knowledge-compiled.service";
+import { getProjectKnowledgeLintIssues, isActiveProjectKnowledgeLintIssue, runProjectKnowledgeLint } from "@/modules/rag/project-knowledge-compiled.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     if (parsed.data.run) return NextResponse.json(await runProjectKnowledgeLint({ scope: trustedScope }));
     const issues = await getProjectKnowledgeLintIssues({ scope: trustedScope });
-    const activeIssues = issues.filter((issue) => issue.status === "open" || issue.status === "reported");
+    const activeIssues = issues.filter(isActiveProjectKnowledgeLintIssue);
     return NextResponse.json({
       issues,
       summary: {

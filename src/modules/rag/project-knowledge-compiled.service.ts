@@ -719,11 +719,21 @@ export async function runProjectKnowledgeLint(input: { scope: ProjectScope }) {
     },
   });
 
+  const storedIssues = await getProjectKnowledgeLintIssues({ scope });
   return {
     runId: lintRunId,
-    issues: await getProjectKnowledgeLintIssues({ scope }),
-    summary: summarizeIssues(issues),
+    issues: storedIssues,
+    summary: summarizeIssues(storedIssues.filter(isActiveProjectKnowledgeLintIssue)),
   };
+}
+
+/**
+ * An issue is "active" (counted in the health tiles) only while it is open or a
+ * reported human miss. Ignored, resolved, confirmed, and rejected issues are
+ * still returned in the list but must not inflate the summary counts.
+ */
+export function isActiveProjectKnowledgeLintIssue(issue: { status: string }) {
+  return issue.status === "open" || issue.status === "reported";
 }
 
 export async function getProjectKnowledgeLintIssues(input: { scope: ProjectScope }): Promise<ProjectKnowledgeLintIssue[]> {
