@@ -45,6 +45,10 @@ const POLL_MS = Number(process.env.WORKER_POLL_MS ?? "2000");
 const HEARTBEAT_MS = Number(process.env.WORKER_HEARTBEAT_MS ?? String(30 * 1000));
 const SCHEDULER_ENABLED = process.env.WORKER_SCHEDULER !== "false";
 const SCHEDULER_TICK_MS = Number(process.env.WORKER_SCHEDULER_TICK_MS ?? String(60 * 1000));
+// Initial registration retries while the web process's startup migration is
+// still creating worker_instances (fresh database), instead of crash-looping.
+const REGISTRATION_RETRY_MS = 5_000;
+const REGISTRATION_DEADLINE_MS = 120_000;
 
 let shuttingDown = false;
 let registryHeartbeat: ReturnType<typeof setInterval> | null = null;
@@ -174,6 +178,20 @@ function installShutdown() {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
+async function registerWorkerInstanceWithRetry(capabilities: string[]) {
+  const deadline = Date.now() + REGISTRATION_DEADLINE_MS;
+  for (;;) {
+    try {
+      await registerWorkerInstance({ id: WORKER_ID, capabilities });
+      return;
+    } catch (error) {
+      if (shuttingDown || Date.now() >= deadline) throw error;
+      console.error(`[worker] registration failed; retrying in ${REGISTRATION_RETRY_MS / 1000}s (the database may still be migrating).`, error);
+      await sleep(REGISTRATION_RETRY_MS);
+    }
+  }
+}
+
 async function main() {
   if (!process.env.DATABASE_URL) {
     console.error("[worker] DATABASE_URL is not set. See .env.example.");
@@ -181,7 +199,7 @@ async function main() {
   }
   registerAllJobHandlers();
   const capabilities = registeredJobTypes();
-  await registerWorkerInstance({ id: WORKER_ID, capabilities });
+  await registerWorkerInstanceWithRetry(capabilities);
   await removeStaleWorkerInstances();
   registryHeartbeat = setInterval(() => {
     void heartbeatWorkerInstance(WORKER_ID)
