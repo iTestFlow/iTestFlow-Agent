@@ -25,6 +25,25 @@ export type SemanticContextChunk = {
   similarity: number;
 };
 
+export type SemanticKnowledgeEntry = {
+  entry_id: string;
+  category: string;
+  entry_key: string;
+  title: string;
+  content: string;
+  source_work_item_ids: string;
+  evidence: string;
+  similarity: number;
+};
+
+// Discriminates the two embedding pipelines sharing the `embeddings` table so
+// neither's orphan-cleanup or search queries can see the other's rows. Raw
+// work-item chunks are keyed by document_chunks.id; knowledge entries have no
+// stable per-save id (see knowledgeEmbeddingChunkId), so they get a distinct
+// synthetic chunk_id namespace under their own source_type.
+const CHUNK_SOURCE_TYPE = "azure_work_item_chunk";
+const KNOWLEDGE_SOURCE_TYPE = "project_knowledge_entry";
+
 const ACTIVE_CHUNK_FILTER_SQL = `
   dc.project_id = @projectId
   AND dc.azure_project_id = @azureProjectId
@@ -55,6 +74,7 @@ export async function syncProjectChunkEmbeddings(input: {
       DELETE FROM embeddings
       WHERE project_id = @projectId
         AND azure_project_id = @azureProjectId
+        AND source_type = @sourceType
         AND NOT EXISTS (
           SELECT 1 FROM document_chunks dc WHERE dc.id = embeddings.chunk_id
         )
@@ -62,6 +82,7 @@ export async function syncProjectChunkEmbeddings(input: {
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
+      sourceType: CHUNK_SOURCE_TYPE,
     },
   );
 
@@ -78,6 +99,7 @@ export async function syncProjectChunkEmbeddings(input: {
       FROM document_chunks dc
       LEFT JOIN embeddings e
         ON e.chunk_id = dc.id
+       AND e.source_type = @sourceType
        AND e.vector_reference = @vectorReference
       WHERE ${ACTIVE_CHUNK_FILTER_SQL}
         AND (e.id IS NULL OR e.updated_at < dc.updated_at)
@@ -86,6 +108,7 @@ export async function syncProjectChunkEmbeddings(input: {
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
+      sourceType: CHUNK_SOURCE_TYPE,
       vectorReference: input.provider.vectorReference,
     },
   );
@@ -102,13 +125,13 @@ export async function syncProjectChunkEmbeddings(input: {
       await sqlRun(
         `
           INSERT INTO embeddings (
-            id, project_id, azure_project_id, chunk_id, provider, model,
+            id, project_id, azure_project_id, chunk_id, source_type, provider, model,
             vector_reference, vector_json, created_at, updated_at
           ) VALUES (
-            @id, @projectId, @azureProjectId, @chunkId, @provider, @model,
+            @id, @projectId, @azureProjectId, @chunkId, @sourceType, @provider, @model,
             @vectorReference, @vectorJson, @createdAt, @updatedAt
           )
-          ON CONFLICT (chunk_id) DO UPDATE SET
+          ON CONFLICT (source_type, chunk_id) DO UPDATE SET
             provider = excluded.provider,
             model = excluded.model,
             vector_reference = excluded.vector_reference,
@@ -120,6 +143,7 @@ export async function syncProjectChunkEmbeddings(input: {
           projectId: scope.projectId,
           azureProjectId: scope.azureProjectId,
           chunkId: chunk.id,
+          sourceType: CHUNK_SOURCE_TYPE,
           provider: input.provider.name,
           model: input.provider.model,
           vectorReference: input.provider.vectorReference,
@@ -170,12 +194,14 @@ export async function searchProjectContextByEmbedding(input: {
       JOIN document_chunks dc ON dc.id = e.chunk_id
       WHERE e.project_id = @projectId
         AND e.azure_project_id = @azureProjectId
+        AND e.source_type = @sourceType
         AND e.vector_reference = @vectorReference
         AND ${ACTIVE_CHUNK_FILTER_SQL}
     `,
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
+      sourceType: CHUNK_SOURCE_TYPE,
       vectorReference: input.provider.vectorReference,
     },
   );
@@ -207,6 +233,166 @@ export async function searchProjectContextByEmbedding(input: {
     selected.push(row);
   }
   return selected;
+}
+
+// project_knowledge_entries has no stable per-save id (refreshProjectKnowledgeSearchIndex
+// fully deletes and reinserts every entry, with a fresh random id, on every knowledge
+// base save), so embeddings for it are keyed on a synthetic id derived from each
+// entry's natural identity (category + entry_key) instead. This makes the embedding
+// row's identity independent of the entry table's per-save id churn.
+function knowledgeEmbeddingChunkId(projectId: string, category: string, entryKey: string) {
+  return `kb:${projectId}:${category}:${entryKey}`;
+}
+
+/**
+ * Embeds every current project_knowledge_entries row and removes embeddings for
+ * entries no longer present. Unlike syncProjectChunkEmbeddings, this always
+ * re-embeds every entry on every call rather than skipping unchanged ones: knowledge
+ * bases are small (tens to low-hundreds of entries) and compiled infrequently by a
+ * deliberate owner/admin action, unlike the continuously-synced chunk corpus, so
+ * incremental skip isn't worth the extra content-hash tracking it would need. Meant
+ * to be called once per knowledge base save (see saveProjectKnowledgeBaseSnapshot),
+ * after refreshProjectKnowledgeSearchIndex has already written the current entries.
+ */
+export async function syncProjectKnowledgeEntryEmbeddings(input: {
+  scope: ProjectScope;
+  provider: EmbeddingProvider;
+}) {
+  const scope = assertProjectScope(input.scope);
+  const entries = await sqlAll<{ category: string; entry_key: string; content: string }>(
+    `
+      SELECT category, entry_key, content
+      FROM project_knowledge_entries
+      WHERE project_id = @projectId
+        AND azure_project_id = @azureProjectId
+      ORDER BY category, entry_key
+    `,
+    { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
+  );
+
+  const currentChunkIds = entries.map((entry) =>
+    knowledgeEmbeddingChunkId(scope.projectId, entry.category, entry.entry_key),
+  );
+  const removedCount = await sqlRun(
+    `
+      DELETE FROM embeddings
+      WHERE project_id = @projectId
+        AND azure_project_id = @azureProjectId
+        AND source_type = @sourceType
+        AND NOT (chunk_id = ANY(@currentChunkIds))
+    `,
+    {
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      sourceType: KNOWLEDGE_SOURCE_TYPE,
+      currentChunkIds,
+    },
+  );
+
+  let embeddedEntryCount = 0;
+  for (let start = 0; start < entries.length; start += MAX_EMBED_BATCH_SIZE) {
+    const batch = entries.slice(start, start + MAX_EMBED_BATCH_SIZE);
+    const vectors = await input.provider.embed(batch.map((entry) => entry.content), "document");
+    const now = nowIso();
+    for (const [index, entry] of batch.entries()) {
+      await sqlRun(
+        `
+          INSERT INTO embeddings (
+            id, project_id, azure_project_id, chunk_id, source_type, provider, model,
+            vector_reference, vector_json, created_at, updated_at
+          ) VALUES (
+            @id, @projectId, @azureProjectId, @chunkId, @sourceType, @provider, @model,
+            @vectorReference, @vectorJson, @createdAt, @updatedAt
+          )
+          ON CONFLICT (source_type, chunk_id) DO UPDATE SET
+            provider = excluded.provider,
+            model = excluded.model,
+            vector_reference = excluded.vector_reference,
+            vector_json = excluded.vector_json,
+            updated_at = excluded.updated_at
+        `,
+        {
+          id: createId("emb"),
+          projectId: scope.projectId,
+          azureProjectId: scope.azureProjectId,
+          chunkId: knowledgeEmbeddingChunkId(scope.projectId, entry.category, entry.entry_key),
+          sourceType: KNOWLEDGE_SOURCE_TYPE,
+          provider: input.provider.name,
+          model: input.provider.model,
+          vectorReference: input.provider.vectorReference,
+          vectorJson: JSON.stringify(vectors[index]),
+          createdAt: now,
+          updatedAt: now,
+        },
+      );
+      embeddedEntryCount += 1;
+    }
+  }
+
+  return {
+    embeddedEntryCount,
+    removedEmbeddingCount: removedCount,
+  };
+}
+
+/** Same approach as searchProjectContextByEmbedding, over project_knowledge_entries. */
+export async function searchProjectKnowledgeByEmbedding(input: {
+  scope: ProjectScope;
+  provider: EmbeddingProvider;
+  query: string;
+  topK: number;
+}): Promise<SemanticKnowledgeEntry[]> {
+  const scope = assertProjectScope(input.scope);
+  const query = input.query.trim();
+  if (!query) return [];
+
+  const rows = await sqlAll<{
+    vector_json: string | null;
+    entry_id: string;
+    category: string;
+    entry_key: string;
+    title: string;
+    content: string;
+    source_work_item_ids: string;
+    evidence: string;
+  }>(
+    `
+      SELECT e.vector_json, pke.id AS entry_id, pke.category, pke.entry_key, pke.title,
+             pke.content, pke.source_work_item_ids, pke.evidence
+      FROM embeddings e
+      JOIN project_knowledge_entries pke
+        ON e.chunk_id = 'kb:' || @projectId || ':' || pke.category || ':' || pke.entry_key
+       AND pke.project_id = @projectId
+       AND pke.azure_project_id = @azureProjectId
+      WHERE e.project_id = @projectId
+        AND e.azure_project_id = @azureProjectId
+        AND e.source_type = @sourceType
+        AND e.vector_reference = @vectorReference
+    `,
+    {
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      sourceType: KNOWLEDGE_SOURCE_TYPE,
+      vectorReference: input.provider.vectorReference,
+    },
+  );
+  if (!rows.length) return [];
+
+  const [queryVector] = await input.provider.embed([query], "query");
+  return rows
+    .map((row) => ({
+      entry_id: row.entry_id,
+      category: row.category,
+      entry_key: row.entry_key,
+      title: row.title,
+      content: row.content,
+      source_work_item_ids: row.source_work_item_ids,
+      evidence: row.evidence,
+      similarity: cosineSimilarity(queryVector, parseVectorJson(row.vector_json)),
+    }))
+    .filter((row) => row.similarity > 0)
+    .sort((first, second) => second.similarity - first.similarity || first.entry_id.localeCompare(second.entry_id))
+    .slice(0, input.topK);
 }
 
 function parseVectorJson(value: string | null): number[] {

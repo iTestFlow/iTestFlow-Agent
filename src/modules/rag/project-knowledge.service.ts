@@ -25,6 +25,8 @@ import {
   type ProjectKnowledgeCompilationMode,
 } from "./project-knowledge-compiled.service";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
+import { createEmbeddingProvider } from "./embedding-provider";
+import { syncProjectKnowledgeEntryEmbeddings } from "./embedding-store.service";
 
 // Keep each extraction batch's INPUT small enough that its structured OUTPUT comfortably
 // fits under the output-token cap. Smaller batches are cheap now that consolidation is a
@@ -1347,6 +1349,30 @@ async function saveProjectKnowledgeBaseSnapshot(input: {
     await runProjectKnowledgeLint({ scope: input.scope });
   } catch (error) {
     console.error("Project knowledge lint failed after snapshot save", error);
+  }
+
+  // Knowledge-entry embedding sync is likewise best-effort and post-commit: a
+  // missing or failing embedding backend must never fail or roll back the saved
+  // snapshot, it only means the Business Owner Assistant's knowledge search stays
+  // lexical until the next successful save.
+  const embeddingProvider = createEmbeddingProvider();
+  if (embeddingProvider) {
+    try {
+      await syncProjectKnowledgeEntryEmbeddings({ scope: input.scope, provider: embeddingProvider });
+    } catch (error) {
+      console.error("Knowledge entry embedding sync failed after snapshot save", error);
+      recordProjectKnowledgeLog({
+        scope: input.scope,
+        eventType: "knowledge.embedding_failed",
+        severity: "warning",
+        title: "Knowledge entry embedding sync failed",
+        message: error instanceof Error ? error.message : "Unknown embedding error.",
+        metadata: {
+          provider: embeddingProvider.name,
+          model: embeddingProvider.model,
+        },
+      });
+    }
   }
 
   return {
