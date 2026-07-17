@@ -131,7 +131,6 @@
     "src/modules/llm/prompts/index.ts",
     "src/modules/llm/prompts/project-knowledge-extraction.prompt.ts",
     "src/modules/llm/prompts/prompt.types.ts",
-    "src/modules/llm/prompts/registry.ts",
     "src/modules/llm/prompts/requirement-analysis.prompt.ts",
     "src/modules/llm/prompts/structured-output.prompt.ts",
     "src/modules/llm/prompts/test-case-generation.prompt.ts",

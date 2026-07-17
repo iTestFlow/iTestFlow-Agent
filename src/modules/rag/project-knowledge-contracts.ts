@@ -58,8 +58,6 @@ export const PROJECT_KNOWLEDGE_OPERATION_TYPES = [
   "flag_contradiction",
 ] as const;
 
-export type ProjectKnowledgeOperationType = (typeof PROJECT_KNOWLEDGE_OPERATION_TYPES)[number];
-
 export const ProjectKnowledgeOperationSchema = z.object({
   id: z.string().trim().min(1),
   type: z.enum(PROJECT_KNOWLEDGE_OPERATION_TYPES),

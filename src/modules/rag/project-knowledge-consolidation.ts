@@ -25,9 +25,6 @@ export type ProjectKnowledgeEntryByConsolidationCategory = {
   dependency: ProjectKnowledgeBase["crossDependencies"][number];
 };
 
-export type ProjectKnowledgeConsolidationEntry =
-  ProjectKnowledgeEntryByConsolidationCategory[ProjectKnowledgeConsolidationCategory];
-
 const GLOSSARY_TYPE_PRIORITY: Record<ProjectKnowledgeBase["glossary"][number]["type"], number> = {
   business_entity: 1,
   process: 2,

@@ -1097,16 +1097,6 @@ export async function transitionProjectKnowledgeLintIssue(input: {
   return getProjectKnowledgeLintIssues({ scope });
 }
 
-export async function reviewProjectKnowledgeLintMiss(input: {
-  scope: ProjectScope;
-  actor: string;
-  issueId: string;
-  decision: "confirm" | "reject";
-  note?: string;
-}) {
-  return transitionProjectKnowledgeLintIssue({ ...input, action: input.decision });
-}
-
 export async function listProjectKnowledgeCandidates(input: {
   scope: ProjectScope;
   status?: ProjectKnowledgeCandidateStatus;

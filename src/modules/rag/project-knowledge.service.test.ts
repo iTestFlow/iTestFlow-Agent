@@ -49,7 +49,6 @@ import {
   loadProjectKnowledgeContext,
   previewGeneratedProjectKnowledgeBase,
   saveManualProjectKnowledgeBaseFromBatches,
-  validateProjectKnowledgeExternalOutput,
   validateProjectKnowledgeManualBatch,
 } from "./project-knowledge.service";
 
@@ -283,72 +282,6 @@ beforeEach(() => {
   draftService.storeProjectKnowledgeManualDraftBatches.mockResolvedValue({
     draft: { id: "draft-1" },
     carriedBatches: [],
-  });
-});
-
-describe("validateProjectKnowledgeExternalOutput", () => {
-  const validPayload = {
-    modules: [{
-      id: "mod-checkout",
-      name: "Checkout",
-      description: "",
-      sourceWorkItemIds: [" 1", "1", "2"],
-      evidence: "Checkout story",
-    }],
-    businessRules: [],
-    stateTransitions: [],
-    glossary: [{
-      term: "Customer",
-      type: "Business Entity",
-      definition: "A buyer.",
-      sourceWorkItemIds: ["1"],
-      evidence: "Story 1",
-    }],
-    crossDependencies: [],
-  };
-
-  it("accepts a valid payload and normalizes it through the schema", () => {
-    const result = validateProjectKnowledgeExternalOutput(JSON.stringify(validPayload));
-
-    // Duplicate/whitespace source ids collapse, blank description falls back to
-    // evidence, and free-form glossary types normalize to the enum.
-    expect(result.modules).toEqual([expect.objectContaining({
-      id: "mod-checkout",
-      description: "Checkout story",
-      sourceWorkItemIds: ["1", "2"],
-    })]);
-    expect(result.glossary[0].type).toBe("business_entity");
-  });
-
-  it("accepts JSON pasted with prose and markdown fences around it", () => {
-    const rawOutput = `Here is the knowledge base:\n\n\`\`\`json\n${JSON.stringify(validPayload)}\n\`\`\`\nLet me know if you need anything else.`;
-    expect(validateProjectKnowledgeExternalOutput(rawOutput).modules).toHaveLength(1);
-  });
-
-  it("rejects truncated output with an actionable invalid-JSON error", () => {
-    const full = JSON.stringify(validPayload);
-    const error = expectAppError(() => validateProjectKnowledgeExternalOutput(full.slice(0, full.length - 30)));
-
-    expect(error.code).toBe(AppErrorCode.InvalidJson);
-    expect(error.message).toContain("External LLM output was not valid JSON");
-    expect(error.userMessage).toContain("was not valid JSON");
-  });
-
-  it("rejects empty input with a paste-the-response message", () => {
-    const error = expectAppError(() => validateProjectKnowledgeExternalOutput("   "));
-
-    expect(error.code).toBe(AppErrorCode.InvalidJson);
-    expect(error.message).toBe("Paste the external LLM JSON response before continuing.");
-  });
-
-  it("rejects schema-invalid JSON and names the failing path", () => {
-    const error = expectAppError(() => validateProjectKnowledgeExternalOutput(JSON.stringify({
-      modules: [{ id: "m1", name: "M", sourceWorkItemIds: [], evidence: "E" }],
-    })));
-
-    expect(error.code).toBe(AppErrorCode.SchemaValidation);
-    expect(error.message).toContain("failed schema validation for ProjectKnowledgeBase");
-    expect(error.message).toContain("modules.0.sourceWorkItemIds");
   });
 });
 

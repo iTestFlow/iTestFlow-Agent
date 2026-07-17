@@ -1111,69 +1111,6 @@ export async function getProjectKnowledgeDraft(input: { scope: ProjectScope; dra
 }
 
 
-export async function abandonProjectKnowledgeDraft(input: {
-  scope: ProjectScope;
-  actor: string;
-  draftId: string;
-}) {
-  const scope = assertProjectScope(input.scope);
-  return withTransaction(async (client) => {
-    await acquireProjectKnowledgeLock(scope, client);
-    await expireManualProjectKnowledgeDrafts(scope, client);
-    const draft = await getDraftRow(scope, input.draftId, client, true);
-    if (!draft) throw draftNotFound();
-    if (!["generating", "awaiting_input", "ready_for_review", "blocked", "rebase_required"].includes(draft.status)) {
-      throw draftStateConflict(draft.status);
-    }
-    const now = nowIso();
-    await sqlRun(
-      `
-        UPDATE project_knowledge_drafts
-        SET status = 'superseded', status_reason = 'abandoned_by_user', updated_at = @now
-        WHERE id = @draftId
-      `,
-      { draftId: draft.id, now },
-      client,
-    );
-    await writeAuditLogTransactional({
-      workspaceId: scope.workspaceId,
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      azureProjectName: scope.azureProjectName,
-      azureOrganizationUrl: scope.azureOrganizationUrl,
-      entityType: "project_knowledge_draft",
-      entityId: draft.id,
-      action: "rag.knowledge_draft.abandoned",
-      status: "Success",
-      actor: input.actor,
-      message: "Abandoned a project knowledge draft.",
-      details: { previousStatus: draft.status },
-    }, client);
-    return requireDraft(scope, draft.id, client);
-  });
-}
-
-export async function listProjectKnowledgeDrafts(input: { scope: ProjectScope; limit?: number }) {
-  const scope = assertProjectScope(input.scope);
-  await expireManualProjectKnowledgeDrafts(scope);
-  await supersedeOutdatedContractDrafts(scope);
-  const rows = await sqlAll<DraftRow>(
-    `
-      SELECT * FROM project_knowledge_drafts
-      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-      ORDER BY updated_at DESC
-      LIMIT @limit
-    `,
-    {
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      limit: Math.min(100, Math.max(1, input.limit ?? 30)),
-    },
-  );
-  return rows.map(toDraft);
-}
-
-
 export async function markProjectKnowledgeSourceDrift(
   scopeInput: ProjectScope,
   reason: Record<string, unknown>,

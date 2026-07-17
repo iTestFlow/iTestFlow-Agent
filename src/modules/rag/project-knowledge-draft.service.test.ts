@@ -42,11 +42,9 @@ import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeBase } from "./project
 import {
   applyProjectKnowledgeConflictDecisions,
   beginProjectKnowledgeDraft,
-  abandonProjectKnowledgeDraft,
   completeProjectKnowledgeDraft,
   getProjectKnowledgeDraft,
   getProjectKnowledgeDraftConflicts,
-  listProjectKnowledgeDrafts,
   loadProjectKnowledgeManualBatchResults,
   publishProjectKnowledgeDraft,
   storeProjectKnowledgeManualDraftBatches,
@@ -1334,27 +1332,6 @@ describe("draft lifecycle", () => {
     expect(insertIndex).toBeGreaterThan(expiryIndex);
   });
 
-  it("expires inactive manual drafts before listing drafts", async () => {
-    database.sqlAll.mockResolvedValue([]);
-
-    await expect(listProjectKnowledgeDrafts({ scope })).resolves.toEqual([]);
-
-    expect(database.sqlRun).toHaveBeenCalledWith(
-      expect.stringContaining("manual_draft_expired"),
-      expect.objectContaining({ projectId: scope.projectId, azureProjectId: scope.azureProjectId }),
-      undefined,
-    );
-    expect(database.sqlRun).toHaveBeenCalledWith(
-      expect.stringContaining("compiler_contract_upgraded"),
-      expect.objectContaining({
-        projectId: scope.projectId,
-        azureProjectId: scope.azureProjectId,
-        compilerContractVersion: PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION,
-      }),
-      undefined,
-    );
-  });
-
   it("expires inactive manual drafts in every nonterminal lifecycle state before direct reads", async () => {
     database.sqlGet.mockResolvedValue(draftRow({
       generation_mode: "manual",
@@ -1413,28 +1390,6 @@ describe("draft lifecycle", () => {
       draftVersion: "stale-version",
       decisions: [],
     })).rejects.toMatchObject({ code: AppErrorCode.KnowledgeContractMismatch });
-  });
-
-  it("abandons a live draft under the project lock and records the prior state", async () => {
-    database.sqlGet.mockResolvedValue(draftRow({ status: "blocked" }));
-
-    const result = await abandonProjectKnowledgeDraft({ scope, draftId: "draft-child", actor: "owner-1" });
-
-    expect(result).toMatchObject({ persistedStatus: "blocked" });
-    expect(lock.acquireProjectKnowledgeLock).toHaveBeenCalledWith(scope, expect.anything());
-    expect(database.sqlRun).toHaveBeenCalledWith(
-      expect.stringContaining("status_reason = 'abandoned_by_user'"),
-      expect.objectContaining({ draftId: "draft-child" }),
-      expect.anything(),
-    );
-    expect(audit.writeAuditLogTransactional).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: "rag.knowledge_draft.abandoned",
-        actor: "owner-1",
-        details: { previousStatus: "blocked" },
-      }),
-      expect.anything(),
-    );
   });
 });
 

@@ -70,43 +70,6 @@ export function recordProjectKnowledgeBenchmarkQuestion(input: {
   ));
 }
 
-export async function submitProjectKnowledgeBenchmarkQuestion(input: {
-  scope: ProjectScope;
-  question: string;
-}) {
-  const scope = assertProjectScope(input.scope);
-  const sanitized = sanitizeProjectKnowledgeBenchmarkQuestion(input.question);
-  if (sanitized.length < 12 || sanitized.split(/\s+/).length < 3) {
-    throw new Error("Benchmark questions must contain at least three meaningful words.");
-  }
-  const questionHash = createHash("sha256").update(sanitized.toLowerCase()).digest("hex");
-  const now = nowIso();
-  await sqlRun(
-    `
-      INSERT INTO project_knowledge_benchmark_cases (
-        id, workspace_id, project_id, azure_project_id, source_type,
-        question_hash, sanitized_question, usage_count, first_seen_at, last_seen_at
-      ) VALUES (
-        @id, (SELECT workspace_id FROM projects WHERE id = @projectId), @projectId,
-        @azureProjectId, 'qa', @questionHash, @sanitizedQuestion, 1, @now, @now
-      )
-      ON CONFLICT (project_id, azure_project_id, source_type, question_hash)
-      DO UPDATE SET usage_count = project_knowledge_benchmark_cases.usage_count + 1,
-                    last_seen_at = EXCLUDED.last_seen_at,
-                    active = true
-    `,
-    {
-      id: createId("pkbc"),
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      questionHash,
-      sanitizedQuestion: sanitized,
-      now,
-    },
-  );
-  return { sourceType: "qa" as const, question: sanitized };
-}
-
 export async function listProjectKnowledgeBenchmarkCases(input: {
   scope: ProjectScope;
   limit?: number;

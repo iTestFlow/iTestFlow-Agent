@@ -6,10 +6,7 @@ import { parseExternalStructuredOutput } from "@/modules/llm/external-structured
 import type { LLMProvider, LLMResult } from "@/modules/llm/llm-types";
 import { addTokenUsage, hasTokenUsage } from "@/modules/llm/token-usage";
 import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
-import {
-  projectKnowledgeConsolidationPrompt,
-  projectKnowledgeExtractionPrompt,
-} from "@/modules/llm/prompts";
+import { projectKnowledgeExtractionPrompt } from "@/modules/llm/prompts";
 import { nowIso, sqlAll, sqlGet } from "@/modules/shared/infrastructure/database/db";
 import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import {
@@ -54,7 +51,6 @@ import {
   getProjectKnowledgeDraft,
   heartbeatProjectKnowledgeDraft,
   loadProjectKnowledgeManualBatchResults,
-  publishProjectKnowledgeDraft,
   setProjectKnowledgeDraftCompilationMode,
   storeProjectKnowledgeManualDraftBatches,
   saveProjectKnowledgeManualBatchResult,
@@ -193,38 +189,6 @@ export type ProjectKnowledgeGeneratedDraft = {
   omissionReasons: Record<string, number>;
   citationRepairCallCount: number;
 };
-
-export async function extractAndSaveProjectKnowledgeBase(input: {
-  scope: ProjectScope;
-  actor: string;
-  provider: LLMProvider;
-  mode?: ProjectKnowledgeCompileMode;
-}) {
-  const draft = await previewGeneratedProjectKnowledgeBase({
-    scope: input.scope,
-    actor: input.actor,
-    provider: input.provider,
-    mode: input.mode,
-  });
-  writeAuditLog({
-    workspaceId: input.scope.workspaceId,
-    projectId: input.scope.projectId,
-    azureProjectId: input.scope.azureProjectId,
-    azureProjectName: input.scope.azureProjectName,
-    azureOrganizationUrl: input.scope.azureOrganizationUrl,
-    entityType: "project_knowledge_draft",
-    entityId: draft.draftId,
-    actor: input.actor,
-    action: "rag.extract_project_knowledge_base.compatibility",
-    status: "Info",
-    message: "Deprecated extract endpoint created a reviewable draft without publishing knowledge.",
-    details: {
-      requiresReview: true,
-      automaticDuplicateConsolidationCount: draft.automaticDuplicateConsolidationCount,
-    },
-  });
-  return draft;
-}
 
 export async function previewGeneratedProjectKnowledgeBase(input: {
   scope: ProjectScope;
@@ -431,14 +395,6 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
     }
     throw error;
   }
-}
-
-export async function saveGeneratedProjectKnowledgeBaseDraft(input: {
-  scope: ProjectScope;
-  actor: string;
-  draftId: string;
-}) {
-  return publishProjectKnowledgeDraft(input);
 }
 
 async function completeGeneratedPreview(input: {
@@ -658,127 +614,12 @@ export async function buildProjectKnowledgeManualDraft(input: {
   };
 }
 
-export function buildProjectKnowledgeManualConsolidationPrompt(input: {
-  scope: ProjectScope;
-  partialKnowledgeBases: ProjectKnowledgeBase[];
-}) {
-  const scope = assertProjectScope(input.scope);
-  const userPrompt = buildProjectKnowledgeConsolidationUserPrompt({
-    scope,
-    partialKnowledgeBases: input.partialKnowledgeBases,
-  });
-
-  return {
-    schemaName: "ProjectKnowledgeGeneratedBase",
-    promptName: projectKnowledgeConsolidationPrompt.name,
-    promptVersion: projectKnowledgeConsolidationPrompt.version,
-    systemPrompt: projectKnowledgeConsolidationPrompt.system,
-    userPrompt,
-    prompt: buildManualPromptMarkdown({
-      title: "iTestFlow Knowledge Base Consolidation",
-      system: projectKnowledgeConsolidationPrompt.system,
-      user: userPrompt,
-    }),
-  };
-}
-
-export function validateProjectKnowledgeExternalOutput(rawOutput: string) {
-  return parseExternalStructuredOutput({
-    schemaName: "ProjectKnowledgeBase",
-    schema: ProjectKnowledgeBaseSchema,
-    rawOutput,
-  });
-}
-
 export function validateProjectKnowledgeGeneratedExternalOutput(rawOutput: string) {
   return parseExternalStructuredOutput({
     schemaName: "ProjectKnowledgeGeneratedBase",
     schema: ProjectKnowledgeGeneratedBaseSchema,
     rawOutput,
   });
-}
-
-export async function saveManualProjectKnowledgeBaseSnapshot(input: {
-  scope: ProjectScope;
-  actor: string;
-  rawOutput: string;
-  mode?: ProjectKnowledgeCompileMode;
-}) {
-  const scope = assertProjectScope(input.scope);
-  const draft = await beginProjectKnowledgeDraft({
-    scope,
-    actor: input.actor,
-    generationMode: "manual",
-    compilationMode: input.mode ?? "full",
-  });
-  const workItems = await loadProjectKnowledgeWorkItemsFromManifest(scope, draft.sourceManifest);
-  if (!workItems.length) {
-    throw new Error("Fetch and index project context before saving the knowledge base.");
-  }
-
-  const manualGrounding = groundManualProjectKnowledgeOutput({
-    rawOutput: input.rawOutput,
-    workItems,
-  });
-  const knowledgeBase = manualGrounding.knowledgeBase;
-  const saveResult = await prepareProjectKnowledgeManualSave({
-    scope,
-    sourceWorkItems: workItems,
-    partialKnowledgeBases: [knowledgeBase],
-    rawOutput: input.rawOutput,
-    mode: input.mode ?? "full",
-  });
-  const completed = await completeProjectKnowledgeDraft({
-    scope,
-    draftId: draft.id,
-    provider: "external",
-    model: "manual-external",
-    rawOutput: saveResult.rawOutput,
-    knowledgeBase: saveResult.knowledgeBase,
-    metrics: {
-      ...buildProjectKnowledgeSizeMetrics(workItems, saveResult.knowledgeBase),
-      splitCallCount: 1,
-      renderedPromptChars: 0,
-      automaticDuplicateConsolidationCount: saveResult.automaticDuplicateConsolidationCount,
-      wordingCarryOverCount: saveResult.wordingCarryOverCount,
-      omittedEntryCount: manualGrounding.omissions.length,
-      omissionReasons: manualGrounding.omissionReasons,
-      citationRepairCallCount: 0,
-    },
-    touchedSourceWorkItemIds: saveResult.mode === "full"
-      ? workItems.map((item) => item.id)
-      : [...saveResult.changedSourceWorkItemIds, ...saveResult.retiredSourceWorkItemIds],
-  });
-
-  writeAuditLog({
-    projectId: scope.projectId,
-    azureProjectId: scope.azureProjectId,
-    azureProjectName: scope.azureProjectName,
-    azureOrganizationUrl: scope.azureOrganizationUrl,
-    actor: input.actor,
-    action: "rag.extract_project_knowledge_base.manual_complete",
-    status: "Success",
-    message: "Prepared a reviewable project knowledge draft from validated external LLM output.",
-    details: {
-      provider: "external",
-      model: "manual-external",
-      promptVersion: projectKnowledgeExtractionPrompt.version,
-      requestedMode: input.mode ?? "full",
-      mode: saveResult.mode,
-      promptedSourceWorkItemCount: saveResult.promptedSourceWorkItemCount,
-      changedSourceWorkItemIds: saveResult.changedSourceWorkItemIds,
-      retiredSourceWorkItemIds: saveResult.retiredSourceWorkItemIds,
-      sourceWorkItemCount: workItems.length,
-      counts: getKnowledgeCounts(saveResult.knowledgeBase),
-      automaticDuplicateConsolidationCount: saveResult.automaticDuplicateConsolidationCount,
-      wordingCarryOverCount: saveResult.wordingCarryOverCount,
-      omittedEntryCount: manualGrounding.omissions.length,
-      omissionReasons: manualGrounding.omissionReasons,
-    },
-  });
-
-  if (!completed.knowledgeBase) throw new Error("Manual draft completed without proposed knowledge.");
-  return { ...completed, knowledgeBase: completed.knowledgeBase };
 }
 
 export async function saveManualProjectKnowledgeBaseFromBatches(input: {
@@ -1770,20 +1611,6 @@ function buildProjectKnowledgeExtractionUserPrompt(input: {
     relevantExistingKnowledge: input.relevantExistingKnowledge
       ? projectKnowledgeBaseToGeneratedPrompt(input.relevantExistingKnowledge)
       : undefined,
-    requiredOutputShape: PROJECT_KNOWLEDGE_GENERATED_OUTPUT_SHAPE,
-    projectScope: {
-      azureProjectId: input.scope.azureProjectId,
-      azureProjectName: input.scope.azureProjectName,
-    },
-  }, null, 2);
-}
-
-function buildProjectKnowledgeConsolidationUserPrompt(input: {
-  scope: ProjectScope;
-  partialKnowledgeBases: ProjectKnowledgeBase[];
-}) {
-  return JSON.stringify({
-    partialKnowledgeBases: input.partialKnowledgeBases.map(projectKnowledgeBaseToGeneratedPrompt),
     requiredOutputShape: PROJECT_KNOWLEDGE_GENERATED_OUTPUT_SHAPE,
     projectScope: {
       azureProjectId: input.scope.azureProjectId,
