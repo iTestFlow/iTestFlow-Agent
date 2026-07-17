@@ -11,6 +11,7 @@ export enum AppErrorCode {
   KnowledgePublicationBlocked = "knowledge_publication_blocked",
   KnowledgeDraftNotFound = "knowledge_draft_not_found",
   KnowledgeContractMismatch = "knowledge_contract_mismatch",
+  KnowledgeBuildUnavailable = "knowledge_build_unavailable",
   ResourceNotFound = "resource_not_found",
   Unknown = "unknown",
 }

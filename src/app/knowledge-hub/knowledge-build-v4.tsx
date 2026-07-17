@@ -26,12 +26,14 @@ import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent } from "@/components/ui/tabs"
 import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress"
+import { ApiError } from "@/components/workflow/api-error"
 import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle"
 import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session"
 import { ManualLLMFields } from "@/components/workflow/manual-llm-panel"
 import { postJson } from "@/components/workflow/post-json"
 import type { AiGenerationStatus } from "@/components/workflow/use-ai-generation"
 import { WorkflowStepper, type WorkflowStepDefinition } from "@/components/workflow/workflow-stepper"
+import { AppErrorCode } from "@/modules/shared/errors/app-error"
 import type { ActiveProjectScope } from "@/shared/lib/active-project"
 import {
   KnowledgeConflictReview,
@@ -161,6 +163,7 @@ export function KnowledgeBuildV4({
   const [compileMode, setCompileMode] = useState<"incremental" | "full">("incremental")
   const [job, setJob] = useState<JobView | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [buildUnavailable, setBuildUnavailable] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [readyDraftId, setReadyDraftId] = useState<string | null>(null)
   const [conflictDraftId, setConflictDraftId] = useState<string | null>(null)
@@ -390,6 +393,7 @@ export function KnowledgeBuildV4({
     beginBuildLoadingExperience(next)
     setJob(next)
     setError(null)
+    setBuildUnavailable(false)
     setNotice(null)
     window.localStorage.setItem(storageKey, next.id)
     onActivityChange?.(true)
@@ -415,6 +419,14 @@ export function KnowledgeBuildV4({
     try {
       await queueBuild()
     } catch (queueError) {
+      if (queueError instanceof ApiError
+        && (queueError.code === AppErrorCode.KnowledgeBuildUnavailable
+          || (queueError.code === undefined && queueError.status === 503))) {
+        setBuildUnavailable(true)
+        setError(null)
+        return
+      }
+      setBuildUnavailable(false)
       setError(queueError instanceof Error ? queueError.message : "The knowledge build could not start.")
     }
   }
@@ -774,6 +786,30 @@ export function KnowledgeBuildV4({
         />
       ) : job && (job.status === "pending" || job.status === "running") ? (
         <JobProgress job={job} onCancel={cancelJob} />
+      ) : null}
+
+      {buildUnavailable ? (
+        <div role="alert" className="flex flex-col gap-3 rounded-md border border-warning/40 bg-warning/10 p-4 text-sm text-warning-foreground sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <div>
+              <div className="font-semibold">Generation service unavailable</div>
+              <p className="mt-1 text-xs leading-5">
+                The background generation service is not running, so the build was not queued.
+                Start the app with <code>npm run dev</code> (web and worker together), or run{" "}
+                <code>npm run worker:dev</code> alongside <code>npm run web:dev</code>, then retry.
+              </p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void startAutomaticBuild()}
+            disabled={Boolean(activeOperation)}
+          >
+            Retry build
+          </Button>
+        </div>
       ) : null}
 
       {error ? (

@@ -96,6 +96,7 @@ export function statusForCode(code: AppErrorCode) {
     case AppErrorCode.SchemaValidation:
     case AppErrorCode.ProviderUnavailable:
     case AppErrorCode.NoProvider:
+    case AppErrorCode.KnowledgeBuildUnavailable:
       return 503;
     case AppErrorCode.Unknown:
     default:

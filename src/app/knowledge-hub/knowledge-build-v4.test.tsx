@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({ postJson: vi.fn() }));
 
 vi.mock("@/components/workflow/post-json", () => ({ postJson: api.postJson }));
 
+import { ApiError } from "@/components/workflow/api-error";
 import { buildJobPollDelay, KnowledgeBuildV4 } from "./knowledge-build-v4";
 
 const scope = {
@@ -175,6 +176,43 @@ describe("Project Knowledge v4 conflict review", () => {
       "/api/context/knowledge/jobs",
       expect.objectContaining({ operation: "build", mode: "full" }),
     ));
+  });
+
+  it("shows the generation-unavailable callout with retry when the build returns 503", async () => {
+    api.postJson
+      .mockRejectedValueOnce(ApiError.fromResponse(
+        {
+          error: "Knowledge generation is temporarily unavailable. Please try again shortly.",
+          code: "knowledge_build_unavailable",
+        },
+        503,
+      ))
+      .mockResolvedValueOnce({ job: completedJob({ outcome: "no_changes" }), reused: false });
+
+    render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Build knowledge" }));
+
+    await waitFor(() => expect(screen.getByText("Generation service unavailable")).toBeTruthy());
+    expect(screen.getByText(/the build was not queued/)).toBeTruthy();
+    expect(screen.queryByText("Knowledge generation is temporarily unavailable. Please try again shortly.")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry build" }));
+
+    await waitFor(() => expect(screen.queryByText("Generation service unavailable")).toBeNull());
+    expect(api.postJson).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the generic error box for non-availability build failures", async () => {
+    api.postJson.mockRejectedValueOnce(ApiError.fromResponse(
+      { error: "No LLM provider is configured. Configure a provider, model, and API key in Settings.", code: "no_provider" },
+      503,
+    ));
+
+    render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Build knowledge" }));
+
+    await waitFor(() => expect(screen.getByText(/No LLM provider is configured/)).toBeTruthy());
+    expect(screen.queryByText("Generation service unavailable")).toBeNull();
   });
 
   it("uses the shared LLM progress and loading-game experience for active builds", async () => {
