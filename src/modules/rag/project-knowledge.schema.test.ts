@@ -4,7 +4,9 @@ import {
   ProjectKnowledgeBaseSchema,
   ProjectKnowledgeGlossaryTermSchema,
   ProjectKnowledgeModuleSchema,
+  haveEquivalentNonEmptyEvidenceContent,
   haveIdenticalNonEmptyEvidenceContent,
+  projectKnowledgeEvidenceContentEquivalenceIdentity,
   projectKnowledgeEvidenceContentIdentity,
   projectKnowledgeEvidenceContentIdentitySet,
   type ProjectKnowledgeEvidenceRef,
@@ -235,6 +237,63 @@ describe("evidence content identity", () => {
     expect(haveIdenticalNonEmptyEvidenceContent(
       [ref()],
       [ref({ quote: "Different" })],
+    )).toBe(false);
+  });
+
+  it("keeps the strict identity sensitive to punctuation and case", () => {
+    const identity = projectKnowledgeEvidenceContentIdentity(ref());
+    expect(projectKnowledgeEvidenceContentIdentity(ref({ quote: "Valid code applies discount." }))).not.toBe(identity);
+    expect(projectKnowledgeEvidenceContentIdentity(ref({ quote: "valid code applies discount" }))).not.toBe(identity);
+  });
+});
+
+describe("evidence content equivalence", () => {
+  const ref = (overrides: Partial<ProjectKnowledgeEvidenceRef> = {}): ProjectKnowledgeEvidenceRef => ({
+    sourceSnapshotId: "snapshot-1",
+    sourceWorkItemId: "10",
+    sourceField: "acceptanceCriteria",
+    quote: "Valid code applies discount",
+    origin: "generated_v2",
+    verification: "exact",
+    ...overrides,
+  });
+
+  it("ignores terminal punctuation, wrapping quotes, and case drift", () => {
+    const identity = projectKnowledgeEvidenceContentEquivalenceIdentity(ref());
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ quote: "Valid code applies discount." })))
+      .toBe(identity);
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ quote: "valid code applies DISCOUNT" })))
+      .toBe(identity);
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ quote: "\"Valid code applies discount.\"" })))
+      .toBe(identity);
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ quote: "'Valid code applies discount'!" })))
+      .toBe(identity);
+  });
+
+  it("still distinguishes source, field, and interior wording", () => {
+    const identity = projectKnowledgeEvidenceContentEquivalenceIdentity(ref());
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ sourceWorkItemId: "11" }))).not.toBe(identity);
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ sourceField: "description" }))).not.toBe(identity);
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ quote: "Valid code, applies discount" })))
+      .not.toBe(identity);
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ quote: "Invalid code applies discount" })))
+      .not.toBe(identity);
+  });
+
+  it("compares evidence sets with the relaxed quote form and rejects empty sides", () => {
+    expect(haveEquivalentNonEmptyEvidenceContent(
+      [ref({ quote: "retry does not duplicate payment or order." })],
+      [ref({ quote: "retry does not duplicate payment or order" })],
+    )).toBe(true);
+    expect(haveEquivalentNonEmptyEvidenceContent([], [])).toBe(false);
+    expect(haveEquivalentNonEmptyEvidenceContent([ref()], undefined)).toBe(false);
+    expect(haveEquivalentNonEmptyEvidenceContent(
+      [ref()],
+      [ref(), ref({ sourceWorkItemId: "11" })],
+    )).toBe(false);
+    expect(haveEquivalentNonEmptyEvidenceContent(
+      [ref()],
+      [ref({ quote: "A different claim entirely" })],
     )).toBe(false);
   });
 });

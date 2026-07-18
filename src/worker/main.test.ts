@@ -43,11 +43,13 @@ vi.mock("@/modules/jobs/worker-registry.service", () => workerRegistry);
 
 import type { Job } from "@/modules/jobs/job-queue.service";
 import {
+  attachSupervisorShutdownChannel,
   dispatchReadyKnowledgeJobs,
   processNextJob,
   requeueUnfinishedJobsForShutdown,
   waitForActiveJobs,
   WORKER_ID,
+  WORKER_SHUTDOWN_MESSAGE,
 } from "./main";
 
 // Ownership token the worker passes to every queue mutation.
@@ -339,5 +341,34 @@ describe("shutdown", () => {
     finish("job-a");
     await vi.advanceTimersByTimeAsync(0);
     await expect(waitForActiveJobs(500)).resolves.toBe(true);
+  });
+});
+
+describe("supervisor shutdown channel", () => {
+  it("pins the shutdown message literal mirrored in scripts/run-app.mjs", () => {
+    expect(WORKER_SHUTDOWN_MESSAGE).toBe("shutdown");
+  });
+
+  it("fires only for the shutdown control line, tolerating padding", async () => {
+    const { PassThrough } = await import("node:stream");
+    const stream = new PassThrough();
+    const onShutdown = vi.fn();
+    attachSupervisorShutdownChannel(stream, onShutdown);
+
+    stream.write("some unrelated log line\n");
+    stream.write(`not-${WORKER_SHUTDOWN_MESSAGE}\n`);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onShutdown).not.toHaveBeenCalled();
+
+    stream.write(`  ${WORKER_SHUTDOWN_MESSAGE}  \n`);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onShutdown).toHaveBeenCalledTimes(1);
+    expect(onShutdown).toHaveBeenCalledWith("supervisor shutdown message");
+
+    // Stream end alone must never trigger shutdown: a standalone worker under a
+    // service manager can have an immediately-closed stdin.
+    stream.end();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onShutdown).toHaveBeenCalledTimes(1);
   });
 });

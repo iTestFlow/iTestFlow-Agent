@@ -564,6 +564,9 @@ export async function completeProjectKnowledgeDraft(input: {
             duplicateResolution.counters.preConsolidationDuplicateIdentityCount,
           paraphraseMergeCount:
             numberMetric(input.metrics?.paraphraseMergeCount) + duplicateResolution.counters.paraphraseMergeCount,
+          evidenceOnlyParaphraseMergeCount:
+            numberMetric(input.metrics?.evidenceOnlyParaphraseMergeCount) +
+            duplicateResolution.counters.evidenceOnlyParaphraseMergeCount,
           rekeyCount: numberMetric(input.metrics?.rekeyCount) + duplicateResolution.counters.rekeyCount,
           atomicExtractionFailureCount:
             numberMetric(input.metrics?.atomicExtractionFailureCount) +
@@ -1110,6 +1113,53 @@ export async function getProjectKnowledgeDraft(input: { scope: ProjectScope; dra
   return row ? toDraft(row) : null;
 }
 
+export type ProjectKnowledgeInReviewDraftSummary = {
+  id: string;
+  status: "conflicts_required" | "ready_to_publish";
+  updatedAt: string;
+  conflictCount: number;
+  possibleTensionCount: number;
+};
+
+/**
+ * The newest draft still awaiting a review decision, for the status-route
+ * resume surface: the UI has no draft listing, so without this a refresh after
+ * job completion permanently loses the path back into the review workspace.
+ * The base-revision filter hides drafts that could only publish as outdated.
+ */
+export async function getLatestInReviewProjectKnowledgeDraft(input: {
+  scope: ProjectScope;
+}): Promise<ProjectKnowledgeInReviewDraftSummary | null> {
+  const scope = assertProjectScope(input.scope);
+  await expireManualProjectKnowledgeDrafts(scope);
+  await supersedeOutdatedContractDrafts(scope);
+  const row = await sqlGet<{ id: string; status: string; updated_at: string; metrics_json: unknown }>(
+    `
+      SELECT drafts.id, drafts.status, drafts.updated_at, drafts.metrics_json
+      FROM project_knowledge_drafts drafts
+      LEFT JOIN project_knowledge_base base
+        ON base.project_id = drafts.project_id AND base.azure_project_id = drafts.azure_project_id
+      WHERE drafts.project_id = @projectId AND drafts.azure_project_id = @azureProjectId
+        AND drafts.status IN ('blocked', 'ready_to_publish')
+        AND drafts.base_revision_id IS NOT DISTINCT FROM base.active_revision_id
+      ORDER BY drafts.updated_at DESC
+      LIMIT 1
+    `,
+    { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
+  );
+  if (!row) return null;
+  const metrics = asRecord(row.metrics_json);
+  const countMetric = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  return {
+    id: row.id,
+    status: row.status === "blocked" ? "conflicts_required" : "ready_to_publish",
+    updatedAt: row.updated_at,
+    conflictCount: countMetric(metrics.conflictCount),
+    possibleTensionCount: countMetric(metrics.possibleTensionCount),
+  };
+}
+
 
 export async function markProjectKnowledgeSourceDrift(
   scopeInput: ProjectScope,
@@ -1466,11 +1516,14 @@ async function persistProjectKnowledgeHardConflicts(
   }
 }
 
-// Deliberately strict: only normalization-identical entries merge here. This runs on
-// every draft completion, including the compact-decision boundary where entries
-// reflect explicit reviewer decisions — an evidence-identity paraphrase fallback (see
-// shouldAutomaticallyConsolidate in project-knowledge.service.ts) would silently
-// override reviewer wording. Compiler-produced paraphrases are merged upstream instead.
+// Deliberately strict grouping: only normalization-identical entries can merge here.
+// This runs on every draft completion, including the compact-decision boundary where
+// entries reflect explicit reviewer decisions — pairs are grouped by their normalized
+// text projection FIRST, so reviewer wording can never be overridden at this boundary
+// even though the per-pair category gate (isCompatibleProjectKnowledgeParaphrase) also
+// accepts evidence-equivalent paraphrases. Within an identical-projection group the
+// gate can only heal metadata-only splits (e.g. constraint present on one side).
+// Compiler-produced paraphrases with differing wording are merged upstream instead.
 function consolidateSafeProjectKnowledgeDuplicates(knowledgeBase: ProjectKnowledgeBase) {
   const modules = consolidateSafeCategory(
     "module",

@@ -81,6 +81,14 @@ type JobView = {
 
 type EnqueuedJob = { job: JobView; reused: boolean }
 
+export type KnowledgeInReviewDraft = {
+  id: string
+  status: "conflicts_required" | "ready_to_publish"
+  updatedAt: string
+  conflictCount: number
+  possibleTensionCount: number
+}
+
 type ManualDraft = {
   draftId: string
   mode: "incremental" | "full"
@@ -104,6 +112,7 @@ type Props = {
   sourceIndexContent?: ReactNode
   generationAvailable?: boolean
   onRefreshAvailability?: () => void
+  resumableDraft?: KnowledgeInReviewDraft | null
 }
 
 type KnowledgeDraftPreviewCategory =
@@ -162,6 +171,7 @@ export function KnowledgeBuildV4({
   sourceIndexContent,
   generationAvailable,
   onRefreshAvailability,
+  resumableDraft,
 }: Props) {
   const [generationMode, setGenerationMode] = useState<"automatic" | "external">("automatic")
   const [compileMode, setCompileMode] = useState<"incremental" | "full">("incremental")
@@ -171,6 +181,7 @@ export function KnowledgeBuildV4({
   const [notice, setNotice] = useState<string | null>(null)
   const [readyDraftId, setReadyDraftId] = useState<string | null>(null)
   const [conflictDraftId, setConflictDraftId] = useState<string | null>(null)
+  const [resumedDraftId, setResumedDraftId] = useState<string | null>(null)
   const [conflictPage, setConflictPage] = useState<ConflictPage | null>(null)
   const [conflictsLoading, setConflictsLoading] = useState(false)
   const [decisions, setDecisions] = useState<Record<string, ConflictDecision>>({})
@@ -207,7 +218,9 @@ export function KnowledgeBuildV4({
       cache: "no-store",
     })
     const body = await response.json().catch(() => null) as { job?: JobView; error?: string } | null
-    if (!response.ok || !body?.job) throw new Error(body?.error ?? "The knowledge build status could not be loaded.")
+    if (!response.ok || !body?.job) {
+      throw new ApiError(body?.error ?? "The knowledge build status could not be loaded.", { status: response.status })
+    }
     return body.job
   }, [scope.projectId, scope.workspaceId])
 
@@ -320,18 +333,43 @@ export function KnowledgeBuildV4({
     setNotice(null)
     setReadyDraftId(null)
     setConflictDraftId(null)
+    setResumedDraftId(null)
     setConflictPage(null)
     setDecisions({})
     setDraftHadConflicts(false)
     setWorkflowPublished(false)
     const savedJobId = window.localStorage.getItem(storageKey)
     if (!savedJobId) return
-    void readJob(savedJobId)
-      .then((savedJob) => {
-        beginBuildLoadingExperience(savedJob)
-        setJob(savedJob)
-      })
-      .catch(() => window.localStorage.removeItem(storageKey))
+    // Only a confirmed 404 proves the saved job is gone; a network blip or server
+    // restart must keep the id so the running build stays resumable (a lost id
+    // has no UI recovery path once the job completes). Retry with the same
+    // failure backoff the polling loop uses.
+    let cancelled = false
+    let retryTimer: number | undefined
+    const attemptResume = (failures: number) => {
+      void readJob(savedJobId)
+        .then((savedJob) => {
+          if (cancelled) return
+          beginBuildLoadingExperience(savedJob)
+          setJob(savedJob)
+        })
+        .catch((resumeError) => {
+          if (cancelled) return
+          if (resumeError instanceof ApiError && resumeError.status === 404) {
+            window.localStorage.removeItem(storageKey)
+            return
+          }
+          retryTimer = window.setTimeout(
+            () => attemptResume(failures + 1),
+            buildJobPollDelay({ createdAt: undefined }, failures + 1, Date.now()),
+          )
+        })
+    }
+    attemptResume(0)
+    return () => {
+      cancelled = true
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+    }
   }, [beginBuildLoadingExperience, endLoadingGameSession, readJob, storageKey])
 
   useEffect(() => {
@@ -852,6 +890,46 @@ export function KnowledgeBuildV4({
       ) : null}
 
       {omissionSummary ? <OmissionSummary summary={omissionSummary} /> : null}
+
+      {resumableDraft &&
+        !activeOperation &&
+        !manualDraft &&
+        !conflictDraftId &&
+        !readyDraftId &&
+        !workflowPublished &&
+        resumedDraftId !== resumableDraft.id ? (
+        <div role="status" className="flex flex-col gap-3 rounded-md border border-border bg-muted/30 p-4 text-sm sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-2">
+            <GitMerge className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
+            <div>
+              <div className="font-semibold">A knowledge draft from a previous build is still awaiting review</div>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {resumableDraft.status === "conflicts_required"
+                  ? resumableDraft.conflictCount === 1
+                    ? "1 conflict still needs a decision before the draft can be published."
+                    : `${resumableDraft.conflictCount > 0 ? resumableDraft.conflictCount : "Knowledge"} conflicts still need decisions before the draft can be published.`
+                  : "The draft passed validation and is ready to review and publish. Publishing commits exactly what was reviewed."}
+              </p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setResumedDraftId(resumableDraft.id)
+              setError(null)
+              void processKnowledgeResult({
+                outcome: resumableDraft.status,
+                draftId: resumableDraft.id,
+                conflictCount: resumableDraft.conflictCount,
+                possibleTensionCount: resumableDraft.possibleTensionCount,
+              })
+            }}
+          >
+            Resume review
+          </Button>
+        </div>
+      ) : null}
 
       {conflictDraftId ? (
         <KnowledgeConflictReview

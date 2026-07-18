@@ -5,6 +5,7 @@ import { PROJECT_KNOWLEDGE_JOB } from "@/modules/jobs/project-knowledge-jobs.ser
 import { hasHealthyWorkerCapability } from "@/modules/jobs/worker-registry.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { getLatestInReviewProjectKnowledgeDraft } from "@/modules/rag/project-knowledge-draft.service";
 import { getProjectKnowledgeBaseSnapshot } from "@/modules/rag/project-knowledge.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
@@ -23,11 +24,12 @@ export async function POST(request: Request) {
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
-    const [snapshot, generationAvailable] = await Promise.all([
+    const [snapshot, generationAvailable, latestInReviewDraft] = await Promise.all([
       getProjectKnowledgeBaseSnapshot({ scope: trustedScope }),
       hasHealthyWorkerCapability(PROJECT_KNOWLEDGE_JOB),
+      getLatestInReviewProjectKnowledgeDraft({ scope: trustedScope }),
     ]);
-    return NextResponse.json({ snapshot, generationAvailable });
+    return NextResponse.json({ snapshot, generationAvailable, latestInReviewDraft });
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;

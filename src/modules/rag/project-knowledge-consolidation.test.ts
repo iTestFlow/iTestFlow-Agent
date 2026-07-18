@@ -152,6 +152,39 @@ describe("mergeProjectKnowledgeConflictEntries", () => {
     expect(reverse.constraint).toEqual(forward.constraint);
   });
 
+  it("re-extracts an atomic constraint when only the losing wording carries the claim", () => {
+    // No entry persists a constraint and the merged entry keeps the longer,
+    // abstaining wording — without the extraction fallback the shorter wording's
+    // atomic claim would silently vanish from the merged entry.
+    const extractable: ProjectKnowledgeBase["businessRules"][number] = {
+      id: "br-retry",
+      rule: "Maximum retry count is 3.",
+      sourceField: "acceptanceCriteria",
+      sourceWorkItemIds: ["10"],
+      evidence: "Maximum retry count is 3.",
+    };
+    const longerAbstaining: ProjectKnowledgeBase["businessRules"][number] = {
+      ...extractable,
+      rule: "Retry policy applies to all checkout payment flows for registered customers.",
+      sourceWorkItemIds: ["11"],
+    };
+
+    const forward = mergeProjectKnowledgeConflictEntries("business_rule", [longerAbstaining, extractable]);
+    const reverse = mergeProjectKnowledgeConflictEntries("business_rule", [extractable, longerAbstaining]);
+
+    expect(forward).toMatchObject({
+      rule: "Retry policy applies to all checkout payment flows for registered customers.",
+      constraint: expect.objectContaining({
+        object: "retry",
+        property: "count",
+        operator: "lte",
+        value: "3",
+        valueType: "number",
+      }),
+    });
+    expect(reverse.constraint).toEqual(forward.constraint);
+  });
+
   it("keeps the most-specific dependency type regardless of merge order", () => {
     const generic: ProjectKnowledgeBase["crossDependencies"][number] = {
       id: "dep-payment",

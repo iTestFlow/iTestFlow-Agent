@@ -354,25 +354,70 @@ export function mergeProjectKnowledgeEvidenceRefs(
 
 // Content identity deliberately excludes sourceSnapshotId and locator: both churn on
 // re-sync even when the underlying source text is unchanged, and comparisons that need
-// to survive that churn (paraphrase merging, wording carry-over, the evidence-identical
-// conflict flag) must key on what the evidence actually says, not which capture said it.
+// to survive that churn must key on what the evidence actually says, not which capture
+// said it. The strict form keeps the quote byte-exact (past whitespace) and backs the
+// evidence-identical conflict flag, where a false "identical" could hide a genuine
+// disagreement from the reviewer. Merge gates and wording carry-over use the relaxed
+// equivalence form below instead.
 export function projectKnowledgeEvidenceContentIdentity(ref: ProjectKnowledgeEvidenceRef) {
   return [ref.sourceWorkItemId, ref.sourceField, normalizeEvidenceQuote(ref.quote)].join("\u0000");
 }
 
+// Relaxed quote form for merge-gate equivalence ONLY. LLM re-quoting drifts in terminal
+// punctuation, symmetric wrapping quotes, and case even when the cited source text is
+// unchanged; treating that drift as different evidence permanently splits paraphrase
+// twins. NOT used by the evidence-identical conflict flag (strict above) nor by any
+// persisted hash (contracts.ts keeps its own quote normalization). Smart quotes are
+// deliberately excluded from wrapper stripping: they form asymmetric pairs that NFKC
+// does not fold, so stripping them would risk eating interior characters.
+function relaxedEvidenceQuoteForm(value: string) {
+  let quote = normalizeEvidenceQuote(value).normalize("NFKC");
+  for (let pass = 0; pass < 2; pass += 1) {
+    quote = quote.replace(/^(["'`])(.*)\1$/u, "$2").trim();
+    quote = quote.replace(/[.;:!?â€¦]+$/u, "").trim();
+  }
+  return quote.toLowerCase();
+}
+
+export function projectKnowledgeEvidenceContentEquivalenceIdentity(ref: ProjectKnowledgeEvidenceRef) {
+  return [ref.sourceWorkItemId, ref.sourceField, relaxedEvidenceQuoteForm(ref.quote)].join("\u0000");
+}
+
 export function projectKnowledgeEvidenceContentIdentitySet(refs: ProjectKnowledgeEvidenceRef[] | undefined) {
-  return Array.from(new Set((refs ?? []).map(projectKnowledgeEvidenceContentIdentity))).sort(compareCanonicalText);
+  return evidenceContentIdentitySet(refs, projectKnowledgeEvidenceContentIdentity);
 }
 
 export function haveIdenticalNonEmptyEvidenceContent(
   first: ProjectKnowledgeEvidenceRef[] | undefined,
   second: ProjectKnowledgeEvidenceRef[] | undefined,
 ) {
-  const firstIdentities = projectKnowledgeEvidenceContentIdentitySet(first);
-  const secondIdentities = projectKnowledgeEvidenceContentIdentitySet(second);
+  return haveMatchingNonEmptyEvidenceContent(first, second, projectKnowledgeEvidenceContentIdentity);
+}
+
+export function haveEquivalentNonEmptyEvidenceContent(
+  first: ProjectKnowledgeEvidenceRef[] | undefined,
+  second: ProjectKnowledgeEvidenceRef[] | undefined,
+) {
+  return haveMatchingNonEmptyEvidenceContent(first, second, projectKnowledgeEvidenceContentEquivalenceIdentity);
+}
+
+function evidenceContentIdentitySet(
+  refs: ProjectKnowledgeEvidenceRef[] | undefined,
+  identity: (ref: ProjectKnowledgeEvidenceRef) => string,
+) {
+  return Array.from(new Set((refs ?? []).map(identity))).sort(compareCanonicalText);
+}
+
+function haveMatchingNonEmptyEvidenceContent(
+  first: ProjectKnowledgeEvidenceRef[] | undefined,
+  second: ProjectKnowledgeEvidenceRef[] | undefined,
+  identity: (ref: ProjectKnowledgeEvidenceRef) => string,
+) {
+  const firstIdentities = evidenceContentIdentitySet(first, identity);
+  const secondIdentities = evidenceContentIdentitySet(second, identity);
   return firstIdentities.length > 0 &&
     firstIdentities.length === secondIdentities.length &&
-    firstIdentities.every((identity, index) => identity === secondIdentities[index]);
+    firstIdentities.every((value, index) => value === secondIdentities[index]);
 }
 
 export function renderProjectKnowledgeEvidenceRefs(refs: ProjectKnowledgeEvidenceRef[]) {

@@ -113,9 +113,11 @@ export function canonicalizeProjectKnowledgeDependencyType(value: string) {
 }
 
 /**
- * Used only as an identical-evidence fallback. Removing relationship verbs lets
- * "payment gateway call" and "payment gateway dependency" match without treating
- * unrelated labels such as "API" and "event" as synonyms.
+ * Used only as a content-equivalent-evidence fallback (terminal punctuation,
+ * wrapping quotes, and case drift tolerated by the caller's comparator).
+ * Removing relationship verbs lets "payment gateway call" and "payment gateway
+ * dependency" match without treating unrelated labels such as "API" and
+ * "event" as synonyms.
  */
 export function projectKnowledgeDependencyTypeSubject(value: string) {
   return normalizeProjectKnowledgeDependencyType(value)
@@ -171,6 +173,9 @@ function hasDependencyTypeHierarchyRank(value: string) {
   return Object.prototype.hasOwnProperty.call(DEPENDENCY_TYPE_HIERARCHY_RANK, value);
 }
 
+// The identicalEvidence option means both dependencies cite content-equivalent
+// non-empty evidence (the caller's relaxed comparator), which licenses the
+// hierarchy and shared-subject fallbacks below.
 export function areProjectKnowledgeDependencyTypesEquivalent(
   first: string,
   second: string,

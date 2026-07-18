@@ -552,4 +552,116 @@ describe("Project Knowledge v4 conflict review", () => {
     }
     expect(requestCount).toBeLessThanOrEqual(65);
   });
+
+  it("resumes a conflicts-required draft from the resume affordance", async () => {
+    api.postJson.mockImplementation(async (url: string, body: Record<string, unknown>) => {
+      if (String(url).endsWith("/conflicts")) return conflictPage(Number(body.page));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    render(
+      <KnowledgeBuildV4
+        scope={scope}
+        onPublished={vi.fn().mockResolvedValue(undefined)}
+        resumableDraft={{
+          id: "draft-1",
+          status: "conflicts_required",
+          updatedAt: "2026-07-18T09:00:00.000Z",
+          conflictCount: 1_000,
+          possibleTensionCount: 0,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("A knowledge draft from a previous build is still awaiting review")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Resume review" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Page 1 of 20")).toBeTruthy();
+      expect(screen.getAllByRole("article")).toHaveLength(50);
+    });
+    expect(screen.queryByText("A knowledge draft from a previous build is still awaiting review")).toBeNull();
+    const conflictCall = api.postJson.mock.calls.find(([url]) => String(url).endsWith("/conflicts"));
+    expect(String(conflictCall?.[0])).toContain("/drafts/draft-1/conflicts");
+  });
+
+  it("resumes a ready-to-publish draft into the preview", async () => {
+    api.postJson.mockImplementation(async (url: string) => {
+      if (String(url).endsWith("/preview")) return draftPreview();
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    render(
+      <KnowledgeBuildV4
+        scope={scope}
+        onPublished={vi.fn().mockResolvedValue(undefined)}
+        resumableDraft={{
+          id: "draft-1",
+          status: "ready_to_publish",
+          updatedAt: "2026-07-18T09:00:00.000Z",
+          conflictCount: 0,
+          possibleTensionCount: 0,
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume review" }));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Review Knowledge Draft" })).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Publish" })).not.toBeDisabled();
+    expect(screen.queryByText("A knowledge draft from a previous build is still awaiting review")).toBeNull();
+  });
+
+  it("clears the saved build job only on a confirmed 404", async () => {
+    const storageKey = "itestflow.project-knowledge-job.workspace-1.project-1";
+    window.localStorage.setItem(storageKey, "job-gone");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: "The knowledge build was not found." }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+      await waitFor(() => expect(window.localStorage.getItem(storageKey)).toBeNull());
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps the saved build job across a transient status failure and retries", async () => {
+    vi.useFakeTimers();
+    const storageKey = "itestflow.project-knowledge-job.workspace-1.project-1";
+    window.localStorage.setItem(storageKey, "job-1");
+    const runningJob = {
+      id: "job-1",
+      status: "running",
+      operation: "build",
+      phase: "compiling_batches",
+      progress: {},
+      result: null,
+      cancellation: { requested: false, requestedAt: null },
+      error: null,
+      createdAt: new Date().toISOString(),
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({ error: "Transient failure." }) })
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ job: runningJob }) });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // A transient failure must NOT clear the saved id — a lost id has no UI
+      // recovery path once the running job completes.
+      expect(window.localStorage.getItem(storageKey)).toBe("job-1");
+      await vi.advanceTimersByTimeAsync(5_100);
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(window.localStorage.getItem(storageKey)).toBe("job-1");
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
 });

@@ -79,6 +79,9 @@ describe("project knowledge duplicate resolution", () => {
   });
 
   it("re-keys compatible-distinct business rules and records a non-blocking tension", () => {
+    // Guard for the both-constraints different-identity refusal: this relies on the
+    // rule() helper quoting the rule text itself, so the two entries also cite
+    // DIFFERENT evidence — content-equivalent evidence would merge them instead.
     const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
       businessRules: [
         rule("notification", "Primary purchase button must be enabled.", {
@@ -284,6 +287,129 @@ describe("project knowledge duplicate resolution", () => {
     expect(result.knowledgeBase.businessRules[0].id).toBe("status-colours");
     expect(result.knowledgeBase.businessRules[0].evidenceRefs).toHaveLength(1);
     expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0 });
+  });
+
+  it("merges a mixed constraint/abstention twin with equivalent evidence instead of recording a tension", () => {
+    const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
+      businessRules: [
+        {
+          ...rule("add-to-cart", "Only in-stock products can be added to cart.", {
+            object: "product",
+            property: "availability",
+            operator: "eq",
+            value: "in-stock",
+            valueType: "enum",
+          }),
+          evidenceRefs: [evidenceRef("Only in-stock products can be added.")],
+        },
+        {
+          ...rule("add-to-cart", "Customers can only add in-stock products to the cart."),
+          evidenceRefs: [evidenceRef("Only in-stock products can be added")],
+        },
+      ],
+    }));
+
+    expect(result.knowledgeBase.businessRules).toHaveLength(1);
+    expect(result.knowledgeBase.businessRules[0].constraint).toMatchObject({ value: "in-stock" });
+    expect(result.counters).toMatchObject({
+      paraphraseMergeCount: 1,
+      evidenceOnlyParaphraseMergeCount: 1,
+      rekeyCount: 0,
+      possibleTensionCount: 0,
+    });
+  });
+
+  it("heals a published mixed twin back into its base id", () => {
+    // The production shape behind the atomic_extraction_uncertain tensions: a
+    // published base entry with a persisted LLM constraint plus its previously
+    // rekeyed abstaining twin, quotes drifted by one trailing period.
+    const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
+      businessRules: [
+        {
+          ...rule("add-to-cart", "Only in-stock products can be added to cart.", {
+            object: "product",
+            property: "availability",
+            operator: "eq",
+            value: "in-stock",
+            valueType: "enum",
+          }),
+          evidenceRefs: [evidenceRef("Only in-stock products can be added.")],
+        },
+        {
+          ...rule("add-to-cart-23d18761", "Only in-stock products can be added to the cart."),
+          evidenceRefs: [evidenceRef("Only in-stock products can be added")],
+        },
+      ],
+    }));
+
+    expect(result.knowledgeBase.businessRules).toHaveLength(1);
+    expect(result.knowledgeBase.businessRules[0].id).toBe("add-to-cart");
+    expect(result.knowledgeBase.businessRules[0].constraint).toMatchObject({ value: "in-stock" });
+    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0, possibleTensionCount: 0 });
+  });
+
+  it("heals abstaining twins whose quotes drifted only by trailing punctuation", () => {
+    const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
+      businessRules: [
+        {
+          ...rule("payment-retry", "Retrying payment does not duplicate payment or order."),
+          evidenceRefs: [evidenceRef("retry does not duplicate payment or order.")],
+        },
+        {
+          ...rule("payment-retry-e112a78e", "A payment retry does not duplicate the payment or order."),
+          evidenceRefs: [evidenceRef("retry does not duplicate payment or order")],
+        },
+      ],
+    }));
+
+    expect(result.knowledgeBase.businessRules).toHaveLength(1);
+    expect(result.knowledgeBase.businessRules[0].id).toBe("payment-retry");
+    expect(result.counters).toMatchObject({
+      paraphraseMergeCount: 1,
+      evidenceOnlyParaphraseMergeCount: 1,
+      rekeyCount: 0,
+      possibleTensionCount: 0,
+    });
+  });
+
+  it("heals a different-identity constrained twin when both sides cite the same quote", () => {
+    // The production different_atomic_identity tension: the extractor split
+    // object/property differently for two wordings of one quoted claim.
+    const quote = "Street, city, and postal code are required for shipping.";
+    const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
+      businessRules: [
+        {
+          ...rule("shipping-fields", "Shipping address required fields are validated.", {
+            object: "shipping address",
+            property: "required fields",
+            operator: "eq",
+            value: "required",
+            valueType: "boolean",
+          }),
+          evidenceRefs: [evidenceRef(quote)],
+        },
+        {
+          ...rule("shipping-fields-df696276", "The shipping address form validates its required fields.", {
+            object: "shipping address form",
+            property: "validation",
+            operator: "eq",
+            value: "required",
+            valueType: "boolean",
+          }),
+          evidenceRefs: [evidenceRef(quote)],
+        },
+      ],
+    }));
+
+    expect(result.knowledgeBase.businessRules).toHaveLength(1);
+    expect(result.knowledgeBase.businessRules[0].id).toBe("shipping-fields");
+    expect(result.knowledgeBase.businessRules[0].constraint).toBeDefined();
+    expect(result.counters).toMatchObject({
+      paraphraseMergeCount: 1,
+      evidenceOnlyParaphraseMergeCount: 1,
+      rekeyCount: 0,
+      possibleTensionCount: 0,
+    });
   });
 
   it("keeps a genuinely distinct rekeyed twin without re-rekeying it", () => {

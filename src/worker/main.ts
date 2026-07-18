@@ -32,6 +32,7 @@
  *                                   with no schedule is a no-op.
  */
 import { hostname } from "node:os";
+import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -340,6 +341,29 @@ async function performShutdown(): Promise<void> {
   }
 }
 
+// Mirrored in scripts/run-app.mjs (the supervisor cannot import this TS module).
+// The supervisor sends this line over the worker's piped stdin because a signal
+// kill on Windows is an abrupt TerminateProcess that would skip the graceful
+// unregister -> drain -> no-retry requeue path.
+export const WORKER_SHUTDOWN_MESSAGE = "shutdown";
+
+/**
+ * Listens for the supervisor's shutdown control message on the given stream.
+ * Deliberately does NOT treat end-of-stream as shutdown: a standalone worker
+ * under a service manager may run with an immediately-closed stdin and must
+ * not self-terminate. Exported for tests.
+ */
+export function attachSupervisorShutdownChannel(
+  stream: NodeJS.ReadableStream,
+  onShutdown: (reason: string) => void,
+) {
+  const channel = createInterface({ input: stream });
+  channel.on("line", (line) => {
+    if (line.trim() === WORKER_SHUTDOWN_MESSAGE) onShutdown("supervisor shutdown message");
+  });
+  return channel;
+}
+
 function installShutdown() {
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
@@ -350,6 +374,11 @@ function installShutdown() {
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+  if (!process.stdin.isTTY) {
+    attachSupervisorShutdownChannel(process.stdin, shutdown);
+    // The open pipe must never keep an otherwise-idle worker alive.
+    process.stdin.unref?.();
+  }
 }
 
 async function registerWorkerInstanceWithRetry(capabilities: string[]) {

@@ -1,5 +1,5 @@
 import {
-  haveIdenticalNonEmptyEvidenceContent,
+  haveEquivalentNonEmptyEvidenceContent,
   ProjectKnowledgeBaseSchema,
   type ProjectKnowledgeBase,
 } from "./project-knowledge.schema";
@@ -85,16 +85,21 @@ export function projectKnowledgeConsolidationCandidateKeys<
  * Whether two entries already matched to the same logical subject are structurally
  * safe to consolidate. Module and glossary text may add supported detail without
  * becoming a conflict. Structured categories retain category-specific guards:
- * business rules only merge when their atomic claim agrees, or — when both
- * extractions abstain — when the fingerprint agrees or both cite identical
- * non-empty evidence content (same-identity rewording of one source claim is
- * paraphrase noise, not a disagreement). Transitions must agree on their target
- * state, and dependency endpoints/types must match.
+ * business rules with two atomic constraints merge only when the constraints share
+ * an identity and their values agree — a provable value disagreement never merges.
+ * When at most one side extracts a constraint (extraction abstains, or constraint
+ * presence flipped between builds for the same claim), wording is paraphrase noise
+ * only when the closed fingerprint agrees exactly or both sides cite
+ * content-equivalent non-empty evidence — the same source claim reworded.
+ * Transitions must agree on their target state, and dependency endpoints/types
+ * must match.
  *
- * Dependencies require identical non-empty evidence content even during draft
+ * Dependencies require content-equivalent non-empty evidence even during draft
  * consolidation: a generic dependency may only be upgraded when both entries
  * describe the same evidenced relationship. Wording carry-over additionally
- * requires identical evidence content for every category.
+ * requires content-equivalent evidence for every category. Evidence equivalence
+ * tolerates terminal punctuation, wrapping quotes, and case drift from LLM
+ * re-quoting; the evidence-identical conflict badge stays byte-strict.
  */
 export function isCompatibleProjectKnowledgeParaphrase<
   TCategory extends ProjectKnowledgeConsolidationCategory,
@@ -121,22 +126,26 @@ export function isCompatibleProjectKnowledgeParaphrase<
           projectKnowledgeAtomicConstraintIdentity(firstConstraint) !==
           projectKnowledgeAtomicConstraintIdentity(secondConstraint)
         ) {
-          return false;
+          // Different atomic identities extracted from the SAME source quote are
+          // near-certainly one claim whose object/property split drifted between
+          // wordings, not two claims — a quote-grounded value cannot disagree
+          // with itself. Distinct evidence keeps them separate (and visible as a
+          // possible tension). Deliberately no fingerprint disjunct here: equal
+          // fingerprints with two different persisted constraints signal a
+          // structured-reading disagreement that must stay reviewable.
+          return haveEquivalentNonEmptyEvidenceContent(firstRule.evidenceRefs, secondRule.evidenceRefs);
         }
         return compareProjectKnowledgeAtomicConstraintValues(firstConstraint, secondConstraint) === "equivalent";
       }
 
-      // Extraction abstention is not proof of equivalence. Wording may only be
-      // treated as paraphrase noise when the closed, language-agnostic
-      // fingerprint agrees exactly, or when both entries cite identical
-      // non-empty evidence content — the same source claim reworded.
-      if (!firstConstraint && !secondConstraint) {
-        return normalizeProjectKnowledgeRuleFingerprint(firstRule.rule) ===
-            normalizeProjectKnowledgeRuleFingerprint(secondRule.rule) ||
-          haveIdenticalNonEmptyEvidenceContent(firstRule.evidenceRefs, secondRule.evidenceRefs);
-      }
-
-      return false;
+      // At most one side extracted a constraint, so no concrete-value disagreement
+      // is provable (constraint presence can flip between builds for the same
+      // claim). Wording is treated as paraphrase noise only when the closed,
+      // language-agnostic fingerprint agrees exactly, or when both entries cite
+      // content-equivalent non-empty evidence — the same source claim reworded.
+      return normalizeProjectKnowledgeRuleFingerprint(firstRule.rule) ===
+          normalizeProjectKnowledgeRuleFingerprint(secondRule.rule) ||
+        haveEquivalentNonEmptyEvidenceContent(firstRule.evidenceRefs, secondRule.evidenceRefs);
     }
     case "state_transition": {
       const firstTransition = first as ProjectKnowledgeEntryByConsolidationCategory["state_transition"];
@@ -154,15 +163,15 @@ export function isCompatibleProjectKnowledgeParaphrase<
       if (dependencyEndpointTupleKey(firstDependency) !== dependencyEndpointTupleKey(secondDependency)) {
         return false;
       }
-      const identicalEvidence = haveIdenticalNonEmptyEvidenceContent(
+      const equivalentEvidence = haveEquivalentNonEmptyEvidenceContent(
         firstDependency.evidenceRefs,
         secondDependency.evidenceRefs,
       );
-      if (!identicalEvidence) return false;
+      if (!equivalentEvidence) return false;
       return areProjectKnowledgeDependencyTypesEquivalent(
         firstDependency.dependencyType,
         secondDependency.dependencyType,
-        { identicalEvidence },
+        { identicalEvidence: equivalentEvidence },
       );
     }
   }
@@ -285,7 +294,7 @@ function carryOverCategory<TCategory extends ProjectKnowledgeConsolidationCatego
     });
     const matches = Array.from(candidates).filter((previous) =>
       !consumed.has(previous) &&
-      haveIdenticalNonEmptyEvidenceContent(previous.evidenceRefs, next.evidenceRefs) &&
+      haveEquivalentNonEmptyEvidenceContent(previous.evidenceRefs, next.evidenceRefs) &&
       isCompatibleProjectKnowledgeParaphrase(category, previous, next) &&
       hasCompatibleReferenceNames(category, previous, next));
     // Ambiguity means we cannot know which previous wording this entry continues — skip.

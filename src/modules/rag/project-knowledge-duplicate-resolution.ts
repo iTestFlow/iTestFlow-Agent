@@ -33,6 +33,14 @@ export type ProjectKnowledgePossibleTension = {
 export type ProjectKnowledgeDuplicateResolutionCounters = {
   preConsolidationDuplicateIdentityCount: number;
   paraphraseMergeCount: number;
+  /**
+   * Merged business-rule clusters where at least one member pair could not have
+   * merged on structured agreement or fingerprint equality alone — the relaxed
+   * evidence equivalence was the deciding condition. Kept observable because
+   * such merges pick one wording via chooseLongerText and silently drop the
+   * others.
+   */
+  evidenceOnlyParaphraseMergeCount: number;
   rekeyCount: number;
   atomicExtractionFailureCount: number;
   possibleTensionCount: number;
@@ -56,6 +64,7 @@ export function resolveProjectKnowledgeDuplicateIdentities(
   const counters: ProjectKnowledgeDuplicateResolutionCounters = {
     preConsolidationDuplicateIdentityCount: countDuplicateLogicalIdentities(knowledgeBase),
     paraphraseMergeCount: 0,
+    evidenceOnlyParaphraseMergeCount: 0,
     rekeyCount: 0,
     atomicExtractionFailureCount: 0,
     possibleTensionCount: 0,
@@ -151,6 +160,7 @@ function resolveBusinessRules(
       const clusterEntries = cluster.map((item) => item.entry);
       if (clusterEntries.length === 1) return clusterEntries[0]!;
       counters.paraphraseMergeCount += clusterEntries.length - 1;
+      if (isEvidenceOnlyBusinessRuleMerge(cluster)) counters.evidenceOnlyParaphraseMergeCount += 1;
       return mergeProjectKnowledgeConflictEntries("business_rule", clusterEntries);
     });
     if (survivors.length > 1 && !hasBusinessRuleContradiction(clusters)) {
@@ -192,6 +202,35 @@ function businessRuleInfo(
 function resolveBusinessRuleConstraint(entry: BusinessRule) {
   const structured = ProjectKnowledgeAtomicConstraintSchema.safeParse(entry.constraint);
   return structured.success ? structured.data : extractAtomicConstraint(entry.rule);
+}
+
+/**
+ * A merged cluster counts as evidence-only when some member pair has neither
+ * two same-identity structured constraints (value agreement provable) nor an
+ * equal closed fingerprint — only the relaxed evidence equivalence admitted it.
+ */
+function isEvidenceOnlyBusinessRuleMerge(cluster: BusinessRuleInfo[]) {
+  for (let firstIndex = 0; firstIndex < cluster.length; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < cluster.length; secondIndex += 1) {
+      const first = cluster[firstIndex]!;
+      const second = cluster[secondIndex]!;
+      if (
+        first.constraint && second.constraint &&
+        projectKnowledgeAtomicConstraintIdentity(first.constraint) ===
+          projectKnowledgeAtomicConstraintIdentity(second.constraint)
+      ) {
+        continue;
+      }
+      if (
+        normalizeProjectKnowledgeRuleFingerprint(first.entry.rule) ===
+        normalizeProjectKnowledgeRuleFingerprint(second.entry.rule)
+      ) {
+        continue;
+      }
+      return true;
+    }
+  }
+  return false;
 }
 
 function hasBusinessRuleContradiction(clusters: BusinessRuleInfo[][]) {

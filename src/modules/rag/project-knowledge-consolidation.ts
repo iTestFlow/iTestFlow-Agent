@@ -9,6 +9,7 @@ import {
   type ProjectKnowledgeBase,
 } from "./project-knowledge.schema";
 import { mostSpecificProjectKnowledgeDependencyType } from "./project-knowledge-dependency-type";
+import { extractAtomicConstraint } from "./project-knowledge-atomic-constraint";
 
 export type ProjectKnowledgeConsolidationCategory =
   | "module"
@@ -162,9 +163,18 @@ function mergeBusinessRuleModuleAssociations(
 function chooseBusinessRuleConstraint(
   entries: readonly ProjectKnowledgeEntryByConsolidationCategory["business_rule"][],
 ) {
-  return [...entries]
-    .sort(compareBusinessRuleConstraintCandidates)
-    .find((entry) => entry.constraint)?.constraint;
+  const sorted = [...entries].sort(compareBusinessRuleConstraintCandidates);
+  const persisted = sorted.find((entry) => entry.constraint)?.constraint;
+  if (persisted) return persisted;
+  // The merged rule keeps the longer wording. When no entry persists a
+  // constraint but a member's text still yields one through the conservative
+  // extractor, dropping it would silently deconstrain the merged entry (the
+  // gate admitted the pair as paraphrase noise, not as a value disagreement).
+  for (const entry of sorted) {
+    const extracted = extractAtomicConstraint(entry.rule);
+    if (extracted) return extracted;
+  }
+  return undefined;
 }
 
 function compareBusinessRuleConstraintCandidates(

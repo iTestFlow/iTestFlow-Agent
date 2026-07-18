@@ -1454,4 +1454,93 @@ describe("same-evidence paraphrase handling", () => {
     expect(saved.knowledgeBase.businessRules[0].evidenceRefs).toHaveLength(2);
   });
 
+  it("auto-merges paraphrases whose re-quoted evidence drifted only by trailing punctuation", async () => {
+    setWorkItems([workItemRow({ azure_work_item_id: "16", content_hash: "h16" })]);
+    const partials = [
+      knowledgeBase({
+        businessRules: [kbBusinessRule({
+          id: "br-payment-retry",
+          rule: "Retrying payment does not duplicate payment or order.",
+          sourceWorkItemIds: ["16"],
+          evidenceRefs: [kbEvidenceRef("16", "snapshot-run-a", "retry does not duplicate payment or order.")],
+        })],
+      }),
+      knowledgeBase({
+        businessRules: [kbBusinessRule({
+          id: "br-payment-retry",
+          rule: "A payment retry does not duplicate the payment or order.",
+          sourceWorkItemIds: ["16"],
+          evidenceRefs: [kbEvidenceRef("16", "snapshot-run-b", "retry does not duplicate payment or order")],
+        })],
+      }),
+    ];
+
+    const saved = await saveManualProjectKnowledgeBaseFromBatches({
+      scope: projectScope(),
+      actor: "qa",
+      partialKnowledgeBases: partials,
+      mode: "full",
+    });
+
+    // Both extractions abstain and the word-order fingerprint differs; only the
+    // relaxed evidence equivalence (trailing period tolerated) merges the pair.
+    expect(saved.knowledgeBase.businessRules).toHaveLength(1);
+    expect(saved.knowledgeBase.businessRules[0].id).toBe("br-payment-retry");
+    expect(saved.knowledgeBase.businessRules[0].evidenceRefs).toHaveLength(2);
+  });
+
+  it("keeps a concrete disagreement visible when an abstaining paraphrase bridges both sides", async () => {
+    // The mixed-branch disjunction makes the gate non-transitive: B matches A via
+    // evidence equivalence and C via fingerprint equality while A and C provably
+    // disagree (3 vs 5). Without partitioning, the union-find would fuse all
+    // three and bury the hard conflict inside one merged entry.
+    setWorkItems([workItemRow({ azure_work_item_id: "1", content_hash: "h1" })]);
+    const retryConstraint = (value: "3" | "5") => ({
+      object: "retry",
+      property: "limit",
+      operator: "eq" as const,
+      value,
+      valueType: "number" as const,
+    });
+    const partials = [
+      knowledgeBase({
+        businessRules: [
+          kbBusinessRule({
+            id: "br-retry-policy",
+            rule: "Retry limit: value 3 applies to checkout retries",
+            constraint: retryConstraint("3"),
+            evidenceRefs: [kbEvidenceRef("1", "snapshot-run-a", "Retry policy for checkout.")],
+          }),
+          kbBusinessRule({
+            id: "br-retry-policy",
+            rule: "Checkout retries follow the configured policy",
+            constraint: retryConstraint("5"),
+            evidenceRefs: [kbEvidenceRef("1", "snapshot-run-a", "Retry policy configuration values.")],
+          }),
+        ],
+      }),
+      knowledgeBase({
+        businessRules: [kbBusinessRule({
+          id: "br-retry-policy",
+          rule: "The checkout retries follow a configured policy",
+          evidenceRefs: [kbEvidenceRef("1", "snapshot-run-b", "Retry policy for checkout")],
+        })],
+      }),
+    ];
+
+    const saved = await saveManualProjectKnowledgeBaseFromBatches({
+      scope: projectScope(),
+      actor: "qa",
+      partialKnowledgeBases: partials,
+      mode: "full",
+    });
+
+    const retryRules = saved.knowledgeBase.businessRules.filter((rule) => rule.id === "br-retry-policy");
+    expect(retryRules).toHaveLength(2);
+    expect(retryRules.map((rule) => rule.constraint?.value).sort()).toEqual(["3", "5"]);
+    expect(detectProjectKnowledgeHardConflicts(saved.knowledgeBase)).toEqual([
+      expect.objectContaining({ conflictType: "incompatible_concrete_value" }),
+    ]);
+  });
+
 });

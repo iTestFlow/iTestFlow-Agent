@@ -1148,9 +1148,10 @@ function consolidateCategoryItems<TCategory extends ProjectKnowledgeConsolidatio
     groups.set(root, group);
   });
   const consolidatedItems = Array.from(groups.values()).flatMap((entries) => {
-    const compatibleGroups = category === "dependency"
-      ? partitionCompatibleDependencyEntries(
-        entries as ProjectKnowledgeEntryByConsolidationCategory["dependency"][],
+    const compatibleGroups = category === "dependency" || category === "business_rule"
+      ? partitionCompatibleCategoryEntries(
+        category,
+        entries as ProjectKnowledgeEntryByConsolidationCategory["dependency" | "business_rule"][],
       )
       : [entries];
     return compatibleGroups.map((group) =>
@@ -1173,21 +1174,34 @@ function shouldAutomaticallyConsolidate<TCategory extends ProjectKnowledgeConsol
 }
 
 /**
- * Pairwise hierarchy compatibility is not transitive: `dependency` can match
- * both API and event entries even though API and event cannot merge with one
- * another. The initial candidate-key union intentionally discovers this whole
- * neighborhood; before reducing it to one entry, split it into deterministic
- * all-compatible groups so a generic link cannot bridge incompatible transports.
+ * Pairwise gate compatibility is not transitive: `dependency` can match both API
+ * and event entries even though API and event cannot merge with one another, and
+ * a business rule whose extraction abstains can match two constrained variants
+ * (fingerprint or evidence equivalence) that provably disagree with each other.
+ * The initial candidate-key union intentionally discovers this whole
+ * neighborhood; before reducing it to one entry, split it into all-compatible
+ * groups so a bridging entry cannot bury a real disagreement.
+ *
+ * Dependencies cluster over a canonical sort for cross-permutation determinism.
+ * Business rules deliberately cluster in input order instead: the fully
+ * compatible (overwhelmingly common) case must keep producing the same merge
+ * winner as the pre-partition code path, or published ids would churn.
  */
-function partitionCompatibleDependencyEntries(
-  entries: ProjectKnowledgeEntryByConsolidationCategory["dependency"][],
+function partitionCompatibleCategoryEntries<TCategory extends "business_rule" | "dependency">(
+  category: TCategory,
+  entries: ProjectKnowledgeEntryByConsolidationCategory[TCategory][],
 ) {
-  const groups: ProjectKnowledgeEntryByConsolidationCategory["dependency"][][] = [];
-  const orderedEntries = [...entries].sort(compareDependencyConsolidationEntries);
+  const groups: ProjectKnowledgeEntryByConsolidationCategory[TCategory][][] = [];
+  const orderedEntries = category === "dependency"
+    ? [...entries].sort((first, second) => compareDependencyConsolidationEntries(
+      first as ProjectKnowledgeEntryByConsolidationCategory["dependency"],
+      second as ProjectKnowledgeEntryByConsolidationCategory["dependency"],
+    ))
+    : entries;
 
   orderedEntries.forEach((entry) => {
     const compatibleGroup = groups.find((group) =>
-      group.every((existing) => isCompatibleProjectKnowledgeParaphrase("dependency", existing, entry)));
+      group.every((existing) => isCompatibleProjectKnowledgeParaphrase(category, existing, entry)));
     if (compatibleGroup) {
       compatibleGroup.push(entry);
     } else {

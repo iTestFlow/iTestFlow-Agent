@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   resolveProjectScope: vi.fn(),
   getSnapshot: vi.fn(),
   hasHealthyWorkerCapability: vi.fn(),
+  getLatestInReviewDraft: vi.fn(),
 }));
 
 vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal) => {
@@ -23,6 +24,9 @@ vi.mock("@/modules/jobs/worker-registry.service", () => ({
 vi.mock("@/modules/jobs/project-knowledge-jobs.service", () => ({
   PROJECT_KNOWLEDGE_JOB: "project_knowledge_v4",
 }));
+vi.mock("@/modules/rag/project-knowledge-draft.service", () => ({
+  getLatestInReviewProjectKnowledgeDraft: mocks.getLatestInReviewDraft,
+}));
 
 import { jsonRequest, projectScope } from "@/test/factories";
 import { POST } from "./route";
@@ -40,6 +44,7 @@ describe("project knowledge status route", () => {
     mocks.resolveProjectScope.mockResolvedValue(projectScope());
     mocks.getSnapshot.mockResolvedValue({ id: "snapshot-1", status: "published" });
     mocks.hasHealthyWorkerCapability.mockResolvedValue(true);
+    mocks.getLatestInReviewDraft.mockResolvedValue(null);
   });
 
   it("returns the snapshot together with generation availability", async () => {
@@ -48,8 +53,30 @@ describe("project knowledge status route", () => {
     await expect(response.json()).resolves.toEqual({
       snapshot: { id: "snapshot-1", status: "published" },
       generationAvailable: true,
+      latestInReviewDraft: null,
     });
     expect(mocks.hasHealthyWorkerCapability).toHaveBeenCalledWith("project_knowledge_v4");
+  });
+
+  it("reports the latest in-review draft for resume", async () => {
+    mocks.getLatestInReviewDraft.mockResolvedValue({
+      id: "draft-7",
+      status: "conflicts_required",
+      updatedAt: "2026-07-18T09:00:00.000Z",
+      conflictCount: 3,
+      possibleTensionCount: 1,
+    });
+    const response = await POST(jsonRequest("/api/context/knowledge/status", { scope }));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      latestInReviewDraft: {
+        id: "draft-7",
+        status: "conflicts_required",
+        conflictCount: 3,
+        possibleTensionCount: 1,
+      },
+    });
+    expect(mocks.getLatestInReviewDraft).toHaveBeenCalledWith({ scope: projectScope() });
   });
 
   it("reports generation as unavailable when no capable worker is healthy", async () => {

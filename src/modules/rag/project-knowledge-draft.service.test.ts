@@ -43,6 +43,7 @@ import {
   applyProjectKnowledgeConflictDecisions,
   beginProjectKnowledgeDraft,
   completeProjectKnowledgeDraft,
+  getLatestInReviewProjectKnowledgeDraft,
   getProjectKnowledgeDraft,
   getProjectKnowledgeDraftConflicts,
   loadProjectKnowledgeManualBatchResults,
@@ -382,6 +383,69 @@ describe("draft evidence recovery", () => {
       evidence: "Customers complete checkout securely.",
     });
     expect(metrics.automaticDuplicateConsolidationCount).toBe(5);
+    expect(metrics.conflictCount).toBe(0);
+  });
+
+  it("heals a metadata-only constraint split at the completion boundary without touching wording", async () => {
+    // Same id + normalization-identical rule text, but constraint presence flipped
+    // between builds. The boundary groups by the strict text projection first, so
+    // the relaxed gate can only merge this metadata split — never reword entries.
+    prepareCompletion({ acceptanceCriteria: "Only in-stock products can be added to cart." });
+    const evidenceRef = {
+      sourceSnapshotId: "snapshot-42",
+      sourceWorkItemId: "42",
+      sourceField: "acceptanceCriteria",
+      quote: "Only in-stock products can be added to cart.",
+      origin: "generated_v4",
+      verification: "exact",
+    } as const;
+
+    await completeProjectKnowledgeDraft({
+      scope,
+      draftId: "draft-child",
+      provider: "openai",
+      model: "model",
+      rawOutput: "{}",
+      knowledgeBase: {
+        ...emptyKnowledge,
+        businessRules: [
+          {
+            id: "br-add-to-cart",
+            rule: "Only in-stock products can be added to cart.",
+            sourceField: "acceptanceCriteria",
+            sourceWorkItemIds: ["42"],
+            evidence: "Only in-stock products can be added to cart.",
+            evidenceRefs: [evidenceRef],
+            constraint: {
+              object: "product",
+              property: "availability",
+              operator: "eq",
+              value: "in-stock",
+              valueType: "enum",
+            },
+          },
+          {
+            id: "br-add-to-cart",
+            rule: " only in-stock products can be added to cart. ",
+            sourceField: "acceptanceCriteria",
+            sourceWorkItemIds: ["42"],
+            evidence: "Only in-stock products can be added to cart.",
+            evidenceRefs: [evidenceRef],
+          },
+        ],
+      },
+    });
+
+    const update = database.sqlRun.mock.calls.find(([sql]) => String(sql).includes("SET status = @status"));
+    expect(update?.[1]).toMatchObject({ status: "ready_to_publish", statusReason: null });
+    const persisted = JSON.parse(String((update?.[1] as { proposedKnowledgeJson: string }).proposedKnowledgeJson));
+    const metrics = JSON.parse(String((update?.[1] as { metricsJson: string }).metricsJson));
+    expect(persisted.businessRules).toHaveLength(1);
+    expect(persisted.businessRules[0]).toMatchObject({
+      id: "br-add-to-cart",
+      constraint: expect.objectContaining({ value: "in-stock" }),
+    });
+    expect(metrics.automaticDuplicateConsolidationCount).toBe(1);
     expect(metrics.conflictCount).toBe(0);
   });
 
@@ -1393,3 +1457,52 @@ describe("draft lifecycle", () => {
   });
 });
 
+describe("getLatestInReviewProjectKnowledgeDraft", () => {
+  it("maps the newest blocked draft to a conflicts_required resume summary", async () => {
+    database.sqlGet.mockImplementation(async (sql: string) =>
+      sql.includes("FROM project_knowledge_drafts drafts")
+        ? {
+          id: "draft-9",
+          status: "blocked",
+          updated_at: "2026-07-18T09:00:00.000Z",
+          metrics_json: { conflictCount: 3, possibleTensionCount: 2 },
+        }
+        : undefined);
+
+    await expect(getLatestInReviewProjectKnowledgeDraft({ scope })).resolves.toEqual({
+      id: "draft-9",
+      status: "conflicts_required",
+      updatedAt: "2026-07-18T09:00:00.000Z",
+      conflictCount: 3,
+      possibleTensionCount: 2,
+    });
+    // Lazy maintenance runs before the read so expired/superseded drafts never
+    // surface as resumable.
+    expect(database.sqlRun.mock.calls.some(([sql]) => String(sql).includes("manual_draft_expired"))).toBe(true);
+    expect(database.sqlRun.mock.calls.some(([sql]) => String(sql).includes("compiler_contract_upgraded"))).toBe(true);
+    const query = database.sqlGet.mock.calls.find(([sql]) => String(sql).includes("FROM project_knowledge_drafts drafts"))?.[0];
+    expect(String(query)).toContain("IS NOT DISTINCT FROM base.active_revision_id");
+  });
+
+  it("maps ready_to_publish and clamps malformed metric counts", async () => {
+    database.sqlGet.mockResolvedValue({
+      id: "draft-10",
+      status: "ready_to_publish",
+      updated_at: "2026-07-18T10:00:00.000Z",
+      metrics_json: { conflictCount: "not-a-number", possibleTensionCount: -2 },
+    });
+
+    await expect(getLatestInReviewProjectKnowledgeDraft({ scope })).resolves.toEqual({
+      id: "draft-10",
+      status: "ready_to_publish",
+      updatedAt: "2026-07-18T10:00:00.000Z",
+      conflictCount: 0,
+      possibleTensionCount: 0,
+    });
+  });
+
+  it("returns null when no revision-current in-review draft exists", async () => {
+    database.sqlGet.mockResolvedValue(undefined);
+    await expect(getLatestInReviewProjectKnowledgeDraft({ scope })).resolves.toBeNull();
+  });
+});

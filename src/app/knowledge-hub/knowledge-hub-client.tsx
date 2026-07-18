@@ -46,7 +46,7 @@ import {
 } from "@/lib/project-context-defaults"
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project"
 import type { ProjectKnowledgeEvidenceRef } from "@/modules/rag/project-knowledge.schema"
-import { KnowledgeBuildV4 } from "./knowledge-build-v4"
+import { KnowledgeBuildV4, type KnowledgeInReviewDraft } from "./knowledge-build-v4"
 import {
   KnowledgeCategoryFilterButton,
   KnowledgeEntryCard,
@@ -183,6 +183,7 @@ type ProjectKnowledgeSnapshot = {
 type KnowledgeStatusResult = {
   snapshot: ProjectKnowledgeSnapshot | null
   generationAvailable?: boolean
+  latestInReviewDraft?: KnowledgeInReviewDraft | null
 }
 
 type KnowledgeLintIssue = {
@@ -305,6 +306,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null)
   const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<ProjectKnowledgeSnapshot | null>(null)
   const [generationAvailable, setGenerationAvailable] = useState<boolean | null>(null)
+  const [resumableDraft, setResumableDraft] = useState<KnowledgeInReviewDraft | null>(null)
   const [knowledgeLint, setKnowledgeLint] = useState<KnowledgeLintResult | null>(null)
   const [knowledgeLog, setKnowledgeLog] = useState<KnowledgeLogItem[]>([])
   const [knowledgeLogVisible, setKnowledgeLogVisible] = useState(false)
@@ -357,9 +359,11 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       const data = await postJson<KnowledgeStatusResult>("/api/context/knowledge/status", { scope: activeScope })
       setKnowledgeSnapshot(data.snapshot)
       setGenerationAvailable(typeof data.generationAvailable === "boolean" ? data.generationAvailable : null)
+      setResumableDraft(data.latestInReviewDraft ?? null)
     } catch {
       setKnowledgeSnapshot(null)
       setGenerationAvailable(null)
+      setResumableDraft(null)
     } finally {
       setKnowledgeStatusLoading(false)
     }
@@ -514,11 +518,13 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         if (cancelled) return
         setKnowledgeSnapshot(data.snapshot)
         setGenerationAvailable(typeof data.generationAvailable === "boolean" ? data.generationAvailable : null)
+        setResumableDraft(data.latestInReviewDraft ?? null)
       })
       .catch(() => {
         if (cancelled) return
         setKnowledgeSnapshot(null)
         setGenerationAvailable(null)
+        setResumableDraft(null)
       })
       .finally(() => {
         if (!cancelled) setKnowledgeStatusLoading(false)
@@ -901,6 +907,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                 sourceIndexReady={Boolean(result)}
                 sourceIndexLoading={buildLoading}
                 generationAvailable={generationAvailable ?? undefined}
+                resumableDraft={resumableDraft}
                 onRefreshAvailability={() => refreshKnowledgeStatus(scope)}
                 sourceIndexContent={(
                   <>

@@ -32,7 +32,7 @@ import {
 import {
   saveManualProjectKnowledgeBaseFromBatches,
 } from "./project-knowledge.service";
-import { publishProjectKnowledgeDraft } from "./project-knowledge-draft.service";
+import { getLatestInReviewProjectKnowledgeDraft, publishProjectKnowledgeDraft } from "./project-knowledge-draft.service";
 import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
 import { recordProjectKnowledgeBenchmarkQuestion } from "./project-knowledge-benchmark.service";
 import { regroundLegacyProjectKnowledgeCandidates } from "./project-knowledge-compiled.service";
@@ -692,6 +692,9 @@ describeDb("source-versioned project knowledge publication", () => {
   });
 
   it("publishes re-keyed hash-suffixed business rules through the canonical uniqueness guard", async () => {
+    // The twins must cite DIFFERENT evidence: same-quote different-identity
+    // constraints now merge as paraphrase noise instead of rekeying, and this
+    // test needs a genuinely distinct pair to exercise the uniqueness guard.
     const rekeyedKnowledge = {
       ...initialKnowledgeBase,
       businessRules: [
@@ -704,6 +707,8 @@ describeDb("source-versioned project knowledge publication", () => {
           ...initialKnowledgeBase.businessRules[0],
           id: "BR-PURCHASE-NOTIFICATION",
           rule: "Secondary purchase button must be enabled.",
+          evidence: "Checkout description",
+          evidenceRefs: [evidenceRef("description", "Checkout description")],
         },
       ],
     };
@@ -995,5 +1000,25 @@ describeDb("source-versioned project knowledge publication", () => {
       origin: "migrated_legacy",
       verification: "exact",
     }]);
+  });
+
+  it("surfaces only the newest revision-current in-review draft for resume", async () => {
+    const draft = await prepare();
+    // The freshest draft wins even when earlier tests left in-review drafts
+    // behind; those sit on older base revisions and are filtered out.
+    expect(await getLatestInReviewProjectKnowledgeDraft({ scope })).toMatchObject({
+      id: draft.id,
+      status: "ready_to_publish",
+    });
+
+    await publish(draft.id);
+    // Publishing advances the active revision: the published draft and every
+    // older ready draft stop surfacing as resumable.
+    expect(await getLatestInReviewProjectKnowledgeDraft({ scope })).toBeNull();
+
+    const next = await prepare();
+    expect((await getLatestInReviewProjectKnowledgeDraft({ scope }))?.id).toBe(next.id);
+    await publish(next.id);
+    expect(await getLatestInReviewProjectKnowledgeDraft({ scope })).toBeNull();
   });
 });

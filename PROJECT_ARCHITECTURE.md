@@ -279,6 +279,7 @@ The worker entrypoint is `src/worker/main.ts`.
 
 - `npm run dev` and `npm start` use `scripts/run-app.mjs` to supervise both web and background child processes by default.
 - The supervisor stops both children when the web process exits and restarts an unexpectedly exited background process after 1, 2, 5, 15, then 30 seconds.
+- The supervisor stops the background child by writing a `shutdown` control line to its piped stdin (mirrored constant in `scripts/run-app.mjs` and `src/worker/main.ts`), falling back to a signal kill only after a 12-second window. This makes the graceful requeue path reliable on Windows, where `child.kill()` is an abrupt `TerminateProcess`. The web child stays signal-stopped: it has no requeue semantics and its mutations are transactional. Stdin end-of-stream is deliberately not a shutdown trigger, so a standalone `npm run worker` under a service manager with a closed stdin keeps running. In dev mode the message passes through the `node --watch` wrapper to the worker; the idle watcher wrapper itself may linger until the fallback kill reaps it (a console Ctrl+C ends it directly via the console event).
 - Advanced split deployments run production processes with `npm run web:start` and `npm run worker`, or watched development processes with `npm run web:dev` and `npm run worker:dev`.
 - Job handlers are registered in `src/modules/jobs/register-handlers.ts`.
 - The queue is implemented in `src/modules/jobs/job-queue.service.ts`.
@@ -288,7 +289,7 @@ The worker entrypoint is `src/worker/main.ts`.
 - The worker runs two execution lanes: a Knowledge Hub dispatcher that claims every ready `project_knowledge_v4` job and runs those builds concurrently (no process-wide cap; one active build per project is enforced by the queue dedupe key), and a serial lane that processes workspace sync and all other job types one at a time.
 - Active jobs are tracked in a process-level registry with one batched heartbeat (`WORKER_HEARTBEAT_MS`) and one cancellation poll covering all running jobs; a cancellation request aborts only the requested job.
 - Background processes claim jobs with row locks and mark stale locks retryable according to environment settings. Progress, completion, failure, and knowledge batch-cache reads/writes are additionally fenced by job id and current worker ownership, so a stale worker cannot modify a job that was reclaimed or requeued.
-- Graceful shutdown stops claiming, unregisters worker capacity, allows three seconds for active jobs to finish, then aborts and atomically requeues unfinished owned jobs without consuming a retry.
+- Graceful shutdown stops claiming, unregisters worker capacity, allows three seconds for active jobs to finish, then aborts and atomically requeues unfinished owned jobs without consuming a retry. It is triggered by SIGINT/SIGTERM or by the supervisor's stdin shutdown message.
 
 Multiple worker processes may run against the same database. A job should be written to tolerate retries because failed or stale jobs can be requeued.
 

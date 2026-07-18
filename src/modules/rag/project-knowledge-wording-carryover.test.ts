@@ -83,16 +83,111 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", reasonA, reasonB)).toBe(true);
   });
 
-  it("refuses a paraphrase when only one business rule has an atomic constraint", () => {
+  it("refuses a mixed constraint/abstention pair when fingerprint and evidence both differ", () => {
     const base = knowledgeBase({
       businessRules: [
-        businessRule("br-retry", "Maximum retry count is 3.", [evidenceRef("1", "s1", "q")]),
-        businessRule("br-retry", "Retry behavior varies by account.", [evidenceRef("1", "s2", "q")]),
+        businessRule("br-retry", "Maximum retry count is 3.", [evidenceRef("1", "s1", "Retries are capped at 3.")]),
+        businessRule("br-retry", "Retry behavior varies by account.", [evidenceRef("1", "s2", "Behavior differs per account tier.")]),
       ],
     });
 
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1]))
       .toBe(false);
+  });
+
+  it("merges a mixed constraint/abstention pair citing content-equivalent evidence", () => {
+    // One side extracts an atomic claim, the other abstains — constraint presence
+    // can flip between builds for the same source claim. Trailing-punctuation
+    // drift in the re-quoted evidence must not keep the pair split forever.
+    const base = knowledgeBase({
+      businessRules: [
+        businessRule("br-retry-cap", "Maximum retry count is 3.", [evidenceRef("1", "s1", "Retry count max 3.")]),
+        businessRule("br-retry-cap", "Retries are capped at three attempts per user.", [evidenceRef("1", "s2", "Retry count max 3")]),
+      ],
+    });
+
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1]))
+      .toBe(true);
+  });
+
+  it("merges a mixed pair on fingerprint equality even when evidence differs", () => {
+    // Production pair: "to cart" vs "to the cart" — identical fingerprints (articles
+    // fold), but one published twin carries a persisted LLM constraint while the
+    // re-extraction abstains. The old mixed branch refused unconditionally.
+    const base = knowledgeBase({
+      businessRules: [
+        {
+          ...businessRule("br-add-to-cart-in-stock-only", "Only in-stock products can be added to cart.", [
+            evidenceRef("8", "s1", "Products must be in-stock"),
+          ]),
+          constraint: {
+            object: "product",
+            property: "availability",
+            operator: "eq",
+            value: "in-stock",
+            valueType: "enum",
+          },
+        },
+        businessRule("br-add-to-cart-in-stock-only", "Only in-stock products can be added to the cart.", [
+          evidenceRef("8", "s2", "Only in-stock products can be added"),
+        ]),
+      ],
+    });
+
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1]))
+      .toBe(true);
+  });
+
+  it("treats trailing-punctuation evidence drift as the same source claim for abstaining twins", () => {
+    // Production pair: both extractions abstain, the fingerprint is word-order
+    // sensitive, and the two quotes differ by exactly one trailing period.
+    const base = knowledgeBase({
+      businessRules: [
+        businessRule("br-payment-retry", "Retrying payment does not duplicate payment or order.", [
+          evidenceRef("16", "s1", "retry does not duplicate payment or order."),
+        ]),
+        businessRule("br-payment-retry", "A payment retry does not duplicate the payment or order.", [
+          evidenceRef("16", "s2", "retry does not duplicate payment or order"),
+        ]),
+      ],
+    });
+
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1]))
+      .toBe(true);
+  });
+
+  it("merges different-identity constraints only when they cite content-equivalent evidence", () => {
+    // Production pair: two wordings of one quoted claim whose object/property
+    // split drifted between extractions. The same quote cannot disagree with
+    // itself; distinct evidence keeps the pair separate and reviewable.
+    const quote = "Street, city, and postal code are required for shipping.";
+    const constraintFor = (object: string, property: string) => ({
+      object,
+      property,
+      operator: "eq" as const,
+      value: "required",
+      valueType: "boolean" as const,
+    });
+    const base = knowledgeBase({
+      businessRules: [
+        {
+          ...businessRule("br-shipping", "Shipping address required fields are validated.", [evidenceRef("30", "s1", quote)]),
+          constraint: constraintFor("shipping address", "required fields"),
+        },
+        {
+          ...businessRule("br-shipping", "The shipping address form validates its required fields.", [evidenceRef("30", "s2", quote)]),
+          constraint: constraintFor("shipping address form", "validation"),
+        },
+        {
+          ...businessRule("br-shipping", "Billing contact fields are validated separately.", [evidenceRef("30", "s3", "Billing contact must be validated separately.")]),
+          constraint: constraintFor("billing contact", "validation"),
+        },
+      ],
+    });
+    const [shippingA, shippingB, billing] = base.businessRules;
+
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", shippingA, shippingB)).toBe(true);
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", shippingA, billing)).toBe(false);
   });
 
   it("merges extraction abstentions with identical evidence even when fingerprints differ", () => {
@@ -297,6 +392,64 @@ describe("carryOverProjectKnowledgeWording", () => {
 
     expect(result.wordingCarryOverCount).toBe(0);
     expect(result.knowledgeBase.businessRules[0].rule).toBe("Maximum retry count is 5.");
+  });
+
+  it("restores previous wording when the re-quoted evidence drifted only by trailing punctuation", () => {
+    const previous = knowledgeBase({
+      businessRules: [businessRule(
+        "br-payment-retry",
+        "Retrying payment does not duplicate payment or order.",
+        [evidenceRef("16", "s-old", "retry does not duplicate payment or order.")],
+      )],
+    });
+    const next = knowledgeBase({
+      businessRules: [businessRule(
+        "br-payment-retry",
+        "A payment retry does not duplicate the payment or order.",
+        [evidenceRef("16", "s-new", "retry does not duplicate payment or order")],
+      )],
+    });
+
+    const result = carryOverProjectKnowledgeWording({ previousKnowledgeBase: previous, knowledgeBase: next });
+
+    expect(result.wordingCarryOverCount).toBe(1);
+    expect(result.knowledgeBase.businessRules[0]).toMatchObject({
+      id: "br-payment-retry",
+      rule: "Retrying payment does not duplicate payment or order.",
+    });
+    expect(result.knowledgeBase.businessRules[0].evidenceRefs).toEqual([
+      expect.objectContaining({ sourceSnapshotId: "s-new" }),
+    ]);
+  });
+
+  it("restores constraint-bearing wording over an abstaining re-extraction of unchanged evidence", () => {
+    const previous = knowledgeBase({
+      businessRules: [{
+        ...businessRule("br-retry-cap", "Maximum retry count is 3.", [evidenceRef("1", "s-old", "retry count is capped at 3")]),
+        constraint: {
+          object: "retry",
+          property: "count",
+          operator: "lte",
+          value: "3",
+          valueType: "number",
+        },
+      }],
+    });
+    const next = knowledgeBase({
+      businessRules: [businessRule(
+        "br-retry-cap",
+        "The retry count limit applies to all users.",
+        [evidenceRef("1", "s-new", "retry count is capped at 3")],
+      )],
+    });
+
+    const result = carryOverProjectKnowledgeWording({ previousKnowledgeBase: previous, knowledgeBase: next });
+
+    expect(result.wordingCarryOverCount).toBe(1);
+    expect(result.knowledgeBase.businessRules[0]).toMatchObject({
+      id: "br-retry-cap",
+      rule: "Maximum retry count is 3.",
+    });
   });
 
   it("does not downgrade hierarchy-compatible dependency types during carry-over", () => {

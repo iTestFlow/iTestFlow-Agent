@@ -16,6 +16,15 @@ const nextBin = fileURLToPath(new URL("../node_modules/next/dist/bin/next", impo
 const workerMain = fileURLToPath(new URL("../src/worker/main.ts", import.meta.url));
 const restartDelays = [1_000, 2_000, 5_000, 15_000, 30_000];
 
+// Mirrored in src/worker/main.ts (an .mjs script cannot import the TS constant).
+// A control message over the worker's piped stdin triggers the same graceful
+// unregister -> drain -> no-retry requeue path as SIGTERM. On Windows,
+// child.kill() is an abrupt TerminateProcess that would skip that path, fall
+// back to ~5-minute stale-lock recovery, and burn one of the job's attempts.
+export const WORKER_SHUTDOWN_MESSAGE = "shutdown";
+// Must outlive the worker's internal SHUTDOWN_DEADLINE_MS (10s failsafe).
+const WORKER_STOP_KILL_FALLBACK_MS = 12_000;
+
 let shuttingDown = false;
 let webProcess;
 let workerProcess;
@@ -23,10 +32,10 @@ let workerRestartTimer;
 let workerRestartAttempt = 0;
 let workerStartedAt = 0;
 
-function spawnChild(args) {
+function spawnChild(args, stdio = "inherit") {
   return spawn(process.execPath, args, {
     cwd: root,
-    stdio: "inherit",
+    stdio,
     env: process.env,
   });
 }
@@ -52,7 +61,7 @@ function workerArguments() {
 function startWorker() {
   if (shuttingDown) return;
   workerStartedAt = Date.now();
-  workerProcess = spawnChild(workerArguments());
+  workerProcess = spawnChild(workerArguments(), ["pipe", "inherit", "inherit"]);
   workerProcess.once("error", (error) => scheduleWorkerRestart(`Generation service failed to start: ${error.message}`));
   workerProcess.once("exit", (code, signal) => {
     if (shuttingDown) return;
@@ -76,6 +85,22 @@ function stopChild(child, signal) {
   if (child && child.exitCode === null && !child.killed) child.kill(signal);
 }
 
+/**
+ * Asks the worker to shut down gracefully over its piped stdin. Returns false
+ * when the message could not be delivered (worker already gone, stdin closed),
+ * in which case the caller falls back to a signal kill. Exported for tests.
+ */
+export function requestWorkerShutdown(child) {
+  if (!child || child.exitCode !== null || child.killed || !child.stdin || child.stdin.destroyed) return false;
+  try {
+    child.stdin.write(`${WORKER_SHUTDOWN_MESSAGE}\n`);
+    child.stdin.end();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function stopApplication(exitCode, reason, signal = "SIGTERM") {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -83,8 +108,16 @@ function stopApplication(exitCode, reason, signal = "SIGTERM") {
   if (reason) console.error(`[app] ${reason}`);
   if (workerRestartTimer) clearTimeout(workerRestartTimer);
   stopChild(webProcess, signal);
-  stopChild(workerProcess, signal);
-  setTimeout(() => process.exit(exitCode), 5_000).unref();
+  if (requestWorkerShutdown(workerProcess)) {
+    const worker = workerProcess;
+    const killFallback = setTimeout(() => stopChild(worker, signal), WORKER_STOP_KILL_FALLBACK_MS);
+    killFallback.unref();
+    worker.once("exit", () => clearTimeout(killFallback));
+  } else {
+    stopChild(workerProcess, signal);
+  }
+  // Must outlive the worker's graceful window (message fallback 12s + margin).
+  setTimeout(() => process.exit(exitCode), 15_000).unref();
 }
 
 export function workerRestartDelay(attempt) {
