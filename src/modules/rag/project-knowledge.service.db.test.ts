@@ -691,10 +691,10 @@ describeDb("source-versioned project knowledge publication", () => {
     )).toEqual([{ count: 0 }]);
   });
 
-  it("publishes re-keyed hash-suffixed business rules through the canonical uniqueness guard", async () => {
-    // The twins must cite DIFFERENT evidence: same-quote different-identity
-    // constraints now merge as paraphrase noise instead of rekeying, and this
-    // test needs a genuinely distinct pair to exercise the uniqueness guard.
+  it("retains re-keyed contradictory business rules through the canonical uniqueness guard", async () => {
+    // Only a provable same-identity value contradiction survives merge-by-default.
+    // It must still be re-keyed before conflict review so canonical uniqueness is
+    // preserved without ever silently fusing the incompatible values.
     const rekeyedKnowledge = {
       ...initialKnowledgeBase,
       businessRules: [
@@ -706,7 +706,7 @@ describeDb("source-versioned project knowledge publication", () => {
         {
           ...initialKnowledgeBase.businessRules[0],
           id: "BR-PURCHASE-NOTIFICATION",
-          rule: "Secondary purchase button must be enabled.",
+          rule: "Primary purchase button must be disabled.",
           evidence: "Checkout description",
           evidenceRefs: [evidenceRef("description", "Checkout description")],
         },
@@ -716,19 +716,13 @@ describeDb("source-versioned project knowledge publication", () => {
     const draft = await prepare(rekeyedKnowledge);
     const entryKeys = draft.proposedKnowledge?.businessRules.map((entry) => entry.id);
 
-    expect(draft.persistedStatus).toBe("ready_to_publish");
+    expect(draft.persistedStatus).toBe("blocked");
     expect(entryKeys).toEqual([
       "BR-PURCHASE-NOTIFICATION",
       expect.stringMatching(/^BR-PURCHASE-NOTIFICATION-[a-f0-9]{8}$/),
     ]);
 
-    await expect(publish(draft.id)).resolves.toMatchObject({ persistedStatus: "published" });
-    expect(await sqlAll<{ entry_key: string; status: string }>(
-      `SELECT entry_key, status FROM project_knowledge_entry_versions
-       WHERE project_id = @projectId AND category = 'business_rule'
-       ORDER BY entry_key`,
-      { projectId },
-    )).toEqual(entryKeys?.map((entryKey) => ({ entry_key: entryKey, status: "active" })));
+    await expect(publish(draft.id)).rejects.toMatchObject({ code: "knowledge_publication_blocked" });
   });
 
   it("auto-merges the frozen Quote Receiving dependency variants before persisting conflicts", async () => {

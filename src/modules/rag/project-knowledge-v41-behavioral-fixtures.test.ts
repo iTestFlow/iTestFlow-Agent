@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeProjectKnowledgeRuleFingerprint } from "./project-knowledge-atomic-constraint";
 import { detectProjectKnowledgeHardConflicts } from "./project-knowledge-conflicts";
 import {
   hasProjectKnowledgeDuplicateLogicalIdentities,
@@ -115,7 +114,7 @@ describe("project knowledge v4.1 frozen-draft behavioral fixtures", () => {
       "br-quote-timeout-popup-non-dismissible",
       "br-timeout-trigger-frontend-only",
     ]);
-    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0, possibleTensionCount: 0 });
+    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0 });
   });
 
   it("merges Masked Card Number wording and retains both module associations", () => {
@@ -151,13 +150,12 @@ describe("project knowledge v4.1 frozen-draft behavioral fixtures", () => {
       }),
     ]);
     expect(result.knowledgeBase.businessRules[0]?.evidenceRefs).toHaveLength(2);
-    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0, possibleTensionCount: 0 });
+    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0 });
   });
 
-  it("re-keys the Purchase Notification button variants and records a non-blocking tension", () => {
+  it("merges the Purchase Notification button variants under v4.2 semantics", () => {
     const first = "Download Policy is enabled only when the policy document has been issued and the document URL is available; if policy status is Pending, it is disabled with a tooltip explaining that the document is not yet available.";
     const second = "Download Policy is enabled only when the policy document URL has been received and stored from the insurance company's purchase notification response; otherwise it is disabled with a tooltip.";
-    expect(normalizeProjectKnowledgeRuleFingerprint(first)).not.toBe(normalizeProjectKnowledgeRuleFingerprint(second));
 
     const result = resolveFixture({
       businessRules: [
@@ -166,17 +164,13 @@ describe("project knowledge v4.1 frozen-draft behavioral fixtures", () => {
       ],
     });
 
-    expect(result.knowledgeBase.businessRules).toHaveLength(2);
-    expect(result.counters).toMatchObject({ rekeyCount: 1, possibleTensionCount: 1 });
-    expect(result.possibleTensions).toEqual([
-      expect.objectContaining({ category: "business_rule", reason: "fingerprint_mismatch" }),
-    ]);
+    expect(result.knowledgeBase.businessRules).toHaveLength(1);
+    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0 });
   });
 
-  it("keeps the Download Loading variants separate when their frozen fingerprints differ", () => {
+  it("merges the Download Loading variants under v4.2 semantics", () => {
     const first = "While quotes are being fetched from the aggregator, a loading skeleton or spinner is displayed in place of the quote list; the sort dropdown and expiry timer are hidden until at least one quote is received.";
     const second = "While quotes are being fetched from the aggregator, display a loading skeleton/spinner in place of the quote list, and hide the sort dropdown and expiry timer until at least one quote is received.";
-    expect(normalizeProjectKnowledgeRuleFingerprint(first)).not.toBe(normalizeProjectKnowledgeRuleFingerprint(second));
 
     const result = resolveFixture({
       businessRules: [
@@ -185,8 +179,8 @@ describe("project knowledge v4.1 frozen-draft behavioral fixtures", () => {
       ],
     });
 
-    expect(result.knowledgeBase.businessRules).toHaveLength(2);
-    expect(result.counters).toMatchObject({ rekeyCount: 1, possibleTensionCount: 1 });
+    expect(result.knowledgeBase.businessRules).toHaveLength(1);
+    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0 });
   });
 
   it("merges the Quote Receiving to Aggregator dependency through the generic hierarchy level", () => {
@@ -274,6 +268,6 @@ describe("project knowledge v4.1 frozen-draft behavioral fixtures", () => {
     });
 
     expect(result.knowledgeBase.crossDependencies).toHaveLength(2);
-    expect(result.counters).toMatchObject({ rekeyCount: 1, possibleTensionCount: 0 });
+    expect(result.counters).toMatchObject({ rekeyCount: 1 });
   });
 });

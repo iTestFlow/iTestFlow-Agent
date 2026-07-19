@@ -73,15 +73,13 @@ describe("project knowledge duplicate resolution", () => {
       preConsolidationDuplicateIdentityCount: 1,
       paraphraseMergeCount: 1,
       rekeyCount: 0,
-      possibleTensionCount: 0,
     });
     expect(hasProjectKnowledgeDuplicateLogicalIdentities(result.knowledgeBase)).toBe(false);
   });
 
-  it("re-keys compatible-distinct business rules and records a non-blocking tension", () => {
-    // Guard for the both-constraints different-identity refusal: this relies on the
-    // rule() helper quoting the rule text itself, so the two entries also cite
-    // DIFFERENT evidence — content-equivalent evidence would merge them instead.
+  it("merges compatible-distinct business rules", () => {
+    // Different atomic identities are not a provable value contradiction, so the
+    // same-id variants form one logical rule even with different evidence.
     const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
       businessRules: [
         rule("notification", "Primary purchase button must be enabled.", {
@@ -101,23 +99,9 @@ describe("project knowledge duplicate resolution", () => {
       ],
     }));
 
-    expect(result.knowledgeBase.businessRules.map((entry) => entry.id)).toEqual([
-      "notification",
-      expect.stringMatching(/^notification-[a-f0-9]{8}$/),
-    ]);
-    const rekeyed = result.knowledgeBase.businessRules.find((entry) => entry.id !== "notification");
-    expect(rekeyed?.constraint).toBeDefined();
-    expect(rekeyed?.id).toBe(`notification-${hashCanonicalValue(
-      projectKnowledgeAtomicConstraintIdentity(rekeyed!.constraint!, rekeyed!.moduleName),
-    ).slice(0, 8)}`);
-    expect(result.counters).toMatchObject({ rekeyCount: 1, possibleTensionCount: 1 });
-    expect(result.possibleTensions).toEqual([
-      expect.objectContaining({
-        category: "business_rule",
-        reason: "different_atomic_identity",
-        entryKeys: expect.arrayContaining(["notification"]),
-      }),
-    ]);
+    expect(result.knowledgeBase.businessRules).toHaveLength(1);
+    expect(result.knowledgeBase.businessRules[0]?.id).toBe("notification");
+    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0 });
     expect(detectProjectKnowledgeHardConflicts(result.knowledgeBase)).toEqual([]);
   });
 
@@ -141,7 +125,12 @@ describe("project knowledge duplicate resolution", () => {
       ],
     }));
 
-    expect(result.counters).toMatchObject({ rekeyCount: 1, possibleTensionCount: 0 });
+    expect(result.knowledgeBase.businessRules).toHaveLength(2);
+    expect(result.knowledgeBase.businessRules.map((entry) => entry.id)).toEqual([
+      "retry-limit",
+      expect.stringMatching(/^retry-limit-[a-f0-9]{8}$/),
+    ]);
+    expect(result.counters).toMatchObject({ rekeyCount: 1 });
     expect(hasProjectKnowledgeDuplicateLogicalIdentities(result.knowledgeBase)).toBe(false);
     expect(detectProjectKnowledgeHardConflicts(result.knowledgeBase)).toEqual([
       expect.objectContaining({ conflictType: "incompatible_concrete_value" }),
@@ -167,7 +156,7 @@ describe("project knowledge duplicate resolution", () => {
     expect(result.knowledgeBase.businessRules).toEqual(expect.arrayContaining([
       expect.objectContaining({ moduleName: "Alpha", moduleAssociations: ["Alpha", "Zulu"] }),
     ]));
-    expect(result.counters).toMatchObject({ rekeyCount: 1, possibleTensionCount: 0 });
+    expect(result.counters).toMatchObject({ rekeyCount: 1 });
     expect(detectProjectKnowledgeHardConflicts(result.knowledgeBase)).toEqual([
       expect.objectContaining({
         conflictType: "incompatible_concrete_value",
@@ -237,7 +226,7 @@ describe("project knowledge duplicate resolution", () => {
     });
   });
 
-  it("keeps distinct-evidence abstentions separate while merging equal fingerprints", () => {
+  it("merges abstaining business-rule variants regardless of evidence", () => {
     const merged = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
       businessRules: [
         rule("refund-reason", "A reason is required for a return/refund request."),
@@ -252,11 +241,11 @@ describe("project knowledge duplicate resolution", () => {
     }));
 
     expect(merged.knowledgeBase.businessRules).toHaveLength(1);
-    expect(preserved.knowledgeBase.businessRules).toHaveLength(2);
+    expect(preserved.knowledgeBase.businessRules).toHaveLength(1);
     expect(preserved.counters).toMatchObject({
       atomicExtractionFailureCount: 2,
-      rekeyCount: 1,
-      possibleTensionCount: 1,
+      paraphraseMergeCount: 1,
+      rekeyCount: 0,
     });
   });
 
@@ -271,7 +260,7 @@ describe("project knowledge duplicate resolution", () => {
 
     expect(result.knowledgeBase.businessRules).toHaveLength(1);
     expect(result.knowledgeBase.businessRules[0].id).toBe("status-colours");
-    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0, possibleTensionCount: 0 });
+    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0 });
   });
 
   it("heals a previously rekeyed same-evidence twin back into its base id", () => {
@@ -289,7 +278,7 @@ describe("project knowledge duplicate resolution", () => {
     expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0 });
   });
 
-  it("merges a mixed constraint/abstention twin with equivalent evidence instead of recording a tension", () => {
+  it("merges a mixed constraint/abstention twin", () => {
     const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
       businessRules: [
         {
@@ -313,16 +302,13 @@ describe("project knowledge duplicate resolution", () => {
     expect(result.knowledgeBase.businessRules[0].constraint).toMatchObject({ value: "in-stock" });
     expect(result.counters).toMatchObject({
       paraphraseMergeCount: 1,
-      evidenceOnlyParaphraseMergeCount: 1,
       rekeyCount: 0,
-      possibleTensionCount: 0,
     });
   });
 
   it("heals a published mixed twin back into its base id", () => {
-    // The production shape behind the atomic_extraction_uncertain tensions: a
-    // published base entry with a persisted LLM constraint plus its previously
-    // rekeyed abstaining twin, quotes drifted by one trailing period.
+    // A published base entry with a persisted LLM constraint can heal with its
+    // previously rekeyed abstaining twin when the pair is resolved again.
     const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
       businessRules: [
         {
@@ -345,7 +331,7 @@ describe("project knowledge duplicate resolution", () => {
     expect(result.knowledgeBase.businessRules).toHaveLength(1);
     expect(result.knowledgeBase.businessRules[0].id).toBe("add-to-cart");
     expect(result.knowledgeBase.businessRules[0].constraint).toMatchObject({ value: "in-stock" });
-    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0, possibleTensionCount: 0 });
+    expect(result.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0 });
   });
 
   it("heals abstaining twins whose quotes drifted only by trailing punctuation", () => {
@@ -366,15 +352,13 @@ describe("project knowledge duplicate resolution", () => {
     expect(result.knowledgeBase.businessRules[0].id).toBe("payment-retry");
     expect(result.counters).toMatchObject({
       paraphraseMergeCount: 1,
-      evidenceOnlyParaphraseMergeCount: 1,
       rekeyCount: 0,
-      possibleTensionCount: 0,
     });
   });
 
   it("heals a different-identity constrained twin when both sides cite the same quote", () => {
-    // The production different_atomic_identity tension: the extractor split
-    // object/property differently for two wordings of one quoted claim.
+    // The extractor split object/property differently for two wordings of one
+    // quoted claim; the variants heal into their common logical rule.
     const quote = "Street, city, and postal code are required for shipping.";
     const result = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({
       businessRules: [
@@ -406,13 +390,11 @@ describe("project knowledge duplicate resolution", () => {
     expect(result.knowledgeBase.businessRules[0].constraint).toBeDefined();
     expect(result.counters).toMatchObject({
       paraphraseMergeCount: 1,
-      evidenceOnlyParaphraseMergeCount: 1,
       rekeyCount: 0,
-      possibleTensionCount: 0,
     });
   });
 
-  it("keeps a genuinely distinct rekeyed twin without re-rekeying it", () => {
+  it("heals a rekeyed business-rule twin by merging it into the base id", () => {
     const base = knowledgeBase({
       businessRules: [
         rule("checkout", "Checkout should be intuitive."),
@@ -422,11 +404,9 @@ describe("project knowledge duplicate resolution", () => {
     const first = resolveProjectKnowledgeDuplicateIdentities(base);
     const second = resolveProjectKnowledgeDuplicateIdentities(first.knowledgeBase);
 
-    expect(first.knowledgeBase.businessRules.map((entry) => entry.id).sort()).toEqual([
-      "checkout",
-      "checkout-0a1b2c3d",
-    ]);
-    expect(first.counters).toMatchObject({ paraphraseMergeCount: 0, rekeyCount: 0, possibleTensionCount: 1 });
+    expect(first.knowledgeBase.businessRules).toHaveLength(1);
+    expect(first.knowledgeBase.businessRules[0]?.id).toBe("checkout");
+    expect(first.counters).toMatchObject({ paraphraseMergeCount: 1, rekeyCount: 0 });
     expect(second.knowledgeBase).toEqual(first.knowledgeBase);
     expect(second.counters).toMatchObject({ rekeyCount: 0 });
   });
@@ -443,7 +423,7 @@ describe("project knowledge duplicate resolution", () => {
       "audit-cafebabe",
       "audit-deadbeef",
     ]);
-    expect(result.counters).toMatchObject({ paraphraseMergeCount: 0, rekeyCount: 0, possibleTensionCount: 0 });
+    expect(result.counters).toMatchObject({ paraphraseMergeCount: 0, rekeyCount: 0 });
   });
 
   it("merges hierarchy-compatible dependencies with identical evidence", () => {
@@ -519,14 +499,14 @@ describe("project knowledge duplicate resolution", () => {
       rule("notification", "Primary purchase button must be enabled.", {
         object: "purchase notification", property: "primary button", operator: "eq", value: "enabled", valueType: "boolean",
       }),
-      rule("notification", "Secondary purchase button must be enabled.", {
-        object: "purchase notification", property: "secondary button", operator: "eq", value: "enabled", valueType: "boolean",
+      rule("notification", "Primary purchase button must be disabled.", {
+        object: "purchase notification", property: "primary button", operator: "eq", value: "disabled", valueType: "boolean",
       }),
       rule("download-loading", "Download loading indicator must be enabled.", {
         object: "download loading", property: "indicator", operator: "eq", value: "enabled", valueType: "boolean",
       }),
-      rule("download-loading", "Download loading spinner must be enabled.", {
-        object: "download loading", property: "spinner", operator: "eq", value: "enabled", valueType: "boolean",
+      rule("download-loading", "Download loading indicator must be disabled.", {
+        object: "download loading", property: "indicator", operator: "eq", value: "disabled", valueType: "boolean",
       }),
     ];
     const first = resolveProjectKnowledgeDuplicateIdentities(knowledgeBase({ businessRules: entries }));
@@ -534,7 +514,7 @@ describe("project knowledge duplicate resolution", () => {
     const secondPass = resolveProjectKnowledgeDuplicateIdentities(first.knowledgeBase);
 
     expect(permuted.knowledgeBase).toEqual(first.knowledgeBase);
-    expect(permuted.possibleTensions).toEqual(first.possibleTensions);
+    expect(first.counters).toMatchObject({ rekeyCount: 2 });
     expect(secondPass.knowledgeBase).toEqual(first.knowledgeBase);
     expect(secondPass.counters).toMatchObject({
       preConsolidationDuplicateIdentityCount: 0,

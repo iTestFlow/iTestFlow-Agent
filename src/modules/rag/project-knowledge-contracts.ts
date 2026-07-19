@@ -10,7 +10,7 @@ import {
   type ProjectKnowledgeEvidenceRef,
 } from "./project-knowledge.schema";
 
-export const PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION = "4.1.0";
+export const PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION = "4.2.0";
 export const PROJECT_KNOWLEDGE_WORDING_VERSION = "4.0.0";
 export const PROJECT_KNOWLEDGE_SEMANTIC_HASH_VERSION = "semantic-v2";
 export const PROJECT_KNOWLEDGE_PROVENANCE_HASH_VERSION = "provenance-v2";

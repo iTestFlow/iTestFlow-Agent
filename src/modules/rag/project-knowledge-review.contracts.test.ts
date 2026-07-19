@@ -259,7 +259,6 @@ describe("project knowledge review contracts", () => {
       paraphraseMergeCount: 6,
       rekeyCount: 5,
       atomicExtractionFailureCount: 4,
-      possibleTensionCount: 3,
       wordingCarryOverCount: 4,
     })).toEqual({
       attemptedEvidenceRepairs: 5,
@@ -269,7 +268,6 @@ describe("project knowledge review contracts", () => {
       paraphraseMerges: 6,
       rekeys: 5,
       atomicExtractionFailures: 4,
-      possibleTensions: 3,
       wordingCarryOvers: 4,
       unresolvedEvidenceEntries: 3,
       remainingBlockers: 3,
@@ -292,7 +290,6 @@ describe("project knowledge review contracts", () => {
       paraphraseMerges: 0,
       rekeys: 0,
       atomicExtractionFailures: 0,
-      possibleTensions: 0,
       wordingCarryOvers: 0,
       unresolvedEvidenceEntries: 0,
     });

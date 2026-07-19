@@ -185,6 +185,7 @@ Knowledge Hub and RAG:
 - `/api/context/index`, `/api/context/status`, and `/api/context/suggestions` manage project context indexing and retrieval.
 - `/api/context/knowledge/*` manages background build jobs, draft review (conflicts/decisions/preview/publish), lint, log, candidates, promotion, manual drafting/finalization/validation, status, and export.
 - RAG storage, compiled knowledge, retrieval, linting, and citations live under `src/modules/rag`.
+- Same-id knowledge entries merge by default (longer wording and unioned evidence); only provable atomic value contradictions keep both entries and block as hard conflicts. Full rebuilds extract purely from sources without published-KB re-feed, while incremental builds reconcile changed sources.
 - The compiled knowledge design is documented in `docs/knowledge-wiki-rag-enhancement.md`.
 
 Business Owner Assistant:
@@ -304,6 +305,7 @@ Multiple worker processes may run against the same database. A job should be wri
 - Azure DevOps is the first implementation behind generic work-management and test-management provider contracts, not a standalone bulk work-item browser.
 - Provider identity is persisted per workspace and project, but no provider selection UI exists yet.
 - Project Context/Knowledge Hub is the only place that intentionally fetches many work items, and it does so with filters.
+- Same-id knowledge entries merge by default (longer wording and unioned evidence); only provable atomic value contradictions keep both entries and block as hard conflicts. Full rebuilds extract purely from sources without published-KB re-feed, while incremental builds reconcile changed sources.
 - Workflows usually operate on one selected project and one target work item ID.
 - All project-scoped Azure DevOps access must be resolved through trusted workspace/project scope before reading or writing.
 - Server route handlers should stay thin and delegate validation, integration calls, and business rules to modules.

@@ -88,7 +88,7 @@ export class AnthropicProvider extends BaseJsonProvider {
 
     if (!response.ok) {
       const errorText = await response.text();
-      if (outputConfig && isAnthropicGrammarTooLargeError(errorText)) {
+      if (outputConfig && isAnthropicNativeSchemaFallbackError(errorText)) {
         const fallbackRequestBody = this.structuredRequestBody(input);
         const fallbackResponse = await this.postMessages(fallbackRequestBody, input.signal);
         return anthropicStructuredCallResult(fallbackResponse, fallbackRequestBody);
@@ -192,8 +192,8 @@ async function anthropicStructuredCallResult(
   };
 }
 
-function isAnthropicGrammarTooLargeError(errorText: string) {
-  return /compiled grammar is too large/i.test(errorText);
+function isAnthropicNativeSchemaFallbackError(errorText: string) {
+  return /compiled grammar is too large|too many optional parameters/i.test(errorText);
 }
 
 function sanitizeAnthropicJsonSchema(value: unknown, propertyMap = false): unknown {

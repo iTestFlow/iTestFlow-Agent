@@ -1,7 +1,6 @@
 import {
   compareProjectKnowledgeAtomicConstraintValues,
   extractAtomicConstraint,
-  normalizeProjectKnowledgeRuleFingerprint,
   projectKnowledgeAtomicConstraintIdentity,
   ProjectKnowledgeAtomicConstraintSchema,
   type ProjectKnowledgeAtomicConstraint,
@@ -11,7 +10,6 @@ import {
   canonicalizeProjectKnowledgeLogicalIdentity,
   compareProjectKnowledgeCanonicalText,
   hashCanonicalValue,
-  type ProjectKnowledgeEntryCategory,
 } from "./project-knowledge-contracts";
 import {
   mergeProjectKnowledgeConflictEntries,
@@ -23,39 +21,23 @@ import {
 } from "./project-knowledge.schema";
 import { isCompatibleProjectKnowledgeParaphrase } from "./project-knowledge-wording-carryover";
 
-export type ProjectKnowledgePossibleTension = {
-  category: ProjectKnowledgeEntryCategory;
-  subject: string;
-  entryKeys: string[];
-  reason: string;
-};
-
 export type ProjectKnowledgeDuplicateResolutionCounters = {
   preConsolidationDuplicateIdentityCount: number;
   paraphraseMergeCount: number;
-  /**
-   * Merged business-rule clusters where at least one member pair could not have
-   * merged on structured agreement or fingerprint equality alone — the relaxed
-   * evidence equivalence was the deciding condition. Kept observable because
-   * such merges pick one wording via chooseLongerText and silently drop the
-   * others.
-   */
-  evidenceOnlyParaphraseMergeCount: number;
   rekeyCount: number;
   atomicExtractionFailureCount: number;
-  possibleTensionCount: number;
 };
 
 export type ProjectKnowledgeDuplicateResolutionResult = {
   knowledgeBase: ProjectKnowledgeBase;
   counters: ProjectKnowledgeDuplicateResolutionCounters;
-  possibleTensions: ProjectKnowledgePossibleTension[];
 };
 
 /**
  * Resolves repeated logical IDs without ever turning a collision into a review
- * blocker by itself. Exact category-specific merges are retained; every other
- * survivor receives a deterministic new key before conflict detection runs.
+ * blocker by itself. Business rules merge by default unless a provable atomic
+ * contradiction keeps them separate; every remaining survivor receives a
+ * deterministic new key before conflict detection runs.
  */
 export function resolveProjectKnowledgeDuplicateIdentities(
   knowledgeBaseInput: ProjectKnowledgeBase,
@@ -64,16 +46,13 @@ export function resolveProjectKnowledgeDuplicateIdentities(
   const counters: ProjectKnowledgeDuplicateResolutionCounters = {
     preConsolidationDuplicateIdentityCount: countDuplicateLogicalIdentities(knowledgeBase),
     paraphraseMergeCount: 0,
-    evidenceOnlyParaphraseMergeCount: 0,
     rekeyCount: 0,
     atomicExtractionFailureCount: 0,
-    possibleTensionCount: 0,
   };
-  const possibleTensions: ProjectKnowledgePossibleTension[] = [];
 
   const modules = resolveAlwaysMergeCategory("module", knowledgeBase.modules, counters);
   const glossary = resolveAlwaysMergeCategory("glossary", knowledgeBase.glossary, counters);
-  const businessRules = resolveBusinessRules(knowledgeBase.businessRules, counters, possibleTensions);
+  const businessRules = resolveBusinessRules(knowledgeBase.businessRules, counters);
   const stateTransitions = resolveStateTransitions(knowledgeBase.stateTransitions, counters);
   const crossDependencies = resolveDependencies(knowledgeBase.crossDependencies, counters);
 
@@ -84,13 +63,7 @@ export function resolveProjectKnowledgeDuplicateIdentities(
     glossary,
     crossDependencies,
   });
-  possibleTensions.sort((first, second) =>
-    compareProjectKnowledgeCanonicalText(first.category, second.category) ||
-    compareProjectKnowledgeCanonicalText(first.subject, second.subject) ||
-    compareProjectKnowledgeCanonicalText(first.entryKeys.join("\u0000"), second.entryKeys.join("\u0000")) ||
-    compareProjectKnowledgeCanonicalText(first.reason, second.reason));
-  counters.possibleTensionCount = possibleTensions.length;
-  return { knowledgeBase: resolvedKnowledgeBase, counters, possibleTensions };
+  return { knowledgeBase: resolvedKnowledgeBase, counters };
 }
 
 export function hasProjectKnowledgeDuplicateLogicalIdentities(knowledgeBaseInput: ProjectKnowledgeBase) {
@@ -124,20 +97,17 @@ type Dependency = ProjectKnowledgeBase["crossDependencies"][number];
 type BusinessRuleInfo = {
   entry: BusinessRule;
   constraint: ProjectKnowledgeAtomicConstraint | null;
-  fingerprint: string | null;
 };
 
 function resolveBusinessRules(
   entries: BusinessRule[],
   counters: ProjectKnowledgeDuplicateResolutionCounters,
-  possibleTensions: ProjectKnowledgePossibleTension[],
 ) {
   const canonicalIds = new Set(entries.map((entry) => canonicalizeProjectKnowledgeLogicalIdentity(entry.id)));
   const grouped = groupByLogicalIdentity(entries, (entry) => suffixHealedIdentity(entry.id, canonicalIds));
   const resolved: BusinessRule[] = [];
-  const tensionIntents: Array<{ subject: string; entries: BusinessRule[]; reason: string }> = [];
 
-  for (const [identity, group] of grouped) {
+  for (const [, group] of grouped) {
     const infos = sortCategoryEntries("business_rule", group).map((entry) => businessRuleInfo(entry, counters));
     if (infos.length < 2) {
       resolved.push(...infos.map((info) => info.entry));
@@ -160,30 +130,12 @@ function resolveBusinessRules(
       const clusterEntries = cluster.map((item) => item.entry);
       if (clusterEntries.length === 1) return clusterEntries[0]!;
       counters.paraphraseMergeCount += clusterEntries.length - 1;
-      if (isEvidenceOnlyBusinessRuleMerge(cluster)) counters.evidenceOnlyParaphraseMergeCount += 1;
       return mergeProjectKnowledgeConflictEntries("business_rule", clusterEntries);
     });
-    if (survivors.length > 1 && !hasBusinessRuleContradiction(clusters)) {
-      tensionIntents.push({
-        subject: `identity:business_rule:${identity}`,
-        entries: survivors,
-        reason: businessRuleTensionReason(clusters),
-      });
-    }
     resolved.push(...survivors);
   }
 
-  const rekeyed = rekeyCategory("business_rule", resolved, counters, (entry) => resolveBusinessRuleConstraint(entry));
-  const replacementByEntry = rekeyed.replacements;
-  for (const intent of tensionIntents) {
-    possibleTensions.push({
-      category: "business_rule",
-      subject: intent.subject,
-      entryKeys: intent.entries.map((entry) => (replacementByEntry.get(entry) ?? entry).id).sort(compareProjectKnowledgeCanonicalText),
-      reason: intent.reason,
-    });
-  }
-  return rekeyed.entries;
+  return rekeyCategory("business_rule", resolved, counters, (entry) => resolveBusinessRuleConstraint(entry)).entries;
 }
 
 function businessRuleInfo(
@@ -195,7 +147,6 @@ function businessRuleInfo(
   return {
     entry,
     constraint,
-    fingerprint: constraint ? null : normalizeProjectKnowledgeRuleFingerprint(entry.rule),
   };
 }
 
@@ -205,35 +156,11 @@ function resolveBusinessRuleConstraint(entry: BusinessRule) {
 }
 
 /**
- * A merged cluster counts as evidence-only when some member pair has neither
- * two same-identity structured constraints (value agreement provable) nor an
- * equal closed fingerprint — only the relaxed evidence equivalence admitted it.
+ * Conflict-review integrations retain this scoped detector alongside the
+ * module-scope helpers. Duplicate merging itself is intentionally
+ * module-agnostic and uses the pairwise carry-over gate above.
  */
-function isEvidenceOnlyBusinessRuleMerge(cluster: BusinessRuleInfo[]) {
-  for (let firstIndex = 0; firstIndex < cluster.length; firstIndex += 1) {
-    for (let secondIndex = firstIndex + 1; secondIndex < cluster.length; secondIndex += 1) {
-      const first = cluster[firstIndex]!;
-      const second = cluster[secondIndex]!;
-      if (
-        first.constraint && second.constraint &&
-        projectKnowledgeAtomicConstraintIdentity(first.constraint) ===
-          projectKnowledgeAtomicConstraintIdentity(second.constraint)
-      ) {
-        continue;
-      }
-      if (
-        normalizeProjectKnowledgeRuleFingerprint(first.entry.rule) ===
-        normalizeProjectKnowledgeRuleFingerprint(second.entry.rule)
-      ) {
-        continue;
-      }
-      return true;
-    }
-  }
-  return false;
-}
-
-function hasBusinessRuleContradiction(clusters: BusinessRuleInfo[][]) {
+export function hasBusinessRuleContradiction(clusters: BusinessRuleInfo[][]) {
   for (let firstIndex = 0; firstIndex < clusters.length; firstIndex += 1) {
     for (let secondIndex = firstIndex + 1; secondIndex < clusters.length; secondIndex += 1) {
       const firstCluster = clusters[firstIndex] ?? [];
@@ -274,16 +201,6 @@ function businessRuleAtomicModuleScopeIdentities(
   const modules = [entry.moduleName, ...(entry.moduleAssociations ?? [])];
   return (modules.length ? modules : [undefined])
     .map((moduleName) => projectKnowledgeAtomicConstraintIdentity(constraint, moduleName));
-}
-
-function businessRuleTensionReason(clusters: BusinessRuleInfo[][]) {
-  const representatives = clusters.map((cluster) => cluster[0]).filter((item): item is BusinessRuleInfo => Boolean(item));
-  if (representatives.some((item) => !item.constraint)) {
-    return representatives.every((item) => !item.constraint)
-      ? "fingerprint_mismatch"
-      : "atomic_extraction_uncertain";
-  }
-  return "different_atomic_identity";
 }
 
 function resolveStateTransitions(
@@ -374,7 +291,7 @@ function rekeyCategory<TEntry extends RekeyableEntry>(
     });
   }
   const rekeyed = entries.map((entry) => replacements.get(entry) ?? entry);
-  return { entries: sortCategoryEntries(category, rekeyed) as TEntry[], replacements };
+  return { entries: sortCategoryEntries(category, rekeyed) as TEntry[] };
 }
 
 function readEntryKey(category: RekeyableCategory, entry: RekeyableEntry) {
@@ -421,7 +338,7 @@ function groupByLogicalIdentity<TEntry>(entries: TEntry[], identity: (entry: TEn
   return grouped;
 }
 
-const REKEY_SUFFIX_PATTERN = /-[0-9a-f]{8}(-\d+)?$/;
+export const REKEY_SUFFIX_PATTERN = /-[0-9a-f]{8}(-\d+)?$/;
 
 /**
  * Buckets a previously rekeyed id (base-xxxxxxxx or base-xxxxxxxx-n) with its

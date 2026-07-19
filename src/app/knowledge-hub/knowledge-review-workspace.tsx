@@ -55,12 +55,6 @@ export type CompactConflictPage = {
   pageSize: number
   pageCount: number
   conflicts: CompactKnowledgeConflict[]
-  possibleTensions?: Array<{
-    category: string
-    subject: string
-    entryKeys: string[]
-    reason: string
-  }>
 }
 
 export type CompactConflictDecision =
@@ -91,7 +85,6 @@ export function KnowledgeConflictReview({
   const selectedCount = Object.keys(decisions).length
   const totalCount = page?.counts.total ?? 0
   const hasBlockingConflicts = totalCount > 0
-  const hasPossibleTensions = Boolean(page?.possibleTensions?.length)
   const allSelected = Boolean(page) && totalCount > 0 && selectedCount === totalCount
   const deferredQuery = useDeferredValue(query)
   const normalizedQuery = deferredQuery.trim().toLowerCase()
@@ -148,9 +141,7 @@ export function KnowledgeConflictReview({
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
               {hasBlockingConflicts
                 ? "Compare the supported versions and their evidence. Keep one version or review and combine supported fields."
-                : hasPossibleTensions
-                  ? "The draft can be published. The items below are informational and do not require a decision."
-                  : "The draft can be published without a conflict decision."}
+                : "The draft can be published without a conflict decision."}
             </p>
           </div>
         </div>
@@ -168,27 +159,6 @@ export function KnowledgeConflictReview({
           ) : null}
         </div>
       </div>
-
-      {page?.possibleTensions?.length ? (
-        <section aria-label="Possible tensions" className="rounded-lg border border-warning/30 bg-warning/5 p-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary">Possible tensions</Badge>
-            <span className="text-sm font-semibold text-foreground">{page.possibleTensions.length} non-blocking {page.possibleTensions.length === 1 ? "item" : "items"}</span>
-          </div>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            These entries were kept separately because equivalence was not proven. They do not block publication.
-          </p>
-          <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
-            {page.possibleTensions.map((tension, index) => (
-              <li key={`${tension.category}-${tension.subject}-${index}`} className="rounded-md border border-border bg-card/70 p-3">
-                <span className="font-medium text-foreground">{friendlyConflictSubject(tension.subject)}</span>
-                <span className="text-muted-foreground"> — {friendlyConflictCode(tension.reason)}</span>
-                {tension.entryKeys.length ? <span className="text-muted-foreground"> ({tension.entryKeys.join(", ")})</span> : null}
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
 
       {page && page.conflicts.length ? (
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">

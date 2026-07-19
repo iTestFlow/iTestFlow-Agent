@@ -65,12 +65,19 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
     expect(isCompatibleProjectKnowledgeParaphrase("glossary", base.glossary[0], base.glossary[1])).toBe(true);
   });
 
-  it("uses atomic constraints and abstention fingerprints for business rules", () => {
+  it("merges business rules by default except provable atomic contradictions", () => {
+    const retryConstraint = (value: string) => ({
+      object: "retry",
+      property: "count",
+      operator: "eq" as const,
+      value,
+      valueType: "number" as const,
+    });
     const base = knowledgeBase({
       businessRules: [
-        businessRule("br-1", "Maximum retry count is 3.", [evidenceRef("1", "s1", "q")]),
-        businessRule("br-1", "Maximum retry count is 5.", [evidenceRef("1", "s2", "q")]),
-        businessRule("br-1", "The maximum retry count must be 3", [evidenceRef("1", "s3", "q")]),
+        { ...businessRule("br-1", "Maximum retry count is 3.", [evidenceRef("1", "s1", "q")]), constraint: retryConstraint("3") },
+        { ...businessRule("br-1", "Maximum retry count is 5.", [evidenceRef("1", "s2", "q")]), constraint: retryConstraint("5") },
+        { ...businessRule("br-1", "The maximum retry count must be 3", [evidenceRef("1", "s3", "q")]), constraint: retryConstraint("3") },
         businessRule("br-2", "A reason is required for a return/refund request.", [evidenceRef("2", "s4", "q")]),
         businessRule("br-2", "A reason is required for return/refund requests.", [evidenceRef("2", "s5", "q")]),
       ],
@@ -78,12 +85,11 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
     const [three, five, alsoThree, reasonA, reasonB] = base.businessRules;
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", three, five)).toBe(false);
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", three, alsoThree)).toBe(true);
-    // Both conservative extractions abstain; request/requests folds in the closed
-    // fingerprint table and is therefore safe to carry over.
+    // Extraction abstentions are accepted as wording variants of one logical id.
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", reasonA, reasonB)).toBe(true);
   });
 
-  it("refuses a mixed constraint/abstention pair when fingerprint and evidence both differ", () => {
+  it("merges a mixed constraint/abstention pair when evidence differs", () => {
     const base = knowledgeBase({
       businessRules: [
         businessRule("br-retry", "Maximum retry count is 3.", [evidenceRef("1", "s1", "Retries are capped at 3.")]),
@@ -92,7 +98,7 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
     });
 
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1]))
-      .toBe(false);
+      .toBe(true);
   });
 
   it("merges a mixed constraint/abstention pair citing content-equivalent evidence", () => {
@@ -110,10 +116,8 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
       .toBe(true);
   });
 
-  it("merges a mixed pair on fingerprint equality even when evidence differs", () => {
-    // Production pair: "to cart" vs "to the cart" — identical fingerprints (articles
-    // fold), but one published twin carries a persisted LLM constraint while the
-    // re-extraction abstains. The old mixed branch refused unconditionally.
+  it("merges a mixed pair even when evidence differs", () => {
+    // Constraint extraction can abstain on one wording of the same logical claim.
     const base = knowledgeBase({
       businessRules: [
         {
@@ -156,10 +160,10 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
       .toBe(true);
   });
 
-  it("merges different-identity constraints only when they cite content-equivalent evidence", () => {
+  it("merges different-identity constraints regardless of evidence", () => {
     // Production pair: two wordings of one quoted claim whose object/property
-    // split drifted between extractions. The same quote cannot disagree with
-    // itself; distinct evidence keeps the pair separate and reviewable.
+    // split drifted between extractions. Different atomic identities are not a
+    // provable value contradiction, so both variants merge by default.
     const quote = "Street, city, and postal code are required for shipping.";
     const constraintFor = (object: string, property: string) => ({
       object,
@@ -187,7 +191,7 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
     const [shippingA, shippingB, billing] = base.businessRules;
 
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", shippingA, shippingB)).toBe(true);
-    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", shippingA, billing)).toBe(false);
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", shippingA, billing)).toBe(true);
   });
 
   it("merges extraction abstentions with identical evidence even when fingerprints differ", () => {
@@ -222,14 +226,14 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1])).toBe(true);
   });
 
-  it("keeps extraction abstentions separate when fingerprints and evidence both differ", () => {
+  it("merges extraction abstentions when fingerprints and evidence both differ", () => {
     const base = knowledgeBase({
       businessRules: [
         businessRule("br-1", "Customers can request refunds through support.", [evidenceRef("1", "s1", "Refunds go through support.")]),
         businessRule("br-1", "Support agents can escalate refund disputes.", [evidenceRef("1", "s2", "Disputes may be escalated.")]),
       ],
     });
-    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1])).toBe(false);
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1])).toBe(true);
   });
 
   it("prefers supplied atomic constraints and refuses a proven contradiction", () => {
@@ -275,6 +279,38 @@ describe("isCompatibleProjectKnowledgeParaphrase", () => {
 
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", enabled, alsoEnabled)).toBe(true);
     expect(isCompatibleProjectKnowledgeParaphrase("business_rule", enabled, disabled)).toBe(false);
+  });
+
+  it("refuses a same-identity contradiction across module boundaries", () => {
+    const base = knowledgeBase({
+      businessRules: [
+        {
+          ...businessRule("br-feature", "The feature is enabled.", [evidenceRef("1", "s1", "feature enabled")]),
+          moduleName: "Checkout",
+          constraint: {
+            object: "feature",
+            property: "enabled",
+            operator: "eq",
+            value: "true",
+            valueType: "boolean",
+          },
+        },
+        {
+          ...businessRule("br-feature", "The feature is disabled.", [evidenceRef("2", "s2", "feature disabled")]),
+          moduleName: "Admin",
+          constraint: {
+            object: "feature",
+            property: "enabled",
+            operator: "eq",
+            value: "false",
+            valueType: "boolean",
+          },
+        },
+      ],
+    });
+
+    expect(isCompatibleProjectKnowledgeParaphrase("business_rule", base.businessRules[0], base.businessRules[1]))
+      .toBe(false);
   });
 
   it("requires state transitions to agree on the target state", () => {
@@ -382,10 +418,28 @@ describe("carryOverProjectKnowledgeWording", () => {
 
   it("never carries wording across a concrete-value disagreement", () => {
     const previous = knowledgeBase({
-      businessRules: [businessRule("br-retry", "Maximum retry count is 3.", [evidenceRef("1", "s-old", "retry")])],
+      businessRules: [{
+        ...businessRule("br-retry", "Maximum retry count is 3.", [evidenceRef("1", "s-old", "retry")]),
+        constraint: {
+          object: "retry",
+          property: "count",
+          operator: "eq",
+          value: "3",
+          valueType: "number",
+        },
+      }],
     });
     const next = knowledgeBase({
-      businessRules: [businessRule("br-retry", "Maximum retry count is 5.", [evidenceRef("1", "s-new", "retry")])],
+      businessRules: [{
+        ...businessRule("br-retry", "Maximum retry count is 5.", [evidenceRef("1", "s-new", "retry")]),
+        constraint: {
+          object: "retry",
+          property: "count",
+          operator: "eq",
+          value: "5",
+          valueType: "number",
+        },
+      }],
     });
 
     const result = carryOverProjectKnowledgeWording({ previousKnowledgeBase: previous, knowledgeBase: next });

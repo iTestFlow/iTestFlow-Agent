@@ -87,7 +87,13 @@ describe("Project Knowledge v4 worker handler", () => {
 
   it("resolves user credentials in the worker and reports build phases and summaries", async () => {
     const ctx = context();
-    mocks.preview.mockImplementation(async (input: { onProgress: (value: Record<string, unknown>) => Promise<void>; batchCache: { load: (index: number) => Promise<unknown>; save: (index: number, value: Record<string, unknown>) => Promise<void> } }) => {
+    mocks.preview.mockImplementation(async (input: {
+      onProgress: (value: Record<string, unknown>) => Promise<void>;
+      batchCache: {
+        load: (index: number) => Promise<unknown>;
+        save: (index: number, value: Record<string, unknown>) => Promise<void>;
+      };
+    }) => {
       await input.onProgress({ phase: "compiling_batches", completed: 1, total: 2, draftId: "draft-1" });
       await input.batchCache.load(1);
       await input.batchCache.save(1, { validatedOutput: {} });

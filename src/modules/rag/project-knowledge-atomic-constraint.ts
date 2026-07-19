@@ -29,6 +29,7 @@ const BOOLEAN_FALSE_VALUES = new Set([
 ]);
 
 const BOUND_OPERATORS = new Set<string>(["lte", "gte", "lt", "gt"]);
+const MAX_ATOMIC_SUBJECT_TOKENS = 8;
 
 const RawRequiredTextSchema = z
   .string()
@@ -566,7 +567,7 @@ function splitAtomicSubject(subject: string) {
     .replace(/[’']s\b/gi, " ");
   const canonical = canonicalizeAtomicIdentityText(normalized);
   const tokens = canonical.split(" ").filter(Boolean);
-  if (!tokens.length) return null;
+  if (!tokens.length || tokens.length > MAX_ATOMIC_SUBJECT_TOKENS) return null;
   if (tokens.length === 1) return { object: tokens[0], property: "value" };
   return { object: tokens.slice(0, -1).join(" "), property: tokens[tokens.length - 1] ?? "value" };
 }

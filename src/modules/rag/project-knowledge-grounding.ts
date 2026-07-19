@@ -31,6 +31,19 @@ const GlossaryTypeSchema = z.preprocess(
     .default("term")
     .catch("term"),
 );
+// Keep the generated constraint permissive enough for quote-backed grounding to
+// reject incomplete or semantically invalid values, while giving native structured
+// output providers a concrete JSON Schema. `z.unknown()` serializes as `{}`, which
+// Anthropic rejects because it accepts any JSON value.
+const GeneratedAtomicConstraintSchema = z.object({
+  object: z.string().optional(),
+  property: z.string().optional(),
+  condition: z.string().optional(),
+  operator: z.string().optional(),
+  value: z.string().optional(),
+  valueType: z.string().optional(),
+  unit: z.string().optional(),
+});
 
 export const ProjectKnowledgeGeneratedBaseSchema = z.object({
   modules: z.array(z.object({
@@ -44,9 +57,7 @@ export const ProjectKnowledgeGeneratedBaseSchema = z.object({
     rule: RequiredText,
     moduleName: OptionalText,
     moduleAssociations: z.array(RequiredText).optional(),
-    // Generated constraints are intentionally untyped here: an invalid LLM payload
-    // must not reject the entire envelope before quote-backed grounding can drop it.
-    constraint: z.unknown().optional(),
+    constraint: GeneratedAtomicConstraintSchema.optional(),
     citations: CitationsSchema,
   })).default([]),
   stateTransitions: z.array(z.object({

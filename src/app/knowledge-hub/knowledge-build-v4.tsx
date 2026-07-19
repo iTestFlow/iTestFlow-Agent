@@ -67,7 +67,6 @@ type JobView = {
     outcome?: "no_changes" | "conflicts_required" | "ready_to_publish" | "published" | "outdated"
     draftId?: string
     conflictCount?: number
-    possibleTensionCount?: number
     omittedEntryCount?: number
     omissionReasons?: Record<string, number>
     freshness?: string
@@ -86,7 +85,6 @@ export type KnowledgeInReviewDraft = {
   status: "conflicts_required" | "ready_to_publish"
   updatedAt: string
   conflictCount: number
-  possibleTensionCount: number
 }
 
 type ManualDraft = {
@@ -254,16 +252,11 @@ export function KnowledgeBuildV4({
       return
     }
     if (result.outcome === "ready_to_publish" && result.draftId) {
-      const hasPossibleTensions = Number(result.possibleTensionCount ?? 0) > 0
-      setConflictDraftId(hasPossibleTensions ? result.draftId : null)
+      setConflictDraftId(null)
       setConflictPage(null)
       setReadyDraftId(result.draftId)
       setWorkflowPublished(false)
       setNotice("The knowledge draft is ready. Publish will commit exactly what was reviewed.")
-      if (hasPossibleTensions) {
-        setDecisions({})
-        await loadConflictPage(result.draftId, 1)
-      }
       return
     }
     if (result.outcome === "no_changes") {
@@ -922,7 +915,6 @@ export function KnowledgeBuildV4({
                 outcome: resumableDraft.status,
                 draftId: resumableDraft.id,
                 conflictCount: resumableDraft.conflictCount,
-                possibleTensionCount: resumableDraft.possibleTensionCount,
               })
             }}
           >

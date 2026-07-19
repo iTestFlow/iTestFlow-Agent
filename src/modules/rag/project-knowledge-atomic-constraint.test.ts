@@ -122,6 +122,7 @@ describe("project knowledge atomic constraint extraction", () => {
     "A reason is required for return/refund requests.",
     "The order status must be Final. No exceptions apply.",
     "When payment succeeds, the receipt status must be visible. No exceptions apply.",
+    "The current customer account's international invoice approval workflow escalation notification delivery processing status in the application dashboard for external partners must be Pending.",
     "El numero de reintentos debe ser 3.",
   ])("abstains for non-atomic or non-English rule text: %s", (rule) => {
     expect(extractAtomicConstraint(rule)).toBeNull();

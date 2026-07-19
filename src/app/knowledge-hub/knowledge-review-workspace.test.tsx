@@ -38,35 +38,6 @@ describe("KnowledgeConflictReview", () => {
     expect(screen.getByText(/These source-backed entries disagree/)).toBeTruthy();
   });
 
-  it("renders possible-tension labels with a real em dash", () => {
-    render(<KnowledgeConflictReview
-      page={{
-        draftVersion: "tension-draft",
-        counts: { total: 0, resolved: 0, remaining: 0 },
-        page: 1,
-        pageSize: 50,
-        pageCount: 1,
-        conflicts: [],
-        possibleTensions: [{
-          category: "business_rule",
-          subject: "identity:business_rule:purchase-notification",
-          entryKeys: ["purchase-notification", "purchase-notification-a1b2c3d4"],
-          reason: "different_atomic_identity",
-        }],
-      }}
-      loading={false}
-      decisions={{}}
-      active={false}
-      onDecision={vi.fn()}
-      onPage={vi.fn()}
-      onReset={vi.fn()}
-      onApply={vi.fn()}
-    />);
-
-    expect(screen.getByText("Purchase Notification")).toBeTruthy();
-    expect(screen.getByText("— Different Atomic Identity")).toBeTruthy();
-  });
-
   it("restores the established version comparison UI while submitting compact decisions", () => {
     const onDecision = vi.fn();
 

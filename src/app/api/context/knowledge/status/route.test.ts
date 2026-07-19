@@ -64,7 +64,6 @@ describe("project knowledge status route", () => {
       status: "conflicts_required",
       updatedAt: "2026-07-18T09:00:00.000Z",
       conflictCount: 3,
-      possibleTensionCount: 1,
     });
     const response = await POST(jsonRequest("/api/context/knowledge/status", { scope }));
     expect(response.status).toBe(200);
@@ -73,7 +72,6 @@ describe("project knowledge status route", () => {
         id: "draft-7",
         status: "conflicts_required",
         conflictCount: 3,
-        possibleTensionCount: 1,
       },
     });
     expect(mocks.getLatestInReviewDraft).toHaveBeenCalledWith({ scope: projectScope() });
