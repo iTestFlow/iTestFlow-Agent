@@ -22,6 +22,7 @@ import {
   PROJECT_KNOWLEDGE_WORDING_VERSION,
   ProjectKnowledgeSourceManifestSchema,
   canonicalizeBusinessRuleSourceFieldForProjection,
+  canonicalizeProjectKnowledgeKey,
   canonicalizeProjectKnowledgeLogicalIdentity,
   computeProjectKnowledgeHashes,
   computeProjectKnowledgeSourceFingerprint,
@@ -51,8 +52,8 @@ import {
   type ProjectKnowledgeHardConflict,
 } from "./project-knowledge-conflicts";
 import {
+  REKEY_SUFFIX_PATTERN,
   resolveProjectKnowledgeDuplicateIdentities,
-  type ProjectKnowledgePossibleTension,
 } from "./project-knowledge-duplicate-resolution";
 import { acquireProjectKnowledgeLock } from "./project-knowledge-lock";
 import { backfillProjectKnowledgeCompilerFoundation } from "./project-knowledge-migration.service";
@@ -511,6 +512,9 @@ export async function completeProjectKnowledgeDraft(input: {
     }
     const duplicateResolution = resolveProjectKnowledgeDuplicateIdentities(strictGrounding.knowledgeBase);
     const resolvedKnowledgeBase = duplicateResolution.knowledgeBase;
+    if (touchedKeys) {
+      includeHealedBusinessRuleTwinKeys(touchedKeys, baseKnowledgeBase, resolvedKnowledgeBase);
+    }
     const conflicts = detectProjectKnowledgeHardConflicts(resolvedKnowledgeBase);
     const hashes = computeProjectKnowledgeHashes(resolvedKnowledgeBase);
     const operations: ProjectKnowledgeOperation[] = buildProjectKnowledgeOperations({
@@ -525,9 +529,6 @@ export async function completeProjectKnowledgeDraft(input: {
     const status: ProjectKnowledgeDraftStatus = blockers.length ? "blocked" : "ready_to_publish";
     const statusReason = status === "blocked" ? "hard_conflict" : null;
     const now = nowIso();
-    const possibleTensions = duplicateResolution.possibleTensions.length
-      ? duplicateResolution.possibleTensions
-      : possibleTensionsFromMetrics(input.metrics?.possibleTensions);
     await sqlRun(
       `
         UPDATE project_knowledge_drafts
@@ -564,15 +565,10 @@ export async function completeProjectKnowledgeDraft(input: {
             duplicateResolution.counters.preConsolidationDuplicateIdentityCount,
           paraphraseMergeCount:
             numberMetric(input.metrics?.paraphraseMergeCount) + duplicateResolution.counters.paraphraseMergeCount,
-          evidenceOnlyParaphraseMergeCount:
-            numberMetric(input.metrics?.evidenceOnlyParaphraseMergeCount) +
-            duplicateResolution.counters.evidenceOnlyParaphraseMergeCount,
           rekeyCount: numberMetric(input.metrics?.rekeyCount) + duplicateResolution.counters.rekeyCount,
           atomicExtractionFailureCount:
             numberMetric(input.metrics?.atomicExtractionFailureCount) +
             duplicateResolution.counters.atomicExtractionFailureCount,
-          possibleTensionCount: possibleTensions.length,
-          possibleTensions,
           quoteExactCount: verification.counts.exact,
           quoteNormalizedCount: verification.counts.normalized,
           quoteAutoReanchorCount: verification.counts.autoReanchored,
@@ -922,7 +918,6 @@ export async function getProjectKnowledgeDraftConflicts(input: {
         })),
       })),
     })),
-    possibleTensions: possibleTensionsFromMetrics(draft.metrics.possibleTensions),
   };
 }
 
@@ -1118,7 +1113,6 @@ export type ProjectKnowledgeInReviewDraftSummary = {
   status: "conflicts_required" | "ready_to_publish";
   updatedAt: string;
   conflictCount: number;
-  possibleTensionCount: number;
 };
 
 /**
@@ -1156,7 +1150,6 @@ export async function getLatestInReviewProjectKnowledgeDraft(input: {
     status: row.status === "blocked" ? "conflicts_required" : "ready_to_publish",
     updatedAt: row.updated_at,
     conflictCount: countMetric(metrics.conflictCount),
-    possibleTensionCount: countMetric(metrics.possibleTensionCount),
   };
 }
 
@@ -1644,27 +1637,27 @@ function partitionSafeDuplicateEntries<TCategory extends ProjectKnowledgeConsoli
   return groups;
 }
 
-function possibleTensionsFromMetrics(value: unknown): ProjectKnowledgePossibleTension[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-    const tension = item as Record<string, unknown>;
-    const category = typeof tension.category === "string" ? tension.category : "";
-    const subject = typeof tension.subject === "string" ? tension.subject : "";
-    const reason = typeof tension.reason === "string" ? tension.reason : "";
-    const entryKeys = Array.isArray(tension.entryKeys)
-      ? tension.entryKeys.filter((entryKey): entryKey is string => typeof entryKey === "string")
-      : [];
-    if (
-      !["module", "business_rule", "state_transition", "glossary", "dependency"].includes(category) ||
-      !subject ||
-      !reason ||
-      !entryKeys.length
-    ) {
-      return [];
-    }
-    return [{ category: category as ProjectKnowledgePossibleTension["category"], subject, entryKeys, reason }];
-  });
+/**
+ * A formerly rekeyed business-rule twin can heal into its unsuffixed sibling
+ * during duplicate resolution even when neither twin cites a changed source.
+ * Include both identities in incremental reconciliation so the resulting
+ * update and retire operations remain visible in the audited draft diff.
+ */
+function includeHealedBusinessRuleTwinKeys(
+  touchedKeys: Set<string>,
+  baseKnowledgeBase: ProjectKnowledgeBase | null,
+  resolvedKnowledgeBase: ProjectKnowledgeBase,
+) {
+  const resolvedBusinessRuleKeys = new Set(
+    resolvedKnowledgeBase.businessRules.map((entry) => canonicalizeProjectKnowledgeKey(entry.id)),
+  );
+  for (const entry of baseKnowledgeBase?.businessRules ?? []) {
+    const canonicalId = canonicalizeProjectKnowledgeKey(entry.id);
+    const baseId = canonicalId.replace(REKEY_SUFFIX_PATTERN, "");
+    if (baseId === canonicalId || !resolvedBusinessRuleKeys.has(baseId)) continue;
+    touchedKeys.add(`business_rule:${canonicalId}`);
+    touchedKeys.add(`business_rule:${baseId}`);
+  }
 }
 
 function knowledgeEntryKeysForSources(

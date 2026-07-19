@@ -180,7 +180,10 @@ describe("draft evidence recovery", () => {
     };
   }
 
-  function prepareCompletionForFrozenFixture(snapshots: FrozenFixtureSource[]) {
+  function prepareCompletionForFrozenFixture(
+    snapshots: FrozenFixtureSource[],
+    rowOverrides: Record<string, unknown> = {},
+  ) {
     const fixtureManifest = snapshots.map((snapshot, index) => ({
       sourceSnapshotId: snapshot.id,
       sourceWorkItemId: snapshot.workItemId,
@@ -195,6 +198,7 @@ describe("draft evidence recovery", () => {
       status: "generating",
       source_manifest_json: fixtureManifest,
       source_fingerprint: computeProjectKnowledgeSourceFingerprint(fixtureManifest),
+      ...rowOverrides,
     });
     database.sqlGet.mockImplementation(async (sql: string) =>
       sql.includes("project_knowledge_drafts") ? row : undefined);
@@ -291,6 +295,85 @@ describe("draft evidence recovery", () => {
     });
     const persisted = JSON.parse(String((update?.[1] as { proposedKnowledgeJson: string }).proposedKnowledgeJson));
     expect(persisted.modules[0].evidenceRefs).toHaveLength(1);
+  });
+
+  it("audits a resolver-healed published twin in the incremental operations diff", async () => {
+    const checkoutText = "Checkout completes in one step.";
+    const retryText = "Retrying payment does not duplicate payment or order.";
+    const retryTwinText = "A payment retry does not duplicate the payment or order.";
+    const fixtureRule = (id: string, rule: string, workItemId: string, snapshotId: string, quote: string) => ({
+      id,
+      rule,
+      sourceField: "acceptanceCriteria",
+      sourceWorkItemIds: [workItemId],
+      evidence: quote,
+      evidenceRefs: [{
+        sourceSnapshotId: snapshotId,
+        sourceWorkItemId: workItemId,
+        sourceField: "acceptanceCriteria" as const,
+        quote,
+        origin: "generated_v4" as const,
+        verification: "exact" as const,
+      }],
+    });
+    prepareCompletionForFrozenFixture([
+      { id: "snap-42", workItemId: "42", acceptanceCriteria: checkoutText },
+      { id: "snap-99", workItemId: "99", acceptanceCriteria: `${retryText} ${retryTwinText}` },
+    ], {
+      generation_data_json: {
+        baseKnowledgeBase: {
+          ...emptyKnowledge,
+          businessRules: [
+            fixtureRule("br-checkout", checkoutText, "42", "snap-42", checkoutText),
+            fixtureRule("br-payment-retry", retryText, "99", "snap-99", retryText),
+            fixtureRule(
+              "br-payment-retry-e112a78e",
+              retryTwinText,
+              "99",
+              "snap-99",
+              retryTwinText,
+            ),
+          ],
+        },
+      },
+    });
+
+    await completeProjectKnowledgeDraft({
+      scope,
+      draftId: "draft-child",
+      provider: "openai",
+      model: "model",
+      rawOutput: "{}",
+      knowledgeBase: {
+        ...emptyKnowledge,
+        businessRules: [
+          fixtureRule("br-checkout", checkoutText, "42", "snap-42", checkoutText),
+          fixtureRule("br-payment-retry", retryText, "99", "snap-99", retryText),
+          fixtureRule("br-payment-retry-e112a78e", retryTwinText, "99", "snap-99", retryTwinText),
+        ],
+      },
+      // Only work item 42 changed; the resolver-healed twins cite untouched 99.
+      touchedSourceWorkItemIds: ["42"],
+    });
+
+    const update = database.sqlRun.mock.calls.find(([sql]) => String(sql).includes("SET status = @status"));
+    const operations = JSON.parse(
+      String((update?.[1] as { operationsJson: string }).operationsJson),
+    ) as Array<{ type: string; entryKey: string }>;
+    const persisted = JSON.parse(
+      String((update?.[1] as { proposedKnowledgeJson: string }).proposedKnowledgeJson),
+    ) as ProjectKnowledgeBase;
+    expect(persisted.businessRules).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "br-payment-retry" }),
+    ]));
+    expect(persisted.businessRules.some((entry) => entry.id === "br-payment-retry-e112a78e")).toBe(false);
+    // Without the healed-twin audit widening, the incremental diff would skip
+    // both twins entirely and the resolver's merge would have no retire record.
+    expect(operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "retire", entryKey: expect.stringContaining("br-payment-retry-e112a78e") }),
+    ]));
+    expect(operations.some((operation) =>
+      operation.entryKey.includes("br-payment-retry") && operation.type !== "retire")).toBe(true);
   });
 
   it("omits unsupported entries without creating evidence blockers", async () => {
@@ -520,7 +603,6 @@ describe("draft evidence recovery", () => {
       preConsolidationDuplicateIdentityCount: 1,
       paraphraseMergeCount: 1,
       rekeyCount: 0,
-      possibleTensionCount: 0,
       conflictCount: 0,
     });
   });
@@ -584,7 +666,6 @@ describe("draft evidence recovery", () => {
     expect(result.metrics).toMatchObject({
       paraphraseMergeCount: 1,
       rekeyCount: 0,
-      possibleTensionCount: 0,
     });
   });
 
@@ -640,11 +721,10 @@ describe("draft evidence recovery", () => {
     expect(result.metrics).toMatchObject({
       paraphraseMergeCount: 1,
       rekeyCount: 0,
-      possibleTensionCount: 0,
     });
   });
 
-  it("grounds the frozen Purchase Notification variants, re-keys them, and keeps their tension non-blocking", async () => {
+  it("grounds and merges the frozen Purchase Notification variants", async () => {
     const issuedDocument = "Download Policy is enabled only when the policy document has been issued and the document URL is available; if policy status is Pending, it is disabled with a tooltip explaining that the document is not yet available.";
     const notificationResponse = "Download Policy is enabled only when the policy document URL has been received and stored from the insurance company's purchase notification response; otherwise it is disabled with a tooltip.";
     const result = await completeGroundedFrozenFixture({
@@ -674,21 +754,22 @@ describe("draft evidence recovery", () => {
       },
     });
 
-    const ids = result.persisted.businessRules.map((entry) => entry.id);
-    expect(ids).toContain("br-download-policy-availability");
-    expect(ids.some((id) => id.startsWith("br-download-policy-availability-"))).toBe(true);
-    expect(result.persisted.businessRules).toHaveLength(2);
+    expect(result.persisted.businessRules).toEqual([
+      expect.objectContaining({
+        id: "br-download-policy-availability",
+        evidenceRefs: expect.arrayContaining([
+          expect.objectContaining({ quote: issuedDocument }),
+          expect.objectContaining({ quote: notificationResponse }),
+        ]),
+      }),
+    ]);
     expect(result.metrics).toMatchObject({
-      rekeyCount: 1,
-      possibleTensionCount: 1,
-      possibleTensions: [expect.objectContaining({
-        category: "business_rule",
-        reason: "fingerprint_mismatch",
-      })],
+      paraphraseMergeCount: 1,
+      rekeyCount: 0,
     });
   });
 
-  it("grounds the frozen Download Loading variants, re-keys them, and keeps their tension non-blocking", async () => {
+  it("grounds and merges the frozen Download Loading variants", async () => {
     const skeleton = "While quotes are being fetched from the aggregator, a loading skeleton or spinner is displayed in place of the quote list; the sort dropdown and expiry timer are hidden until at least one quote is received.";
     const loading = "While quotes are being fetched from the aggregator, display a loading skeleton/spinner in place of the quote list, and hide the sort dropdown and expiry timer until at least one quote is received.";
     const result = await completeGroundedFrozenFixture({
@@ -718,17 +799,18 @@ describe("draft evidence recovery", () => {
       },
     });
 
-    const ids = result.persisted.businessRules.map((entry) => entry.id);
-    expect(ids).toContain("br-loading-quotes-state");
-    expect(ids.some((id) => id.startsWith("br-loading-quotes-state-"))).toBe(true);
-    expect(result.persisted.businessRules).toHaveLength(2);
+    expect(result.persisted.businessRules).toEqual([
+      expect.objectContaining({
+        id: "br-loading-quotes-state",
+        evidenceRefs: expect.arrayContaining([
+          expect.objectContaining({ quote: skeleton }),
+          expect.objectContaining({ quote: loading }),
+        ]),
+      }),
+    ]);
     expect(result.metrics).toMatchObject({
-      rekeyCount: 1,
-      possibleTensionCount: 1,
-      possibleTensions: [expect.objectContaining({
-        category: "business_rule",
-        reason: "fingerprint_mismatch",
-      })],
+      paraphraseMergeCount: 1,
+      rekeyCount: 0,
     });
   });
 
@@ -772,7 +854,6 @@ describe("draft evidence recovery", () => {
     expect(result.persisted.crossDependencies).toHaveLength(2);
     expect(result.metrics).toMatchObject({
       rekeyCount: 1,
-      possibleTensionCount: 0,
     });
   });
 
@@ -1091,12 +1172,6 @@ describe("draft lifecycle", () => {
       evidenceIdentical: false,
       message: "Choose a supported version.",
     };
-    const retainedTension = {
-      category: "business_rule",
-      subject: "identity:business_rule:retry-count",
-      entryKeys: [firstEntry.id, secondEntry.id],
-      reason: "fingerprint_mismatch",
-    };
     const row = draftRow({
       generation_mode: "automatic",
       status: "blocked",
@@ -1116,8 +1191,6 @@ describe("draft lifecycle", () => {
         paraphraseMergeCount: 3,
         rekeyCount: 4,
         atomicExtractionFailureCount: 5,
-        possibleTensionCount: 1,
-        possibleTensions: [retainedTension],
       },
       semantic_hash: hashes.semanticKnowledgeHash,
       provenance_hash: hashes.provenanceHash,
@@ -1149,7 +1222,6 @@ describe("draft lifecycle", () => {
           moduleName: "participant-2",
         },
       },
-      retainedTension,
     };
   }
 
@@ -1167,7 +1239,6 @@ describe("draft lifecycle", () => {
     return {
       persisted: JSON.parse(String((update[1] as { proposedKnowledgeJson: string }).proposedKnowledgeJson)),
       metrics: JSON.parse(String((update[1] as { metricsJson: string }).metricsJson)),
-      retainedTension: prepared.retainedTension,
     };
   }
 
@@ -1184,12 +1255,10 @@ describe("draft lifecycle", () => {
       paraphraseMergeCount: 3,
       rekeyCount: 4,
       atomicExtractionFailureCount: 5,
-      possibleTensionCount: 1,
-      possibleTensions: [result.retainedTension],
     });
   });
 
-  it("preserves decision metrics and tensions through a second blocked decision lifecycle", async () => {
+  it("preserves decision metrics through a second blocked decision lifecycle", async () => {
     const firstPass = await applyBusinessRuleCombination({ ruleWinnerKeepsMetadata: false });
     const approvedQuote = "Manager review moves the order to Approved.";
     const rejectedQuote = "Manager review moves the order to Rejected.";
@@ -1351,9 +1420,6 @@ describe("draft lifecycle", () => {
     ]) {
       expect(reentryMetrics[metric]).toBe(firstPass.metrics[metric]);
     }
-    expect(reentryMetrics.possibleTensions).toEqual([firstPass.retainedTension]);
-    expect(reentryMetrics.possibleTensionCount).toBe(1);
-    expect(reentryMetrics.possibleTensionCount).toBe((reentryMetrics.possibleTensions as unknown[]).length);
   });
 
   it("carries the rule winner's atomic constraint and module associations", async () => {
@@ -1465,7 +1531,7 @@ describe("getLatestInReviewProjectKnowledgeDraft", () => {
           id: "draft-9",
           status: "blocked",
           updated_at: "2026-07-18T09:00:00.000Z",
-          metrics_json: { conflictCount: 3, possibleTensionCount: 2 },
+          metrics_json: { conflictCount: 3 },
         }
         : undefined);
 
@@ -1474,7 +1540,6 @@ describe("getLatestInReviewProjectKnowledgeDraft", () => {
       status: "conflicts_required",
       updatedAt: "2026-07-18T09:00:00.000Z",
       conflictCount: 3,
-      possibleTensionCount: 2,
     });
     // Lazy maintenance runs before the read so expired/superseded drafts never
     // surface as resumable.
@@ -1489,7 +1554,7 @@ describe("getLatestInReviewProjectKnowledgeDraft", () => {
       id: "draft-10",
       status: "ready_to_publish",
       updated_at: "2026-07-18T10:00:00.000Z",
-      metrics_json: { conflictCount: "not-a-number", possibleTensionCount: -2 },
+      metrics_json: { conflictCount: "not-a-number" },
     });
 
     await expect(getLatestInReviewProjectKnowledgeDraft({ scope })).resolves.toEqual({
@@ -1497,7 +1562,6 @@ describe("getLatestInReviewProjectKnowledgeDraft", () => {
       status: "ready_to_publish",
       updatedAt: "2026-07-18T10:00:00.000Z",
       conflictCount: 0,
-      possibleTensionCount: 0,
     });
   });
 

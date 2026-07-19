@@ -84,7 +84,6 @@ export const runProjectKnowledgeJob: JobHandler = async (job, context) => {
     draftId: draft.draftId,
     draftStatus: draft.draftStatus,
     conflictCount: draft.blockers.filter((blocker) => blocker.type === "hard_conflict").length,
-    possibleTensionCount: Number(draft.reviewSummary?.possibleTensions ?? 0),
     omittedEntryCount: draft.omittedEntryCount,
     omissionReasons: draft.omissionReasons,
     warnings: draft.warnings ?? [],

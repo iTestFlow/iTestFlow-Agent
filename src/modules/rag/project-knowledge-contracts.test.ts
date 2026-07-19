@@ -106,8 +106,8 @@ describe("project knowledge canonical hashes", () => {
     });
   });
 
-  it("uses compiler contract v4.1 without changing the hash algorithm versions", () => {
-    expect(PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION).toBe("4.1.0");
+  it("uses compiler contract v4.2 without changing the hash algorithm versions", () => {
+    expect(PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION).toBe("4.2.0");
     expect(PROJECT_KNOWLEDGE_WORDING_VERSION).toBe("4.0.0");
     expect(PROJECT_KNOWLEDGE_SEMANTIC_HASH_VERSION).toBe("semantic-v2");
     expect(PROJECT_KNOWLEDGE_PROVENANCE_HASH_VERSION).toBe("provenance-v2");

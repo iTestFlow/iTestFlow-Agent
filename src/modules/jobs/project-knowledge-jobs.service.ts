@@ -155,7 +155,6 @@ function sanitizeResult(result: Record<string, unknown> | null | undefined) {
     "draftId",
     "draftStatus",
     "conflictCount",
-    "possibleTensionCount",
     "omittedEntryCount",
     "omissionReasons",
     "warnings",

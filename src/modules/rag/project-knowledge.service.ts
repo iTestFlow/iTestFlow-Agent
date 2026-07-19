@@ -241,6 +241,8 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
   input.signal?.throwIfAborted();
 
   if (selection.mode === "incremental" && !selection.workItems.length) {
+    // This path does not re-extract source knowledge, so fresh duplicate twins
+    // cannot form.
     const existingSnapshot = await getProjectKnowledgeBaseSnapshot({ scope });
     if (!existingSnapshot) throw new Error("Run a full knowledge recompile before incremental compilation.");
 
@@ -350,16 +352,14 @@ export async function previewGeneratedProjectKnowledgeBase(input: {
     changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
     retiredSourceWorkItemCount: selection.retiredSourceWorkItemIds.length,
     retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
-    rawOutput: selection.mode === "incremental"
-      ? JSON.stringify({
-          mode: "incremental",
-          changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
-          retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
-          extraction: result.rawOutput,
-          automaticDuplicateConsolidationCount,
-          wordingCarryOverCount: carryOver.wordingCarryOverCount,
-        })
-      : result.rawOutput,
+    rawOutput: buildProjectKnowledgeGeneratedRawOutput({
+      mode: selection.mode,
+      resultRawOutput: result.rawOutput,
+      changedSourceWorkItemIds: selection.changedSourceWorkItemIds,
+      retiredSourceWorkItemIds: selection.retiredSourceWorkItemIds,
+      automaticDuplicateConsolidationCount,
+      wordingCarryOverCount: carryOver.wordingCarryOverCount,
+    }),
     knowledgeBase: carryOver.knowledgeBase,
     generatedAt: nowIso(),
     warnings: result.warnings,
@@ -442,6 +442,27 @@ async function completeGeneratedPreview(input: {
     blockers: completed.blockers,
     reviewSummary: completed.reviewSummary,
   };
+}
+
+function buildProjectKnowledgeGeneratedRawOutput(input: {
+  mode: ProjectKnowledgeCompileMode;
+  resultRawOutput: string;
+  changedSourceWorkItemIds: string[];
+  retiredSourceWorkItemIds: string[];
+  automaticDuplicateConsolidationCount: number;
+  wordingCarryOverCount: number;
+}) {
+  if (input.mode === "incremental") {
+    return JSON.stringify({
+      mode: "incremental",
+      changedSourceWorkItemIds: input.changedSourceWorkItemIds,
+      retiredSourceWorkItemIds: input.retiredSourceWorkItemIds,
+      extraction: input.resultRawOutput,
+      automaticDuplicateConsolidationCount: input.automaticDuplicateConsolidationCount,
+      wordingCarryOverCount: input.wordingCarryOverCount,
+    });
+  }
+  return input.resultRawOutput;
 }
 
 function buildProjectKnowledgeSizeMetrics(
@@ -1325,7 +1346,7 @@ async function extractProjectKnowledgeBase(input: {
     partialResults.push(...chunkResults);
   }
 
-  // Deterministic, Zod-validated merge — mirrors the manual/external save path
+  // Deterministic, Zod-validated merge â€” mirrors the manual/external save path
   // (prepareProjectKnowledgeManualSave). This avoids an unbounded LLM "re-emit the whole
   // knowledge base" call, whose output overflows the token cap and hard-fails the build.
   const consolidation = consolidateProjectKnowledgeBases(
@@ -1622,7 +1643,7 @@ function buildProjectKnowledgeExtractionUserPrompt(input: {
     batchIndex: input.batchIndex,
     batchCount: input.batchCount,
     sources: input.workItems.map(toPromptWorkItem),
-    relevantExistingKnowledge: input.relevantExistingKnowledge
+    relevantExistingKnowledge: input.mode === "incremental" && input.relevantExistingKnowledge
       ? projectKnowledgeBaseToGeneratedPrompt(input.relevantExistingKnowledge)
       : undefined,
     requiredOutputShape: PROJECT_KNOWLEDGE_GENERATED_OUTPUT_SHAPE,
@@ -1732,7 +1753,7 @@ function buildProjectKnowledgeExtractionJobs(input: {
   const jobs: ProjectKnowledgeExtractionJob[] = [];
   for (const workItems of sourceBatches) {
     const sourceIds = new Set(workItems.map((item) => item.id));
-    const relevantEntries = input.existingKnowledgeBase
+    const relevantEntries = input.mode === "incremental" && input.existingKnowledgeBase
       ? flattenRawKnowledgeEntries(input.existingKnowledgeBase).filter((entry) =>
           entry.sourceWorkItemIds.some((sourceId) => sourceIds.has(sourceId)),
         )

@@ -81,7 +81,6 @@ export function projectKnowledgeDraftSummary(draft: ProjectKnowledgeDraft) {
     draftId: draft.id,
     draftStatus: draft.persistedStatus,
     conflictCount: draft.blockers.filter((blocker) => blocker.type === "hard_conflict").length,
-    possibleTensionCount: Number(draft.metrics.possibleTensionCount ?? 0),
     omittedEntryCount: Number(draft.metrics.omittedEntryCount ?? 0),
     omissionReasons: draft.metrics.omissionReasons ?? {},
   };

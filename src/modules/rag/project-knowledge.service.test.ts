@@ -361,6 +361,27 @@ describe("buildProjectKnowledgeManualDraft batching", () => {
     expect(draft.batches[0].userPrompt).not.toContain('"id": "1"');
   });
 
+  it("omits saved knowledge from full prompts and includes it for incremental reconciliation", async () => {
+    const existing = knowledgeBase({
+      modules: [kbModule({ id: "existing-module", name: "Existing module", sourceWorkItemIds: ["1"] })],
+    });
+    setWorkItems([workItemRow({ azure_work_item_id: "1", content_hash: "h-new" })]);
+    stubExistingKnowledge({
+      snapshot: snapshotRow(existing),
+      sourceWorkItemHashes: { "1": "h-old" },
+    });
+
+    const full = await buildProjectKnowledgeManualDraft({ scope: projectScope(), mode: "full" });
+    const fullPrompt = JSON.parse(full.batches[0].userPrompt);
+    expect(fullPrompt.relevantExistingKnowledge).toBeUndefined();
+
+    const incremental = await buildProjectKnowledgeManualDraft({ scope: projectScope(), mode: "incremental" });
+    const incrementalPrompt = JSON.parse(incremental.batches[0].userPrompt);
+    expect(incrementalPrompt.relevantExistingKnowledge.modules).toEqual([
+      expect.objectContaining({ id: "existing-module" }),
+    ]);
+  });
+
   it("splits into a new batch only when the accumulated input exceeds the size cap", async () => {
     // ~8k chars each: two fit under the 18k input cap, the third overflows.
     setWorkItems([1, 2, 3].map((id) => workItemRow({
@@ -599,6 +620,39 @@ describe("automatic v4 reconciliation prompts", () => {
     expect(draftService.completeProjectKnowledgeDraft).toHaveBeenCalledWith(expect.objectContaining({
       metrics: expect.objectContaining({ automaticDuplicateConsolidationCount: 1 }),
     }));
+  });
+
+  it("omits saved knowledge from full automatic prompts and includes it for incremental reconciliation", async () => {
+    const existing = knowledgeBase({
+      modules: [kbModule({ id: "existing-module", name: "Existing module", sourceWorkItemIds: ["1"] })],
+    });
+    setWorkItems([workItemRow({ azure_work_item_id: "1", content_hash: "h-new" })]);
+    stubExistingKnowledge({
+      snapshot: snapshotRow(existing),
+      sourceWorkItemHashes: { "1": "h-old" },
+    });
+    const provider = fakeLlmProvider({ structuredOutput: knowledgeBase() });
+
+    await previewGeneratedProjectKnowledgeBase({
+      scope: projectScope(),
+      actor: "qa",
+      provider,
+      mode: "full",
+    });
+    const fullPrompt = JSON.parse(vi.mocked(provider.generateStructuredOutput).mock.calls[0]![0].user);
+    expect(fullPrompt.relevantExistingKnowledge).toBeUndefined();
+
+    vi.mocked(provider.generateStructuredOutput).mockClear();
+    await previewGeneratedProjectKnowledgeBase({
+      scope: projectScope(),
+      actor: "qa",
+      provider,
+      mode: "incremental",
+    });
+    const incrementalPrompt = JSON.parse(vi.mocked(provider.generateStructuredOutput).mock.calls[0]![0].user);
+    expect(incrementalPrompt.relevantExistingKnowledge.modules).toEqual([
+      expect.objectContaining({ id: "existing-module" }),
+    ]);
   });
 
   it("uses the deterministic no-LLM path for zero-change and retired-only runs", async () => {
@@ -1446,9 +1500,8 @@ describe("same-evidence paraphrase handling", () => {
       mode: "full",
     });
 
-    // Enumerations abstain from atomic extraction, so the word-order-sensitive
-    // fingerprint differs — identical evidence content must merge the pair anyway
-    // instead of publishing a rekeyed near-duplicate.
+    // Enumerations abstain from atomic extraction. Same-id abstentions merge by
+    // default and preserve both independently captured evidence quotes.
     expect(saved.knowledgeBase.businessRules).toHaveLength(1);
     expect(saved.knowledgeBase.businessRules[0].id).toBe("br-status-colours");
     expect(saved.knowledgeBase.businessRules[0].evidenceRefs).toHaveLength(2);
@@ -1482,18 +1535,17 @@ describe("same-evidence paraphrase handling", () => {
       mode: "full",
     });
 
-    // Both extractions abstain and the word-order fingerprint differs; only the
-    // relaxed evidence equivalence (trailing period tolerated) merges the pair.
+    // Both extractions abstain. Merge-by-default keeps one logical rule while
+    // retaining the independently captured quotes, even when they drift.
     expect(saved.knowledgeBase.businessRules).toHaveLength(1);
     expect(saved.knowledgeBase.businessRules[0].id).toBe("br-payment-retry");
     expect(saved.knowledgeBase.businessRules[0].evidenceRefs).toHaveLength(2);
   });
 
   it("keeps a concrete disagreement visible when an abstaining paraphrase bridges both sides", async () => {
-    // The mixed-branch disjunction makes the gate non-transitive: B matches A via
-    // evidence equivalence and C via fingerprint equality while A and C provably
-    // disagree (3 vs 5). Without partitioning, the union-find would fuse all
-    // three and bury the hard conflict inside one merged entry.
+    // An abstaining variant is compatible with both concrete variants, while the
+    // two concrete values provably disagree. Partitioning must preserve that hard
+    // conflict instead of allowing the bridge to fuse the incompatible values.
     setWorkItems([workItemRow({ azure_work_item_id: "1", content_hash: "h1" })]);
     const retryConstraint = (value: "3" | "5") => ({
       object: "retry",

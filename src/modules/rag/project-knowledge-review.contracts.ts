@@ -81,7 +81,6 @@ export type ProjectKnowledgeReviewSummary = {
   paraphraseMerges: number;
   rekeys: number;
   atomicExtractionFailures: number;
-  possibleTensions: number;
   wordingCarryOvers: number;
   unresolvedEvidenceEntries: number;
   remainingBlockers: number;
@@ -406,7 +405,6 @@ export function summarizeProjectKnowledgeReview(
     paraphraseMerges: numberValue(metrics.paraphraseMergeCount),
     rekeys: numberValue(metrics.rekeyCount),
     atomicExtractionFailures: numberValue(metrics.atomicExtractionFailureCount),
-    possibleTensions: numberValue(metrics.possibleTensionCount),
     wordingCarryOvers: numberValue(metrics.wordingCarryOverCount),
     unresolvedEvidenceEntries: numberValue(metrics.autoEvidenceRepairUnresolvedCount),
     remainingBlockers: blockers.length,

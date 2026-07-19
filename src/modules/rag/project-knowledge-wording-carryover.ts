@@ -10,7 +10,6 @@ import {
 import {
   compareProjectKnowledgeAtomicConstraintValues,
   extractAtomicConstraint,
-  normalizeProjectKnowledgeRuleFingerprint,
   projectKnowledgeAtomicConstraintIdentity,
 } from "./project-knowledge-atomic-constraint";
 import {
@@ -85,12 +84,10 @@ export function projectKnowledgeConsolidationCandidateKeys<
  * Whether two entries already matched to the same logical subject are structurally
  * safe to consolidate. Module and glossary text may add supported detail without
  * becoming a conflict. Structured categories retain category-specific guards:
- * business rules with two atomic constraints merge only when the constraints share
- * an identity and their values agree — a provable value disagreement never merges.
- * When at most one side extracts a constraint (extraction abstains, or constraint
- * presence flipped between builds for the same claim), wording is paraphrase noise
- * only when the closed fingerprint agrees exactly or both sides cite
- * content-equivalent non-empty evidence — the same source claim reworded.
+ * same-id business rules merge by default, including abstentions, different atomic
+ * identities, and non-comparable values. Only a provable value contradiction in
+ * the same atomic identity refuses the merge. Module scope is deliberately ignored
+ * for that guard: a concrete disagreement must never fuse, even across modules.
  * Transitions must agree on their target state, and dependency endpoints/types
  * must match.
  *
@@ -118,34 +115,21 @@ export function isCompatibleProjectKnowledgeParaphrase<
       const firstConstraint = firstRule.constraint ?? extractAtomicConstraint(firstRule.rule);
       const secondConstraint = secondRule.constraint ?? extractAtomicConstraint(secondRule.rule);
 
-      if (firstConstraint && secondConstraint) {
-        // Module qualification is a conflict concern, not a duplicate-merge
-        // concern. Equivalent claims can span surfaces; consolidation retains
-        // every source module in moduleAssociations and chooses a stable primary.
-        if (
-          projectKnowledgeAtomicConstraintIdentity(firstConstraint) !==
-          projectKnowledgeAtomicConstraintIdentity(secondConstraint)
-        ) {
-          // Different atomic identities extracted from the SAME source quote are
-          // near-certainly one claim whose object/property split drifted between
-          // wordings, not two claims — a quote-grounded value cannot disagree
-          // with itself. Distinct evidence keeps them separate (and visible as a
-          // possible tension). Deliberately no fingerprint disjunct here: equal
-          // fingerprints with two different persisted constraints signal a
-          // structured-reading disagreement that must stay reviewable.
-          return haveEquivalentNonEmptyEvidenceContent(firstRule.evidenceRefs, secondRule.evidenceRefs);
-        }
-        return compareProjectKnowledgeAtomicConstraintValues(firstConstraint, secondConstraint) === "equivalent";
+      // Same-id entries are one logical claim: merge by default (longer wording
+      // wins, evidence quotes union). Refuse ONLY a provable value contradiction —
+      // those keep both entries and surface as blocking hard conflicts. Module
+      // scope is deliberately ignored here: a provable disagreement must never
+      // fuse, even across modules.
+      if (
+        firstConstraint &&
+        secondConstraint &&
+        projectKnowledgeAtomicConstraintIdentity(firstConstraint) ===
+          projectKnowledgeAtomicConstraintIdentity(secondConstraint) &&
+        compareProjectKnowledgeAtomicConstraintValues(firstConstraint, secondConstraint) === "contradiction"
+      ) {
+        return false;
       }
-
-      // At most one side extracted a constraint, so no concrete-value disagreement
-      // is provable (constraint presence can flip between builds for the same
-      // claim). Wording is treated as paraphrase noise only when the closed,
-      // language-agnostic fingerprint agrees exactly, or when both entries cite
-      // content-equivalent non-empty evidence — the same source claim reworded.
-      return normalizeProjectKnowledgeRuleFingerprint(firstRule.rule) ===
-          normalizeProjectKnowledgeRuleFingerprint(secondRule.rule) ||
-        haveEquivalentNonEmptyEvidenceContent(firstRule.evidenceRefs, secondRule.evidenceRefs);
+      return true;
     }
     case "state_transition": {
       const firstTransition = first as ProjectKnowledgeEntryByConsolidationCategory["state_transition"];
