@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can promote answers to project knowledge.");
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
-    return NextResponse.json(await promoteContextChatbotAnswer({ ...parsed.data, scope: trustedScope }));
+    return NextResponse.json(await promoteContextChatbotAnswer({ ...parsed.data, scope: trustedScope, actor: ctx.userId }));
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;

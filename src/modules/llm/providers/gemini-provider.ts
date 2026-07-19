@@ -37,6 +37,7 @@ export class GeminiProvider extends BaseJsonProvider {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify(requestBody),
+      signal: input.signal,
     };
     const response = await fetchWithTransientRetry(
       `${baseUrl}/models/${this.model}:generateContent?key=${this.config.apiKey}`,
@@ -86,6 +87,7 @@ export class GeminiProvider extends BaseJsonProvider {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify(requestBody),
+      signal: input.signal,
     };
     const response = await fetchWithTransientRetry(
       `${baseUrl}/models/${this.model}:generateContent?key=${this.config.apiKey}`,

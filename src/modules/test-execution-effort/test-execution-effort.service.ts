@@ -47,6 +47,7 @@ export async function generateTestExecutionEffort(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  projectKnowledgeNotice?: string | null;
   options: TestExecutionEffortOptions;
 }) {
   const scope = assertProjectScope(input.scope);
@@ -58,6 +59,7 @@ export async function generateTestExecutionEffort(input: {
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
+    projectKnowledgeNotice: input.projectKnowledgeNotice,
     options: input.options,
   });
 
@@ -110,6 +112,7 @@ export function buildTestExecutionEffortPromptDraft(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  projectKnowledgeNotice?: string | null;
   options: TestExecutionEffortOptions;
 }) {
   const scope = assertProjectScope(input.scope);
@@ -121,6 +124,7 @@ export function buildTestExecutionEffortPromptDraft(input: {
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
+    projectKnowledgeNotice: input.projectKnowledgeNotice,
     options: input.options,
   });
 
@@ -146,6 +150,7 @@ export function buildTestExecutionEffortPrompt(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  projectKnowledgeNotice?: string | null;
   options: TestExecutionEffortOptions;
 }) {
   const scope = assertProjectScope(input.scope);
@@ -159,6 +164,7 @@ export function buildTestExecutionEffortPrompt(input: {
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
+    projectKnowledgeNotice: input.projectKnowledgeNotice,
     options: TestExecutionEffortOptionsSchema.parse(input.options),
     outputContract: TEST_EXECUTION_EFFORT_OUTPUT_CONTRACT,
   });

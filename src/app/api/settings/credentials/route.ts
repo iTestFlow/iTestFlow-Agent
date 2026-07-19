@@ -71,6 +71,7 @@ const UpdateSchema = z
         model: z.string().trim().min(1, "Select an LLM model."),
         apiKey: z.string().trim().min(1, "Enter an LLM API key."),
         baseUrl: z.string().trim().url().optional(),
+        maxInputTokens: z.number().int().min(4000).max(2_000_000).optional(),
       })
       .optional(),
   })
@@ -150,6 +151,7 @@ export async function PUT(request: Request) {
       provider: parsed.data.llm.provider,
       model: parsed.data.llm.model,
       baseUrl: parsed.data.llm.baseUrl,
+      maxInputTokens: parsed.data.llm.maxInputTokens,
       isDefault: true,
     });
   }

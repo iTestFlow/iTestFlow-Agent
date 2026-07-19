@@ -81,6 +81,14 @@ export function statusForManualValidationError(error: unknown) {
 
 export function statusForCode(code: AppErrorCode) {
   switch (code) {
+    case AppErrorCode.KnowledgeDraftConflict:
+    case AppErrorCode.KnowledgeContractMismatch:
+      return 409;
+    case AppErrorCode.KnowledgePublicationBlocked:
+      return 422;
+    case AppErrorCode.KnowledgeDraftNotFound:
+    case AppErrorCode.ResourceNotFound:
+      return 404;
     case AppErrorCode.Network:
       return 502;
     case AppErrorCode.TokenLimit:
@@ -88,6 +96,7 @@ export function statusForCode(code: AppErrorCode) {
     case AppErrorCode.SchemaValidation:
     case AppErrorCode.ProviderUnavailable:
     case AppErrorCode.NoProvider:
+    case AppErrorCode.KnowledgeBuildUnavailable:
       return 503;
     case AppErrorCode.Unknown:
     default:

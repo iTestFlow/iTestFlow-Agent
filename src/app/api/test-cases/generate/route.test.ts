@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   fetchWorkItemById: vi.fn(),
   resolveWorkflowContext: vi.fn(),
   getRetrievalTopK: vi.fn(),
-  getSavedProjectKnowledgeBase: vi.fn(),
+  loadProjectKnowledgeContext: vi.fn(),
   generateTestCases: vi.fn(),
   buildWorkflowContextCitations: vi.fn(),
   writeGenerationFailureAudit: vi.fn(),
@@ -36,7 +36,7 @@ vi.mock("@/modules/rag/retrieval-config", () => ({
   getRetrievalTopK: mocks.getRetrievalTopK,
 }));
 vi.mock("@/modules/rag/project-knowledge.service", () => ({
-  getSavedProjectKnowledgeBase: mocks.getSavedProjectKnowledgeBase,
+  loadProjectKnowledgeContext: mocks.loadProjectKnowledgeContext,
 }));
 vi.mock("@/modules/rag/workflow-context-citations", () => ({
   buildWorkflowContextCitations: mocks.buildWorkflowContextCitations,
@@ -96,7 +96,7 @@ describe("POST /api/test-cases/generate", () => {
       contextUsed: [],
       retrievalTopK: 8,
     });
-    mocks.getSavedProjectKnowledgeBase.mockResolvedValue(null);
+    mocks.loadProjectKnowledgeContext.mockResolvedValue({ knowledgeBase: null, health: null, usage: "raw_only", promptNotice: null });
     mocks.buildWorkflowContextCitations.mockReturnValue([]);
     mocks.startWorkflowRun.mockReturnValue("run-1");
     mocks.generateTestCases.mockResolvedValue({

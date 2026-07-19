@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback, type ReactNode } from "react"
-import { ClipboardPaste, Loader2, Play } from "lucide-react"
+import { type ReactNode } from "react"
+import { Loader2, Play } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -126,15 +126,6 @@ export function ManualLLMFields({
   responseMinHeightClass?: string
   disabled?: boolean
 }) {
-  const pasteResponse = useCallback(async () => {
-    try {
-      const clipboardText = await navigator.clipboard.readText()
-      onResponseChange(clipboardText)
-    } catch (error) {
-      console.error("Clipboard paste failed", error)
-    }
-  }, [onResponseChange])
-
   return (
     <>
       <div className="relative">
@@ -155,27 +146,20 @@ export function ManualLLMFields({
         />
       </div>
       <div className="space-y-2">
-        <Label className="text-sm font-medium">{responseLabel}</Label>
-        <div className="relative">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="absolute right-3 top-3 z-10 bg-background/95 shadow-sm backdrop-blur-sm"
-            onClick={() => void pasteResponse()}
-            disabled={disabled}
-          >
-            <ClipboardPaste className="size-4" />
-            Paste Response
-          </Button>
-          <Textarea
-            value={response}
-            onChange={(event) => onResponseChange(event.target.value)}
-            className={cn("pt-12 font-mono text-xs", responseMinHeightClass)}
-            placeholder={responsePlaceholder}
-            aria-label={responseLabel}
-          />
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <Label className="text-sm font-medium">{responseLabel}</Label>
+          <p id="external-llm-response-paste-help" className="text-xs text-muted-foreground">
+            Paste with Ctrl+V (or Cmd+V on macOS).
+          </p>
         </div>
+        <Textarea
+          value={response}
+          onChange={(event) => onResponseChange(event.target.value)}
+          className={cn("font-mono text-xs", responseMinHeightClass)}
+          placeholder={responsePlaceholder}
+          aria-label={responseLabel}
+          aria-describedby="external-llm-response-paste-help"
+        />
       </div>
       <div className="flex justify-end">
         <Button onClick={onSubmit} disabled={disabled || !response.trim() || submitting}>

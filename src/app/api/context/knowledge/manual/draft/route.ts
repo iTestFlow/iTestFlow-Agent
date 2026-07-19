@@ -29,6 +29,7 @@ export async function POST(request: Request) {
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     return NextResponse.json(await buildProjectKnowledgeManualDraft({
       scope: trustedScope,
+      actor: ctx.userId,
       mode: parsed.data.mode,
     }));
   } catch (error) {

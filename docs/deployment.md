@@ -6,15 +6,16 @@ For source layout and module boundaries, see [Project Architecture](../PROJECT_A
 
 ## Services
 
-A deployment runs three service types:
+The default topology runs two service types:
 
 | Service | Command | Purpose |
 | --- | --- | --- |
-| web | `npm run build` then `npm run start` | Next.js app, pages, and API routes |
-| worker | `npm run worker` | Background jobs, scheduled Azure DevOps sync, indexing, and job recovery |
+| application | `npm run build` then `npm start` | Supervises the Next.js app and background processing as one application unit |
 | postgres | managed or self-hosted PostgreSQL 16+ | All durable application data and job queue state |
 
-The web app and worker are independent Node processes that share PostgreSQL. Multiple web replicas and multiple workers are supported. Workers claim jobs with `FOR UPDATE SKIP LOCKED`, heartbeat active work, and requeue stale locks, so a job is not intentionally processed by more than one live worker.
+The application supervisor starts the web and background child processes, restarts an unexpectedly exited background process with bounded backoff, and stops both children when the application shuts down. The background child is stopped with a shutdown control message over its piped stdin, which triggers the same graceful drain-and-requeue path as SIGTERM on every OS — on Windows a signal kill is an abrupt `TerminateProcess` that would skip that path — and the supervisor falls back to a kill only if the child has not exited after the graceful window. Knowledge builds are accepted only while a capable process is healthy, so an unavailable generation path fails immediately instead of leaving a build queued indefinitely.
+
+For independently scaled deployments, run `npm run web:start` and `npm run worker` as separate services. Both processes share PostgreSQL. Multiple web replicas and multiple background processes are supported; jobs are claimed with `FOR UPDATE SKIP LOCKED`, heartbeat active work, and requeue stale locks.
 
 ## Required Environment Variables
 
@@ -40,14 +41,14 @@ iTestFlow supports two bootstrap modes:
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | yes | PostgreSQL connection string |
-| `DATABASE_POOL_MAX` | optional | Max PostgreSQL connections per process, default `10` |
+| `DATABASE_POOL_MAX` | optional | Max PostgreSQL connections per process, default `10`. Consider raising it on background processes expected to run many simultaneous knowledge builds |
 | `APP_ENCRYPTION_KEY` | yes | Base64-encoded 32-byte key used to encrypt stored PATs and LLM keys |
 | `SESSION_SECRET` | optional | Reserved for cookie HMAC hardening; stateful sessions do not require it today |
 | `CREDENTIAL_STALE_DAYS` | optional | Age threshold for credential freshness warnings, default from app code |
 | `WORKER_SCHEDULER` | optional | Set `false` to disable worker cron scheduling, default enabled |
 | `WORKER_SCHEDULER_TICK_MS` | optional | How often due schedules are evaluated, default `60000` |
 | `WORKER_POLL_MS` | optional | Worker idle poll interval, default `2000` |
-| `WORKER_HEARTBEAT_MS` | optional | Active-job heartbeat interval, default `30000` |
+| `WORKER_HEARTBEAT_MS` | optional | Active-job heartbeat interval, default `30000`; one batched heartbeat covers all of a worker's active jobs |
 | `JOB_STALE_LOCK_MS` | optional | Stale lock recovery threshold, default `300000` |
 | `RATE_LIMIT_BACKEND` | optional | `postgres` (shared multi-replica) or `memory` (per-process). Defaults to `postgres` when `NODE_ENV=production`, else `memory` |
 | `RATE_LIMIT_TRUSTED_PROXY_HOPS` | optional | Reverse proxies in front of the app; login throttling reads the client IP this many hops from the right of `X-Forwarded-For`. Default `0` |
@@ -95,24 +96,18 @@ Interactive actions use the current user's Azure DevOps PAT and LLM key. Schedul
    npm run db:migrate
    ```
 
-4. Build and start the web service:
+4. Build and start the application:
 
    ```bash
    npm run build
    npm run start
    ```
 
-5. Start at least one worker:
-
-   ```bash
-   npm run worker
-   ```
-
-6. The bootstrap process idempotently seeds the owner user, workspace, and owner membership on startup.
-7. The owner signs in at `/login` with the enabled Azure DevOps organization and a valid PAT.
-8. The owner adds private LLM credentials from `/settings`.
-9. The owner selects an active Azure DevOps project from the top bar. The server verifies and stores the project anchor before project-scoped routes can use it.
-10. An owner/admin sets the workspace sync credential and, optionally, a sync schedule in Settings.
+5. The bootstrap process idempotently seeds the owner user, workspace, and owner membership on startup.
+6. The owner signs in at `/login` with the enabled Azure DevOps organization and a valid PAT.
+7. The owner adds private LLM credentials from `/settings`.
+8. The owner selects an active Azure DevOps project from the top bar. The server verifies and stores the project anchor before project-scoped routes can use it.
+9. An owner/admin sets the workspace sync credential and, optionally, a sync schedule in Settings.
 
 The app startup instrumentation also attempts pending migrations and bootstrap seeding. Keep the explicit migration step anyway so schema failures are caught before serving traffic.
 
@@ -131,24 +126,18 @@ The app startup instrumentation also attempts pending migrations and bootstrap s
    npm run db:migrate
    ```
 
-4. Build and start the web service:
+4. Build and start the application:
 
    ```bash
    npm run build
    npm run start
    ```
 
-5. Start at least one worker:
-
-   ```bash
-   npm run worker
-   ```
-
-6. The bootstrap process idempotently seeds each organization, its owner user, and owner membership on startup.
-7. Each org owner signs in at `/login`, selects their organization from the list (or enters it by URL), and authenticates with a PAT.
-8. Each owner adds private LLM credentials from `/settings`.
-9. Each owner selects an active Azure DevOps project from the top bar. The server verifies and stores the project anchor before project-scoped routes can use it.
-10. Each org admin sets workspace sync credentials and, optionally, sync schedules in Settings.
+5. The bootstrap process idempotently seeds each organization, its owner user, and owner membership on startup.
+6. Each org owner signs in at `/login`, selects their organization from the list (or enters it by URL), and authenticates with a PAT.
+7. Each owner adds private LLM credentials from `/settings`.
+8. Each owner selects an active Azure DevOps project from the top bar. The server verifies and stores the project anchor before project-scoped routes can use it.
+9. Each org admin sets workspace sync credentials and, optionally, sync schedules in Settings.
 
 The same startup-instrumentation note applies: keep the explicit `npm run db:migrate` step in the deploy pipeline so schema failures surface before serving traffic.
 
@@ -180,13 +169,12 @@ These operations are reversible and preserve all workspace data, user records, p
 
 - [ ] HTTPS is enabled.
 - [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, and bootstrap variables (`BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG` or `BOOTSTRAP_AZURE_ORGS`) are set through secrets.
-- [ ] `npm run db:migrate` runs before the new web/worker version receives traffic.
-- [ ] At least one web process is running.
-- [ ] At least one worker process is running with `DATABASE_URL` and `APP_ENCRYPTION_KEY`.
+- [ ] `npm run db:migrate` runs before the new application version receives traffic.
+- [ ] At least one supervised application process is running, or the advanced split topology has at least one web process and one capable background process.
 - [ ] PostgreSQL automated backups are enabled and restore has been tested.
 - [ ] Reverse proxy forwards client IP headers if rate limiting should key by real client IP.
 - [ ] `RATE_LIMIT_BACKEND=postgres` is set when running more than one web replica.
-- [ ] Worker logs are monitored for repeated job failures or stale-lock recovery.
+- [ ] Application logs are monitored for repeated background-process restarts, job failures, or stale-lock recovery.
 - [ ] `APP_ENCRYPTION_KEY` is backed up in a secure secret store separate from PostgreSQL backups.
 - [ ] For multi-org deployments, verify that each org's owner can sign in and that org enable/disable scripts are accessible if needed.
 
@@ -194,9 +182,11 @@ These operations are reversible and preserve all workspace data, user records, p
 
 Use `RATE_LIMIT_BACKEND=postgres` with multiple web replicas so login and credential rate limits are shared. The default memory backend is per-process and is acceptable only for one web replica or local development.
 
-Workers can scale horizontally. Keep job handlers idempotent where possible because failed or stale jobs can be retried.
+The default supervised application can scale horizontally. Queue locking prevents replicas from intentionally claiming the same live job. Use the split `web:start` and `worker` topology when web and background capacity need to scale independently. Keep job handlers idempotent because failed or stale jobs can be retried.
 
-Before redeploying workers, drain or gracefully stop the old worker pool so in-flight sync jobs can finish. If a worker is terminated mid-job, the replacement worker recovers it through stale-lock requeue after `JOB_STALE_LOCK_MS` (5 minutes by default), so scheduled sync can appear delayed during that window.
+Knowledge Hub builds (`project_knowledge_build`) for different projects and organizations do not block one another: each background process starts every ready build immediately and runs them concurrently, while workspace sync and other job types stay on a separate serial lane. One active build per project is still enforced through the queue's dedupe key. LLM provider throttling (429/`Retry-After`) can delay individual LLM requests inside a build, but it does not stall sibling projects' builds; transient retries are jittered so concurrent builds do not retry a throttled provider in lockstep.
+
+Before redeploying split background services, gracefully stop the old pool (SIGTERM). A stopping process unregisters its capacity, gives active jobs three seconds to finish, then aborts and atomically requeues the unfinished ones without consuming a retry, so a surviving process picks them up immediately. Under the supervised `npm start`/`npm run dev` topology, the supervisor triggers the identical path on every OS by writing a shutdown message to the background child's stdin (Windows has no graceful signal delivery). If a process is killed without the graceful path, its replacement recovers the job through stale-lock requeue after `JOB_STALE_LOCK_MS` (5 minutes by default) — that recovery consumes one attempt, and scheduled sync can appear delayed during the window.
 
 ## Backups And Restore
 
@@ -214,7 +204,7 @@ After restore:
 
 1. Confirm the restored environment has the same `APP_ENCRYPTION_KEY`.
 2. Run `npm run db:migrate`.
-3. Start the web service and worker.
+3. Start the supervised application, or both services in the advanced split topology.
 4. Sign in and verify workspace/project selection, credential status, dashboard reads, and a small Knowledge Hub status read.
 
 Rollback past migration `1710000007000_project_anchor_backfill` is backup-based. That migration canonicalizes project IDs and cannot reconstruct prior IDs through `db:migrate:down`; restore a pre-migration PostgreSQL backup instead.
@@ -226,10 +216,11 @@ cp .env.example .env
 docker compose up -d postgres
 npm run db:migrate
 npm run dev -- --hostname 127.0.0.1 --port 3000
-npm run worker:dev
 ```
 
 Developers may skip Docker by pointing `DATABASE_URL` at a native PostgreSQL instance. Docker is required only for the provided local PostgreSQL service, disposable test database, or pgAdmin profile.
+
+`npm run dev` starts both application processes. For advanced split-process debugging, use `npm run web:dev` in one terminal and `npm run worker:dev` in another.
 
 Optional local services:
 
@@ -263,8 +254,10 @@ npm run build
 ```
 
 The unit and gated coverage suites are fully local and mock external boundaries.
-The integration suite requires `DATABASE_URL` and a migrated PostgreSQL database;
-it exits immediately instead of silently skipping when that prerequisite is absent.
+The integration suite requires `TEST_DATABASE_URL` and a migrated disposable PostgreSQL
+database; it exits immediately instead of silently skipping when that prerequisite is
+absent. Run `npm run db:migrate:test` before the suite. Integration commands never use
+the application's `DATABASE_URL`, preventing test fixtures from leaking into the app.
 
 ## Docs Cleanup Guidance
 

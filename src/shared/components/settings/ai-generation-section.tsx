@@ -26,6 +26,7 @@ type CredentialSummary = {
   provider?: string | null
   model?: string | null
   isStale?: boolean
+  maxInputTokens?: number | null
 }
 
 type CredentialStatusResponse = {
@@ -57,6 +58,7 @@ function AiProviderCard() {
   const [apiKey, setApiKey] = useState("")
   const [model, setModel] = useState("")
   const [baseUrl, setBaseUrl] = useState("")
+  const [maxInputTokens, setMaxInputTokens] = useState("")
 
   const [models, setModels] = useState<ModelOption[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
@@ -76,6 +78,7 @@ function AiProviderCard() {
         setProvider(data.llm.provider as Provider)
       }
       setModel(data.llm.model ?? "")
+      setMaxInputTokens(data.llm.maxInputTokens ? String(data.llm.maxInputTokens) : "")
     } catch {
       toast.error("Could not load your AI provider settings.")
     } finally {
@@ -136,7 +139,13 @@ function AiProviderCard() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          llm: { provider, model: model.trim(), apiKey: apiKey.trim(), ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}) },
+          llm: {
+            provider,
+            model: model.trim(),
+            apiKey: apiKey.trim(),
+            ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
+            ...(maxInputTokens.trim() ? { maxInputTokens: Number(maxInputTokens) } : {}),
+          },
         }),
       })
       const data = (await response.json().catch(() => ({}))) as CredentialStatusResponse & { error?: string }
@@ -226,6 +235,24 @@ function AiProviderCard() {
             onOpen={() => { if (!modelsFetched && !loadingModels) void fetchModels() }}
           />
         )}
+      </Field>
+
+      <Field
+        label="Model Input Limit Override (optional)"
+        htmlFor="llm-max-input-tokens"
+        description="Leave blank to use the exact known model capability; unknown models use a conservative 16,000-token fallback."
+      >
+        <Input
+          id="llm-max-input-tokens"
+          type="number"
+          min={4000}
+          max={2000000}
+          step={1000}
+          className="h-8 border-input bg-card text-foreground"
+          value={maxInputTokens}
+          onChange={(event) => setMaxInputTokens(event.target.value)}
+          placeholder="16000"
+        />
       </Field>
 
       <Button type="button" onClick={() => void onSave()} disabled={saving || loading || !apiKey.trim() || !model.trim()}>

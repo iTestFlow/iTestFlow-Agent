@@ -87,6 +87,7 @@ export async function POST(request: Request) {
       relatedWorkItems: data.relatedWorkItems,
       selectedContext: data.selectedContext,
       projectKnowledgeBase: data.projectKnowledgeBase,
+      projectKnowledgeNotice: data.projectKnowledgeNotice,
       options,
     });
     const contextCitations = buildWorkflowContextCitations({
@@ -117,7 +118,7 @@ export async function POST(request: Request) {
       rawOutput: result.rawOutput,
       tokenUsage: provider.getTokenUsage(),
       estimate: result.validatedOutput,
-      warnings: result.warnings,
+      warnings: [...(result.warnings ?? []), ...(data.projectKnowledgeNotice ? [data.projectKnowledgeNotice] : [])],
     });
   } catch (error) {
     const authResponse = authErrorResponse(error);

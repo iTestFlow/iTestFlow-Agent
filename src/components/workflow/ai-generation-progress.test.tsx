@@ -38,6 +38,17 @@ describe("AiGenerationProgress", () => {
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
+  it("supports accurate persistence guidance for background generation", () => {
+    render(
+      <AiGenerationProgress
+        status="waiting_llm"
+        activeHint="You can leave or refresh this page; generation will continue safely."
+      />,
+    );
+    expect(screen.getByText(/generation will continue safely/)).toBeInTheDocument();
+    expect(screen.queryByText(/Please keep this page open/)).not.toBeInTheDocument();
+  });
+
   it("uses the shorter preparation flow and cancel label", () => {
     render(
       <AiGenerationProgress

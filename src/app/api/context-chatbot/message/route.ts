@@ -30,6 +30,10 @@ const HistoryMessageSchema = z.object({
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   message: z.string().trim().min(1).max(4000),
+  selectedWorkItemIds: z.array(z.string().trim().min(1).max(100))
+    .max(50)
+    .default([])
+    .transform((ids) => Array.from(new Set(ids))),
   history: z
     .preprocess(
       (value) => (Array.isArray(value) ? value.slice(-CONTEXT_CHATBOT_HISTORY_REQUEST_LIMIT) : value),
@@ -68,6 +72,7 @@ export async function POST(request: Request) {
       provider,
       message: parsed.data.message,
       history: parsed.data.history,
+      selectedWorkItemIds: parsed.data.selectedWorkItemIds,
     });
     completeWorkflowRun({
       scope: trustedScope,

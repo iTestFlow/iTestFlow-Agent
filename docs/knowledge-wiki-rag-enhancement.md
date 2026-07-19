@@ -17,6 +17,14 @@ iTestFlow keeps Azure DevOps work items as source truth and compiles them into a
 - Retired, superseded, confirmed, and candidate knowledge versions are retained for audit/history.
 - Markdown export is a personal/project knowledge-base surface, not the runtime source of truth.
 
+## Duplicate-Rule Reconciliation
+
+- Same-id business-rule entries are one logical claim and merge by default: the longer wording wins and evidence quotes are unioned.
+- A merge is refused only for a provable atomic value contradiction with the same atomic identity. Both entries remain and the hard-conflict review blocks publication.
+- The contradiction guard is module-agnostic, so a provable disagreement is never fused. Same-identity pairs that are not comparable (for example, unit mismatch or overlapping ranges) merge with their evidence preserved.
+- Full rebuilds extract purely from current source work items and do not re-feed the published knowledge base. Incremental builds reconcile only changed sources.
+- This intentionally accepts unprovable soft disagreements as one entry with all supporting quotes preserved, matching the main-branch behavior while keeping genuine atomic contradictions reviewable.
+
 ## Scheduled Auto-Update
 
 - The cron scheduler runs in the background worker, so at least one worker must be running when a schedule is due.

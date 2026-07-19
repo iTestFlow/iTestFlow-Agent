@@ -24,7 +24,7 @@ export type CredentialSummary = {
 
 export type UserCredentialStatus = {
   azurePat: CredentialSummary;
-  llm: CredentialSummary & { model?: string | null };
+  llm: CredentialSummary & { model?: string | null; maxInputTokens?: number | null };
 };
 
 /**
@@ -58,6 +58,7 @@ export type ResolvedUserLlm = {
   model: string;
   apiKey: string;
   baseUrl?: string;
+  maxInputTokens?: number;
 };
 
 type EncryptedRow = {
@@ -204,6 +205,7 @@ export async function saveUserLlmSettings(input: {
   baseUrl?: string | null;
   temperature?: number | null;
   maxOutputTokens?: number | null;
+  maxInputTokens?: number | null;
   isDefault?: boolean;
 }): Promise<void> {
   const now = nowIso();
@@ -218,16 +220,17 @@ export async function saveUserLlmSettings(input: {
   await sqlRun(
     `INSERT INTO user_llm_settings (
        id, workspace_id, user_id, provider, model, base_url, temperature,
-       max_output_tokens, is_default, created_at, updated_at
+       max_output_tokens, max_input_tokens, is_default, created_at, updated_at
      ) VALUES (
        @id, @workspaceId, @userId, @provider, @model, @baseUrl, @temperature,
-       @maxOutputTokens, @isDefault, @now, @now
+       @maxOutputTokens, @maxInputTokens, @isDefault, @now, @now
      )
      ON CONFLICT (workspace_id, user_id, provider) DO UPDATE SET
        model = excluded.model,
        base_url = excluded.base_url,
        temperature = excluded.temperature,
        max_output_tokens = excluded.max_output_tokens,
+       max_input_tokens = excluded.max_input_tokens,
        is_default = excluded.is_default,
        updated_at = excluded.updated_at`,
     {
@@ -239,6 +242,7 @@ export async function saveUserLlmSettings(input: {
       baseUrl: input.baseUrl ?? null,
       temperature: input.temperature ?? null,
       maxOutputTokens: input.maxOutputTokens ?? null,
+      maxInputTokens: input.maxInputTokens ?? null,
       isDefault: isDefault ? 1 : 0,
       now,
     },
@@ -286,8 +290,8 @@ export async function updateUserLlmModel(input: {
  * for the global runtime-settings LLM resolution.
  */
 export async function resolveUserLlmConfig(workspaceId: string, userId: string): Promise<ResolvedUserLlm | null> {
-  const settings = await sqlGet<{ provider: LLMProviderName; model: string; base_url: string | null }>(
-    `SELECT provider, model, base_url
+  const settings = await sqlGet<{ provider: LLMProviderName; model: string; base_url: string | null; max_input_tokens: number | null }>(
+    `SELECT provider, model, base_url, max_input_tokens
      FROM user_llm_settings
      WHERE workspace_id = @workspaceId AND user_id = @userId
      ORDER BY is_default DESC, updated_at DESC
@@ -311,6 +315,7 @@ export async function resolveUserLlmConfig(workspaceId: string, userId: string):
     model: settings.model,
     apiKey: decodeRow(keyRow),
     baseUrl: settings.base_url ?? undefined,
+    maxInputTokens: settings.max_input_tokens ?? undefined,
   };
 }
 
@@ -331,8 +336,9 @@ export async function getUserCredentialStatus(workspaceId: string, userId: strin
     provider: string | null;
     last_validated_at: string | null;
     model: string | null;
+    max_input_tokens: number | null;
   }>(
-    `SELECT c.masked_preview, c.status, c.provider, c.last_validated_at, s.model
+    `SELECT c.masked_preview, c.status, c.provider, c.last_validated_at, s.model, s.max_input_tokens
      FROM user_credentials c
      LEFT JOIN user_llm_settings s
        ON s.workspace_id = c.workspace_id AND s.user_id = c.user_id AND s.provider = c.provider
@@ -357,6 +363,7 @@ export async function getUserCredentialStatus(workspaceId: string, userId: strin
           maskedPreview: llm.masked_preview,
           provider: llm.provider,
           model: llm.model,
+          maxInputTokens: llm.max_input_tokens,
           lastValidatedAt: llm.last_validated_at,
           isStale: llm.status === "configured" && isCredentialStale(llm.last_validated_at, now),
         }

@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+import { ProjectKnowledgeAtomicConstraintSchema } from "./project-knowledge-atomic-constraint";
+import { canonicalizeProjectKnowledgeDependencyType } from "./project-knowledge-dependency-type";
+
 const RequiredTextSchema = z.string().trim().min(1);
 const OptionalTextSchema = z
   .string()
@@ -19,6 +22,41 @@ const SourceIdsSchema = z
   .transform((ids) => Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean))))
   .pipe(z.array(RequiredTextSchema).min(1));
 
+export const PROJECT_KNOWLEDGE_SOURCE_FIELDS = [
+  "title",
+  "description",
+  "acceptanceCriteria",
+  "state",
+  "tags",
+  "areaPath",
+  "iterationPath",
+  "metadata",
+] as const;
+
+export const PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS = [
+  "title",
+  "description",
+  "acceptanceCriteria",
+  "metadata",
+] as const;
+
+export const ProjectKnowledgeEvidenceRefSchema = z.object({
+  sourceSnapshotId: RequiredTextSchema,
+  sourceWorkItemId: RequiredTextSchema,
+  sourceField: z.enum(PROJECT_KNOWLEDGE_SOURCE_FIELDS),
+  quote: RequiredTextSchema,
+  locator: z.record(z.string(), z.unknown()).optional(),
+  origin: z.enum(["generated_v2", "generated_v4", "migrated_legacy", "reviewer_reanchored"]),
+  verification: z.enum(["exact", "normalized", "auto_reanchored", "unverified"]),
+});
+
+export type ProjectKnowledgeEvidenceRef = z.infer<typeof ProjectKnowledgeEvidenceRefSchema>;
+
+const EvidenceRefsSchema = z
+  .array(ProjectKnowledgeEvidenceRefSchema)
+  .transform(sortProjectKnowledgeEvidenceRefs)
+  .optional();
+
 const GlossaryTypeSchema = z.preprocess(
   (value) => (typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : value),
   z
@@ -34,20 +72,28 @@ export const ProjectKnowledgeModuleSchema = z
     description: DescriptionTextSchema,
     sourceWorkItemIds: SourceIdsSchema,
     evidence: RequiredTextSchema,
+    evidenceRefs: EvidenceRefsSchema,
   })
-  .transform((module) => ({
-    ...module,
-    description: module.description || module.evidence,
-  }));
+  .transform((module) => {
+    const provenance = deriveCompatibilityProvenance(module);
+    return {
+      ...module,
+      ...provenance,
+      description: module.description || provenance.evidence,
+    };
+  });
 
 export const ProjectKnowledgeBusinessRuleSchema = z.object({
   id: RequiredTextSchema,
   rule: RequiredTextSchema,
   sourceField: RequiredTextSchema,
   moduleName: OptionalTextSchema,
+  moduleAssociations: z.array(RequiredTextSchema).optional(),
+  constraint: ProjectKnowledgeAtomicConstraintSchema.optional(),
   sourceWorkItemIds: SourceIdsSchema,
   evidence: RequiredTextSchema,
-});
+  evidenceRefs: EvidenceRefsSchema,
+}).transform((rule) => ({ ...rule, ...deriveCompatibilityProvenance(rule) }));
 
 export const ProjectKnowledgeStateTransitionSchema = z.object({
   id: RequiredTextSchema,
@@ -59,7 +105,8 @@ export const ProjectKnowledgeStateTransitionSchema = z.object({
   moduleName: OptionalTextSchema,
   sourceWorkItemIds: SourceIdsSchema,
   evidence: RequiredTextSchema,
-});
+  evidenceRefs: EvidenceRefsSchema,
+}).transform((transition) => ({ ...transition, ...deriveCompatibilityProvenance(transition) }));
 
 export const ProjectKnowledgeGlossaryTermSchema = z.object({
   term: RequiredTextSchema,
@@ -67,22 +114,12 @@ export const ProjectKnowledgeGlossaryTermSchema = z.object({
   definition: RequiredTextSchema,
   sourceWorkItemIds: SourceIdsSchema,
   evidence: RequiredTextSchema,
-});
+  evidenceRefs: EvidenceRefsSchema,
+}).transform((term) => ({ ...term, ...deriveCompatibilityProvenance(term) }));
 
-type ProjectKnowledgeGlossaryTerm = z.infer<typeof ProjectKnowledgeGlossaryTermSchema>;
 type ProjectKnowledgeModule = z.infer<typeof ProjectKnowledgeModuleSchema>;
 type ProjectKnowledgeStateTransition = z.infer<typeof ProjectKnowledgeStateTransitionSchema>;
-
-const GLOSSARY_TYPE_PRIORITY: Record<ProjectKnowledgeGlossaryTerm["type"], number> = {
-  business_entity: 1,
-  process: 2,
-  role: 3,
-  actor: 4,
-  external_service: 5,
-  system: 6,
-  data_entity: 7,
-  term: 8,
-};
+type ProjectKnowledgeGlossaryTerm = z.infer<typeof ProjectKnowledgeGlossaryTermSchema>;
 
 export const ProjectKnowledgeCrossDependencySchema = z
   .object({
@@ -93,11 +130,17 @@ export const ProjectKnowledgeCrossDependencySchema = z
     description: DescriptionTextSchema,
     sourceWorkItemIds: SourceIdsSchema,
     evidence: RequiredTextSchema,
+    evidenceRefs: EvidenceRefsSchema,
   })
-  .transform((dependency) => ({
-    ...dependency,
-    description: dependency.description || dependency.evidence,
-  }));
+  .transform((dependency) => {
+    const provenance = deriveCompatibilityProvenance(dependency);
+    return {
+      ...dependency,
+      ...provenance,
+      dependencyType: canonicalizeProjectKnowledgeDependencyType(dependency.dependencyType),
+      description: dependency.description || provenance.evidence,
+    };
+  });
 
 type ProjectKnowledgeCrossDependency = z.infer<typeof ProjectKnowledgeCrossDependencySchema>;
 
@@ -109,59 +152,10 @@ export const ProjectKnowledgeBaseSchema = z
     glossary: z.array(ProjectKnowledgeGlossaryTermSchema).default([]),
     crossDependencies: z.array(ProjectKnowledgeCrossDependencySchema).default([]),
   })
-  .transform((knowledgeBase) => {
-    const glossary = deduplicateGlossaryTerms(knowledgeBase.glossary);
-    return {
-      ...knowledgeBase,
-      glossary,
-      crossDependencies: normalizeWorkflowStepDependencies({
-        ...knowledgeBase,
-        glossary,
-      }),
-    };
-  });
-
-function deduplicateGlossaryTerms(glossary: ProjectKnowledgeGlossaryTerm[]) {
-  const grouped = new Map<
-    string,
-    {
-      selected: ProjectKnowledgeGlossaryTerm;
-      sourceWorkItemIds: string[];
-      evidence: string[];
-    }
-  >();
-
-  glossary.forEach((entry) => {
-    const key = normalizeGlossaryTerm(entry.term);
-    const existing = grouped.get(key);
-
-    if (!existing) {
-      grouped.set(key, {
-        selected: entry,
-        sourceWorkItemIds: entry.sourceWorkItemIds,
-        evidence: splitEvidence(entry.evidence),
-      });
-      return;
-    }
-
-    existing.sourceWorkItemIds = mergeUnique(existing.sourceWorkItemIds, entry.sourceWorkItemIds);
-    existing.evidence = mergeUnique(existing.evidence, splitEvidence(entry.evidence));
-
-    if (isMoreBusinessLikeGlossaryEntry(entry, existing.selected)) {
-      existing.selected = entry;
-    }
-  });
-
-  return Array.from(grouped.values()).map((group) => ({
-    ...group.selected,
-    sourceWorkItemIds: group.sourceWorkItemIds,
-    evidence: group.evidence.join(" | "),
+  .transform((knowledgeBase) => ({
+    ...knowledgeBase,
+    crossDependencies: normalizeWorkflowStepDependencies(knowledgeBase),
   }));
-}
-
-function normalizeGlossaryTerm(term: string) {
-  return term.trim().replace(/\s+/g, " ").toLowerCase();
-}
 
 function normalizeWorkflowStepDependencies(knowledgeBase: {
   modules: ProjectKnowledgeModule[];
@@ -312,26 +306,173 @@ function appendOriginalEndpointNote(description: string, kind: "source" | "targe
   return description.includes(note) ? description : [description, note].filter(Boolean).join("\n\n");
 }
 
-function splitEvidence(evidence: string) {
-  return evidence
-    .split(/\s+\|\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
+function normalizeEvidenceQuote(value: string) {
+  return value.trim().replace(/\s+/g, " ");
 }
 
-function mergeUnique(first: string[], second: string[]) {
-  return Array.from(new Set([...first, ...second].map((value) => value.trim()).filter(Boolean)));
+function canonicalLocator(locator: ProjectKnowledgeEvidenceRef["locator"]) {
+  if (!locator) return "";
+  return JSON.stringify(canonicalLocatorValue(locator));
 }
 
-function isMoreBusinessLikeGlossaryEntry(candidate: ProjectKnowledgeGlossaryTerm, current: ProjectKnowledgeGlossaryTerm) {
-  const candidatePriority = GLOSSARY_TYPE_PRIORITY[candidate.type];
-  const currentPriority = GLOSSARY_TYPE_PRIORITY[current.type];
+function canonicalLocatorValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalLocatorValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([first], [second]) => compareCanonicalText(first, second))
+      .map(([key, nested]) => [key, canonicalLocatorValue(nested)]),
+  );
+}
 
-  if (candidatePriority !== currentPriority) {
-    return candidatePriority < currentPriority;
+function evidenceRefIdentity(ref: ProjectKnowledgeEvidenceRef) {
+  return [
+    ref.sourceWorkItemId,
+    ref.sourceSnapshotId,
+    ref.sourceField,
+    canonicalLocator(ref.locator),
+    normalizeEvidenceQuote(ref.quote),
+  ].join("\u0000");
+}
+
+export function sortProjectKnowledgeEvidenceRefs(refs: ProjectKnowledgeEvidenceRef[]) {
+  return [...refs].sort((first, second) => compareCanonicalText(evidenceRefIdentity(first), evidenceRefIdentity(second)));
+}
+
+function compareCanonicalText(first: string, second: string) {
+  return first < second ? -1 : first > second ? 1 : 0;
+}
+
+export function mergeProjectKnowledgeEvidenceRefs(
+  first: ProjectKnowledgeEvidenceRef[],
+  second: ProjectKnowledgeEvidenceRef[],
+) {
+  const refs = new Map<string, ProjectKnowledgeEvidenceRef>();
+  [...first, ...second].forEach((ref) => refs.set(evidenceRefIdentity(ref), ref));
+  return sortProjectKnowledgeEvidenceRefs(Array.from(refs.values()));
+}
+
+// Content identity deliberately excludes sourceSnapshotId and locator: both churn on
+// re-sync even when the underlying source text is unchanged, and comparisons that need
+// to survive that churn must key on what the evidence actually says, not which capture
+// said it. The strict form keeps the quote byte-exact (past whitespace) and backs the
+// evidence-identical conflict flag, where a false "identical" could hide a genuine
+// disagreement from the reviewer. Merge gates and wording carry-over use the relaxed
+// equivalence form below instead.
+export function projectKnowledgeEvidenceContentIdentity(ref: ProjectKnowledgeEvidenceRef) {
+  return [ref.sourceWorkItemId, ref.sourceField, normalizeEvidenceQuote(ref.quote)].join("\u0000");
+}
+
+// Relaxed quote form for merge-gate equivalence ONLY. LLM re-quoting drifts in terminal
+// punctuation, symmetric wrapping quotes, and case even when the cited source text is
+// unchanged; treating that drift as different evidence permanently splits paraphrase
+// twins. NOT used by the evidence-identical conflict flag (strict above) nor by any
+// persisted hash (contracts.ts keeps its own quote normalization). Smart quotes are
+// deliberately excluded from wrapper stripping: they form asymmetric pairs that NFKC
+// does not fold, so stripping them would risk eating interior characters.
+function relaxedEvidenceQuoteForm(value: string) {
+  let quote = normalizeEvidenceQuote(value).normalize("NFKC");
+  for (let pass = 0; pass < 2; pass += 1) {
+    quote = quote.replace(/^(["'`])(.*)\1$/u, "$2").trim();
+    quote = quote.replace(/[.;:!?â€¦]+$/u, "").trim();
   }
+  return quote.toLowerCase();
+}
 
-  return candidate.definition.length > current.definition.length;
+export function projectKnowledgeEvidenceContentEquivalenceIdentity(ref: ProjectKnowledgeEvidenceRef) {
+  return [ref.sourceWorkItemId, ref.sourceField, relaxedEvidenceQuoteForm(ref.quote)].join("\u0000");
+}
+
+export function projectKnowledgeEvidenceContentIdentitySet(refs: ProjectKnowledgeEvidenceRef[] | undefined) {
+  return evidenceContentIdentitySet(refs, projectKnowledgeEvidenceContentIdentity);
+}
+
+export function haveIdenticalNonEmptyEvidenceContent(
+  first: ProjectKnowledgeEvidenceRef[] | undefined,
+  second: ProjectKnowledgeEvidenceRef[] | undefined,
+) {
+  return haveMatchingNonEmptyEvidenceContent(first, second, projectKnowledgeEvidenceContentIdentity);
+}
+
+export function haveEquivalentNonEmptyEvidenceContent(
+  first: ProjectKnowledgeEvidenceRef[] | undefined,
+  second: ProjectKnowledgeEvidenceRef[] | undefined,
+) {
+  return haveMatchingNonEmptyEvidenceContent(first, second, projectKnowledgeEvidenceContentEquivalenceIdentity);
+}
+
+function evidenceContentIdentitySet(
+  refs: ProjectKnowledgeEvidenceRef[] | undefined,
+  identity: (ref: ProjectKnowledgeEvidenceRef) => string,
+) {
+  return Array.from(new Set((refs ?? []).map(identity))).sort(compareCanonicalText);
+}
+
+function haveMatchingNonEmptyEvidenceContent(
+  first: ProjectKnowledgeEvidenceRef[] | undefined,
+  second: ProjectKnowledgeEvidenceRef[] | undefined,
+  identity: (ref: ProjectKnowledgeEvidenceRef) => string,
+) {
+  const firstIdentities = evidenceContentIdentitySet(first, identity);
+  const secondIdentities = evidenceContentIdentitySet(second, identity);
+  return firstIdentities.length > 0 &&
+    firstIdentities.length === secondIdentities.length &&
+    firstIdentities.every((value, index) => value === secondIdentities[index]);
+}
+
+export function renderProjectKnowledgeEvidenceRefs(refs: ProjectKnowledgeEvidenceRef[]) {
+  return sortProjectKnowledgeEvidenceRefs(refs)
+    .map((ref) => escapeProjectKnowledgeCompatibilityEvidenceFragment(normalizeEvidenceQuote(ref.quote)))
+    .join(" | ");
+}
+
+export function escapeProjectKnowledgeCompatibilityEvidenceFragment(value: string) {
+  return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+}
+
+export function splitProjectKnowledgeRenderedEvidence(value: string) {
+  const fragments: string[] = [];
+  let current = "";
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.startsWith(" | ", index)) {
+      if (current.trim()) fragments.push(current.trim());
+      current = "";
+      index += 2;
+      continue;
+    }
+    const character = value[index];
+    if (character === "\\" && index + 1 < value.length) {
+      const next = value[index + 1];
+      if (next === "\\" || next === "|") {
+        current += next;
+        index += 1;
+        continue;
+      }
+    }
+    current += character;
+  }
+  if (current.trim()) fragments.push(current.trim());
+  return fragments;
+}
+
+export function splitProjectKnowledgeLegacyEvidence(value: string) {
+  return value.split(" | ").map((fragment) => fragment.trim()).filter(Boolean);
+}
+
+function deriveCompatibilityProvenance(input: {
+  sourceWorkItemIds: string[];
+  evidence: string;
+  evidenceRefs?: ProjectKnowledgeEvidenceRef[];
+}) {
+  if (!input.evidenceRefs?.length) {
+    return { sourceWorkItemIds: input.sourceWorkItemIds, evidence: input.evidence };
+  }
+  const evidenceRefs = sortProjectKnowledgeEvidenceRefs(input.evidenceRefs);
+  return {
+    evidenceRefs,
+    sourceWorkItemIds: Array.from(new Set(evidenceRefs.map((ref) => ref.sourceWorkItemId))),
+    evidence: renderProjectKnowledgeEvidenceRefs(evidenceRefs),
+  };
 }
 
 export const PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE = {
@@ -342,6 +483,17 @@ export const PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE = {
       description: "string; omit item if not supported, or use evidence-based description",
       sourceWorkItemIds: ["string"],
       evidence: "string",
+      evidenceRefs: [
+        {
+          sourceSnapshotId: "string",
+          sourceWorkItemId: "string",
+          sourceField: "title | description | acceptanceCriteria | state | tags | areaPath | iterationPath | metadata",
+          quote: "exact string",
+          locator: "optional object",
+          origin: "generated_v2",
+          verification: "exact | normalized | auto_reanchored",
+        },
+      ],
     },
   ],
   businessRules: [
@@ -352,6 +504,7 @@ export const PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE = {
       moduleName: "optional string",
       sourceWorkItemIds: ["string"],
       evidence: "string",
+      evidenceRefs: ["EvidenceRef"],
     },
   ],
   stateTransitions: [
@@ -365,6 +518,7 @@ export const PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE = {
       moduleName: "optional string",
       sourceWorkItemIds: ["string"],
       evidence: "string",
+      evidenceRefs: ["EvidenceRef"],
     },
   ],
   glossary: [
@@ -374,6 +528,7 @@ export const PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE = {
       definition: "string",
       sourceWorkItemIds: ["string"],
       evidence: "string",
+      evidenceRefs: ["EvidenceRef"],
     },
   ],
   crossDependencies: [
@@ -385,6 +540,7 @@ export const PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE = {
       description: "string; omit item if not supported, or use evidence-based description",
       sourceWorkItemIds: ["string"],
       evidence: "string",
+      evidenceRefs: ["EvidenceRef"],
     },
   ],
 } as const;

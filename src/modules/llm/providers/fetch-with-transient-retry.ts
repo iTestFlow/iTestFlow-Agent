@@ -13,6 +13,7 @@ export async function fetchWithTransientRetry(
   let retriesUsed = 0;
 
   while (true) {
+    init.signal?.throwIfAborted();
     try {
       const response = await fetch(url, init);
       if (retriesUsed >= retryAttempts || !TRANSIENT_STATUS_CODES.has(response.status)) {
@@ -20,10 +21,11 @@ export async function fetchWithTransientRetry(
       }
 
       await response.body?.cancel();
-      await delay(retryDelayMs(response, retriesUsed));
+      await delay(retryDelayMs(response, retriesUsed), init.signal);
     } catch (error) {
+      if (init.signal?.aborted) throw init.signal.reason ?? error;
       if (retriesUsed >= retryAttempts) throw error;
-      await delay(exponentialDelayMs(retriesUsed));
+      await delay(exponentialDelayMs(retriesUsed), init.signal);
     }
 
     retriesUsed += 1;
@@ -51,9 +53,24 @@ function parseRetryAfterMs(value: string | null) {
 }
 
 function exponentialDelayMs(retryIndex: number) {
-  return Math.min(BASE_RETRY_DELAY_MS * (2 ** retryIndex), MAX_RETRY_DELAY_MS);
+  const base = Math.min(BASE_RETRY_DELAY_MS * (2 ** retryIndex), MAX_RETRY_DELAY_MS);
+  // Equal jitter: keep half the deterministic backoff as a floor and randomize
+  // the rest, so concurrent builds throttled by the same provider decorrelate
+  // their retries instead of hammering it again in lockstep.
+  return base / 2 + Math.random() * (base / 2);
 }
 
-function delay(durationMs: number) {
-  return new Promise((resolve) => setTimeout(resolve, durationMs));
+function delay(durationMs: number, signal?: AbortSignal | null) {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, durationMs);
+    const abort = () => {
+      clearTimeout(timeout);
+      reject(signal?.reason ?? new Error("Request aborted."));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }

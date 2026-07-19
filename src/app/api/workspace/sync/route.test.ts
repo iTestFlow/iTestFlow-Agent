@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   resolveWorkspaceRequest: vi.fn(),
   enqueueWorkspaceContextSync: vi.fn(),
+  hasHealthyWorkerCapability: vi.fn(),
 }));
 
 vi.mock("@/modules/workspace/workspace-request", async (importOriginal) => {
@@ -10,7 +11,11 @@ vi.mock("@/modules/workspace/workspace-request", async (importOriginal) => {
   return { ...actual, resolveWorkspaceRequest: mocks.resolveWorkspaceRequest };
 });
 vi.mock("@/modules/jobs/workspace-sync.handler", () => ({
+  WORKSPACE_CONTEXT_SYNC: "workspace_context_sync",
   enqueueWorkspaceContextSync: mocks.enqueueWorkspaceContextSync,
+}));
+vi.mock("@/modules/jobs/worker-registry.service", () => ({
+  hasHealthyWorkerCapability: mocks.hasHealthyWorkerCapability,
 }));
 
 import { SessionError } from "@/modules/auth/session.service";
@@ -25,6 +30,19 @@ describe("POST /api/workspace/sync", () => {
       workspace: { id: "ws-1" },
     });
     mocks.enqueueWorkspaceContextSync.mockResolvedValue(2);
+    mocks.hasHealthyWorkerCapability.mockResolvedValue(true);
+  });
+
+  it("returns 503 without enqueueing when no healthy worker holds the sync capability", async () => {
+    mocks.hasHealthyWorkerCapability.mockResolvedValue(false);
+
+    const response = await POST();
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("5");
+    expect(await response.json()).toMatchObject({ code: "workspace_sync_unavailable" });
+    expect(mocks.hasHealthyWorkerCapability).toHaveBeenCalledWith("workspace_context_sync");
+    expect(mocks.enqueueWorkspaceContextSync).not.toHaveBeenCalled();
   });
 
   it("enqueues only the server-resolved workspace and actor", async () => {

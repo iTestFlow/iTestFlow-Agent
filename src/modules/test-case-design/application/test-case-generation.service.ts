@@ -19,6 +19,7 @@ export async function generateTestCases(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  projectKnowledgeNotice?: string | null;
   options?: Partial<TestDesignOptions>;
   extraInstructions?: string;
 }) {
@@ -29,6 +30,7 @@ export async function generateTestCases(input: {
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
+    projectKnowledgeNotice: input.projectKnowledgeNotice,
     options: input.options,
     extraInstructions: input.extraInstructions,
   });
@@ -79,6 +81,7 @@ export function buildTestCaseGenerationPromptDraft(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  projectKnowledgeNotice?: string | null;
   options?: Partial<TestDesignOptions>;
   extraInstructions?: string;
 }) {
@@ -94,6 +97,7 @@ export function buildTestCaseGenerationPromptDraft(input: {
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
+    projectKnowledgeNotice: input.projectKnowledgeNotice,
     options: testDesignOptions,
     extraInstructions: input.extraInstructions,
     outputContract: testCaseOutputContract,

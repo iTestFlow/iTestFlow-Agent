@@ -267,6 +267,30 @@ td {
   .knowledge-entry {
     content-visibility: auto;
     contain-intrinsic-size: 0 220px;
+    container-name: knowledge-card;
+    container-type: inline-size;
+  }
+}
+
+@container knowledge-card (min-width: 42rem) {
+  .knowledge-entry__summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .knowledge-entry__metrics {
+    width: auto;
+    justify-content: flex-end;
+  }
+}
+
+@container knowledge-card (min-width: 56rem) {
+  .knowledge-entry__expanded {
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  }
+
+  .knowledge-entry__panel--full {
+    grid-column: 1 / -1;
   }
 }
 
