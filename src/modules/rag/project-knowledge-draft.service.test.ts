@@ -270,7 +270,7 @@ describe("draft evidence recovery", () => {
     return { grounding, metrics, persisted };
   }
 
-  it("validates frozen v4 evidence once and persists ready_to_publish", async () => {
+  it("validates frozen evidence once and persists ready_to_publish", async () => {
     prepareCompletion({ description: "Customers complete checkout securely." });
     await completeProjectKnowledgeDraft({
       scope,
@@ -1071,7 +1071,7 @@ describe("draft publication guards", () => {
     expect(compiled.recordProjectKnowledgeRevision).not.toHaveBeenCalled();
   });
 
-  it("rejects creation of rebase child drafts in v4", async () => {
+  it("rejects creation of rebase child drafts", async () => {
     await expect(beginProjectKnowledgeDraft({
       scope,
       actor: "owner-1",

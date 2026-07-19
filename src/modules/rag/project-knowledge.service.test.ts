@@ -565,7 +565,7 @@ describe("loadProjectKnowledgeContext", () => {
   });
 });
 
-describe("automatic v4 reconciliation prompts", () => {
+describe("automatic reconciliation prompts", () => {
   it("consolidates duplicates produced inside one automatic extraction batch", async () => {
     setWorkItems([workItemRow({ azure_work_item_id: "1", content_hash: "h1" })]);
     const provider = fakeLlmProvider({

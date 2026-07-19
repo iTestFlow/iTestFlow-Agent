@@ -160,7 +160,7 @@ const PHASE_LABELS: Record<string, string> = {
   completed: "Completed",
 }
 
-export function KnowledgeBuildV4({
+export function KnowledgeBuild({
   scope,
   onPublished,
   onActivityChange,

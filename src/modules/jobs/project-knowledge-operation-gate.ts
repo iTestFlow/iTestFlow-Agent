@@ -4,9 +4,9 @@ import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import { getPool, sqlGet } from "@/modules/shared/infrastructure/database/db";
 import { findActiveJob } from "./job-queue.service";
+import { PROJECT_KNOWLEDGE_JOB } from "./project-knowledge-job-type";
 
 const OPERATION_GATE_NAMESPACE = "itestflow:project-knowledge-operation";
-const PROJECT_KNOWLEDGE_JOB_TYPE = "project_knowledge_v4";
 
 export async function withProjectKnowledgeOperationGate<T>(
   scope: Pick<ProjectScope, "workspaceId" | "projectId" | "azureProjectId">,
@@ -49,7 +49,7 @@ export async function assertNoActiveProjectKnowledgeBuild(
   const active = await findActiveJob({
     workspaceId: scope.workspaceId,
     projectId: scope.projectId,
-    jobType: PROJECT_KNOWLEDGE_JOB_TYPE,
+    jobType: PROJECT_KNOWLEDGE_JOB,
     dedupeKey: `project_knowledge:${scope.projectId}`,
   });
   if (active) throw activeOperationError("build");

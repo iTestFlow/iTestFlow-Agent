@@ -46,7 +46,7 @@ import {
 } from "@/lib/project-context-defaults"
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project"
 import type { ProjectKnowledgeEvidenceRef } from "@/modules/rag/project-knowledge.schema"
-import { KnowledgeBuildV4, type KnowledgeInReviewDraft } from "./knowledge-build-v4"
+import { KnowledgeBuild, type KnowledgeInReviewDraft } from "./knowledge-build"
 import {
   KnowledgeCategoryFilterButton,
   KnowledgeEntryCard,
@@ -901,7 +901,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         <TabsContent value="build" className="space-y-4">
           {scope ? (
             <>
-              <KnowledgeBuildV4
+              <KnowledgeBuild
                 key={`${scope.workspaceId ?? "workspace"}:${scope.projectId}`}
                 scope={scope}
                 sourceIndexReady={Boolean(result)}

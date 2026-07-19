@@ -13,8 +13,9 @@ import {
 } from "./job-queue.service";
 import { hasHealthyWorkerCapability } from "./worker-registry.service";
 import { withProjectKnowledgeOperationGate } from "./project-knowledge-operation-gate";
+import { PROJECT_KNOWLEDGE_JOB } from "./project-knowledge-job-type";
 
-export const PROJECT_KNOWLEDGE_JOB = "project_knowledge_v4";
+export { PROJECT_KNOWLEDGE_JOB } from "./project-knowledge-job-type";
 export const PROJECT_KNOWLEDGE_PENDING_CAPACITY_GRACE_MS = 30_000;
 export const KNOWLEDGE_BUILD_UNAVAILABLE_CODE = "knowledge_build_unavailable";
 export const KNOWLEDGE_BUILD_UNAVAILABLE_MESSAGE = "Knowledge generation is temporarily unavailable. Please try again shortly.";

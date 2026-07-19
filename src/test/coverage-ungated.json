@@ -117,6 +117,7 @@
     "src/modules/integrations/azure-devops/azure-devops-test-plan.service.ts",
     "src/modules/jobs/job-handlers.ts",
     "src/modules/jobs/job-queue.service.ts",
+    "src/modules/jobs/project-knowledge-job-type.ts",
     "src/modules/jobs/register-handlers.ts",
     "src/modules/jobs/sync-schedule.service.ts",
     "src/modules/jobs/workspace-sync.handler.ts",

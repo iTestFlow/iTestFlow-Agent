@@ -27,16 +27,16 @@ describe("worker registry", () => {
 
   it("checks capability and freshness using database time", async () => {
     db.sqlGet.mockResolvedValue({ available: true });
-    await expect(hasHealthyWorkerCapability("project_knowledge_v4", 20_000)).resolves.toBe(true);
+    await expect(hasHealthyWorkerCapability("project_knowledge_build", 20_000)).resolves.toBe(true);
     expect(db.sqlGet).toHaveBeenCalledWith(
       expect.stringContaining("capabilities_json ? @capability"),
-      { capability: "project_knowledge_v4", healthyForMs: 20_000 },
+      { capability: "project_knowledge_build", healthyForMs: 20_000 },
     );
   });
 
   it("returns false when no capable worker is fresh", async () => {
     db.sqlGet.mockResolvedValue({ available: false });
-    await expect(hasHealthyWorkerCapability("project_knowledge_v4")).resolves.toBe(false);
+    await expect(hasHealthyWorkerCapability("project_knowledge_build")).resolves.toBe(false);
   });
 
   it("heartbeats, unregisters, and removes stale registrations", async () => {

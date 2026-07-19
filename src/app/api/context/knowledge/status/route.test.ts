@@ -22,7 +22,7 @@ vi.mock("@/modules/jobs/worker-registry.service", () => ({
   hasHealthyWorkerCapability: mocks.hasHealthyWorkerCapability,
 }));
 vi.mock("@/modules/jobs/project-knowledge-jobs.service", () => ({
-  PROJECT_KNOWLEDGE_JOB: "project_knowledge_v4",
+  PROJECT_KNOWLEDGE_JOB: "project_knowledge_build",
 }));
 vi.mock("@/modules/rag/project-knowledge-draft.service", () => ({
   getLatestInReviewProjectKnowledgeDraft: mocks.getLatestInReviewDraft,
@@ -55,7 +55,7 @@ describe("project knowledge status route", () => {
       generationAvailable: true,
       latestInReviewDraft: null,
     });
-    expect(mocks.hasHealthyWorkerCapability).toHaveBeenCalledWith("project_knowledge_v4");
+    expect(mocks.hasHealthyWorkerCapability).toHaveBeenCalledWith("project_knowledge_build");
   });
 
   it("reports the latest in-review draft for resume", async () => {

@@ -26,7 +26,7 @@ function emptyGenerated() {
   return { modules: [], businessRules: [], stateTransitions: [], glossary: [], crossDependencies: [] };
 }
 
-describe("Project Knowledge v4 grounding", () => {
+describe("Project Knowledge grounding", () => {
   it("builds opaque deterministic handles over the canonical source projection", () => {
     const sources = buildProjectKnowledgeCitationSources([workItem]);
     expect(sources.map(({ sourceField, text }) => ({ sourceField, text }))).toEqual([

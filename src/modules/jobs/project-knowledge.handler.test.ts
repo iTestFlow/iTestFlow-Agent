@@ -60,7 +60,7 @@ function context() {
   };
 }
 
-describe("Project Knowledge v4 worker handler", () => {
+describe("Project Knowledge worker handler", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.sqlGet.mockResolvedValue({

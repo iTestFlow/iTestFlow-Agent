@@ -32,11 +32,11 @@ const HEARTBEAT_MS = vi.hoisted(() => {
   return 1000;
 });
 const CANCELLATION_POLL_MS = 1000;
-const KNOWLEDGE_TYPE = "project_knowledge_v4";
+const KNOWLEDGE_TYPE = "project_knowledge_build";
 
 vi.mock("@/modules/jobs/job-queue.service", () => jobQueue);
 vi.mock("@/modules/jobs/job-handlers", () => registry);
-vi.mock("@/modules/jobs/project-knowledge-jobs.service", () => ({ PROJECT_KNOWLEDGE_JOB: "project_knowledge_v4" }));
+vi.mock("@/modules/jobs/project-knowledge-jobs.service", () => ({ PROJECT_KNOWLEDGE_JOB: "project_knowledge_build" }));
 vi.mock("@/modules/jobs/register-handlers", () => registration);
 vi.mock("@/modules/jobs/sync-schedule.service", () => schedule);
 vi.mock("@/modules/jobs/worker-registry.service", () => workerRegistry);

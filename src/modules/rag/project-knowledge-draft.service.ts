@@ -193,7 +193,7 @@ export async function beginProjectKnowledgeDraft(input: {
   if (input.parentDraftId) {
     throw new AppError({
       code: AppErrorCode.KnowledgeDraftConflict,
-      message: "Project Knowledge v4 does not create rebased child drafts.",
+      message: "Project Knowledge does not create rebased child drafts.",
       userMessage: "Rebase is no longer used. Start a new build from the latest publication.",
     });
   }
@@ -506,7 +506,7 @@ export async function completeProjectKnowledgeDraft(input: {
     if (!hasStrictProjectKnowledgeGrounding(strictGrounding.knowledgeBase)) {
       throw new AppError({
         code: AppErrorCode.KnowledgePublicationBlocked,
-        message: "The v4 draft contains unsupported project-knowledge entries after validation.",
+        message: "The draft contains unsupported project-knowledge entries after validation.",
         userMessage: "The draft failed grounding validation. Start a new build.",
       });
     }
@@ -848,7 +848,7 @@ export async function publishProjectKnowledgeDraft(input: {
   if (result.kind === "invalid_grounding") {
     throw new AppError({
       code: AppErrorCode.KnowledgePublicationBlocked,
-      message: "A v4 publication requires verified immutable evidence for every entry.",
+      message: "A publication requires verified immutable evidence for every entry.",
       userMessage: "The draft failed grounding validation. Start a new build.",
     });
   }

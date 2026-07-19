@@ -129,7 +129,7 @@ describe("project knowledge background job contract", () => {
     expect(queue.failPendingJob).toHaveBeenCalledWith("job-1", expect.stringContaining("temporarily unavailable"));
   });
 
-  it("returns and cancels only v4 project knowledge jobs in the requested project", async () => {
+  it("returns and cancels only project knowledge build jobs in the requested project", async () => {
     queue.getJob.mockResolvedValue(job());
     queue.requestJobCancellation.mockResolvedValue(job({ status: "running", cancelRequestedAt: "2026-07-15T01:00:00.000Z" }));
     await expect(getProjectKnowledgeJob({ id: "job-1", workspaceId: "workspace-1", projectId: "project-1" }))

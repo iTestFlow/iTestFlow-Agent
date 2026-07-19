@@ -8,7 +8,7 @@ const api = vi.hoisted(() => ({ postJson: vi.fn() }));
 vi.mock("@/components/workflow/post-json", () => ({ postJson: api.postJson }));
 
 import { ApiError } from "@/components/workflow/api-error";
-import { buildJobPollDelay, KnowledgeBuildV4 } from "./knowledge-build-v4";
+import { buildJobPollDelay, KnowledgeBuild } from "./knowledge-build";
 
 const scope = {
   workspaceId: "workspace-1",
@@ -121,10 +121,10 @@ beforeEach(() => {
   });
 });
 
-describe("Project Knowledge v4 conflict review", () => {
+describe("Project Knowledge conflict review", () => {
   it("requires the project index before starting automatic or external builds", () => {
     const { rerender } = render(
-      <KnowledgeBuildV4
+      <KnowledgeBuild
         scope={scope}
         sourceIndexReady={false}
         onPublished={vi.fn().mockResolvedValue(undefined)}
@@ -144,7 +144,7 @@ describe("Project Knowledge v4 conflict review", () => {
     expect(screen.getByRole("region", { name: "Use an external LLM" }).className).toContain("border-border");
 
     rerender(
-      <KnowledgeBuildV4
+      <KnowledgeBuild
         scope={scope}
         sourceIndexReady
         onPublished={vi.fn().mockResolvedValue(undefined)}
@@ -161,7 +161,7 @@ describe("Project Knowledge v4 conflict review", () => {
       reused: false,
     });
 
-    render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
 
     const incremental = screen.getByRole("button", { name: "Incremental" });
     const full = screen.getByRole("button", { name: "Full recompile" });
@@ -189,7 +189,7 @@ describe("Project Knowledge v4 conflict review", () => {
       ))
       .mockResolvedValueOnce({ job: completedJob({ outcome: "no_changes" }), reused: false });
 
-    render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
     fireEvent.click(screen.getByRole("button", { name: "Build knowledge" }));
 
     await waitFor(() => expect(screen.getByText("Generation service unavailable")).toBeTruthy());
@@ -208,7 +208,7 @@ describe("Project Knowledge v4 conflict review", () => {
       503,
     ));
 
-    render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
     fireEvent.click(screen.getByRole("button", { name: "Build knowledge" }));
 
     await waitFor(() => expect(screen.getByText(/No LLM provider is configured/)).toBeTruthy());
@@ -218,7 +218,7 @@ describe("Project Knowledge v4 conflict review", () => {
   it("pre-disables the build with an offline banner when generation capacity is unavailable", () => {
     const onRefreshAvailability = vi.fn();
     render(
-      <KnowledgeBuildV4
+      <KnowledgeBuild
         scope={scope}
         generationAvailable={false}
         onRefreshAvailability={onRefreshAvailability}
@@ -235,7 +235,7 @@ describe("Project Knowledge v4 conflict review", () => {
   });
 
   it("treats unknown generation availability as buildable", () => {
-    render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
 
     expect(screen.getByRole("button", { name: "Build knowledge" })).not.toBeDisabled();
     expect(screen.queryByText("Generation service offline")).toBeNull();
@@ -257,7 +257,7 @@ describe("Project Knowledge v4 conflict review", () => {
       reused: false,
     });
 
-    render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.queryByText(/frozen draft/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Build knowledge" }));
 
@@ -285,7 +285,7 @@ describe("Project Knowledge v4 conflict review", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
 
-    render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
     fireEvent.click(screen.getByRole("button", { name: "Build knowledge" }));
 
     await waitFor(() => {
@@ -335,7 +335,7 @@ describe("Project Knowledge v4 conflict review", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
 
-    render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
     fireEvent.click(screen.getByRole("button", { name: "Build knowledge" }));
 
     await waitFor(() => expect(screen.getByText("Page 1 of 2")).toBeTruthy());
@@ -433,7 +433,7 @@ describe("Project Knowledge v4 conflict review", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
 
-    render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
     fireEvent.click(screen.getByRole("button", { name: "Build knowledge" }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: /All\s*12/i })).toBeTruthy());
@@ -519,7 +519,7 @@ describe("Project Knowledge v4 conflict review", () => {
     });
 
     render(
-      <KnowledgeBuildV4
+      <KnowledgeBuild
         scope={scope}
         onPublished={vi.fn().mockResolvedValue(undefined)}
         resumableDraft={{
@@ -550,7 +550,7 @@ describe("Project Knowledge v4 conflict review", () => {
     });
 
     render(
-      <KnowledgeBuildV4
+      <KnowledgeBuild
         scope={scope}
         onPublished={vi.fn().mockResolvedValue(undefined)}
         resumableDraft={{
@@ -580,7 +580,7 @@ describe("Project Knowledge v4 conflict review", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     try {
-      render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+      render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
       await waitFor(() => expect(window.localStorage.getItem(storageKey)).toBeNull());
       expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
@@ -608,7 +608,7 @@ describe("Project Knowledge v4 conflict review", () => {
       .mockResolvedValue({ ok: true, status: 200, json: async () => ({ job: runningJob }) });
     vi.stubGlobal("fetch", fetchMock);
     try {
-      render(<KnowledgeBuildV4 scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+      render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
       await vi.advanceTimersByTimeAsync(0);
       expect(fetchMock).toHaveBeenCalledTimes(1);
       // A transient failure must NOT clear the saved id — a lost id has no UI

@@ -7,7 +7,7 @@
  * here using the workspace sync credential, with no logged-in user.
  *
  * Execution lanes:
- *  - Knowledge Hub dispatcher: claims EVERY ready `project_knowledge_v4` job
+ *  - Knowledge Hub dispatcher: claims EVERY ready `project_knowledge_build` job
  *    and runs each concurrently — builds for distinct projects never queue
  *    behind one another (same-project single-flight stays on the queue's
  *    dedupe key). There is intentionally no process-wide build cap.
