@@ -214,9 +214,13 @@ npm run build
 ```
 
 `test:unit` and `test:coverage` need no database, browser, internet, Azure DevOps
-connection, or LLM credentials. `test:integration` requires `DATABASE_URL` and a
-migrated PostgreSQL database. Use `test:coverage:all` for the broader non-gated
-coverage report.
+connection, or LLM credentials. `test:integration` requires `TEST_DATABASE_URL` and a
+migrated disposable PostgreSQL database. Start the bundled test database with
+`docker compose --profile test up -d postgres-test`, then run `npm run db:migrate:test`.
+Integration commands explicitly use `TEST_DATABASE_URL`, never the application's
+`DATABASE_URL`, so fixture rows cannot appear in the development login picker. Use
+`npm run db:reset:test` to reset only the disposable test database, or use
+`test:coverage:all` for the broader non-gated coverage report.
 
 > **`test:coverage` is a curated, risk-based gate, not a repository-wide number.**
 > Its thresholds apply only to the allowlist (`GATED_INCLUDE` in `vitest.coverage-manifest.ts`,

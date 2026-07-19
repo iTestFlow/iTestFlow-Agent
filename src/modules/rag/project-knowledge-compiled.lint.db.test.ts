@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 
-import { sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { flushBackgroundWrites, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import {
   getProjectKnowledgeLintIssues,
   runProjectKnowledgeLint,
@@ -32,6 +32,10 @@ describeDb("project knowledge lint summary honesty", () => {
   });
 
   afterAll(async () => {
+    // Lint completion records its activity through the deferred-write queue. Drain
+    // it before deleting fixture rows so a late log insert cannot recreate a
+    // workspace dependency after this cleanup has started.
+    await flushBackgroundWrites();
     await sqlRun(`DELETE FROM project_knowledge_lint_issues WHERE workspace_id = @id`, { id: workspaceId });
     await sqlRun(`DELETE FROM project_knowledge_lint_runs WHERE workspace_id = @id`, { id: workspaceId });
     await sqlRun(`DELETE FROM project_knowledge_log WHERE workspace_id = @id`, { id: workspaceId });

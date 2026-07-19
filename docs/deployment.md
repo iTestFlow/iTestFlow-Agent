@@ -254,8 +254,10 @@ npm run build
 ```
 
 The unit and gated coverage suites are fully local and mock external boundaries.
-The integration suite requires `DATABASE_URL` and a migrated PostgreSQL database;
-it exits immediately instead of silently skipping when that prerequisite is absent.
+The integration suite requires `TEST_DATABASE_URL` and a migrated disposable PostgreSQL
+database; it exits immediately instead of silently skipping when that prerequisite is
+absent. Run `npm run db:migrate:test` before the suite. Integration commands never use
+the application's `DATABASE_URL`, preventing test fixtures from leaking into the app.
 
 ## Docs Cleanup Guidance
 
