@@ -26,6 +26,7 @@ const WS = uniqueTestId("ws_ctxstore");
 const ORG = `https://dev.azure.com/${WS}`;
 const PROJ_A = uniqueTestId("az_ctxstore_a");
 const PROJ_B = uniqueTestId("az_ctxstore_b");
+const PROJ_C = uniqueTestId("az_ctxstore_c");
 
 const scopeA: ProjectScope = {
   projectId: PROJ_A,
@@ -37,6 +38,15 @@ const scopeB: ProjectScope = {
   projectId: PROJ_B,
   azureProjectId: PROJ_B,
   azureProjectName: "Context Store B",
+  azureOrganizationUrl: ORG,
+};
+// Dedicated project for tests that don't belong to project A's carefully sequenced
+// sync-lifecycle narrative (see the describeDb comment below) — keeps them from
+// perturbing that scope's snapshot/revision history.
+const scopeC: ProjectScope = {
+  projectId: PROJ_C,
+  azureProjectId: PROJ_C,
+  azureProjectName: "Context Store C",
   azureOrganizationUrl: ORG,
 };
 
@@ -169,6 +179,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     await seedWorkspace({ id: WS, orgUrl: ORG });
     await seedProject({ workspaceId: WS, orgUrl: ORG, azureProjectId: PROJ_A, azureProjectName: "Context Store A" });
     await seedProject({ workspaceId: WS, orgUrl: ORG, azureProjectId: PROJ_B, azureProjectName: "Context Store B" });
+    await seedProject({ workspaceId: WS, orgUrl: ORG, azureProjectId: PROJ_C, azureProjectName: "Context Store C" });
   });
 
   afterAll(async () => {
@@ -176,7 +187,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     // projects still exist, then delete feature rows before cleanupFixtures can
     // trip on their workspace_id FKs.
     await flushBackgroundWrites();
-    for (const projectId of [PROJ_A, PROJ_B]) {
+    for (const projectId of [PROJ_A, PROJ_B, PROJ_C]) {
       await sqlRun(`DELETE FROM document_chunks_fts WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM document_chunks WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM azure_devops_work_items WHERE project_id = @projectId`, { projectId });
@@ -459,7 +470,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
   it("caps retrieval at one chunk per work item so a verbose item cannot crowd out weaker matches", async () => {
     const longInventory = requirement({
       id: "104",
-      azureProjectId: PROJ_A,
+      azureProjectId: PROJ_C,
       title: "Inventory sync",
       description: "Inventory warehouse reconciliation keeps counts aligned. ".repeat(100),
       acceptanceCriteria: "Given warehouse stock, when inventory syncs, then reconcile counts.",
@@ -467,21 +478,21 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     });
     const shortInventory = requirement({
       id: "105",
-      azureProjectId: PROJ_A,
+      azureProjectId: PROJ_C,
       title: "Shelf counter",
       description: "Track inventory counts for each shelf.",
       acceptanceCriteria: "Given a shelf, when counts change, then update the display.",
       tags: [],
     });
-    await sync(scopeA, [checkoutItem(CHANGED_DESCRIPTION), refundItem(), rolloutItem(), longInventory, shortInventory]);
+    await sync(scopeC, [longInventory, shortInventory]);
 
     // The long item must genuinely span multiple chunks for this test to prove anything.
-    const chunks104 = (await chunkRows(PROJ_A)).filter((chunk) => chunk.azure_work_item_id === "104");
+    const chunks104 = (await chunkRows(PROJ_C)).filter((chunk) => chunk.azure_work_item_id === "104");
     expect(chunks104.length).toBeGreaterThan(1);
 
     // Every 104 chunk matches both terms strongly; 105 matches only "inventory". Without
     // the per-work-item cap, 104's chunks would fill the result before 105 appears.
-    const sources = await retrieveStoredProjectContext({ scope: scopeA, query: "inventory warehouse", embeddingProvider: null });
+    const sources = await retrieveStoredProjectContext({ scope: scopeC, query: "inventory warehouse", embeddingProvider: null });
     expect(sources.map((source) => source.workItemId)).toEqual(["104", "105"]);
   });
 
