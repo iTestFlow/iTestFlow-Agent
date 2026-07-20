@@ -1,19 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ManualLLMFields, ManualLLMPanel } from "./manual-llm-panel";
 
 describe("ManualLLMPanel", () => {
   afterEach(cleanup);
-
-  beforeEach(() => {
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { readText: vi.fn(async () => "{\"result\":true}"), writeText: vi.fn() },
-    });
-  });
 
   it("renders prompt metadata and the read-only prompt", () => {
     render(
@@ -70,20 +63,20 @@ describe("ManualLLMPanel", () => {
     expect(onSubmit).toHaveBeenCalledOnce();
   });
 
-  it("pastes the clipboard response through the controlled callback", async () => {
-    const onResponseChange = vi.fn();
+  it("uses native browser paste without a permission-dependent button", () => {
     render(
       <ManualLLMFields
         prompt="Prompt"
         response=""
-        onResponseChange={onResponseChange}
+        onResponseChange={vi.fn()}
         onSubmit={vi.fn()}
         submitting={false}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Paste Response" }));
-    await waitFor(() => {
-      expect(onResponseChange).toHaveBeenCalledWith("{\"result\":true}");
-    });
+
+    const responseField = screen.getByRole("textbox", { name: "External LLM response" });
+    expect(responseField).toHaveAttribute("aria-describedby", "external-llm-response-paste-help");
+    expect(screen.getByText(/paste with ctrl\+v/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Paste Response" })).not.toBeInTheDocument();
   });
 });

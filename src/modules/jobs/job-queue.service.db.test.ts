@@ -2,7 +2,18 @@ import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 
 import { describeDb } from "@/test/db";
 import { getPool, resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
-import { claimNextJob, completeJob, enqueueJob, failJob, heartbeatJob } from "@/modules/jobs/job-queue.service";
+import {
+  claimNextJob,
+  completeJob,
+  completeJobBatch,
+  enqueueJob,
+  failJob,
+  getRequestedJobCancellations,
+  heartbeatJob,
+  heartbeatJobs,
+  loadCompletedJobBatch,
+  requeueOwnedJobs,
+} from "@/modules/jobs/job-queue.service";
 
 const TYPE = "test_noop";
 const WS = "ws_jobtest";
@@ -41,6 +52,13 @@ describeDb("job queue (DB-backed)", () => {
     await completeJob(id!, "w1");
     const row = await sqlGet<{ status: string }>(`SELECT status FROM jobs WHERE id = @id`, { id });
     expect(row?.status).toBe("completed");
+  });
+
+  it("claims only job types the worker advertises", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS });
+
+    await expect(claimNextJob("wrong-capability", ["different_job_type"])).resolves.toBeNull();
+    await expect(claimNextJob("capable", [TYPE])).resolves.toMatchObject({ id, jobType: TYPE });
   });
 
   it("never hands the same job to two workers (FOR UPDATE SKIP LOCKED)", async () => {
@@ -171,5 +189,117 @@ describeDb("job queue (DB-backed)", () => {
 
     await expect(heartbeatJob(id!, "other")).resolves.toBe(false);
     await expect(heartbeatJob(id!, "heartbeat-owner")).resolves.toBe(true);
+  });
+
+  it("heartbeats all of a worker's jobs in one batch, skipping foreign locks", async () => {
+    const a = await enqueueJob({ jobType: TYPE, workspaceId: WS, priority: 1 });
+    const b = await enqueueJob({ jobType: TYPE, workspaceId: WS, priority: 2 });
+    const c = await enqueueJob({ jobType: TYPE, workspaceId: WS, priority: 3 });
+    expect((await claimNextJob("batch-owner"))?.id).toBe(a);
+    expect((await claimNextJob("batch-owner"))?.id).toBe(b);
+    expect((await claimNextJob("batch-other"))?.id).toBe(c);
+
+    const backdated = new Date(Date.now() - 60 * 1000).toISOString();
+    await sqlRun(`UPDATE jobs SET locked_at = @lockedAt WHERE id = ANY(@ids)`, { lockedAt: backdated, ids: [a, b, c] });
+
+    const refreshed = await heartbeatJobs([a!, b!, c!], "batch-owner");
+    expect(refreshed.sort()).toEqual([a, b].sort());
+
+    const rows = await Promise.all([a, b, c].map((id) =>
+      sqlGet<{ locked_at: string }>(`SELECT locked_at FROM jobs WHERE id = @id`, { id }),
+    ));
+    expect(new Date(rows[0]!.locked_at).getTime()).toBeGreaterThan(new Date(backdated).getTime());
+    expect(new Date(rows[1]!.locked_at).getTime()).toBeGreaterThan(new Date(backdated).getTime());
+    expect(rows[2]!.locked_at).toBe(backdated); // foreign lock untouched
+  });
+
+  it("returns only owned running jobs with a pending cancellation request", async () => {
+    const a = await enqueueJob({ jobType: TYPE, workspaceId: WS, priority: 1 });
+    const b = await enqueueJob({ jobType: TYPE, workspaceId: WS, priority: 2 });
+    const c = await enqueueJob({ jobType: TYPE, workspaceId: WS, priority: 3 });
+    expect((await claimNextJob("cancel-owner"))?.id).toBe(a);
+    expect((await claimNextJob("cancel-owner"))?.id).toBe(b);
+    expect((await claimNextJob("cancel-other"))?.id).toBe(c);
+
+    const now = new Date().toISOString();
+    await sqlRun(`UPDATE jobs SET cancel_requested_at = @now WHERE id = ANY(@ids)`, { now, ids: [a, c] });
+
+    // Only the owned + flagged job comes back; the foreign flagged job does not.
+    await expect(getRequestedJobCancellations([a!, b!, c!], "cancel-owner")).resolves.toEqual([a]);
+  });
+
+  it("requeues owned running jobs without consuming a retry", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS, maxAttempts: 3 });
+    expect((await claimNextJob("drain-worker"))?.attempts).toBe(1);
+    await sqlRun(`UPDATE jobs SET error_message = 'earlier transient failure' WHERE id = @id`, { id });
+
+    await expect(requeueOwnedJobs([id!], "drain-worker")).resolves.toBe(1);
+    const row = await sqlGet<{
+      status: string; attempts: number; locked_by: string | null; locked_at: string | null;
+      run_after: string; error_message: string | null;
+    }>(`SELECT status, attempts, locked_by, locked_at, run_after, error_message FROM jobs WHERE id = @id`, { id });
+    expect(row).toMatchObject({
+      status: "pending",
+      attempts: 0, // the claim's increment was refunded
+      locked_by: null,
+      locked_at: null,
+      error_message: "earlier transient failure",
+    });
+    expect(new Date(row!.run_after).getTime()).toBeLessThanOrEqual(Date.now());
+
+    // Immediately claimable again, back on its first attempt.
+    expect((await claimNextJob("successor"))?.attempts).toBe(1);
+  });
+
+  it("requeue only touches the calling worker's running jobs", async () => {
+    const a = await enqueueJob({ jobType: TYPE, workspaceId: WS, priority: 1 });
+    const b = await enqueueJob({ jobType: TYPE, workspaceId: WS, priority: 2 });
+    const c = await enqueueJob({ jobType: TYPE, workspaceId: WS, priority: 3 });
+    expect((await claimNextJob("requeue-owner"))?.id).toBe(a);
+    expect((await claimNextJob("requeue-owner"))?.id).toBe(b);
+    expect((await claimNextJob("requeue-other"))?.id).toBe(c);
+    await completeJob(b!, "requeue-owner");
+
+    await expect(requeueOwnedJobs([a!, b!, c!], "requeue-owner")).resolves.toBe(1);
+    const statuses = await Promise.all([a, b, c].map((id) =>
+      sqlGet<{ status: string; locked_by: string | null }>(`SELECT status, locked_by FROM jobs WHERE id = @id`, { id }),
+    ));
+    expect(statuses[0]).toMatchObject({ status: "pending", locked_by: null });
+    expect(statuses[1]).toMatchObject({ status: "completed", locked_by: null });
+    expect(statuses[2]).toMatchObject({ status: "running", locked_by: "requeue-other" });
+  });
+
+  it("a requeued job keeps its active dedupe slot", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS, dedupeKey: "requeue-dedupe" });
+    expect((await claimNextJob("dedupe-worker"))?.id).toBe(id);
+    await expect(requeueOwnedJobs([id!], "dedupe-worker")).resolves.toBe(1);
+
+    await expect(enqueueJob({ jobType: TYPE, workspaceId: WS, dedupeKey: "requeue-dedupe" })).resolves.toBeNull();
+  });
+
+  it("fences batch-cache reads and writes to the worker that owns the job", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS });
+    expect((await claimNextJob("cache-owner"))?.id).toBe(id);
+
+    // A non-owner cannot seed the cache.
+    await expect(completeJobBatch({ jobId: id!, batchKey: "extraction:0", result: { v: 1 }, workerId: "cache-other" }))
+      .resolves.toBe(false);
+    await expect(sqlGet(`SELECT id FROM project_knowledge_job_batches WHERE job_id = @id`, { id })).resolves.toBeUndefined();
+
+    // The owner writes, re-writes (upsert), and reads; a non-owner reads a miss.
+    await expect(completeJobBatch({ jobId: id!, batchKey: "extraction:0", result: { v: 1 }, workerId: "cache-owner" }))
+      .resolves.toBe(true);
+    await expect(loadCompletedJobBatch(id!, "extraction:0", "cache-owner")).resolves.toEqual({ v: 1 });
+    await expect(loadCompletedJobBatch(id!, "extraction:0", "cache-other")).resolves.toBeNull();
+    await expect(completeJobBatch({ jobId: id!, batchKey: "extraction:0", result: { v: 2 }, workerId: "cache-owner" }))
+      .resolves.toBe(true);
+    await expect(loadCompletedJobBatch(id!, "extraction:0", "cache-owner")).resolves.toEqual({ v: 2 });
+
+    // After a shutdown requeue the job is no longer running, so even the old
+    // owner is fenced out of its cache until the job is claimed again.
+    await expect(requeueOwnedJobs([id!], "cache-owner")).resolves.toBe(1);
+    await expect(loadCompletedJobBatch(id!, "extraction:0", "cache-owner")).resolves.toBeNull();
+    await expect(completeJobBatch({ jobId: id!, batchKey: "extraction:1", result: { v: 3 }, workerId: "cache-owner" }))
+      .resolves.toBe(false);
   });
 });

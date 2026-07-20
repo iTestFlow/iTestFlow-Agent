@@ -12,6 +12,7 @@ import { OpenAIProvider } from "./openai-provider";
 import { RequirementAnalysisOutputSchema } from "../../requirement-analysis/schemas/requirement-analysis.schema";
 import { TestCaseGenerationOutputSchema } from "../../test-case-design/schemas/test-case.schema";
 import { ExistingTestCaseReviewOutputSchema } from "../../existing-test-case-review/schemas/existing-test-case-review.schema";
+import { ProjectKnowledgeGeneratedBaseSchema } from "../../rag/project-knowledge-grounding";
 
 describe("provider HTTP adapters", () => {
   afterEach(() => {
@@ -156,12 +157,15 @@ describe("provider HTTP adapters", () => {
     },
   );
 
-  it("falls back to prompt-only JSON when Anthropic native schema grammar is too large", async () => {
+  it.each([
+    ["the compiled grammar is too large", "The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools."],
+    ["there are too many optional parameters", "Schemas contains too many optional parameters (37), which would make grammar compilation inefficient. Reduce the number of optional parameters in your tool schemas (limit: 24)."],
+  ])("falls back to prompt-only JSON when Anthropic native schema reports %s", async (_reason, errorMessage) => {
     const fetchMock = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         error: {
           type: "invalid_request_error",
-          message: "The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools.",
+          message: errorMessage,
         },
         type: "error",
       }), { status: 400 }))
@@ -268,6 +272,52 @@ describe("provider HTTP adapters", () => {
     expect(JSON.stringify(sentSchema)).not.toMatch(/"(?:minimum|maximum|minLength|maxLength|format)":/);
   });
 
+  it("sends a concrete native schema for optional knowledge constraints", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      content: [{ type: "text", text: "{}" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 2 },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new AnthropicProvider({
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      apiKey: "key",
+      retryAttempts: 0,
+    });
+
+    await expect(provider.generateStructuredOutput({
+      schemaName: "ProjectKnowledgeGeneratedBase",
+      schema: ProjectKnowledgeGeneratedBaseSchema,
+      system: "Build project knowledge.",
+      user: "Extract supported knowledge.",
+    })).resolves.toMatchObject({
+      validatedOutput: {
+        modules: [],
+        businessRules: [],
+        stateTransitions: [],
+        glossary: [],
+        crossDependencies: [],
+      },
+    });
+
+    const sentSchema = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+      .output_config.format.schema;
+    expect(sentSchema.properties.businessRules.items.properties.constraint).toEqual({
+      type: "object",
+      properties: {
+        object: { type: "string" },
+        property: { type: "string" },
+        condition: { type: "string" },
+        operator: { type: "string" },
+        value: { type: "string" },
+        valueType: { type: "string" },
+        unit: { type: "string" },
+      },
+      additionalProperties: false,
+    });
+  });
+
   it("applies native schemas to Sonnet 5 test design and gap analysis", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       content: [{ type: "text", text: "{}" }],
@@ -318,6 +368,41 @@ describe("provider HTTP adapters", () => {
     await vi.runAllTimersAsync();
     await expect(pending).resolves.toMatchObject({ status: 200 });
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps half the exponential backoff as the jitter floor", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("busy", { status: 503 }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    // Equal jitter over the 750ms base: floor at 375ms, never zero-delay.
+    vi.spyOn(Math, "random").mockReturnValue(0);
+
+    const pending = fetchWithTransientRetry("https://example.test", {}, 1);
+    await vi.advanceTimersByTimeAsync(374);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toMatchObject({ status: 200 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("caps the jittered backoff at the deterministic exponential delay", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("busy", { status: 503 }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    // Mocked upper bound of the jitter window: 375 + 1 * 375 = the deterministic
+    // 750ms base. Real Math.random() stays strictly below it.
+    vi.spyOn(Math, "random").mockReturnValue(1);
+
+    const pending = fetchWithTransientRetry("https://example.test", {}, 1);
+    await vi.advanceTimersByTimeAsync(749);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toMatchObject({ status: 200 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("honors a numeric Retry-After header before retrying a 503", async () => {

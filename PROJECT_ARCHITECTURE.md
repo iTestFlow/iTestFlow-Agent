@@ -66,7 +66,8 @@ The app intentionally avoids becoming a general Azure DevOps work-item browser. 
 - Framework: Next.js App Router, React, and TypeScript.
 - UI: Tailwind CSS, shadcn/Radix primitives, lucide-react icons, Sonner toasts, and Recharts.
 - Database: PostgreSQL via `pg`, with migrations in `migrations/` managed by `node-pg-migrate`.
-- Background work: `npm run worker`, using the `jobs` table with `FOR UPDATE SKIP LOCKED`, heartbeats, and stale-lock recovery.
+- Runtime supervision: `npm run dev` and `npm start` launch both the web and background processes; split commands remain available for independently scaled deployments.
+- Background work uses the `jobs` table with `FOR UPDATE SKIP LOCKED`, process capability heartbeats, active-job heartbeats, and stale-lock recovery.
 - Authentication: opaque session cookie backed by hashed session tokens in PostgreSQL.
 - External systems: Azure DevOps REST APIs and OpenAI, Gemini, or Anthropic LLM provider APIs.
 
@@ -182,10 +183,11 @@ Knowledge Hub and RAG:
 
 - `/knowledge-hub` indexes filtered Azure DevOps work items, compiles project knowledge, reports knowledge health, and exports a Markdown wiki.
 - `/api/context/index`, `/api/context/status`, and `/api/context/suggestions` manage project context indexing and retrieval.
-- `/api/context/knowledge/*` manages extraction, preview, save, lint, log, promotion, manual drafting/finalization/validation/consolidation, status, and export.
+- `/api/context/knowledge/*` manages background build jobs, draft review (conflicts/decisions/preview/publish), lint, log, candidates, promotion, manual drafting/finalization/validation, status, and export.
 - RAG storage, compiled knowledge, retrieval, linting, and citations live under `src/modules/rag`.
 - Retrieval fuses up to three signals via reciprocal rank fusion (`src/modules/rag/hybrid-ranking.ts`), each degrading silently on failure: PostgreSQL full-text search (always on; shared query builder with QA-domain synonym expansion in `src/modules/rag/full-text-search.ts`), PostgreSQL trigram search (always on, no configuration; `src/modules/rag/trigram-search.ts`, catches compound-word matches word-prefix FTS misses), and semantic search (deployment-configured via `EMBEDDINGS_PROVIDER`, on by default via the zero-setup local backend). `src/modules/rag/hybrid-chunk-search.ts` is the shared chunk-search implementation used by both workflow context retrieval and the Business Owner Assistant; the Business Owner Assistant's knowledge search fuses the same three signals independently against compiled knowledge entries.
 - The `local` embedding backend runs nomic-embed-text in-process via transformers.js/ONNX with zero user setup (quantized weights auto-download to `data/model-cache`); Ollama, OpenAI-compatible servers, and Gemini are alternatives. Context indexing embeds work-item chunks and every knowledge base save embeds compiled knowledge entries into the same `embeddings` table, discriminated by a `source_type` column (chunks are keyed by `document_chunks.id`; knowledge entries by a synthetic `category`/`entryKey` id, since the entries table has no stable per-save id).
+- Same-id knowledge entries merge by default (longer wording and unioned evidence); only provable atomic value contradictions keep both entries and block as hard conflicts. Full rebuilds extract purely from sources without published-KB re-feed, while incremental builds reconcile changed sources.
 - The compiled knowledge design, retrieval architecture, and the local embedding model's known non-English limitation are documented in `docs/knowledge-wiki-rag-enhancement.md`.
 
 Business Owner Assistant:
@@ -278,12 +280,19 @@ Database:
 
 The worker entrypoint is `src/worker/main.ts`.
 
-- Run production workers with `npm run worker`.
-- Run local watched workers with `npm run worker:dev`.
+- `npm run dev` and `npm start` use `scripts/run-app.mjs` to supervise both web and background child processes by default.
+- The supervisor stops both children when the web process exits and restarts an unexpectedly exited background process after 1, 2, 5, 15, then 30 seconds.
+- The supervisor stops the background child by writing a `shutdown` control line to its piped stdin (mirrored constant in `scripts/run-app.mjs` and `src/worker/main.ts`), falling back to a signal kill only after a 12-second window. This makes the graceful requeue path reliable on Windows, where `child.kill()` is an abrupt `TerminateProcess`. The web child stays signal-stopped: it has no requeue semantics and its mutations are transactional. Stdin end-of-stream is deliberately not a shutdown trigger, so a standalone `npm run worker` under a service manager with a closed stdin keeps running. In dev mode the message passes through the `node --watch` wrapper to the worker; the idle watcher wrapper itself may linger until the fallback kill reaps it (a console Ctrl+C ends it directly via the console event).
+- Advanced split deployments run production processes with `npm run web:start` and `npm run worker`, or watched development processes with `npm run web:dev` and `npm run worker:dev`.
 - Job handlers are registered in `src/modules/jobs/register-handlers.ts`.
 - The queue is implemented in `src/modules/jobs/job-queue.service.ts`.
 - Scheduled workspace sync is implemented in `src/modules/jobs/sync-schedule.service.ts` and `workspace-sync.handler.ts`.
-- Workers claim jobs with row locks, heartbeat active jobs, and mark stale locks retryable according to environment settings.
+- Background processes register capabilities in `worker_instances` and heartbeat with PostgreSQL time. Automatic Knowledge Hub builds are rejected before enqueue when no healthy `project_knowledge_build` capability is available.
+- Only automatic AI knowledge compilation uses the Knowledge Hub queue. Project indexing, external-LLM finalization, conflict decisions, and publication execute as normal server requests.
+- The worker runs two execution lanes: a Knowledge Hub dispatcher that claims every ready `project_knowledge_build` job and runs those builds concurrently (no process-wide cap; one active build per project is enforced by the queue dedupe key), and a serial lane that processes workspace sync and all other job types one at a time.
+- Active jobs are tracked in a process-level registry with one batched heartbeat (`WORKER_HEARTBEAT_MS`) and one cancellation poll covering all running jobs; a cancellation request aborts only the requested job.
+- Background processes claim jobs with row locks and mark stale locks retryable according to environment settings. Progress, completion, failure, and knowledge batch-cache reads/writes are additionally fenced by job id and current worker ownership, so a stale worker cannot modify a job that was reclaimed or requeued.
+- Graceful shutdown stops claiming, unregisters worker capacity, allows three seconds for active jobs to finish, then aborts and atomically requeues unfinished owned jobs without consuming a retry. It is triggered by SIGINT/SIGTERM or by the supervisor's stdin shutdown message.
 
 Multiple worker processes may run against the same database. A job should be written to tolerate retries because failed or stale jobs can be requeued.
 
@@ -298,6 +307,7 @@ Multiple worker processes may run against the same database. A job should be wri
 - Azure DevOps is the first implementation behind generic work-management and test-management provider contracts, not a standalone bulk work-item browser.
 - Provider identity is persisted per workspace and project, but no provider selection UI exists yet.
 - Project Context/Knowledge Hub is the only place that intentionally fetches many work items, and it does so with filters.
+- Same-id knowledge entries merge by default (longer wording and unioned evidence); only provable atomic value contradictions keep both entries and block as hard conflicts. Full rebuilds extract purely from sources without published-KB re-feed, while incremental builds reconcile changed sources.
 - Workflows usually operate on one selected project and one target work item ID.
 - All project-scoped Azure DevOps access must be resolved through trusted workspace/project scope before reading or writing.
 - Server route handlers should stay thin and delegate validation, integration calls, and business rules to modules.

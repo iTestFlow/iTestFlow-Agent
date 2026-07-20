@@ -9,7 +9,7 @@ import {
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { runRequirementAnalysis } from "@/modules/requirement-analysis/application/requirement-analysis.service";
-import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
 import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
@@ -82,6 +82,7 @@ export async function POST(request: Request) {
       retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
       workflowType: "requirement_analysis",
     });
+    const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "requirement_analysis" });
     const result = await runRequirementAnalysis({
       scope: trustedScope,
       actor: ctx.userId,
@@ -89,7 +90,8 @@ export async function POST(request: Request) {
       targetRequirement,
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
+      projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      projectKnowledgeNotice: knowledgeContext.promptNotice,
       enabledChecklistItemIds: parsed.data.enabledChecklistItemIds,
       extraInstructions: parsed.data.extraInstructions,
     });
@@ -131,7 +133,7 @@ export async function POST(request: Request) {
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
       tokenUsage: provider.getTokenUsage(),
-      warnings: result.warnings,
+      warnings: [...(result.warnings ?? []), ...(knowledgeContext.promptNotice ? [knowledgeContext.promptNotice] : [])],
     });
   } catch (error) {
     const authResponse = authErrorResponse(error);

@@ -1,41 +1,36 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react"
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 import { DashboardEmptyPanel } from "@/components/dashboard/dashboard-states"
 import {
   AlertTriangle,
   ArrowUpDown,
   BookOpen,
-  ChevronLeft,
-  ChevronRight,
+  Check,
   Clock3,
   Database,
   Download,
   History,
+  MessageSquareWarning,
   RefreshCw,
-  Save,
   Search,
   SearchX,
+  Send,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react"
 
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector"
-import { GenerationModeToggle } from "@/components/workflow/generation-mode-toggle"
-import { AiGenerationProgress } from "@/components/workflow/ai-generation-progress"
-import { AiGenerationCompletedMetrics } from "@/components/workflow/ai-generation-metrics"
-import { postJson } from "@/components/workflow/post-json"
-import { ManualLLMFields } from "@/components/workflow/manual-llm-panel"
-import { WorkflowStepper } from "@/components/workflow/workflow-stepper"
-import { useAiGeneration } from "@/components/workflow/use-ai-generation"
-import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session"
+import { patchJson, postJson } from "@/components/workflow/post-json"
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Table,
   TableBody,
@@ -50,7 +45,14 @@ import {
   DEFAULT_CONTEXT_WORK_ITEM_TYPES,
 } from "@/lib/project-context-defaults"
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project"
-import type { TokenUsage } from "@/modules/llm/llm-types"
+import type { ProjectKnowledgeEvidenceRef } from "@/modules/rag/project-knowledge.schema"
+import { KnowledgeBuild, type KnowledgeInReviewDraft } from "./knowledge-build"
+import {
+  KnowledgeCategoryFilterButton,
+  KnowledgeEntryCard,
+  type KnowledgeCategoryVisualKey,
+  type KnowledgeDisplayEntry,
+} from "./knowledge-entry-card"
 import {
   projectScopeKey,
   selectAvailableDefaults,
@@ -83,6 +85,12 @@ type RecentContextItem = {
   chunkCount: number
 }
 
+export function appendUniqueContextItems(current: RecentContextItem[], incoming: RecentContextItem[]) {
+  const itemsById = new Map(current.map((item) => [item.workItemId, item]))
+  for (const item of incoming) itemsById.set(item.workItemId, item)
+  return Array.from(itemsById.values())
+}
+
 type ContextSortBy = "lastIndexedAt" | "type" | "state"
 type ContextSortDirection = "asc" | "desc"
 
@@ -97,11 +105,10 @@ type ContextStatusResult = {
   query?: string
 }
 
-type KnowledgeCompileMode = "incremental" | "full"
-
 type KnowledgeSource = {
   sourceWorkItemIds: string[]
   evidence: string
+  evidenceRefs?: ProjectKnowledgeEvidenceRef[]
 }
 
 type ProjectKnowledgeModule = KnowledgeSource & {
@@ -161,29 +168,22 @@ type ProjectKnowledgeSnapshot = {
   extractedAt: string
   createdAt?: string
   updatedAt?: string
-}
-
-type KnowledgeGeneratedDraft = {
-  promptVersion: string
-  provider: string
-  model: string
-  requestedMode: KnowledgeCompileMode
-  mode: KnowledgeCompileMode
-  fallbackReason?: string
-  sourceWorkItemCount: number
-  promptedSourceWorkItemCount: number
-  changedSourceWorkItemCount: number
-  changedSourceWorkItemIds: string[]
-  retiredSourceWorkItemCount: number
-  rawOutput: string
-  knowledgeBase: ProjectKnowledgeBase
-  generatedAt: string
-  alreadyCurrent?: boolean
-  tokenUsage?: TokenUsage
+  health: {
+    freshness: string
+    provenance: string
+    compilerCompatibility: string
+    staleSince?: string | null
+    timeToRefreshMs?: number | null
+    rawContextRequired: boolean
+    trustedCompiledRetrieval: boolean
+    warnings: string[]
+  }
 }
 
 type KnowledgeStatusResult = {
   snapshot: ProjectKnowledgeSnapshot | null
+  generationAvailable?: boolean
+  latestInReviewDraft?: KnowledgeInReviewDraft | null
 }
 
 type KnowledgeLintIssue = {
@@ -196,11 +196,13 @@ type KnowledgeLintIssue = {
   entryKey?: string | null
   sourceWorkItemIds: string[]
   status: string
+  origin: "deterministic" | "human"
   createdAt: string
   updatedAt: string
 }
 
 type KnowledgeLintResult = {
+  runId?: string
   issues: KnowledgeLintIssue[]
   summary: {
     total: number
@@ -229,47 +231,39 @@ type KnowledgeExportResult = {
   fileCount: number
 }
 
-type KnowledgeManualBatchPrompt = {
-  batchIndex: number
-  batchCount: number
-  workItemCount: number
-  prompt: string
-}
-
-type KnowledgeManualDraft = {
-  promptVersion: string
-  requestedMode: KnowledgeCompileMode
-  mode: KnowledgeCompileMode
-  fallbackReason?: string
-  sourceWorkItemCount: number
-  totalSourceWorkItemCount: number
-  changedSourceWorkItemCount: number
-  retiredSourceWorkItemCount: number
-  batchCount: number
-  batches: KnowledgeManualBatchPrompt[]
-}
-
-type KnowledgeManualValidationResult = {
-  knowledgeBase: ProjectKnowledgeBase
-  snapshot?: ProjectKnowledgeSnapshot
-}
-
-type BuildMode = "auto" | "manual"
-type BuildStep = "index" | "prepare" | "preview"
 type TopTab = "hub" | "build"
 type WorkspaceRole = "owner" | "admin" | "member"
-type HubView = "explorer" | "context"
+type HubView = "explorer" | "context" | "candidates"
+type KnowledgeCandidateStatus = "legacy_ungrounded" | "grounded" | "rejected" | "integration_requested"
+
+type KnowledgeCandidate = {
+  id: string
+  title: string
+  content: string
+  status: KnowledgeCandidateStatus
+  sourceWorkItemIds: string[]
+  evidenceRefs: unknown[]
+  citations: unknown[]
+  rejectedReason?: string | null
+  updatedAt: string
+}
 
 const KNOWLEDGE_CATEGORIES = [
-  { key: "modules", label: "Modules", badge: "Module" },
-  { key: "businessRules", label: "Business Rules", badge: "Business Rule" },
-  { key: "stateTransitions", label: "State Transitions", badge: "State Transition" },
-  { key: "glossary", label: "Glossary", badge: "Glossary" },
-  { key: "crossDependencies", label: "Dependencies", badge: "Dependency" },
-] as const
+  { key: "modules", label: "Modules", badge: "Module", iconKey: "module" },
+  { key: "businessRules", label: "Business Rules", badge: "Business Rule", iconKey: "businessRule" },
+  { key: "stateTransitions", label: "State Transitions", badge: "State Transition", iconKey: "stateTransition" },
+  { key: "glossary", label: "Glossary", badge: "Glossary", iconKey: "glossary" },
+  { key: "crossDependencies", label: "Dependencies", badge: "Dependency", iconKey: "dependency" },
+] as const satisfies ReadonlyArray<{
+  key: string
+  label: string
+  badge: string
+  iconKey: KnowledgeCategoryVisualKey
+}>
 
 type KnowledgeCategoryKey = (typeof KNOWLEDGE_CATEGORIES)[number]["key"]
 type KnowledgeExplorerCategory = KnowledgeCategoryKey | "all"
+const NO_HIGHLIGHTED_KNOWLEDGE_ENTRIES: string[] = []
 
 type AnyKnowledgeItem = KnowledgeSource & {
   id?: string
@@ -291,30 +285,18 @@ type AnyKnowledgeItem = KnowledgeSource & {
   dependencyType?: string
 }
 
-type KnowledgeExplorerEntry = {
-  key: string
-  category: KnowledgeCategoryKey
-  categoryLabel: string
-  badge: string
-  title: string
-  description: string
-  evidence: string
-  sourceWorkItemIds: string[]
-  meta: string[]
-  searchText: string
-}
+type KnowledgeExplorerEntry = KnowledgeDisplayEntry<KnowledgeCategoryKey>
 
 export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: WorkspaceRole | null }) {
   const [scope, setScope] = useState<ActiveProjectScope | null>(null)
   const [activeTab, setActiveTab] = useState<TopTab>("hub")
   const [hubView, setHubView] = useState<HubView>("explorer")
-  const [buildMode, setBuildMode] = useState<BuildMode>("auto")
-  const [buildStep, setBuildStep] = useState<BuildStep>("index")
-  const [compileMode, setCompileMode] = useState<KnowledgeCompileMode>("incremental")
   const [workItemTypes, setWorkItemTypes] = useState<string[]>(DEFAULT_CONTEXT_WORK_ITEM_TYPES)
   const [states, setStates] = useState<string[]>(DEFAULT_CONTEXT_STATES)
   const [buildLoading, setBuildLoading] = useState(false)
   const [statusLoading, setStatusLoading] = useState(false)
+  const [contextLoadingMore, setContextLoadingMore] = useState(false)
+  const [contextStatusError, setContextStatusError] = useState<string | null>(null)
   const [buildError, setBuildError] = useState<string | null>(null)
   const [result, setResult] = useState<IndexResult | null>(null)
   const [recentItems, setRecentItems] = useState<RecentContextItem[]>([])
@@ -323,6 +305,8 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeStatusLoading, setKnowledgeStatusLoading] = useState(false)
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null)
   const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<ProjectKnowledgeSnapshot | null>(null)
+  const [generationAvailable, setGenerationAvailable] = useState<boolean | null>(null)
+  const [resumableDraft, setResumableDraft] = useState<KnowledgeInReviewDraft | null>(null)
   const [knowledgeLint, setKnowledgeLint] = useState<KnowledgeLintResult | null>(null)
   const [knowledgeLog, setKnowledgeLog] = useState<KnowledgeLogItem[]>([])
   const [knowledgeLogVisible, setKnowledgeLogVisible] = useState(false)
@@ -330,46 +314,22 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeHealthLoading, setKnowledgeHealthLoading] = useState(false)
   const [knowledgeLogLoading, setKnowledgeLogLoading] = useState(false)
   const [knowledgeExportLoading, setKnowledgeExportLoading] = useState(false)
-  const [generatedDraft, setGeneratedDraft] = useState<KnowledgeGeneratedDraft | null>(null)
-  const [generatedSaveLoading, setGeneratedSaveLoading] = useState(false)
-  const [manualKnowledgeDraft, setManualKnowledgeDraft] = useState<KnowledgeManualDraft | null>(null)
-  const [manualKnowledgeCurrentBatch, setManualKnowledgeCurrentBatch] = useState(1)
-  const [manualKnowledgeBatchResponses, setManualKnowledgeBatchResponses] = useState<Record<number, string>>({})
-  const [manualKnowledgeValidatedBatches, setManualKnowledgeValidatedBatches] = useState<Record<number, ProjectKnowledgeBase>>({})
-  const [manualKnowledgeValidationLoading, setManualKnowledgeValidationLoading] = useState(false)
-  const [manualKnowledgeSaveLoading, setManualKnowledgeSaveLoading] = useState(false)
+  const [knowledgeReportLoading, setKnowledgeReportLoading] = useState(false)
+  const [knowledgeCandidates, setKnowledgeCandidates] = useState<KnowledgeCandidate[]>([])
+  const [candidateStatus, setCandidateStatus] = useState<KnowledgeCandidateStatus | "all">("all")
+  const [candidateLoading, setCandidateLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(25)
   const [totalPages, setTotalPages] = useState(1)
-  const gen = useAiGeneration()
-  const cancelKnowledgeGeneration = gen.cancel
   const [sortBy, setSortBy] = useState<ContextSortBy>("lastIndexedAt")
   const [sortDirection, setSortDirection] = useState<ContextSortDirection>("desc")
   const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false)
   useUnsavedChangesGuard({
     dirty: hasUnfinishedWork,
-    busy:
-      buildLoading ||
-      gen.isRunning ||
-      generatedSaveLoading ||
-      manualKnowledgeValidationLoading ||
-      manualKnowledgeSaveLoading,
+    busy: buildLoading,
   })
-  const autoIndexStepRef = useRef<HTMLDivElement | null>(null)
-  const autoPrepareStepRef = useRef<HTMLDivElement | null>(null)
-  const autoPreviewStepRef = useRef<HTMLDivElement | null>(null)
-  const manualIndexStepRef = useRef<HTMLDivElement | null>(null)
-  const manualPrepareStepRef = useRef<HTMLDivElement | null>(null)
-  const manualPreviewStepRef = useRef<HTMLDivElement | null>(null)
-  const manualBatchRef = useRef<HTMLDivElement | null>(null)
   const initializedFilterProjectRef = useRef<string | null>(null)
-  const loadingGame = useLlmLoadingGameSession<KnowledgeGeneratedDraft>((draft) => {
-    setGeneratedDraft(draft)
-    if (draft.alreadyCurrent) setHasUnfinishedWork(false)
-    setBuildStep(draft.alreadyCurrent ? "prepare" : "preview")
-    scrollBuildSection(draft.alreadyCurrent ? autoPrepareStepRef : autoPreviewStepRef)
-  })
-  const endLoadingGameSession = loadingGame.endSession
+  const contextRequestIdRef = useRef(0)
   const filterProjectKey = projectScopeKey(scope)
   const {
     metadata: workItemMetadata,
@@ -398,12 +358,36 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     try {
       const data = await postJson<KnowledgeStatusResult>("/api/context/knowledge/status", { scope: activeScope })
       setKnowledgeSnapshot(data.snapshot)
+      setGenerationAvailable(typeof data.generationAvailable === "boolean" ? data.generationAvailable : null)
+      setResumableDraft(data.latestInReviewDraft ?? null)
     } catch {
       setKnowledgeSnapshot(null)
+      setGenerationAvailable(null)
+      setResumableDraft(null)
     } finally {
       setKnowledgeStatusLoading(false)
     }
   }, [scope])
+
+  const refreshKnowledgeCandidates = useCallback(async (
+    activeScope: ActiveProjectScope | null = scope,
+    status: KnowledgeCandidateStatus | "all" = candidateStatus,
+  ) => {
+    if (!activeScope) return
+    setCandidateLoading(true)
+    try {
+      const data = await postJson<{ candidates: KnowledgeCandidate[] }>("/api/context/knowledge/candidates", {
+        scope: activeScope,
+        ...(status === "all" ? {} : { status }),
+        limit: 100,
+      })
+      setKnowledgeCandidates(data.candidates)
+    } catch {
+      setKnowledgeCandidates([])
+    } finally {
+      setCandidateLoading(false)
+    }
+  }, [candidateStatus, scope])
 
   const loadStatus = useCallback(async (
     activeScope: ActiveProjectScope | null,
@@ -412,6 +396,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       sortBy?: ContextSortBy
       sortDirection?: ContextSortDirection
       query?: string
+      append?: boolean
     },
   ) => {
     if (!activeScope) return
@@ -419,8 +404,16 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     const nextSortBy = options?.sortBy ?? "lastIndexedAt"
     const nextSortDirection = options?.sortDirection ?? "desc"
     const nextQuery = options?.query ?? ""
+    const append = options?.append ?? false
+    const requestId = ++contextRequestIdRef.current
 
-    setStatusLoading(true)
+    setContextStatusError(null)
+    if (append) {
+      setContextLoadingMore(true)
+    } else {
+      setContextLoadingMore(false)
+      setStatusLoading(true)
+    }
     try {
       const data = await postJson<ContextStatusResult>("/api/context/status", {
         scope: activeScope,
@@ -430,18 +423,26 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         sortDirection: nextSortDirection,
         query: nextQuery,
       })
-      setRecentItems(data.items)
+      if (requestId !== contextRequestIdRef.current) return
+      setRecentItems((current) => append ? appendUniqueContextItems(current, data.items) : data.items)
       setTotalCount(data.totalCount)
       setTotalPages(data.totalPages)
       setPage(data.page)
       setSortBy(data.sortBy)
       setSortDirection(data.sortDirection)
-    } catch {
-      setRecentItems([])
-      setTotalCount(0)
-      setTotalPages(1)
+    } catch (error) {
+      if (requestId !== contextRequestIdRef.current) return
+      if (!append) {
+        setRecentItems([])
+        setTotalCount(0)
+        setTotalPages(1)
+      }
+      setContextStatusError(error instanceof Error ? error.message : "Indexed project context could not be loaded.")
     } finally {
-      setStatusLoading(false)
+      if (requestId === contextRequestIdRef.current) {
+        if (append) setContextLoadingMore(false)
+        else setStatusLoading(false)
+      }
     }
   }, [pageSize])
 
@@ -449,14 +450,13 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setScope(readActiveProject())
     const onChange = (event: Event) => {
       const custom = event as CustomEvent<ActiveProjectScope>
-      cancelKnowledgeGeneration()
-      endLoadingGameSession()
+      contextRequestIdRef.current += 1
       setScope(custom.detail ?? readActiveProject())
       setHasUnfinishedWork(false)
     }
     window.addEventListener("itestflow:active-project-changed", onChange)
     return () => window.removeEventListener("itestflow:active-project-changed", onChange)
-  }, [cancelKnowledgeGeneration, endLoadingGameSession])
+  }, [])
 
   useEffect(() => {
     if (!canBuildKnowledge && activeTab === "build") setActiveTab("hub")
@@ -475,62 +475,56 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   }, [filterProjectKey, workItemMetadata])
 
   useEffect(() => {
-    if (!scope) return
+    if (!scope) {
+      contextRequestIdRef.current += 1
+      setRecentItems([])
+      setTotalCount(0)
+      setTotalPages(1)
+      setPage(1)
+      setStatusLoading(false)
+      setContextLoadingMore(false)
+      setContextStatusError(null)
+      return
+    }
     let cancelled = false
 
-    setBuildStep("index")
     setBuildError(null)
     setResult(null)
-    setGeneratedDraft(null)
-    setManualKnowledgeDraft(null)
-    setManualKnowledgeCurrentBatch(1)
-    setManualKnowledgeBatchResponses({})
-    setManualKnowledgeValidatedBatches({})
     setKnowledgeError(null)
     setKnowledgeLint(null)
     setKnowledgeLog([])
     setKnowledgeLogVisible(false)
     setKnowledgeExport(null)
+    setKnowledgeReportLoading(false)
+    setKnowledgeCandidates([])
+    setCandidateStatus("all")
     setPage(1)
     setSortBy("lastIndexedAt")
     setSortDirection("desc")
     setContextSearch("")
-    setStatusLoading(true)
+    setContextLoadingMore(false)
+    setContextStatusError(null)
     setKnowledgeStatusLoading(true)
 
-    void postJson<ContextStatusResult>("/api/context/status", {
-      scope,
+    void loadStatus(scope, {
       page: 1,
-      pageSize,
       sortBy: "lastIndexedAt",
       sortDirection: "desc",
       query: "",
     })
-      .then((data) => {
-        if (cancelled) return
-        setRecentItems(data.items)
-        setTotalCount(data.totalCount)
-        setTotalPages(data.totalPages)
-        setPage(data.page)
-        setSortBy(data.sortBy)
-        setSortDirection(data.sortDirection)
-      })
-      .catch(() => {
-        if (cancelled) return
-        setRecentItems([])
-        setTotalCount(0)
-        setTotalPages(1)
-      })
-      .finally(() => {
-        if (!cancelled) setStatusLoading(false)
-      })
 
     void postJson<KnowledgeStatusResult>("/api/context/knowledge/status", { scope })
       .then((data) => {
-        if (!cancelled) setKnowledgeSnapshot(data.snapshot)
+        if (cancelled) return
+        setKnowledgeSnapshot(data.snapshot)
+        setGenerationAvailable(typeof data.generationAvailable === "boolean" ? data.generationAvailable : null)
+        setResumableDraft(data.latestInReviewDraft ?? null)
       })
       .catch(() => {
-        if (!cancelled) setKnowledgeSnapshot(null)
+        if (cancelled) return
+        setKnowledgeSnapshot(null)
+        setGenerationAvailable(null)
+        setResumableDraft(null)
       })
       .finally(() => {
         if (!cancelled) setKnowledgeStatusLoading(false)
@@ -541,7 +535,11 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     return () => {
       cancelled = true
     }
-  }, [pageSize, refreshKnowledgeLog, scope])
+  }, [loadStatus, refreshKnowledgeLog, scope])
+
+  useEffect(() => {
+    if (scope) void refreshKnowledgeCandidates(scope, candidateStatus)
+  }, [candidateStatus, refreshKnowledgeCandidates, scope])
 
   useEffect(() => {
     if (!scope) return
@@ -553,42 +551,9 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     return () => window.clearTimeout(timeoutId)
   }, [contextSearch, loadStatus, scope, sortBy, sortDirection])
 
-  function scrollBuildSection(ref: RefObject<HTMLDivElement | null>) {
-    window.requestAnimationFrame(() => {
-      ref.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-    })
-  }
-
-  function activeIndexStepRef() {
-    return buildMode === "manual" ? manualIndexStepRef : autoIndexStepRef
-  }
-
-  function activePrepareStepRef() {
-    return buildMode === "manual" ? manualPrepareStepRef : autoPrepareStepRef
-  }
-
-  function clearPreparedKnowledge() {
-    setGeneratedDraft(null)
-    setManualKnowledgeDraft(null)
-    setManualKnowledgeCurrentBatch(1)
-    setManualKnowledgeBatchResponses({})
-    setManualKnowledgeValidatedBatches({})
-  }
-
-  function resetBuildState() {
-    gen.cancel()
-    loadingGame.endSession()
-    setBuildStep("index")
-    setBuildError(null)
-    setResult(null)
-    clearPreparedKnowledge()
-  }
-
   function invalidateBuildIndex() {
-    setBuildStep("index")
     setBuildError(null)
     setResult(null)
-    clearPreparedKnowledge()
   }
 
   function changeWorkItemTypes(values: string[]) {
@@ -601,16 +566,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setHasUnfinishedWork(true)
     setStates(values)
     invalidateBuildIndex()
-  }
-
-  function changeCompileMode(nextMode: KnowledgeCompileMode) {
-    gen.cancel()
-    loadingGame.endSession()
-    setHasUnfinishedWork(true)
-    setCompileMode(nextMode)
-    setBuildError(null)
-    clearPreparedKnowledge()
-    if (buildStep === "preview") setBuildStep(result ? "prepare" : "index")
   }
 
   async function indexContextForBuild() {
@@ -632,172 +587,12 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setHasUnfinishedWork(true)
     setBuildLoading(true)
     setBuildError(null)
-    clearPreparedKnowledge()
     try {
       await indexContextForBuild()
-      setBuildStep("prepare")
-      scrollBuildSection(activePrepareStepRef())
     } catch (indexError) {
-      setBuildStep("index")
       setBuildError(indexError instanceof Error ? indexError.message : "Project index loading failed.")
     } finally {
       setBuildLoading(false)
-    }
-  }
-
-  async function prepareAutoKnowledge() {
-    if (!scope) return
-    if (!result) {
-      setBuildStep("index")
-      setBuildError("Load the project index before preparing a knowledge preview.")
-      scrollBuildSection(activeIndexStepRef())
-      return
-    }
-    if (gen.isRunning) return
-
-    loadingGame.startSession()
-    setHasUnfinishedWork(true)
-    setBuildError(null)
-    setGeneratedDraft(null)
-    setManualKnowledgeDraft(null)
-    setManualKnowledgeValidatedBatches({})
-    const draft = await gen.start((signal) =>
-      postJson<KnowledgeGeneratedDraft>("/api/context/knowledge/preview", { scope, mode: compileMode }, signal),
-    )
-    if (!draft) {
-      loadingGame.endSession()
-      return // cancelled or failed: the progress panel owns the message
-    }
-    loadingGame.completeSession(draft)
-  }
-
-  async function prepareExternalKnowledge() {
-    if (!scope) return
-    if (!result) {
-      setBuildStep("index")
-      setBuildError("Load the project index before preparing an external LLM prompt.")
-      scrollBuildSection(activeIndexStepRef())
-      return
-    }
-
-    setHasUnfinishedWork(true)
-    setBuildLoading(true)
-    setBuildError(null)
-    setGeneratedDraft(null)
-    setManualKnowledgeDraft(null)
-    setManualKnowledgeCurrentBatch(1)
-    setManualKnowledgeBatchResponses({})
-    setManualKnowledgeValidatedBatches({})
-    scrollBuildSection(manualPrepareStepRef)
-    try {
-      const data = await postJson<KnowledgeManualDraft>("/api/context/knowledge/manual/draft", { scope, mode: compileMode })
-      setManualKnowledgeDraft(data)
-      const nextStep = data.batchCount === 0 && data.retiredSourceWorkItemCount > 0 ? "preview" : "prepare"
-      setBuildStep(nextStep)
-      scrollBuildSection(nextStep === "preview" ? manualPreviewStepRef : manualPrepareStepRef)
-    } catch (prepareError) {
-      setBuildError(prepareError instanceof Error ? prepareError.message : "External LLM knowledge prompt preparation failed.")
-    } finally {
-      setBuildLoading(false)
-    }
-  }
-
-  async function validateManualKnowledgeBatch() {
-    if (!scope || !manualKnowledgeDraft) return
-    const batch = manualKnowledgeDraft.batches.find((item) => item.batchIndex === manualKnowledgeCurrentBatch)
-    if (!batch) return
-    const rawOutput = manualKnowledgeBatchResponses[batch.batchIndex]?.trim()
-    if (!rawOutput) return
-
-    setManualKnowledgeValidationLoading(true)
-    setBuildError(null)
-    try {
-      const data = await postJson<KnowledgeManualValidationResult>("/api/context/knowledge/manual/validate", {
-        scope,
-        rawOutput,
-        mode: manualKnowledgeDraft.mode,
-        save: false,
-      })
-
-      const nextValidated = {
-        ...manualKnowledgeValidatedBatches,
-        [batch.batchIndex]: data.knowledgeBase,
-      }
-      setManualKnowledgeValidatedBatches(nextValidated)
-      const nextBatch = manualKnowledgeDraft.batches.find((item) => !nextValidated[item.batchIndex])
-      if (nextBatch) {
-        setManualKnowledgeCurrentBatch(nextBatch.batchIndex)
-        scrollBuildSection(manualBatchRef)
-      } else {
-        setBuildStep("preview")
-        scrollBuildSection(manualPreviewStepRef)
-      }
-    } catch (validationError) {
-      setBuildError(validationError instanceof Error ? validationError.message : "External LLM knowledge response validation failed.")
-    } finally {
-      setManualKnowledgeValidationLoading(false)
-    }
-  }
-
-  async function saveGeneratedKnowledge() {
-    if (!scope || !generatedDraft) return
-    setGeneratedSaveLoading(true)
-    setBuildError(null)
-    try {
-      const snapshot = await postJson<ProjectKnowledgeSnapshot>("/api/context/knowledge/save", {
-        scope,
-        provider: generatedDraft.provider,
-        model: generatedDraft.model,
-        rawOutput: generatedDraft.rawOutput,
-        requestedMode: generatedDraft.requestedMode,
-        mode: generatedDraft.mode,
-        knowledgeBase: generatedDraft.knowledgeBase,
-      })
-      setKnowledgeSnapshot(snapshot)
-      setHasUnfinishedWork(false)
-      resetBuildState()
-      setActiveTab("hub")
-      await Promise.all([
-        loadStatus(scope, { page: 1, sortBy, sortDirection, query: contextSearch }),
-        refreshKnowledgeStatus(scope),
-        refreshKnowledgeLog(scope),
-      ])
-    } catch (saveError) {
-      setBuildError(saveError instanceof Error ? saveError.message : "Project knowledge save failed.")
-    } finally {
-      setGeneratedSaveLoading(false)
-    }
-  }
-
-  async function saveManualKnowledgeBatches() {
-    if (!scope || !manualKnowledgeDraft) return
-    const partialKnowledgeBases = manualKnowledgeDraft.batches
-      .map((batch) => manualKnowledgeValidatedBatches[batch.batchIndex])
-      .filter(Boolean)
-    if (manualKnowledgeDraft.batchCount > 0 && partialKnowledgeBases.length !== manualKnowledgeDraft.batchCount) return
-    if (manualKnowledgeDraft.batchCount === 0 && manualKnowledgeDraft.mode !== "incremental") return
-
-    setManualKnowledgeSaveLoading(true)
-    setBuildError(null)
-    try {
-      const data = await postJson<KnowledgeManualValidationResult>("/api/context/knowledge/manual/finalize", {
-        scope,
-        mode: manualKnowledgeDraft.mode,
-        partialKnowledgeBases,
-      })
-      if (data.snapshot) setKnowledgeSnapshot(data.snapshot)
-      setHasUnfinishedWork(false)
-      resetBuildState()
-      setActiveTab("hub")
-      await Promise.all([
-        loadStatus(scope, { page: 1, sortBy, sortDirection, query: contextSearch }),
-        refreshKnowledgeStatus(scope),
-        refreshKnowledgeLog(scope),
-      ])
-    } catch (saveError) {
-      setBuildError(saveError instanceof Error ? saveError.message : "External LLM knowledge base save failed.")
-    } finally {
-      setManualKnowledgeSaveLoading(false)
     }
   }
 
@@ -806,7 +601,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setKnowledgeHealthLoading(true)
     setKnowledgeError(null)
     try {
-      const data = await postJson<KnowledgeLintResult>("/api/context/knowledge/lint", { scope })
+      const data = await postJson<KnowledgeLintResult>("/api/context/knowledge/lint", { scope, run: true })
       setKnowledgeLint(data)
       await refreshKnowledgeLog(scope)
     } catch (healthError) {
@@ -841,35 +636,89 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     await refreshKnowledgeLog(scope)
   }
 
+  async function reportKnowledgeLintMiss(input: {
+    missType: "duplicate" | "conflict"
+    title: string
+    message: string
+  }) {
+    if (!scope) return false
+    setKnowledgeReportLoading(true)
+    setKnowledgeError(null)
+    try {
+      await postJson("/api/context/knowledge/lint/report", { scope, ...input })
+      setKnowledgeLint(await postJson<KnowledgeLintResult>("/api/context/knowledge/lint", { scope, run: false }))
+      await refreshKnowledgeLog(scope)
+      return true
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "The lint miss could not be reported.")
+      return false
+    } finally {
+      setKnowledgeReportLoading(false)
+    }
+  }
+
+  async function transitionKnowledgeLintIssue(
+    issueId: string,
+    action: "confirm" | "reject" | "ignore" | "reopen",
+  ) {
+    if (!scope || !canBuildKnowledge) return
+    setKnowledgeHealthLoading(true)
+    setKnowledgeError(null)
+    try {
+      await patchJson(`/api/context/knowledge/lint/${issueId}`, { scope, action })
+      setKnowledgeLint(await postJson<KnowledgeLintResult>("/api/context/knowledge/lint", { scope, run: false }))
+      await refreshKnowledgeLog(scope)
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "The lint report could not be reviewed.")
+    } finally {
+      setKnowledgeHealthLoading(false)
+    }
+  }
+
+  async function updateKnowledgeCandidate(candidateId: string, action: "reject" | "request_integration") {
+    if (!scope || !canBuildKnowledge) return
+    setCandidateLoading(true)
+    setKnowledgeError(null)
+    try {
+      await patchJson(`/api/context/knowledge/candidates/${candidateId}`, {
+        scope,
+        action,
+        ...(action === "reject" ? { reason: "Rejected during Knowledge Hub review." } : {}),
+      })
+      await refreshKnowledgeCandidates(scope, candidateStatus)
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "The candidate could not be updated.")
+    } finally {
+      setCandidateLoading(false)
+    }
+  }
+
   function changeSort(nextSortBy: ContextSortBy) {
     const nextDirection = sortBy === nextSortBy && sortDirection === "asc" ? "desc" : "asc"
+    setStatusLoading(true)
     setSortBy(nextSortBy)
     setSortDirection(nextDirection)
     setPage(1)
-    if (scope) void loadStatus(scope, { page: 1, sortBy: nextSortBy, sortDirection: nextDirection, query: contextSearch })
   }
 
-  function changePage(nextPage: number) {
-    const safePage = Math.min(Math.max(1, nextPage), totalPages)
-    setPage(safePage)
-    if (scope) void loadStatus(scope, { page: safePage, sortBy, sortDirection, query: contextSearch })
+  function changeContextSearch(value: string) {
+    setStatusLoading(true)
+    setContextSearch(value)
+    setPage(1)
   }
 
-  function changeBuildMode(nextMode: BuildMode) {
-    setHasUnfinishedWork(true)
-    setBuildMode(nextMode)
-    resetBuildState()
+  function loadMoreContext() {
+    if (!scope || statusLoading || contextLoadingMore || page >= totalPages) return
+    void loadStatus(scope, {
+      page: page + 1,
+      sortBy,
+      sortDirection,
+      query: contextSearch,
+      append: true,
+    })
   }
 
-  const currentManualKnowledgeBatch = manualKnowledgeDraft?.batches.find((batch) => batch.batchIndex === manualKnowledgeCurrentBatch)
-  const manualKnowledgeValidatedCount = manualKnowledgeDraft
-    ? manualKnowledgeDraft.batches.filter((batch) => manualKnowledgeValidatedBatches[batch.batchIndex]).length
-    : 0
-  const manualKnowledgeAllBatchesValidated = manualKnowledgeDraft
-    ? manualKnowledgeValidatedCount === manualKnowledgeDraft.batchCount
-    : false
-  const rangeStart = totalCount === 0 ? 0 : (page - 1) * pageSize + 1
-  const rangeEnd = totalCount === 0 ? 0 : Math.min(totalCount, rangeStart + recentItems.length - 1)
+  const hasMoreContext = recentItems.length < totalCount && page < totalPages
   const totalKnowledgeItems = knowledgeSnapshot ? countKnowledgeItems(knowledgeSnapshot.knowledgeBase) : 0
   const canLoadIndex = Boolean(scope)
     && Boolean(workItemMetadata)
@@ -878,7 +727,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     && workItemTypes.length > 0
     && states.length > 0
     && !buildLoading
-  const canPrepareKnowledge = Boolean(scope) && Boolean(result) && !buildLoading
   const emptyKnowledgeMessage = canBuildKnowledge
     ? "No knowledge base has been saved yet. Use Build Knowledge to compile source-backed project knowledge."
     : "No knowledge base has been saved yet."
@@ -936,6 +784,27 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
             loading={knowledgeStatusLoading}
           />
 
+          {knowledgeSnapshot?.health.warnings.length ? (
+            <div role="status" className="flex flex-col gap-3 rounded-md border border-warning/40 bg-warning/10 p-4 text-sm text-warning-foreground sm:flex-row sm:items-start sm:justify-between">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                <div>
+                  <div className="font-semibold">Published knowledge needs attention</div>
+                  <ul className="mt-1 list-disc space-y-1 pl-4">
+                    {knowledgeSnapshot.health.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                  </ul>
+                  {knowledgeSnapshot.health.staleSince ? (
+                    <div className="mt-2 text-xs">Stale since {formatDate(knowledgeSnapshot.health.staleSince)}. Raw indexed evidence remains authoritative.</div>
+                  ) : null}
+                  {!canBuildKnowledge ? <div className="mt-2 text-xs">Ask a workspace owner or admin to refresh and review the knowledge draft.</div> : null}
+                </div>
+              </div>
+              {canBuildKnowledge ? (
+                <Button size="sm" variant="outline" onClick={() => setActiveTab("build")}>Refresh knowledge</Button>
+              ) : null}
+            </div>
+          ) : null}
+
           <KnowledgeOpsPanel
             lint={knowledgeLint}
             logItems={knowledgeLog}
@@ -944,9 +813,13 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
             healthLoading={knowledgeHealthLoading}
             logLoading={knowledgeLogLoading}
             exportLoading={knowledgeExportLoading}
+            reportLoading={knowledgeReportLoading}
+            canManage={canBuildKnowledge}
             onRunHealthCheck={runKnowledgeHealthCheck}
             onToggleLog={toggleKnowledgeLog}
             onExport={exportKnowledgeWiki}
+            onReportMiss={reportKnowledgeLintMiss}
+            onTransitionIssue={transitionKnowledgeLintIssue}
           />
 
           {knowledgeError ? (
@@ -971,10 +844,11 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                 >
                   <HubViewTab value="explorer" label="Knowledge Explorer" shortLabel="Explorer" count={knowledgeStatusLoading ? "-" : totalKnowledgeItems} />
                   <HubViewTab value="context" label="Indexed Project Context" shortLabel="Indexed Context" count={totalCount} />
+                  <HubViewTab value="candidates" label="Candidates" shortLabel="Candidates" count={knowledgeCandidates.length} />
                 </TabsList>
               </div>
 
-              <CardContent className="pt-4">
+              <CardContent className="min-w-0 max-w-full pt-4">
                 <TabsContent value="explorer" className="mt-0">
                   {knowledgeStatusLoading ? (
                     <KnowledgeLoadingState label="Loading saved knowledge base" />
@@ -994,18 +868,28 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                   <IndexedContextView
                     items={recentItems}
                     totalCount={totalCount}
-                    rangeStart={rangeStart}
-                    rangeEnd={rangeEnd}
-                    page={page}
-                    totalPages={totalPages}
                     sortBy={sortBy}
                     sortDirection={sortDirection}
                     search={contextSearch}
                     loading={statusLoading}
+                    loadingMore={contextLoadingMore}
+                    hasMore={hasMoreContext}
+                    error={contextStatusError}
                     emptyMessage={emptyContextMessage}
-                    onSearchChange={setContextSearch}
+                    onSearchChange={changeContextSearch}
                     onSortChange={changeSort}
-                    onPageChange={changePage}
+                    onLoadMore={loadMoreContext}
+                  />
+                </TabsContent>
+
+                <TabsContent value="candidates" className="mt-0">
+                  <KnowledgeCandidatesView
+                    candidates={knowledgeCandidates}
+                    status={candidateStatus}
+                    loading={candidateLoading}
+                    canManage={canBuildKnowledge}
+                    onStatusChange={setCandidateStatus}
+                    onAction={updateKnowledgeCandidate}
                   />
                 </TabsContent>
               </CardContent>
@@ -1015,47 +899,49 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
 
         {canBuildKnowledge ? (
         <TabsContent value="build" className="space-y-4">
-          <Card className="qa-card">
-            <CardHeader>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="flex items-center gap-2">
-                  <CardTitle className="text-base" role="heading" aria-level={2}>Build Knowledge</CardTitle>
-                  {knowledgeSnapshot ? <Badge variant="outline">Prompt {knowledgeSnapshot.promptVersion}</Badge> : null}
-                </div>
-                <GenerationModeToggle
-                  mode={buildMode}
-                  onChange={changeBuildMode}
-                  ariaLabel="Knowledge build mode"
-                />
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <Tabs value={buildMode} className="flex-col gap-4">
-                <BuildStepper step={buildStep} />
+          {scope ? (
+            <>
+              <KnowledgeBuild
+                key={`${scope.workspaceId ?? "workspace"}:${scope.projectId}`}
+                scope={scope}
+                sourceIndexReady={Boolean(result)}
+                sourceIndexLoading={buildLoading}
+                generationAvailable={generationAvailable ?? undefined}
+                resumableDraft={resumableDraft}
+                onRefreshAvailability={() => refreshKnowledgeStatus(scope)}
+                sourceIndexContent={(
+                  <>
+                    <Card className="qa-card">
+                      <CardHeader>
+                        <CardTitle className="text-base" role="heading" aria-level={2}>Load Project Index</CardTitle>
+                        <p className="text-sm leading-6 text-muted-foreground">
+                          Sync the selected Azure DevOps work items, review what changed, then build project knowledge from that index.
+                        </p>
+                      </CardHeader>
+                      <CardContent>
+                        <IndexLoadPanel
+                          workItemTypes={workItemTypes}
+                          states={states}
+                          workItemTypeOptions={workItemMetadata?.workItemTypes ?? []}
+                          stateOptions={workItemMetadata?.states ?? []}
+                          metadataLoading={workItemMetadataLoading}
+                          metadataError={workItemMetadataError}
+                          canLoad={canLoadIndex}
+                          loading={buildLoading}
+                          onWorkItemTypesChange={changeWorkItemTypes}
+                          onStatesChange={changeStates}
+                          onRetryMetadata={retryWorkItemMetadata}
+                          onLoad={loadProjectIndexForBuild}
+                        />
+                      </CardContent>
+                    </Card>
 
-                {buildError ? (
-                  <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-                    <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-                    <span>{buildError}</span>
-                  </div>
-                ) : null}
-
-                <TabsContent value="auto" className="space-y-4">
-                  <div ref={autoIndexStepRef} className="scroll-mt-4 space-y-4">
-                    <IndexLoadPanel
-                      workItemTypes={workItemTypes}
-                      states={states}
-                      workItemTypeOptions={workItemMetadata?.workItemTypes ?? []}
-                      stateOptions={workItemMetadata?.states ?? []}
-                      metadataLoading={workItemMetadataLoading}
-                      metadataError={workItemMetadataError}
-                      canLoad={canLoadIndex}
-                      loading={buildLoading}
-                      onWorkItemTypesChange={changeWorkItemTypes}
-                      onStatesChange={changeStates}
-                      onRetryMetadata={retryWorkItemMetadata}
-                      onLoad={loadProjectIndexForBuild}
-                    />
+                    {buildError ? (
+                      <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+                        <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                        <span>{buildError}</span>
+                      </div>
+                    ) : null}
 
                     {result ? (
                       <>
@@ -1063,189 +949,33 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                         <IndexedContextPanel
                           items={recentItems}
                           totalCount={totalCount}
-                          rangeStart={rangeStart}
-                          rangeEnd={rangeEnd}
-                          page={page}
-                          totalPages={totalPages}
                           sortBy={sortBy}
                           sortDirection={sortDirection}
                           search={contextSearch}
                           loading={statusLoading}
+                          loadingMore={contextLoadingMore}
+                          hasMore={hasMoreContext}
+                          error={contextStatusError}
                           emptyMessage="No indexed work items matched the loaded project index."
-                          onSearchChange={setContextSearch}
+                          onSearchChange={changeContextSearch}
                           onSortChange={changeSort}
-                          onPageChange={changePage}
+                          onLoadMore={loadMoreContext}
                         />
                       </>
                     ) : null}
-                  </div>
-
-                  {result ? (
-                    <div ref={autoPrepareStepRef} className="scroll-mt-4 space-y-4">
-                      <KnowledgePreparePanel
-                        compileMode={compileMode}
-                        canPrepare={canPrepareKnowledge && !gen.isRunning}
-                        loading={buildLoading || gen.isRunning}
-                        onCompileModeChange={changeCompileMode}
-                        onPrepare={prepareAutoKnowledge}
-                        actionLabel={buildLoading || gen.isRunning ? "Preparing..." : "Prepare Knowledge Preview"}
-                      />
-
-                      {gen.status !== "idle" && (gen.status !== "completed" || loadingGame.shouldKeepPanelMounted) ? (
-                        <AiGenerationProgress
-                          variant="generic"
-                          title="Building project knowledge"
-                          status={gen.status}
-                          elapsedSeconds={gen.elapsedSeconds}
-                          error={gen.error}
-                          errorMessage={gen.errorMessage}
-                          canCancel
-                          onCancel={gen.cancel}
-                          onRetry={() => {
-                            gen.retry()
-                            void prepareAutoKnowledge()
-                          }}
-                          loadingGame={loadingGame.panel}
-                        />
-                      ) : null}
-
-                      {generatedDraft?.alreadyCurrent ? (
-                        <div className="space-y-2">
-                          {gen.status === "completed" ? (
-                            <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
-                          ) : null}
-                          <GeneratedPreviewPanel
-                            draft={generatedDraft}
-                            saving={generatedSaveLoading}
-                            onSave={saveGeneratedKnowledge}
-                          />
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {generatedDraft && !generatedDraft.alreadyCurrent ? (
-                    <div ref={autoPreviewStepRef} className="scroll-mt-4 space-y-2">
-                      {gen.status === "completed" ? (
-                        <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
-                      ) : null}
-                      <GeneratedPreviewPanel
-                        draft={generatedDraft}
-                        saving={generatedSaveLoading}
-                        onSave={saveGeneratedKnowledge}
-                      />
-                    </div>
-                  ) : null}
-                </TabsContent>
-
-                <TabsContent value="manual" className="space-y-4">
-                  <div ref={manualIndexStepRef} className="scroll-mt-4 space-y-4">
-                    <IndexLoadPanel
-                      workItemTypes={workItemTypes}
-                      states={states}
-                      workItemTypeOptions={workItemMetadata?.workItemTypes ?? []}
-                      stateOptions={workItemMetadata?.states ?? []}
-                      metadataLoading={workItemMetadataLoading}
-                      metadataError={workItemMetadataError}
-                      canLoad={canLoadIndex}
-                      loading={buildLoading}
-                      onWorkItemTypesChange={changeWorkItemTypes}
-                      onStatesChange={changeStates}
-                      onRetryMetadata={retryWorkItemMetadata}
-                      onLoad={loadProjectIndexForBuild}
-                    />
-
-                    {result ? (
-                      <>
-                        <IndexSummary result={result} />
-                        <IndexedContextPanel
-                          items={recentItems}
-                          totalCount={totalCount}
-                          rangeStart={rangeStart}
-                          rangeEnd={rangeEnd}
-                          page={page}
-                          totalPages={totalPages}
-                          sortBy={sortBy}
-                          sortDirection={sortDirection}
-                          search={contextSearch}
-                          loading={statusLoading}
-                          emptyMessage="No indexed work items matched the loaded project index."
-                          onSearchChange={setContextSearch}
-                          onSortChange={changeSort}
-                          onPageChange={changePage}
-                        />
-                      </>
-                    ) : null}
-                  </div>
-
-                  {result ? (
-                    <div ref={manualPrepareStepRef} className="scroll-mt-4 space-y-4">
-                      <KnowledgePreparePanel
-                        compileMode={compileMode}
-                        canPrepare={canPrepareKnowledge}
-                        loading={buildLoading}
-                        onCompileModeChange={changeCompileMode}
-                        onPrepare={prepareExternalKnowledge}
-                        actionLabel={buildLoading ? "Preparing prompt..." : "Prepare Knowledge Preview Prompt"}
-                      />
-
-                      {manualKnowledgeDraft && buildStep === "prepare" ? (
-                        <ExternalPromptPanel
-                          draft={manualKnowledgeDraft}
-                          currentBatch={currentManualKnowledgeBatch}
-                          responses={manualKnowledgeBatchResponses}
-                          validatedCount={manualKnowledgeValidatedCount}
-                          allValidated={manualKnowledgeAllBatchesValidated}
-                          validationLoading={manualKnowledgeValidationLoading}
-                          saveLoading={manualKnowledgeSaveLoading}
-                          validatedBatches={manualKnowledgeValidatedBatches}
-                          batchRef={manualBatchRef}
-                          showPrompt
-                          showPreview={false}
-                          onResponseChange={(batchIndex, value) => {
-                            setHasUnfinishedWork(true)
-                            setManualKnowledgeBatchResponses((current) => ({
-                              ...current,
-                              [batchIndex]: value,
-                            }))
-                          }}
-                          onValidate={validateManualKnowledgeBatch}
-                          onSave={saveManualKnowledgeBatches}
-                        />
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {manualKnowledgeDraft && buildStep === "preview" ? (
-                    <div ref={manualPreviewStepRef} className="scroll-mt-4">
-                      <ExternalPromptPanel
-                        draft={manualKnowledgeDraft}
-                        currentBatch={currentManualKnowledgeBatch}
-                        responses={manualKnowledgeBatchResponses}
-                        validatedCount={manualKnowledgeValidatedCount}
-                        allValidated={manualKnowledgeAllBatchesValidated}
-                        validationLoading={manualKnowledgeValidationLoading}
-                        saveLoading={manualKnowledgeSaveLoading}
-                        validatedBatches={manualKnowledgeValidatedBatches}
-                        batchRef={manualBatchRef}
-                        showPrompt={false}
-                        showPreview
-                        onResponseChange={(batchIndex, value) => {
-                          setHasUnfinishedWork(true)
-                          setManualKnowledgeBatchResponses((current) => ({
-                            ...current,
-                            [batchIndex]: value,
-                          }))
-                        }}
-                        onValidate={validateManualKnowledgeBatch}
-                        onSave={saveManualKnowledgeBatches}
-                      />
-                    </div>
-                  ) : null}
-                </TabsContent>
-              </Tabs>
-            </CardContent>
-          </Card>
+                  </>
+                )}
+                onActivityChange={setHasUnfinishedWork}
+                onPublished={async () => {
+                  await Promise.all([
+                    refreshKnowledgeStatus(scope),
+                    refreshKnowledgeLog(scope),
+                    loadStatus(scope, { page: 1, sortBy, sortDirection, query: contextSearch }),
+                  ])
+                }}
+              />
+            </>
+          ) : null}
         </TabsContent>
         ) : null}
       </Tabs>
@@ -1327,40 +1057,6 @@ function HubViewTab({
   )
 }
 
-function BuildStepper({ step }: { step: BuildStep }) {
-  const steps = [
-    {
-      id: "index",
-      label: "Load Project Index",
-      description: "Select and sync source work items.",
-      icon: Database,
-    },
-    {
-      id: "prepare",
-      label: "Prepare Knowledge Preview",
-      description: "Compile source-backed project knowledge.",
-      icon: BookOpen,
-    },
-    {
-      id: "preview",
-      label: "Preview & Save",
-      description: "Inspect and save the prepared knowledge.",
-      icon: Save,
-    },
-  ] as const
-  const activeIndex = steps.findIndex((item) => item.id === step)
-
-  return (
-    <WorkflowStepper
-      steps={steps}
-      activeStepId={step}
-      completedStepIds={steps.slice(0, activeIndex).map((item) => item.id)}
-      enabledStepIds={[step]}
-      ariaLabel="Build Knowledge workflow"
-    />
-  )
-}
-
 function IndexLoadPanel({
   workItemTypes,
   states,
@@ -1431,289 +1127,6 @@ function IndexLoadPanel({
   )
 }
 
-function KnowledgePreparePanel({
-  compileMode,
-  canPrepare,
-  loading,
-  onCompileModeChange,
-  onPrepare,
-  actionLabel,
-}: {
-  compileMode: KnowledgeCompileMode
-  canPrepare: boolean
-  loading: boolean
-  onCompileModeChange: (mode: KnowledgeCompileMode) => void
-  onPrepare: () => void
-  actionLabel: string
-}) {
-  return (
-    <div className="space-y-4 rounded-md border border-border bg-card p-4">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0 flex-1">
-          <Label className="text-sm font-semibold text-foreground">Compile mode</Label>
-          <div className="mt-2 grid gap-2 rounded-md border border-border bg-muted p-1 sm:grid-cols-2">
-            <button
-              type="button"
-              aria-pressed={compileMode === "incremental"}
-              className={`rounded-md border px-3 py-2 text-sm font-semibold outline-none transition-colors duration-ui focus-visible:ring-2 focus-visible:ring-ring ${
-                compileMode === "incremental"
-                  ? "border-primary bg-accent text-primary shadow-sm"
-                  : "border-transparent bg-card text-foreground hover:border-primary/40 hover:bg-accent"
-              }`}
-              onClick={() => onCompileModeChange("incremental")}
-            >
-              Incremental
-            </button>
-            <button
-              type="button"
-              aria-pressed={compileMode === "full"}
-              className={`rounded-md border px-3 py-2 text-sm font-semibold outline-none transition-colors duration-ui focus-visible:ring-2 focus-visible:ring-ring ${
-                compileMode === "full"
-                  ? "border-primary bg-accent text-primary shadow-sm"
-                  : "border-transparent bg-card text-foreground hover:border-primary/40 hover:bg-accent"
-              }`}
-              onClick={() => onCompileModeChange("full")}
-            >
-              Full recompile
-            </button>
-          </div>
-          <div className="mt-2 text-xs leading-5 text-muted-foreground">
-            Prepare the knowledge preview from the project index loaded in step 1.
-          </div>
-        </div>
-        <div className="rounded-md border border-border bg-muted p-3 lg:w-[360px]">
-          <div className="mb-3 text-xs leading-5 text-muted-foreground">
-            Review the compile mode, then prepare the next knowledge preview.
-          </div>
-          <Button className="h-11 w-full justify-center" onClick={onPrepare} disabled={!canPrepare} aria-busy={loading}>
-            {loading ? <RefreshCw className="size-4 animate-spin" /> : <BookOpen className="size-4" />}
-            {actionLabel}
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function GeneratedPreviewPanel({
-  draft,
-  saving,
-  onSave,
-}: {
-  draft: KnowledgeGeneratedDraft
-  saving: boolean
-  onSave: () => void
-}) {
-  const isIncremental = draft.mode === "incremental"
-  const displayBase = useMemo(
-    () =>
-      isIncremental
-        ? filterKnowledgeBaseBySource(draft.knowledgeBase, new Set(draft.changedSourceWorkItemIds))
-        : draft.knowledgeBase,
-    [isIncremental, draft.knowledgeBase, draft.changedSourceWorkItemIds],
-  )
-  const totalItems = countKnowledgeItems(draft.knowledgeBase)
-  const displayCount = countKnowledgeItems(displayBase)
-
-  if (draft.alreadyCurrent) {
-    return (
-      <div className="rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success">
-        <div className="font-semibold">No Knowledge Changes Needed</div>
-        <div className="mt-1">
-          The current incremental baseline has no changed work items, so there is no generated preview to save.
-        </div>
-      </div>
-    )
-  }
-
-  const showRetiredOnlyNote = isIncremental && displayCount === 0
-
-  return (
-    <div className="space-y-4 rounded-md border border-border bg-card p-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-foreground" role="heading" aria-level={3}>Generated Knowledge Preview</div>
-          <div className="text-xs text-muted-foreground">
-            {isIncremental ? (
-              <>
-                {displayCount} new/updated {displayCount === 1 ? "entry" : "entries"} from {draft.changedSourceWorkItemCount} changed source work {draft.changedSourceWorkItemCount === 1 ? "item" : "items"}. {draft.retiredSourceWorkItemCount} retired. Saving updates the full knowledge base ({totalItems} entries total).
-              </>
-            ) : (
-              <>{totalItems} entries from {draft.sourceWorkItemCount} active source work items.</>
-            )}
-          </div>
-        </div>
-        <Badge variant="outline">Prompt {draft.promptVersion}</Badge>
-      </div>
-      {draft.fallbackReason ? (
-        <div className="rounded-md border border-warning/40 bg-warning/15 p-3 text-xs text-warning-foreground dark:text-warning">
-          {draft.fallbackReason}
-        </div>
-      ) : null}
-      {showRetiredOnlyNote ? (
-        <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
-          No new or updated knowledge entries were generated.
-          {draft.retiredSourceWorkItemCount > 0
-            ? ` ${draft.retiredSourceWorkItemCount} retired source work item${
-                draft.retiredSourceWorkItemCount === 1 ? "" : "s"
-              } will be pruned from the saved knowledge base on save.`
-            : ""}
-        </div>
-      ) : (
-        <KnowledgeExplorer knowledgeBase={displayBase} compact />
-      )}
-      <div className="flex justify-end gap-2 border-t border-border pt-3">
-        <Button onClick={onSave} disabled={saving} aria-busy={saving}>
-          {saving ? <RefreshCw className="size-4 animate-spin" /> : <Save className="size-4" />}
-          {saving ? "Saving..." : "Save Knowledge Base"}
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function ExternalPromptPanel({
-  draft,
-  currentBatch,
-  responses,
-  validatedCount,
-  allValidated,
-  validationLoading,
-  saveLoading,
-  validatedBatches,
-  batchRef,
-  showPrompt = true,
-  showPreview = true,
-  onResponseChange,
-  onValidate,
-  onSave,
-}: {
-  draft: KnowledgeManualDraft
-  currentBatch?: KnowledgeManualBatchPrompt
-  responses: Record<number, string>
-  validatedCount: number
-  allValidated: boolean
-  validationLoading: boolean
-  saveLoading: boolean
-  validatedBatches: Record<number, ProjectKnowledgeBase>
-  batchRef: RefObject<HTMLDivElement | null>
-  showPrompt?: boolean
-  showPreview?: boolean
-  onResponseChange: (batchIndex: number, value: string) => void
-  onValidate: () => void
-  onSave: () => void
-}) {
-  const hasRetiredOnlyUpdate = draft.batchCount === 0 && draft.retiredSourceWorkItemCount > 0
-  const previewKnowledgeBase = useMemo(() => {
-    const bases = Object.values(validatedBatches)
-    if (bases.length === 1) return bases[0]
-    if (!bases.length) return null
-    return combineKnowledgeBasesForPreview(bases)
-  }, [validatedBatches])
-
-  if (draft.batchCount === 0) {
-    return (
-      <div
-        className={`rounded-md border p-4 text-sm ${
-          hasRetiredOnlyUpdate
-            ? "border-warning/40 bg-warning/15 text-warning-foreground dark:text-warning"
-            : "border-success/30 bg-success/10 text-success"
-        }`}
-      >
-        <div className="font-semibold">
-          {hasRetiredOnlyUpdate ? "Knowledge Baseline Update Needed" : "No Knowledge Changes Needed"}
-        </div>
-        <div className="mt-1">
-          {hasRetiredOnlyUpdate
-            ? `${draft.retiredSourceWorkItemCount} retired source work item${
-                draft.retiredSourceWorkItemCount === 1 ? "" : "s"
-              } should be removed from the saved knowledge base. No external prompt is needed.`
-            : "The current incremental baseline has no changed work items, so there is no external prompt to copy or save."}
-        </div>
-        {draft.fallbackReason ? <div className="mt-2 text-xs">{draft.fallbackReason}</div> : null}
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-4">
-      {showPrompt ? (
-        <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="font-semibold text-foreground">
-                {draft.mode === "incremental" ? "Compile Knowledge Prompt" : "Full Recompile Prompt"}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {draft.sourceWorkItemCount} of {draft.totalSourceWorkItemCount} active work items in prompt input.
-                {draft.mode === "incremental"
-                  ? ` ${draft.changedSourceWorkItemCount} changed, ${draft.retiredSourceWorkItemCount} retired.`
-                  : null}
-              </div>
-            </div>
-            <Badge variant="outline">{draft.batchCount} {draft.batchCount === 1 ? "batch" : "batches"}</Badge>
-          </div>
-          {draft.fallbackReason ? (
-            <div className="mt-3 rounded-md border border-warning/40 bg-warning/15 p-3 text-xs text-warning-foreground dark:text-warning">
-              {draft.fallbackReason}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      {showPrompt && currentBatch ? (
-        <div ref={batchRef} className="space-y-4 rounded-md border border-border bg-muted p-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="text-sm font-semibold text-foreground">
-                Batch {currentBatch.batchIndex} of {draft.batchCount}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {currentBatch.workItemCount} work items in this prompt. {validatedCount} validated.
-              </div>
-            </div>
-          </div>
-          <ManualLLMFields
-            key={currentBatch.batchIndex}
-            prompt={currentBatch.prompt}
-            response={responses[currentBatch.batchIndex] ?? ""}
-            onResponseChange={(value) => onResponseChange(currentBatch.batchIndex, value)}
-            onSubmit={onValidate}
-            submitting={validationLoading}
-            submitLabel="Validate Batch"
-            submittingLabel="Validating..."
-            responseLabel="External LLM Response"
-            responsePlaceholder="Paste the JSON response for this batch."
-            promptMinHeightClass="min-h-[320px]"
-            responseMinHeightClass="min-h-[220px]"
-          />
-        </div>
-      ) : null}
-
-      {showPreview && allValidated && previewKnowledgeBase ? (
-        <div className="space-y-4 rounded-md border border-border bg-card p-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <div className="text-sm font-semibold text-foreground">Validated Knowledge Preview</div>
-              <div className="text-xs text-muted-foreground">
-                {validatedCount} batch {validatedCount === 1 ? "response" : "responses"} validated. Save to persist the final knowledge base.
-              </div>
-            </div>
-            <Badge variant="outline">{countKnowledgeItems(previewKnowledgeBase)} entries</Badge>
-          </div>
-          <KnowledgeExplorer knowledgeBase={previewKnowledgeBase} compact />
-          <div className="flex justify-end gap-2 border-t border-border pt-3">
-            <Button onClick={onSave} disabled={saveLoading}>
-              {saveLoading ? <RefreshCw className="size-4 animate-spin" /> : <Save className="size-4" />}
-              {saveLoading ? "Saving..." : "Save Knowledge Base"}
-            </Button>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
 function SortHeader({
   label,
   active,
@@ -1756,47 +1169,46 @@ function IndexedContextPanel(props: IndexedContextViewProps) {
 type IndexedContextViewProps = {
   items: RecentContextItem[]
   totalCount: number
-  rangeStart: number
-  rangeEnd: number
-  page: number
-  totalPages: number
   sortBy: ContextSortBy
   sortDirection: ContextSortDirection
   search: string
   loading: boolean
+  loadingMore: boolean
+  hasMore: boolean
+  error: string | null
   emptyMessage: string
   onSearchChange: (value: string) => void
   onSortChange: (sortBy: ContextSortBy) => void
-  onPageChange: (page: number) => void
+  onLoadMore: () => void
 }
 
-function IndexedContextView({
+export function IndexedContextView({
   items,
   totalCount,
-  rangeStart,
-  rangeEnd,
-  page,
-  totalPages,
   sortBy,
   sortDirection,
   search,
   loading,
+  loadingMore,
+  hasMore,
+  error,
   emptyMessage,
   onSearchChange,
   onSortChange,
-  onPageChange,
+  onLoadMore,
 }: IndexedContextViewProps) {
-  const safeTotalPages = Math.max(1, totalPages)
-  const safePage = Math.min(Math.max(1, page), safeTotalPages)
-  const canGoPrevious = safePage > 1
-  const canGoNext = safePage < safeTotalPages
+  const scrollRegionRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (scrollRegionRef.current) scrollRegionRef.current.scrollTop = 0
+  }, [search, sortBy, sortDirection])
 
   return (
     <>
       <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div role="status" aria-live="polite" className="text-sm text-muted-foreground">
           {totalCount > 0
-            ? `Showing ${rangeStart}-${rangeEnd} of ${totalCount} active source work items available for retrieval.`
+            ? `Showing ${items.length} of ${totalCount} active source work items available for retrieval.${loadingMore ? " Loading more." : ""}`
             : search.trim()
               ? "No active source work items match the current search."
               : "No active source work items are available for retrieval yet."}
@@ -1813,13 +1225,27 @@ function IndexedContextView({
         </div>
       </div>
 
+      {error ? (
+        <div role="alert" className="mb-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span>{error}</span>
+        </div>
+      ) : null}
+
       {!items.length && loading ? (
         <KnowledgeLoadingState label="Loading indexed project context" compact />
       ) : items.length ? (
-        <div className="space-y-3">
-          <div className="content-scroll-region">
-            <Table className={`min-w-[760px] ${loading ? "opacity-60" : ""}`}>
-              <TableHeader>
+        <div
+          ref={scrollRegionRef}
+          role="region"
+          tabIndex={0}
+          aria-label="Scrollable indexed project context"
+          aria-busy={loading || loadingMore}
+          className="max-h-[min(68vh,680px)] overflow-auto overscroll-contain rounded-lg border border-border bg-card outline-none [scrollbar-gutter:stable] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
+          <div className="min-w-[760px]">
+            <Table containerClassName="overflow-visible" className={`transition-opacity duration-ui motion-reduce:transition-none ${loading ? "opacity-60" : ""}`}>
+              <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_hsl(var(--border))]">
                 <TableRow>
                   <TableHead>ID</TableHead>
                   <TableHead aria-sort={sortBy === "type" ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>
@@ -1851,33 +1277,24 @@ function IndexedContextView({
                 ))}
               </TableBody>
             </Table>
-          </div>
-          <div className="flex flex-col gap-3 border-t border-border pt-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-            <span>
-              Page {safePage} of {safeTotalPages}
-              {loading ? " - Loading" : ""}
-            </span>
-            <div className="flex gap-2">
-              <Button
-                size="icon-sm"
-                variant="outline"
-                disabled={!canGoPrevious || loading}
-                onClick={() => onPageChange(safePage - 1)}
-                aria-label="Previous page"
-                title="Previous page"
-              >
-                <ChevronLeft className="size-4" />
-              </Button>
-              <Button
-                size="icon-sm"
-                variant="outline"
-                disabled={!canGoNext || loading}
-                onClick={() => onPageChange(safePage + 1)}
-                aria-label="Next page"
-                title="Next page"
-              >
-                <ChevronRight className="size-4" />
-              </Button>
+            <div className="flex min-h-14 items-center justify-center border-t border-border bg-card/95 px-4 py-3 text-sm text-muted-foreground backdrop-blur-sm">
+              {hasMore ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={loading || loadingMore}
+                  onClick={onLoadMore}
+                  aria-label={`Load more indexed project context. ${items.length} of ${totalCount} currently shown.`}
+                >
+                  {loadingMore ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : null}
+                  {loadingMore ? "Loading more..." : "Load more"}
+                </Button>
+              ) : (
+                <span className="flex items-center gap-2">
+                  <Check className="size-4 text-success" aria-hidden="true" />
+                  All {totalCount} active source work items loaded
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -1894,7 +1311,7 @@ function IndexedContextView({
   )
 }
 
-function IndexSummary({ result }: { result: IndexResult }) {
+export function IndexSummary({ result }: { result: IndexResult }) {
   const metrics = [
     ["Fetched", result.fetchedCount],
     ["New", result.createdCount],
@@ -1930,7 +1347,73 @@ function IndexSummary({ result }: { result: IndexResult }) {
   )
 }
 
-function KnowledgeOpsPanel({
+export function KnowledgeCandidatesView({
+  candidates,
+  status,
+  loading,
+  canManage,
+  onStatusChange,
+  onAction,
+}: {
+  candidates: KnowledgeCandidate[]
+  status: KnowledgeCandidateStatus | "all"
+  loading: boolean
+  canManage: boolean
+  onStatusChange: (status: KnowledgeCandidateStatus | "all") => void
+  onAction: (candidateId: string, action: "reject" | "request_integration") => Promise<void>
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <div className="text-sm font-semibold text-foreground">Knowledge Candidates</div>
+          <div className="text-xs text-muted-foreground">Candidate answers remain non-authoritative until integrated through a reviewed draft.</div>
+        </div>
+        <Label className="space-y-1 text-xs sm:w-56">
+          <span>Status</span>
+          <select
+            value={status}
+            onChange={(event) => onStatusChange(event.target.value as KnowledgeCandidateStatus | "all")}
+            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+          >
+            <option value="all">All statuses</option>
+            <option value="legacy_ungrounded">Legacy ungrounded</option>
+            <option value="grounded">Grounded</option>
+            <option value="integration_requested">Integration requested</option>
+            <option value="rejected">Rejected</option>
+          </select>
+        </Label>
+      </div>
+      {loading ? <KnowledgeLoadingState label="Loading knowledge candidates" /> : candidates.length ? candidates.map((candidate) => (
+        <div key={candidate.id} className="rounded-md border border-border bg-card p-4 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline">{candidate.status.replaceAll("_", " ")}</Badge>
+            <span className="font-semibold text-foreground">{candidate.title}</span>
+          </div>
+          <div className="mt-2 whitespace-pre-wrap text-muted-foreground">{candidate.content}</div>
+          <div className="mt-3 text-xs text-muted-foreground">Sources: {candidate.sourceWorkItemIds.join(", ") || "No linked work items"}</div>
+          {candidate.evidenceRefs.length || candidate.citations.length ? (
+            <details className="mt-3 rounded-md bg-muted p-3">
+              <summary className="cursor-pointer text-xs font-semibold">Evidence and citations</summary>
+              <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify({ evidenceRefs: candidate.evidenceRefs, citations: candidate.citations }, null, 2)}</pre>
+            </details>
+          ) : null}
+          {candidate.rejectedReason ? <div className="mt-2 text-xs text-destructive">Rejected: {candidate.rejectedReason}</div> : null}
+          {canManage && !["rejected", "integration_requested"].includes(candidate.status) ? (
+            <div className="mt-3 flex justify-end gap-2">
+              <Button size="sm" variant="outline" disabled={loading} onClick={() => void onAction(candidate.id, "reject")}>Reject</Button>
+              {candidate.status === "grounded" ? (
+                <Button size="sm" disabled={loading} onClick={() => void onAction(candidate.id, "request_integration")}>Request Integration</Button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      )) : <KnowledgeEmptyState title="No candidates" message="No knowledge candidates match this status." />}
+    </div>
+  )
+}
+
+export function KnowledgeOpsPanel({
   lint,
   logItems,
   logVisible,
@@ -1938,9 +1421,13 @@ function KnowledgeOpsPanel({
   healthLoading,
   logLoading,
   exportLoading,
+  reportLoading,
+  canManage,
   onRunHealthCheck,
   onToggleLog,
   onExport,
+  onReportMiss,
+  onTransitionIssue,
 }: {
   lint: KnowledgeLintResult | null
   logItems: KnowledgeLogItem[]
@@ -1949,10 +1436,29 @@ function KnowledgeOpsPanel({
   healthLoading: boolean
   logLoading: boolean
   exportLoading: boolean
+  reportLoading: boolean
+  canManage: boolean
   onRunHealthCheck: () => void
   onToggleLog: () => void
   onExport: () => void
+  onReportMiss: (input: { missType: "duplicate" | "conflict"; title: string; message: string }) => Promise<boolean>
+  onTransitionIssue: (issueId: string, action: "confirm" | "reject" | "ignore" | "reopen") => Promise<void>
 }) {
+  const [missType, setMissType] = useState<"duplicate" | "conflict">("duplicate")
+  const [missTitle, setMissTitle] = useState("")
+  const [missMessage, setMissMessage] = useState("")
+  const [missSubmitted, setMissSubmitted] = useState(false)
+
+  async function submitMiss() {
+    if (!missTitle.trim() || !missMessage.trim()) return
+    setMissSubmitted(false)
+    const reported = await onReportMiss({ missType, title: missTitle.trim(), message: missMessage.trim() })
+    if (!reported) return
+    setMissTitle("")
+    setMissMessage("")
+    setMissSubmitted(true)
+  }
+
   return (
     <section className="content-surface space-y-3 p-4" aria-label="Compiled knowledge operations">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -1961,24 +1467,28 @@ function KnowledgeOpsPanel({
             <ShieldCheck className="size-4 shrink-0 text-primary" aria-hidden="true" />
             <span role="heading" aria-level={2} className="text-sm font-semibold text-foreground">Compiled Knowledge Operations</span>
           </div>
-          <div className="text-xs text-muted-foreground">Health checks, event history, and Markdown export for the source-backed knowledge layer.</div>
+          <div className="text-xs text-muted-foreground">Health checks, event history, and managed export for the source-backed knowledge layer.</div>
         </div>
         <div className="grid grid-cols-2 gap-2 min-[420px]:grid-cols-3 sm:flex sm:flex-wrap lg:shrink-0 lg:flex-nowrap">
-          <Button variant="outline" size="sm" onClick={onRunHealthCheck} disabled={healthLoading}>
-            {healthLoading ? <RefreshCw className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
-            <span className="sm:hidden">Health</span>
-            <span className="hidden sm:inline">Check health</span>
-          </Button>
+          {canManage ? (
+            <Button variant="outline" size="sm" onClick={onRunHealthCheck} disabled={healthLoading}>
+              {healthLoading ? <RefreshCw className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
+              <span className="sm:hidden">Health</span>
+              <span className="hidden sm:inline">Check health</span>
+            </Button>
+          ) : null}
           <Button variant={logVisible ? "secondary" : "outline"} size="sm" onClick={onToggleLog} disabled={logLoading} aria-expanded={logVisible}>
             {logLoading ? <RefreshCw className="size-4 animate-spin" /> : <History className="size-4" />}
             <span className="sm:hidden">{logVisible ? "Hide" : "Log"}</span>
             <span className="hidden sm:inline">{logVisible ? "Hide Log" : "Log"}</span>
           </Button>
-          <Button variant="outline" size="sm" onClick={onExport} disabled={exportLoading}>
-            {exportLoading ? <RefreshCw className="size-4 animate-spin" /> : <Download className="size-4" />}
-            <span className="sm:hidden">Export</span>
-            <span className="hidden sm:inline">Export Markdown</span>
-          </Button>
+          {canManage ? (
+            <Button variant="outline" size="sm" onClick={onExport} disabled={exportLoading}>
+              {exportLoading ? <RefreshCw className="size-4 animate-spin" /> : <Download className="size-4" />}
+              <span className="sm:hidden">Export</span>
+              <span className="hidden sm:inline">Export files</span>
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -1997,11 +1507,27 @@ function KnowledgeOpsPanel({
             <div key={issue.id} className="rounded-md border border-border bg-muted p-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant={issue.severity === "error" ? "destructive" : "secondary"}>{issue.severity}</Badge>
+                <Badge variant="outline">{issue.status}</Badge>
                 <span className="font-semibold text-foreground">{issue.title}</span>
               </div>
               <div className="mt-1 text-muted-foreground">{issue.message}</div>
+              {canManage && issue.origin === "human" && issue.status === "reported" ? (
+                <div className="mt-3 flex justify-end gap-2">
+                  <Button size="sm" variant="outline" disabled={healthLoading} onClick={() => void onTransitionIssue(issue.id, "reject")}>Reject report</Button>
+                  <Button size="sm" disabled={healthLoading} onClick={() => void onTransitionIssue(issue.id, "confirm")}>Confirm miss</Button>
+                </div>
+              ) : null}
+              {canManage && issue.origin === "deterministic" && issue.status === "open" ? (
+                <div className="mt-3 flex justify-end"><Button size="sm" variant="outline" disabled={healthLoading} onClick={() => void onTransitionIssue(issue.id, "ignore")}>Ignore</Button></div>
+              ) : null}
+              {canManage && ((issue.origin === "deterministic" && ["ignored", "resolved"].includes(issue.status)) || (issue.origin === "human" && ["confirmed", "rejected"].includes(issue.status))) ? (
+                <div className="mt-3 flex justify-end"><Button size="sm" variant="outline" disabled={healthLoading} onClick={() => void onTransitionIssue(issue.id, "reopen")}>Reopen</Button></div>
+              ) : null}
             </div>
           ))}
+          {lint.issues.length > 5 ? (
+            <p className="text-xs text-muted-foreground">Showing 5 of {lint.issues.length} issues.</p>
+          ) : null}
         </div>
       ) : lint ? (
         <div className="rounded-md border border-success/30 bg-success/10 p-3 text-sm text-success">
@@ -2009,9 +1535,108 @@ function KnowledgeOpsPanel({
         </div>
       ) : null}
 
+      <Accordion type="single" collapsible>
+        <AccordionItem
+          value="report-missed-knowledge-issue"
+          className="border-primary/25 bg-gradient-to-br from-primary/10 via-card to-info/10 shadow-sm transition-colors duration-ui motion-reduce:transition-none dark:border-primary/30"
+        >
+          <AccordionTrigger className="min-h-16 items-start py-4 hover:bg-primary/5 motion-reduce:transition-none [&>svg]:mt-2">
+            <div className="flex min-w-0 flex-1 items-start gap-3 pr-1">
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-sm">
+                <MessageSquareWarning className="size-5" aria-hidden="true" />
+              </span>
+              <span className="min-w-0 flex-1 text-left">
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-foreground">Report a missed duplicate or conflict</span>
+                </span>
+                <span className="mt-1 block text-xs font-normal leading-5 text-muted-foreground">
+                  Help improve semantic lint by flagging related knowledge that the automated check missed.
+                </span>
+              </span>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="bg-card/90 p-4">
+            <form
+              className="space-y-3"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void submitMiss()
+              }}
+            >
+              <p id="knowledge-miss-description" className="text-xs leading-5 text-muted-foreground">
+                Reports do not change knowledge. Owners or admins must confirm them before they count toward semantic-lint expansion.
+              </p>
+              <div className="grid gap-3 md:grid-cols-[180px_1fr]">
+                <div className="space-y-1">
+                  <Label htmlFor="knowledge-miss-type" className="text-xs">Miss type</Label>
+                  <select
+                    id="knowledge-miss-type"
+                    value={missType}
+                    onChange={(event) => {
+                      setMissType(event.target.value as "duplicate" | "conflict")
+                      setMissSubmitted(false)
+                    }}
+                    disabled={reportLoading}
+                    aria-describedby="knowledge-miss-description"
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none transition-colors duration-ui focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
+                  >
+                    <option value="duplicate">Duplicate</option>
+                    <option value="conflict">Conflict</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="knowledge-miss-title" className="text-xs">Title</Label>
+                  <Input
+                    id="knowledge-miss-title"
+                    value={missTitle}
+                    onChange={(event) => {
+                      setMissTitle(event.target.value)
+                      setMissSubmitted(false)
+                    }}
+                    maxLength={200}
+                    placeholder="What deterministic lint missed"
+                    disabled={reportLoading}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="knowledge-miss-evidence" className="text-xs">Evidence and impact</Label>
+                <Textarea
+                  id="knowledge-miss-evidence"
+                  value={missMessage}
+                  onChange={(event) => {
+                    setMissMessage(event.target.value)
+                    setMissSubmitted(false)
+                  }}
+                  maxLength={2000}
+                  placeholder="Describe the entries, concrete mismatch, and relevant source IDs."
+                  disabled={reportLoading}
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">
+                <div role="status" aria-live="polite" className="min-h-5 text-sm text-success">
+                  {missSubmitted ? (
+                    <span className="flex items-center gap-2">
+                      <Check className="size-4" aria-hidden="true" />
+                      Report submitted for review.
+                    </span>
+                  ) : null}
+                </div>
+                <Button type="submit" size="sm" disabled={reportLoading || !missTitle.trim() || !missMessage.trim()} aria-busy={reportLoading}>
+                  {reportLoading ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Send className="size-4" aria-hidden="true" />}
+                  {reportLoading ? "Reporting..." : "Report miss"}
+                </Button>
+              </div>
+            </form>
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
+
       {exportResult ? (
         <div className="rounded-md border border-primary/40 bg-accent p-3 text-sm text-primary">
-          Exported {exportResult.fileCount} Markdown files to <span className="font-mono">{exportResult.exportRoot}</span>.
+          Exported {exportResult.fileCount} knowledge files to <span className="font-mono">{exportResult.exportRoot}</span>.
         </div>
       ) : null}
 
@@ -2040,7 +1665,7 @@ function KnowledgeOpsPanel({
   )
 }
 
-function KnowledgeMetric({ label, value, tone }: { label: string; value: number; tone?: "error" | "warning" }) {
+function KnowledgeMetric({ label, value, tone }: { label: string; value: number | string; tone?: "error" | "warning" }) {
   const valueClass = tone === "error" ? "text-destructive" : tone === "warning" ? "text-warning-foreground dark:text-warning" : "text-foreground"
   return (
     <div className="rounded-md border border-border bg-card p-3">
@@ -2050,32 +1675,57 @@ function KnowledgeMetric({ label, value, tone }: { label: string; value: number;
   )
 }
 
-function KnowledgeExplorer({ knowledgeBase, compact = false }: { knowledgeBase: ProjectKnowledgeBase; compact?: boolean }) {
+export function KnowledgeExplorer({
+  knowledgeBase,
+  compact = false,
+  highlightedEntryIdentities = NO_HIGHLIGHTED_KNOWLEDGE_ENTRIES,
+}: {
+  knowledgeBase: ProjectKnowledgeBase
+  compact?: boolean
+  highlightedEntryIdentities?: string[]
+}) {
   const [category, setCategory] = useState<KnowledgeExplorerCategory>("all")
   const [query, setQuery] = useState("")
   const [page, setPage] = useState(1)
+  const scrollRegionRef = useRef<HTMLDivElement | null>(null)
   const entries = useMemo(() => flattenKnowledgeEntries(knowledgeBase), [knowledgeBase])
   const counts = useMemo(() => getKnowledgeCategoryCounts(knowledgeBase), [knowledgeBase])
-  const normalizedQuery = normalizeSearch(query)
-  const filteredEntries = entries.filter((entry) => {
+  const deferredQuery = useDeferredValue(query)
+  const normalizedQuery = normalizeSearch(deferredQuery)
+  const filteredEntries = useMemo(() => entries.filter((entry) => {
     const categoryMatch = category === "all" || entry.category === category
-    const textMatch = !normalizedQuery || normalizeSearch(entry.searchText).includes(normalizedQuery)
+    const textMatch = !normalizedQuery || entry.searchText.includes(normalizedQuery)
     return categoryMatch && textMatch
-  })
-  const pageSize = compact ? 5 : 8
+  }), [category, entries, normalizedQuery])
+  const highlightedEntryIdentitySet = useMemo(
+    () => new Set(highlightedEntryIdentities),
+    [highlightedEntryIdentities],
+  )
+  const pageSize = 5
   const totalPages = Math.max(1, Math.ceil(filteredEntries.length / pageSize))
   const safePage = Math.min(page, totalPages)
   const pageStart = filteredEntries.length === 0 ? 0 : (safePage - 1) * pageSize + 1
   const pageEnd = Math.min(filteredEntries.length, safePage * pageSize)
-  const visibleEntries = filteredEntries.slice((safePage - 1) * pageSize, safePage * pageSize)
+  const visibleEntries = compact
+    ? filteredEntries.slice((safePage - 1) * pageSize, safePage * pageSize)
+    : filteredEntries
 
   useEffect(() => {
     setPage(1)
-  }, [category, query, compact, knowledgeBase])
+    if (scrollRegionRef.current) scrollRegionRef.current.scrollTop = 0
+  }, [category, deferredQuery, compact, knowledgeBase])
+
+  useEffect(() => {
+    const highlightedIndex = entries.findIndex((entry) => highlightedEntryIdentities.includes(entry.highlightIdentity))
+    if (highlightedIndex < 0) return
+    setCategory("all")
+    setQuery("")
+    setPage(Math.floor(highlightedIndex / pageSize) + 1)
+  }, [entries, highlightedEntryIdentities, pageSize])
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <div className="w-full min-w-0 max-w-full space-y-3">
+      <div className="flex min-w-0 max-w-full flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div role="status" aria-live="polite" className="text-sm text-muted-foreground">
           {filteredEntries.length} entries match the current filters.
         </div>
@@ -2090,19 +1740,21 @@ function KnowledgeExplorer({ knowledgeBase, compact = false }: { knowledgeBase: 
           />
         </div>
       </div>
-      <div className={`grid gap-4 ${compact ? "lg:grid-cols-[180px_1fr]" : "lg:grid-cols-[190px_1fr]"}`}>
-        <div className="-mx-1 px-1 lg:mx-0 lg:px-0">
-          <div role="group" aria-label="Knowledge categories" className="flex flex-wrap gap-1 lg:block lg:space-y-1">
-            <KnowledgeCategoryButton
+      <div className={`grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)] gap-4 ${compact ? "lg:grid-cols-[208px_minmax(0,1fr)]" : "lg:grid-cols-[216px_minmax(0,1fr)]"}`}>
+        <div className="-mx-1 min-w-0 max-w-full px-1 lg:mx-0 lg:px-0">
+          <div role="group" aria-label="Knowledge categories" className="flex min-w-0 max-w-full flex-wrap gap-1 lg:block lg:space-y-1">
+            <KnowledgeCategoryFilterButton
               label="All"
+              iconKey="all"
               count={entries.length}
               active={category === "all"}
               onClick={() => setCategory("all")}
             />
             {KNOWLEDGE_CATEGORIES.map((item) => (
-              <KnowledgeCategoryButton
+              <KnowledgeCategoryFilterButton
                 key={item.key}
                 label={item.label}
+                iconKey={item.iconKey}
                 count={counts[item.key]}
                 active={category === item.key}
                 onClick={() => setCategory(item.key)}
@@ -2110,9 +1762,24 @@ function KnowledgeExplorer({ knowledgeBase, compact = false }: { knowledgeBase: 
             ))}
           </div>
         </div>
-        <div className={`space-y-3 ${compact ? "max-h-[520px] overflow-y-auto pr-1" : ""}`}>
+        <div
+          ref={scrollRegionRef}
+          role="region"
+          tabIndex={0}
+          aria-label={compact ? "Scrollable knowledge preview" : "Scrollable knowledge explorer results"}
+          className={`w-full min-w-0 max-w-full space-y-3 overflow-x-clip overflow-y-auto overscroll-contain pr-2 outline-none [scrollbar-gutter:stable] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+            compact ? "max-h-[520px]" : "max-h-[min(68vh,680px)]"
+          }`}
+        >
           {visibleEntries.length ? (
-            visibleEntries.map((entry) => <KnowledgeExplorerEntryCard key={entry.key} entry={entry} compact={compact} />)
+            visibleEntries.map((entry) => (
+              <KnowledgeEntryCard
+                key={entry.key}
+                entry={entry}
+                compact={compact}
+                highlighted={highlightedEntryIdentitySet.has(entry.highlightIdentity)}
+              />
+            ))
           ) : (
             <KnowledgeEmptyState
               title="No knowledge entries match"
@@ -2125,7 +1792,7 @@ function KnowledgeExplorer({ knowledgeBase, compact = false }: { knowledgeBase: 
               compact
             />
           )}
-          {filteredEntries.length > pageSize ? (
+          {compact && filteredEntries.length > pageSize ? (
             <div className="flex flex-col gap-3 border-t border-border pt-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
               <span className="tabular-nums">Showing {pageStart}-{pageEnd} of {filteredEntries.length}</span>
               <div className="flex gap-2">
@@ -2144,93 +1811,28 @@ function KnowledgeExplorer({ knowledgeBase, compact = false }: { knowledgeBase: 
   )
 }
 
-function KnowledgeCategoryButton({
-  label,
-  count,
-  active,
-  onClick,
-}: {
-  label: string
-  count: number
-  active: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={`flex min-h-10 w-auto shrink-0 items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm font-medium outline-none transition-colors duration-ui focus-visible:ring-2 focus-visible:ring-ring lg:w-full ${
-        active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"
-      }`}
-    >
-      <span>{label}</span>
-      <span className="rounded-sm border border-border bg-card px-1.5 py-0.5 text-xs text-muted-foreground">{count}</span>
-    </button>
-  )
-}
-
-function KnowledgeExplorerEntryCard({ entry, compact }: { entry: KnowledgeExplorerEntry; compact?: boolean }) {
-  const description = entry.description.trim()
-
-  return (
-    <article className="knowledge-entry rounded-lg border border-border bg-muted/60 p-4 transition-colors duration-ui hover:border-primary/40 hover:bg-muted focus-within:ring-2 focus-within:ring-ring">
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary">{entry.badge}</Badge>
-            <span className="font-semibold text-foreground">{entry.title}</span>
-          </div>
-          {description ? (
-            <div className={`mt-2 text-sm text-muted-foreground ${compact ? "line-clamp-2" : ""}`}>
-              {description}
-            </div>
-          ) : null}
-        </div>
-        <div role="group" aria-label="Source work item IDs" className="flex max-w-[420px] flex-wrap gap-1">
-          {entry.sourceWorkItemIds.slice(0, compact ? 6 : 10).map((id) => (
-            <Badge key={id} variant="outline" className="font-mono text-xs tabular-nums">{id}</Badge>
-          ))}
-          {entry.sourceWorkItemIds.length > (compact ? 6 : 10) ? (
-            <Badge
-              variant="outline"
-              className="font-mono text-xs tabular-nums text-muted-foreground"
-              aria-label={`${entry.sourceWorkItemIds.length - (compact ? 6 : 10)} more source work items`}
-              title={entry.sourceWorkItemIds.slice(compact ? 6 : 10).join(", ")}
-            >
-              +{entry.sourceWorkItemIds.length - (compact ? 6 : 10)}
-            </Badge>
-          ) : null}
-        </div>
-      </div>
-      {entry.meta.length ? (
-        <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
-          {entry.meta.map((meta) => <Badge key={meta} variant="secondary">{meta}</Badge>)}
-        </div>
-      ) : null}
-      <div className={`mt-3 rounded-md bg-card p-3 text-sm text-muted-foreground ${compact ? "line-clamp-2" : ""}`}>
-        <span className="font-semibold text-foreground">Evidence:</span> {entry.evidence}
-      </div>
-    </article>
-  )
-}
-
 function KnowledgeLoadingState({ label, compact = false }: { label: string; compact?: boolean }) {
   const rows = Array.from({ length: compact ? 2 : 4 }).map((_, index) => (
-    <div key={index} className="rounded-lg border border-border bg-muted/30 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 space-y-3">
-          <Skeleton className="h-4 w-2/5" />
-          <Skeleton className="h-3 w-full" />
-          <Skeleton className="h-3 w-4/5" />
+    <div key={index} className="rounded-lg border border-border bg-muted/30 p-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-5 w-16 rounded-full" />
+            <Skeleton className="h-4 w-2/5" />
+          </div>
+          <Skeleton className="mt-2 h-3 w-3/5" />
         </div>
-        <Skeleton className="h-6 w-12" />
+        <div className="flex shrink-0 items-center gap-2">
+          <Skeleton className="h-5 w-16 rounded-full" />
+          <Skeleton className="h-5 w-24 rounded-full" />
+          <Skeleton className="size-5 rounded-sm" />
+        </div>
       </div>
     </div>
   ))
 
   return (
-    <div role="status" aria-live="polite" aria-label={label} className="space-y-3">
+    <div role="status" aria-live="polite" aria-label={label} className="min-w-0 max-w-full space-y-3">
       <span className="sr-only">{label}</span>
       {compact ? (
         <div className="space-y-3">{rows}</div>
@@ -2240,13 +1842,13 @@ function KnowledgeLoadingState({ label, compact = false }: { label: string; comp
             <Skeleton className="h-4 w-48" />
             <Skeleton className="h-9 w-full lg:w-[420px]" />
           </div>
-          <div className="grid gap-4 lg:grid-cols-[190px_1fr]">
-            <div className="space-y-1">
+          <div className="grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[216px_minmax(0,1fr)]">
+            <div className="min-w-0 max-w-full space-y-1">
               {Array.from({ length: 5 }).map((_, index) => (
                 <Skeleton key={index} className="h-10 w-full" />
               ))}
             </div>
-            <div className="space-y-3">{rows}</div>
+            <div className="min-w-0 max-w-full space-y-3">{rows}</div>
           </div>
         </>
       )}
@@ -2287,8 +1889,15 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
       const title = knowledgeTitle(category.key, item)
       const description = knowledgeDescription(category.key, item)
       const meta = knowledgeMeta(category.key, item)
+      const details = knowledgeDetails(category.key, item)
+      const evidenceItems = item.evidenceRefs?.map((evidence) => ({
+        sourceWorkItemId: evidence.sourceWorkItemId,
+        sourceField: evidence.sourceField,
+        quote: evidence.quote,
+      }))
       return {
         key: knowledgeItemKey(category.key, item, index),
+        highlightIdentity: knowledgeHighlightIdentity(category.key, item),
         category: category.key,
         categoryLabel: category.label,
         badge: category.badge,
@@ -2297,17 +1906,29 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
         evidence: item.evidence,
         sourceWorkItemIds: item.sourceWorkItemIds,
         meta,
-        searchText: [
+        details,
+        evidenceItems,
+        searchText: normalizeSearch([
           category.label,
           title,
           description,
           item.evidence,
-          item.sourceWorkItemIds.join(" "),
-          meta.join(" "),
-        ].join(" "),
+          ...item.sourceWorkItemIds,
+          ...meta,
+          ...details.flatMap((detail) => [detail.id, detail.label, detail.value]),
+          ...(evidenceItems ?? []).flatMap((evidence) => [
+            evidence.sourceWorkItemId,
+            evidence.sourceField,
+            evidence.quote,
+          ]),
+        ].join(" ")),
       }
     })
   })
+}
+
+function knowledgeHighlightIdentity(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) {
+  return `${category}:${JSON.stringify(item)}`
 }
 
 function knowledgeItemKey(category: KnowledgeCategoryKey, item: AnyKnowledgeItem, index: number) {
@@ -2344,6 +1965,52 @@ function knowledgeMeta(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) {
   ].filter((value): value is string => Boolean(value))
 }
 
+function knowledgeDetails(category: KnowledgeCategoryKey, item: AnyKnowledgeItem) {
+  const details = category === "modules"
+    ? [
+        knowledgeDetail("id", "ID", item.id),
+        knowledgeDetail("name", "Name", item.name),
+        knowledgeDetail("description", "Description", item.description),
+      ]
+    : category === "businessRules"
+      ? [
+          knowledgeDetail("id", "ID", item.id),
+          knowledgeDetail("rule", "Rule", item.rule),
+          knowledgeDetail("sourceField", "Source field", item.sourceField),
+          knowledgeDetail("moduleName", "Module", item.moduleName),
+        ]
+      : category === "stateTransitions"
+        ? [
+            knowledgeDetail("id", "ID", item.id),
+            knowledgeDetail("workflowName", "Workflow", item.workflowName),
+            knowledgeDetail("fromState", "From state", item.fromState),
+            knowledgeDetail("toState", "To state", item.toState),
+            knowledgeDetail("triggerOrCondition", "Trigger or condition", item.triggerOrCondition),
+            knowledgeDetail("actor", "Actor", item.actor),
+            knowledgeDetail("moduleName", "Module", item.moduleName),
+          ]
+        : category === "glossary"
+          ? [
+              knowledgeDetail("term", "Term", item.term),
+              knowledgeDetail("type", "Type", formatGlossaryType(item.type)),
+              knowledgeDetail("definition", "Definition", item.definition),
+            ]
+          : [
+              knowledgeDetail("id", "ID", item.id),
+              knowledgeDetail("sourceModule", "Source", item.sourceModule),
+              knowledgeDetail("targetModule", "Target", item.targetModule),
+              knowledgeDetail("dependencyType", "Dependency type", item.dependencyType),
+              knowledgeDetail("description", "Description", item.description),
+            ]
+
+  return details.filter((detail): detail is NonNullable<typeof detail> => Boolean(detail))
+}
+
+function knowledgeDetail(id: string, label: string, value?: string) {
+  const normalized = value?.trim()
+  return normalized ? { id, label, value: normalized } : null
+}
+
 function getKnowledgeCategoryCounts(knowledgeBase: ProjectKnowledgeBase) {
   return {
     modules: knowledgeBase.modules.length,
@@ -2356,28 +2023,6 @@ function getKnowledgeCategoryCounts(knowledgeBase: ProjectKnowledgeBase) {
 
 function countKnowledgeItems(knowledgeBase: ProjectKnowledgeBase) {
   return Object.values(getKnowledgeCategoryCounts(knowledgeBase)).reduce((sum, count) => sum + count, 0)
-}
-
-function combineKnowledgeBasesForPreview(knowledgeBases: ProjectKnowledgeBase[]): ProjectKnowledgeBase {
-  return {
-    modules: knowledgeBases.flatMap((base) => base.modules),
-    businessRules: knowledgeBases.flatMap((base) => base.businessRules),
-    stateTransitions: knowledgeBases.flatMap((base) => base.stateTransitions),
-    glossary: knowledgeBases.flatMap((base) => base.glossary),
-    crossDependencies: knowledgeBases.flatMap((base) => base.crossDependencies),
-  }
-}
-
-function filterKnowledgeBaseBySource(knowledgeBase: ProjectKnowledgeBase, sourceIds: Set<string>): ProjectKnowledgeBase {
-  const keep = <TItem extends KnowledgeSource>(items: TItem[]) =>
-    items.filter((item) => item.sourceWorkItemIds.some((id) => sourceIds.has(id.trim())))
-  return {
-    modules: keep(knowledgeBase.modules),
-    businessRules: keep(knowledgeBase.businessRules),
-    stateTransitions: keep(knowledgeBase.stateTransitions),
-    glossary: keep(knowledgeBase.glossary),
-    crossDependencies: keep(knowledgeBase.crossDependencies),
-  }
 }
 
 function syncStatusToneClass(status?: string | null) {

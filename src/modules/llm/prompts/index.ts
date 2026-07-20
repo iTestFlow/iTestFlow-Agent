@@ -2,10 +2,7 @@ export type { SystemPromptDefinition } from "./prompt.types";
 export { buildBugReportSystemPrompt, bugReportPrompt } from "./bug-report.prompt";
 export { contextSelectionPrompt } from "./context-selection.prompt";
 export { existingTestCaseReviewPrompt } from "./existing-test-case-review.prompt";
-export {
-  projectKnowledgeConsolidationPrompt,
-  projectKnowledgeExtractionPrompt,
-} from "./project-knowledge-extraction.prompt";
+export { projectKnowledgeExtractionPrompt } from "./project-knowledge-extraction.prompt";
 export {
   allRequirementAnalysisChecklistItemIds,
   buildRequirementAnalysisSystemPrompt,
@@ -20,4 +17,3 @@ export {
 } from "./structured-output.prompt";
 export { buildTestCaseGenerationSystemPrompt, testCaseGenerationPrompt } from "./test-case-generation.prompt";
 export { testExecutionEffortPrompt } from "./test-execution-effort.prompt";
-export { getLlmPrompt, llmPromptRegistry, type LlmPromptKey } from "./registry";

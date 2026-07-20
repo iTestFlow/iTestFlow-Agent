@@ -73,6 +73,7 @@ export type WorkItemTypeField = {
 
 export type Requirement = {
   id: string;
+  revision?: number;
   azureProjectId: string;
   /**
    * The work item's true owning project NAME, read from System.TeamProject.

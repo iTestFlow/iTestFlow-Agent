@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   reviewExistingLinkedTestCases: vi.fn(),
   resolveWorkflowContext: vi.fn(),
   getRetrievalTopK: vi.fn(),
-  getSavedProjectKnowledgeBase: vi.fn(),
+  loadProjectKnowledgeContext: vi.fn(),
   writeGenerationFailureAudit: vi.fn(),
   startWorkflowRun: vi.fn(),
   updateWorkflowRun: vi.fn(),
@@ -44,7 +44,7 @@ vi.mock("@/modules/rag/retrieval-config", () => ({
   getRetrievalTopK: mocks.getRetrievalTopK,
 }));
 vi.mock("@/modules/rag/project-knowledge.service", () => ({
-  getSavedProjectKnowledgeBase: mocks.getSavedProjectKnowledgeBase,
+  loadProjectKnowledgeContext: mocks.loadProjectKnowledgeContext,
 }));
 vi.mock("@/modules/audit/generation-failure-audit", () => ({
   writeGenerationFailureAudit: mocks.writeGenerationFailureAudit,
@@ -110,7 +110,7 @@ describe("POST /api/existing-test-case-review/run", () => {
       retrievalTopK: 5,
     });
     mocks.getRetrievalTopK.mockResolvedValue(5);
-    mocks.getSavedProjectKnowledgeBase.mockResolvedValue(null);
+    mocks.loadProjectKnowledgeContext.mockResolvedValue({ knowledgeBase: null, health: null, usage: "raw_only", promptNotice: null });
     mocks.startWorkflowRun.mockReturnValue("run-1");
     mocks.reviewExistingLinkedTestCases.mockResolvedValue({
       provider: "openai",

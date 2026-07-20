@@ -27,6 +27,7 @@ export async function generateBugReport(input: {
   customFields?: BugCustomFieldValue[];
   attachments?: BugAttachmentDescriptor[];
   projectKnowledgeBase?: unknown | null;
+  projectKnowledgeNotice?: string | null;
 }) {
   const scope = assertProjectScope(input.scope);
   const promptDraft = buildBugReportPromptDraft(input);
@@ -77,6 +78,7 @@ export function buildBugReportPromptDraft(input: {
   customFields?: BugCustomFieldValue[];
   attachments?: BugAttachmentDescriptor[];
   projectKnowledgeBase?: unknown | null;
+  projectKnowledgeNotice?: string | null;
 }) {
   const scope = assertProjectScope(input.scope);
   const systemPrompt = buildBugReportSystemPrompt();
@@ -88,6 +90,7 @@ export function buildBugReportPromptDraft(input: {
     customFields: normalizePromptCustomFields(input.customFields),
     attachments: normalizePromptAttachments(input.attachments),
     projectKnowledgeBase: input.projectKnowledgeBase,
+    projectKnowledgeNotice: input.projectKnowledgeNotice,
   });
 
   return {
@@ -150,6 +153,7 @@ function buildBugReportMarkdownPrompt(input: {
   customFields: BugCustomFieldValue[];
   attachments: BugAttachmentDescriptor[];
   projectKnowledgeBase?: unknown | null;
+  projectKnowledgeNotice?: string | null;
 }) {
   return [
     "# Current Project",
@@ -171,6 +175,7 @@ function buildBugReportMarkdownPrompt(input: {
     "# Attachments",
     renderAttachments(input.attachments),
     "",
+    ...(input.projectKnowledgeNotice ? ["# Knowledge Authority", input.projectKnowledgeNotice, ""] : []),
     "# Saved Project Knowledge",
     renderProjectKnowledge(input.projectKnowledgeBase),
     "",

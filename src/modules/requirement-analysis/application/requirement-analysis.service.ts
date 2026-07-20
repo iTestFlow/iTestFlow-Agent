@@ -23,6 +23,7 @@ export async function runRequirementAnalysis(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  projectKnowledgeNotice?: string | null;
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   extraInstructions?: string;
 }) {
@@ -33,6 +34,7 @@ export async function runRequirementAnalysis(input: {
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
+    projectKnowledgeNotice: input.projectKnowledgeNotice,
     enabledChecklistItemIds: input.enabledChecklistItemIds,
     extraInstructions: input.extraInstructions,
   });
@@ -88,6 +90,7 @@ export function buildRequirementAnalysisPromptDraft(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  projectKnowledgeNotice?: string | null;
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   extraInstructions?: string;
 }) {
@@ -103,6 +106,7 @@ export function buildRequirementAnalysisPromptDraft(input: {
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
+    projectKnowledgeNotice: input.projectKnowledgeNotice,
     extraInstructions: input.extraInstructions,
     outputContract: buildRequirementOutputContract(enabledChecklistItemIds),
   });

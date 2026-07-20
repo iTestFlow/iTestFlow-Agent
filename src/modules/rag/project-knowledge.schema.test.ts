@@ -4,6 +4,12 @@ import {
   ProjectKnowledgeBaseSchema,
   ProjectKnowledgeGlossaryTermSchema,
   ProjectKnowledgeModuleSchema,
+  haveEquivalentNonEmptyEvidenceContent,
+  haveIdenticalNonEmptyEvidenceContent,
+  projectKnowledgeEvidenceContentEquivalenceIdentity,
+  projectKnowledgeEvidenceContentIdentity,
+  projectKnowledgeEvidenceContentIdentitySet,
+  type ProjectKnowledgeEvidenceRef,
 } from "./project-knowledge.schema";
 
 const glossaryEntry = (overrides: Record<string, unknown>) => ({
@@ -17,8 +23,8 @@ const glossaryEntry = (overrides: Record<string, unknown>) => ({
 
 const parseGlossary = (glossary: unknown[]) => ProjectKnowledgeBaseSchema.parse({ glossary }).glossary;
 
-describe("glossary deduplication", () => {
-  it("keeps the most business-like type and merges source IDs and evidence across duplicates", () => {
+describe("glossary duplicate identity preservation", () => {
+  it("preserves normalized duplicate terms for downstream hard-conflict detection", () => {
     const glossary = parseGlossary([
       // Same term modulo case/whitespace; types span the preference order.
       glossaryEntry({ term: "Shopping Cart", type: "term", definition: "Basic cart", sourceWorkItemIds: ["1", "2"], evidence: "Seen in WI 1 | Seen in WI 2" }),
@@ -29,20 +35,14 @@ describe("glossary deduplication", () => {
     ]);
 
     expect(glossary).toEqual([
-      {
-        // business_entity outranks system and term; the winner keeps its own term/definition.
-        term: "SHOPPING CART",
-        type: "business_entity",
-        definition: "The customer's cart",
-        // IDs and evidence merge across all duplicates in first-seen order, deduped.
-        sourceWorkItemIds: ["1", "2", "3", "4"],
-        evidence: "Seen in WI 1 | Seen in WI 2 | Seen in WI 3 | Seen in WI 4",
-      },
+      { term: "Shopping Cart", type: "term", definition: "Basic cart", sourceWorkItemIds: ["1", "2"], evidence: "Seen in WI 1 | Seen in WI 2" },
+      { term: "shopping  cart", type: "system", definition: "Cart subsystem", sourceWorkItemIds: ["2", "3"], evidence: "Seen in WI 2 | Seen in WI 3" },
+      { term: "SHOPPING CART", type: "business_entity", definition: "The customer's cart", sourceWorkItemIds: ["4"], evidence: "Seen in WI 4" },
       { term: "Order", type: "business_entity", definition: "An order", sourceWorkItemIds: ["5"], evidence: "WI 5" },
     ]);
   });
 
-  it("breaks type ties by longer definition but never lets definition length outrank type", () => {
+  it("does not silently select one projection when duplicate terms disagree", () => {
     const glossary = parseGlossary([
       glossaryEntry({ term: "Refund", type: "process", definition: "Short", sourceWorkItemIds: ["1"], evidence: "A" }),
       glossaryEntry({ term: "refund", type: "process", definition: "A longer refund process definition", sourceWorkItemIds: ["2"], evidence: "B" }),
@@ -50,14 +50,11 @@ describe("glossary deduplication", () => {
       glossaryEntry({ term: "REFUND", type: "term", definition: "An even longer definition that must not win on length alone", sourceWorkItemIds: ["3"], evidence: "C" }),
     ]);
 
-    expect(glossary).toEqual([
-      {
-        term: "refund",
-        type: "process",
-        definition: "A longer refund process definition",
-        sourceWorkItemIds: ["1", "2", "3"],
-        evidence: "A | B | C",
-      },
+    expect(glossary).toHaveLength(3);
+    expect(glossary.map((entry) => entry.definition)).toEqual([
+      "Short",
+      "A longer refund process definition",
+      "An even longer definition that must not win on length alone",
     ]);
   });
 });
@@ -189,5 +186,114 @@ describe("source work item IDs normalization", () => {
   it("defaults a blank description to the evidence text", () => {
     expect(parseModule({ evidence: "From WI 7" }).description).toBe("From WI 7");
     expect(parseModule({ description: "  Trimmed  ", evidence: "From WI 7" }).description).toBe("Trimmed");
+  });
+});
+
+describe("evidence content identity", () => {
+  const ref = (overrides: Partial<ProjectKnowledgeEvidenceRef> = {}): ProjectKnowledgeEvidenceRef => ({
+    sourceSnapshotId: "snapshot-1",
+    sourceWorkItemId: "10",
+    sourceField: "acceptanceCriteria",
+    quote: "Valid code applies discount",
+    origin: "generated_v2",
+    verification: "exact",
+    ...overrides,
+  });
+
+  it("ignores snapshot ids, locators, and quote whitespace", () => {
+    const identity = projectKnowledgeEvidenceContentIdentity(ref());
+    expect(projectKnowledgeEvidenceContentIdentity(ref({
+      sourceSnapshotId: "snapshot-2",
+      locator: { line: 3 },
+      quote: "  Valid code   applies discount ",
+    }))).toBe(identity);
+    expect(projectKnowledgeEvidenceContentIdentity(ref({ sourceWorkItemId: "11" }))).not.toBe(identity);
+    expect(projectKnowledgeEvidenceContentIdentity(ref({ sourceField: "description" }))).not.toBe(identity);
+    expect(projectKnowledgeEvidenceContentIdentity(ref({ quote: "Another quote" }))).not.toBe(identity);
+  });
+
+  it("dedupes and sorts identity sets", () => {
+    const set = projectKnowledgeEvidenceContentIdentitySet([
+      ref({ sourceSnapshotId: "b" }),
+      ref({ sourceSnapshotId: "a" }),
+      ref({ sourceWorkItemId: "11" }),
+    ]);
+    expect(set).toHaveLength(2);
+    expect([...set].sort()).toEqual(set);
+    expect(projectKnowledgeEvidenceContentIdentitySet(undefined)).toEqual([]);
+  });
+
+  it("compares evidence content across snapshot churn and rejects empty sides", () => {
+    expect(haveIdenticalNonEmptyEvidenceContent(
+      [ref({ sourceSnapshotId: "old" })],
+      [ref({ sourceSnapshotId: "new" })],
+    )).toBe(true);
+    expect(haveIdenticalNonEmptyEvidenceContent([], [])).toBe(false);
+    expect(haveIdenticalNonEmptyEvidenceContent([ref()], undefined)).toBe(false);
+    expect(haveIdenticalNonEmptyEvidenceContent(
+      [ref()],
+      [ref(), ref({ sourceWorkItemId: "11" })],
+    )).toBe(false);
+    expect(haveIdenticalNonEmptyEvidenceContent(
+      [ref()],
+      [ref({ quote: "Different" })],
+    )).toBe(false);
+  });
+
+  it("keeps the strict identity sensitive to punctuation and case", () => {
+    const identity = projectKnowledgeEvidenceContentIdentity(ref());
+    expect(projectKnowledgeEvidenceContentIdentity(ref({ quote: "Valid code applies discount." }))).not.toBe(identity);
+    expect(projectKnowledgeEvidenceContentIdentity(ref({ quote: "valid code applies discount" }))).not.toBe(identity);
+  });
+});
+
+describe("evidence content equivalence", () => {
+  const ref = (overrides: Partial<ProjectKnowledgeEvidenceRef> = {}): ProjectKnowledgeEvidenceRef => ({
+    sourceSnapshotId: "snapshot-1",
+    sourceWorkItemId: "10",
+    sourceField: "acceptanceCriteria",
+    quote: "Valid code applies discount",
+    origin: "generated_v2",
+    verification: "exact",
+    ...overrides,
+  });
+
+  it("ignores terminal punctuation, wrapping quotes, and case drift", () => {
+    const identity = projectKnowledgeEvidenceContentEquivalenceIdentity(ref());
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ quote: "Valid code applies discount." })))
+      .toBe(identity);
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ quote: "valid code applies DISCOUNT" })))
+      .toBe(identity);
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ quote: "\"Valid code applies discount.\"" })))
+      .toBe(identity);
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ quote: "'Valid code applies discount'!" })))
+      .toBe(identity);
+  });
+
+  it("still distinguishes source, field, and interior wording", () => {
+    const identity = projectKnowledgeEvidenceContentEquivalenceIdentity(ref());
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ sourceWorkItemId: "11" }))).not.toBe(identity);
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ sourceField: "description" }))).not.toBe(identity);
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ quote: "Valid code, applies discount" })))
+      .not.toBe(identity);
+    expect(projectKnowledgeEvidenceContentEquivalenceIdentity(ref({ quote: "Invalid code applies discount" })))
+      .not.toBe(identity);
+  });
+
+  it("compares evidence sets with the relaxed quote form and rejects empty sides", () => {
+    expect(haveEquivalentNonEmptyEvidenceContent(
+      [ref({ quote: "retry does not duplicate payment or order." })],
+      [ref({ quote: "retry does not duplicate payment or order" })],
+    )).toBe(true);
+    expect(haveEquivalentNonEmptyEvidenceContent([], [])).toBe(false);
+    expect(haveEquivalentNonEmptyEvidenceContent([ref()], undefined)).toBe(false);
+    expect(haveEquivalentNonEmptyEvidenceContent(
+      [ref()],
+      [ref(), ref({ sourceWorkItemId: "11" })],
+    )).toBe(false);
+    expect(haveEquivalentNonEmptyEvidenceContent(
+      [ref()],
+      [ref({ quote: "A different claim entirely" })],
+    )).toBe(false);
   });
 });

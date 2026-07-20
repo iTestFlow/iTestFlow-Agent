@@ -53,6 +53,7 @@ export async function POST(request: Request) {
       resolvedContextUsed: data.resolvedContextUsed,
       retrievalTopK: data.retrievalTopK,
       options: TestExecutionEffortOptionsSchema.parse(parsed.data),
+      warnings: data.projectKnowledgeNotice ? [data.projectKnowledgeNotice] : undefined,
     });
   } catch (error) {
     const authResponse = authErrorResponse(error);

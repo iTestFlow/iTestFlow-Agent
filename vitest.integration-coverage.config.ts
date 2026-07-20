@@ -26,6 +26,7 @@ export default mergeConfig(integrationConfig, {
         "src/modules/projects/workspace-projects.service.ts",
         "src/modules/rag/context-auto-update-run-history.service.ts",
         "src/modules/rag/project-context-store.service.ts",
+        "src/modules/rag/project-knowledge-draft.service.ts",
         "src/modules/rag/project-knowledge.service.ts",
         "src/modules/security/rate-limit.ts",
         "src/modules/workspace/workspace-members.service.ts",
@@ -33,7 +34,20 @@ export default mergeConfig(integrationConfig, {
         "src/modules/workspace/workspace.service.ts",
         "src/worker/main.ts",
       ],
-      thresholds: {},
+      thresholds: {
+        "src/modules/rag/project-knowledge-draft.service.ts": {
+          statements: 44,
+          branches: 34,
+          functions: 48,
+          lines: 46,
+        },
+        "src/modules/rag/project-knowledge.service.ts": {
+          statements: 24,
+          branches: 15,
+          functions: 31,
+          lines: 25,
+        },
+      },
     },
   },
 });

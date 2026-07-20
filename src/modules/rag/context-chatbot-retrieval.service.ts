@@ -3,7 +3,13 @@ import "server-only";
 import type { PoolClient } from "pg";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { createId, nowIso, sqlAll, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
-import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeBase } from "./project-knowledge.schema";
+import {
+  ProjectKnowledgeBaseSchema,
+  renderProjectKnowledgeEvidenceRefs,
+  type ProjectKnowledgeBase,
+  type ProjectKnowledgeEvidenceRef,
+} from "./project-knowledge.schema";
+import { canonicalizeProjectKnowledgeKey, getEntryProvenanceStatus } from "./project-knowledge-contracts";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 import { buildFtsQueryWithDynamicSynonyms } from "./full-text-search";
 import { searchProjectKnowledgeByTrigram } from "./trigram-search";
@@ -42,6 +48,16 @@ export type ContextChatbotKnowledgeEvidence = {
 export type ContextChatbotEvidence = {
   context: ContextChatbotContextEvidence[];
   knowledge: ContextChatbotKnowledgeEvidence[];
+  retrievalMode?: "raw_wins" | "trusted_compiled";
+};
+
+type ChunkFtsRow = {
+  chunk_id: string;
+  azure_work_item_id: string;
+  work_item_type: string;
+  title: string;
+  content: string;
+  metadata_json: string | null;
 };
 
 type KnowledgeFtsRow = {
@@ -66,6 +82,7 @@ type KnowledgeEntry = {
   content: string;
   sourceWorkItemIds: string[];
   evidence: string;
+  evidenceRefs: ProjectKnowledgeEvidenceRef[];
   metadata: Record<string, unknown>;
 };
 
@@ -154,6 +171,29 @@ export async function refreshProjectKnowledgeSearchIndex(
   const scope = assertProjectScope(input.scope);
   const now = nowIso();
   const entries = flattenProjectKnowledge(input.knowledgeBase);
+  const activeVersions = await sqlAll<{
+    id: string;
+    category: string;
+    entry_key: string;
+    entry_semantic_hash: string | null;
+    entry_provenance_hash: string | null;
+  }>(
+    `
+      SELECT id, category, entry_key, entry_semantic_hash, entry_provenance_hash
+      FROM project_knowledge_entry_versions
+      WHERE project_id = @projectId
+        AND azure_project_id = @azureProjectId
+        AND status = 'active'
+    `,
+    { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
+    client,
+  );
+  const activeVersionByKey = new Map(
+    activeVersions.map((version) => [
+      `${version.category}:${canonicalizeProjectKnowledgeKey(version.entry_key)}`,
+      version,
+    ]),
+  );
 
   await sqlRun(
     `
@@ -185,6 +225,9 @@ export async function refreshProjectKnowledgeSearchIndex(
     const id = createId("pke");
     const sourceWorkItemIds = entry.sourceWorkItemIds.join(", ");
     const metadataJson = JSON.stringify(entry.metadata);
+    const activeVersion = activeVersionByKey.get(
+      `${entry.category}:${canonicalizeProjectKnowledgeKey(entry.entryKey)}`,
+    );
     const params = {
       id,
       projectId: scope.projectId,
@@ -199,6 +242,10 @@ export async function refreshProjectKnowledgeSearchIndex(
       sourceWorkItemIds,
       evidence: entry.evidence,
       metadataJson,
+      entryVersionId: activeVersion?.id ?? null,
+      entrySemanticHash: activeVersion?.entry_semantic_hash ?? null,
+      entryProvenanceHash: activeVersion?.entry_provenance_hash ?? null,
+      provenanceStatus: getEntryProvenanceStatus(entry.evidenceRefs),
       createdAt: now,
       updatedAt: now,
     };
@@ -207,11 +254,13 @@ export async function refreshProjectKnowledgeSearchIndex(
       INSERT INTO project_knowledge_entries (
         id, project_id, azure_project_id, azure_project_name, azure_organization_url,
         knowledge_base_id, category, entry_key, title, content, source_work_item_ids,
-        evidence, metadata_json, created_at, updated_at
+        evidence, metadata_json, created_at, updated_at, entry_version_id,
+        entry_semantic_hash, entry_provenance_hash, provenance_status
       ) VALUES (
         @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
         @knowledgeBaseId, @category, @entryKey, @title, @content, @sourceWorkItemIds,
-        @evidence, @metadataJson, @createdAt, @updatedAt
+        @evidence, @metadataJson, @createdAt, @updatedAt, @entryVersionId,
+        @entrySemanticHash, @entryProvenanceHash, @provenanceStatus
       )
     `,
       params,
@@ -334,6 +383,7 @@ export async function retrieveContextChatbotEvidence(input: {
   contextLimit?: number;
   knowledgeLimit?: number;
   maxContextChunksPerWorkItem?: number;
+  selectedWorkItemIds?: string[];
 }): Promise<ContextChatbotEvidence> {
   const scope = assertProjectScope(input.scope);
   await ensureContextChatbotSearchIndexes({ scope });
@@ -346,25 +396,123 @@ export async function retrieveContextChatbotEvidence(input: {
   // (createEmbeddingProvider is a cheap, stateless env-read, not worth threading
   // through every call for reuse).
   const ftsQuery = await buildFtsQueryWithDynamicSynonyms(input.query, createEmbeddingProvider());
+  const selectedWorkItemIds = Array.from(new Set(input.selectedWorkItemIds ?? []));
   if (!ftsQuery) {
-    return { context: [], knowledge: await getFallbackKnowledge({ scope, limit: knowledgeLimit }) };
+    const selected = selectedWorkItemIds.length
+      ? await loadSelectedContext({
+          scope,
+          selectedWorkItemIds,
+          limit: contextLimit,
+          maxChunksPerWorkItem: maxContextChunksPerWorkItem,
+        })
+      : [];
+    return { context: selected, knowledge: await getFallbackKnowledge({ scope, limit: knowledgeLimit }) };
   }
 
+  const knowledge = await searchKnowledge({ scope, ftsQuery, rawQuery: input.query, limit: knowledgeLimit });
+  const trustedCompiled = knowledge.length > 0 && await hasTrustedCompiledKnowledge(scope);
+  const selected = selectedWorkItemIds.length
+    ? await loadSelectedContext({
+        scope,
+        selectedWorkItemIds,
+        limit: contextLimit,
+        maxChunksPerWorkItem: maxContextChunksPerWorkItem,
+      })
+    : [];
+  const searched = await searchContext({
+    scope,
+    ftsQuery,
+    rawQuery: input.query,
+    limit: contextLimit,
+    maxChunksPerWorkItem: maxContextChunksPerWorkItem,
+  });
+  const context = mergeContextEvidence(selected, searched, contextLimit, maxContextChunksPerWorkItem);
   return {
-    context: await searchContext({
-      scope,
-      ftsQuery,
-      rawQuery: input.query,
-      limit: contextLimit,
-      maxChunksPerWorkItem: maxContextChunksPerWorkItem,
-    }),
-    knowledge: await searchKnowledge({
-      scope,
-      ftsQuery,
-      rawQuery: input.query,
-      limit: knowledgeLimit,
-    }),
+    context,
+    knowledge,
+    ...(trustedCompiled ? { retrievalMode: "trusted_compiled" as const } : {}),
   };
+}
+
+function mergeContextEvidence(
+  selected: ContextChatbotContextEvidence[],
+  searched: ContextChatbotContextEvidence[],
+  limit: number,
+  maxChunksPerWorkItem: number,
+) {
+  const seen = new Set<string>();
+  const merged = [...selected, ...searched].filter((item) => {
+    const key = `${item.workItemId}\u0000${item.content}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return limitContextEvidenceByWorkItem(merged, { limit, maxChunksPerWorkItem });
+}
+
+async function loadSelectedContext(input: {
+  scope: ProjectScope;
+  selectedWorkItemIds: string[];
+  limit: number;
+  maxChunksPerWorkItem: number;
+}) {
+  const rows = await sqlAll<ChunkFtsRow>(
+    `
+      SELECT chunks.id AS chunk_id, chunks.azure_work_item_id, chunks.work_item_type,
+             chunks.document_name AS title, chunks.content, chunks.metadata_json
+      FROM document_chunks chunks
+      JOIN azure_devops_work_items work_items
+        ON work_items.project_id = chunks.project_id
+       AND work_items.azure_project_id = chunks.azure_project_id
+       AND work_items.azure_work_item_id = chunks.azure_work_item_id
+      WHERE chunks.project_id = @projectId AND chunks.azure_project_id = @azureProjectId
+        AND chunks.source_type = 'azure_work_item'
+        AND chunks.azure_work_item_id = ANY(@selectedWorkItemIds::text[])
+        AND COALESCE(work_items.sync_status, 'active') = 'active'
+      ORDER BY array_position(@selectedWorkItemIds::text[], chunks.azure_work_item_id), chunks.chunk_index
+      LIMIT @rowLimit
+    `,
+    {
+      projectId: input.scope.projectId,
+      azureProjectId: input.scope.azureProjectId,
+      selectedWorkItemIds: input.selectedWorkItemIds,
+      rowLimit: input.limit * input.maxChunksPerWorkItem,
+    },
+  );
+  return limitContextEvidenceByWorkItem(rows.map((row) => ({
+    sourceType: "project_context" as const,
+    sourceId: `WI:${row.azure_work_item_id}`,
+    workItemId: row.azure_work_item_id,
+    workItemType: row.work_item_type,
+    title: row.title,
+    content: row.content,
+    metadata: parseChunkMetadata(row.metadata_json),
+  })), {
+    limit: input.limit,
+    maxChunksPerWorkItem: input.maxChunksPerWorkItem,
+  });
+}
+
+async function hasTrustedCompiledKnowledge(scope: ProjectScope) {
+  const row = await sqlGet<{
+    freshness_status: string;
+    provenance_status: string;
+    compiler_compatibility: string;
+  }>(
+    `
+      SELECT freshness_status, provenance_status, compiler_compatibility
+      FROM project_knowledge_base
+      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
+      LIMIT 1
+    `,
+    { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
+  );
+  return Boolean(
+    row &&
+    row.freshness_status === "current" &&
+    row.provenance_status === "verified" &&
+    row.compiler_compatibility === "current",
+  );
 }
 
 async function searchContext(input: {
@@ -505,6 +653,20 @@ async function getFallbackKnowledge(input: { scope: ProjectScope; limit: number 
 }
 
 function flattenProjectKnowledge(knowledgeBase: ProjectKnowledgeBase): KnowledgeEntry[] {
+  const provenance = (item: {
+    sourceWorkItemIds: string[];
+    evidence: string;
+    evidenceRefs?: ProjectKnowledgeEvidenceRef[];
+  }) => {
+    const evidenceRefs = item.evidenceRefs ?? [];
+    return {
+      sourceWorkItemIds: evidenceRefs.length
+        ? Array.from(new Set(evidenceRefs.map((ref) => ref.sourceWorkItemId)))
+        : item.sourceWorkItemIds,
+      evidence: evidenceRefs.length ? renderProjectKnowledgeEvidenceRefs(evidenceRefs) : item.evidence,
+      evidenceRefs,
+    };
+  };
   return [
     ...knowledgeBase.modules.map((item) => ({
       category: "module",
@@ -513,11 +675,8 @@ function flattenProjectKnowledge(knowledgeBase: ProjectKnowledgeBase): Knowledge
       content: [
         `Module: ${item.name}`,
         item.description,
-        `Evidence: ${item.evidence}`,
-        `Sources: ${item.sourceWorkItemIds.join(", ")}`,
       ].join("\n"),
-      sourceWorkItemIds: item.sourceWorkItemIds,
-      evidence: item.evidence,
+      ...provenance(item),
       metadata: item,
     })),
     ...knowledgeBase.businessRules.map((item) => ({
@@ -528,11 +687,8 @@ function flattenProjectKnowledge(knowledgeBase: ProjectKnowledgeBase): Knowledge
         `Business rule: ${item.rule}`,
         item.moduleName ? `Module: ${item.moduleName}` : "",
         `Source field: ${item.sourceField}`,
-        `Evidence: ${item.evidence}`,
-        `Sources: ${item.sourceWorkItemIds.join(", ")}`,
       ].filter(Boolean).join("\n"),
-      sourceWorkItemIds: item.sourceWorkItemIds,
-      evidence: item.evidence,
+      ...provenance(item),
       metadata: item,
     })),
     ...knowledgeBase.stateTransitions.map((item) => ({
@@ -547,11 +703,8 @@ function flattenProjectKnowledge(knowledgeBase: ProjectKnowledgeBase): Knowledge
         `Trigger or condition: ${item.triggerOrCondition}`,
         item.actor ? `Actor: ${item.actor}` : "",
         item.moduleName ? `Module: ${item.moduleName}` : "",
-        `Evidence: ${item.evidence}`,
-        `Sources: ${item.sourceWorkItemIds.join(", ")}`,
       ].filter(Boolean).join("\n"),
-      sourceWorkItemIds: item.sourceWorkItemIds,
-      evidence: item.evidence,
+      ...provenance(item),
       metadata: item,
     })),
     ...knowledgeBase.glossary.map((item) => ({
@@ -562,11 +715,8 @@ function flattenProjectKnowledge(knowledgeBase: ProjectKnowledgeBase): Knowledge
         `Glossary term: ${item.term}`,
         `Type: ${item.type}`,
         `Definition: ${item.definition}`,
-        `Evidence: ${item.evidence}`,
-        `Sources: ${item.sourceWorkItemIds.join(", ")}`,
       ].join("\n"),
-      sourceWorkItemIds: item.sourceWorkItemIds,
-      evidence: item.evidence,
+      ...provenance(item),
       metadata: item,
     })),
     ...knowledgeBase.crossDependencies.map((item) => ({
@@ -577,11 +727,8 @@ function flattenProjectKnowledge(knowledgeBase: ProjectKnowledgeBase): Knowledge
         `Dependency: ${item.sourceModule} -> ${item.targetModule}`,
         `Type: ${item.dependencyType}`,
         item.description,
-        `Evidence: ${item.evidence}`,
-        `Sources: ${item.sourceWorkItemIds.join(", ")}`,
       ].join("\n"),
-      sourceWorkItemIds: item.sourceWorkItemIds,
-      evidence: item.evidence,
+      ...provenance(item),
       metadata: item,
     })),
   ];

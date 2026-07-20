@@ -1,7 +1,7 @@
 import "server-only";
 
 import { describe } from "vitest";
-import { nowIso, sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { flushBackgroundWrites, nowIso, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { persistSession } from "@/modules/auth/session.service";
 
 /**
@@ -92,6 +92,10 @@ export async function createTestSession(userId: string): Promise<string> {
 
 /** Remove the rows seeded above for the given workspaces and users (FK-safe order). */
 export async function cleanupFixtures(input: { workspaceIds: string[]; userIds: string[] }): Promise<void> {
+  // Some services persist audit/history rows through the shared deferred-write
+  // queue. Let those writes settle before removing their workspace parents.
+  await flushBackgroundWrites();
+
   for (const id of input.workspaceIds) {
     await sqlRun(`DELETE FROM analytics_workflow_runs WHERE workspace_id = @id OR azure_project_id IN (SELECT azure_project_id FROM projects WHERE workspace_id = @id)`, { id });
     await sqlRun(`DELETE FROM audit_logs WHERE workspace_id = @id OR azure_project_id IN (SELECT azure_project_id FROM projects WHERE workspace_id = @id)`, { id });

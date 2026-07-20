@@ -167,4 +167,48 @@ describe("retrieveContextChatbotEvidence", () => {
     expect(result.knowledge).toEqual([knowledgeEvidence]);
     expect(db.sqlAll).toHaveBeenCalledTimes(4);
   });
+
+  it("retains raw FTS evidence in trusted mode and loads explicitly selected context first", async () => {
+    const selectedChunk = {
+      chunk_id: "chunk-selected",
+      azure_work_item_id: "999",
+      work_item_type: "User Story",
+      title: "Explicitly selected",
+      content: "Raw content selected by the user.",
+      metadata_json: JSON.stringify({ chunkIndex: 0 }),
+    };
+    db.sqlGet.mockImplementation(async (sql) => {
+      if (sql.includes("freshness_status")) {
+        return {
+          freshness_status: "current",
+          provenance_status: "verified",
+          compiler_compatibility: "current",
+        };
+      }
+      return undefined;
+    });
+    db.sqlAll.mockImplementation(async (sql) => {
+      if (sql.includes("project_knowledge_entries_fts")) return [knowledgeRow];
+      if (sql.includes("FROM document_chunks chunks")) return [selectedChunk];
+      return [];
+    });
+
+    const result = await retrieveContextChatbotEvidence({
+      scope: projectScope(),
+      query: "checkout policy",
+      selectedWorkItemIds: ["999"],
+    });
+
+    expect(result.retrievalMode).toBe("trusted_compiled");
+    expect(result.context).toEqual([{
+      sourceType: "project_context",
+      sourceId: "WI:999",
+      workItemId: "999",
+      workItemType: "User Story",
+      title: "Explicitly selected",
+      content: "Raw content selected by the user.",
+      metadata: { chunkIndex: 0 },
+    }]);
+    expect(db.sqlAll.mock.calls.some(([sql]) => sql.includes("document_chunks_fts"))).toBe(true);
+  });
 });

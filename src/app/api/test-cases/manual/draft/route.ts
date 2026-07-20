@@ -4,7 +4,7 @@ import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "
 import { buildTestCaseGenerationPromptDraft } from "@/modules/test-case-design/application/test-case-generation.service";
 import { defaultTestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import { TestDesignOptionsRequestSchema } from "@/modules/test-case-design/test-design-options.schema";
-import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
 import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
@@ -48,12 +48,14 @@ export async function POST(request: Request) {
       selectedContextIds: parsed.data.selectedContextIds,
       retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
     });
+    const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "test_case_design_manual" });
     const draft = buildTestCaseGenerationPromptDraft({
       scope: trustedScope,
       targetRequirement,
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
+      projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      projectKnowledgeNotice: knowledgeContext.promptNotice,
       options,
       extraInstructions: parsed.data.extraInstructions,
     });
@@ -70,6 +72,7 @@ export async function POST(request: Request) {
       retrievalTopK: autoContext.retrievalTopK,
       options,
       ...draft,
+      warnings: knowledgeContext.promptNotice ? [knowledgeContext.promptNotice] : undefined,
     });
   } catch (error) {
     const authResponse = authErrorResponse(error);

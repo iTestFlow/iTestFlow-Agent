@@ -251,7 +251,7 @@ function knowledgeEmbeddingChunkId(projectId: string, category: string, entryKey
  * bases are small (tens to low-hundreds of entries) and compiled infrequently by a
  * deliberate owner/admin action, unlike the continuously-synced chunk corpus, so
  * incremental skip isn't worth the extra content-hash tracking it would need. Meant
- * to be called once per knowledge base save (see saveProjectKnowledgeBaseSnapshot),
+ * to be called once per knowledge base save (see publishProjectKnowledgeDraft),
  * after refreshProjectKnowledgeSearchIndex has already written the current entries.
  */
 export async function syncProjectKnowledgeEntryEmbeddings(input: {

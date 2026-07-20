@@ -12,7 +12,10 @@ import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-pro
 import { syncProjectChunkEmbeddings } from "./embedding-store.service";
 import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
-import { recordProjectKnowledgeLog } from "./project-knowledge-compiled.service";
+import { recordProjectKnowledgeLog, regroundLegacyProjectKnowledgeCandidates } from "./project-knowledge-compiled.service";
+import { acquireProjectKnowledgeLock } from "./project-knowledge-lock";
+import { markProjectKnowledgeSourceDrift } from "./project-knowledge-draft.service";
+import { backfillProjectKnowledgeCompilerFoundation } from "./project-knowledge-migration.service";
 
 type CryptoModule = typeof import("crypto");
 
@@ -62,13 +65,13 @@ const UPSERT_WORK_ITEM_SQL = `
     azure_work_item_id, work_item_type, title, description, acceptance_criteria,
     state, assigned_to, priority, tags, area_path, iteration_path, raw_json,
     created_date, updated_date, last_synced_at, content_hash, sync_status,
-    current_index_run_id, created_at, updated_at
+    current_index_run_id, current_snapshot_id, created_at, updated_at
   ) VALUES (
     @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
     @azureWorkItemId, @workItemType, @title, @description, @acceptanceCriteria,
     @state, @assignedTo, @priority, @tags, @areaPath, @iterationPath, @rawJson,
     @createdDate, @updatedDate, @lastSyncedAt, @contentHash, 'active',
-    @currentIndexRunId, @createdAt, @updatedAt
+    @currentIndexRunId, @currentSnapshotId, @createdAt, @updatedAt
   )
   ON CONFLICT(project_id, azure_work_item_id) DO UPDATE SET
     azure_project_id = excluded.azure_project_id,
@@ -91,6 +94,7 @@ const UPSERT_WORK_ITEM_SQL = `
     content_hash = excluded.content_hash,
     sync_status = 'active',
     current_index_run_id = excluded.current_index_run_id,
+    current_snapshot_id = excluded.current_snapshot_id,
     updated_at = excluded.updated_at
 `;
 const MARK_UNCHANGED_WORK_ITEM_SQL = `
@@ -98,6 +102,7 @@ const MARK_UNCHANGED_WORK_ITEM_SQL = `
   SET last_synced_at = @lastSyncedAt,
       sync_status = 'active',
       current_index_run_id = @currentIndexRunId,
+      current_snapshot_id = @currentSnapshotId,
       updated_at = @updatedAt
   WHERE project_id = @projectId
     AND azure_project_id = @azureProjectId
@@ -136,12 +141,25 @@ const INSERT_CHUNK_SQL = `
   INSERT INTO document_chunks (
     id, project_id, azure_project_id, azure_project_name, source_type,
     azure_work_item_id, work_item_type, document_name, document_type,
-    chunk_index, content, metadata_json, created_at, updated_at
+    chunk_index, content, metadata_json, source_snapshot_id, created_at, updated_at
   ) VALUES (
     @id, @projectId, @azureProjectId, @azureProjectName, 'azure_work_item',
     @azureWorkItemId, @workItemType, @documentName, 'azure_work_item',
-    @chunkIndex, @content, @metadataJson, @createdAt, @updatedAt
+    @chunkIndex, @content, @metadataJson, @sourceSnapshotId, @createdAt, @updatedAt
   )
+`;
+const INSERT_SOURCE_SNAPSHOT_SQL = `
+  INSERT INTO azure_devops_work_item_snapshots (
+    id, workspace_id, project_id, azure_project_id, azure_project_name,
+    azure_organization_url, azure_work_item_id, work_item_type, content_hash,
+    ado_revision, fields_json, source_updated_at, captured_at, created_at
+  ) VALUES (
+    @id, (SELECT workspace_id FROM projects WHERE id = @projectId), @projectId,
+    @azureProjectId, @azureProjectName, @azureOrganizationUrl, @azureWorkItemId,
+    @workItemType, @contentHash, @adoRevision, @fieldsJson, @sourceUpdatedAt,
+    @capturedAt, @createdAt
+  )
+  ON CONFLICT DO NOTHING
 `;
 
 export async function indexAzureWorkItemsAsProjectContext(input: {
@@ -169,26 +187,31 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
   let createdCount = 0;
   let updatedCount = 0;
   let unchangedCount = 0;
+  let provenanceRefreshCount = 0;
   let inactiveCount = 0;
   let indexedWorkItemCount = 0;
   let indexedChunkCount = 0;
   let skippedEmptyCount = 0;
   const fetchedIds = new Set(workItems.map((item) => item.id));
-  const existingRows = await sqlAll<{ azure_work_item_id: string; content_hash: string | null; sync_status: string | null }>(
-    `
-      SELECT azure_work_item_id, content_hash, sync_status
-      FROM azure_devops_work_items
-      WHERE project_id = @projectId
-        AND azure_project_id = @azureProjectId
-    `,
-    {
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-    },
-  );
-  const existingById = new Map(existingRows.map((row) => [row.azure_work_item_id, row]));
 
   await withTransaction(async (client) => {
+    await acquireProjectKnowledgeLock(scope, client);
+    const existingRows = await sqlAll<{
+      azure_work_item_id: string;
+      content_hash: string | null;
+      sync_status: string | null;
+      current_snapshot_id: string | null;
+    }>(
+      `
+        SELECT azure_work_item_id, content_hash, sync_status, current_snapshot_id
+        FROM azure_devops_work_items
+        WHERE project_id = @projectId AND azure_project_id = @azureProjectId
+      `,
+      { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
+      client,
+    );
+    const existingById = new Map(existingRows.map((row) => [row.azure_work_item_id, row]));
+
     if (mode === "rebuild") {
       await sqlRun(DELETE_PROJECT_CHUNKS_SQL, {
         projectId: scope.projectId,
@@ -202,17 +225,71 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
     }
 
     for (const item of workItems) {
+      const snapshotFields = workItemToSnapshotFields(item);
       const text = workItemToContextText(item);
-      const contentHash = stableHash(text);
+      const contentHash = stableHash(JSON.stringify(snapshotFields));
       const existing = existingById.get(item.id);
+      const snapshotId = `awis_${stableHash(`${scope.projectId}:${scope.azureProjectId}:${item.id}:${contentHash}:${item.revision ?? -1}`).slice(0, 40)}`;
+      await sqlRun(INSERT_SOURCE_SNAPSHOT_SQL, {
+        id: snapshotId,
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        azureProjectName: scope.azureProjectName,
+        azureOrganizationUrl: scope.azureOrganizationUrl,
+        azureWorkItemId: item.id,
+        workItemType: item.workItemType,
+        contentHash,
+        adoRevision: item.revision ?? null,
+        fieldsJson: JSON.stringify(snapshotFields),
+        sourceUpdatedAt: item.updatedDate ?? null,
+        capturedAt: now,
+        createdAt: now,
+      }, client);
+      const persistedSnapshot = await sqlGet<{ id: string }>(
+        `
+          SELECT id FROM azure_devops_work_item_snapshots
+          WHERE project_id = @projectId AND azure_project_id = @azureProjectId
+            AND azure_work_item_id = @azureWorkItemId AND content_hash = @contentHash
+            AND ado_revision IS NOT DISTINCT FROM @adoRevision
+          LIMIT 1
+        `,
+        {
+          projectId: scope.projectId,
+          azureProjectId: scope.azureProjectId,
+          azureWorkItemId: item.id,
+          contentHash,
+          adoRevision: item.revision ?? null,
+        },
+        client,
+      );
+      if (!persistedSnapshot) throw new Error(`Failed to persist source snapshot for work item ${item.id}.`);
 
       if (mode === "incremental" && existing?.content_hash === contentHash && existing.sync_status !== "inactive") {
         unchangedCount += 1;
+        if (existing.current_snapshot_id !== persistedSnapshot.id) {
+          provenanceRefreshCount += 1;
+          await sqlRun(
+            `
+              UPDATE document_chunks
+              SET source_snapshot_id = @sourceSnapshotId
+              WHERE project_id = @projectId AND azure_project_id = @azureProjectId
+                AND source_type = 'azure_work_item' AND azure_work_item_id = @azureWorkItemId
+            `,
+            {
+              projectId: scope.projectId,
+              azureProjectId: scope.azureProjectId,
+              azureWorkItemId: item.id,
+              sourceSnapshotId: persistedSnapshot.id,
+            },
+            client,
+          );
+        }
         await sqlRun(MARK_UNCHANGED_WORK_ITEM_SQL, {
           projectId: scope.projectId,
           azureProjectId: scope.azureProjectId,
           azureWorkItemId: item.id,
           currentIndexRunId: indexRunId,
+          currentSnapshotId: persistedSnapshot.id,
           lastSyncedAt: now,
           updatedAt: now,
         }, client);
@@ -242,6 +319,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
         lastSyncedAt: now,
         contentHash,
         currentIndexRunId: indexRunId,
+        currentSnapshotId: persistedSnapshot.id,
         createdAt: now,
         updatedAt: now,
       }, client);
@@ -294,6 +372,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
             updatedDate: item.updatedDate,
             chunkIndex: index,
           }),
+          sourceSnapshotId: persistedSnapshot.id,
           createdAt: now,
           updatedAt: now,
         }, client);
@@ -317,7 +396,43 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
       }
     }
 
+    if (createdCount || updatedCount || inactiveCount || provenanceRefreshCount || mode === "rebuild") {
+      await markProjectKnowledgeSourceDrift(scope, {
+        type: "source_sync",
+        mode,
+        indexRunId,
+        createdCount,
+        updatedCount,
+        inactiveCount,
+        provenanceRefreshCount,
+      }, client);
+    }
+
     await refreshProjectContextSearchIndex({ scope }, client);
+    await backfillProjectKnowledgeCompilerFoundation(scope, client);
+    await regroundLegacyProjectKnowledgeCandidates(scope, client);
+    await recordProjectKnowledgeLog({
+      scope,
+      eventType: "context.synced",
+      severity: "info",
+      title: "Project context synced",
+      message: `Context sync completed in ${mode} mode with ${createdCount} created, ${updatedCount} updated, ${unchangedCount} unchanged, and ${inactiveCount} inactive work items.`,
+      metadata: {
+        mode,
+        indexRunId,
+        fetchedCount: workItems.length,
+        indexedWorkItemCount,
+        indexedChunkCount,
+        createdCount,
+        updatedCount,
+        unchangedCount,
+        inactiveCount,
+        provenanceRefreshCount,
+        skippedEmptyCount,
+        workItemTypes: input.workItemTypes,
+        states: input.states,
+      },
+    }, client);
   });
 
   // Embedding sync is best-effort and outside the transaction: a missing or failing
@@ -407,6 +522,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
       updatedCount,
       unchangedCount,
       inactiveCount,
+      provenanceRefreshCount,
       skippedEmptyCount,
       workItemTypes: input.workItemTypes,
       states: input.states,
@@ -423,6 +539,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
     updatedCount,
     unchangedCount,
     inactiveCount,
+    provenanceRefreshCount,
     skippedEmptyCount,
     embeddingSummary,
     workItemTypes: input.workItemTypes,
@@ -635,6 +752,29 @@ export function workItemToContextText(item: Requirement) {
     .join("\n\n");
 }
 
+export function workItemToSnapshotFields(item: Requirement) {
+  return {
+    title: item.title.trim(),
+    description: item.description ? stripHtml(item.description) : null,
+    acceptanceCriteria: item.acceptanceCriteria ? stripHtml(item.acceptanceCriteria) : null,
+    state: item.state?.trim() || null,
+    workItemType: item.workItemType.trim(),
+    tags: item.tags?.map((tag) => tag.trim()).filter(Boolean).sort() ?? [],
+    areaPath: item.areaPath?.trim() || null,
+    iterationPath: item.iterationPath?.trim() || null,
+    metadata: {
+      assignedTo: item.assignedTo?.trim() || null,
+      priority: item.priority ?? null,
+      severity: item.severity?.trim() || null,
+      originalEstimate: item.originalEstimate ?? null,
+      remainingWork: item.remainingWork ?? null,
+      completedWork: item.completedWork ?? null,
+      dueDate: item.dueDate ?? null,
+      storyPoints: item.storyPoints ?? null,
+    },
+  };
+}
+
 export function workItemToLlmContextSource(item: Requirement, relevanceScore = 1): LlmContextSource {
   return {
     sourceType: "azure_work_item",
@@ -761,9 +901,9 @@ function nativeRequire(specifier: string): unknown {
 
 function contextSortSql(sortBy: ProjectContextSortBy, direction: ProjectContextSortDirection) {
   const directionSql = direction === "asc" ? "ASC" : "DESC";
-  if (sortBy === "type") return `wi.work_item_type ${directionSql}, wi.last_synced_at DESC, wi.updated_date DESC`;
-  if (sortBy === "state") return `COALESCE(wi.state, '') ${directionSql}, wi.last_synced_at DESC, wi.updated_date DESC`;
-  return `wi.last_synced_at ${directionSql}, wi.updated_date ${directionSql}`;
+  if (sortBy === "type") return `wi.work_item_type ${directionSql}, wi.last_synced_at DESC, wi.updated_date DESC, wi.azure_work_item_id ASC`;
+  if (sortBy === "state") return `COALESCE(wi.state, '') ${directionSql}, wi.last_synced_at DESC, wi.updated_date DESC, wi.azure_work_item_id ASC`;
+  return `wi.last_synced_at ${directionSql}, wi.updated_date ${directionSql}, wi.azure_work_item_id ASC`;
 }
 
 function escapeSqlLike(value: string) {

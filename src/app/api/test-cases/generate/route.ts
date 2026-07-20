@@ -12,7 +12,7 @@ import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-
 import { generateTestCases } from "@/modules/test-case-design/application/test-case-generation.service";
 import { defaultTestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import { TestDesignOptionsRequestSchema } from "@/modules/test-case-design/test-design-options.schema";
-import { getSavedProjectKnowledgeBase } from "@/modules/rag/project-knowledge.service";
+import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
 import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
@@ -76,6 +76,7 @@ export async function POST(request: Request) {
       retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
       workflowType: "test_case_generation",
     });
+    const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "test_case_design" });
     const result = await generateTestCases({
       scope: trustedScope,
       actor: ctx.userId,
@@ -83,7 +84,8 @@ export async function POST(request: Request) {
       targetRequirement,
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: await getSavedProjectKnowledgeBase({ scope: trustedScope }),
+      projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      projectKnowledgeNotice: knowledgeContext.promptNotice,
       options,
       extraInstructions: parsed.data.extraInstructions,
     });
@@ -120,7 +122,7 @@ export async function POST(request: Request) {
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
       tokenUsage: provider.getTokenUsage(),
-      warnings: result.warnings,
+      warnings: [...(result.warnings ?? []), ...(knowledgeContext.promptNotice ? [knowledgeContext.promptNotice] : [])],
     });
   } catch (error) {
     const authResponse = authErrorResponse(error);

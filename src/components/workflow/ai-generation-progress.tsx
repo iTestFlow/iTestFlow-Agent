@@ -33,6 +33,8 @@ export type AiGenerationProgressProps = {
   description?: string;
   elapsedSeconds?: number;
   currentStepLabel?: string;
+  /** Optional accurate persistence guidance for background-backed generation. */
+  activeHint?: string;
   /** Reserved for future streaming; unused while the backend does not stream. */
   streamedText?: string;
   error?: AiGenerationError | null;
@@ -257,6 +259,7 @@ export function AiGenerationProgress({
   description,
   elapsedSeconds,
   currentStepLabel,
+  activeHint,
   error,
   errorMessage,
   canCancel,
@@ -361,7 +364,7 @@ export function AiGenerationProgress({
             <p className="text-xs text-muted-foreground">
               {status === "completed"
                 ? "Your generated response is available whenever you are ready."
-                : "Please keep this page open while the response is being generated. Large stories or rich project context may take longer."}
+                : (activeHint ?? "Please keep this page open while the response is being generated. Large stories or rich project context may take longer.")}
             </p>
             {loadingGame ? (
               <LlmLoadingGameShell

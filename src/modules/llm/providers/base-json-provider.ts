@@ -46,6 +46,8 @@ type ProviderErrorContext = {
 export abstract class BaseJsonProvider implements LLMProvider {
   readonly name: LLMProviderName;
   readonly model: string;
+  readonly maxInputTokens: number;
+  readonly inputTokenLimitSource: "user_override" | "model_capability" | "unknown_fallback";
   protected readonly config: LLMProviderConfig;
   private cumulativeTokenUsage: TokenUsage | undefined;
   private cumulativeTokenUsageComplete = true;
@@ -54,6 +56,9 @@ export abstract class BaseJsonProvider implements LLMProvider {
     this.name = config.provider;
     this.model = config.model;
     this.config = config;
+    const inputLimit = resolveModelInputTokenLimit(config);
+    this.maxInputTokens = inputLimit.tokens;
+    this.inputTokenLimitSource = inputLimit.source;
   }
 
   abstract testConnection(): Promise<boolean>;
@@ -338,6 +343,34 @@ export abstract class BaseJsonProvider implements LLMProvider {
     const details = describeThrownError(error);
     return this.providerError(details.message, { ...context, upstreamCause: details.cause });
   }
+}
+
+const MODEL_INPUT_TOKEN_CAPABILITIES: Record<string, number> = {
+  "openai:gpt-4.1": 1_000_000,
+  "openai:gpt-4.1-mini": 1_000_000,
+  "openai:gpt-4o": 128_000,
+  "openai:gpt-4o-mini": 128_000,
+  "gemini:gemini-2.5-pro": 1_000_000,
+  "gemini:gemini-2.5-flash": 1_000_000,
+  "gemini:gemini-2.5-flash-lite": 1_000_000,
+  "anthropic:claude-sonnet-4": 200_000,
+  "anthropic:claude-sonnet-4-5": 200_000,
+  "anthropic:claude-opus-4": 200_000,
+};
+
+export function resolveModelInputTokenLimit(config: Pick<LLMProviderConfig, "provider" | "model" | "maxInputTokens">) {
+  if (Number.isInteger(config.maxInputTokens) && Number(config.maxInputTokens) > 0) {
+    return { tokens: Number(config.maxInputTokens), source: "user_override" as const };
+  }
+  const normalizedModel = config.model.toLowerCase();
+  const exact = MODEL_INPUT_TOKEN_CAPABILITIES[`${config.provider}:${normalizedModel}`];
+  if (exact) return { tokens: exact, source: "model_capability" as const };
+  const undatedModel = normalizedModel.replace(/-(?:20\d{2}-\d{2}-\d{2}|20\d{6})$/, "");
+  const registeredBase = undatedModel !== normalizedModel
+    ? MODEL_INPUT_TOKEN_CAPABILITIES[`${config.provider}:${undatedModel}`]
+    : undefined;
+  if (registeredBase) return { tokens: registeredBase, source: "model_capability" as const };
+  return { tokens: 16_000, source: "unknown_fallback" as const };
 }
 
 function isLikelyNetworkError(message: string) {
