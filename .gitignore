@@ -9,7 +9,9 @@ data/runtime-settings.json
 data/.runtime-settings-key
 data/uploads/*
 data/indexes/*
+data/model-cache/*
 *.log
 tsconfig.tsbuildinfo
 .claude
 .codex
+private-context
