@@ -27,6 +27,78 @@ describe("RAG pipeline", () => {
     ]);
   });
 
+  it("overlaps consecutive chunks so boundary-straddling text survives in one piece", () => {
+    const chunks = chunkText({
+      projectId: "p",
+      azureProjectId: "a",
+      sourceId: "WI:1",
+      sourceType: "azure_work_item",
+      title: "Story",
+      text: "abcdefghij",
+      chunkSize: 5,
+      chunkOverlap: 2,
+    });
+    // step = chunkSize - overlap = 3: chunk1 starts at index 3, chunk2 at index 6.
+    // The text is only 10 chars, so the final chunk is a shorter 4-char tail
+    // ("ghij"), not a full 5-char window — it still carries new content ("ij")
+    // beyond the previous chunk, so it is not a redundant subset.
+    expect(chunks.map((chunk) => chunk.content)).toEqual(["abcde", "defgh", "ghij"]);
+    expect(chunks.map((chunk) => chunk.metadata.chunkIndex)).toEqual([0, 1, 2]);
+  });
+
+  it("applies the default 200-char overlap at the default chunk size", () => {
+    const text = "x".repeat(1900) + "y".repeat(200);
+    const chunks = chunkText({
+      projectId: "p",
+      azureProjectId: "a",
+      sourceId: "WI:1",
+      sourceType: "azure_work_item",
+      title: "Story",
+      text,
+    });
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]!.content).toHaveLength(2000);
+    expect(chunks[0]!.content.slice(-200)).toBe(chunks[1]!.content.slice(0, 200));
+    expect(chunks[1]!.content.endsWith("y".repeat(200))).toBe(true);
+  });
+
+  it("never emits a trailing chunk that is a pure subset of the previous one", () => {
+    const exactFit = chunkText({
+      projectId: "p",
+      azureProjectId: "a",
+      sourceId: "WI:1",
+      sourceType: "azure_work_item",
+      title: "Story",
+      text: "abcde",
+      chunkSize: 5,
+      chunkOverlap: 2,
+    });
+    expect(exactFit.map((chunk) => chunk.content)).toEqual(["abcde"]);
+
+    expect(chunkText({
+      projectId: "p",
+      azureProjectId: "a",
+      sourceId: "WI:1",
+      sourceType: "azure_work_item",
+      title: "Story",
+      text: "",
+    })).toEqual([]);
+  });
+
+  it("clamps an oversized overlap below the chunk size so the window always advances", () => {
+    const chunks = chunkText({
+      projectId: "p",
+      azureProjectId: "a",
+      sourceId: "WI:1",
+      sourceType: "azure_work_item",
+      title: "Story",
+      text: "abcdef",
+      chunkSize: 3,
+      chunkOverlap: 99,
+    });
+    expect(chunks.map((chunk) => chunk.content)).toEqual(["abc", "bcd", "cde", "def"]);
+  });
+
   it("upserts by ID, isolates projects, ranks matches, and honors topK", async () => {
     const store = new LocalKeywordVectorStore();
     await store.upsert([

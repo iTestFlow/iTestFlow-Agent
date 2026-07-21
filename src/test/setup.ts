@@ -8,6 +8,13 @@ if (typeof document !== "undefined") {
   await import("@testing-library/jest-dom/vitest");
 }
 
+// EMBEDDINGS_PROVIDER defaults to "local" (zero-setup) outside tests, but leaving that
+// default active here would make suites that call the real indexing/search functions
+// with no explicit embeddingProvider override (most .db.test.ts files) reach for the
+// real in-process ONNX model — slow, network-dependent, and non-deterministic. Tests
+// that specifically want a provider stub it themselves; everything else should stay off.
+process.env.EMBEDDINGS_PROVIDER = "off";
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();

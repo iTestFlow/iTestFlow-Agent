@@ -49,7 +49,14 @@ const defaultCitations = [{
   workItemType: "User Story",
 }];
 
-function installFetch(options?: { statusFailure?: boolean; answer?: string; citations?: typeof defaultCitations }) {
+function installFetch(options?: {
+  statusFailure?: boolean;
+  answer?: string;
+  citations?: typeof defaultCitations;
+  retrievedContextCount?: number;
+  retrievedKnowledgeCount?: number;
+  linkedWorkItemCount?: number;
+}) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     void _init;
     const url = String(input);
@@ -81,8 +88,9 @@ function installFetch(options?: { statusFailure?: boolean; answer?: string; cita
       return jsonResponse({
         answer: options?.answer ?? "The approval rule is grounded in [WI:123]. Unknown text [UNKNOWN] stays plain.",
         citations,
-        retrievedContextCount: citations.length,
-        retrievedKnowledgeCount: 0,
+        retrievedContextCount: options?.retrievedContextCount ?? citations.length,
+        retrievedKnowledgeCount: options?.retrievedKnowledgeCount ?? 0,
+        linkedWorkItemCount: options?.linkedWorkItemCount ?? 0,
         provider: "test-provider",
         model: "test-model",
       });
@@ -135,6 +143,39 @@ describe("BusinessOwnerAssistantClient", () => {
     expect(screen.getByRole("button", { name: "Sources (1)" })).toBeInTheDocument();
     expect(screen.getByText("Based on 1 project source")).toBeInTheDocument();
     expect(screen.getByText("test-provider / test-model").closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("reports 'Based on N project sources' matching the full citation list, broken down by bucket", async () => {
+    // The citations list can include work items fanned out from a knowledge entry's
+    // provenance (see buildCitations in context-chatbot.service.ts) so those inline
+    // mentions are clickable, on top of what was directly retrieved. "Based on N"
+    // must count all of it (retrieved context + saved knowledge + linked work items)
+    // so it always matches "Sources (N)" instead of silently under-reporting.
+    const manyCitations = Array.from({ length: 3 }, (_, index) => ({
+      sourceType: "project_context" as const,
+      sourceId: `WI:${index}`,
+      title: `Work item ${index}`,
+      workItemId: String(index),
+      workItemType: "User Story",
+    }));
+    installFetch({
+      answer: "Grounded in indexed and saved sources.",
+      citations: manyCitations,
+      retrievedContextCount: 1,
+      retrievedKnowledgeCount: 1,
+      linkedWorkItemCount: 1,
+    });
+    const user = userEvent.setup();
+    render(<BusinessOwnerAssistantClient workspaceRole="owner" />);
+
+    await user.click(await screen.findByRole("button", { name: /Project overview/i }));
+    await screen.findByText(/Grounded in indexed and saved sources/i);
+
+    expect(screen.getByRole("button", { name: "Sources (3)" })).toBeInTheDocument();
+    expect(screen.getByText("Based on 3 project sources")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Based on 3 project sources"));
+    expect(screen.getByText("Linked work items")).toBeInTheDocument();
   });
 
   it("opens inline source details and builds an encoded Azure DevOps link", async () => {

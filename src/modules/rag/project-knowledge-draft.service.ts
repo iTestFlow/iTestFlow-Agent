@@ -42,10 +42,13 @@ import {
   type ProjectKnowledgeEntryByConsolidationCategory,
 } from "./project-knowledge-consolidation";
 import {
+  recordProjectKnowledgeLog,
   recordProjectKnowledgeRevision,
   runProjectKnowledgeLint,
   type ProjectKnowledgeCompilationMode,
 } from "./project-knowledge-compiled.service";
+import { createEmbeddingProvider } from "./embedding-provider";
+import { syncProjectKnowledgeEntryEmbeddings } from "./embedding-store.service";
 import {
   detectProjectKnowledgeHardConflicts,
   sortProjectKnowledgeHardConflictsForReview,
@@ -861,6 +864,31 @@ export async function publishProjectKnowledgeDraft(input: {
   } catch (error) {
     console.error("Project knowledge lint failed after draft publication", error);
   }
+
+  // Knowledge-entry embedding sync is likewise best-effort and post-commit: a
+  // missing or failing embedding backend must never fail or roll back the
+  // published draft, it only means the Business Owner Assistant's knowledge
+  // search stays lexical until the next successful publish.
+  const embeddingProvider = createEmbeddingProvider();
+  if (embeddingProvider) {
+    try {
+      await syncProjectKnowledgeEntryEmbeddings({ scope, provider: embeddingProvider });
+    } catch (error) {
+      console.error("Knowledge entry embedding sync failed after draft publication", error);
+      recordProjectKnowledgeLog({
+        scope,
+        eventType: "knowledge.embedding_failed",
+        severity: "warning",
+        title: "Knowledge entry embedding sync failed",
+        message: error instanceof Error ? error.message : "Unknown embedding error.",
+        metadata: {
+          provider: embeddingProvider.name,
+          model: embeddingProvider.model,
+        },
+      });
+    }
+  }
+
   return getProjectKnowledgeDraft({ scope, draftId: result.draftId });
 }
 

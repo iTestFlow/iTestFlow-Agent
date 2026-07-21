@@ -12,10 +12,18 @@ export function chunkText(input: {
   title: string;
   text: string;
   chunkSize?: number;
+  chunkOverlap?: number;
 }): RagChunk[] {
   const size = input.chunkSize ?? 2000;
+  // Consecutive chunks share an overlap window so a sentence straddling a chunk
+  // boundary stays intact in at least one chunk. Default: 10% of the chunk size,
+  // capped at 200 chars; always at least 1 char smaller than the chunk so the
+  // window advances.
+  const requestedOverlap = input.chunkOverlap ?? Math.min(200, Math.floor(size * 0.1));
+  const overlap = Math.min(Math.max(Math.trunc(requestedOverlap), 0), size - 1);
+  const step = size - overlap;
   const chunks: RagChunk[] = [];
-  for (let index = 0; index < input.text.length; index += size) {
+  for (let index = 0; index < input.text.length; index += step) {
     chunks.push({
       id: `${input.sourceId}-${chunks.length}`,
       projectId: input.projectId,
@@ -26,6 +34,9 @@ export function chunkText(input: {
       content: input.text.slice(index, index + size),
       metadata: { chunkIndex: chunks.length },
     });
+    // Once a chunk reaches the end of the text, stop: a further step would emit a
+    // trailing chunk that is a pure subset of this one.
+    if (index + size >= input.text.length) break;
   }
   return chunks;
 }

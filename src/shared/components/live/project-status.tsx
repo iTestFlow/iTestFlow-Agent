@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { apiErrorMessage, caughtErrorMessage } from "@/shared/lib/api-error-message";
 import {
@@ -47,14 +48,28 @@ export function HeaderProjectSelector() {
       .then(async (response) => {
         const json = await response.json();
         if (!response.ok) throw new Error(apiErrorMessage(json, "Failed to fetch Azure DevOps projects."));
+        return json as { projects?: AzureProject[]; workspaceId?: string };
+      })
+      .then(async (json) => {
+        // Listing projects is proof Azure DevOps is actually connected: clear any
+        // earlier "not configured" state and show the real project list, even if
+        // the background re-select step below runs into trouble.
         const loadedProjects = (json.projects ?? []) as AzureProject[];
         setProjects(loadedProjects);
+        setError(null);
         const stored = readActiveProject();
         const projectToRefresh = projectSelectionNeedingRefresh(stored, loadedProjects, json.workspaceId);
-        if (projectToRefresh) {
+        if (!projectToRefresh) return;
+        try {
           const scope = await selectProject(projectToRefresh);
           writeActiveProject(scope);
           setActiveProject(scope);
+        } catch (err) {
+          // A failed automatic re-select (e.g. a transient error, or the
+          // previously active project no longer resolving) is not a connection
+          // problem: Azure DevOps is connected, we just couldn't refresh which
+          // project is active. Don't misreport the connection as unconfigured.
+          toast.error(caughtErrorMessage(err, "Could not refresh the active Azure DevOps project."));
         }
       })
       .catch((err: unknown) => setError(caughtErrorMessage(err, "Azure DevOps is not configured.")));
@@ -96,7 +111,10 @@ export function HeaderProjectSelector() {
               writeActiveProject(scope);
               setActiveProject(scope);
             }).catch((err: unknown) => {
-              setError(caughtErrorMessage(err, "Azure DevOps project selection failed."));
+              // A failed manual re-select is not a connection problem either: keep
+              // showing the loaded project list and surface this as a one-off
+              // notification instead of collapsing to "not configured".
+              toast.error(caughtErrorMessage(err, "Azure DevOps project selection failed."));
             });
           });
         }}

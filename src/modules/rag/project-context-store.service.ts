@@ -1,12 +1,16 @@
 import "server-only";
 
-import { createId, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
+import { createId, getPool, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { chunkText } from "./rag-pipeline.service";
-import { refreshProjectContextSearchIndex } from "./context-chatbot-retrieval.service";
+import { ensureProjectContextSearchIndex, refreshProjectContextSearchIndex } from "./context-chatbot-retrieval.service";
+import { buildFtsQueryWithDynamicSynonyms } from "./full-text-search";
+import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
+import { syncProjectChunkEmbeddings } from "./embedding-store.service";
+import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 import { recordProjectKnowledgeLog, regroundLegacyProjectKnowledgeCandidates } from "./project-knowledge-compiled.service";
 import { acquireProjectKnowledgeLock } from "./project-knowledge-lock";
@@ -431,6 +435,51 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
     }, client);
   });
 
+  // Embedding sync is best-effort and outside the transaction: a missing or failing
+  // embedding backend must never fail or roll back context indexing, it only means
+  // retrieval stays lexical until the next successful sync. An advisory lock guards
+  // against two overlapping calls for the same project (e.g. a manual "Index Now"
+  // double-click racing a scheduled sync — the manual route has no job-queue dedup)
+  // redundantly re-embedding the same content; a lock miss just skips this call's
+  // embedding sync rather than duplicating the work.
+  const embeddingProvider = createEmbeddingProvider();
+  let embeddingSummary: { embeddedChunkCount: number; removedEmbeddingCount: number } | undefined;
+  if (embeddingProvider) {
+    try {
+      const lockOutcome = await withEmbeddingSyncLock(scope.projectId, () =>
+        syncProjectChunkEmbeddings({ scope, provider: embeddingProvider }),
+      );
+      if (lockOutcome.acquired) {
+        embeddingSummary = lockOutcome.result;
+      } else {
+        recordProjectKnowledgeLog({
+          scope,
+          eventType: "context.embedding_sync_skipped",
+          severity: "info",
+          title: "Embedding sync skipped (already running)",
+          message: "Another embedding sync for this project was already in progress; this call left retrieval on the existing vectors.",
+          metadata: {
+            provider: embeddingProvider.name,
+            model: embeddingProvider.model,
+          },
+        });
+      }
+    } catch (error) {
+      console.error("Chunk embedding sync failed; retrieval continues with full-text search only.", error);
+      recordProjectKnowledgeLog({
+        scope,
+        eventType: "context.embedding_failed",
+        severity: "warning",
+        title: "Chunk embedding sync failed",
+        message: error instanceof Error ? error.message : "Unknown embedding error.",
+        metadata: {
+          provider: embeddingProvider.name,
+          model: embeddingProvider.model,
+        },
+      });
+    }
+  }
+
   writeAuditLog({
     projectId: scope.projectId,
     azureProjectId: scope.azureProjectId,
@@ -450,8 +499,8 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
       updatedCount,
       unchangedCount,
       inactiveCount,
-      provenanceRefreshCount,
       skippedEmptyCount,
+      embeddingSummary,
       workItemTypes: input.workItemTypes,
       states: input.states,
     },
@@ -469,6 +518,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
     inactiveCount,
     provenanceRefreshCount,
     skippedEmptyCount,
+    embeddingSummary,
     workItemTypes: input.workItemTypes,
     states: input.states,
   };
@@ -587,66 +637,79 @@ export async function retrieveStoredProjectContext(input: {
   query: string;
   topK?: number;
   workItemIds?: string[];
+  maxChunksPerWorkItem?: number;
+  /**
+   * Semantic-retrieval override, mainly for tests: undefined resolves the
+   * deployment-configured backend (EMBEDDINGS_PROVIDER env), null disables
+   * semantic retrieval for this call.
+   */
+  embeddingProvider?: EmbeddingProvider | null;
 }): Promise<LlmContextSource[]> {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
   const topK = input.topK ?? 8;
 
-  const rows = input.workItemIds?.length
-    ? await sqlAll<ContextChunkRow>(
-        `
-          SELECT id, azure_work_item_id, work_item_type, document_name, content, metadata_json
-          FROM document_chunks
-          WHERE project_id = @projectId
-            AND azure_project_id = @azureProjectId
-            AND source_type = 'azure_work_item'
-            AND azure_work_item_id IN (${input.workItemIds.map((_, index) => `@id${index}`).join(", ")})
-            AND EXISTS (
-              SELECT 1
-              FROM azure_devops_work_items wi
-              WHERE wi.project_id = document_chunks.project_id
-                AND wi.azure_project_id = document_chunks.azure_project_id
-                AND wi.azure_work_item_id = document_chunks.azure_work_item_id
-                AND COALESCE(wi.sync_status, 'active') = 'active'
-            )
-          ORDER BY azure_work_item_id, chunk_index
-          LIMIT @limit
-        `,
-        {
-          projectId: scope.projectId,
-          azureProjectId: scope.azureProjectId,
-          limit: Math.max(topK, input.workItemIds.length * 3),
-          ...Object.fromEntries(input.workItemIds.map((id, index) => [`id${index}`, id])),
-        },
-      )
-    : await sqlAll<ContextChunkRow>(
-        `
-          SELECT id, azure_work_item_id, work_item_type, document_name, content, metadata_json
-          FROM document_chunks
-          WHERE project_id = @projectId
-            AND azure_project_id = @azureProjectId
-            AND source_type = 'azure_work_item'
-            AND EXISTS (
-              SELECT 1
-              FROM azure_devops_work_items wi
-              WHERE wi.project_id = document_chunks.project_id
-                AND wi.azure_project_id = document_chunks.azure_project_id
-                AND wi.azure_work_item_id = document_chunks.azure_work_item_id
-                AND COALESCE(wi.sync_status, 'active') = 'active'
-            )
-        `,
-        {
-          projectId: scope.projectId,
-          azureProjectId: scope.azureProjectId,
-        },
-      );
+  if (input.workItemIds?.length) {
+    // Explicit selection is a targeted fetch, not a relevance search: the caller
+    // asked for these work items, so every chunk is returned in document order with
+    // full relevance.
+    const rows = await sqlAll<ContextChunkRow>(
+      `
+        SELECT id, azure_work_item_id, work_item_type, document_name, content, metadata_json
+        FROM document_chunks
+        WHERE project_id = @projectId
+          AND azure_project_id = @azureProjectId
+          AND source_type = 'azure_work_item'
+          AND azure_work_item_id IN (${input.workItemIds.map((_, index) => `@id${index}`).join(", ")})
+          AND EXISTS (
+            SELECT 1
+            FROM azure_devops_work_items wi
+            WHERE wi.project_id = document_chunks.project_id
+              AND wi.azure_project_id = document_chunks.azure_project_id
+              AND wi.azure_work_item_id = document_chunks.azure_work_item_id
+              AND COALESCE(wi.sync_status, 'active') = 'active'
+          )
+        ORDER BY azure_work_item_id, chunk_index
+        LIMIT @limit
+      `,
+      {
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        limit: Math.max(topK, input.workItemIds.length * 3),
+        ...Object.fromEntries(input.workItemIds.map((id, index) => [`id${index}`, id])),
+      },
+    );
+    return rows.map((row) => toLlmContextSource(row, 1));
+  }
 
-  const terms = tokenize(input.query);
-  return rows
-    .map((row) => toLlmContextSource(row, scoreContent(row.content, terms)))
-    .filter((source) => input.workItemIds?.length || source.relevanceScore > 0)
-    .sort((a, b) => b.relevanceScore - a.relevanceScore)
-    .slice(0, topK);
+  // Resolve the embedding provider once and reuse it both for dynamic synonym
+  // resolution (see buildFtsQueryWithDynamicSynonyms) and for semantic search below,
+  // instead of letting searchProjectChunksHybrid re-resolve it independently.
+  const embeddingProvider =
+    input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
+  const ftsQuery = await buildFtsQueryWithDynamicSynonyms(input.query, embeddingProvider);
+  if (!ftsQuery) return [];
+  await ensureProjectContextSearchIndex({ scope });
+
+  const maxChunksPerWorkItem = Math.max(1, Math.trunc(input.maxChunksPerWorkItem ?? 1));
+  const fused = await searchProjectChunksHybrid({
+    scope,
+    ftsQuery,
+    rawQuery: input.query,
+    topK,
+    maxChunksPerWorkItem,
+    embeddingProvider,
+  });
+  const maxScore = fused[0]?.score ?? 0;
+  return fused.map(({ row, score }) => toLlmContextSource(row, normalizeRank(score, maxScore)));
+}
+
+// LlmContextSource.relevanceScore stays 0..1 (prompt renderers and the LLM context
+// selection contract present it that way), so raw ranking values (ts_rank_cd or RRF
+// scores) are normalized against the best match in the result set.
+function normalizeRank(rank: number, maxRank: number) {
+  if (!(maxRank > 0)) return 1;
+  return Math.max(0.01, Math.round((rank / maxRank) * 100) / 100);
 }
 
 export function workItemToContextText(item: Requirement) {
@@ -758,19 +821,46 @@ function parseMetadata(value: string | null): {
   }
 }
 
-function tokenize(value: string) {
-  return value.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 2);
-}
-
-function scoreContent(content: string, terms: string[]) {
-  if (!terms.length) return 0;
-  const haystack = content.toLowerCase();
-  const hits = terms.reduce((count, term) => count + (haystack.includes(term) ? 1 : 0), 0);
-  return Math.round((hits / terms.length) * 100) / 100;
-}
-
 function stableHash(value: string) {
   return getCrypto().createHash("sha256").update(value).digest("hex");
+}
+
+/** Exported for tests only; production callers go through withEmbeddingSyncLock. */
+export function advisoryLockKeyForProject(projectId: string): [number, number] {
+  const digest = getCrypto().createHash("sha256").update(`context_embedding_sync:${projectId}`).digest();
+  return [digest.readInt32BE(0), digest.readInt32BE(4)];
+}
+
+/**
+ * Runs `fn` while holding a session-scoped Postgres advisory lock keyed on the
+ * project, so two overlapping calls for the same project don't both redo the same
+ * work. pg_try_advisory_lock/pg_advisory_unlock are scoped to the physical
+ * connection, not a logical transaction, so both calls must run on the exact same
+ * PoolClient — never let sqlGet/sqlRun fall back to the shared pool here, or the
+ * "unlock" can silently target a different session and never release the lock.
+ * A lock miss returns { acquired: false } without running fn; it never blocks/waits.
+ */
+export async function withEmbeddingSyncLock<T>(
+  projectId: string,
+  fn: () => Promise<T>,
+): Promise<{ acquired: boolean; result?: T }> {
+  const [key1, key2] = advisoryLockKeyForProject(projectId);
+  const client = await getPool().connect();
+  try {
+    const lockRow = await sqlGet<{ locked: boolean }>(
+      "SELECT pg_try_advisory_lock(@key1, @key2) AS locked",
+      { key1, key2 },
+      client,
+    );
+    if (!lockRow?.locked) return { acquired: false };
+    try {
+      return { acquired: true, result: await fn() };
+    } finally {
+      await sqlRun("SELECT pg_advisory_unlock(@key1, @key2)", { key1, key2 }, client);
+    }
+  } finally {
+    client.release();
+  }
 }
 
 function stripHtml(value: string) {

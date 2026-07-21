@@ -11,6 +11,12 @@ import {
 } from "./project-knowledge.schema";
 import { canonicalizeProjectKnowledgeKey, getEntryProvenanceStatus } from "./project-knowledge-contracts";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
+import { buildFtsQueryWithDynamicSynonyms } from "./full-text-search";
+import { searchProjectKnowledgeByTrigram } from "./trigram-search";
+import { fuseByReciprocalRank } from "./hybrid-ranking";
+import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
+import { createEmbeddingProvider } from "./embedding-provider";
+import { searchProjectKnowledgeByEmbedding } from "./embedding-store.service";
 
 export type ContextChatbotContextEvidence = {
   sourceType: "project_context";
@@ -287,7 +293,12 @@ export async function refreshProjectKnowledgeSearchIndex(
   }
 }
 
-export async function ensureContextChatbotSearchIndexes(input: { scope: ProjectScope }) {
+/**
+ * Self-heals the chunk FTS table when it drifts from the active chunk set (e.g. a
+ * database restored from before the FTS table was populated). Cheap when consistent:
+ * two COUNT queries against indexed columns.
+ */
+export async function ensureProjectContextSearchIndex(input: { scope: ProjectScope }) {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
   const chunkCount = await countRows(
@@ -317,6 +328,11 @@ export async function ensureContextChatbotSearchIndexes(input: { scope: ProjectS
   if (chunkCount > 0 && chunkCount !== chunkFtsCount) {
     await refreshProjectContextSearchIndex({ scope });
   }
+}
+
+export async function ensureContextChatbotSearchIndexes(input: { scope: ProjectScope }) {
+  const scope = assertProjectScope(input.scope);
+  await ensureProjectContextSearchIndex({ scope });
 
   const knowledgeSnapshot = await sqlGet<KnowledgeSnapshotRow>(
     `
@@ -375,7 +391,11 @@ export async function retrieveContextChatbotEvidence(input: {
   const knowledgeLimit = input.knowledgeLimit ?? 10;
   const maxContextChunksPerWorkItem = input.maxContextChunksPerWorkItem ?? 2;
 
-  const ftsQuery = buildFtsQuery(input.query);
+  // Resolved once and reused for dynamic synonym resolution here; searchContext and
+  // searchKnowledge independently resolve their own provider for semantic search
+  // (createEmbeddingProvider is a cheap, stateless env-read, not worth threading
+  // through every call for reuse).
+  const ftsQuery = await buildFtsQueryWithDynamicSynonyms(input.query, createEmbeddingProvider());
   const selectedWorkItemIds = Array.from(new Set(input.selectedWorkItemIds ?? []));
   if (!ftsQuery) {
     const selected = selectedWorkItemIds.length
@@ -389,7 +409,7 @@ export async function retrieveContextChatbotEvidence(input: {
     return { context: selected, knowledge: await getFallbackKnowledge({ scope, limit: knowledgeLimit }) };
   }
 
-  const knowledge = await searchKnowledge({ scope, ftsQuery, limit: knowledgeLimit });
+  const knowledge = await searchKnowledge({ scope, ftsQuery, rawQuery: input.query, limit: knowledgeLimit });
   const trustedCompiled = knowledge.length > 0 && await hasTrustedCompiledKnowledge(scope);
   const selected = selectedWorkItemIds.length
     ? await loadSelectedContext({
@@ -402,6 +422,7 @@ export async function retrieveContextChatbotEvidence(input: {
   const searched = await searchContext({
     scope,
     ftsQuery,
+    rawQuery: input.query,
     limit: contextLimit,
     maxChunksPerWorkItem: maxContextChunksPerWorkItem,
   });
@@ -494,55 +515,33 @@ async function hasTrustedCompiledKnowledge(scope: ProjectScope) {
   );
 }
 
-async function searchContext(input: { scope: ProjectScope; ftsQuery: string; limit: number; maxChunksPerWorkItem?: number }) {
+async function searchContext(input: {
+  scope: ProjectScope;
+  ftsQuery: string;
+  rawQuery: string;
+  limit: number;
+  maxChunksPerWorkItem?: number;
+}) {
   const maxChunksPerWorkItem = positiveIntegerOrDefault(input.maxChunksPerWorkItem, input.limit);
-  try {
-    const rows = await sqlAll<ChunkFtsRow>(
-      `
-        WITH ranked AS (
-          SELECT chunk_id, azure_work_item_id, work_item_type, title, content, metadata_json,
-                 ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) AS rank,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY azure_work_item_id
-                   ORDER BY ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) DESC, chunk_id ASC
-                 ) AS work_item_rank
-          FROM document_chunks_fts
-          WHERE tsv @@ to_tsquery('simple', @ftsQuery)
-            AND project_id = @projectId
-            AND azure_project_id = @azureProjectId
-        )
-        SELECT chunk_id, azure_work_item_id, work_item_type, title, content, metadata_json
-        FROM ranked
-        WHERE work_item_rank <= @maxChunksPerWorkItem
-        ORDER BY rank DESC
-        LIMIT @limit
-      `,
-      {
-        ftsQuery: input.ftsQuery,
-        projectId: input.scope.projectId,
-        azureProjectId: input.scope.azureProjectId,
-        limit: input.limit,
-        maxChunksPerWorkItem,
-      },
-    );
-
-    const evidence = rows.map((row) => ({
-      sourceType: "project_context" as const,
-      sourceId: `WI:${row.azure_work_item_id}`,
-      workItemId: row.azure_work_item_id,
-      workItemType: row.work_item_type,
-      title: row.title,
-      content: row.content,
-      metadata: parseChunkMetadata(row.metadata_json),
-    }));
-    return limitContextEvidenceByWorkItem(evidence, {
-      limit: input.limit,
-      maxChunksPerWorkItem,
-    });
-  } catch (error) {
-    console.error("Project chat context FTS search failed", error);
-    return [];
-  }
+  // searchProjectChunksHybrid never throws (every source is independently caught
+  // inside it) and already enforces the per-work-item cap on its fused output, so
+  // no outer try/catch or second cap pass is needed here.
+  const fused = await searchProjectChunksHybrid({
+    scope: input.scope,
+    ftsQuery: input.ftsQuery,
+    rawQuery: input.rawQuery,
+    topK: input.limit,
+    maxChunksPerWorkItem,
+  });
+  return fused.map(({ row }) => ({
+    sourceType: "project_context" as const,
+    sourceId: `WI:${row.azure_work_item_id ?? ""}`,
+    workItemId: row.azure_work_item_id ?? "",
+    workItemType: row.work_item_type ?? "Unknown",
+    title: row.document_name ?? "Untitled work item",
+    content: row.content,
+    metadata: parseChunkMetadata(row.metadata_json),
+  }));
 }
 
 export function limitContextEvidenceByWorkItem<TItem extends { workItemId: string }>(
@@ -566,9 +565,10 @@ export function limitContextEvidenceByWorkItem<TItem extends { workItemId: strin
   return selected;
 }
 
-async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; limit: number }) {
+async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; rawQuery: string; limit: number }) {
+  let ftsRows: KnowledgeFtsRow[] = [];
   try {
-    const rows = await sqlAll<KnowledgeFtsRow>(
+    ftsRows = await sqlAll<KnowledgeFtsRow>(
       `
         SELECT entry_id, category, entry_key, title, content, source_work_item_ids,
                evidence, ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) AS rank
@@ -586,13 +586,50 @@ async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; l
         limit: input.limit,
       },
     );
-
-    const results = rows.map(toKnowledgeEvidence);
-    return results.length ? results : await getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
   } catch (error) {
     console.error("Project chat knowledge FTS search failed", error);
-    return getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
   }
+
+  let trigramRows: KnowledgeFtsRow[] = [];
+  try {
+    trigramRows = await searchProjectKnowledgeByTrigram({
+      scope: input.scope,
+      query: input.rawQuery,
+      topK: input.limit,
+    });
+  } catch (error) {
+    console.error("Project chat knowledge trigram search failed", error);
+  }
+
+  const embeddingProvider = createEmbeddingProvider();
+  let semanticRows: KnowledgeFtsRow[] = [];
+  if (embeddingProvider) {
+    try {
+      semanticRows = await searchProjectKnowledgeByEmbedding({
+        scope: input.scope,
+        provider: embeddingProvider,
+        query: input.rawQuery,
+        topK: input.limit,
+      });
+    } catch (error) {
+      console.error("Project chat knowledge semantic search failed", error);
+    }
+  }
+
+  // No trigram or semantic signal: keep FTS's own ts_rank_cd order rather than
+  // running a single-list fusion through RRF, which would flatten its real score
+  // spread.
+  if (!trigramRows.length && !semanticRows.length) {
+    const results = ftsRows.map(toKnowledgeEvidence);
+    return results.length ? results : getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
+  }
+
+  const fused = fuseByReciprocalRank({
+    lists: [ftsRows, trigramRows, semanticRows].filter((list) => list.length > 0),
+    getKey: (row) => row.entry_id,
+  });
+  if (!fused.length) return getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
+  return fused.slice(0, input.limit).map(({ item }) => toKnowledgeEvidence(item));
 }
 
 async function getFallbackKnowledge(input: { scope: ProjectScope; limit: number }) {
@@ -737,24 +774,4 @@ async function countRows(sql: string, scope: ProjectScope) {
     azureProjectId: scope.azureProjectId,
   });
   return row?.count ?? 0;
-}
-
-// Builds a PostgreSQL to_tsquery string from free text: lowercased alphanumeric
-// terms (>2 chars, max 16) become prefix matches joined with OR, e.g.
-// "login flow" -> "login:* | flow:*". Terms are alphanumeric-only by
-// construction, so they are safe to interpolate into to_tsquery('simple', ...).
-// Exported for unit tests only; production callers go through
-// retrieveContextChatbotEvidence.
-export function buildFtsQuery(value: string) {
-  const terms = Array.from(
-    new Set(
-      value
-        .toLowerCase()
-        .split(/[^\p{L}\p{N}]+/u)
-        .map((term) => term.trim())
-        .filter((term) => term.length > 2),
-    ),
-  ).slice(0, 16);
-
-  return terms.map((term) => `${term}:*`).join(" | ");
 }
