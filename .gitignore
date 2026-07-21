@@ -16,4 +16,3 @@ data/model-cache/*
 tsconfig.tsbuildinfo
 .claude
 .codex
-private-context

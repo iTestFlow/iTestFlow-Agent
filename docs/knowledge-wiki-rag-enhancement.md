@@ -67,7 +67,7 @@ search below closes.
 **Trigram search** (always on, no configuration). `src/modules/rag/trigram-search.ts`
 queries the same two FTS mirror tables via PostgreSQL's `pg_trgm` extension
 (`word_similarity()`/`<%`, GIN-indexed — see
-`migrations/1710000016000_trigram_search.js`), catching compound-word/infix matches
+`migrations/1710000023000_trigram_search.js`), catching compound-word/infix matches
 word-prefix FTS matching misses (e.g. "flow" matching "workflow"). Queries under 3
 characters skip trigram entirely (too little signal to compare).
 

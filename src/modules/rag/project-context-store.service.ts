@@ -506,29 +506,6 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
     },
   });
 
-  recordProjectKnowledgeLog({
-    scope,
-    eventType: "context.synced",
-    severity: inactiveCount || updatedCount || createdCount ? "info" : "info",
-    title: "Project context synced",
-    message: `Context sync completed in ${mode} mode with ${createdCount} created, ${updatedCount} updated, ${unchangedCount} unchanged, and ${inactiveCount} inactive work items.`,
-    metadata: {
-      mode,
-      indexRunId,
-      fetchedCount: workItems.length,
-      indexedWorkItemCount,
-      indexedChunkCount,
-      createdCount,
-      updatedCount,
-      unchangedCount,
-      inactiveCount,
-      provenanceRefreshCount,
-      skippedEmptyCount,
-      workItemTypes: input.workItemTypes,
-      states: input.states,
-    },
-  });
-
   return {
     mode,
     fetchedCount: workItems.length,

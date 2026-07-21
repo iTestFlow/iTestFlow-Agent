@@ -8,7 +8,7 @@ import { sqlAll } from "@/modules/shared/infrastructure/database/db";
  * search and semantic search, meant to catch compound-word/infix matches
  * to_tsquery prefix matching misses (e.g. "flow" matching "workflow"). Query-side
  * only -- indexing is handled entirely by the trigram GIN indexes added in
- * migrations/1710000016000_trigram_search.js; no separate sync step is needed since
+ * migrations/1710000023000_trigram_search.js; no separate sync step is needed since
  * Postgres maintains those indexes automatically as document_chunks_fts /
  * project_knowledge_entries_fts rows are inserted.
  */
