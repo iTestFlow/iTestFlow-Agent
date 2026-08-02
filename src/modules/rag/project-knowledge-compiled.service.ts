@@ -1161,8 +1161,26 @@ export async function getProjectKnowledgeCandidate(input: { scope: ProjectScope;
 }
 
 /** Identity of an indexed insight: its content, so duplicate approvals collapse to one entry. */
-function chatInsightEntryKey(content: string) {
+export function chatInsightEntryKey(content: string) {
   return `chat-insight-${stableHash(content).slice(0, 12)}`;
+}
+
+/**
+ * Transaction-scoped advisory-lock key serializing index writes for one insight
+ * identity. The entries table has no unique constraint on (project, category,
+ * entry_key), and indexApprovedChatInsight is delete-then-insert: under READ
+ * COMMITTED, two same-content candidates integrated concurrently each miss the
+ * other's uncommitted insert and commit duplicate rows. Exported for the db test.
+ */
+export function chatInsightLockKey(
+  scope: { projectId: string; azureProjectId: string },
+  entryKey: string,
+): [number, number] {
+  const digest = getCrypto()
+    .createHash("sha256")
+    .update(`chat_insight:${scope.projectId}:${scope.azureProjectId}:${entryKey}`)
+    .digest();
+  return [digest.readInt32BE(0), digest.readInt32BE(4)];
 }
 
 export async function rejectProjectKnowledgeCandidate(input: {
@@ -1214,6 +1232,12 @@ export async function rejectProjectKnowledgeCandidate(input: {
     // Entries are keyed by content, so another integrated candidate may still legitimately
     // claim this exact answer. Un-publishing then would revoke a decision nobody reversed.
     const entryKey = chatInsightEntryKey(current.content);
+    // Lock ordering: own candidate row (FOR UPDATE above) first, advisory lock second —
+    // the same order integrateProjectKnowledgeCandidate uses. Without this lock, the
+    // sibling snapshot below can miss a same-content integrate that is still in flight,
+    // and the deindex then lands on that integrate's just-committed row.
+    const [lockKey1, lockKey2] = chatInsightLockKey(scope, entryKey);
+    await sqlRun(`SELECT pg_advisory_xact_lock(@lockKey1, @lockKey2)`, { lockKey1, lockKey2 }, client);
     const siblings = await sqlAll<{ content: string }>(
       `
         SELECT content FROM project_knowledge_candidates
@@ -1259,23 +1283,49 @@ export async function integrateProjectKnowledgeCandidate(input: {
   actor: string;
 }) {
   const scope = assertProjectScope(input.scope);
-  const candidate = await getProjectKnowledgeCandidate({ scope, candidateId: input.candidateId });
-  if (!candidate) throw resourceNotFound("Project knowledge candidate");
-  if (candidate.status === "rejected") {
-    throw new AppError({
-      code: AppErrorCode.KnowledgeDraftConflict,
-      message: "A rejected candidate cannot be integrated.",
-      userMessage: "This candidate was rejected. Reopen it before integrating.",
-    });
-  }
 
   const now = nowIso();
   // Status and index move together: an entry indexed without the status recorded would
   // be re-indexed on every retry, and a status recorded without the entry would claim
   // the knowledge is in use when retrieval cannot see it.
   await withTransaction(async (client) => {
-    // Conditional, not a blind write: a reject landing between the read above and this
-    // update must win, or integration would silently resurrect rejected content.
+    // Read under a row lock inside this transaction so the status cannot be overtaken
+    // by a concurrent reject between read and claim (parity with
+    // rejectProjectKnowledgeCandidate's own FOR UPDATE read).
+    const row = await sqlGet<KnowledgeCandidateRow>(
+      `
+        SELECT id, title, content, status, source_work_item_ids, evidence_refs_json,
+               citations_json, rejected_reason, created_at, updated_at
+        FROM project_knowledge_candidates
+        WHERE id = @candidateId AND project_id = @projectId AND azure_project_id = @azureProjectId
+        FOR UPDATE
+      `,
+      { candidateId: input.candidateId, projectId: scope.projectId, azureProjectId: scope.azureProjectId },
+      client,
+    );
+    if (!row) throw resourceNotFound("Project knowledge candidate");
+    const candidate = toKnowledgeCandidate(row);
+    if (candidate.status === "rejected") {
+      throw new AppError({
+        code: AppErrorCode.KnowledgeDraftConflict,
+        message: "A rejected candidate cannot be integrated.",
+        userMessage: "This candidate was rejected. Reopen it before integrating.",
+      });
+    }
+
+    // Same derivation promoteContextChatbotAnswer uses for its own entryKey, so two
+    // saves of one answer resolve to a single indexed insight.
+    const entryKey = chatInsightEntryKey(candidate.content);
+    // Lock ordering: own candidate row (FOR UPDATE above) first, advisory lock second —
+    // the same order rejectProjectKnowledgeCandidate uses, so the two cannot deadlock.
+    // Serializes delete-then-insert index writes for candidates sharing this content,
+    // which the entries table's lack of a unique (project, category, entry_key)
+    // constraint would otherwise let interleave into duplicate rows.
+    const [lockKey1, lockKey2] = chatInsightLockKey(scope, entryKey);
+    await sqlRun(`SELECT pg_advisory_xact_lock(@lockKey1, @lockKey2)`, { lockKey1, lockKey2 }, client);
+
+    // Conditional, not a blind write: belt-and-braces with the row lock above — a
+    // reject can no longer land in between, but the guard keeps the invariant local.
     const claimed = await sqlRun(
       `
         UPDATE project_knowledge_candidates
@@ -1304,9 +1354,7 @@ export async function integrateProjectKnowledgeCandidate(input: {
       {
         scope,
         candidateId: input.candidateId,
-        // Same derivation promoteContextChatbotAnswer uses for its own entryKey, so two
-        // saves of one answer resolve to a single indexed insight.
-        entryKey: chatInsightEntryKey(candidate.content),
+        entryKey,
         title: candidate.title,
         content: candidate.content,
         sourceWorkItemIds: candidate.sourceWorkItemIds.filter(

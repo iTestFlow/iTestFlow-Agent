@@ -507,4 +507,3 @@ export async function searchProjectKnowledgeByEmbedding(input: {
     .sort((first, second) => second.similarity - first.similarity || first.entry_id.localeCompare(second.entry_id))
     .slice(0, input.topK);
 }
-

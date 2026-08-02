@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 
-import { flushBackgroundWrites, getPool, resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { flushBackgroundWrites, getPool, resetDatabaseForTests, sqlAll, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import {
   refreshProjectKnowledgeSearchIndex,
   retrieveContextChatbotEvidence,
 } from "@/modules/rag/context-chatbot-retrieval.service";
 import {
+  chatInsightEntryKey,
+  chatInsightLockKey,
   integrateProjectKnowledgeCandidate,
   promoteContextChatbotAnswer,
   rejectProjectKnowledgeCandidate,
@@ -287,6 +289,59 @@ describeDb("saved chatbot answers reach retrieval (DB-backed)", () => {
     });
     expect(evidence.knowledge.map((item) => item.content)).toContain(answer);
   });
+
+  it("two concurrent integrations of identical answers index exactly one entry", async () => {
+    // The race the advisory lock closes. Two candidates carrying the same content share
+    // one entryKey, but hold different candidate rows — so the FOR UPDATE row locks do
+    // not serialize them, and indexApprovedChatInsight is delete-then-insert with no
+    // unique constraint backing it: under READ COMMITTED each transaction's DELETE
+    // misses the other's uncommitted INSERT and both commit, duplicating the insight in
+    // every prompt. Pre-holding the advisory lock externally guarantees both integrates
+    // are provably in flight together before either can index; with the fix they queue
+    // on it, without it the external lock is invisible to them and the race runs free.
+    const answer = "Loyalty credits expire after eighteen months of account inactivity.";
+    const first = await savedAnswer(answer);
+    const second = await savedAnswer(answer);
+    const entryKey = chatInsightEntryKey(answer);
+    const [lockKey1, lockKey2] = chatInsightLockKey(scope, entryKey);
+
+    const lockClient = await getPool().connect();
+    try {
+      await lockClient.query("BEGIN");
+      await lockClient.query("SELECT pg_advisory_xact_lock($1, $2)", [lockKey1, lockKey2]);
+
+      const firstPromise = integrateProjectKnowledgeCandidate({
+        scope, candidateId: first.candidateId, actor: "admin-1",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const secondPromise = integrateProjectKnowledgeCandidate({
+        scope, candidateId: second.candidateId, actor: "admin-2",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      await lockClient.query("COMMIT");
+
+      const [firstResult, secondResult] = await Promise.allSettled([firstPromise, secondPromise]);
+      expect(firstResult.status).toBe("fulfilled");
+      expect(secondResult.status).toBe("fulfilled");
+    } finally {
+      lockClient.release();
+    }
+
+    for (const table of ["project_knowledge_entries", "project_knowledge_entries_fts"] as const) {
+      const rows = await sqlAll<{ id: string | null }>(
+        `SELECT project_id AS id FROM ${table}
+         WHERE project_id = @p AND category = 'chat_insight' AND entry_key = @entryKey`,
+        { p: PROJ, entryKey },
+      );
+      expect(rows).toHaveLength(1);
+    }
+    const evidence = await retrieveContextChatbotEvidence({
+      scope, query: "loyalty credits expire account inactivity",
+      embeddingProvider: null, rerankProvider: null,
+    });
+    expect(evidence.knowledge.filter((item) => item.content === answer)).toHaveLength(1);
+  }, 60_000);
 
   it("refuses to integrate a candidate that was rejected", async () => {
     const answer = "Vendor onboarding requires a signed data-processing agreement first.";

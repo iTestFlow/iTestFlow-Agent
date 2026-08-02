@@ -52,6 +52,10 @@ export async function POST(request: Request) {
       adapter,
       storyId: parsed.data.storyId,
       selectedContextIds: parsed.data.selectedContextIds,
+      // The requirement is fetched inside the data loader, not available here; the
+      // query param is a documented no-op until the adaptive-K heuristic lands
+      // (retrieval-config.ts), at which point topK resolution should move into
+      // loadTestExecutionEffortData where the requirement text is in hand.
       retrievalTopK: await resolveRetrievalTopK({ workspaceId: ctx.workspace.id, query: "" }),
     });
     const preview = buildTestExecutionEffortPreview({

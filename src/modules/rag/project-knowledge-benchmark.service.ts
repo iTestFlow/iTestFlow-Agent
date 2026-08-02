@@ -4,6 +4,7 @@ import { createHash } from "crypto";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
+import { normalizeExpectedWorkItemId } from "./work-item-id";
 import {
   createId,
   enqueueBackgroundWrite,
@@ -145,7 +146,12 @@ export async function labelProjectKnowledgeBenchmarkCase(input: {
   labeledBy: string;
 }): Promise<ProjectKnowledgeBenchmarkCase> {
   const scope = assertProjectScope(input.scope);
-  const expectedWorkItemId = input.expectedWorkItemId?.trim() || null;
+  // Best-effort canonicalization for any future caller; the label API route is the
+  // rejection gate for un-normalizable input, so unknown shapes fall back to trimmed.
+  const trimmedWorkItemId = input.expectedWorkItemId?.trim() || null;
+  const expectedWorkItemId = trimmedWorkItemId
+    ? (normalizeExpectedWorkItemId(trimmedWorkItemId) ?? trimmedWorkItemId)
+    : null;
   const expectedAnswerSnippet = input.expectedAnswerSnippet?.trim().slice(0, 2000) || null;
   const now = nowIso();
   const row = await sqlGet<ProjectKnowledgeBenchmarkCaseRow>(

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const local = vi.hoisted(() => ({ rerankWithLocalModel: vi.fn() }));
 vi.mock("./local-rerank", () => local);
 
-import { createRerankProvider, MAX_RERANK_BATCH_SIZE, RERANK_DTYPE, RERANK_MODEL } from "./rerank-provider";
+import { createRerankProvider, MAX_RERANK_BATCH_SIZE, MAX_RERANK_QUERY_CHARS, RERANK_DTYPE, RERANK_MODEL } from "./rerank-provider";
 
 /**
  * Unit coverage for the provider's own logic — batching, truncation and validation —
@@ -78,11 +78,13 @@ describe("createRerankProvider", () => {
     }
   });
 
-  it("truncates oversized text and query input", async () => {
+  it("truncates oversized text and query input, with a tighter cap on the query", async () => {
+    // The 512-token pair window is shared and nothing prioritizes the passage, so the
+    // query must not be allowed to consume it — see MAX_RERANK_QUERY_CHARS.
     await createRerankProvider().rerank("q".repeat(5000), ["p".repeat(5000)]);
 
     const call = local.rerankWithLocalModel.mock.calls[0]![0];
-    expect(call.query).toHaveLength(2000);
+    expect(call.query).toHaveLength(MAX_RERANK_QUERY_CHARS);
     expect(call.texts[0]).toHaveLength(2000);
   });
 

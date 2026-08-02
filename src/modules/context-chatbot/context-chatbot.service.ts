@@ -34,10 +34,10 @@ const BUDGET_SAFETY_FRACTION_FOR_HISTORY = 0.9;
 
 /**
  * Scores how relevant an earlier exchange is to the current question, using the same
- * local embedding model retrieval uses. Returns undefined when the model is
- * unavailable, which degrades conversation memory to plain recency.
+ * local embedding model retrieval uses. A scorer failure at call time is caught by
+ * conversation memory, which degrades to plain recency.
  */
-function buildExchangeScorer(): ExchangeScorer | undefined {
+function buildExchangeScorer(): ExchangeScorer {
   const provider = createEmbeddingProvider();
   return async ({ question, exchanges }) => {
     const [questionVector] = await provider.embed([question], "query");

@@ -1511,7 +1511,7 @@ export function KnowledgeCandidatesView({
             </details>
           ) : null}
           {candidate.rejectedReason ? <div className="mt-2 text-xs text-destructive">Rejected: {candidate.rejectedReason}</div> : null}
-          {canManage && !["rejected", "integration_requested", "integrated"].includes(candidate.status) ? (
+          {canManage && !["rejected", "integrated"].includes(candidate.status) ? (
             <div className="mt-3 flex justify-end gap-2">
               <Button size="sm" variant="outline" disabled={loading} onClick={() => void onAction(candidate.id, "reject")}>Reject</Button>
               <Button size="sm" disabled={loading} onClick={() => void onAction(candidate.id, "request_integration")}>Integrate</Button>
@@ -1852,7 +1852,7 @@ export function KnowledgeBenchmarkRow({
           <Input
             value={expectedWorkItemId}
             onChange={(event) => setExpectedWorkItemId(event.target.value)}
-            placeholder="Expected work item ID"
+            placeholder="Work item ID, e.g. 1234 or AB#1234"
             disabled={saving}
             className="sm:w-48"
             aria-label={`Expected work item ID for benchmark case ${item.id}`}
