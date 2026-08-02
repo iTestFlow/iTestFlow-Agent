@@ -83,6 +83,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/rag/rag-pipeline.service.ts",
   "src/modules/rag/retrieval-benchmark-scorer.ts",
   "src/modules/rag/retrieval-config.ts",
+  "src/modules/rag/work-item-id.ts",
   "src/modules/rag/workflow-context-citations.ts",
   "src/modules/requirement-analysis/comment/requirement-analysis-comment.ts",
   "src/modules/scoring/scoring.service.ts",

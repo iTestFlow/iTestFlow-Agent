@@ -109,6 +109,14 @@ describeDb("retrieval benchmark runner (real model, real index, real labels)", (
       expectedWorkItemId: "9202",
       labeledBy: "db-test-admin",
     });
+
+    // Force one label back into the legacy free-text shape rows could carry before
+    // normalization-at-write landed. The service would normalize "AB#9201" today, so
+    // write it directly: the runner's normalize-at-compare must still score it.
+    await sqlRun(
+      `UPDATE project_knowledge_benchmark_cases SET expected_work_item_id = 'AB#9201' WHERE id = @id`,
+      { id: cardCase.id },
+    );
   }, 300_000);
 
   afterAll(async () => {
@@ -135,6 +143,10 @@ describeDb("retrieval benchmark runner (real model, real index, real labels)", (
     }
     expect(run.summary.mrr).toBe(1);
     expect(run.summary.recallAtK[1]).toBe(1);
+    // The card case's stored label is the legacy "AB#9201" shape (see beforeAll);
+    // the runner must normalize it at compare time and report the canonical id.
+    const cardResult = run.results.find((result) => result.question.includes("card refused"));
+    expect(cardResult?.expectedWorkItemId).toBe("9201");
   }, 300_000);
 
   it("excludes unlabeled cases from the run", async () => {

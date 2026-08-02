@@ -3,6 +3,7 @@ import "server-only";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { retrieveContextChatbotEvidence } from "@/modules/rag/context-chatbot-retrieval.service";
 import { listProjectKnowledgeBenchmarkCases } from "@/modules/rag/project-knowledge-benchmark.service";
+import { normalizeExpectedWorkItemId } from "@/modules/rag/work-item-id";
 import {
   reciprocalRank,
   recallAtK,
@@ -51,6 +52,11 @@ export async function runRetrievalBenchmark(input: { scope: ProjectScope }): Pro
   for (const benchmarkCase of labeledCases) {
     // Guaranteed by labeledOnly, but keeps the result type's expectedWorkItemId non-nullable.
     if (!benchmarkCase.expectedWorkItemId) continue;
+    // Labels written before normalization-at-write landed can still carry "AB#1234"
+    // shapes; retrieval returns plain numeric ids, so normalize at compare too. The
+    // scorer itself stays pure exact-match.
+    const expectedWorkItemId =
+      normalizeExpectedWorkItemId(benchmarkCase.expectedWorkItemId) ?? benchmarkCase.expectedWorkItemId;
 
     const evidence = await retrieveContextChatbotEvidence({
       scope,
@@ -64,10 +70,10 @@ export async function runRetrievalBenchmark(input: { scope: ProjectScope }): Pro
     results.push({
       caseId: benchmarkCase.id,
       question: benchmarkCase.question,
-      expectedWorkItemId: benchmarkCase.expectedWorkItemId,
+      expectedWorkItemId,
       rankedWorkItemIds,
-      recallAt1: recallAtK(rankedWorkItemIds, benchmarkCase.expectedWorkItemId, 1),
-      reciprocalRank: reciprocalRank(rankedWorkItemIds, benchmarkCase.expectedWorkItemId),
+      recallAt1: recallAtK(rankedWorkItemIds, expectedWorkItemId, 1),
+      reciprocalRank: reciprocalRank(rankedWorkItemIds, expectedWorkItemId),
     });
   }
 

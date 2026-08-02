@@ -1852,7 +1852,7 @@ export function KnowledgeBenchmarkRow({
           <Input
             value={expectedWorkItemId}
             onChange={(event) => setExpectedWorkItemId(event.target.value)}
-            placeholder="Expected work item ID"
+            placeholder="Work item ID, e.g. 1234 or AB#1234"
             disabled={saving}
             className="sm:w-48"
             aria-label={`Expected work item ID for benchmark case ${item.id}`}
