@@ -1511,7 +1511,7 @@ export function KnowledgeCandidatesView({
             </details>
           ) : null}
           {candidate.rejectedReason ? <div className="mt-2 text-xs text-destructive">Rejected: {candidate.rejectedReason}</div> : null}
-          {canManage && !["rejected", "integration_requested", "integrated"].includes(candidate.status) ? (
+          {canManage && !["rejected", "integrated"].includes(candidate.status) ? (
             <div className="mt-3 flex justify-end gap-2">
               <Button size="sm" variant="outline" disabled={loading} onClick={() => void onAction(candidate.id, "reject")}>Reject</Button>
               <Button size="sm" disabled={loading} onClick={() => void onAction(candidate.id, "request_integration")}>Integrate</Button>

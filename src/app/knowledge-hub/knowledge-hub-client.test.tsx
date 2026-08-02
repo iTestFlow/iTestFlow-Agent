@@ -189,6 +189,23 @@ describe("Knowledge Hub candidates UI", () => {
     expect(screen.getByRole("button", { name: "Integrate" })).toBeTruthy();
   });
 
+  it("offers integration for a legacy integration_requested candidate", () => {
+    // Rows in this status predate direct integration: the old flow only recorded a
+    // request nothing fulfilled. The API accepts integrating them (only rejected is
+    // barred), so hiding the buttons stranded them permanently.
+    render(<KnowledgeCandidatesView
+      candidates={[{ ...candidate, status: "integration_requested" as const }]}
+      status="all"
+      loading={false}
+      canManage
+      onStatusChange={vi.fn()}
+      onAction={vi.fn()}
+    />);
+
+    expect(screen.getByRole("button", { name: "Integrate" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeTruthy();
+  });
+
   it("stops offering integration once a candidate is integrated", () => {
     render(<KnowledgeCandidatesView
       candidates={[{ ...candidate, status: "integrated" as const }]}
