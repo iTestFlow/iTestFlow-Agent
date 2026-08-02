@@ -138,5 +138,7 @@ export function buildAliasIndex(names: Iterable<string>): AliasIndex {
 export function resolveAlias(index: AliasIndex, name: string | undefined | null) {
   const trimmed = name?.trim();
   if (!trimmed) return null;
-  return index.canonicalKeyByName.get(trimmed) ?? entityAliasKey(trimmed) ?? null;
+  // entityAliasKey returns "" (not null) for punctuation-only input, and `??` would
+  // let that empty string leak out as a truthy-shaped alias identity.
+  return index.canonicalKeyByName.get(trimmed) ?? (entityAliasKey(trimmed) || null);
 }

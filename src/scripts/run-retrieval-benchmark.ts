@@ -7,9 +7,9 @@
  * Run:
  *   npm run benchmark:run
  *
- * Env: DATABASE_URL. Uses the real configured embedding backend (EMBEDDINGS_* env
- * vars, same as production), so results reflect whatever backend the deployment
- * actually runs — not a stub.
+ * Env: DATABASE_URL. Embeddings and reranking run on the pinned in-process local
+ * models (see embedding-provider.ts / rerank-provider.ts) — the same models
+ * production uses; there is no embedding backend configuration.
  */
 import { sqlAll } from "@/modules/shared/infrastructure/database/db";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";

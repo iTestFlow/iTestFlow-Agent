@@ -122,4 +122,13 @@ describe("resolveAlias", () => {
     expect(resolveAlias(index, undefined)).toBeNull();
     expect(resolveAlias(index, "  ")).toBeNull();
   });
+
+  it("returns nothing for a punctuation-only name instead of an empty identity", () => {
+    // entityAliasKey strips punctuation entirely, so "—" folds to "": two distinct
+    // all-punctuation names must not silently resolve to the same empty alias key.
+    const index = buildAliasIndex(["Shipment"]);
+
+    expect(resolveAlias(index, "—")).toBeNull();
+    expect(resolveAlias(index, "###")).toBeNull();
+  });
 });
