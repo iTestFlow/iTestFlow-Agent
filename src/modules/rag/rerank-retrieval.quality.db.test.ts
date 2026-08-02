@@ -1,7 +1,11 @@
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 
 import { flushBackgroundWrites, resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
-import { indexAzureWorkItemsAsProjectContext, workItemToContextUnits } from "@/modules/rag/project-context-store.service";
+import {
+  indexAzureWorkItemsAsProjectContext,
+  requirementToRetrievalQuery,
+  workItemToContextUnits,
+} from "@/modules/rag/project-context-store.service";
 import { syncProjectChunkEmbeddings } from "@/modules/rag/embedding-store.service";
 import { searchProjectChunksHybrid } from "@/modules/rag/hybrid-chunk-search";
 import { buildFtsQuery } from "@/modules/rag/full-text-search";
@@ -74,6 +78,34 @@ const wrongItem = requirement({
 });
 
 const ITEMS: Requirement[] = [rightItem, wrongItem];
+
+// Workflow auto-context does not rerank with a short question: it passes
+// requirementToRetrievalQuery(targetRequirement) — title, description, acceptance
+// criteria and tags joined, unbounded. Built with the same production function so the
+// fixture is provably the real query shape. The genuine ask sits in the title and the
+// opening description sentences (where real requirements put it); the rest is the
+// boilerplate tail real work items carry. Length is guarded below so the fixture cannot
+// silently shrink out of the regime it exists to exercise.
+const longRequirement = requirement({
+  id: "9103",
+  azureProjectId: PROJ,
+  title: "Export test run results from the results page",
+  description: [
+    "As a QA lead, I want to export my finished test run results as a CSV file from the results page, so I can analyse them offline and share them with stakeholders who do not have access to the tool.",
+    "Background: our compliance team reviews release evidence quarterly and requires result artifacts to be archived alongside the release record in the document management system. Today testers copy results into spreadsheets by hand, which is slow and error-prone and has twice produced divergent numbers between the archived spreadsheet and the tool during audits.",
+    "Non-functional notes: the export should complete within thirty seconds for runs of up to ten thousand test cases, must not block the UI while generating, and should produce a file encoded as UTF-8 with a byte-order mark so that spreadsheet applications on Windows open it with correct character rendering for non-English test case titles.",
+    "Out of scope for this story: scheduled or recurring exports, export of attachments and screenshots, PDF report generation, and pushing results to external dashboards. Those are tracked separately on the reporting epic and must not creep into this implementation.",
+    "Accessibility and localisation: the export control must be reachable by keyboard, announced by screen readers, and its label localised in all supported languages. Error states (network failure mid-download, run deleted while exporting) need user-visible messages that support can reference in tickets.",
+    "Security review noted the exported file may contain customer-identifiable test data, so the download must respect the same project-level permissions as the results page itself and be recorded in the audit log with the exporting user's identity.",
+  ].join("\n"),
+  acceptanceCriteria: [
+    "Given a completed test run, when the user chooses export on the results page, then a CSV file containing every test result row of that run is downloaded.",
+    "Given a run with more than ten thousand results, when the user exports, then the file is produced without freezing the browser tab.",
+    "Given an export that fails mid-way, when the failure occurs, then the user sees an actionable error message and no partial file is saved.",
+  ].join("\n"),
+  tags: ["reporting", "compliance"],
+});
+const LONG_QUERY = requirementToRetrievalQuery(longRequirement);
 
 describeDb("rerank retrieval quality (real model, real index)", () => {
   beforeAll(async () => {
@@ -155,5 +187,32 @@ describeDb("rerank retrieval quality (real model, real index)", () => {
       rerankProvider: null,
     });
     expect(baseline[0]!.row.azure_work_item_id).toBe(RIGHT_ID);
+  }, 300_000);
+
+  it("still prefers the right passage when the query is a full requirement, not a question", async () => {
+    // The regime the other tests never enter: the cross-encoder's 512-token window
+    // covers query and passage COMBINED, and workflow auto-context queries are whole
+    // requirements. Without the asymmetric query cap (MAX_RERANK_QUERY_CHARS), a
+    // near-2000-char query could consume essentially the entire window and leave the
+    // model scoring the query against a stump of each passage.
+    expect(LONG_QUERY.length).toBeGreaterThan(2000);
+
+    const rightCore = workItemToContextUnits(rightItem)[0]!.text;
+    const wrongCore = workItemToContextUnits(wrongItem)[0]!.text;
+
+    const scores = await rerankProvider!.rerank(LONG_QUERY, [wrongCore, rightCore]);
+    expect(scores[1]).toBeGreaterThan(scores[0]!);
+  }, 180_000);
+
+  it("ranks the right item first in hybrid search for a full-requirement query", async () => {
+    const reranked = await searchProjectChunksHybrid({
+      scope,
+      ftsQuery: buildFtsQuery(LONG_QUERY) ?? "",
+      rawQuery: LONG_QUERY,
+      topK: 3,
+      embeddingProvider,
+      rerankProvider,
+    });
+    expect(reranked[0]!.row.azure_work_item_id).toBe(RIGHT_ID);
   }, 300_000);
 });

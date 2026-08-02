@@ -43,6 +43,15 @@ export const MAX_RERANK_BATCH_SIZE = 16;
 // reach the tokenizer's own truncation (this model's max_position_embeddings is 512
 // tokens, covering query + passage combined).
 const MAX_RERANK_INPUT_CHARS = 2000;
+// The query gets a much tighter cap than passages, and deliberately so: the 512-token
+// pair window (~2000 chars) is shared, and nothing in tokenization prioritizes keeping
+// the passage visible — a requirement-length query (workflow auto-context passes
+// title+description+criteria joined, unbounded) could consume essentially the whole
+// window and leave the model scoring the query against a stump of each passage. 600
+// chars (~150 tokens) keeps the query under a third of the window; its discriminative
+// content is front-loaded by construction (title, then the opening description
+// sentences), while passages have to survive from mid-chunk. Exported for tests.
+export const MAX_RERANK_QUERY_CHARS = 600;
 
 /**
  * The rerank provider. Always available — there is no "off" and no null return;
@@ -58,7 +67,7 @@ export function createRerankProvider(): RerankProvider {
 
 async function rerankInBatches(query: string, texts: string[]): Promise<number[]> {
   if (!texts.length) return [];
-  const preparedQuery = query.slice(0, MAX_RERANK_INPUT_CHARS);
+  const preparedQuery = query.slice(0, MAX_RERANK_QUERY_CHARS);
   const preparedTexts = texts.map((text) => text.slice(0, MAX_RERANK_INPUT_CHARS));
   const scores: number[] = [];
   for (let start = 0; start < preparedTexts.length; start += MAX_RERANK_BATCH_SIZE) {
