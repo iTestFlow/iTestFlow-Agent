@@ -240,6 +240,23 @@ npm run db:migrate:down
 npm run db:reset-dev
 ```
 
+### Repairing a fork-era migration history
+
+A database migrated from a pre-merge fork branch can fail `npm run db:migrate` (and application startup, which runs the same check) with:
+
+```
+Error: Not run migration <name> is preceding already run migration <name>
+```
+
+This happens because two unrelated migrations once claimed the same timestamps and were later renumbered; the database's recorded history still carries the old filenames. Run the one-time repair, then migrate:
+
+```bash
+npm run db:fix-migration-history
+npm run db:migrate
+```
+
+The repair renames the affected history records to the current filenames, removes records for migrations that were reverted before ever shipping, applies either workspace-settings migration when the history proves it was skipped, and re-canonicalizes the recorded order. It is idempotent and safe to run on fresh, healthy, or already-repaired databases — it reports "not present" for anything that does not need fixing. Fresh installs and databases only ever migrated from `main` never need it.
+
 Use `npm run db:reset-dev` only against disposable development databases.
 
 ## Verification
