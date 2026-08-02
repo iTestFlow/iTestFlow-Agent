@@ -66,7 +66,19 @@ describe("selectRelevantEntries", () => {
     // per-category bar cannot see that, a global one can.
     const selection = selectRelevantEntries(typicalKnowledgeBase(), NOTHING_CONNECTED);
 
-    expect(selection.crossDependencies ?? []).toEqual([]);
+    expect(selection.crossDependencies).toEqual([]);
+  });
+
+  it("emits an explicit empty array for a scored category with no survivors, and no key for one never scored", () => {
+    // The renderer reads a present-but-empty array as "ranked, send nothing" and an
+    // absent key as "not ranked, keep keyword ranking". A fully-cut category must be
+    // the former — otherwise keyword fallback re-admits what the cutoff rejected.
+    const selection = selectRelevantEntries(typicalKnowledgeBase(), NOTHING_CONNECTED);
+
+    expect("crossDependencies" in selection).toBe(true);
+    expect(selection.crossDependencies).toEqual([]);
+    // typicalKnowledgeBase() contains no chatInsights entries at all.
+    expect("chatInsights" in selection).toBe(false);
   });
 
   it("keeps the one module the work item is about and drops the tail", () => {
@@ -110,7 +122,7 @@ describe("selectRelevantEntries", () => {
         new Map([[ontologyEntryId("modules", "mod-1"), 0]]),
       );
 
-      expect(withoutOntology.modules ?? []).toEqual([]);
+      expect(withoutOntology.modules).toEqual([]);
       expect(withOntology.modules).toEqual(["mod-1"]);
     });
 

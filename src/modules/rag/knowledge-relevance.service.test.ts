@@ -112,4 +112,22 @@ describe("rankProjectKnowledgeByRelevance", () => {
     // scoring below a purely similarity-based bar.
     expect(result?.businessRules ?? []).toContain("rule-1");
   });
+
+  it("distinguishes a scored-but-fully-cut category from one that was never scored", async () => {
+    // Keys deliberately absent from the fixture ontology so nothing is rescued by
+    // connection: with similarities 0.9/0.2 the bar sits at 0.55, so the module entry
+    // is cut. Its category must still arrive as an explicit empty array — the renderer
+    // reads that as "send nothing", whereas an absent key (glossary here) means "keep
+    // keyword ranking".
+    searchByEmbedding.mockResolvedValue([
+      { entry_key: "rule-x", category: "business_rule", similarity: 0.9 },
+      { entry_key: "mod-x", category: "module", similarity: 0.2 },
+    ]);
+
+    const result = await rankProjectKnowledgeByRelevance(baseInput());
+
+    expect(result?.businessRules).toEqual(["rule-x"]);
+    expect(result?.modules).toEqual([]);
+    expect(result && "glossary" in result).toBe(false);
+  });
 });

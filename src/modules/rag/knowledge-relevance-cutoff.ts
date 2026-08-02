@@ -48,6 +48,12 @@ export type RelevanceSelection = Partial<Record<OntologyCategory, string[]>>;
  *
  * `connected` maps ontology entry ids to hop distance; entries it contains are kept
  * regardless of similarity, and rank ahead of unconnected ones at equal similarity.
+ *
+ * Every category that was scored gets a key, even when nothing survived: a present
+ * empty array tells the prompt renderer "this category was ranked and has nothing to
+ * say — send nothing", while an absent key means "this category was never embedded —
+ * keep keyword ranking". Collapsing the two into an absent key made the renderer's
+ * keyword fallback re-admit exactly the entries the cutoff had rejected.
  */
 export function selectRelevantEntries(
   scored: ScoredEntry[],
@@ -69,8 +75,11 @@ export function selectRelevantEntries(
     .sort((first, second) => second.entry.similarity - first.entry.similarity);
 
   const selection: RelevanceSelection = {};
+  for (const entry of scored) {
+    selection[entry.category] ??= [];
+  }
   for (const candidate of kept) {
-    (selection[candidate.entry.category] ??= []).push(candidate.entry.key);
+    selection[candidate.entry.category]!.push(candidate.entry.key);
   }
   return selection;
 }
