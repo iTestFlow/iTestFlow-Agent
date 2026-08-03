@@ -50,10 +50,10 @@ function buildExchangeScorer(): ExchangeScorer {
  * sent — see selectEvidenceWithinBudget. Sized to comfortably cover a whole compiled
  * knowledge base (~213 entries on a real project) without unbounded fetching.
  */
-export const CONTEXT_CANDIDATE_LIMIT = 40;
-export const KNOWLEDGE_CANDIDATE_LIMIT = 120;
+const CONTEXT_CANDIDATE_LIMIT = 40;
+const KNOWLEDGE_CANDIDATE_LIMIT = 120;
 /** Chunks one work item may contribute, so a single long item cannot fill the evidence. */
-export const MAX_CONTEXT_CHUNKS_PER_WORK_ITEM = 2;
+const MAX_CONTEXT_CHUNKS_PER_WORK_ITEM = 2;
 
 export async function answerContextChatbot(input: {
   scope: ProjectScope;
