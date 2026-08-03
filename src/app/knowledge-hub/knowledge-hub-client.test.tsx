@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -109,22 +108,16 @@ function contextItem(id: string, title = `Work item ${id}`) {
   };
 }
 
-function knowledgeOpsProps(onReportMiss = vi.fn().mockResolvedValue(true)) {
+function knowledgeOpsProps() {
   return {
-    lint: null,
     logItems: [],
     logVisible: false,
     exportResult: null,
-    healthLoading: false,
     logLoading: false,
     exportLoading: false,
-    reportLoading: false,
     canManage: true,
-    onRunHealthCheck: vi.fn(),
     onToggleLog: vi.fn(),
     onExport: vi.fn(),
-    onReportMiss,
-    onTransitionIssue: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -213,54 +206,23 @@ describe("Knowledge Hub candidates UI", () => {
   });
 });
 
-describe("Knowledge Hub missed-issue report", () => {
-  it("starts collapsed, supports keyboard expansion, and resets after remount", async () => {
-    const user = userEvent.setup();
-    const { unmount } = render(<KnowledgeOpsPanel {...knowledgeOpsProps()} />);
-    const trigger = screen.getByRole("button", { name: /Report a missed duplicate or conflict/i });
-
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    trigger.focus();
-    await user.keyboard("{Enter}");
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
-
-    unmount();
+describe("Knowledge Hub operations panel", () => {
+  it("offers exactly Log and Export to managers", () => {
     render(<KnowledgeOpsPanel {...knowledgeOpsProps()} />);
-    expect(screen.getByRole("button", { name: /Report a missed duplicate or conflict/i }).getAttribute("aria-expanded")).toBe("false");
+
+    expect(screen.getByText("Compiled Knowledge Operations")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /log/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /export files/i })).toBeTruthy();
+    expect(screen.getAllByRole("button")).toHaveLength(2);
   });
 
-  it("clears the form and announces a successful report", async () => {
-    const onReportMiss = vi.fn().mockResolvedValue(true);
-    render(<KnowledgeOpsPanel {...knowledgeOpsProps(onReportMiss)} />);
-    fireEvent.click(screen.getByRole("button", { name: /Report a missed duplicate or conflict/i }));
+  it("hides the export action from members and toggles the log", () => {
+    const onToggleLog = vi.fn();
+    render(<KnowledgeOpsPanel {...knowledgeOpsProps()} canManage={false} onToggleLog={onToggleLog} />);
 
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Repeated checkout rule" } });
-    fireEvent.change(screen.getByLabelText("Evidence and impact"), { target: { value: "Rules 10 and 11 contain the same constraint." } });
-    fireEvent.click(screen.getByRole("button", { name: "Report miss" }));
-
-    await waitFor(() => expect(onReportMiss).toHaveBeenCalledWith({
-      missType: "duplicate",
-      title: "Repeated checkout rule",
-      message: "Rules 10 and 11 contain the same constraint.",
-    }));
-    expect(await screen.findByText("Report submitted for review.")).toBeTruthy();
-    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("");
-    expect((screen.getByLabelText("Evidence and impact") as HTMLTextAreaElement).value).toBe("");
-  });
-
-  it("preserves report details when submission fails", async () => {
-    const onReportMiss = vi.fn().mockResolvedValue(false);
-    render(<KnowledgeOpsPanel {...knowledgeOpsProps(onReportMiss)} />);
-    fireEvent.click(screen.getByRole("button", { name: /Report a missed duplicate or conflict/i }));
-
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Conflicting limits" } });
-    fireEvent.change(screen.getByLabelText("Evidence and impact"), { target: { value: "Rules 20 and 21 disagree." } });
-    fireEvent.click(screen.getByRole("button", { name: "Report miss" }));
-
-    await waitFor(() => expect(onReportMiss).toHaveBeenCalled());
-    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Conflicting limits");
-    expect((screen.getByLabelText("Evidence and impact") as HTMLTextAreaElement).value).toBe("Rules 20 and 21 disagree.");
-    expect(screen.queryByText("Report submitted for review.")).toBeNull();
+    expect(screen.queryByRole("button", { name: /export files/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /log/i }));
+    expect(onToggleLog).toHaveBeenCalled();
   });
 });
 

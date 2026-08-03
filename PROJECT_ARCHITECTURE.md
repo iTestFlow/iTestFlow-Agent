@@ -53,7 +53,7 @@ iTestFlow helps QA, product, and delivery teams:
 - Store each user's Azure DevOps PAT and LLM API key encrypted and private to that user/workspace.
 - Select an active Azure DevOps project whose server-side project anchor is validated before scoped reads or writes.
 - Index filtered Azure DevOps work items into project context.
-- Compile durable project knowledge with revisions, health checks, citations, and Markdown export.
+- Compile durable project knowledge with revisions, publish-time lint checks, citations, and Markdown export.
 - Ask grounded questions through the Business Owner Assistant.
 - Analyze requirements, design test cases, review gaps, estimate execution effort, report bugs, migrate suites, and bulk-create tasks.
 - Publish only reviewed artifacts back to Azure DevOps.
@@ -181,9 +181,9 @@ Dashboards:
 
 Knowledge Hub and RAG:
 
-- `/knowledge-hub` indexes filtered Azure DevOps work items, compiles project knowledge, reports knowledge health, and exports a Markdown wiki.
+- `/knowledge-hub` indexes filtered Azure DevOps work items, compiles project knowledge, and exports a Markdown wiki.
 - `/api/context/index`, `/api/context/status`, and `/api/context/suggestions` manage project context indexing and retrieval.
-- `/api/context/knowledge/*` manages background build jobs, draft review (conflicts/decisions/preview/publish), lint, log, candidates, promotion, manual drafting/finalization/validation, status, and export.
+- `/api/context/knowledge/*` manages background build jobs, draft review (conflicts/decisions/preview/publish), log, candidates, promotion, manual drafting/finalization/validation, status, and export.
 - RAG storage, compiled knowledge, retrieval, linting, and citations live under `src/modules/rag`.
 - Retrieval fuses up to three signals via reciprocal rank fusion (`src/modules/rag/hybrid-ranking.ts`), each degrading silently on failure: PostgreSQL full-text search (always on; shared query builder with QA-domain synonym expansion in `src/modules/rag/full-text-search.ts`), PostgreSQL trigram search (always on, no configuration; `src/modules/rag/trigram-search.ts`, catches compound-word matches word-prefix FTS misses), and semantic search (always on, no configuration; one pinned in-process model, `src/modules/rag/embedding-provider.ts`). `src/modules/rag/hybrid-chunk-search.ts` is the shared chunk-search implementation used by both workflow context retrieval and the Business Owner Assistant; the Business Owner Assistant's knowledge search fuses the same three signals independently against compiled knowledge entries.
 - The embedding backend is pinned and unconfigurable: nomic-embed-text-v1.5 runs in-process via transformers.js/ONNX with zero user setup (quantized weights ~131 MB auto-download to `data/model-cache`). It is not swappable because vectors are only comparable within the model that produced them, so a model change silently invalidates every stored vector until a full re-index. Context indexing embeds work-item chunks and every knowledge base save embeds compiled knowledge entries into the same `embeddings` table, discriminated by a `source_type` column (chunks are keyed by `document_chunks.id`; knowledge entries by a synthetic `category`/`entryKey` id, since the entries table has no stable per-save id).

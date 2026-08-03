@@ -4,7 +4,6 @@ import { flushBackgroundWrites, sqlRun } from "@/modules/shared/infrastructure/d
 import {
   getProjectKnowledgeLintIssues,
   runProjectKnowledgeLint,
-  transitionProjectKnowledgeLintIssue,
 } from "./project-knowledge-compiled.service";
 import {
   cleanupFixtures,
@@ -49,7 +48,13 @@ describeDb("project knowledge lint summary honesty", () => {
     const issue = first.issues.find((entry) => entry.issueType === "missing_knowledge_base");
     expect(issue).toBeDefined();
 
-    await transitionProjectKnowledgeLintIssue({ scope, actor: "owner-1", issueId: issue!.id, action: "ignore" });
+    // The interactive review flow that once set this status is gone, but deployed
+    // databases still carry 'ignored' rows from when it existed — the engine must
+    // keep honoring them instead of resurrecting them into the summary tiles.
+    await sqlRun(
+      `UPDATE project_knowledge_lint_issues SET status = 'ignored' WHERE id = @issueId`,
+      { issueId: issue!.id },
+    );
 
     // Re-running detects the same fingerprint; the upsert keeps it ignored, so it
     // stays in the list but no longer inflates the summary tiles.

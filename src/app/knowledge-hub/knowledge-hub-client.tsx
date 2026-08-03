@@ -11,16 +11,13 @@ import {
   Database,
   Download,
   History,
-  MessageSquareWarning,
   RefreshCw,
   Search,
   SearchX,
-  Send,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react"
 
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -37,7 +34,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Textarea } from "@/components/ui/textarea"
 import {
   Table,
   TableBody,
@@ -195,32 +191,6 @@ type KnowledgeStatusResult = {
   latestInReviewDraft?: KnowledgeInReviewDraft | null
 }
 
-type KnowledgeLintIssue = {
-  id: string
-  issueType: string
-  severity: "info" | "warning" | "error"
-  title: string
-  message: string
-  category?: string | null
-  entryKey?: string | null
-  sourceWorkItemIds: string[]
-  status: string
-  origin: "deterministic" | "human"
-  createdAt: string
-  updatedAt: string
-}
-
-type KnowledgeLintResult = {
-  runId?: string
-  issues: KnowledgeLintIssue[]
-  summary: {
-    total: number
-    errors: number
-    warnings: number
-    info: number
-  }
-}
-
 type KnowledgeLogItem = {
   id: string
   eventType: string
@@ -317,14 +287,11 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<ProjectKnowledgeSnapshot | null>(null)
   const [generationAvailable, setGenerationAvailable] = useState<boolean | null>(null)
   const [resumableDraft, setResumableDraft] = useState<KnowledgeInReviewDraft | null>(null)
-  const [knowledgeLint, setKnowledgeLint] = useState<KnowledgeLintResult | null>(null)
   const [knowledgeLog, setKnowledgeLog] = useState<KnowledgeLogItem[]>([])
   const [knowledgeLogVisible, setKnowledgeLogVisible] = useState(false)
   const [knowledgeExport, setKnowledgeExport] = useState<KnowledgeExportResult | null>(null)
-  const [knowledgeHealthLoading, setKnowledgeHealthLoading] = useState(false)
   const [knowledgeLogLoading, setKnowledgeLogLoading] = useState(false)
   const [knowledgeExportLoading, setKnowledgeExportLoading] = useState(false)
-  const [knowledgeReportLoading, setKnowledgeReportLoading] = useState(false)
   const [knowledgeCandidates, setKnowledgeCandidates] = useState<KnowledgeCandidate[]>([])
   const [candidateStatus, setCandidateStatus] = useState<KnowledgeCandidateStatus | "all">("all")
   const [candidateLoading, setCandidateLoading] = useState(false)
@@ -501,11 +468,9 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setBuildError(null)
     setResult(null)
     setKnowledgeError(null)
-    setKnowledgeLint(null)
     setKnowledgeLog([])
     setKnowledgeLogVisible(false)
     setKnowledgeExport(null)
-    setKnowledgeReportLoading(false)
     setKnowledgeCandidates([])
     setCandidateStatus("all")
     setPage(1)
@@ -613,21 +578,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     }
   }
 
-  async function runKnowledgeHealthCheck() {
-    if (!scope) return
-    setKnowledgeHealthLoading(true)
-    setKnowledgeError(null)
-    try {
-      const data = await postJson<KnowledgeLintResult>("/api/context/knowledge/lint", { scope, run: true })
-      setKnowledgeLint(data)
-      await refreshKnowledgeLog(scope)
-    } catch (healthError) {
-      setKnowledgeError(healthError instanceof Error ? healthError.message : "Project knowledge health check failed.")
-    } finally {
-      setKnowledgeHealthLoading(false)
-    }
-  }
-
   async function exportKnowledgeWiki() {
     if (!scope) return
     setKnowledgeExportLoading(true)
@@ -651,45 +601,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
 
     setKnowledgeLogVisible(true)
     await refreshKnowledgeLog(scope)
-  }
-
-  async function reportKnowledgeLintMiss(input: {
-    missType: "duplicate" | "conflict"
-    title: string
-    message: string
-  }) {
-    if (!scope) return false
-    setKnowledgeReportLoading(true)
-    setKnowledgeError(null)
-    try {
-      await postJson("/api/context/knowledge/lint/report", { scope, ...input })
-      setKnowledgeLint(await postJson<KnowledgeLintResult>("/api/context/knowledge/lint", { scope, run: false }))
-      await refreshKnowledgeLog(scope)
-      return true
-    } catch (error) {
-      setKnowledgeError(error instanceof Error ? error.message : "The lint miss could not be reported.")
-      return false
-    } finally {
-      setKnowledgeReportLoading(false)
-    }
-  }
-
-  async function transitionKnowledgeLintIssue(
-    issueId: string,
-    action: "confirm" | "reject" | "ignore" | "reopen",
-  ) {
-    if (!scope || !canBuildKnowledge) return
-    setKnowledgeHealthLoading(true)
-    setKnowledgeError(null)
-    try {
-      await patchJson(`/api/context/knowledge/lint/${issueId}`, { scope, action })
-      setKnowledgeLint(await postJson<KnowledgeLintResult>("/api/context/knowledge/lint", { scope, run: false }))
-      await refreshKnowledgeLog(scope)
-    } catch (error) {
-      setKnowledgeError(error instanceof Error ? error.message : "The lint report could not be reviewed.")
-    } finally {
-      setKnowledgeHealthLoading(false)
-    }
   }
 
   async function updateKnowledgeCandidate(candidateId: string, action: "reject" | "request_integration") {
@@ -823,20 +734,14 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
           ) : null}
 
           <KnowledgeOpsPanel
-            lint={knowledgeLint}
             logItems={knowledgeLog}
             logVisible={knowledgeLogVisible}
             exportResult={knowledgeExport}
-            healthLoading={knowledgeHealthLoading}
             logLoading={knowledgeLogLoading}
             exportLoading={knowledgeExportLoading}
-            reportLoading={knowledgeReportLoading}
             canManage={canBuildKnowledge}
-            onRunHealthCheck={runKnowledgeHealthCheck}
             onToggleLog={toggleKnowledgeLog}
             onExport={exportKnowledgeWiki}
-            onReportMiss={reportKnowledgeLintMiss}
-            onTransitionIssue={transitionKnowledgeLintIssue}
           />
 
           {knowledgeError ? (
@@ -1457,51 +1362,24 @@ export function KnowledgeCandidatesView({
 }
 
 export function KnowledgeOpsPanel({
-  lint,
   logItems,
   logVisible,
   exportResult,
-  healthLoading,
   logLoading,
   exportLoading,
-  reportLoading,
   canManage,
-  onRunHealthCheck,
   onToggleLog,
   onExport,
-  onReportMiss,
-  onTransitionIssue,
 }: {
-  lint: KnowledgeLintResult | null
   logItems: KnowledgeLogItem[]
   logVisible: boolean
   exportResult: KnowledgeExportResult | null
-  healthLoading: boolean
   logLoading: boolean
   exportLoading: boolean
-  reportLoading: boolean
   canManage: boolean
-  onRunHealthCheck: () => void
   onToggleLog: () => void
   onExport: () => void
-  onReportMiss: (input: { missType: "duplicate" | "conflict"; title: string; message: string }) => Promise<boolean>
-  onTransitionIssue: (issueId: string, action: "confirm" | "reject" | "ignore" | "reopen") => Promise<void>
 }) {
-  const [missType, setMissType] = useState<"duplicate" | "conflict">("duplicate")
-  const [missTitle, setMissTitle] = useState("")
-  const [missMessage, setMissMessage] = useState("")
-  const [missSubmitted, setMissSubmitted] = useState(false)
-
-  async function submitMiss() {
-    if (!missTitle.trim() || !missMessage.trim()) return
-    setMissSubmitted(false)
-    const reported = await onReportMiss({ missType, title: missTitle.trim(), message: missMessage.trim() })
-    if (!reported) return
-    setMissTitle("")
-    setMissMessage("")
-    setMissSubmitted(true)
-  }
-
   return (
     <section className="content-surface space-y-3 p-4" aria-label="Compiled knowledge operations">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -1510,16 +1388,9 @@ export function KnowledgeOpsPanel({
             <ShieldCheck className="size-4 shrink-0 text-primary" aria-hidden="true" />
             <span role="heading" aria-level={2} className="text-sm font-semibold text-foreground">Compiled Knowledge Operations</span>
           </div>
-          <div className="text-xs text-muted-foreground">Health checks, event history, and managed export for the source-backed knowledge layer.</div>
+          <div className="text-xs text-muted-foreground">Event history and managed export for the source-backed knowledge layer.</div>
         </div>
-        <div className="grid grid-cols-2 gap-2 min-[420px]:grid-cols-3 sm:flex sm:flex-wrap lg:shrink-0 lg:flex-nowrap">
-          {canManage ? (
-            <Button variant="outline" size="sm" onClick={onRunHealthCheck} disabled={healthLoading}>
-              {healthLoading ? <RefreshCw className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
-              <span className="sm:hidden">Health</span>
-              <span className="hidden sm:inline">Check health</span>
-            </Button>
-          ) : null}
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap lg:shrink-0 lg:flex-nowrap">
           <Button variant={logVisible ? "secondary" : "outline"} size="sm" onClick={onToggleLog} disabled={logLoading} aria-expanded={logVisible}>
             {logLoading ? <RefreshCw className="size-4 animate-spin" /> : <History className="size-4" />}
             <span className="sm:hidden">{logVisible ? "Hide" : "Log"}</span>
@@ -1534,148 +1405,6 @@ export function KnowledgeOpsPanel({
           ) : null}
         </div>
       </div>
-
-      {lint ? (
-        <div className="grid gap-3 sm:grid-cols-4">
-          <KnowledgeMetric label="Issues" value={lint.summary.total} />
-          <KnowledgeMetric label="Errors" value={lint.summary.errors} tone="error" />
-          <KnowledgeMetric label="Warnings" value={lint.summary.warnings} tone="warning" />
-          <KnowledgeMetric label="Info" value={lint.summary.info} />
-        </div>
-      ) : null}
-
-      {lint?.issues.length ? (
-        <div className="space-y-2">
-          {lint.issues.slice(0, 5).map((issue) => (
-            <div key={issue.id} className="rounded-md border border-border bg-muted p-3 text-sm">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={issue.severity === "error" ? "destructive" : "secondary"}>{issue.severity}</Badge>
-                <Badge variant="outline">{issue.status}</Badge>
-                <span className="font-semibold text-foreground">{issue.title}</span>
-              </div>
-              <div className="mt-1 text-muted-foreground">{issue.message}</div>
-              {canManage && issue.origin === "human" && issue.status === "reported" ? (
-                <div className="mt-3 flex justify-end gap-2">
-                  <Button size="sm" variant="outline" disabled={healthLoading} onClick={() => void onTransitionIssue(issue.id, "reject")}>Reject report</Button>
-                  <Button size="sm" disabled={healthLoading} onClick={() => void onTransitionIssue(issue.id, "confirm")}>Confirm miss</Button>
-                </div>
-              ) : null}
-              {canManage && issue.origin === "deterministic" && issue.status === "open" ? (
-                <div className="mt-3 flex justify-end"><Button size="sm" variant="outline" disabled={healthLoading} onClick={() => void onTransitionIssue(issue.id, "ignore")}>Ignore</Button></div>
-              ) : null}
-              {canManage && ((issue.origin === "deterministic" && ["ignored", "resolved"].includes(issue.status)) || (issue.origin === "human" && ["confirmed", "rejected"].includes(issue.status))) ? (
-                <div className="mt-3 flex justify-end"><Button size="sm" variant="outline" disabled={healthLoading} onClick={() => void onTransitionIssue(issue.id, "reopen")}>Reopen</Button></div>
-              ) : null}
-            </div>
-          ))}
-          {lint.issues.length > 5 ? (
-            <p className="text-xs text-muted-foreground">Showing 5 of {lint.issues.length} issues.</p>
-          ) : null}
-        </div>
-      ) : lint ? (
-        <div className="rounded-md border border-success/30 bg-success/10 p-3 text-sm text-success">
-          Knowledge health check passed without open issues.
-        </div>
-      ) : null}
-
-      <Accordion type="single" collapsible>
-        <AccordionItem
-          value="report-missed-knowledge-issue"
-          className="border-primary/25 bg-gradient-to-br from-primary/10 via-card to-info/10 shadow-sm transition-colors duration-ui motion-reduce:transition-none dark:border-primary/30"
-        >
-          <AccordionTrigger className="min-h-16 items-start py-4 hover:bg-primary/5 motion-reduce:transition-none [&>svg]:mt-2">
-            <div className="flex min-w-0 flex-1 items-start gap-3 pr-1">
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-sm">
-                <MessageSquareWarning className="size-5" aria-hidden="true" />
-              </span>
-              <span className="min-w-0 flex-1 text-left">
-                <span className="flex flex-wrap items-center gap-2">
-                  <span className="font-semibold text-foreground">Report a missed duplicate or conflict</span>
-                </span>
-                <span className="mt-1 block text-xs font-normal leading-5 text-muted-foreground">
-                  Help improve semantic lint by flagging related knowledge that the automated check missed.
-                </span>
-              </span>
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="bg-card/90 p-4">
-            <form
-              className="space-y-3"
-              onSubmit={(event) => {
-                event.preventDefault()
-                void submitMiss()
-              }}
-            >
-              <p id="knowledge-miss-description" className="text-xs leading-5 text-muted-foreground">
-                Reports do not change knowledge. Owners or admins must confirm them before they count toward semantic-lint expansion.
-              </p>
-              <div className="grid gap-3 md:grid-cols-[180px_1fr]">
-                <div className="space-y-1">
-                  <Label htmlFor="knowledge-miss-type" className="text-xs">Miss type</Label>
-                  <select
-                    id="knowledge-miss-type"
-                    value={missType}
-                    onChange={(event) => {
-                      setMissType(event.target.value as "duplicate" | "conflict")
-                      setMissSubmitted(false)
-                    }}
-                    disabled={reportLoading}
-                    aria-describedby="knowledge-miss-description"
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none transition-colors duration-ui focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none"
-                  >
-                    <option value="duplicate">Duplicate</option>
-                    <option value="conflict">Conflict</option>
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="knowledge-miss-title" className="text-xs">Title</Label>
-                  <Input
-                    id="knowledge-miss-title"
-                    value={missTitle}
-                    onChange={(event) => {
-                      setMissTitle(event.target.value)
-                      setMissSubmitted(false)
-                    }}
-                    maxLength={200}
-                    placeholder="What deterministic lint missed"
-                    disabled={reportLoading}
-                    required
-                  />
-                </div>
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="knowledge-miss-evidence" className="text-xs">Evidence and impact</Label>
-                <Textarea
-                  id="knowledge-miss-evidence"
-                  value={missMessage}
-                  onChange={(event) => {
-                    setMissMessage(event.target.value)
-                    setMissSubmitted(false)
-                  }}
-                  maxLength={2000}
-                  placeholder="Describe the entries, concrete mismatch, and relevant source IDs."
-                  disabled={reportLoading}
-                  required
-                />
-              </div>
-              <div className="flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">
-                <div role="status" aria-live="polite" className="min-h-5 text-sm text-success">
-                  {missSubmitted ? (
-                    <span className="flex items-center gap-2">
-                      <Check className="size-4" aria-hidden="true" />
-                      Report submitted for review.
-                    </span>
-                  ) : null}
-                </div>
-                <Button type="submit" size="sm" disabled={reportLoading || !missTitle.trim() || !missMessage.trim()} aria-busy={reportLoading}>
-                  {reportLoading ? <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Send className="size-4" aria-hidden="true" />}
-                  {reportLoading ? "Reporting..." : "Report miss"}
-                </Button>
-              </div>
-            </form>
-          </AccordionContent>
-        </AccordionItem>
-      </Accordion>
 
       {exportResult ? (
         <div className="rounded-md border border-primary/40 bg-accent p-3 text-sm text-primary">
@@ -1705,16 +1434,6 @@ export function KnowledgeOpsPanel({
         </div>
       ) : null}
     </section>
-  )
-}
-
-function KnowledgeMetric({ label, value, tone }: { label: string; value: number | string; tone?: "error" | "warning" }) {
-  const valueClass = tone === "error" ? "text-destructive" : tone === "warning" ? "text-warning-foreground dark:text-warning" : "text-foreground"
-  return (
-    <div className="rounded-md border border-border bg-card p-3">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`mt-1 text-base font-semibold tabular-nums ${valueClass}`}>{value}</div>
-    </div>
   )
 }
 
