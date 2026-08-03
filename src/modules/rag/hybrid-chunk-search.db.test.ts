@@ -3,7 +3,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { flushBackgroundWrites, resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { indexAzureWorkItemsAsProjectContext } from "@/modules/rag/project-context-store.service";
 import { syncProjectChunkEmbeddings } from "@/modules/rag/embedding-store.service";
-import { searchProjectChunksHybrid } from "@/modules/rag/hybrid-chunk-search";
+import { RERANK_MAX_PAIRS, RERANK_TIMEOUT_MS, searchProjectChunksHybrid } from "@/modules/rag/hybrid-chunk-search";
 import { buildFtsQuery } from "@/modules/rag/full-text-search";
 import type { EmbeddingProvider } from "@/modules/rag/embedding-provider";
 import type { RerankProvider } from "@/modules/rag/rerank-provider";
@@ -243,4 +243,117 @@ describeDb("hybrid chunk search (DB-backed)", () => {
     expect(consoleError).toHaveBeenCalled();
     consoleError.mockRestore();
   });
+
+  it("falls back to the fused order when the reranker exceeds its latency budget", async () => {
+    // Slowness is degradation, not an error: a rerank slower than RERANK_TIMEOUT_MS
+    // must yield the same results a rerank FAILURE yields (the pre-rerank order),
+    // within the budget, instead of stalling the search for as long as inference
+    // takes. The provider below never resolves, which models a hung ONNX session.
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const hungRerankProvider: RerankProvider = {
+      name: "local",
+      model: "fake-reranker",
+      rerank: () => new Promise<number[]>(() => {}),
+    };
+
+    const baseline = await searchProjectChunksHybrid({
+      scope,
+      ftsQuery: buildFtsQuery("checkout payment"),
+      rawQuery: "checkout payment",
+      topK: 5,
+      embeddingProvider: null,
+      rerankProvider: null,
+    });
+    const started = performance.now();
+    const results = await searchProjectChunksHybrid({
+      scope,
+      ftsQuery: buildFtsQuery("checkout payment"),
+      rawQuery: "checkout payment",
+      topK: 5,
+      embeddingProvider: null,
+      rerankProvider: hungRerankProvider,
+    });
+    const elapsed = performance.now() - started;
+
+    expect(results).toEqual(baseline);
+    // Loose bound: the budget plus generous slack for CI variance, but far below
+    // "waited for inference" territory.
+    expect(elapsed).toBeLessThan(RERANK_TIMEOUT_MS + 3_000);
+    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("budget"));
+    consoleWarn.mockRestore();
+  }, 30_000);
+
+  it("scores at most RERANK_MAX_PAIRS candidates and passes the rest through in fused order", async () => {
+    // Inference cost is bounded by the pair cap, never result breadth: a large-topK
+    // caller (the chatbot fetches 40 candidates) must get its full candidate list
+    // back, with only the top fused slice actually run through the cross-encoder.
+    // Needs a corpus wider than the cap, so this test seeds its own project.
+    const ws = uniqueTestId("ws_rerankcap");
+    const proj = uniqueTestId("az_rerankcap");
+    const capScope: ProjectScope = {
+      projectId: proj,
+      azureProjectId: proj,
+      azureProjectName: "Rerank Pair Cap",
+      azureOrganizationUrl: `https://dev.azure.com/${ws}`,
+    };
+    await seedWorkspace({ id: ws, orgUrl: capScope.azureOrganizationUrl });
+    await seedProject({
+      workspaceId: ws,
+      orgUrl: capScope.azureOrganizationUrl,
+      azureProjectId: proj,
+      azureProjectName: capScope.azureProjectName,
+    });
+    const items = Array.from({ length: 30 }, (_, index) =>
+      requirement({
+        id: String(700 + index),
+        azureProjectId: proj,
+        title: `Payment scenario ${index}`,
+        description: `Payment case number ${index}: the checkout charges the customer card variant ${index}.`,
+        acceptanceCriteria: `Given payment variant ${index}, when checkout runs, then charge succeeds.`,
+        tags: [],
+      }),
+    );
+    try {
+      await indexAzureWorkItemsAsProjectContext({
+        scope: capScope,
+        actor: "db-test",
+        adapter: fakeAzureAdapter({ fetchWorkItems: vi.fn(async () => items) }),
+        workItemTypes: ["User Story"],
+        states: ["Active"],
+        embeddingProvider: null,
+      });
+
+      const seenTexts: string[][] = [];
+      const recordingRerankProvider: RerankProvider = {
+        name: "local",
+        model: "fake-reranker",
+        rerank: async (_query, texts) => {
+          seenTexts.push(texts);
+          return texts.map(() => 0.5);
+        },
+      };
+
+      const results = await searchProjectChunksHybrid({
+        scope: capScope,
+        ftsQuery: buildFtsQuery("payment checkout"),
+        rawQuery: "payment checkout",
+        topK: 40,
+        embeddingProvider: null,
+        rerankProvider: recordingRerankProvider,
+      });
+
+      expect(seenTexts).toHaveLength(1);
+      expect(seenTexts[0]).toHaveLength(RERANK_MAX_PAIRS);
+      // Result breadth is untouched by the cap: every matching work item comes back.
+      expect(results.length).toBe(30);
+      const returnedIds = new Set(results.map(({ row }) => row.azure_work_item_id));
+      expect(returnedIds.size).toBe(30);
+    } finally {
+      await flushBackgroundWrites();
+      for (const table of ["embeddings", "document_chunks_fts", "document_chunks", "azure_devops_work_items", "project_knowledge_log"]) {
+        await sqlRun(`DELETE FROM ${table} WHERE project_id = @projectId`, { projectId: proj });
+      }
+      await cleanupFixtures({ workspaceIds: [ws], userIds: [] });
+    }
+  }, 60_000);
 });
