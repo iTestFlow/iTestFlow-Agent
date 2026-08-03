@@ -20,7 +20,6 @@ import {
   computeProjectKnowledgeHashes,
   type ProjectKnowledgeSourceManifestEntry,
 } from "./project-knowledge-contracts";
-import { listProjectKnowledgeBenchmarkCases } from "./project-knowledge-benchmark.service";
 import { indexApprovedChatInsight, removeChatInsightFromSearchIndex } from "./context-chatbot-retrieval.service";
 import { createEmbeddingProvider } from "./embedding-provider";
 import { syncProjectKnowledgeEntryEmbeddings } from "./embedding-store.service";
@@ -787,7 +786,6 @@ export async function exportProjectKnowledgeWiki(input: { scope: ProjectScope })
 
   const knowledgeBase = JSON.parse(snapshot.validated_output) as ProjectKnowledgeBase;
   const logs = await getProjectKnowledgeLog({ scope, limit: 500 });
-  const benchmark = await listProjectKnowledgeBenchmarkCases({ scope, limit: 500 });
   const fs = getFs();
   const path = getPath();
   const exportRoot = path.join(
@@ -806,17 +804,7 @@ export async function exportProjectKnowledgeWiki(input: { scope: ProjectScope })
   fs.writeFileSync(path.join(exportRoot, "index.md"), renderWikiIndex(scope, knowledgeBase, snapshot), "utf8");
   fs.writeFileSync(path.join(exportRoot, "log.md"), renderWikiLog(logs), "utf8");
   fs.writeFileSync(path.join(exportRoot, "map.md"), renderWikiMap(knowledgeBase), "utf8");
-  fs.writeFileSync(
-    path.join(exportRoot, "benchmark.jsonl"),
-    benchmark.map((item) => JSON.stringify({
-      id: item.id,
-      sourceType: item.sourceType,
-      question: item.question,
-      usageCount: item.usageCount,
-    })).join("\n") + (benchmark.length ? "\n" : ""),
-    "utf8",
-  );
-  const generatedFiles = ["benchmark.jsonl", "index.md", "log.md", "map.md"];
+  const generatedFiles = ["index.md", "log.md", "map.md"];
 
   knowledgeBase.modules.forEach((item) => {
     generatedFiles.push(`modules/${safePathSegment(item.id)}.md`);
@@ -896,7 +884,7 @@ export async function exportProjectKnowledgeWiki(input: { scope: ProjectScope })
   return {
     exportRoot,
     fileCount:
-      5 +
+      4 +
       knowledgeBase.modules.length +
       knowledgeBase.businessRules.length +
       knowledgeBase.stateTransitions.length +

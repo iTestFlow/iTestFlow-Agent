@@ -17,7 +17,6 @@ import {
   type ContextChatbotContextEvidence,
   type ContextChatbotKnowledgeEvidence,
 } from "@/modules/rag/context-chatbot-retrieval.service";
-import { recordProjectKnowledgeBenchmarkQuestion } from "@/modules/rag/project-knowledge-benchmark.service";
 
 export type ContextChatbotCitation = {
   sourceType: "project_context" | "project_knowledge";
@@ -67,11 +66,6 @@ export async function answerContextChatbot(input: {
   const scope = assertProjectScope(input.scope);
   const question = input.message.trim();
   if (!question) throw new Error("Enter a question before sending a chat message.");
-  recordProjectKnowledgeBenchmarkQuestion({
-    scope,
-    sourceType: "business_owner_assistant",
-    question,
-  });
 
   // The conversation accumulates; decide what is worth sending before anything is
   // costed, since the chosen history is part of the fixed prompt the evidence budget

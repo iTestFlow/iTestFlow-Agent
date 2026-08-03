@@ -17,7 +17,6 @@ import {
   SearchX,
   Send,
   ShieldCheck,
-  Target,
   type LucideIcon,
 } from "lucide-react"
 
@@ -258,19 +257,6 @@ type KnowledgeCandidate = {
   updatedAt: string
 }
 
-type KnowledgeBenchmarkCase = {
-  id: string
-  sourceType: "qa" | "business_owner_assistant"
-  question: string
-  usageCount: number
-  firstSeenAt: string
-  lastSeenAt: string
-  expectedWorkItemId: string | null
-  expectedAnswerSnippet: string | null
-  labeledAt: string | null
-  labeledBy: string | null
-}
-
 const KNOWLEDGE_CATEGORIES = [
   { key: "modules", label: "Modules", badge: "Module", iconKey: "module" },
   { key: "businessRules", label: "Business Rules", badge: "Business Rule", iconKey: "businessRule" },
@@ -342,10 +328,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeCandidates, setKnowledgeCandidates] = useState<KnowledgeCandidate[]>([])
   const [candidateStatus, setCandidateStatus] = useState<KnowledgeCandidateStatus | "all">("all")
   const [candidateLoading, setCandidateLoading] = useState(false)
-  const [knowledgeBenchmark, setKnowledgeBenchmark] = useState<KnowledgeBenchmarkCase[]>([])
-  const [knowledgeBenchmarkVisible, setKnowledgeBenchmarkVisible] = useState(false)
-  const [knowledgeBenchmarkLoading, setKnowledgeBenchmarkLoading] = useState(false)
-  const [knowledgeBenchmarkLabelingId, setKnowledgeBenchmarkLabelingId] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(25)
   const [totalPages, setTotalPages] = useState(1)
@@ -416,19 +398,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       setCandidateLoading(false)
     }
   }, [candidateStatus, scope])
-
-  const refreshKnowledgeBenchmark = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
-    if (!activeScope) return
-    setKnowledgeBenchmarkLoading(true)
-    try {
-      const data = await postJson<{ cases: KnowledgeBenchmarkCase[] }>("/api/context/knowledge/benchmark", { scope: activeScope })
-      setKnowledgeBenchmark(data.cases)
-    } catch {
-      setKnowledgeBenchmark([])
-    } finally {
-      setKnowledgeBenchmarkLoading(false)
-    }
-  }, [scope])
 
   const loadStatus = useCallback(async (
     activeScope: ActiveProjectScope | null,
@@ -539,8 +508,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setKnowledgeReportLoading(false)
     setKnowledgeCandidates([])
     setCandidateStatus("all")
-    setKnowledgeBenchmark([])
-    setKnowledgeBenchmarkVisible(false)
     setPage(1)
     setSortBy("lastIndexedAt")
     setSortDirection("desc")
@@ -684,34 +651,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
 
     setKnowledgeLogVisible(true)
     await refreshKnowledgeLog(scope)
-  }
-
-  async function toggleKnowledgeBenchmark() {
-    if (knowledgeBenchmarkVisible) {
-      setKnowledgeBenchmarkVisible(false)
-      return
-    }
-
-    setKnowledgeBenchmarkVisible(true)
-    await refreshKnowledgeBenchmark(scope)
-  }
-
-  async function labelKnowledgeBenchmarkCase(caseId: string, input: { expectedWorkItemId: string; expectedAnswerSnippet: string }) {
-    if (!scope || !canBuildKnowledge) return
-    setKnowledgeBenchmarkLabelingId(caseId)
-    setKnowledgeError(null)
-    try {
-      const data = await postJson<{ case: KnowledgeBenchmarkCase }>(`/api/context/knowledge/benchmark/${caseId}/label`, {
-        scope,
-        expectedWorkItemId: input.expectedWorkItemId,
-        ...(input.expectedAnswerSnippet ? { expectedAnswerSnippet: input.expectedAnswerSnippet } : {}),
-      })
-      setKnowledgeBenchmark((current) => current.map((item) => item.id === caseId ? data.case : item))
-    } catch (error) {
-      setKnowledgeError(error instanceof Error ? error.message : "The benchmark case could not be labeled.")
-    } finally {
-      setKnowledgeBenchmarkLabelingId(null)
-    }
   }
 
   async function reportKnowledgeLintMiss(input: {
@@ -898,12 +837,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
             onExport={exportKnowledgeWiki}
             onReportMiss={reportKnowledgeLintMiss}
             onTransitionIssue={transitionKnowledgeLintIssue}
-            benchmarkCases={knowledgeBenchmark}
-            benchmarkVisible={knowledgeBenchmarkVisible}
-            benchmarkLoading={knowledgeBenchmarkLoading}
-            benchmarkLabelingId={knowledgeBenchmarkLabelingId}
-            onToggleBenchmark={toggleKnowledgeBenchmark}
-            onLabelBenchmarkCase={labelKnowledgeBenchmarkCase}
           />
 
           {knowledgeError ? (
@@ -1538,12 +1471,6 @@ export function KnowledgeOpsPanel({
   onExport,
   onReportMiss,
   onTransitionIssue,
-  benchmarkCases,
-  benchmarkVisible,
-  benchmarkLoading,
-  benchmarkLabelingId,
-  onToggleBenchmark,
-  onLabelBenchmarkCase,
 }: {
   lint: KnowledgeLintResult | null
   logItems: KnowledgeLogItem[]
@@ -1559,12 +1486,6 @@ export function KnowledgeOpsPanel({
   onExport: () => void
   onReportMiss: (input: { missType: "duplicate" | "conflict"; title: string; message: string }) => Promise<boolean>
   onTransitionIssue: (issueId: string, action: "confirm" | "reject" | "ignore" | "reopen") => Promise<void>
-  benchmarkCases: KnowledgeBenchmarkCase[]
-  benchmarkVisible: boolean
-  benchmarkLoading: boolean
-  benchmarkLabelingId: string | null
-  onToggleBenchmark: () => void
-  onLabelBenchmarkCase: (caseId: string, input: { expectedWorkItemId: string; expectedAnswerSnippet: string }) => Promise<void>
 }) {
   const [missType, setMissType] = useState<"duplicate" | "conflict">("duplicate")
   const [missTitle, setMissTitle] = useState("")
@@ -1604,13 +1525,6 @@ export function KnowledgeOpsPanel({
             <span className="sm:hidden">{logVisible ? "Hide" : "Log"}</span>
             <span className="hidden sm:inline">{logVisible ? "Hide Log" : "Log"}</span>
           </Button>
-          {canManage ? (
-            <Button variant={benchmarkVisible ? "secondary" : "outline"} size="sm" onClick={onToggleBenchmark} disabled={benchmarkLoading} aria-expanded={benchmarkVisible}>
-              {benchmarkLoading ? <RefreshCw className="size-4 animate-spin" /> : <Target className="size-4" />}
-              <span className="sm:hidden">{benchmarkVisible ? "Hide" : "Benchmark"}</span>
-              <span className="hidden sm:inline">{benchmarkVisible ? "Hide Benchmark" : "Benchmark"}</span>
-            </Button>
-          ) : null}
           {canManage ? (
             <Button variant="outline" size="sm" onClick={onExport} disabled={exportLoading}>
               {exportLoading ? <RefreshCw className="size-4 animate-spin" /> : <Download className="size-4" />}
@@ -1790,92 +1704,7 @@ export function KnowledgeOpsPanel({
           )}
         </div>
       ) : null}
-
-      {benchmarkVisible && canManage ? (
-        <div className="space-y-2">
-          <div className="text-xs font-semibold uppercase text-muted-foreground">Retrieval Benchmark</div>
-          <p className="text-xs text-muted-foreground">
-            Real questions collected from the Business Owner Assistant, ranked by how often they were asked. Label
-            the work item each question should retrieve, then run <span className="font-mono">npm run benchmark:run</span> to
-            score retrieval against them.
-          </p>
-          {benchmarkLoading ? (
-            <KnowledgeLoadingState label="Loading retrieval benchmark cases" compact />
-          ) : benchmarkCases.length ? (
-            benchmarkCases.map((item) => (
-              <KnowledgeBenchmarkRow
-                key={item.id}
-                item={item}
-                saving={benchmarkLabelingId === item.id}
-                onLabel={onLabelBenchmarkCase}
-              />
-            ))
-          ) : (
-            <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
-              No business-owner questions have been collected for this project yet.
-            </div>
-          )}
-        </div>
-      ) : null}
     </section>
-  )
-}
-
-export function KnowledgeBenchmarkRow({
-  item,
-  saving,
-  onLabel,
-}: {
-  item: KnowledgeBenchmarkCase
-  saving: boolean
-  onLabel: (caseId: string, input: { expectedWorkItemId: string; expectedAnswerSnippet: string }) => Promise<void>
-}) {
-  const [expectedWorkItemId, setExpectedWorkItemId] = useState("")
-  const [expectedAnswerSnippet, setExpectedAnswerSnippet] = useState("")
-  const labeled = Boolean(item.expectedWorkItemId)
-
-  return (
-    <div className="rounded-md border border-border bg-card p-3 text-sm">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="outline">{item.sourceType === "business_owner_assistant" ? "Assistant" : "QA"}</Badge>
-        <Badge variant="secondary">Asked {item.usageCount}x</Badge>
-        {labeled ? <Badge variant="outline">Labeled</Badge> : null}
-      </div>
-      <div className="mt-2 text-foreground">{item.question}</div>
-      {labeled ? (
-        <div className="mt-2 text-xs text-muted-foreground">
-          Expected work item <span className="font-mono">{item.expectedWorkItemId}</span>
-          {item.expectedAnswerSnippet ? <> — {item.expectedAnswerSnippet}</> : null}
-        </div>
-      ) : (
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-          <Input
-            value={expectedWorkItemId}
-            onChange={(event) => setExpectedWorkItemId(event.target.value)}
-            placeholder="Work item ID, e.g. 1234 or AB#1234"
-            disabled={saving}
-            className="sm:w-48"
-            aria-label={`Expected work item ID for benchmark case ${item.id}`}
-          />
-          <Input
-            value={expectedAnswerSnippet}
-            onChange={(event) => setExpectedAnswerSnippet(event.target.value)}
-            placeholder="Expected answer snippet (optional)"
-            disabled={saving}
-            className="sm:flex-1"
-            aria-label={`Expected answer snippet for benchmark case ${item.id}`}
-          />
-          <Button
-            size="sm"
-            disabled={saving || !expectedWorkItemId.trim()}
-            onClick={() => void onLabel(item.id, { expectedWorkItemId: expectedWorkItemId.trim(), expectedAnswerSnippet: expectedAnswerSnippet.trim() })}
-          >
-            {saving ? <RefreshCw className="size-4 animate-spin" /> : <Check className="size-4" />}
-            Save
-          </Button>
-        </div>
-      )}
-    </div>
   )
 }
 
