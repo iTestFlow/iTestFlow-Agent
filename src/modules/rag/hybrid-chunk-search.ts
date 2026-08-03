@@ -166,6 +166,49 @@ export async function searchProjectChunksHybrid(input: {
 // cutoff. Ceiling bounds rerank cost when a caller requests a large topK.
 const RERANK_POOL_WIDTH_MULTIPLIER = 3;
 const RERANK_POOL_CEILING = 50;
+// How many of the pool's candidates get SCORED, as opposed to returned. A cross-
+// encoder forward pass costs ~54ms per max-length pair on the reference hardware, so
+// the chatbot's 50-pair pool cost ~2.7s per message; capping inference at the top 24
+// fused candidates roughly halves that while leaving result breadth untouched —
+// candidates past the cap keep their fused order below the reranked block. 24 covers
+// the whole pool for the default workflow topK (8 x 3), so only large-topK callers
+// (the chatbot's candidate fetch) are affected, and fused positions 25+ effectively
+// never reach a final answer anyway. Deliberately NOT a pool/result cap: TOP_K_MAX is
+// 25, and a caller must never receive fewer rows than its topK because of rerank cost.
+export const RERANK_MAX_PAIRS = 24;
+// A rerank slower than this gets logged; one slower than the timeout is abandoned in
+// favor of the already-good fused order — the same degradation the catch below applies
+// to a rerank failure, so slowness introduces no new semantics. Measured worst case
+// after the pair cap is ~1.3s on the reference hardware, so 1.5s fires only under
+// genuine degradation (hung ONNX session, CPU starvation). Honest caveat: the
+// abandoned inference still runs to completion on the CPU; only the caller stops
+// waiting for it.
+export const RERANK_TIMEOUT_MS = 1_500;
+const RERANK_SLOW_WARN_MS = 1_000;
+
+/**
+ * Races the provider's rerank against the latency budget. Resolves null on timeout;
+ * rejections propagate to the caller's existing failure handling.
+ */
+async function rerankWithinBudget(
+  provider: RerankProvider,
+  query: string,
+  texts: string[],
+): Promise<number[] | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), RERANK_TIMEOUT_MS);
+  });
+  const scoring = provider.rerank(query, texts);
+  // A rejection landing after the budget already won must not surface as an
+  // unhandled rejection and crash the process.
+  scoring.catch(() => {});
+  try {
+    return await Promise.race([scoring, budget]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Shared tail of both return paths above: dedup, optionally rerank, then apply the
@@ -189,19 +232,36 @@ async function finalizeSearchResults(input: {
 
   const widePoolSize = Math.min(RERANK_POOL_CEILING, input.topK * RERANK_POOL_WIDTH_MULTIPLIER);
   const candidates = applyPerWorkItemCap(deduped, input.maxChunksPerWorkItem, widePoolSize);
+  const scored = candidates.slice(0, RERANK_MAX_PAIRS);
+  // Unscored remainder keeps its fused order below the reranked block. Its entries
+  // keep fused-scale scores while the block above carries sigmoid scores — the list
+  // ORDER is the contract; scores are already documented as non-comparable confidence.
+  const passthrough = candidates.slice(RERANK_MAX_PAIRS);
 
   try {
-    const scores = await input.rerankProvider.rerank(
+    const started = performance.now();
+    const scores = await rerankWithinBudget(
+      input.rerankProvider,
       input.query,
-      candidates.map((entry) => entry.row.content),
+      scored.map((entry) => entry.row.content),
     );
-    if (scores.length !== candidates.length) {
-      throw new Error(`Reranker returned ${scores.length} scores for ${candidates.length} candidates.`);
+    const durationMs = Math.round(performance.now() - started);
+    if (scores === null) {
+      console.warn(
+        `Hybrid chunk search: rerank exceeded its ${RERANK_TIMEOUT_MS}ms budget for ${scored.length} pairs; keeping fused order.`,
+      );
+      return applyPerWorkItemCap(deduped, input.maxChunksPerWorkItem, input.topK);
     }
-    const reordered = candidates
+    if (durationMs > RERANK_SLOW_WARN_MS) {
+      console.warn(`Hybrid chunk search: rerank took ${durationMs}ms for ${scored.length} pairs.`);
+    }
+    if (scores.length !== scored.length) {
+      throw new Error(`Reranker returned ${scores.length} scores for ${scored.length} candidates.`);
+    }
+    const reordered = scored
       .map((entry, index) => ({ row: entry.row, score: scores[index]! }))
       .sort((first, second) => second.score - first.score);
-    return applyPerWorkItemCap(reordered, input.maxChunksPerWorkItem, input.topK);
+    return applyPerWorkItemCap([...reordered, ...passthrough], input.maxChunksPerWorkItem, input.topK);
   } catch (error) {
     // Same resilience pattern as FTS/semantic/trigram above: a broken reranker
     // degrades to the pre-rerank order rather than losing results.

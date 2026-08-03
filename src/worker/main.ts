@@ -32,6 +32,7 @@
  *                                   with no schedule is a no-op.
  */
 import { hostname } from "node:os";
+import { warmLocalModels } from "@/modules/rag/local-model-warmup";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
@@ -414,6 +415,9 @@ async function main() {
   registryHeartbeat.unref();
   installShutdown();
   console.log(`[worker] ${WORKER_ID} started. handlers=[${capabilities.join(", ")}] poll=${POLL_MS}ms scheduler=${SCHEDULER_ENABLED}`);
+  // Fire-and-forget: sync jobs embed and searches rerank, so pay the model load
+  // (and any first-time weight download) now instead of inside the first job.
+  void warmLocalModels();
 
   const loops = [serialWorkLoop()];
   if (capabilities.includes(PROJECT_KNOWLEDGE_JOB)) loops.push(knowledgeDispatchLoop());

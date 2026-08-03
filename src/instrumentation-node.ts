@@ -1,6 +1,7 @@
 import path from "path";
 import migrate from "node-pg-migrate";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
+import { warmLocalModels } from "@/modules/rag/local-model-warmup";
 
 async function runMigrations() {
   await migrate({
@@ -32,8 +33,15 @@ async function runStartup() {
   await ensureBootstrapOwner();
 }
 
-void runStartup().catch((error) => {
-  console.error("[startup] Migration or bootstrap failed; refusing to start.", error);
-  process.exit(1);
-});
+void runStartup()
+  .then(() => {
+    // Fire-and-forget, outside the fatal chain: warmLocalModels never throws, and a
+    // machine that cannot load the models must still boot — the first real call
+    // simply pays the load itself, exactly as before warm-up existed.
+    void warmLocalModels();
+  })
+  .catch((error) => {
+    console.error("[startup] Migration or bootstrap failed; refusing to start.", error);
+    process.exit(1);
+  });
 
