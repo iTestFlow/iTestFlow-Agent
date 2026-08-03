@@ -1,17 +1,15 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   appendUniqueContextItems,
   IndexSummary,
   IndexedContextView,
-  KnowledgeBenchmarkRow,
   KnowledgeCandidatesView,
   KnowledgeExplorer,
-  KnowledgeOpsPanel,
+  KnowledgeExportControls,
 } from "./knowledge-hub-client";
 
 afterEach(cleanup);
@@ -110,31 +108,6 @@ function contextItem(id: string, title = `Work item ${id}`) {
   };
 }
 
-function knowledgeOpsProps(onReportMiss = vi.fn().mockResolvedValue(true)) {
-  return {
-    lint: null,
-    logItems: [],
-    logVisible: false,
-    exportResult: null,
-    healthLoading: false,
-    logLoading: false,
-    exportLoading: false,
-    reportLoading: false,
-    canManage: true,
-    onRunHealthCheck: vi.fn(),
-    onToggleLog: vi.fn(),
-    onExport: vi.fn(),
-    onReportMiss,
-    onTransitionIssue: vi.fn().mockResolvedValue(undefined),
-    benchmarkCases: [],
-    benchmarkVisible: false,
-    benchmarkLoading: false,
-    benchmarkLabelingId: null,
-    onToggleBenchmark: vi.fn(),
-    onLabelBenchmarkCase: vi.fn().mockResolvedValue(undefined),
-  };
-}
-
 describe("Knowledge Hub candidates UI", () => {
   it("shows candidate evidence to members without mutation actions", () => {
     render(<KnowledgeCandidatesView
@@ -220,105 +193,42 @@ describe("Knowledge Hub candidates UI", () => {
   });
 });
 
-describe("Knowledge Hub benchmark labeling", () => {
-  const benchmarkCase = {
-    id: "case-1",
-    sourceType: "business_owner_assistant" as const,
-    question: "Which role approves a refund?",
-    usageCount: 7,
-    expectedWorkItemId: null,
-    expectedAnswerSnippet: null,
-    firstSeenAt: "2026-01-01T00:00:00.000Z",
-    lastSeenAt: "2026-01-02T00:00:00.000Z",
-    labeledAt: null,
-    labeledBy: null,
-  };
-
-  it("cannot submit a label without an expected work item", () => {
-    // The work item id is the whole point of the label: saving a blank one would record
-    // a case the scorer can never evaluate.
-    render(<KnowledgeBenchmarkRow item={benchmarkCase} saving={false} onLabel={vi.fn()} />);
-
-    expect(screen.getByText("Which role approves a refund?")).toBeTruthy();
-    expect(screen.getByText("Asked 7x")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /save/i })).toHaveProperty("disabled", true);
-  });
-
-  it("submits the trimmed label for the case it belongs to", async () => {
-    const onLabel = vi.fn().mockResolvedValue(undefined);
-    render(<KnowledgeBenchmarkRow item={benchmarkCase} saving={false} onLabel={onLabel} />);
-
-    fireEvent.change(screen.getByLabelText(/expected work item id/i), { target: { value: "  4821  " } });
-    fireEvent.change(screen.getByLabelText(/expected answer snippet/i), { target: { value: " refunds " } });
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
-
-    await waitFor(() => expect(onLabel).toHaveBeenCalledWith("case-1", {
-      expectedWorkItemId: "4821",
-      expectedAnswerSnippet: "refunds",
-    }));
-  });
-
-  it("shows the recorded label instead of the form once a case is labeled", () => {
-    render(<KnowledgeBenchmarkRow
-      item={{ ...benchmarkCase, expectedWorkItemId: "4821", expectedAnswerSnippet: "refund policy" }}
-      saving={false}
-      onLabel={vi.fn()}
+describe("Knowledge Hub export controls", () => {
+  it("lets managers export and shows the result banner", () => {
+    const onExport = vi.fn();
+    render(<KnowledgeExportControls
+      exportResult={{ exportRoot: "C:\\wiki\\proj", fileCount: 12 }}
+      exportLoading={false}
+      canManage
+      onExport={onExport}
     />);
 
-    expect(screen.getByText("Labeled")).toBeTruthy();
-    expect(screen.getByText("4821")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /save/i })).toBeNull();
-  });
-});
-
-describe("Knowledge Hub missed-issue report", () => {
-  it("starts collapsed, supports keyboard expansion, and resets after remount", async () => {
-    const user = userEvent.setup();
-    const { unmount } = render(<KnowledgeOpsPanel {...knowledgeOpsProps()} />);
-    const trigger = screen.getByRole("button", { name: /Report a missed duplicate or conflict/i });
-
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    trigger.focus();
-    await user.keyboard("{Enter}");
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
-
-    unmount();
-    render(<KnowledgeOpsPanel {...knowledgeOpsProps()} />);
-    expect(screen.getByRole("button", { name: /Report a missed duplicate or conflict/i }).getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: /export files/i }));
+    expect(onExport).toHaveBeenCalled();
+    expect(screen.getByText(/Exported 12 knowledge files to/)).toBeTruthy();
+    expect(screen.getByText("C:\\wiki\\proj")).toBeTruthy();
   });
 
-  it("clears the form and announces a successful report", async () => {
-    const onReportMiss = vi.fn().mockResolvedValue(true);
-    render(<KnowledgeOpsPanel {...knowledgeOpsProps(onReportMiss)} />);
-    fireEvent.click(screen.getByRole("button", { name: /Report a missed duplicate or conflict/i }));
+  it("renders nothing for members", () => {
+    const { container } = render(<KnowledgeExportControls
+      exportResult={null}
+      exportLoading={false}
+      canManage={false}
+      onExport={vi.fn()}
+    />);
 
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Repeated checkout rule" } });
-    fireEvent.change(screen.getByLabelText("Evidence and impact"), { target: { value: "Rules 10 and 11 contain the same constraint." } });
-    fireEvent.click(screen.getByRole("button", { name: "Report miss" }));
-
-    await waitFor(() => expect(onReportMiss).toHaveBeenCalledWith({
-      missType: "duplicate",
-      title: "Repeated checkout rule",
-      message: "Rules 10 and 11 contain the same constraint.",
-    }));
-    expect(await screen.findByText("Report submitted for review.")).toBeTruthy();
-    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("");
-    expect((screen.getByLabelText("Evidence and impact") as HTMLTextAreaElement).value).toBe("");
+    expect(container.innerHTML).toBe("");
   });
 
-  it("preserves report details when submission fails", async () => {
-    const onReportMiss = vi.fn().mockResolvedValue(false);
-    render(<KnowledgeOpsPanel {...knowledgeOpsProps(onReportMiss)} />);
-    fireEvent.click(screen.getByRole("button", { name: /Report a missed duplicate or conflict/i }));
+  it("disables the button while an export is running", () => {
+    render(<KnowledgeExportControls
+      exportResult={null}
+      exportLoading
+      canManage
+      onExport={vi.fn()}
+    />);
 
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Conflicting limits" } });
-    fireEvent.change(screen.getByLabelText("Evidence and impact"), { target: { value: "Rules 20 and 21 disagree." } });
-    fireEvent.click(screen.getByRole("button", { name: "Report miss" }));
-
-    await waitFor(() => expect(onReportMiss).toHaveBeenCalled());
-    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Conflicting limits");
-    expect((screen.getByLabelText("Evidence and impact") as HTMLTextAreaElement).value).toBe("Rules 20 and 21 disagree.");
-    expect(screen.queryByText("Report submitted for review.")).toBeNull();
+    expect(screen.getByRole("button", { name: /export files/i })).toHaveProperty("disabled", true);
   });
 });
 

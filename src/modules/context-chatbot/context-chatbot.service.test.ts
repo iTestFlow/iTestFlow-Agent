@@ -1,16 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const retrieveEvidence = vi.hoisted(() => vi.fn());
-const recordBenchmarkQuestion = vi.hoisted(() => vi.fn());
 
 vi.mock("@/modules/rag/context-chatbot-retrieval.service", () => ({
   retrieveContextChatbotEvidence: retrieveEvidence,
 }));
 vi.mock("@/modules/audit/audit.service", () => ({
   writeAuditLog: vi.fn(),
-}));
-vi.mock("@/modules/rag/project-knowledge-benchmark.service", () => ({
-  recordProjectKnowledgeBenchmarkQuestion: recordBenchmarkQuestion,
 }));
 // Deterministic stand-in for the local embedding model: a text is "relevant" iff it
 // mentions escalation. Keeps this file hermetic — the real weights are ~131 MB.
@@ -132,10 +128,6 @@ describe("context chatbot service", () => {
       provider,
       message: "What are the payment rules?",
     });
-    expect(recordBenchmarkQuestion).toHaveBeenCalledWith(expect.objectContaining({
-      sourceType: "business_owner_assistant",
-      question: "What are the payment rules?",
-    }));
 
     expect(result.citations).toEqual(expect.arrayContaining([
       expect.objectContaining({

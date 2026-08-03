@@ -175,9 +175,8 @@ describeDb("rerank retrieval quality (real model, real index)", () => {
     //
     // Deliberately NOT "fixed" by making the wrong item denser until fusion trips:
     // that would be fitting the fixture to a desired narrative. A case where
-    // reranking genuinely overturns fusion belongs in the labelled benchmark corpus
-    // (see retrieval-benchmark-runner.service.ts), measured across many real
-    // questions rather than argued from one hand-built pair.
+    // reranking genuinely overturns fusion would need a corpus of many real
+    // questions, measured in aggregate rather than argued from one hand-built pair.
     const baseline = await searchProjectChunksHybrid({
       scope,
       ftsQuery: buildFtsQuery(QUERY) ?? "",

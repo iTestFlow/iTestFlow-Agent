@@ -34,7 +34,6 @@ import {
 } from "./project-knowledge.service";
 import { getLatestInReviewProjectKnowledgeDraft, publishProjectKnowledgeDraft } from "./project-knowledge-draft.service";
 import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
-import { recordProjectKnowledgeBenchmarkQuestion } from "./project-knowledge-benchmark.service";
 import { regroundLegacyProjectKnowledgeCandidates } from "./project-knowledge-compiled.service";
 import { backfillProjectKnowledgeCompilerFoundation } from "./project-knowledge-migration.service";
 
@@ -184,7 +183,6 @@ describeDb("source-versioned project knowledge publication", () => {
     await sqlRun(`DELETE FROM project_knowledge_entries_fts WHERE project_id = @projectId`, { projectId });
     await sqlRun(`DELETE FROM project_knowledge_entries WHERE project_id = @projectId`, { projectId });
     await sqlRun(`DELETE FROM project_knowledge_migration_issues WHERE project_id = @projectId`, { projectId });
-    await sqlRun(`DELETE FROM project_knowledge_benchmark_cases WHERE project_id = @projectId`, { projectId });
     await sqlRun(`DELETE FROM project_knowledge_candidates WHERE project_id = @projectId`, { projectId });
     await sqlRun(`DELETE FROM project_knowledge_base WHERE project_id = @projectId`, { projectId });
     await sqlRun(
@@ -252,7 +250,6 @@ describeDb("source-versioned project knowledge publication", () => {
       await sqlRun(`DELETE FROM project_knowledge_entries_fts WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM project_knowledge_entries WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM project_knowledge_migration_issues WHERE project_id = @projectId`, { projectId });
-      await sqlRun(`DELETE FROM project_knowledge_benchmark_cases WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM project_knowledge_candidates WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM project_knowledge_base WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM azure_devops_work_items WHERE project_id = @projectId`, { projectId });
@@ -883,22 +880,6 @@ describeDb("source-versioned project knowledge publication", () => {
        WHERE project_id = @projectId AND category = 'module'`,
       { projectId },
     )).toEqual([{ category: "module", entry_key: "checkout", status: "active" }]);
-  });
-
-  it("stores only sanitized, deduplicated real benchmark questions", async () => {
-    const question = "Can jane@example.com verify work item 12345 in checkout?";
-    recordProjectKnowledgeBenchmarkQuestion({ scope, sourceType: "qa", question });
-    recordProjectKnowledgeBenchmarkQuestion({ scope, sourceType: "qa", question });
-    await flushBackgroundWrites();
-
-    expect(await sqlAll<{ sanitized_question: string; usage_count: number }>(
-      `SELECT sanitized_question, usage_count FROM project_knowledge_benchmark_cases
-       WHERE project_id = @projectId`,
-      { projectId },
-    )).toEqual([{
-      sanitized_question: "Can [email] verify work item [number] in checkout?",
-      usage_count: 2,
-    }]);
   });
 
   it("preserves backslashes while mapping persisted legacy evidence", async () => {

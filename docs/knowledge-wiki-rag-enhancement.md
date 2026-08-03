@@ -32,11 +32,11 @@ iTestFlow keeps Azure DevOps work items as source truth and compiles them into a
 - Each due schedule enqueues a deduplicated Incremental Sync job for every active project in the workspace, using its configured work-item types and states.
 - When the worker processes a job, it indexes Azure DevOps context with the workspace sync credential and records created, updated, unchanged, inactive, and skipped-empty counts in the project context log.
 - Scheduled sync does not compile or replace the saved knowledge base and does not create a knowledge revision. An owner or admin reviews and runs knowledge compilation from Knowledge Hub.
-- Manual Knowledge Hub controls remain user-triggered: context indexing or rebuild, knowledge compilation, full recompile, health checks, logs, and Markdown export.
+- Manual Knowledge Hub controls remain user-triggered: context indexing or rebuild, knowledge compilation, full recompile, logs, and Markdown export.
 
 ## Health Rules
 
-The deterministic lint pass checks for:
+The deterministic lint pass runs automatically after each knowledge publication and checks for:
 
 - Missing or inactive source work item IDs.
 - Entries without active source support.
@@ -128,5 +128,5 @@ through `src/modules/rag/embedding-store.service.ts` directly.
 - Project Context / RAG: incremental sync replaces full delete-and-rebuild as the default.
 - Project Knowledge Base: saves now create revisions, entry versions, log events, and lint results.
 - Business Owner Assistant: cited answers can be promoted as candidate knowledge for review.
-- `/knowledge-hub`: exposes context indexing mode, rebuild, compiled knowledge health, log, and Markdown export.
-- QA workflows: continue consuming the active `ProjectKnowledgeBase` shape, now backed by revision history and health checks.
+- `/knowledge-hub`: exposes context indexing mode, rebuild, compiled knowledge log, and Markdown export.
+- QA workflows: continue consuming the active `ProjectKnowledgeBase` shape, now backed by revision history and publish-time lint checks.

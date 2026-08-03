@@ -136,10 +136,13 @@ function mapRow(row: RecentActivityRow): DashboardRecentActivity {
 }
 
 // Distinct action groups present in the scope (ignores search/group/date filters so the
-// dropdown never loses options while the user is filtering).
+// dropdown never loses options while the user is filtering). UNION (not UNION ALL)
+// dedupes across the two sources.
 async function getAvailableActions(scopeFilter: ScopeFilter): Promise<ActivityLogActionOption[]> {
   const rows = await sqlAll<ActionRow>(
-    `SELECT DISTINCT action FROM audit_logs WHERE ${scopeWhere()}`,
+    `SELECT action FROM audit_logs WHERE ${scopeWhere()}
+     UNION
+     SELECT event_type AS action FROM project_knowledge_log WHERE ${scopeWhere()}`,
     scopeFilter,
   );
 
@@ -158,47 +161,89 @@ export async function getActivityLog(input: ActivityLogInput): Promise<ActivityL
   const scopeFilter = scopeParams(input.workspaceId, input.scope);
   const limit = clampLimit(input.limit);
 
-  const where: string[] = [scopeWhere()];
+  // Two sources merge into one feed: audit_logs (user actions, with actor attribution)
+  // and project_knowledge_log (knowledge/context operational events — lint results,
+  // embedding failures, exports — written by the system without an actor). The Knowledge
+  // Hub panel that used to display the latter was removed; this page is now its only
+  // surface. Each source gets its own WHERE list because their searchable columns differ.
+  const auditWhere: string[] = [scopeWhere()];
+  const knowledgeWhere: string[] = [scopeWhere()];
   const params: Record<string, unknown> = { ...scopeFilter };
 
   const term = (input.search ?? "").trim();
   if (term) {
     params.q = `%${escapeLike(term)}%`;
-    where.push(
+    auditWhere.push(
       `(message LIKE @q ESCAPE '\\'
         OR action LIKE @q ESCAPE '\\'
         OR COALESCE(entity_id, '') LIKE @q ESCAPE '\\'
         OR COALESCE(entity_type, '') LIKE @q ESCAPE '\\'
         OR COALESCE(actor, '') LIKE @q ESCAPE '\\')`,
     );
+    // Knowledge events carry no actor or entity columns; title/message/event_type is
+    // their whole searchable surface.
+    knowledgeWhere.push(
+      `(title LIKE @q ESCAPE '\\'
+        OR message LIKE @q ESCAPE '\\'
+        OR event_type LIKE @q ESCAPE '\\')`,
+    );
   }
 
   const groups = (input.groups ?? []).map((group) => group.trim()).filter(Boolean);
   if (groups.length) {
-    const clauses = groups.map((group, index) => {
+    const auditClauses: string[] = [];
+    const knowledgeClauses: string[] = [];
+    groups.forEach((group, index) => {
       params[`grpPfx${index}`] = `${escapeLike(group)}.%`;
       params[`grpEq${index}`] = group;
-      return `(action LIKE @grpPfx${index} ESCAPE '\\' OR action = @grpEq${index})`;
+      auditClauses.push(`(action LIKE @grpPfx${index} ESCAPE '\\' OR action = @grpEq${index})`);
+      knowledgeClauses.push(`(event_type LIKE @grpPfx${index} ESCAPE '\\' OR event_type = @grpEq${index})`);
     });
-    where.push(`(${clauses.join(" OR ")})`);
+    auditWhere.push(`(${auditClauses.join(" OR ")})`);
+    knowledgeWhere.push(`(${knowledgeClauses.join(" OR ")})`);
   }
 
   if (input.from) {
     params.fromTs = `${input.from}T00:00:00.000Z`;
-    where.push(`created_at >= @fromTs`);
+    auditWhere.push(`created_at >= @fromTs`);
+    knowledgeWhere.push(`created_at >= @fromTs`);
   }
   if (input.to) {
     params.toTs = `${addOneDayUtc(input.to)}T00:00:00.000Z`;
-    where.push(`created_at < @toTs`);
+    auditWhere.push(`created_at < @toTs`);
+    knowledgeWhere.push(`created_at < @toTs`);
   }
 
   params.queryLimit = limit + 1;
 
+  // Each branch is parenthesized so it can pre-sort and pre-limit (filters first, then
+  // LIMIT — limiting before filtering would drop matching rows); the outer ORDER/LIMIT
+  // merges the two newest-first streams while keeping the limit+1 hasMore convention.
+  // details_json for knowledge rows is string-composed rather than json_build_object so
+  // one historically malformed metadata row degrades to a raw string in parseDetailsJson
+  // instead of failing the whole query.
   const rows = await sqlAll<RecentActivityRow>(
-    `SELECT id, project_id, azure_project_id, azure_project_name, azure_organization_url,
-            entity_type, entity_id, action, status, actor, message, details_json, created_at, updated_at
-     FROM audit_logs
-     WHERE ${where.join(" AND ")}
+    `SELECT * FROM (
+       (SELECT id, project_id, azure_project_id, azure_project_name, azure_organization_url,
+               entity_type, entity_id, action, status, actor, message, details_json, created_at, updated_at
+        FROM audit_logs
+        WHERE ${auditWhere.join(" AND ")}
+        ORDER BY created_at DESC
+        LIMIT @queryLimit)
+       UNION ALL
+       (SELECT id, project_id, azure_project_id, azure_project_name, azure_organization_url,
+               'knowledge_event' AS entity_type, NULL::text AS entity_id,
+               event_type AS action, severity AS status, NULL::text AS actor,
+               title || ' — ' || message AS message,
+               CASE WHEN source_ids <> '[]'
+                    THEN '{"sourceIds":' || source_ids || ',"metadata":' || COALESCE(metadata_json, 'null') || '}'
+                    ELSE metadata_json END AS details_json,
+               created_at, created_at AS updated_at
+        FROM project_knowledge_log
+        WHERE ${knowledgeWhere.join(" AND ")}
+        ORDER BY created_at DESC
+        LIMIT @queryLimit)
+     ) merged
      ORDER BY created_at DESC
      LIMIT @queryLimit`,
     params,

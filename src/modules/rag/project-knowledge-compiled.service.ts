@@ -20,7 +20,6 @@ import {
   computeProjectKnowledgeHashes,
   type ProjectKnowledgeSourceManifestEntry,
 } from "./project-knowledge-contracts";
-import { listProjectKnowledgeBenchmarkCases } from "./project-knowledge-benchmark.service";
 import { indexApprovedChatInsight, removeChatInsightFromSearchIndex } from "./context-chatbot-retrieval.service";
 import { createEmbeddingProvider } from "./embedding-provider";
 import { syncProjectKnowledgeEntryEmbeddings } from "./embedding-store.service";
@@ -787,7 +786,6 @@ export async function exportProjectKnowledgeWiki(input: { scope: ProjectScope })
 
   const knowledgeBase = JSON.parse(snapshot.validated_output) as ProjectKnowledgeBase;
   const logs = await getProjectKnowledgeLog({ scope, limit: 500 });
-  const benchmark = await listProjectKnowledgeBenchmarkCases({ scope, limit: 500 });
   const fs = getFs();
   const path = getPath();
   const exportRoot = path.join(
@@ -806,17 +804,7 @@ export async function exportProjectKnowledgeWiki(input: { scope: ProjectScope })
   fs.writeFileSync(path.join(exportRoot, "index.md"), renderWikiIndex(scope, knowledgeBase, snapshot), "utf8");
   fs.writeFileSync(path.join(exportRoot, "log.md"), renderWikiLog(logs), "utf8");
   fs.writeFileSync(path.join(exportRoot, "map.md"), renderWikiMap(knowledgeBase), "utf8");
-  fs.writeFileSync(
-    path.join(exportRoot, "benchmark.jsonl"),
-    benchmark.map((item) => JSON.stringify({
-      id: item.id,
-      sourceType: item.sourceType,
-      question: item.question,
-      usageCount: item.usageCount,
-    })).join("\n") + (benchmark.length ? "\n" : ""),
-    "utf8",
-  );
-  const generatedFiles = ["benchmark.jsonl", "index.md", "log.md", "map.md"];
+  const generatedFiles = ["index.md", "log.md", "map.md"];
 
   knowledgeBase.modules.forEach((item) => {
     generatedFiles.push(`modules/${safePathSegment(item.id)}.md`);
@@ -896,7 +884,7 @@ export async function exportProjectKnowledgeWiki(input: { scope: ProjectScope })
   return {
     exportRoot,
     fileCount:
-      5 +
+      4 +
       knowledgeBase.modules.length +
       knowledgeBase.businessRules.length +
       knowledgeBase.stateTransitions.length +
@@ -981,138 +969,6 @@ export async function promoteContextChatbotAnswer(input: {
   });
 
   return { candidateId: id, entryKey, sourceIds, status: grounded ? "grounded" : "legacy_ungrounded" };
-}
-
-export async function reportProjectKnowledgeLintMiss(input: {
-  scope: ProjectScope;
-  actor: string;
-  missType: "duplicate" | "conflict";
-  title: string;
-  message: string;
-  category?: string;
-  entryKey?: string;
-  sourceWorkItemIds?: string[];
-}) {
-  const scope = assertProjectScope(input.scope);
-  const now = nowIso();
-  const fingerprint = stableHash(JSON.stringify({
-    origin: "human",
-    missType: input.missType,
-    category: input.category ?? null,
-    entryKey: input.entryKey ? normalizeKey(input.entryKey) : null,
-    message: normalizeKey(input.message),
-  }));
-  const id = createId("pkli");
-  const latestRun = await sqlGet<{ id: string }>(
-    `
-      SELECT id FROM project_knowledge_lint_runs
-      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
-      ORDER BY completed_at DESC LIMIT 1
-    `,
-    { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
-  );
-  const lintRunId = latestRun?.id ?? null;
-  await sqlRun(
-    `
-      INSERT INTO project_knowledge_lint_issues (
-        id, project_id, azure_project_id, azure_project_name, azure_organization_url,
-        issue_type, severity, title, message, category, entry_key,
-        source_work_item_ids, status, created_at, updated_at, issue_fingerprint,
-        origin, first_seen_at, last_seen_at, resolution_json, lint_run_id
-      ) VALUES (
-        @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
-        @issueType, 'warning', @title, @message, @category, @entryKey,
-        @sourceWorkItemIds, 'reported', @createdAt, @updatedAt, @issueFingerprint,
-        'human', @createdAt, @updatedAt, @resolutionJson, @lintRunId
-      )
-      ON CONFLICT (project_id, azure_project_id, issue_fingerprint)
-        WHERE issue_fingerprint IS NOT NULL
-      DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at,
-                    lint_run_id = EXCLUDED.lint_run_id,
-                    updated_at = EXCLUDED.updated_at
-    `,
-    {
-      id,
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      azureProjectName: scope.azureProjectName,
-      azureOrganizationUrl: scope.azureOrganizationUrl,
-      issueType: `reported_missed_${input.missType}`,
-      title: input.title.trim(),
-      message: input.message.trim(),
-      category: input.category ?? null,
-      entryKey: input.entryKey ?? null,
-      sourceWorkItemIds: JSON.stringify(input.sourceWorkItemIds ?? []),
-      issueFingerprint: fingerprint,
-      resolutionJson: JSON.stringify({ reportedBy: input.actor }),
-      lintRunId,
-      createdAt: now,
-      updatedAt: now,
-    },
-  );
-  return getProjectKnowledgeLintIssues({ scope });
-}
-
-export async function transitionProjectKnowledgeLintIssue(input: {
-  scope: ProjectScope;
-  actor: string;
-  issueId: string;
-  action: "confirm" | "reject" | "ignore" | "reopen";
-  note?: string;
-}) {
-  const scope = assertProjectScope(input.scope);
-  const now = nowIso();
-  const updated = await sqlRun(
-    `
-      UPDATE project_knowledge_lint_issues
-      SET status = CASE
-            WHEN @action = 'confirm' THEN 'confirmed'
-            WHEN @action = 'reject' THEN 'rejected'
-            WHEN @action = 'ignore' THEN 'ignored'
-            WHEN origin = 'human' THEN 'reported'
-            ELSE 'open'
-          END,
-          confirmed_by = CASE WHEN @action = 'confirm' THEN @actor ELSE NULL END,
-          confirmed_at = CASE WHEN @action = 'confirm' THEN @now ELSE NULL END,
-          resolution_json = @resolutionJson,
-          resolved_at = CASE WHEN @action = 'reopen' THEN NULL ELSE @now END,
-          updated_at = @now
-      WHERE id = @issueId AND project_id = @projectId AND azure_project_id = @azureProjectId
-        AND (
-          (@action IN ('confirm', 'reject') AND origin = 'human' AND status = 'reported')
-          OR (@action = 'ignore' AND origin = 'deterministic' AND status = 'open')
-          OR (@action = 'reopen' AND (
-            (origin = 'deterministic' AND status IN ('ignored', 'resolved'))
-            OR (origin = 'human' AND status IN ('confirmed', 'rejected'))
-          ))
-        )
-    `,
-    {
-      issueId: input.issueId,
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      action: input.action,
-      actor: input.actor,
-      now,
-      resolutionJson: JSON.stringify({ action: input.action, note: input.note ?? null, reviewedBy: input.actor }),
-    },
-  );
-  if (!updated) {
-    const existing = await sqlGet<{ id: string }>(
-      `
-        SELECT id FROM project_knowledge_lint_issues
-        WHERE id = @issueId AND project_id = @projectId AND azure_project_id = @azureProjectId
-      `,
-      { issueId: input.issueId, projectId: scope.projectId, azureProjectId: scope.azureProjectId },
-    );
-    if (!existing) throw resourceNotFound("Project knowledge lint issue");
-    throw new AppError({
-      code: AppErrorCode.KnowledgeDraftConflict,
-      message: "The lint issue action is invalid for its origin or current status.",
-      userMessage: "This lint issue changed or does not support the requested action. Refresh and try again.",
-    });
-  }
-  return getProjectKnowledgeLintIssues({ scope });
 }
 
 export async function listProjectKnowledgeCandidates(input: {
