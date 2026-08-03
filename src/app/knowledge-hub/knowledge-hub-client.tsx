@@ -10,11 +10,9 @@ import {
   Clock3,
   Database,
   Download,
-  History,
   RefreshCw,
   Search,
   SearchX,
-  ShieldCheck,
   type LucideIcon,
 } from "lucide-react"
 
@@ -191,20 +189,6 @@ type KnowledgeStatusResult = {
   latestInReviewDraft?: KnowledgeInReviewDraft | null
 }
 
-type KnowledgeLogItem = {
-  id: string
-  eventType: string
-  severity: "info" | "warning" | "error"
-  title: string
-  message: string
-  sourceIds: string[]
-  createdAt: string
-}
-
-type KnowledgeLogResult = {
-  items: KnowledgeLogItem[]
-}
-
 type KnowledgeExportResult = {
   exportRoot: string
   fileCount: number
@@ -287,10 +271,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<ProjectKnowledgeSnapshot | null>(null)
   const [generationAvailable, setGenerationAvailable] = useState<boolean | null>(null)
   const [resumableDraft, setResumableDraft] = useState<KnowledgeInReviewDraft | null>(null)
-  const [knowledgeLog, setKnowledgeLog] = useState<KnowledgeLogItem[]>([])
-  const [knowledgeLogVisible, setKnowledgeLogVisible] = useState(false)
   const [knowledgeExport, setKnowledgeExport] = useState<KnowledgeExportResult | null>(null)
-  const [knowledgeLogLoading, setKnowledgeLogLoading] = useState(false)
   const [knowledgeExportLoading, setKnowledgeExportLoading] = useState(false)
   const [knowledgeCandidates, setKnowledgeCandidates] = useState<KnowledgeCandidate[]>([])
   const [candidateStatus, setCandidateStatus] = useState<KnowledgeCandidateStatus | "all">("all")
@@ -315,19 +296,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     retry: retryWorkItemMetadata,
   } = useProjectWorkItemMetadata(scope)
   const canBuildKnowledge = workspaceRole === "owner" || workspaceRole === "admin"
-
-  const refreshKnowledgeLog = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
-    if (!activeScope) return
-    setKnowledgeLogLoading(true)
-    try {
-      const data = await postJson<KnowledgeLogResult>("/api/context/knowledge/log", { scope: activeScope, limit: 20 })
-      setKnowledgeLog(data.items)
-    } catch {
-      setKnowledgeLog([])
-    } finally {
-      setKnowledgeLogLoading(false)
-    }
-  }, [scope])
 
   const refreshKnowledgeStatus = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
     if (!activeScope) return
@@ -468,8 +436,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setBuildError(null)
     setResult(null)
     setKnowledgeError(null)
-    setKnowledgeLog([])
-    setKnowledgeLogVisible(false)
     setKnowledgeExport(null)
     setKnowledgeCandidates([])
     setCandidateStatus("all")
@@ -505,12 +471,10 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         if (!cancelled) setKnowledgeStatusLoading(false)
       })
 
-    void refreshKnowledgeLog(scope)
-
     return () => {
       cancelled = true
     }
-  }, [loadStatus, refreshKnowledgeLog, scope])
+  }, [loadStatus, scope])
 
   useEffect(() => {
     if (scope) void refreshKnowledgeCandidates(scope, candidateStatus)
@@ -585,22 +549,11 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     try {
       const data = await postJson<KnowledgeExportResult>("/api/context/knowledge/export", { scope })
       setKnowledgeExport(data)
-      await refreshKnowledgeLog(scope)
     } catch (exportError) {
       setKnowledgeError(exportError instanceof Error ? exportError.message : "Project knowledge wiki export failed.")
     } finally {
       setKnowledgeExportLoading(false)
     }
-  }
-
-  async function toggleKnowledgeLog() {
-    if (knowledgeLogVisible) {
-      setKnowledgeLogVisible(false)
-      return
-    }
-
-    setKnowledgeLogVisible(true)
-    await refreshKnowledgeLog(scope)
   }
 
   async function updateKnowledgeCandidate(candidateId: string, action: "reject" | "request_integration") {
@@ -733,17 +686,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
             </div>
           ) : null}
 
-          <KnowledgeOpsPanel
-            logItems={knowledgeLog}
-            logVisible={knowledgeLogVisible}
-            exportResult={knowledgeExport}
-            logLoading={knowledgeLogLoading}
-            exportLoading={knowledgeExportLoading}
-            canManage={canBuildKnowledge}
-            onToggleLog={toggleKnowledgeLog}
-            onExport={exportKnowledgeWiki}
-          />
-
           {knowledgeError ? (
             <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
               <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
@@ -775,7 +717,15 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                   {knowledgeStatusLoading ? (
                     <KnowledgeLoadingState label="Loading saved knowledge base" />
                   ) : knowledgeSnapshot ? (
-                    <KnowledgeExplorer knowledgeBase={knowledgeSnapshot.knowledgeBase} />
+                    <div className="space-y-3">
+                      <KnowledgeExportControls
+                        exportResult={knowledgeExport}
+                        exportLoading={knowledgeExportLoading}
+                        canManage={canBuildKnowledge}
+                        onExport={exportKnowledgeWiki}
+                      />
+                      <KnowledgeExplorer knowledgeBase={knowledgeSnapshot.knowledgeBase} />
+                    </div>
                   ) : (
                     <KnowledgeEmptyState
                       title="No compiled knowledge yet"
@@ -893,7 +843,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                 onPublished={async () => {
                   await Promise.all([
                     refreshKnowledgeStatus(scope),
-                    refreshKnowledgeLog(scope),
                     loadStatus(scope, { page: 1, sortBy, sortDirection, query: contextSearch }),
                   ])
                 }}
@@ -1361,79 +1310,32 @@ export function KnowledgeCandidatesView({
   )
 }
 
-export function KnowledgeOpsPanel({
-  logItems,
-  logVisible,
+export function KnowledgeExportControls({
   exportResult,
-  logLoading,
   exportLoading,
   canManage,
-  onToggleLog,
   onExport,
 }: {
-  logItems: KnowledgeLogItem[]
-  logVisible: boolean
   exportResult: KnowledgeExportResult | null
-  logLoading: boolean
   exportLoading: boolean
   canManage: boolean
-  onToggleLog: () => void
   onExport: () => void
 }) {
+  if (!canManage) return null
   return (
-    <section className="content-surface space-y-3 p-4" aria-label="Compiled knowledge operations">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="size-4 shrink-0 text-primary" aria-hidden="true" />
-            <span role="heading" aria-level={2} className="text-sm font-semibold text-foreground">Compiled Knowledge Operations</span>
-          </div>
-          <div className="text-xs text-muted-foreground">Event history and managed export for the source-backed knowledge layer.</div>
-        </div>
-        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap lg:shrink-0 lg:flex-nowrap">
-          <Button variant={logVisible ? "secondary" : "outline"} size="sm" onClick={onToggleLog} disabled={logLoading} aria-expanded={logVisible}>
-            {logLoading ? <RefreshCw className="size-4 animate-spin" /> : <History className="size-4" />}
-            <span className="sm:hidden">{logVisible ? "Hide" : "Log"}</span>
-            <span className="hidden sm:inline">{logVisible ? "Hide Log" : "Log"}</span>
-          </Button>
-          {canManage ? (
-            <Button variant="outline" size="sm" onClick={onExport} disabled={exportLoading}>
-              {exportLoading ? <RefreshCw className="size-4 animate-spin" /> : <Download className="size-4" />}
-              <span className="sm:hidden">Export</span>
-              <span className="hidden sm:inline">Export files</span>
-            </Button>
-          ) : null}
-        </div>
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" onClick={onExport} disabled={exportLoading}>
+          {exportLoading ? <RefreshCw className="size-4 animate-spin" /> : <Download className="size-4" />}
+          Export files
+        </Button>
       </div>
-
       {exportResult ? (
         <div className="rounded-md border border-primary/40 bg-accent p-3 text-sm text-primary">
           Exported {exportResult.fileCount} knowledge files to <span className="font-mono">{exportResult.exportRoot}</span>.
         </div>
       ) : null}
-
-      {logVisible ? (
-        <div className="space-y-2">
-          <div className="text-xs font-semibold uppercase text-muted-foreground">Recent Knowledge Log</div>
-          {logItems.length ? (
-            logItems.slice(0, 8).map((item) => (
-              <div key={item.id} className="rounded-md border border-border p-3 text-sm">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline">{item.eventType}</Badge>
-                  <span className="font-semibold text-foreground">{item.title}</span>
-                  <span className="text-xs text-muted-foreground">{formatDate(item.createdAt)}</span>
-                </div>
-                <div className="mt-1 text-muted-foreground">{item.message}</div>
-              </div>
-            ))
-          ) : (
-            <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
-              No knowledge log events have been recorded for this project yet.
-            </div>
-          )}
-        </div>
-      ) : null}
-    </section>
+    </div>
   )
 }
 

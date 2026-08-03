@@ -9,7 +9,7 @@ import {
   IndexedContextView,
   KnowledgeCandidatesView,
   KnowledgeExplorer,
-  KnowledgeOpsPanel,
+  KnowledgeExportControls,
 } from "./knowledge-hub-client";
 
 afterEach(cleanup);
@@ -108,19 +108,6 @@ function contextItem(id: string, title = `Work item ${id}`) {
   };
 }
 
-function knowledgeOpsProps() {
-  return {
-    logItems: [],
-    logVisible: false,
-    exportResult: null,
-    logLoading: false,
-    exportLoading: false,
-    canManage: true,
-    onToggleLog: vi.fn(),
-    onExport: vi.fn(),
-  };
-}
-
 describe("Knowledge Hub candidates UI", () => {
   it("shows candidate evidence to members without mutation actions", () => {
     render(<KnowledgeCandidatesView
@@ -206,23 +193,42 @@ describe("Knowledge Hub candidates UI", () => {
   });
 });
 
-describe("Knowledge Hub operations panel", () => {
-  it("offers exactly Log and Export to managers", () => {
-    render(<KnowledgeOpsPanel {...knowledgeOpsProps()} />);
+describe("Knowledge Hub export controls", () => {
+  it("lets managers export and shows the result banner", () => {
+    const onExport = vi.fn();
+    render(<KnowledgeExportControls
+      exportResult={{ exportRoot: "C:\\wiki\\proj", fileCount: 12 }}
+      exportLoading={false}
+      canManage
+      onExport={onExport}
+    />);
 
-    expect(screen.getByText("Compiled Knowledge Operations")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /log/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /export files/i })).toBeTruthy();
-    expect(screen.getAllByRole("button")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: /export files/i }));
+    expect(onExport).toHaveBeenCalled();
+    expect(screen.getByText(/Exported 12 knowledge files to/)).toBeTruthy();
+    expect(screen.getByText("C:\\wiki\\proj")).toBeTruthy();
   });
 
-  it("hides the export action from members and toggles the log", () => {
-    const onToggleLog = vi.fn();
-    render(<KnowledgeOpsPanel {...knowledgeOpsProps()} canManage={false} onToggleLog={onToggleLog} />);
+  it("renders nothing for members", () => {
+    const { container } = render(<KnowledgeExportControls
+      exportResult={null}
+      exportLoading={false}
+      canManage={false}
+      onExport={vi.fn()}
+    />);
 
-    expect(screen.queryByRole("button", { name: /export files/i })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /log/i }));
-    expect(onToggleLog).toHaveBeenCalled();
+    expect(container.innerHTML).toBe("");
+  });
+
+  it("disables the button while an export is running", () => {
+    render(<KnowledgeExportControls
+      exportResult={null}
+      exportLoading
+      canManage
+      onExport={vi.fn()}
+    />);
+
+    expect(screen.getByRole("button", { name: /export files/i })).toHaveProperty("disabled", true);
   });
 });
 

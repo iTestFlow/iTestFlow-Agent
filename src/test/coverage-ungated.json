@@ -26,7 +26,6 @@
     "src/app/api/context/knowledge/candidates/[candidateId]/route.ts",
     "src/app/api/context/knowledge/candidates/route.ts",
     "src/app/api/context/knowledge/export/route.ts",
-    "src/app/api/context/knowledge/log/route.ts",
     "src/app/api/context/knowledge/manual/draft/route.ts",
     "src/app/api/context/knowledge/manual/validate/route.ts",
     "src/app/api/context/knowledge/status/route.ts",
