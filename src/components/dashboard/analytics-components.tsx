@@ -31,6 +31,7 @@ function activityStatusTone(
   switch (status) {
     case "Success":
       return "success";
+    case "Error":
     case "Failed":
       return "error";
     case "Warning":
