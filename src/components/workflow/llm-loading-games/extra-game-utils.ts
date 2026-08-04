@@ -32,6 +32,20 @@ export function createMemoryDeck(
   return shuffled([...symbols, ...symbols], random);
 }
 
+export function createNumberFlipDeck(
+  count: number,
+  variantIndex = 0,
+  random: () => number = Math.random,
+): number[] {
+  const tileCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (tileCount === 0) return [];
+
+  const rawSalt = Number.isFinite(variantIndex) ? Math.floor(variantIndex) : 0;
+  const salt = ((rawSalt % tileCount) + tileCount) % tileCount;
+  const values = Array.from({ length: tileCount }, (_, index) => ((index + salt) % tileCount) + 1);
+  return shuffled(values, random);
+}
+
 export type LightToggleMode = "orthogonal" | "diagonal" | "wrap";
 
 export function lightToggleIndices(size: number, cellIndex: number, mode: LightToggleMode): number[] {

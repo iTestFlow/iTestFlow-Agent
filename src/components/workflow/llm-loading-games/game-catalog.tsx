@@ -8,6 +8,7 @@ import {
 } from "./game-definitions";
 import { LightsOutGame } from "./LightsOutGame";
 import { MemoryMatchGame } from "./MemoryMatchGame";
+import { NumberFlipGame } from "./NumberFlipGame";
 import { OddTileGame } from "./OddTileGame";
 import { PatternSequenceGame } from "./PatternSequenceGame";
 import { PipeConnectGame } from "./PipeConnectGame";
@@ -22,6 +23,7 @@ const GAME_COMPONENTS: Record<LoadingGameName, ComponentType<MiniGameProps>> = {
   zip: ZipPathGame,
   pipe: PipeConnectGame,
   memory: MemoryMatchGame,
+  "number-flip": NumberFlipGame,
   lights: LightsOutGame,
   odd: OddTileGame,
   sequence: PatternSequenceGame,
