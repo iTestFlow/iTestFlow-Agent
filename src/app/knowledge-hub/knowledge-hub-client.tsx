@@ -19,6 +19,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Separator } from "@/components/ui/separator"
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector"
 import { patchJson, postJson } from "@/components/workflow/post-json"
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
@@ -805,14 +806,6 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         <TabsContent value="build" className="space-y-4">
           {scope ? (
             <>
-              {/* DocumentsPanel renders its own "Project documents" heading and
-                  upload action; the card only frames it within the build tab. */}
-              <Card className="qa-card">
-                <CardContent className="pt-6">
-                  <DocumentsPanel scope={scope} canManage onCountChange={setDocumentCount} />
-                </CardContent>
-              </Card>
-
               <KnowledgeBuild
                 key={`${scope.workspaceId ?? "workspace"}:${scope.projectId}`}
                 scope={scope}
@@ -827,7 +820,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                       <CardHeader>
                         <CardTitle className="text-base" role="heading" aria-level={2}>Load Project Index</CardTitle>
                         <p className="text-sm leading-6 text-muted-foreground">
-                          Sync the selected Azure DevOps work items, review what changed, then build project knowledge from that index.
+                          Sync the selected Azure DevOps work items and manage uploaded documents — both feed the knowledge build from this step.
                         </p>
                       </CardHeader>
                       <CardContent>
@@ -847,6 +840,11 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                           onRetryMetadata={retryWorkItemMetadata}
                           onLoad={loadProjectIndexForBuild}
                         />
+                        <Separator className="my-6" />
+                        {/* Documents are the second source kind feeding the same build
+                            manifest, so their management lives inside this sources step.
+                            DocumentsPanel renders its own heading and upload action. */}
+                        <DocumentsPanel scope={scope} canManage onCountChange={setDocumentCount} />
                       </CardContent>
                     </Card>
 
