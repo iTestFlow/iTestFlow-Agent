@@ -19,6 +19,7 @@ import {
   parseDocumentScopeParam,
   resolveDocumentReadScope,
   resolveDocumentMutationScope,
+  resolveUserDisplayNames,
 } from "../document-route-helpers";
 
 export const runtime = "nodejs";
@@ -59,9 +60,13 @@ export async function GET(request: Request, { params }: RouteParams) {
         limit: 250,
       })
       : [];
+    const uploaderNames = await resolveUserDisplayNames(result.versions.map((version) => version.uploadedBy));
     return NextResponse.json({
       document: result.document,
-      versions: result.versions,
+      versions: result.versions.map((version) => ({
+        ...version,
+        uploadedByDisplayName: uploaderNames.get(version.uploadedBy),
+      })),
       chunks,
     });
   } catch (error) {

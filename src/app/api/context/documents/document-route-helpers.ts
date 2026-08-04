@@ -53,7 +53,7 @@ export type DocumentListFilters = {
 
 export type DocumentListItem = {
   document: ProjectSourceDocument;
-  currentVersion: ProjectSourceDocumentVersion | null;
+  currentVersion: (ProjectSourceDocumentVersion & { uploadedByDisplayName?: string }) | null;
   versionCount: number;
 };
 
@@ -226,6 +226,22 @@ export async function countProjectSourceDocuments(input: {
 }
 
 /**
+ * uploaded_by stores the immutable user id; display names live on the users
+ * row and may change, so they are resolved at read time only. A missing user
+ * row (deleted account) keeps rendering as the stored id rather than hiding
+ * who uploaded the version.
+ */
+export async function resolveUserDisplayNames(userIds: Array<string | null | undefined>): Promise<Map<string, string>> {
+  const ids = Array.from(new Set(userIds.filter((id): id is string => Boolean(id))));
+  if (!ids.length) return new Map();
+  const rows = await sqlAll<{ id: string; display_name: string | null; email_or_unique_name: string | null }>(
+    `SELECT id, display_name, email_or_unique_name FROM users WHERE id = ANY(@ids::text[])`,
+    { ids },
+  );
+  return new Map(rows.map((row) => [row.id, row.display_name?.trim() || row.email_or_unique_name?.trim() || row.id]));
+}
+
+/**
  * Keep list rows useful without making the browser issue N follow-up requests.
  * Version ids are still loaded through the scoped service, while a grouped query
  * provides an exact count even for documents with more than the UI's history cap.
@@ -259,11 +275,17 @@ export async function enrichProjectSourceDocumentList(input: {
       ? getProjectSourceDocumentVersion({ scope: input.scope, versionId: document.currentVersionId })
       : undefined
   )));
-  return input.documents.map((document, index) => ({
-    document,
-    currentVersion: currentVersions[index] ?? null,
-    versionCount: countByDocumentId.get(document.id) ?? 0,
-  }));
+  const uploaderNames = await resolveUserDisplayNames(currentVersions.map((version) => version?.uploadedBy));
+  return input.documents.map((document, index) => {
+    const currentVersion = currentVersions[index] ?? null;
+    return {
+      document,
+      currentVersion: currentVersion
+        ? { ...currentVersion, uploadedByDisplayName: uploaderNames.get(currentVersion.uploadedBy) }
+        : null,
+      versionCount: countByDocumentId.get(document.id) ?? 0,
+    };
+  });
 }
 
 /** Count a version's chunks only after the caller has scope-validated the version. */

@@ -805,14 +805,10 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         <TabsContent value="build" className="space-y-4">
           {scope ? (
             <>
+              {/* DocumentsPanel renders its own "Project documents" heading and
+                  upload action; the card only frames it within the build tab. */}
               <Card className="qa-card">
-                <CardHeader>
-                  <CardTitle className="text-base" role="heading" aria-level={2}>Project Documents</CardTitle>
-                  <p className="text-sm leading-6 text-muted-foreground">
-                    Upload and manage the source documents that feed knowledge builds.
-                  </p>
-                </CardHeader>
-                <CardContent>
+                <CardContent className="pt-6">
                   <DocumentsPanel scope={scope} canManage onCountChange={setDocumentCount} />
                 </CardContent>
               </Card>

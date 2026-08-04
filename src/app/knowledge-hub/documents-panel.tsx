@@ -82,6 +82,7 @@ export type SourceDocumentVersion = {
   parseRecipeVersion?: string | null
   chunkCount: number
   uploadedBy?: string | null
+  uploadedByDisplayName?: string | null
   createdAt?: string | null
   updatedAt?: string | null
 }
@@ -934,7 +935,7 @@ function DocumentTable({
                   <DocumentProcessingStatus version={currentVersion} job={job} archived={isArchived} />
                 </TableCell>
                 <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground md:table-cell">
-                  <div>{currentVersion?.uploadedBy ?? "—"}</div>
+                  <div>{currentVersion?.uploadedByDisplayName ?? currentVersion?.uploadedBy ?? "—"}</div>
                   <div className="text-xs">{formatDate(currentVersion?.createdAt ?? item.document.createdAt)}</div>
                 </TableCell>
                 <TableCell className="hidden tabular-nums lg:table-cell">{item.versionCount}</TableCell>
@@ -1632,6 +1633,7 @@ function normalizeVersion(value: unknown): SourceDocumentVersion | null {
     parseRecipeVersion: textValue(record?.parseRecipeVersion ?? record?.parse_recipe_version),
     chunkCount: numberValue(record?.chunkCount ?? record?.chunk_count) ?? 0,
     uploadedBy: textValue(record?.uploadedBy ?? record?.uploaded_by),
+    uploadedByDisplayName: textValue(record?.uploadedByDisplayName ?? record?.uploaded_by_display_name),
     createdAt: textValue(record?.createdAt ?? record?.created_at),
     updatedAt: textValue(record?.updatedAt ?? record?.updated_at),
   }
