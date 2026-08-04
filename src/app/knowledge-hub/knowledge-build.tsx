@@ -168,6 +168,11 @@ type KnowledgeDraftPreviewPage = {
       quote: string
     }>
   }>
+  /** Read-time display names for this page's document evidence; provenance itself never stores names. */
+  documentDisplayNames?: {
+    documentNames: Record<string, string>
+    documentVersionNumbers: Record<string, number>
+  }
 }
 
 type KnowledgeBuildWorkflowStep = "index" | "generate" | "conflicts" | "review" | "publish"
@@ -1156,7 +1161,7 @@ function KnowledgeDraftPreview({
     return () => controller.abort()
   }, [category, draftId, page, query, reload, scope])
 
-  const entries = preview?.entries.map(toKnowledgeDisplayEntry) ?? []
+  const entries = preview?.entries.map((entry) => toKnowledgeDisplayEntry(entry, preview.documentDisplayNames)) ?? []
   const showingStart = preview && preview.total > 0 ? (preview.page - 1) * preview.pageSize + 1 : 0
   const showingEnd = preview ? Math.min(preview.page * preview.pageSize, preview.total) : 0
 
@@ -1338,6 +1343,7 @@ function KnowledgeDraftPreview({
 
 function toKnowledgeDisplayEntry(
   entry: KnowledgeDraftPreviewPage["entries"][number],
+  documentDisplayNames?: KnowledgeDraftPreviewPage["documentDisplayNames"],
 ): KnowledgeDisplayEntry {
   const summary = knowledgeDraftPreviewSummary(entry)
 
@@ -1354,7 +1360,15 @@ function toKnowledgeDisplayEntry(
     meta: summary.meta,
     searchText: "",
     details: entry.fields,
-    evidenceItems: entry.evidence,
+    evidenceItems: entry.evidence.map((item) => ({
+      ...item,
+      ...(item.sourceDocumentId && documentDisplayNames?.documentNames[item.sourceDocumentId]
+        ? { documentName: documentDisplayNames.documentNames[item.sourceDocumentId] }
+        : {}),
+      ...(item.sourceDocumentVersionId && documentDisplayNames?.documentVersionNumbers[item.sourceDocumentVersionId] != null
+        ? { documentVersionNumber: documentDisplayNames.documentVersionNumbers[item.sourceDocumentVersionId] }
+        : {}),
+    })),
   }
 }
 

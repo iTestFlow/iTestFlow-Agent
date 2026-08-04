@@ -108,6 +108,43 @@ describe("validateDocumentUpload", () => {
     ).rejects.toMatchObject({ code: "unsupported_format" } satisfies Partial<DocumentParseError>);
   });
 
+  it("rejects a ZIP entry via the per-entry uncompressed-size cap before any parser opens the archive", async () => {
+    const zip = new JSZip();
+    zip.file("xl/worksheets/sheet1.xml", new Uint8Array(1_024), { compression: "STORE" });
+    const bytes = await zip.generateAsync({ type: "uint8array" });
+
+    await expect(
+      validateDocumentUpload({
+        fileName: "big-entry.xlsx",
+        data: bytes,
+        declaredMimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        zipSizeLimits: { maxEntryUncompressedBytes: 512 },
+      }),
+    ).rejects.toMatchObject({
+      code: "oversized",
+      message: expect.stringMatching(/entry exceeds the uncompressed-size/i),
+    } satisfies Partial<DocumentParseError>);
+  });
+
+  it("rejects a ZIP whose entries sum past the total uncompressed-size cap before any parser opens the archive", async () => {
+    const zip = new JSZip();
+    zip.file("xl/worksheets/sheet1.xml", new Uint8Array(1_000), { compression: "STORE" });
+    zip.file("xl/worksheets/sheet2.xml", new Uint8Array(1_000), { compression: "STORE" });
+    const bytes = await zip.generateAsync({ type: "uint8array" });
+
+    await expect(
+      validateDocumentUpload({
+        fileName: "big-total.xlsx",
+        data: bytes,
+        declaredMimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        zipSizeLimits: { maxTotalUncompressedBytes: 1_500 },
+      }),
+    ).rejects.toMatchObject({
+      code: "oversized",
+      message: expect.stringMatching(/total uncompressed-size/i),
+    } satisfies Partial<DocumentParseError>);
+  });
+
   it("rejects an OLE-compound (password-protected) Office document before any ZIP bytes are read", async () => {
     await expect(
       validateDocumentUpload({

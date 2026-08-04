@@ -114,6 +114,7 @@ describe("Documents panel", () => {
     expect(screen.getByRole("link", { name: "Download Architecture notes" })).toBeTruthy()
     expect(screen.queryByRole("button", { name: /upload documents/i })).toBeNull()
     expect(screen.queryByRole("button", { name: "Archive Architecture notes" })).toBeNull()
+    expect(screen.getByText(/Ask a workspace owner or admin to manage documents from the Build Knowledge tab/)).toBeTruthy()
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/api/context/documents?scope=")
   })

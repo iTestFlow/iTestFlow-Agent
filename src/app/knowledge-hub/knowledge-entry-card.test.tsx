@@ -327,6 +327,40 @@ describe("KnowledgeEntryCard", () => {
     expect(screen.queryByText(/Fifth evidence group\./)).toBeNull()
   })
 
+  it("renders resolved document display names instead of raw ids, falling back when a document is unknown", async () => {
+    const user = userEvent.setup()
+    const entry = knowledgeEntry({
+      sourceWorkItemIds: [],
+      evidenceItems: [
+        {
+          sourceKind: "document",
+          sourceDocumentId: "018f1111-aaaa-7000-8000-000000000001",
+          sourceDocumentVersionId: "018f2222-aaaa-7000-8000-000000000002",
+          documentName: "Payment Gateway Spec",
+          documentVersionNumber: 3,
+          sourceField: "content",
+          quote: "The gateway confirms payment before checkout completes.",
+        },
+        {
+          sourceKind: "document",
+          sourceDocumentId: "018f3333-aaaa-7000-8000-000000000003",
+          sourceDocumentVersionId: "018f4444-aaaa-7000-8000-000000000004",
+          sourceField: "content",
+          quote: "This document was hard-deleted after the entry was compiled.",
+        },
+      ],
+    })
+
+    render(<KnowledgeEntryCard entry={entry} />)
+    await user.click(disclosure(entry.title))
+
+    expect(screen.getByText("Payment Gateway Spec · v3")).toBeVisible()
+    expect(screen.getByText(
+      "Document 018f3333-aaaa-7000-8000-000000000003 · v018f4444-aaaa-7000-8000-000000000004",
+    )).toBeVisible()
+    expect(screen.queryByText(/018f1111-aaaa-7000-8000-000000000001/)).toBeNull()
+  })
+
   it("uses the legacy evidence fallback and bounds long source badge lists", async () => {
     const user = userEvent.setup()
     const sourceWorkItemIds = Array.from({ length: 14 }, (_, index) => String(index + 1))

@@ -844,6 +844,62 @@ export async function listProjectSourceDocumentChunks(input: {
 /** Short integration-oriented alias. */
 export const listDocumentChunks = listProjectSourceDocumentChunks;
 
+export type ProjectSourceDocumentDisplayInfo = {
+  documentNames: Map<string, string>;
+  versionNumbers: Map<string, number>;
+};
+
+/**
+ * Batch, read-time lookup of document/version display metadata.  Provenance
+ * records (see project-knowledge.schema.ts evidence refs) deliberately store
+ * only `sourceDocumentId`/`sourceDocumentVersionId` — never names, since a
+ * rename must not go stale in already-hashed provenance.  Callers resolve the
+ * current name at read time via this lookup instead.
+ */
+export async function getProjectSourceDocumentDisplayInfo(input: {
+  scope: ProjectScope;
+  documentIds: string[];
+  versionIds?: string[];
+}): Promise<ProjectSourceDocumentDisplayInfo> {
+  const scope = requireWorkspaceProjectScope(input.scope);
+  const documentIds = Array.from(new Set(input.documentIds.filter(Boolean)));
+  const versionIds = Array.from(new Set((input.versionIds ?? []).filter(Boolean)));
+
+  const [documentRows, versionRows] = await Promise.all([
+    documentIds.length
+      ? sqlAll<{ id: string; document_name: string }>(
+          `
+            SELECT id, document_name
+            FROM project_source_documents
+            WHERE workspace_id = @workspaceId
+              AND project_id = @projectId
+              AND azure_project_id = @azureProjectId
+              AND id = ANY(@documentIds::text[])
+          `,
+          { ...scopeParams(scope), documentIds },
+        )
+      : Promise.resolve([]),
+    versionIds.length
+      ? sqlAll<{ id: string; version_number: number }>(
+          `
+            SELECT id, version_number
+            FROM project_source_document_versions
+            WHERE workspace_id = @workspaceId
+              AND project_id = @projectId
+              AND azure_project_id = @azureProjectId
+              AND id = ANY(@versionIds::text[])
+          `,
+          { ...scopeParams(scope), versionIds },
+        )
+      : Promise.resolve([]),
+  ]);
+
+  return {
+    documentNames: new Map(documentRows.map((row) => [row.id, row.document_name])),
+    versionNumbers: new Map(versionRows.map((row) => [row.id, row.version_number])),
+  };
+}
+
 function requireWorkspaceProjectScope(input: ProjectScope): WorkspaceProjectScope {
   const scope = assertProjectScope(input);
   const workspaceId = requiredText(scope.workspaceId, "Workspace id");

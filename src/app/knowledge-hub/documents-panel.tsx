@@ -459,7 +459,11 @@ export function DocumentsPanel({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h2 className="text-base font-semibold text-foreground">Project documents</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Upload text documents to make them available as project context after processing.</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {canManage
+              ? "Upload text documents to make them available as project context after processing."
+              : "Documents used as project context. Ask a workspace owner or admin to manage documents from the Build Knowledge tab."}
+          </p>
         </div>
         {canManage ? (
           <Button size="sm" onClick={() => setUploadOpen(true)}>
@@ -525,7 +529,7 @@ export function DocumentsPanel({
               title={search || lifecycleStatus !== "active" || parseStatus !== "all" ? "No documents match these filters" : "No project documents yet"}
               description={canManage
                 ? "Upload a PDF, Word document, spreadsheet, CSV, text file, or Markdown file to add it to this project’s context."
-                : "No documents have been uploaded to this project yet."}
+                : "No documents have been uploaded to this project yet. Ask a workspace owner or admin to manage documents from the Build Knowledge tab."}
               actionLabel={canManage ? "Upload your first document" : undefined}
               onAction={canManage ? () => setUploadOpen(true) : undefined}
               icon={FileText}

@@ -127,6 +127,35 @@ describe("document parser registry", () => {
     }
   });
 
+  it("parses DOCX table rows, including a row with empty cells", async () => {
+    const bytes = await buildDocx(
+      "<w:tbl>" +
+        "<w:tr><w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Role</w:t></w:r></w:p></w:tc></w:tr>" +
+        "<w:tr><w:tc><w:p><w:r><w:t>Ada</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Engineer</w:t></w:r></w:p></w:tc></w:tr>" +
+        "<w:tr><w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr>" +
+        "</w:tbl>",
+    );
+
+    const result = await parseDocument({ format: "docx", data: bytes });
+
+    expect(result.status).toBe("parsed");
+    const text = result.sections.map((section) => section.text).join("\n");
+    expect(text).toContain("Name");
+    expect(text).toContain("Engineer");
+  });
+
+  it("reports no extractable text for a DOCX with no paragraphs", async () => {
+    const bytes = await buildDocx("");
+
+    const result = await parseDocument({ format: "docx", data: bytes });
+
+    expect(result.status).toBe("empty");
+    expect(result.sections).toEqual([]);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "no_extractable_text" })]),
+    );
+  });
+
   it("extracts text-layer PDF pages with page locators", async () => {
     const result = await parseDocument({ format: "pdf", data: createTextPdf("Hello PDF") });
 

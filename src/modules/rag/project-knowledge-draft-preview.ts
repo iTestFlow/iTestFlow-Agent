@@ -88,6 +88,26 @@ export function buildProjectKnowledgeDraftPreview(input: {
   };
 }
 
+/**
+ * Collects the distinct document/version ids referenced by a preview page's
+ * evidence, so callers can batch-resolve display names at read time (see
+ * getProjectSourceDocumentDisplayInfo) without persisting names back into
+ * this pure, DB-free preview builder.
+ */
+export function collectProjectKnowledgeDraftPreviewDocumentIds(
+  entries: ProjectKnowledgeDraftPreviewEntry[],
+): { documentIds: string[]; versionIds: string[] } {
+  const documentIds = new Set<string>();
+  const versionIds = new Set<string>();
+  for (const entry of entries) {
+    for (const evidence of entry.evidence) {
+      if (evidence.sourceDocumentId) documentIds.add(evidence.sourceDocumentId);
+      if (evidence.sourceDocumentVersionId) versionIds.add(evidence.sourceDocumentVersionId);
+    }
+  }
+  return { documentIds: Array.from(documentIds), versionIds: Array.from(versionIds) };
+}
+
 function flattenPreviewEntries(knowledgeBase: ProjectKnowledgeBase): ProjectKnowledgeDraftPreviewEntry[] {
   return [
     ...knowledgeBase.modules.map((entry, index) => previewEntry({

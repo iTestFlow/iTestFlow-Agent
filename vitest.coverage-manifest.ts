@@ -27,6 +27,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/dashboard/my-workbench-metrics.ts",
   "src/modules/documents/document-parser-registry.ts",
   "src/modules/documents/document-upload-validation.ts",
+  "src/modules/documents/parsers/docx-document.parser.ts",
   "src/modules/documents/parsers/markdown-document.parser.ts",
   "src/modules/documents/parsers/parser-utils.ts",
   "src/modules/documents/parsers/pdf-document.parser.ts",

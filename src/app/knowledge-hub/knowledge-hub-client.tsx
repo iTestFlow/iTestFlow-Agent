@@ -188,6 +188,17 @@ type KnowledgeStatusResult = {
   snapshot: ProjectKnowledgeSnapshot | null
   generationAvailable?: boolean
   latestInReviewDraft?: KnowledgeInReviewDraft | null
+  documentDisplayNames?: KnowledgeDocumentDisplayNames
+}
+
+/**
+ * Read-time display names for document evidence, resolved server-side.
+ * Provenance never stores names (see project-knowledge.schema.ts), so this
+ * map is looked up alongside the snapshot rather than persisted with it.
+ */
+type KnowledgeDocumentDisplayNames = {
+  documentNames: Record<string, string>
+  documentVersionNumbers: Record<string, number>
 }
 
 type KnowledgeExportResult = {
@@ -270,6 +281,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeStatusLoading, setKnowledgeStatusLoading] = useState(false)
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null)
   const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<ProjectKnowledgeSnapshot | null>(null)
+  const [knowledgeDocumentDisplayNames, setKnowledgeDocumentDisplayNames] = useState<KnowledgeDocumentDisplayNames | null>(null)
   const [generationAvailable, setGenerationAvailable] = useState<boolean | null>(null)
   const [resumableDraft, setResumableDraft] = useState<KnowledgeInReviewDraft | null>(null)
   const [knowledgeExport, setKnowledgeExport] = useState<KnowledgeExportResult | null>(null)
@@ -307,10 +319,12 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       setKnowledgeSnapshot(data.snapshot)
       setGenerationAvailable(typeof data.generationAvailable === "boolean" ? data.generationAvailable : null)
       setResumableDraft(data.latestInReviewDraft ?? null)
+      setKnowledgeDocumentDisplayNames(data.documentDisplayNames ?? null)
     } catch {
       setKnowledgeSnapshot(null)
       setGenerationAvailable(null)
       setResumableDraft(null)
+      setKnowledgeDocumentDisplayNames(null)
     } finally {
       setKnowledgeStatusLoading(false)
     }
@@ -729,7 +743,10 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                         canManage={canBuildKnowledge}
                         onExport={exportKnowledgeWiki}
                       />
-                      <KnowledgeExplorer knowledgeBase={knowledgeSnapshot.knowledgeBase} />
+                      <KnowledgeExplorer
+                        knowledgeBase={knowledgeSnapshot.knowledgeBase}
+                        documentDisplayNames={knowledgeDocumentDisplayNames}
+                      />
                     </div>
                   ) : (
                     <KnowledgeEmptyState
@@ -771,9 +788,11 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                 </TabsContent>
 
                 <TabsContent value="documents" className="mt-0">
+                  {/* Documents are always view-only inside the Knowledge Hub tab, even for
+                      owners/admins: document management lives in the Build Knowledge tab. */}
                   <DocumentsPanel
                     scope={scope}
-                    canManage={canBuildKnowledge}
+                    canManage={false}
                     onCountChange={setDocumentCount}
                   />
                 </TabsContent>
@@ -786,6 +805,18 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         <TabsContent value="build" className="space-y-4">
           {scope ? (
             <>
+              <Card className="qa-card">
+                <CardHeader>
+                  <CardTitle className="text-base" role="heading" aria-level={2}>Project Documents</CardTitle>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    Upload and manage the source documents that feed knowledge builds.
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  <DocumentsPanel scope={scope} canManage onCountChange={setDocumentCount} />
+                </CardContent>
+              </Card>
+
               <KnowledgeBuild
                 key={`${scope.workspaceId ?? "workspace"}:${scope.projectId}`}
                 scope={scope}
@@ -1354,10 +1385,12 @@ export function KnowledgeExportControls({
 
 export function KnowledgeExplorer({
   knowledgeBase,
+  documentDisplayNames = null,
   compact = false,
   highlightedEntryIdentities = NO_HIGHLIGHTED_KNOWLEDGE_ENTRIES,
 }: {
   knowledgeBase: ProjectKnowledgeBase
+  documentDisplayNames?: KnowledgeDocumentDisplayNames | null
   compact?: boolean
   highlightedEntryIdentities?: string[]
 }) {
@@ -1365,7 +1398,10 @@ export function KnowledgeExplorer({
   const [query, setQuery] = useState("")
   const [page, setPage] = useState(1)
   const scrollRegionRef = useRef<HTMLDivElement | null>(null)
-  const entries = useMemo(() => flattenKnowledgeEntries(knowledgeBase), [knowledgeBase])
+  const entries = useMemo(
+    () => flattenKnowledgeEntries(knowledgeBase, documentDisplayNames),
+    [knowledgeBase, documentDisplayNames],
+  )
   const counts = useMemo(() => getKnowledgeCategoryCounts(knowledgeBase), [knowledgeBase])
   const deferredQuery = useDeferredValue(query)
   const normalizedQuery = normalizeSearch(deferredQuery)
@@ -1559,7 +1595,10 @@ function KnowledgeEmptyState({
   )
 }
 
-function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): KnowledgeExplorerEntry[] {
+function flattenKnowledgeEntries(
+  knowledgeBase: ProjectKnowledgeBase,
+  documentDisplayNames: KnowledgeDocumentDisplayNames | null = null,
+): KnowledgeExplorerEntry[] {
   return KNOWLEDGE_CATEGORIES.flatMap((category) => {
     const items = knowledgeBase[category.key] as AnyKnowledgeItem[]
     return items.map((item, index) => {
@@ -1572,6 +1611,12 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
         ...(evidence.sourceWorkItemId ? { sourceWorkItemId: evidence.sourceWorkItemId } : {}),
         ...(evidence.sourceDocumentId ? { sourceDocumentId: evidence.sourceDocumentId } : {}),
         ...(evidence.sourceDocumentVersionId ? { sourceDocumentVersionId: evidence.sourceDocumentVersionId } : {}),
+        ...(evidence.sourceDocumentId && documentDisplayNames?.documentNames[evidence.sourceDocumentId]
+          ? { documentName: documentDisplayNames.documentNames[evidence.sourceDocumentId] }
+          : {}),
+        ...(evidence.sourceDocumentVersionId && documentDisplayNames?.documentVersionNumbers[evidence.sourceDocumentVersionId] != null
+          ? { documentVersionNumber: documentDisplayNames.documentVersionNumbers[evidence.sourceDocumentVersionId] }
+          : {}),
         sourceField: evidence.sourceField,
         quote: evidence.quote,
       }))

@@ -24,6 +24,9 @@ type KnowledgeEvidenceItem = {
   sourceWorkItemId?: string
   sourceDocumentId?: string
   sourceDocumentVersionId?: string
+  /** Resolved at read time by the caller; never persisted into provenance. */
+  documentName?: string
+  documentVersionNumber?: number
   sourceField: string
   quote: string
 }
@@ -443,6 +446,12 @@ function groupEvidenceItems(items: KnowledgeEvidenceItem[]): KnowledgeEvidenceGr
 
 function evidenceSourceLabel(item: KnowledgeEvidenceItem) {
   if (item.sourceKind === "document" || item.sourceDocumentId) {
+    if (item.documentName) {
+      const version = item.documentVersionNumber != null ? ` · v${item.documentVersionNumber}` : ""
+      return `${item.documentName}${version}`
+    }
+    // Fallback for a hard-deleted or otherwise unresolvable document: keep
+    // the id-based label rather than hiding the citation.
     const version = item.sourceDocumentVersionId ? ` · v${item.sourceDocumentVersionId}` : ""
     return `Document ${item.sourceDocumentId ?? "unknown"}${version}`
   }

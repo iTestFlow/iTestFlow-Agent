@@ -88,6 +88,7 @@ import {
 } from "./project-knowledge.schema";
 import {
   buildProjectKnowledgeDraftPreview,
+  collectProjectKnowledgeDraftPreviewDocumentIds,
   type ProjectKnowledgeDraftPreviewCategory,
 } from "./project-knowledge-draft-preview";
 import {
@@ -95,6 +96,7 @@ import {
   omitUnsupportedProjectKnowledgeEntries,
 } from "./project-knowledge-grounding";
 import { isCompatibleProjectKnowledgeParaphrase } from "./project-knowledge-wording-carryover";
+import { getProjectSourceDocumentDisplayInfo } from "@/modules/documents/project-source-documents.service";
 
 type DraftRow = {
   id: string;
@@ -1083,7 +1085,7 @@ export async function getProjectKnowledgeDraftPreview(input: {
   if (draft.persistedStatus !== "ready_to_publish" || !draft.proposedKnowledge) {
     throw draftStateConflict(draft.persistedStatus);
   }
-  return buildProjectKnowledgeDraftPreview({
+  const preview = buildProjectKnowledgeDraftPreview({
     draftId: draft.id,
     draftVersion: projectKnowledgeDraftVersion(draft),
     status: draft.persistedStatus,
@@ -1093,6 +1095,22 @@ export async function getProjectKnowledgeDraftPreview(input: {
     page: input.page,
     pageSize: input.pageSize,
   });
+  // Provenance evidence refs deliberately store only ids (see
+  // project-knowledge.schema.ts) -- resolve display names for this page's
+  // evidence at read time rather than persisting them into the draft.
+  const { documentIds, versionIds } = collectProjectKnowledgeDraftPreviewDocumentIds(preview.entries);
+  const { documentNames, versionNumbers } = await getProjectSourceDocumentDisplayInfo({
+    scope: input.scope,
+    documentIds,
+    versionIds,
+  });
+  return {
+    ...preview,
+    documentDisplayNames: {
+      documentNames: Object.fromEntries(documentNames),
+      documentVersionNumbers: Object.fromEntries(versionNumbers),
+    },
+  };
 }
 
 export async function applyProjectKnowledgeConflictDecisions(input: {

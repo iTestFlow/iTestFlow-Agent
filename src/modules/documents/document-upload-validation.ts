@@ -52,6 +52,12 @@ export type ZipArchiveInspection = {
   entries: ZipArchiveEntry[];
 };
 
+/** Test-only override for the two byte-size ZIP caps below; production callers never set this and get the module constants. */
+export type ZipSizeLimitsOverride = {
+  maxEntryUncompressedBytes?: number;
+  maxTotalUncompressedBytes?: number;
+};
+
 export type DocumentUploadValidationInput = {
   fileName: string;
   data: Uint8Array;
@@ -59,6 +65,8 @@ export type DocumentUploadValidationInput = {
   declaredMimeType?: string | null;
   /** Useful for a Content-Length pre-check and streamed-byte counter. */
   maxUploadBytes?: number;
+  /** Test-only: lets tests trip the per-entry/total uncompressed-size caps without multi-MB fixtures. */
+  zipSizeLimits?: ZipSizeLimitsOverride;
 };
 
 export type ValidatedDocumentUpload = {
@@ -129,7 +137,7 @@ export async function validateDocumentUpload(input: DocumentUploadValidationInpu
       break;
     case "docx":
     case "xlsx":
-      zipArchive = inspectZipArchive(input.data);
+      zipArchive = inspectZipArchive(input.data, input.zipSizeLimits);
       assertOfficePackageMatchesFormat(format, zipArchive);
       break;
     case "csv":
@@ -169,7 +177,9 @@ export function documentFormatFromFileName(fileName: string): DocumentFormat {
  * SheetJS receive data only after this guard rejects encryption, traversal,
  * excessive entry counts, expansion size, and suspicious compression ratios.
  */
-export function inspectZipArchive(data: Uint8Array): ZipArchiveInspection {
+export function inspectZipArchive(data: Uint8Array, limits: ZipSizeLimitsOverride = {}): ZipArchiveInspection {
+  const maxEntryUncompressedBytes = limits.maxEntryUncompressedBytes ?? MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES;
+  const maxTotalUncompressedBytes = limits.maxTotalUncompressedBytes ?? MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES;
   const end = findEndOfCentralDirectory(data);
   const diskNumber = readUint16LE(data, end + 4);
   const centralDirectoryDisk = readUint16LE(data, end + 6);
@@ -229,7 +239,7 @@ export function inspectZipArchive(data: Uint8Array): ZipArchiveInspection {
     if (compressionMethod !== 0 && compressionMethod !== 8) {
       throw zipCorrupted("The Office archive uses an unsupported compression method.");
     }
-    if (uncompressedSize > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
+    if (uncompressedSize > maxEntryUncompressedBytes) {
       throw new DocumentParseError({
         code: "oversized",
         message: "An Office archive entry exceeds the uncompressed-size safety limit.",
@@ -255,7 +265,7 @@ export function inspectZipArchive(data: Uint8Array): ZipArchiveInspection {
 
     totalCompressedBytes += compressedSize;
     totalUncompressedBytes += uncompressedSize;
-    if (totalUncompressedBytes > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+    if (totalUncompressedBytes > maxTotalUncompressedBytes) {
       throw new DocumentParseError({
         code: "oversized",
         message: "The Office archive exceeds the total uncompressed-size safety limit.",
