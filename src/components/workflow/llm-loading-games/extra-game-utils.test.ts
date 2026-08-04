@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   advanceSnake,
   createMemoryDeck,
+  createNumberFlipDeck,
   createOddTilePuzzle,
   createPatternSequence,
   createSnakeGameState,
@@ -27,6 +28,22 @@ describe("Memory Match", () => {
     expect(deck).toHaveLength(pairCount * 2);
     expect(counts.size).toBe(pairCount);
     expect([...counts.values()].every((count) => count === 2)).toBe(true);
+  });
+});
+
+describe("Number Flip", () => {
+  it.each([6, 9, 12])("creates a shuffled permutation of 1 through %i", (count) => {
+    const deck = createNumberFlipDeck(count, 3, () => 0.4);
+
+    expect(deck).toHaveLength(count);
+    expect(new Set(deck)).toHaveLength(count);
+    expect([...deck].sort((left, right) => left - right)).toEqual(
+      Array.from({ length: count }, (_, index) => index + 1),
+    );
+  });
+
+  it("uses the variant index as a deterministic layout salt", () => {
+    expect(createNumberFlipDeck(6, 0, () => 0)).not.toEqual(createNumberFlipDeck(6, 1, () => 0));
   });
 });
 

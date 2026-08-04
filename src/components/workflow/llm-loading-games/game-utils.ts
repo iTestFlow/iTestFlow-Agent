@@ -10,6 +10,7 @@ export type LoadingGameName =
   | "zip"
   | "pipe"
   | "memory"
+  | "number-flip"
   | "lights"
   | "odd"
   | "sequence"

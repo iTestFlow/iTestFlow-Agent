@@ -20,6 +20,22 @@ import {
 import { LOADING_GAME_DEFINITIONS, LOADING_GAME_NAMES } from "./game-definitions";
 
 describe("fair random selection", () => {
+  it("registers Number Flip with its numbered sequence metadata", () => {
+    expect(LOADING_GAME_NAMES).toContain("number-flip");
+    expect(LOADING_GAME_DEFINITIONS["number-flip"]).toEqual({
+      title: "Number Flip",
+      instructions: "Find 1, then 2, then 3… One wrong flip hides every card and restarts the sequence.",
+      variantCount: 8,
+      modifiers: [
+        { id: "quick-six", label: "Quick Six", description: "Find 1 through 6 on a compact 3×2 board." },
+        { id: "classic-nine", label: "Classic Nine", description: "Find 1 through 9 on the classic 3×3 board." },
+        { id: "full-twelve", label: "Full Twelve", description: "Find 1 through 12 on a larger 4×3 board." },
+        { id: "preview", label: "Preview First", description: "Study all nine numbers before hiding the board to begin." },
+        { id: "peek", label: "One Peek", description: "Use one brief reveal of all nine numbers." },
+      ],
+    });
+  });
+
   it("draws every option before refilling and avoids immediate repeats", () => {
     const items = LOADING_GAME_NAMES;
     let bag: Array<(typeof items)[number]> = [];
