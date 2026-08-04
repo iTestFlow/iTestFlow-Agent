@@ -159,7 +159,14 @@ type KnowledgeDraftPreviewPage = {
     title: string
     fields: Array<{ id: string; label: string; value: string }>
     sourceWorkItemIds: string[]
-    evidence: Array<{ sourceWorkItemId: string; sourceField: string; quote: string }>
+    evidence: Array<{
+      sourceKind: "work_item" | "document"
+      sourceWorkItemId?: string
+      sourceDocumentId?: string
+      sourceDocumentVersionId?: string
+      sourceField: string
+      quote: string
+    }>
   }>
 }
 
@@ -274,11 +281,7 @@ export function KnowledgeBuild({
     externalLlmAvailability.enabled,
     generationMode,
     manualDraft,
-    scope.azureOrganizationUrl,
-    scope.azureProjectId,
-    scope.azureProjectName,
-    scope.projectId,
-    scope.workspaceId,
+    scope,
   ])
 
   const storageKey = `itestflow.project-knowledge-job.${scope.workspaceId ?? "workspace"}.${scope.projectId}`

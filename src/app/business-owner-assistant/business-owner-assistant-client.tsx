@@ -1069,7 +1069,9 @@ function SourceCard({
 }) {
   const workItemIds = citation.sourceType === "project_context"
     ? [citation.workItemId]
-    : citation.sourceWorkItemIds;
+    : citation.sourceType === "project_knowledge"
+      ? citation.sourceWorkItemIds
+      : [];
 
   return (
     <article className={cn("rounded-xl border bg-muted/20 p-4", highlighted && "border-primary/50 bg-primary/5 ring-1 ring-primary/20")}>
@@ -1078,11 +1080,25 @@ function SourceCard({
           <span className="truncate">{citation.sourceId}</span>
         </Badge>
         <Badge variant="secondary">
-          {citation.sourceType === "project_context" ? citation.workItemType : citation.category.replaceAll("_", " ")}
+          {citation.sourceType === "project_context"
+            ? citation.workItemType
+            : citation.sourceType === "project_knowledge"
+              ? citation.category.replaceAll("_", " ")
+              : "Document"}
         </Badge>
+        {citation.sourceType === "uploaded_document" && citation.pageNumber ? (
+          <Badge variant="outline">Page {citation.pageNumber}</Badge>
+        ) : null}
+        {citation.sourceType === "uploaded_document" && citation.section ? (
+          <Badge variant="outline" className="max-w-full truncate">{citation.section}</Badge>
+        ) : null}
       </div>
       <h3 className="mt-3 text-sm font-semibold leading-5 text-foreground">{citation.title}</h3>
-      {workItemIds.length ? (
+      {citation.sourceType === "uploaded_document" ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {citation.documentName}{citation.section ? ` · ${citation.section}` : ""}
+        </p>
+      ) : workItemIds.length ? (
         <div className="mt-3 flex flex-wrap gap-2">
           {workItemIds.map((workItemId) => (
             <Button key={workItemId} variant="outline" className="h-11" asChild>

@@ -4,13 +4,12 @@ import { z } from "zod";
 import {
   PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS,
   ProjectKnowledgeBaseSchema,
-  ProjectKnowledgeEvidenceRefSchema,
   sortProjectKnowledgeEvidenceRefs,
   type ProjectKnowledgeBase,
   type ProjectKnowledgeEvidenceRef,
 } from "./project-knowledge.schema";
 
-export const PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION = "4.2.0";
+export const PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION = "5.0.0";
 export const PROJECT_KNOWLEDGE_WORDING_VERSION = "4.0.0";
 export const PROJECT_KNOWLEDGE_SEMANTIC_HASH_VERSION = "semantic-v2";
 export const PROJECT_KNOWLEDGE_PROVENANCE_HASH_VERSION = "provenance-v2";
@@ -34,7 +33,9 @@ export const PROJECT_KNOWLEDGE_DRAFT_STATUSES = [
 export type ProjectKnowledgeDraftStatus = (typeof PROJECT_KNOWLEDGE_DRAFT_STATUSES)[number];
 export type ProjectKnowledgeDraftDisplayStatus = ProjectKnowledgeDraftStatus | "compiling";
 
-export const ProjectKnowledgeSourceManifestEntrySchema = z.object({
+const ProjectKnowledgeWorkItemSourceManifestEntrySchema = z.object({
+  // Defaults keep pre-M2 persisted manifests readable until their next build.
+  sourceKind: z.preprocess((value) => value ?? "work_item", z.literal("work_item").optional()),
   sourceSnapshotId: z.string().trim().min(1),
   sourceWorkItemId: z.string().trim().min(1),
   workItemType: z.string().trim().min(1),
@@ -44,7 +45,29 @@ export const ProjectKnowledgeSourceManifestEntrySchema = z.object({
   capturedAt: z.string().min(1),
 });
 
+const ProjectKnowledgeDocumentSourceManifestEntrySchema = z.object({
+  sourceKind: z.literal("document"),
+  sourceDocumentId: z.string().trim().min(1),
+  sourceDocumentVersionId: z.string().trim().min(1),
+  documentName: z.string().trim().min(1),
+  documentKind: z.enum(["document", "image"]).optional(),
+  fileFormat: z.string().trim().min(1).optional(),
+  contentHash: z.string().trim().min(1),
+  capturedAt: z.string().min(1),
+});
+
+export const ProjectKnowledgeSourceManifestEntrySchema = z.union([
+  ProjectKnowledgeWorkItemSourceManifestEntrySchema,
+  ProjectKnowledgeDocumentSourceManifestEntrySchema,
+]);
+
 export type ProjectKnowledgeSourceManifestEntry = z.infer<typeof ProjectKnowledgeSourceManifestEntrySchema>;
+
+export function isProjectKnowledgeDocumentSourceManifestEntry(
+  entry: ProjectKnowledgeSourceManifestEntry,
+): entry is Extract<ProjectKnowledgeSourceManifestEntry, { sourceKind: "document" }> {
+  return entry.sourceKind === "document";
+}
 
 export const ProjectKnowledgeSourceManifestSchema = z
   .array(ProjectKnowledgeSourceManifestEntrySchema)
@@ -271,7 +294,23 @@ export function buildEntryProvenanceProjection(entry: {
 }
 
 export function canonicalEvidenceRefProjection(ref: ProjectKnowledgeEvidenceRef) {
-  return ProjectKnowledgeEvidenceRefSchema.parse({
+  if (ref.sourceKind === "document") {
+    // Document evidence is new in M2: its projection shape is free to define.
+    return {
+      sourceKind: "document" as const,
+      sourceDocumentId: ref.sourceDocumentId,
+      sourceDocumentVersionId: ref.sourceDocumentVersionId,
+      sourceField: ref.sourceField,
+      quote: normalizeEvidenceQuote(ref.quote),
+      locator: ref.locator ? canonicalizeJsonValue(ref.locator) : undefined,
+      origin: ref.origin,
+      verification: ref.verification,
+    };
+  }
+  // Byte-identical to the pre-M2 projection: work-item entry_provenance_hash values
+  // already persisted in project_knowledge_entry_versions must not shift on this
+  // deploy, so this branch never gains a sourceKind key or any other new field.
+  return {
     sourceSnapshotId: ref.sourceSnapshotId,
     sourceWorkItemId: ref.sourceWorkItemId,
     sourceField: ref.sourceField,
@@ -279,7 +318,7 @@ export function canonicalEvidenceRefProjection(ref: ProjectKnowledgeEvidenceRef)
     locator: ref.locator ? canonicalizeJsonValue(ref.locator) : undefined,
     origin: ref.origin,
     verification: ref.verification,
-  });
+  };
 }
 
 export function getEntryProvenanceStatus(refs: ProjectKnowledgeEvidenceRef[]) {
@@ -295,8 +334,15 @@ export function sortProjectKnowledgeSourceManifest(
 ) {
   return [...manifest].sort(
     (first, second) =>
-      compareProjectKnowledgeCanonicalText(first.sourceWorkItemId, second.sourceWorkItemId) ||
-      compareProjectKnowledgeCanonicalText(first.sourceSnapshotId, second.sourceSnapshotId),
+      compareProjectKnowledgeCanonicalText(projectKnowledgeManifestSourceKind(first), projectKnowledgeManifestSourceKind(second)) ||
+      compareProjectKnowledgeCanonicalText(
+        isProjectKnowledgeDocumentSourceManifestEntry(first) ? first.sourceDocumentId : first.sourceWorkItemId,
+        isProjectKnowledgeDocumentSourceManifestEntry(second) ? second.sourceDocumentId : second.sourceWorkItemId,
+      ) ||
+      compareProjectKnowledgeCanonicalText(
+        isProjectKnowledgeDocumentSourceManifestEntry(first) ? first.sourceDocumentVersionId : first.sourceSnapshotId,
+        isProjectKnowledgeDocumentSourceManifestEntry(second) ? second.sourceDocumentVersionId : second.sourceSnapshotId,
+      ),
   );
 }
 
@@ -304,14 +350,26 @@ export function computeProjectKnowledgeSourceFingerprint(
   manifest: ProjectKnowledgeSourceManifestEntry[],
 ) {
   return hashCanonicalValue(
-    sortProjectKnowledgeSourceManifest(manifest).map((entry) => ({
-      sourceSnapshotId: entry.sourceSnapshotId,
-      sourceWorkItemId: entry.sourceWorkItemId,
-      workItemType: entry.workItemType,
-      contentHash: entry.contentHash,
-      adoRevision: entry.adoRevision ?? null,
-    })),
+    sortProjectKnowledgeSourceManifest(manifest).map((entry) => isProjectKnowledgeDocumentSourceManifestEntry(entry)
+      ? {
+          sourceKind: "document",
+          sourceDocumentVersionId: entry.sourceDocumentVersionId,
+          contentHash: entry.contentHash,
+        }
+      // Byte-identical to the pre-M2 fingerprint entry: work-item source_fingerprint
+      // values already persisted on project_knowledge_base must not shift here.
+      : {
+          sourceSnapshotId: entry.sourceSnapshotId,
+          sourceWorkItemId: entry.sourceWorkItemId,
+          workItemType: entry.workItemType,
+          contentHash: entry.contentHash,
+          adoRevision: entry.adoRevision ?? null,
+        }),
   );
+}
+
+function projectKnowledgeManifestSourceKind(entry: ProjectKnowledgeSourceManifestEntry) {
+  return isProjectKnowledgeDocumentSourceManifestEntry(entry) ? "document" : "work_item";
 }
 
 export function displayProjectKnowledgeDraftStatus(

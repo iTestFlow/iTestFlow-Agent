@@ -315,15 +315,18 @@ export async function recordProjectKnowledgeRevision(input: {
     }, client);
 
     for (const [sortOrder, ref] of entry.evidenceRefs.entries()) {
+      const sourceKind = ref.sourceKind === "document" ? "document" : "work_item";
       await sqlRun(
         `
           INSERT INTO project_knowledge_entry_evidence_refs (
             id, workspace_id, project_id, azure_project_id, entry_version_id,
-            source_snapshot_id, source_work_item_id, source_field, quote,
+            source_kind, source_snapshot_id, source_work_item_id,
+            source_document_id, source_document_version_id, source_field, quote,
             locator_json, origin, verification, sort_order, created_at
           ) VALUES (
             @id, (SELECT workspace_id FROM projects WHERE id = @projectId), @projectId, @azureProjectId, @entryVersionId,
-            @sourceSnapshotId, @sourceWorkItemId, @sourceField, @quote,
+            @sourceKind, @sourceSnapshotId, @sourceWorkItemId,
+            @sourceDocumentId, @sourceDocumentVersionId, @sourceField, @quote,
             @locatorJson, @origin, @verification, @sortOrder, @createdAt
           )
         `,
@@ -332,8 +335,11 @@ export async function recordProjectKnowledgeRevision(input: {
           projectId: scope.projectId,
           azureProjectId: scope.azureProjectId,
           entryVersionId: id,
-          sourceSnapshotId: ref.sourceSnapshotId,
-          sourceWorkItemId: ref.sourceWorkItemId,
+          sourceKind,
+          sourceSnapshotId: sourceKind === "work_item" ? ref.sourceSnapshotId ?? null : null,
+          sourceWorkItemId: sourceKind === "work_item" ? ref.sourceWorkItemId ?? null : null,
+          sourceDocumentId: sourceKind === "document" ? ref.sourceDocumentId ?? null : null,
+          sourceDocumentVersionId: sourceKind === "document" ? ref.sourceDocumentVersionId ?? null : null,
           sourceField: ref.sourceField,
           quote: ref.quote,
           locatorJson: ref.locator ? JSON.stringify(ref.locator) : null,
@@ -1386,7 +1392,8 @@ function flattenProjectKnowledge(knowledgeBase: ProjectKnowledgeBase): Knowledge
     const evidenceRefs = item.evidenceRefs ?? [];
     return {
       sourceWorkItemIds: evidenceRefs.length
-        ? Array.from(new Set(evidenceRefs.map((ref) => ref.sourceWorkItemId)))
+        ? Array.from(new Set(evidenceRefs.flatMap((ref) =>
+          ref.sourceKind !== "document" && ref.sourceWorkItemId ? [ref.sourceWorkItemId] : [])))
         : item.sourceWorkItemIds,
       evidence: evidenceRefs.length ? renderProjectKnowledgeEvidenceRefs(evidenceRefs) : item.evidence,
       evidenceRefs,

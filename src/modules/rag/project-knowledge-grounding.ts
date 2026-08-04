@@ -89,11 +89,37 @@ export const ProjectKnowledgeGeneratedBaseSchema = z.object({
 export type ProjectKnowledgeGeneratedBase = z.infer<typeof ProjectKnowledgeGeneratedBaseSchema>;
 
 export type ProjectKnowledgeCitationSource = {
+  kind: "work_item";
   handle: string;
   sourceSnapshotId: string;
   sourceWorkItemId: string;
   sourceField: ProjectKnowledgeEvidenceRef["sourceField"];
   text: string;
+} | {
+  kind: "document";
+  handle: string;
+  sourceDocumentId: string;
+  sourceDocumentVersionId: string;
+  documentName: string;
+  documentType?: string;
+  sourceField: "documentContent";
+  text: string;
+  locator: Record<string, unknown>;
+  verification: ProjectKnowledgeEvidenceRef["verification"];
+};
+
+export type ProjectSourceDocumentCitationChunk = {
+  id: string;
+  sourceDocumentId: string;
+  sourceDocumentVersionId: string;
+  documentName: string;
+  documentType?: string;
+  section?: string | null;
+  pageNumber?: number | null;
+  content: string;
+  metadata?: Record<string, unknown>;
+  /** Image/OCR sources may carry this forward to preserve the review gate. */
+  verification?: ProjectKnowledgeEvidenceRef["verification"];
 };
 
 export type ProjectKnowledgeGroundingOmission = {
@@ -137,6 +163,22 @@ export function projectKnowledgeCitationHandle(
   return `cite_${digest}`;
 }
 
+/**
+ * Deliberately does not share the work-item hash payload. The explicit docref
+ * namespace makes a document version/chunk handle collision impossible even if
+ * ids happen to resemble Azure DevOps snapshot ids.
+ */
+export function projectSourceDocumentCitationHandle(
+  sourceDocumentVersionId: string,
+  chunkId: string,
+) {
+  const digest = createHash("sha256")
+    .update(`docref\u0000${sourceDocumentVersionId}\u0000${chunkId}`)
+    .digest("base64url")
+    .slice(0, 20);
+  return `cite_${digest}`;
+}
+
 export function buildProjectKnowledgeCitationSources(input: Array<{
   id: string;
   sourceSnapshotId: string;
@@ -149,8 +191,8 @@ export function buildProjectKnowledgeCitationSources(input: Array<{
   areaPath?: string;
   iterationPath?: string;
   updatedDate?: string;
-}>) {
-  return input.flatMap<ProjectKnowledgeCitationSource>((item) => {
+}>): Extract<ProjectKnowledgeCitationSource, { kind: "work_item" }>[] {
+  return input.flatMap<Extract<ProjectKnowledgeCitationSource, { kind: "work_item" }>>((item) => {
     const fields: Record<ProjectKnowledgeEvidenceRef["sourceField"], unknown> = {
       title: item.title,
       description: item.description,
@@ -160,10 +202,14 @@ export function buildProjectKnowledgeCitationSources(input: Array<{
       areaPath: item.areaPath,
       iterationPath: item.iterationPath,
       metadata: undefined,
+      documentContent: undefined,
     };
-    return PROJECT_KNOWLEDGE_SOURCE_FIELDS.filter((sourceField) => sourceField !== "metadata").flatMap((sourceField) => {
+    return PROJECT_KNOWLEDGE_SOURCE_FIELDS
+      .filter((sourceField) => sourceField !== "metadata" && sourceField !== "documentContent")
+      .flatMap((sourceField) => {
       const text = projectKnowledgeCanonicalSourceText(fields[sourceField], sourceField);
       return text ? [{
+        kind: "work_item" as const,
         handle: projectKnowledgeCitationHandle(item.sourceSnapshotId, sourceField),
         sourceSnapshotId: item.sourceSnapshotId,
         sourceWorkItemId: item.id,
@@ -171,6 +217,37 @@ export function buildProjectKnowledgeCitationSources(input: Array<{
         text,
       }] : [];
     });
+  });
+}
+
+/**
+ * Build document citations as a sibling path so the established Azure DevOps
+ * handle calculation and field projection stay byte-for-byte untouched.
+ */
+export function buildProjectSourceDocumentCitationSources(
+  chunks: ProjectSourceDocumentCitationChunk[],
+): Extract<ProjectKnowledgeCitationSource, { kind: "document" }>[] {
+  return chunks.flatMap((chunk) => {
+    const text = projectKnowledgeCanonicalSourceText(chunk.content, "documentContent");
+    if (!text) return [];
+    return [{
+      kind: "document" as const,
+      handle: projectSourceDocumentCitationHandle(chunk.sourceDocumentVersionId, chunk.id),
+      sourceDocumentId: chunk.sourceDocumentId,
+      sourceDocumentVersionId: chunk.sourceDocumentVersionId,
+      documentName: chunk.documentName,
+      ...(chunk.documentType ? { documentType: chunk.documentType } : {}),
+      sourceField: "documentContent" as const,
+      text,
+      locator: {
+        documentChunkId: chunk.id,
+        documentName: chunk.documentName,
+        ...(chunk.section ? { section: chunk.section } : {}),
+        ...(typeof chunk.pageNumber === "number" ? { pageNumber: chunk.pageNumber } : {}),
+        ...(chunk.metadata && Object.keys(chunk.metadata).length ? { metadata: chunk.metadata } : {}),
+      },
+      verification: chunk.verification ?? "exact",
+    }];
   });
 }
 
@@ -208,23 +285,44 @@ export function groundGeneratedProjectKnowledge(input: {
         reasons.push(citation.quote.trim() ? "quote_not_found" : "missing_quote");
         return [];
       }
+      const locator = {
+        ...(source.kind === "document" ? source.locator : {}),
+        projectionVersion: PROJECT_KNOWLEDGE_SOURCE_PROJECTION_VERSION,
+        citationHandle: source.handle,
+        start: match.start,
+        end: match.end,
+      };
+      if (source.kind === "document") {
+        return [{
+          sourceKind: "document" as const,
+          sourceDocumentId: source.sourceDocumentId,
+          sourceDocumentVersionId: source.sourceDocumentVersionId,
+          sourceField: source.sourceField,
+          quote: match.quote,
+          locator,
+          origin: "generated_v4" as const,
+          verification: source.verification === "unverified" ? "unverified" as const : match.verification,
+        }];
+      }
       return [{
+        sourceKind: "work_item" as const,
         sourceSnapshotId: source.sourceSnapshotId,
         sourceWorkItemId: source.sourceWorkItemId,
         sourceField: source.sourceField,
         quote: match.quote,
-        locator: {
-          projectionVersion: PROJECT_KNOWLEDGE_SOURCE_PROJECTION_VERSION,
-          citationHandle: source.handle,
-          start: match.start,
-          end: match.end,
-        },
-        origin: "generated_v4",
+        locator,
+        origin: "generated_v4" as const,
         verification: match.verification,
       }];
     });
     const uniqueRefs = Array.from(new Map(refs.map((ref) => [
-      [ref.sourceSnapshotId, ref.sourceField, ref.quote].join("\u0000"),
+      [
+        ref.sourceKind,
+        ref.sourceSnapshotId ?? "",
+        ref.sourceDocumentVersionId ?? "",
+        ref.sourceField,
+        ref.quote,
+      ].join("\u0000"),
       ref,
     ])).values());
     if (!uniqueRefs.length) {
@@ -234,7 +332,8 @@ export function groundGeneratedProjectKnowledge(input: {
     groundedEntryKeys.push(`${category}:${entryKey}`);
     return {
       evidenceRefs: uniqueRefs,
-      sourceWorkItemIds: Array.from(new Set(uniqueRefs.map((ref) => ref.sourceWorkItemId))),
+      sourceWorkItemIds: Array.from(new Set(uniqueRefs.flatMap((ref) =>
+        ref.sourceKind === "work_item" && ref.sourceWorkItemId ? [ref.sourceWorkItemId] : []))),
       evidence: renderProjectKnowledgeEvidenceRefs(uniqueRefs),
     };
   };
@@ -296,10 +395,10 @@ export function groundGeneratedProjectKnowledge(input: {
 }
 
 export function projectKnowledgeBaseToGeneratedPrompt(knowledgeBase: ProjectKnowledgeBase): ProjectKnowledgeGeneratedBase {
-  const citations = (refs: ProjectKnowledgeEvidenceRef[] | undefined) => (refs ?? []).map((ref) => ({
-    handle: projectKnowledgeCitationHandle(ref.sourceSnapshotId, ref.sourceField),
-    quote: ref.quote,
-  }));
+  const citations = (refs: ProjectKnowledgeEvidenceRef[] | undefined) => (refs ?? []).flatMap((ref) => {
+    const handle = projectKnowledgeCitationHandleForEvidenceRef(ref);
+    return handle ? [{ handle, quote: ref.quote }] : [];
+  });
   return ProjectKnowledgeGeneratedBaseSchema.parse({
     modules: knowledgeBase.modules.map((entry) => ({
       id: entry.id,
@@ -340,6 +439,18 @@ export function projectKnowledgeBaseToGeneratedPrompt(knowledgeBase: ProjectKnow
       citations: citations(entry.evidenceRefs),
     })),
   });
+}
+
+function projectKnowledgeCitationHandleForEvidenceRef(ref: ProjectKnowledgeEvidenceRef) {
+  if (ref.sourceKind !== "document") {
+    return ref.sourceSnapshotId && ref.sourceWorkItemId
+      ? projectKnowledgeCitationHandle(ref.sourceSnapshotId, ref.sourceField)
+      : null;
+  }
+  const chunkId = typeof ref.locator?.documentChunkId === "string" ? ref.locator.documentChunkId.trim() : "";
+  return ref.sourceDocumentVersionId && chunkId
+    ? projectSourceDocumentCitationHandle(ref.sourceDocumentVersionId, chunkId)
+    : null;
 }
 
 export function generatedProjectKnowledgeForOmissions(

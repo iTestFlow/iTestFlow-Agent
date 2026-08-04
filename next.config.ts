@@ -10,7 +10,16 @@ export default function nextConfig(phase: string): NextConfig {
     distDir: phase === PHASE_DEVELOPMENT_SERVER ? ".next-dev" : ".next",
     // pg is a Node-only runtime dependency; never bundle it. The transformers.js
     // stack ships native ONNX runtime binaries that webpack must not touch either.
-    serverExternalPackages: ["pg", "pg-connection-string", "@huggingface/transformers", "onnxruntime-node"],
+    serverExternalPackages: [
+      "pg",
+      "pg-connection-string",
+      "@huggingface/transformers",
+      "onnxruntime-node",
+      "pdfjs-dist",
+      "mammoth",
+      "xlsx",
+      "file-type",
+    ],
     turbopack: {
       // Next 15 Turbopack does not resolve the packages' style-only exports on Windows.
       resolveAlias: {

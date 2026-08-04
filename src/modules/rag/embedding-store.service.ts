@@ -5,6 +5,12 @@ import { createId, nowIso, sqlAll, sqlRun } from "@/modules/shared/infrastructur
 import { MAX_EMBED_BATCH_SIZE, type EmbeddingProvider } from "./embedding-provider";
 import { cosineSimilarity } from "./hybrid-ranking";
 import { metadataFilterParams, workItemPathFilterSql, workItemTypeFilterSql, type MetadataFilter } from "./metadata-filter";
+import {
+  embeddingSourceTypeForContextSource,
+  normalizeProjectContextSourceKinds,
+  projectContextLogicalSourceKey,
+  type ProjectContextSourceKind,
+} from "./project-context-source";
 
 /**
  * Persists chunk embeddings in the `embeddings` table (`vector` holds the raw vector
@@ -25,9 +31,14 @@ import { metadataFilterParams, workItemPathFilterSql, workItemTypeFilterSql, typ
 
 export type SemanticContextChunk = {
   id: string;
+  source_type: ProjectContextSourceKind;
   azure_work_item_id: string | null;
   work_item_type: string | null;
+  document_id: string | null;
+  source_document_version_id: string | null;
   document_name: string | null;
+  section: string | null;
+  page_number: number | null;
   content: string;
   metadata_json: string | null;
   similarity: number;
@@ -49,7 +60,6 @@ export type SemanticKnowledgeEntry = {
 // work-item chunks are keyed by document_chunks.id; knowledge entries have no
 // stable per-save id (see knowledgeEmbeddingChunkId), so they get a distinct
 // synthetic chunk_id namespace under their own source_type.
-const CHUNK_SOURCE_TYPE = "azure_work_item_chunk";
 const KNOWLEDGE_SOURCE_TYPE = "project_knowledge_entry";
 
 /**
@@ -68,6 +78,7 @@ const KNOWLEDGE_SOURCE_TYPE = "project_knowledge_entry";
  * chunk v4: field-aware chunking — title/description/AC/tags as separate units.
  */
 const CHUNK_RECIPE_VERSION = "v4";
+const DOCUMENT_CHUNK_RECIPE_VERSION = "v1";
 // The knowledge recipe has never changed, so it stays on the unsuffixed reference that
 // predates this versioning scheme. Introducing a suffix here would invalidate every
 // stored knowledge vector for a recipe that is byte-identical — and because knowledge
@@ -84,11 +95,15 @@ export function chunkVectorReference(provider: EmbeddingProvider): string {
   return withRecipe(provider, CHUNK_RECIPE_VERSION);
 }
 
+export function documentChunkVectorReference(provider: EmbeddingProvider): string {
+  return withRecipe(provider, DOCUMENT_CHUNK_RECIPE_VERSION);
+}
+
 function knowledgeVectorReference(provider: EmbeddingProvider): string {
   return withRecipe(provider, KNOWLEDGE_RECIPE_VERSION);
 }
 
-const ACTIVE_CHUNK_FILTER_SQL = `
+const ACTIVE_WORK_ITEM_CHUNK_FILTER_SQL = `
   dc.project_id = @projectId
   AND dc.azure_project_id = @azureProjectId
   AND dc.source_type = 'azure_work_item'
@@ -99,6 +114,50 @@ const ACTIVE_CHUNK_FILTER_SQL = `
       AND wi.azure_project_id = dc.azure_project_id
       AND wi.azure_work_item_id = dc.azure_work_item_id
       AND COALESCE(wi.sync_status, 'active') = 'active'
+  )
+`;
+
+/**
+ * The uploaded-document half of the active-chunk predicate. Shared by every
+ * path that must not diverge on what counts as a retrievable uploaded-document
+ * chunk: this service's active-row filter and embedding sync cleanup boundary,
+ * plus hybrid-chunk-search's existence gate. `alias` must reference a table
+ * exposing source_type/document_id/source_document_version_id/project_id/
+ * azure_project_id columns -- document_chunks and its document_chunks_fts
+ * mirror both qualify.
+ */
+export function activeUploadedDocumentChunkFilterSql(alias: string): string {
+  return `
+    ${alias}.source_type = 'uploaded_document'
+    AND EXISTS (
+      SELECT 1
+      FROM project_source_documents psd
+      WHERE psd.id = ${alias}.document_id
+        AND psd.project_id = ${alias}.project_id
+        AND psd.azure_project_id = ${alias}.azure_project_id
+        AND psd.lifecycle_status = 'active'
+        AND psd.current_version_id = ${alias}.source_document_version_id
+    )
+  `;
+}
+
+/** Active, retrieval-eligible raw context chunks across both source families. */
+const ACTIVE_CONTEXT_CHUNK_FILTER_SQL = `
+  dc.project_id = @projectId
+  AND dc.azure_project_id = @azureProjectId
+  AND (
+    (
+      dc.source_type = 'azure_work_item'
+      AND EXISTS (
+        SELECT 1
+        FROM azure_devops_work_items wi
+        WHERE wi.project_id = dc.project_id
+          AND wi.azure_project_id = dc.azure_project_id
+          AND wi.azure_work_item_id = dc.azure_work_item_id
+          AND COALESCE(wi.sync_status, 'active') = 'active'
+      )
+    )
+    OR (${activeUploadedDocumentChunkFilterSql("dc")})
   )
 `;
 
@@ -149,6 +208,13 @@ export function embeddableChunkText(chunk: { content: string; document_name: str
   return title ? `${title}\n\n${text}` : text;
 }
 
+/** Parsed document text is data, not a work-item projection: preserve every line. */
+export function embeddableDocumentChunkText(chunk: { content: string; document_name: string | null }): string {
+  const title = chunk.document_name?.trim();
+  const body = chunk.content.trim();
+  return title ? `${title}\n\n${body}` : body;
+}
+
 /**
  * Brings stored vectors in line with the current chunk set: removes embeddings whose
  * chunk no longer exists, then embeds active chunks that lack a vector for the
@@ -159,7 +225,38 @@ export async function syncProjectChunkEmbeddings(input: {
   scope: ProjectScope;
   provider: EmbeddingProvider;
 }) {
+  return syncProjectSourceChunkEmbeddings({ ...input, sourceKind: "azure_work_item" });
+}
+
+/**
+ * Document ingestion owns its own embedding discriminator and cleanup boundary.
+ * Keeping this sibling means an ADO sync can never reclassify or delete a document
+ * vector, while both paths still share batching and upsert mechanics.
+ */
+export async function syncProjectDocumentEmbeddings(input: {
+  scope: ProjectScope;
+  provider: EmbeddingProvider;
+}) {
+  return syncProjectSourceChunkEmbeddings({ ...input, sourceKind: "uploaded_document" });
+}
+
+async function syncProjectSourceChunkEmbeddings(input: {
+  scope: ProjectScope;
+  provider: EmbeddingProvider;
+  sourceKind: ProjectContextSourceKind;
+}) {
   const scope = assertProjectScope(input.scope);
+  const embeddingSourceType = embeddingSourceTypeForContextSource(input.sourceKind);
+  const vectorReference = input.sourceKind === "uploaded_document"
+    ? documentChunkVectorReference(input.provider)
+    : chunkVectorReference(input.provider);
+  const activeFilter = input.sourceKind === "uploaded_document"
+    ? `
+      dc.project_id = @projectId
+      AND dc.azure_project_id = @azureProjectId
+      AND ${activeUploadedDocumentChunkFilterSql("dc")}
+    `
+    : ACTIVE_WORK_ITEM_CHUNK_FILTER_SQL;
   const removedCount = await sqlRun(
     `
       DELETE FROM embeddings
@@ -167,13 +264,13 @@ export async function syncProjectChunkEmbeddings(input: {
         AND azure_project_id = @azureProjectId
         AND source_type = @sourceType
         AND NOT EXISTS (
-          SELECT 1 FROM document_chunks dc WHERE dc.id = embeddings.chunk_id
+          SELECT 1 FROM document_chunks dc WHERE dc.id = embeddings.chunk_id AND ${activeFilter}
         )
     `,
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-      sourceType: CHUNK_SOURCE_TYPE,
+      sourceType: embeddingSourceType,
     },
   );
 
@@ -196,7 +293,7 @@ export async function syncProjectChunkEmbeddings(input: {
         ON e.chunk_id = dc.id
        AND e.source_type = @sourceType
        AND e.vector_reference = @vectorReference
-      WHERE ${ACTIVE_CHUNK_FILTER_SQL}
+       WHERE ${activeFilter}
         AND (e.id IS NULL OR e.vector IS NULL OR e.updated_at < dc.updated_at)
       -- Length first so each persisted batch below holds similar-length chunks: the
       -- provider batches for inference within what it is handed, and a batch pads
@@ -210,8 +307,8 @@ export async function syncProjectChunkEmbeddings(input: {
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-      sourceType: CHUNK_SOURCE_TYPE,
-      vectorReference: chunkVectorReference(input.provider),
+      sourceType: embeddingSourceType,
+      vectorReference,
     },
   );
 
@@ -221,7 +318,10 @@ export async function syncProjectChunkEmbeddings(input: {
   let embeddedChunkCount = 0;
   for (let start = 0; start < pending.length; start += MAX_EMBED_BATCH_SIZE) {
     const batch = pending.slice(start, start + MAX_EMBED_BATCH_SIZE);
-    const vectors = await input.provider.embed(batch.map(embeddableChunkText), "document");
+    const vectors = await input.provider.embed(
+      batch.map(input.sourceKind === "uploaded_document" ? embeddableDocumentChunkText : embeddableChunkText),
+      "document",
+    );
     const now = nowIso();
     // One statement per batch rather than one per chunk: a full re-embed of this
     // project's 1,155 chunks spent ~22s of its ~167s outside inference, most of it
@@ -229,10 +329,10 @@ export async function syncProjectChunkEmbeddings(input: {
     const params: Record<string, unknown> = {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-      sourceType: CHUNK_SOURCE_TYPE,
+      sourceType: embeddingSourceType,
       provider: input.provider.name,
       model: input.provider.model,
-      vectorReference: chunkVectorReference(input.provider),
+      vectorReference,
       createdAt: now,
       updatedAt: now,
     };
@@ -278,32 +378,45 @@ export async function searchProjectContextByEmbedding(input: {
   query: string;
   topK: number;
   maxChunksPerWorkItem?: number;
+  sourceKinds?: readonly ProjectContextSourceKind[];
   /** Opt-in restriction by work item type / area path / iteration path. Never state. */
   filter?: MetadataFilter;
 }): Promise<SemanticContextChunk[]> {
   const scope = assertProjectScope(input.scope);
   const query = input.query.trim();
   if (!query) return [];
+  const sourceKinds = normalizeProjectContextSourceKinds(input.sourceKinds);
+  const embeddingSourceTypes = sourceKinds.map(embeddingSourceTypeForContextSource);
 
   const rows = await sqlAll<{
     chunk_id: string;
     vector: number[] | null;
+    source_type: ProjectContextSourceKind;
     azure_work_item_id: string | null;
     work_item_type: string | null;
+    document_id: string | null;
+    source_document_version_id: string | null;
     document_name: string | null;
+    section: string | null;
+    page_number: number | null;
     content: string;
     metadata_json: string | null;
   }>(
     `
-      SELECT e.chunk_id, e.vector, dc.azure_work_item_id, dc.work_item_type,
-             dc.document_name, dc.content, dc.metadata_json
+       SELECT e.chunk_id, e.vector, dc.source_type, dc.azure_work_item_id, dc.work_item_type,
+              dc.document_id, dc.source_document_version_id, dc.document_name, dc.section,
+              dc.page_number, dc.content, dc.metadata_json
       FROM embeddings e
       JOIN document_chunks dc ON dc.id = e.chunk_id
       WHERE e.project_id = @projectId
         AND e.azure_project_id = @azureProjectId
-        AND e.source_type = @sourceType
-        AND e.vector_reference = @vectorReference
-        AND ${ACTIVE_CHUNK_FILTER_SQL}
+         AND e.source_type = ANY(@embeddingSourceTypes::text[])
+         AND (
+           (e.source_type = 'azure_work_item_chunk' AND e.vector_reference = @workItemVectorReference)
+           OR (e.source_type = 'uploaded_document_chunk' AND e.vector_reference = @documentVectorReference)
+         )
+         AND dc.source_type = ANY(@sourceKinds::text[])
+         AND ${ACTIVE_CONTEXT_CHUNK_FILTER_SQL}
         AND ${workItemTypeFilterSql("dc.")}
         AND ${workItemPathFilterSql(
           { projectId: "dc.project_id", azureProjectId: "dc.azure_project_id", azureWorkItemId: "dc.azure_work_item_id" },
@@ -313,8 +426,10 @@ export async function searchProjectContextByEmbedding(input: {
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
-      sourceType: CHUNK_SOURCE_TYPE,
-      vectorReference: chunkVectorReference(input.provider),
+       embeddingSourceTypes,
+       sourceKinds,
+       workItemVectorReference: chunkVectorReference(input.provider),
+       documentVectorReference: documentChunkVectorReference(input.provider),
       ...metadataFilterParams(input.filter),
     },
   );
@@ -325,9 +440,14 @@ export async function searchProjectContextByEmbedding(input: {
   const scored = rows
     .map((row) => ({
       id: row.chunk_id,
+      source_type: row.source_type,
       azure_work_item_id: row.azure_work_item_id,
       work_item_type: row.work_item_type,
+      document_id: row.document_id,
+      source_document_version_id: row.source_document_version_id,
       document_name: row.document_name,
+      section: row.section,
+      page_number: row.page_number,
       content: row.content,
       metadata_json: row.metadata_json,
       similarity: cosineSimilarity(queryVector, row.vector ?? []),
@@ -335,14 +455,18 @@ export async function searchProjectContextByEmbedding(input: {
     .filter((row) => row.similarity > 0)
     .sort((first, second) => second.similarity - first.similarity || first.id.localeCompare(second.id));
 
-  const countsByWorkItem = new Map<string, number>();
+  const countsBySource = new Map<string, number>();
   const selected: SemanticContextChunk[] = [];
   for (const row of scored) {
     if (selected.length >= input.topK) break;
-    const key = row.azure_work_item_id ?? "__missing_work_item_id__";
-    const count = countsByWorkItem.get(key) ?? 0;
+    const key = projectContextLogicalSourceKey({
+      sourceType: row.source_type,
+      azureWorkItemId: row.azure_work_item_id,
+      documentId: row.document_id,
+    });
+    const count = countsBySource.get(key) ?? 0;
     if (count >= maxChunksPerWorkItem) continue;
-    countsByWorkItem.set(key, count + 1);
+    countsBySource.set(key, count + 1);
     selected.push(row);
   }
   return selected;

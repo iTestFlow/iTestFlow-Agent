@@ -90,6 +90,7 @@ describe("buildProjectKnowledgeDraftPreview", () => {
     });
     expect(result.entries).toHaveLength(2);
     expect(result.entries[0].evidence).toEqual([{
+      sourceKind: "work_item",
       sourceWorkItemId: "15",
       sourceField: "acceptanceCriteria",
       quote: "Payment gateway is called.",

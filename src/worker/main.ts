@@ -50,6 +50,7 @@ import {
 } from "@/modules/jobs/job-queue.service";
 import { getJobHandler, registeredJobTypes, type JobHandler } from "@/modules/jobs/job-handlers";
 import { PROJECT_KNOWLEDGE_JOB } from "@/modules/jobs/project-knowledge-jobs.service";
+import { UPLOADED_DOCUMENT_INGEST } from "@/modules/jobs/uploaded-document-jobs.service";
 import { registerAllJobHandlers } from "@/modules/jobs/register-handlers";
 import { enqueueDueScheduledSyncs } from "@/modules/jobs/sync-schedule.service";
 import {
@@ -65,6 +66,7 @@ const POLL_MS = Number(process.env.WORKER_POLL_MS ?? "2000");
 const HEARTBEAT_MS = Number(process.env.WORKER_HEARTBEAT_MS ?? String(30 * 1000));
 const SCHEDULER_ENABLED = process.env.WORKER_SCHEDULER !== "false";
 const SCHEDULER_TICK_MS = Number(process.env.WORKER_SCHEDULER_TICK_MS ?? String(60 * 1000));
+const DOCUMENT_INGEST_CONCURRENCY = Math.max(1, Math.trunc(Number(process.env.WORKER_DOCUMENT_INGEST_CONCURRENCY ?? "2")) || 2);
 const CANCELLATION_POLL_MS = 1000;
 const SHUTDOWN_GRACE_MS = 3000;
 // Failsafe: never wedge on an unreachable database mid-shutdown.
@@ -221,7 +223,9 @@ async function executeJob(handler: JobHandler, entry: ActiveJob): Promise<void> 
 }
 
 function serialJobTypes(): string[] {
-  return registeredJobTypes().filter((jobType) => jobType !== PROJECT_KNOWLEDGE_JOB);
+  return registeredJobTypes().filter((jobType) =>
+    jobType !== PROJECT_KNOWLEDGE_JOB && jobType !== UPLOADED_DOCUMENT_INGEST,
+  );
 }
 
 /**
@@ -254,6 +258,25 @@ export async function dispatchReadyKnowledgeJobs(): Promise<number> {
   return claimed;
 }
 
+/**
+ * Bounded document-ingestion lane.  Upload parsing/embedding can be CPU-heavy,
+ * so it must neither block the serial ADO-sync lane nor inherit the intentionally
+ * uncapped knowledge-build dispatcher.
+ */
+export async function dispatchReadyDocumentIngestJobs(): Promise<number> {
+  let claimed = 0;
+  while (!shuttingDown) {
+    const activeDocumentJobs = [...activeJobs.values()]
+      .filter((entry) => entry.job.jobType === UPLOADED_DOCUMENT_INGEST).length;
+    if (activeDocumentJobs >= DOCUMENT_INGEST_CONCURRENCY) break;
+    const job = await claimNextJob(WORKER_ID, [UPLOADED_DOCUMENT_INGEST], { reapStale: claimed === 0 });
+    if (!job) break;
+    startClaimedJob(job);
+    claimed += 1;
+  }
+  return claimed;
+}
+
 async function serialWorkLoop(): Promise<void> {
   while (!shuttingDown) {
     let processed = false;
@@ -277,6 +300,17 @@ async function knowledgeDispatchLoop(): Promise<void> {
       console.error("[worker] knowledge dispatch error; backing off.", error);
     }
     // Claimed builds keep running concurrently; only the claim loop sleeps.
+    await sleep(POLL_MS);
+  }
+}
+
+async function documentIngestDispatchLoop(): Promise<void> {
+  while (!shuttingDown) {
+    try {
+      await dispatchReadyDocumentIngestJobs();
+    } catch (error) {
+      console.error("[worker] document ingest dispatch error; backing off.", error);
+    }
     await sleep(POLL_MS);
   }
 }
@@ -421,6 +455,7 @@ async function main() {
 
   const loops = [serialWorkLoop()];
   if (capabilities.includes(PROJECT_KNOWLEDGE_JOB)) loops.push(knowledgeDispatchLoop());
+  if (capabilities.includes(UPLOADED_DOCUMENT_INGEST)) loops.push(documentIngestDispatchLoop());
   if (SCHEDULER_ENABLED) loops.push(schedulerLoop());
   await Promise.all(loops);
 }

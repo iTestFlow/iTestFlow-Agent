@@ -12,6 +12,7 @@ data/.runtime-settings-key
 data/uploads/*
 data/indexes/*
 data/model-cache/*
+data/document-store/*
 *.log
 tsconfig.tsbuildinfo
 .claude

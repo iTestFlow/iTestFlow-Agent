@@ -23,22 +23,46 @@ import type { MetadataFilter } from "./metadata-filter";
 import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
 import type { RerankProvider } from "./rerank-provider";
 import { searchProjectKnowledgeByEmbedding } from "./embedding-store.service";
+import {
+  normalizeProjectContextSourceKinds,
+  type ProjectContextSourceKind,
+} from "./project-context-source";
 
-export type ContextChatbotContextEvidence = {
+type ContextChatbotContextMetadata = {
+  tags?: string[];
+  areaPath?: string;
+  iterationPath?: string;
+  updatedDate?: string;
+  chunkIndex?: number;
+  section?: string;
+  pageNumber?: number;
+};
+
+export type ContextChatbotWorkItemEvidence = {
   sourceType: "project_context";
   sourceId: string;
   workItemId: string;
   workItemType: string;
   title: string;
   content: string;
-  metadata: {
-    tags?: string[];
-    areaPath?: string;
-    iterationPath?: string;
-    updatedDate?: string;
-    chunkIndex?: number;
-  };
+  metadata: ContextChatbotContextMetadata;
 };
+
+export type ContextChatbotDocumentEvidence = {
+  sourceType: "uploaded_document";
+  sourceId: string;
+  /** Legacy-compatible placeholder; consumers must branch on sourceType/sourceId. */
+  workItemId: "";
+  workItemType: "Document";
+  documentId: string;
+  documentVersionId: string;
+  documentName: string;
+  title: string;
+  content: string;
+  metadata: ContextChatbotContextMetadata;
+};
+
+export type ContextChatbotContextEvidence = ContextChatbotWorkItemEvidence | ContextChatbotDocumentEvidence;
 
 export type ContextChatbotKnowledgeEvidence = {
   sourceType: "project_knowledge";
@@ -59,9 +83,14 @@ export type ContextChatbotEvidence = {
 
 type ChunkFtsRow = {
   chunk_id: string;
-  azure_work_item_id: string;
-  work_item_type: string;
+  source_type: ProjectContextSourceKind;
+  azure_work_item_id: string | null;
+  work_item_type: string | null;
+  document_id: string | null;
+  source_document_version_id: string | null;
   title: string;
+  section: string | null;
+  page_number: number | null;
   content: string;
   metadata_json: string | null;
 };
@@ -101,24 +130,50 @@ export async function refreshProjectContextSearchIndex(
   const now = nowIso();
   const rows = await sqlAll<{
     id: string;
+    source_type: ProjectContextSourceKind;
     azure_work_item_id: string | null;
     work_item_type: string | null;
+    document_id: string | null;
+    source_document_version_id: string | null;
     document_name: string | null;
+    section: string | null;
+    page_number: number | null;
     content: string;
     metadata_json: string | null;
   }>(
     `
-      SELECT dc.id, dc.azure_work_item_id, dc.work_item_type, dc.document_name, dc.content, dc.metadata_json
+      SELECT dc.id, dc.source_type, dc.azure_work_item_id, dc.work_item_type, dc.document_id,
+             dc.source_document_version_id, dc.document_name, dc.section, dc.page_number,
+             dc.content, dc.metadata_json
       FROM document_chunks dc
-      JOIN azure_devops_work_items wi
-        ON wi.project_id = dc.project_id
-       AND wi.azure_project_id = dc.azure_project_id
-       AND wi.azure_work_item_id = dc.azure_work_item_id
       WHERE dc.project_id = @projectId
         AND dc.azure_project_id = @azureProjectId
-        AND dc.source_type = 'azure_work_item'
-        AND COALESCE(wi.sync_status, 'active') = 'active'
-      ORDER BY dc.azure_work_item_id, dc.chunk_index
+        AND (
+          (
+            dc.source_type = 'azure_work_item'
+            AND EXISTS (
+              SELECT 1
+              FROM azure_devops_work_items wi
+              WHERE wi.project_id = dc.project_id
+                AND wi.azure_project_id = dc.azure_project_id
+                AND wi.azure_work_item_id = dc.azure_work_item_id
+                AND COALESCE(wi.sync_status, 'active') = 'active'
+            )
+          )
+          OR (
+            dc.source_type = 'uploaded_document'
+            AND EXISTS (
+              SELECT 1
+              FROM project_source_documents psd
+              WHERE psd.id = dc.document_id
+                AND psd.project_id = dc.project_id
+                AND psd.azure_project_id = dc.azure_project_id
+                AND psd.lifecycle_status = 'active'
+                AND psd.current_version_id = dc.source_document_version_id
+            )
+          )
+        )
+      ORDER BY dc.source_type, COALESCE(dc.azure_work_item_id, dc.document_id), dc.chunk_index
     `,
     {
       projectId: scope.projectId,
@@ -144,20 +199,27 @@ export async function refreshProjectContextSearchIndex(
     await sqlRun(
       `
       INSERT INTO document_chunks_fts (
-        project_id, azure_project_id, chunk_id, azure_work_item_id,
-        work_item_type, title, content, metadata_json
+        project_id, azure_project_id, chunk_id, source_type, azure_work_item_id,
+        work_item_type, document_id, source_document_version_id, title, section,
+        page_number, content, metadata_json
       ) VALUES (
-        @projectId, @azureProjectId, @chunkId, @azureWorkItemId,
-        @workItemType, @title, @content, @metadataJson
+        @projectId, @azureProjectId, @chunkId, @sourceType, @azureWorkItemId,
+        @workItemType, @documentId, @sourceDocumentVersionId, @title, @section,
+        @pageNumber, @content, @metadataJson
       )
     `,
       {
         projectId: scope.projectId,
         azureProjectId: scope.azureProjectId,
         chunkId: row.id,
+        sourceType: row.source_type,
         azureWorkItemId: row.azure_work_item_id ?? "",
         workItemType: row.work_item_type ?? "Unknown",
+        documentId: row.document_id,
+        sourceDocumentVersionId: row.source_document_version_id,
         title: row.document_name ?? "Untitled work item",
+        section: row.section,
+        pageNumber: row.page_number,
         content: row.content,
         metadataJson: row.metadata_json ?? JSON.stringify({ indexedAt: now }),
       },
@@ -486,14 +548,31 @@ export async function ensureProjectContextSearchIndex(input: { scope: ProjectSco
     `
     SELECT COUNT(*)::int AS count
     FROM document_chunks dc
-    JOIN azure_devops_work_items wi
-      ON wi.project_id = dc.project_id
-     AND wi.azure_project_id = dc.azure_project_id
-     AND wi.azure_work_item_id = dc.azure_work_item_id
     WHERE dc.project_id = @projectId
       AND dc.azure_project_id = @azureProjectId
-      AND dc.source_type = 'azure_work_item'
-      AND COALESCE(wi.sync_status, 'active') = 'active'
+      AND (
+        (
+          dc.source_type = 'azure_work_item'
+          AND EXISTS (
+            SELECT 1 FROM azure_devops_work_items wi
+            WHERE wi.project_id = dc.project_id
+              AND wi.azure_project_id = dc.azure_project_id
+              AND wi.azure_work_item_id = dc.azure_work_item_id
+              AND COALESCE(wi.sync_status, 'active') = 'active'
+          )
+        )
+        OR (
+          dc.source_type = 'uploaded_document'
+          AND EXISTS (
+            SELECT 1 FROM project_source_documents psd
+            WHERE psd.id = dc.document_id
+              AND psd.project_id = dc.project_id
+              AND psd.azure_project_id = dc.azure_project_id
+              AND psd.lifecycle_status = 'active'
+              AND psd.current_version_id = dc.source_document_version_id
+          )
+        )
+      )
   `,
     scope,
   );
@@ -506,7 +585,7 @@ export async function ensureProjectContextSearchIndex(input: { scope: ProjectSco
   `,
     scope,
   );
-  if (chunkCount > 0 && chunkCount !== chunkFtsCount) {
+  if (chunkCount !== chunkFtsCount) {
     await refreshProjectContextSearchIndex({ scope });
   }
 }
@@ -580,6 +659,8 @@ export async function retrieveContextChatbotEvidence(input: {
    * reranking entirely so a test never loads the model weights.
    */
   rerankProvider?: RerankProvider | null;
+  /** Defaults to both indexed work-item and uploaded-document evidence. */
+  sourceKinds?: readonly ProjectContextSourceKind[];
   /** Opt-in restriction by work item type / area path / iteration path. Never state. */
   filter?: MetadataFilter;
 }): Promise<ContextChatbotEvidence> {
@@ -588,6 +669,7 @@ export async function retrieveContextChatbotEvidence(input: {
   const contextLimit = input.contextLimit ?? 10;
   const knowledgeLimit = input.knowledgeLimit ?? 10;
   const maxContextChunksPerWorkItem = input.maxContextChunksPerWorkItem ?? 2;
+  const sourceKinds = normalizeProjectContextSourceKinds(input.sourceKinds);
 
   // Resolved once and threaded into every consumer below, so a caller (tests) can
   // disable semantic search for the whole evidence pass with a single seam.
@@ -629,6 +711,7 @@ export async function retrieveContextChatbotEvidence(input: {
     embeddingProvider,
     rerankProvider: input.rerankProvider,
     filter: input.filter,
+    sourceKinds,
   });
   const context = mergeContextEvidence(selected, searched, contextLimit, maxContextChunksPerWorkItem);
   return {
@@ -646,12 +729,12 @@ function mergeContextEvidence(
 ) {
   const seen = new Set<string>();
   const merged = [...selected, ...searched].filter((item) => {
-    const key = `${item.workItemId}\u0000${item.content}`;
+    const key = `${item.sourceId}\u0000${item.content}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
-  return limitContextEvidenceByWorkItem(merged, { limit, maxChunksPerWorkItem });
+  return limitContextEvidenceBySource(merged, { limit, maxChunksPerSource: maxChunksPerWorkItem });
 }
 
 async function loadSelectedContext(input: {
@@ -662,8 +745,9 @@ async function loadSelectedContext(input: {
 }) {
   const rows = await sqlAll<ChunkFtsRow>(
     `
-      SELECT chunks.id AS chunk_id, chunks.azure_work_item_id, chunks.work_item_type,
-             chunks.document_name AS title, chunks.content, chunks.metadata_json
+       SELECT chunks.id AS chunk_id, chunks.source_type, chunks.azure_work_item_id, chunks.work_item_type,
+              chunks.document_id, chunks.source_document_version_id, chunks.document_name AS title,
+              chunks.section, chunks.page_number, chunks.content, chunks.metadata_json
       FROM document_chunks chunks
       JOIN azure_devops_work_items work_items
         ON work_items.project_id = chunks.project_id
@@ -683,17 +767,17 @@ async function loadSelectedContext(input: {
       rowLimit: input.limit * input.maxChunksPerWorkItem,
     },
   );
-  return limitContextEvidenceByWorkItem(rows.map((row) => ({
+  return limitContextEvidenceBySource(rows.map((row) => ({
     sourceType: "project_context" as const,
     sourceId: `WI:${row.azure_work_item_id}`,
-    workItemId: row.azure_work_item_id,
-    workItemType: row.work_item_type,
-    title: row.title,
+    workItemId: row.azure_work_item_id ?? "",
+    workItemType: row.work_item_type ?? "Unknown",
+    title: row.title ?? "Untitled work item",
     content: row.content,
     metadata: parseChunkMetadata(row.metadata_json),
   })), {
     limit: input.limit,
-    maxChunksPerWorkItem: input.maxChunksPerWorkItem,
+    maxChunksPerSource: input.maxChunksPerWorkItem,
   });
 }
 
@@ -728,6 +812,7 @@ async function searchContext(input: {
   maxChunksPerWorkItem?: number;
   embeddingProvider?: EmbeddingProvider | null;
   rerankProvider?: RerankProvider | null;
+  sourceKinds?: readonly ProjectContextSourceKind[];
   /** Opt-in restriction by work item type / area path / iteration path. Never state. */
   filter?: MetadataFilter;
 }) {
@@ -745,37 +830,89 @@ async function searchContext(input: {
     embeddingProvider: input.embeddingProvider,
     rerankProvider: input.rerankProvider,
     filter: input.filter,
+    sourceKinds: input.sourceKinds,
   });
-  return fused.map(({ row }) => ({
-    sourceType: "project_context" as const,
+  return fused.map(({ row }) => toContextEvidence(row));
+}
+
+function toContextEvidence(row: {
+  source_type: ProjectContextSourceKind;
+  azure_work_item_id: string | null;
+  work_item_type: string | null;
+  document_id: string | null;
+  source_document_version_id: string | null;
+  document_name: string | null;
+  section: string | null;
+  page_number: number | null;
+  content: string;
+  metadata_json: string | null;
+}): ContextChatbotContextEvidence {
+  const metadata = parseChunkMetadata(row.metadata_json);
+  if (row.source_type === "uploaded_document") {
+    const documentId = row.document_id ?? "unknown-document";
+    const documentVersionId = row.source_document_version_id ?? "unknown-version";
+    return {
+      sourceType: "uploaded_document",
+      sourceId: `DOC:${documentId}`,
+      workItemId: "",
+      workItemType: "Document",
+      documentId,
+      documentVersionId,
+      documentName: row.document_name ?? "Untitled document",
+      title: row.document_name ?? "Untitled document",
+      content: row.content,
+      metadata: {
+        ...metadata,
+        section: row.section ?? metadata.section,
+        pageNumber: row.page_number ?? metadata.pageNumber,
+      },
+    };
+  }
+  return {
+    sourceType: "project_context",
     sourceId: `WI:${row.azure_work_item_id ?? ""}`,
     workItemId: row.azure_work_item_id ?? "",
     workItemType: row.work_item_type ?? "Unknown",
     title: row.document_name ?? "Untitled work item",
     content: row.content,
-    metadata: parseChunkMetadata(row.metadata_json),
-  }));
+    metadata,
+  };
 }
 
-export function limitContextEvidenceByWorkItem<TItem extends { workItemId: string }>(
+export function limitContextEvidenceBySource<TItem extends { sourceId: string }>(
   items: TItem[],
-  input: { limit: number; maxChunksPerWorkItem?: number },
+  input: { limit: number; maxChunksPerSource?: number },
 ): TItem[] {
   const limit = positiveIntegerOrDefault(input.limit, items.length);
-  const maxChunksPerWorkItem = positiveIntegerOrDefault(input.maxChunksPerWorkItem, limit);
-  const countsByWorkItem = new Map<string, number>();
+  const maxChunksPerSource = positiveIntegerOrDefault(input.maxChunksPerSource, limit);
+  const countsBySource = new Map<string, number>();
   const selected: TItem[] = [];
 
   for (const item of items) {
     if (selected.length >= limit) break;
-    const key = item.workItemId || "__missing_work_item_id__";
-    const count = countsByWorkItem.get(key) ?? 0;
-    if (count >= maxChunksPerWorkItem) continue;
-    countsByWorkItem.set(key, count + 1);
+    const key = item.sourceId || "__missing_source_id__";
+    const count = countsBySource.get(key) ?? 0;
+    if (count >= maxChunksPerSource) continue;
+    countsBySource.set(key, count + 1);
     selected.push(item);
   }
 
   return selected;
+}
+
+/** Legacy-compatible work-item helper retained for existing callers/tests. */
+export function limitContextEvidenceByWorkItem<TItem extends { workItemId: string }>(
+  items: TItem[],
+  input: { limit: number; maxChunksPerWorkItem?: number },
+): TItem[] {
+  return limitContextEvidenceBySource(
+    items.map((item) => ({ ...item, sourceId: `WI:${item.workItemId}` })),
+    { limit: input.limit, maxChunksPerSource: input.maxChunksPerWorkItem },
+  ).map((item) => {
+    const legacyItem = { ...item } as Record<string, unknown>;
+    delete legacyItem.sourceId;
+    return legacyItem as unknown as TItem;
+  });
 }
 
 async function searchKnowledge(input: {
@@ -882,7 +1019,8 @@ function flattenProjectKnowledge(knowledgeBase: ProjectKnowledgeBase): Knowledge
     const evidenceRefs = item.evidenceRefs ?? [];
     return {
       sourceWorkItemIds: evidenceRefs.length
-        ? Array.from(new Set(evidenceRefs.map((ref) => ref.sourceWorkItemId)))
+        ? Array.from(new Set(evidenceRefs.flatMap((ref) =>
+          ref.sourceKind === "document" || !ref.sourceWorkItemId ? [] : [ref.sourceWorkItemId])))
         : item.sourceWorkItemIds,
       evidence: evidenceRefs.length ? renderProjectKnowledgeEvidenceRefs(evidenceRefs) : item.evidence,
       evidenceRefs,

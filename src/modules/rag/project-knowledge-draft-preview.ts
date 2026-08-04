@@ -22,7 +22,10 @@ export type ProjectKnowledgeDraftPreviewEntry = {
   fields: Array<{ id: string; label: string; value: string }>;
   sourceWorkItemIds: string[];
   evidence: Array<{
-    sourceWorkItemId: string;
+    sourceKind: "work_item" | "document";
+    sourceWorkItemId?: string;
+    sourceDocumentId?: string;
+    sourceDocumentVersionId?: string;
     sourceField: ProjectKnowledgeEvidenceRef["sourceField"];
     quote: string;
   }>;
@@ -58,7 +61,9 @@ export function buildProjectKnowledgeDraftPreview(input: {
       ...entry.fields.flatMap((field) => [field.label, field.value]),
       ...entry.sourceWorkItemIds,
       ...entry.evidence.flatMap((evidence) => [
-        evidence.sourceWorkItemId,
+        evidence.sourceWorkItemId ?? "",
+        evidence.sourceDocumentId ?? "",
+        evidence.sourceDocumentVersionId ?? "",
         evidence.sourceField,
         evidence.quote,
       ]),
@@ -183,7 +188,10 @@ function previewEntry(input: {
     fields: input.fields.filter((value): value is NonNullable<typeof value> => Boolean(value)),
     sourceWorkItemIds: input.entry.sourceWorkItemIds,
     evidence: (input.entry.evidenceRefs ?? []).map((evidence) => ({
-      sourceWorkItemId: evidence.sourceWorkItemId,
+      sourceKind: evidence.sourceKind === "document" ? "document" : "work_item",
+      ...(evidence.sourceWorkItemId ? { sourceWorkItemId: evidence.sourceWorkItemId } : {}),
+      ...(evidence.sourceDocumentId ? { sourceDocumentId: evidence.sourceDocumentId } : {}),
+      ...(evidence.sourceDocumentVersionId ? { sourceDocumentVersionId: evidence.sourceDocumentVersionId } : {}),
       sourceField: evidence.sourceField,
       quote: evidence.quote,
     })),

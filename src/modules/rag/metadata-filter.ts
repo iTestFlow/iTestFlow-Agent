@@ -7,7 +7,10 @@
  * state filtering would silently re-filter a choice the user deliberately made.
  *
  * Every field is opt-in. No filter applied is the default and costs nothing extra —
- * each condition below short-circuits on `IS NULL` before touching the join.
+ * each condition below short-circuits on `IS NULL` before touching the join. These are
+ * intentionally work-item-only filters: when one is supplied, uploaded-document
+ * chunks (which have no work-item type/path) do not match. Callers that want only
+ * documents should use the explicit source-kind filter instead.
  */
 export type MetadataFilter = {
   workItemTypes?: string[];

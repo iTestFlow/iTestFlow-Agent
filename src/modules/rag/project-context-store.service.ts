@@ -19,10 +19,11 @@ import { recordProjectKnowledgeLog, regroundLegacyProjectKnowledgeCandidates } f
 import { acquireProjectKnowledgeLock } from "./project-knowledge-lock";
 import { markProjectKnowledgeSourceDrift } from "./project-knowledge-draft.service";
 import { backfillProjectKnowledgeCompilerFoundation } from "./project-knowledge-migration.service";
+import type { ProjectContextSourceKind } from "./project-context-source";
 
 type CryptoModule = typeof import("crypto");
 
-export type LlmContextSource = {
+export type LlmWorkItemContextSource = {
   sourceType: "azure_work_item";
   workItemId: string;
   workItemType: string;
@@ -39,11 +40,35 @@ export type LlmContextSource = {
   };
 };
 
+/** A retrieved immutable uploaded-document chunk, rendered as data in prompts. */
+export type LlmDocumentContextSource = {
+  sourceType: "uploaded_document";
+  sourceId: string;
+  documentId: string;
+  documentVersionId: string;
+  documentName: string;
+  title: string;
+  content: string;
+  relevanceScore: number;
+  metadata: {
+    section?: string;
+    pageNumber?: number;
+    chunkIndex: number;
+  };
+};
+
+export type LlmContextSource = LlmWorkItemContextSource | LlmDocumentContextSource;
+
 type ContextChunkRow = {
   id: string;
+  source_type: ProjectContextSourceKind;
   azure_work_item_id: string | null;
   work_item_type: string | null;
+  document_id: string | null;
+  source_document_version_id: string | null;
   document_name: string | null;
+  section: string | null;
+  page_number: number | null;
   content: string;
   metadata_json: string | null;
 };
@@ -680,7 +705,7 @@ export async function getRecentProjectContext(input: {
   };
 }
 
-export async function retrieveStoredProjectContext(input: {
+export type RetrieveStoredProjectContextInput = {
   scope: ProjectScope;
   query: string;
   topK?: number;
@@ -700,7 +725,25 @@ export async function retrieveStoredProjectContext(input: {
   rerankProvider?: RerankProvider | null;
   /** Opt-in restriction by work item type / area path / iteration path. Never state. */
   filter?: MetadataFilter;
-}): Promise<LlmContextSource[]> {
+  /** Restricts retrieval to one or both first-class project source kinds. */
+  sourceKinds?: readonly ProjectContextSourceKind[];
+};
+
+/**
+ * Retrieval defaults to both first-class source kinds. Legacy workflow callers
+ * explicitly pass the Azure-only tuple and receive the narrower work-item
+ * shape: their prompts and selection schemas address workItemId/workItemType
+ * and must never accidentally receive a document as a pseudo work item.
+ */
+export function retrieveStoredProjectContext(
+  input: RetrieveStoredProjectContextInput & { sourceKinds: readonly ["azure_work_item"] },
+): Promise<LlmWorkItemContextSource[]>;
+export function retrieveStoredProjectContext(
+  input: RetrieveStoredProjectContextInput,
+): Promise<LlmContextSource[]>;
+export async function retrieveStoredProjectContext(
+  input: RetrieveStoredProjectContextInput,
+): Promise<LlmContextSource[]> {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
   const topK = input.topK ?? 8;
@@ -711,7 +754,9 @@ export async function retrieveStoredProjectContext(input: {
     // full relevance.
     const rows = await sqlAll<ContextChunkRow>(
       `
-        SELECT id, azure_work_item_id, work_item_type, document_name, content, metadata_json
+        SELECT id, source_type, azure_work_item_id, work_item_type, document_id,
+               source_document_version_id, document_name, section, page_number,
+               content, metadata_json
         FROM document_chunks
         WHERE project_id = @projectId
           AND azure_project_id = @azureProjectId
@@ -757,6 +802,7 @@ export async function retrieveStoredProjectContext(input: {
     embeddingProvider,
     rerankProvider: input.rerankProvider,
     filter: input.filter,
+    sourceKinds: input.sourceKinds,
   });
   const maxScore = fused[0]?.score ?? 0;
   return fused.map(({ row, score }) => toLlmContextSource(row, normalizeRank(score, maxScore)));
@@ -856,7 +902,7 @@ export function workItemToSnapshotFields(item: Requirement) {
   };
 }
 
-export function workItemToLlmContextSource(item: Requirement, relevanceScore = 1): LlmContextSource {
+export function workItemToLlmContextSource(item: Requirement, relevanceScore = 1): LlmWorkItemContextSource {
   return {
     sourceType: "azure_work_item",
     workItemId: item.id,
@@ -886,8 +932,31 @@ export function requirementToRetrievalQuery(item: Requirement) {
     .join("\n");
 }
 
+export function isWorkItemLlmContextSource(item: LlmContextSource): item is LlmWorkItemContextSource {
+  return item.sourceType === "azure_work_item";
+}
+
 function toLlmContextSource(row: ContextChunkRow, score: number): LlmContextSource {
   const metadata = parseMetadata(row.metadata_json);
+  if (row.source_type === "uploaded_document") {
+    const documentId = row.document_id ?? "unknown-document";
+    const documentVersionId = row.source_document_version_id ?? "unknown-version";
+    return {
+      sourceType: "uploaded_document",
+      sourceId: `DOC:${documentId}`,
+      documentId,
+      documentVersionId,
+      documentName: row.document_name ?? "Untitled document",
+      title: row.document_name ?? "Untitled document",
+      content: row.content,
+      relevanceScore: score,
+      metadata: {
+        section: row.section ?? metadata.section,
+        pageNumber: row.page_number ?? metadata.pageNumber,
+        chunkIndex: metadata.chunkIndex ?? 0,
+      },
+    };
+  }
   return {
     sourceType: "azure_work_item",
     workItemId: metadata.azureWorkItemId ?? row.azure_work_item_id ?? "",
@@ -916,6 +985,8 @@ function parseMetadata(value: string | null): {
   tags?: string[];
   updatedDate?: string;
   chunkIndex?: number;
+  section?: string;
+  pageNumber?: number;
 } {
   if (!value) return {};
   try {

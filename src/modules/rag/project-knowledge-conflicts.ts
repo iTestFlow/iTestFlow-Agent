@@ -347,7 +347,10 @@ function buildParticipant(
     ...(concreteValue === undefined ? {} : { concreteValue }),
     evidenceRefs: entry.evidenceRefs,
     sourceSnapshotIds: sourceSnapshotIds(entry.evidenceRefs),
-    sourceWorkItemIds: [...new Set(entry.sourceWorkItemIds)].sort(),
+    sourceWorkItemIds: [...new Set(entry.evidenceRefs.length
+      ? entry.evidenceRefs.flatMap((ref) =>
+        ref.sourceKind === "document" || !ref.sourceWorkItemId ? [] : [ref.sourceWorkItemId])
+      : entry.sourceWorkItemIds)].sort(),
     evidence: entry.evidence,
   };
 }
@@ -361,7 +364,8 @@ function participantsHaveIdenticalEvidence(participants: ProjectKnowledgeHardCon
 }
 
 function sourceSnapshotIds(refs: ProjectKnowledgeEvidenceRef[]) {
-  return Array.from(new Set(refs.map((ref) => ref.sourceSnapshotId))).sort();
+  return Array.from(new Set(refs.flatMap((ref) =>
+    ref.sourceKind === "document" || !ref.sourceSnapshotId ? [] : [ref.sourceSnapshotId]))).sort();
 }
 
 function addParticipant(

@@ -16,12 +16,31 @@ export type ProjectKnowledgeEvidenceSnapshot = {
   fields: Record<string, unknown>;
 };
 
+export type ProjectKnowledgeDocumentEvidenceChunk = {
+  id: string;
+  sourceDocumentId: string;
+  sourceDocumentVersionId: string;
+  content: string;
+  /** Preserves the stricter M3 image/OCR review gate when those chunks arrive. */
+  verification?: ProjectKnowledgeEvidenceRef["verification"];
+};
+
 export type ProjectKnowledgeEvidenceBlocker = {
-  type: "quote_mismatch" | "snapshot_missing" | "work_item_mismatch" | "source_field_missing";
+  type:
+    | "quote_mismatch"
+    | "snapshot_missing"
+    | "work_item_mismatch"
+    | "source_field_missing"
+    | "document_chunk_missing"
+    | "document_mismatch"
+    | "document_version_mismatch";
   category: string;
   entryKey: string;
-  sourceSnapshotId: string;
-  sourceWorkItemId: string;
+  sourceKind: ProjectKnowledgeEvidenceRef["sourceKind"];
+  sourceSnapshotId?: string;
+  sourceWorkItemId?: string;
+  sourceDocumentId?: string;
+  sourceDocumentVersionId?: string;
   sourceField: string;
   message: string;
 };
@@ -29,9 +48,14 @@ export type ProjectKnowledgeEvidenceBlocker = {
 export function verifyProjectKnowledgeEvidence(input: {
   knowledgeBase: ProjectKnowledgeBase;
   snapshots: ProjectKnowledgeEvidenceSnapshot[];
+  documentChunks?: ProjectKnowledgeDocumentEvidenceChunk[];
 }) {
   const knowledgeBase = structuredClone(ProjectKnowledgeBaseSchema.parse(input.knowledgeBase));
   const snapshots = new Map(input.snapshots.map((snapshot) => [snapshot.id, snapshot]));
+  const documentChunks = new Map((input.documentChunks ?? []).map((chunk) => [documentChunkKey(
+    chunk.sourceDocumentVersionId,
+    chunk.id,
+  ), chunk]));
   const blockers: ProjectKnowledgeEvidenceBlocker[] = [];
   const warnings: ProjectKnowledgeEvidenceBlocker[] = [];
   const counts = {
@@ -45,7 +69,9 @@ export function verifyProjectKnowledgeEvidence(input: {
     const refs = entry.value.evidenceRefs ?? [];
     if (!refs.length) continue;
     const verifiedRefs = refs.map((ref) => {
-      const result = verifyEvidenceRef(ref, snapshots.get(ref.sourceSnapshotId));
+      const result = ref.sourceKind === "document"
+        ? verifyDocumentEvidenceRef(ref, documentChunks)
+        : verifyWorkItemEvidenceRef(ref, snapshots.get(ref.sourceSnapshotId ?? ""));
       if (result.ref.verification === "exact") counts.exact += 1;
       if (result.ref.verification === "normalized") counts.normalized += 1;
       if (result.ref.verification === "auto_reanchored") counts.autoReanchored += 1;
@@ -62,9 +88,10 @@ export function verifyProjectKnowledgeEvidence(input: {
       return result.ref;
     });
     entry.value.evidenceRefs = sortProjectKnowledgeEvidenceRefs(verifiedRefs);
-    entry.value.sourceWorkItemIds = Array.from(
-      new Set(entry.value.evidenceRefs.map((ref) => ref.sourceWorkItemId)),
-    );
+    entry.value.sourceWorkItemIds = Array.from(new Set(
+      entry.value.evidenceRefs.flatMap((ref) =>
+        ref.sourceKind === "work_item" && ref.sourceWorkItemId ? [ref.sourceWorkItemId] : []),
+    ));
     entry.value.evidence = renderProjectKnowledgeEvidenceRefs(entry.value.evidenceRefs);
   }
 
@@ -76,7 +103,7 @@ export function verifyProjectKnowledgeEvidence(input: {
   };
 }
 
-function verifyEvidenceRef(
+function verifyWorkItemEvidenceRef(
   ref: ProjectKnowledgeEvidenceRef,
   snapshot: ProjectKnowledgeEvidenceSnapshot | undefined,
 ): { ref: ProjectKnowledgeEvidenceRef; issue?: Omit<ProjectKnowledgeEvidenceBlocker, "category" | "entryKey"> } {
@@ -87,6 +114,39 @@ function verifyEvidenceRef(
 
   const fieldValue = projectKnowledgeSourceFieldText(snapshot.fields, ref.sourceField);
   if (!fieldValue) return unresolved(ref, "source_field_missing", "The cited strict source field is empty or missing.");
+  return verifyQuoteAgainstText(ref, fieldValue);
+}
+
+function verifyDocumentEvidenceRef(
+  ref: ProjectKnowledgeEvidenceRef,
+  chunks: Map<string, ProjectKnowledgeDocumentEvidenceChunk>,
+): { ref: ProjectKnowledgeEvidenceRef; issue?: Omit<ProjectKnowledgeEvidenceBlocker, "category" | "entryKey"> } {
+  const chunkId = typeof ref.locator?.documentChunkId === "string" ? ref.locator.documentChunkId.trim() : "";
+  if (!chunkId || !ref.sourceDocumentVersionId) {
+    return unresolved(ref, "document_chunk_missing", "The cited immutable document chunk does not exist.");
+  }
+  const chunk = chunks.get(documentChunkKey(ref.sourceDocumentVersionId, chunkId));
+  if (!chunk) return unresolved(ref, "document_chunk_missing", "The cited immutable document chunk does not exist.");
+  if (chunk.sourceDocumentId !== ref.sourceDocumentId) {
+    return unresolved(ref, "document_mismatch", "The cited chunk belongs to a different document.");
+  }
+  if (chunk.sourceDocumentVersionId !== ref.sourceDocumentVersionId) {
+    return unresolved(ref, "document_version_mismatch", "The cited chunk belongs to a different document version.");
+  }
+
+  const result = verifyQuoteAgainstText(ref, chunk.content);
+  // OCR/vision-derived chunks intentionally cannot be upgraded by quote matching:
+  // their unverified status is the automatic-publication safety gate.
+  if (ref.verification === "unverified" || chunk.verification === "unverified") {
+    return { ...result, ref: { ...result.ref, verification: "unverified" } };
+  }
+  return result;
+}
+
+function verifyQuoteAgainstText(
+  ref: ProjectKnowledgeEvidenceRef,
+  fieldValue: string,
+): { ref: ProjectKnowledgeEvidenceRef; issue?: Omit<ProjectKnowledgeEvidenceBlocker, "category" | "entryKey"> } {
   if (fieldValue.includes(ref.quote)) return { ref: { ...ref, verification: "exact" } };
   if (normalizeProjectKnowledgeSourceWhitespace(fieldValue).includes(normalizeProjectKnowledgeSourceWhitespace(ref.quote))) {
     return { ref: { ...ref, verification: "normalized" } };
@@ -115,12 +175,19 @@ function unresolved(
     ref: { ...ref, verification: "unverified" as const },
     issue: {
       type,
-      sourceSnapshotId: ref.sourceSnapshotId,
-      sourceWorkItemId: ref.sourceWorkItemId,
+      sourceKind: ref.sourceKind,
+      ...(ref.sourceSnapshotId ? { sourceSnapshotId: ref.sourceSnapshotId } : {}),
+      ...(ref.sourceWorkItemId ? { sourceWorkItemId: ref.sourceWorkItemId } : {}),
+      ...(ref.sourceDocumentId ? { sourceDocumentId: ref.sourceDocumentId } : {}),
+      ...(ref.sourceDocumentVersionId ? { sourceDocumentVersionId: ref.sourceDocumentVersionId } : {}),
       sourceField: ref.sourceField,
       message,
     },
   };
+}
+
+function documentChunkKey(sourceDocumentVersionId: string, chunkId: string) {
+  return `${sourceDocumentVersionId}\u0000${chunkId}`;
 }
 
 function uniqueTokenReanchor(fieldValue: string, quote: string) {

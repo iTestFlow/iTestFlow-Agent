@@ -50,6 +50,7 @@ import {
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project"
 import type { ProjectKnowledgeEvidenceRef } from "@/modules/rag/project-knowledge.schema"
 import { KnowledgeBuild, type KnowledgeInReviewDraft } from "./knowledge-build"
+import { DocumentsPanel } from "./documents-panel"
 import {
   KnowledgeCategoryFilterButton,
   KnowledgeEntryCard,
@@ -196,7 +197,7 @@ type KnowledgeExportResult = {
 
 type TopTab = "hub" | "build"
 type WorkspaceRole = "owner" | "admin" | "member"
-type HubView = "explorer" | "context" | "candidates"
+type HubView = "explorer" | "context" | "candidates" | "documents"
 type KnowledgeCandidateStatus = "legacy_ungrounded" | "grounded" | "rejected" | "integration_requested" | "integrated"
 
 type KnowledgeCandidate = {
@@ -274,6 +275,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeExport, setKnowledgeExport] = useState<KnowledgeExportResult | null>(null)
   const [knowledgeExportLoading, setKnowledgeExportLoading] = useState(false)
   const [knowledgeCandidates, setKnowledgeCandidates] = useState<KnowledgeCandidate[]>([])
+  const [documentCount, setDocumentCount] = useState<number | null>(null)
   const [candidateStatus, setCandidateStatus] = useState<KnowledgeCandidateStatus | "all">("all")
   const [candidateLoading, setCandidateLoading] = useState(false)
   const [page, setPage] = useState(1)
@@ -429,6 +431,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       setStatusLoading(false)
       setContextLoadingMore(false)
       setContextStatusError(null)
+      setDocumentCount(null)
       return
     }
     let cancelled = false
@@ -438,6 +441,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setKnowledgeError(null)
     setKnowledgeExport(null)
     setKnowledgeCandidates([])
+    setDocumentCount(null)
     setCandidateStatus("all")
     setPage(1)
     setSortBy("lastIndexedAt")
@@ -709,6 +713,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                   <HubViewTab value="explorer" label="Knowledge Explorer" shortLabel="Explorer" count={knowledgeStatusLoading ? "-" : totalKnowledgeItems} />
                   <HubViewTab value="context" label="Indexed Project Context" shortLabel="Indexed Context" count={totalCount} />
                   <HubViewTab value="candidates" label="Candidates" shortLabel="Candidates" count={knowledgeCandidates.length} />
+                  <HubViewTab value="documents" label="Documents" shortLabel="Documents" count={documentCount ?? "-"} />
                 </TabsList>
               </div>
 
@@ -762,6 +767,14 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                     canManage={canBuildKnowledge}
                     onStatusChange={setCandidateStatus}
                     onAction={updateKnowledgeCandidate}
+                  />
+                </TabsContent>
+
+                <TabsContent value="documents" className="mt-0">
+                  <DocumentsPanel
+                    scope={scope}
+                    canManage={canBuildKnowledge}
+                    onCountChange={setDocumentCount}
                   />
                 </TabsContent>
               </CardContent>
@@ -1555,7 +1568,10 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
       const meta = knowledgeMeta(category.key, item)
       const details = knowledgeDetails(category.key, item)
       const evidenceItems = item.evidenceRefs?.map((evidence) => ({
-        sourceWorkItemId: evidence.sourceWorkItemId,
+        sourceKind: evidence.sourceKind === "document" ? "document" as const : "work_item" as const,
+        ...(evidence.sourceWorkItemId ? { sourceWorkItemId: evidence.sourceWorkItemId } : {}),
+        ...(evidence.sourceDocumentId ? { sourceDocumentId: evidence.sourceDocumentId } : {}),
+        ...(evidence.sourceDocumentVersionId ? { sourceDocumentVersionId: evidence.sourceDocumentVersionId } : {}),
         sourceField: evidence.sourceField,
         quote: evidence.quote,
       }))
@@ -1581,7 +1597,9 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
           ...meta,
           ...details.flatMap((detail) => [detail.id, detail.label, detail.value]),
           ...(evidenceItems ?? []).flatMap((evidence) => [
-            evidence.sourceWorkItemId,
+            evidence.sourceWorkItemId ?? "",
+            evidence.sourceDocumentId ?? "",
+            evidence.sourceDocumentVersionId ?? "",
             evidence.sourceField,
             evidence.quote,
           ]),

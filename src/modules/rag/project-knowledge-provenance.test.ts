@@ -98,4 +98,55 @@ describe("immutable evidence verification", () => {
     });
     expect(result.blockers[0]).toMatchObject({ type: "work_item_mismatch" });
   });
+
+  it("verifies immutable document chunks without inventing a work-item id", () => {
+    const documentRef: ProjectKnowledgeEvidenceRef = {
+      sourceKind: "document",
+      sourceDocumentId: "doc-1",
+      sourceDocumentVersionId: "version-2",
+      sourceField: "documentContent",
+      quote: "Payment is required before submission.",
+      locator: { documentChunkId: "chunk-4", pageNumber: 2 },
+      origin: "generated_v4",
+      verification: "exact",
+    };
+    const knowledgeBase = ProjectKnowledgeBaseSchema.parse({
+      modules: [{
+        id: "mod-payment",
+        name: "Payment",
+        description: "Payment policy.",
+        sourceWorkItemIds: [],
+        evidence: documentRef.quote,
+        evidenceRefs: [documentRef],
+      }],
+    });
+    const result = verifyProjectKnowledgeEvidence({
+      knowledgeBase,
+      snapshots: [],
+      documentChunks: [{
+        id: "chunk-4",
+        sourceDocumentId: "doc-1",
+        sourceDocumentVersionId: "version-2",
+        content: "Payment is required before submission.",
+      }],
+    });
+
+    expect(result.blockers).toEqual([]);
+    expect(result.knowledgeBase.modules[0]).toMatchObject({
+      sourceWorkItemIds: [],
+      evidenceRefs: [{
+        sourceKind: "document",
+        sourceDocumentId: "doc-1",
+        sourceDocumentVersionId: "version-2",
+        verification: "exact",
+      }],
+    });
+
+    const missing = verifyProjectKnowledgeEvidence({
+      knowledgeBase,
+      snapshots: [],
+      documentChunks: [],
+    });
+    expect(missing.blockers[0]).toMatchObject({ type: "document_chunk_missing" });
+  });
 });

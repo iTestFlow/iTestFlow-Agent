@@ -6,6 +6,8 @@ import {
   PROJECT_KNOWLEDGE_PROVENANCE_HASH_VERSION,
   PROJECT_KNOWLEDGE_SEMANTIC_HASH_VERSION,
   PROJECT_KNOWLEDGE_WORDING_VERSION,
+  ProjectKnowledgeSourceManifestSchema,
+  canonicalEvidenceRefProjection,
   canonicalJson,
   canonicalizeBusinessRuleSourceFieldForProjection,
   canonicalizeProjectKnowledgeLogicalIdentity,
@@ -14,6 +16,7 @@ import {
   displayProjectKnowledgeDraftStatus,
   flattenProjectKnowledgeSemanticEntries,
   getEntryProvenanceStatus,
+  hashCanonicalValue,
 } from "./project-knowledge-contracts";
 import {
   ProjectKnowledgeBaseSchema,
@@ -106,8 +109,8 @@ describe("project knowledge canonical hashes", () => {
     });
   });
 
-  it("uses compiler contract v4.2 without changing the hash algorithm versions", () => {
-    expect(PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION).toBe("4.2.0");
+  it("uses compiler contract v5.0 for document evidence without changing hash algorithm versions", () => {
+    expect(PROJECT_KNOWLEDGE_COMPILER_CONTRACT_VERSION).toBe("5.0.0");
     expect(PROJECT_KNOWLEDGE_WORDING_VERSION).toBe("4.0.0");
     expect(PROJECT_KNOWLEDGE_SEMANTIC_HASH_VERSION).toBe("semantic-v2");
     expect(PROJECT_KNOWLEDGE_PROVENANCE_HASH_VERSION).toBe("provenance-v2");
@@ -256,6 +259,66 @@ describe("project knowledge canonical hashes", () => {
       ref({ sourceSnapshotId: "snapshot-2", verification: "auto_reanchored" }),
     ])).toBe("verified");
   });
+
+  it("keeps the exact pre-M2 key set for work-item evidence-ref projections", () => {
+    const projection = canonicalEvidenceRefProjection(ref());
+    expect(Object.keys(projection).sort()).toEqual([
+      "locator",
+      "origin",
+      "quote",
+      "sourceField",
+      "sourceSnapshotId",
+      "sourceWorkItemId",
+      "verification",
+    ]);
+    expect(projection).not.toHaveProperty("sourceKind");
+  });
+
+  it("pins the work-item entry provenance hash to the frozen pre-M2 (v4.2.0) shape", () => {
+    const workItemRef = ref({
+      sourceSnapshotId: "snapshot-42",
+      sourceWorkItemId: "42",
+      sourceField: "acceptanceCriteria",
+      quote: "Checkout   requires\tpayment",
+      locator: { section: "b", index: 2 },
+      origin: "migrated_legacy",
+      verification: "auto_reanchored",
+    });
+    const knowledgeBase = ProjectKnowledgeBaseSchema.parse({
+      modules: [{
+        id: "mod-checkout",
+        name: "Checkout",
+        description: "Handles checkout.",
+        sourceWorkItemIds: ["42"],
+        evidence: "Checkout requires payment",
+        evidenceRefs: [workItemRef],
+      }],
+    });
+
+    // The exact object canonicalEvidenceRefProjection produced at HEAD, before
+    // document evidence support existed. This is inlined (not derived by calling
+    // the production function) so a future reshaping of the work-item branch
+    // fails this assertion instead of silently moving entry_provenance_hash for
+    // every already-published entry.
+    const headShapedProvenance = [{
+      sourceSnapshotId: "snapshot-42",
+      sourceWorkItemId: "42",
+      sourceField: "acceptanceCriteria",
+      quote: "Checkout requires payment",
+      locator: { index: 2, section: "b" },
+      origin: "migrated_legacy",
+      verification: "auto_reanchored",
+    }];
+
+    const hashes = computeProjectKnowledgeHashes(knowledgeBase);
+    const moduleEntry = hashes.entries.find((entry) => entry.category === "module");
+    expect(moduleEntry?.entryProvenanceHash).toBe(hashCanonicalValue(headShapedProvenance));
+    expect(hashes.provenanceHash).toBe(hashCanonicalValue([{
+      category: "module",
+      canonicalKey: "mod-checkout",
+      provenance: headShapedProvenance,
+    }]));
+  });
 });
 
 describe("source and lifecycle contracts", () => {
@@ -278,6 +341,49 @@ describe("source and lifecycle contracts", () => {
       .toBe(computeProjectKnowledgeSourceFingerprint([...manifest].reverse()));
     expect(computeProjectKnowledgeSourceFingerprint(manifest))
       .not.toBe(computeProjectKnowledgeSourceFingerprint([{ ...manifest[0], contentHash: "changed" }, manifest[1]]));
+  });
+
+  it("pins the work-item source fingerprint to the frozen pre-M2 (v4.2.0) shape", () => {
+    const manifest = [
+      { sourceSnapshotId: "s1", sourceWorkItemId: "1", workItemType: "Story", contentHash: "h1", adoRevision: 1, capturedAt: "2026-01-01" },
+      { sourceSnapshotId: "s2", sourceWorkItemId: "2", workItemType: "Bug", contentHash: "h2", adoRevision: null, capturedAt: "2026-01-02" },
+    ];
+
+    // The exact per-entry object computeProjectKnowledgeSourceFingerprint hashed at
+    // HEAD, already in the order sortProjectKnowledgeSourceManifest produces for an
+    // all-work-item manifest (ascending sourceWorkItemId, matching input here).
+    const headShapedManifest = [
+      { sourceSnapshotId: "s1", sourceWorkItemId: "1", workItemType: "Story", contentHash: "h1", adoRevision: 1 },
+      { sourceSnapshotId: "s2", sourceWorkItemId: "2", workItemType: "Bug", contentHash: "h2", adoRevision: null },
+    ];
+
+    expect(computeProjectKnowledgeSourceFingerprint(manifest)).toBe(hashCanonicalValue(headShapedManifest));
+  });
+
+  it("fingerprints document sources by immutable version and content hash", () => {
+    const manifest = ProjectKnowledgeSourceManifestSchema.parse([{
+      sourceKind: "document",
+      sourceDocumentId: "doc-1",
+      sourceDocumentVersionId: "version-1",
+      documentName: "Checkout policy.pdf",
+      documentKind: "document",
+      fileFormat: "pdf",
+      contentHash: "hash-1",
+      capturedAt: "2026-01-01",
+    }]);
+    expect(computeProjectKnowledgeSourceFingerprint(manifest)).toBe(
+      computeProjectKnowledgeSourceFingerprint(ProjectKnowledgeSourceManifestSchema.parse([{
+        ...manifest[0],
+        documentName: "Renamed policy.pdf",
+      }])),
+    );
+    expect(computeProjectKnowledgeSourceFingerprint(manifest)).not.toBe(
+      computeProjectKnowledgeSourceFingerprint(ProjectKnowledgeSourceManifestSchema.parse([{
+        ...manifest[0],
+        sourceDocumentVersionId: "version-2",
+        contentHash: "hash-2",
+      }])),
+    );
   });
 
   it("reports compiling only while the generating heartbeat is fresh", () => {
