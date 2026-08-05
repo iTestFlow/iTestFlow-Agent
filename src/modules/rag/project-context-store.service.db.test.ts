@@ -408,7 +408,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       { projectId: PROJ_A },
     );
     expect(orphanChunks?.count).toBe(2);
-    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "payment gateway", embeddingProvider: null })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "payment gateway", embeddingProvider: null, sourceKinds: ["azure_work_item"] })).toEqual([]);
 
     const recent = await getRecentProjectContext({ scope: scopeA });
     expect(recent.totalCount).toBe(2);
@@ -424,7 +424,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     const rows = await workItemRows(PROJ_A);
     expect(rows.filter((row) => row.sync_status === "active").map((row) => row.azure_work_item_id)).toEqual(["101", "102", "103"]);
 
-    const sources = await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "payment gateway", embeddingProvider: null });
+    const sources = await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "payment gateway", embeddingProvider: null, sourceKinds: ["azure_work_item"] });
     expect(sources.map((source) => source.workItemId)).toEqual(["101"]);
   });
 
@@ -432,14 +432,14 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     const result = await sync(scopeB, [telemetryItem()]);
     expect(result).toMatchObject({ createdCount: 1 });
 
-    const fromB = await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeB, query: "zebra telemetry ingest", embeddingProvider: null });
+    const fromB = await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeB, query: "zebra telemetry ingest", embeddingProvider: null, sourceKinds: ["azure_work_item"] });
     expect(fromB).toHaveLength(1);
     expect(fromB[0]).toMatchObject({ workItemId: "101", title: "Telemetry pipeline" });
     expect(fromB[0]?.content).toContain("zebra");
 
     // No leakage in either direction, even though both projects hold an item "101".
-    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "zebra telemetry ingest", embeddingProvider: null })).toEqual([]);
-    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeB, query: "payment gateway", embeddingProvider: null })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "zebra telemetry ingest", embeddingProvider: null, sourceKinds: ["azure_work_item"] })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeB, query: "payment gateway", embeddingProvider: null, sourceKinds: ["azure_work_item"] })).toEqual([]);
 
     const recentA = await getRecentProjectContext({ scope: scopeA });
     expect(recentA.totalCount).toBe(3);
@@ -476,6 +476,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       scope: scopeA,
       query: "refund delivered order checkout",
       embeddingProvider: null,
+      sourceKinds: ["azure_work_item"],
     });
 
     expect(sources.map((source) => source.workItemId)).toEqual(["102", "101"]);
@@ -488,10 +489,10 @@ describeDb("project context store sync state machine (DB-backed)", () => {
   });
 
   it("returns nothing for empty or unmatched queries instead of scanning the corpus", async () => {
-    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "", embeddingProvider: null })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "", embeddingProvider: null, sourceKinds: ["azure_work_item"] })).toEqual([]);
     // Every term is 2 chars or fewer, so the built tsquery is empty.
-    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "zz qq ab", embeddingProvider: null })).toEqual([]);
-    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "nonexistentterm", embeddingProvider: null })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "zz qq ab", embeddingProvider: null, sourceKinds: ["azure_work_item"] })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "nonexistentterm", embeddingProvider: null, sourceKinds: ["azure_work_item"] })).toEqual([]);
   });
 
   it("explicit workItemIds fetch returns those items regardless of query match, scored 1", async () => {
@@ -500,6 +501,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       scope: scopeA,
       query: "words matching nothing indexed",
       workItemIds: ["102"],
+      sourceKinds: ["azure_work_item"],
     });
     // refundItem (102) has both a description and acceptance criteria, so
     // field-aware chunking returns two chunks -- one source per chunk, both scored 1.
@@ -532,7 +534,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
 
     // Every 104 chunk matches both terms strongly; 105 matches only "inventory". Without
     // the per-work-item cap, 104's chunks would fill the result before 105 appears.
-    const sources = await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeC, query: "inventory warehouse", embeddingProvider: null });
+    const sources = await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeC, query: "inventory warehouse", embeddingProvider: null, sourceKinds: ["azure_work_item"] });
     expect(sources.map((source) => source.workItemId)).toEqual(["104", "105"]);
   });
 

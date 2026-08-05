@@ -29,6 +29,7 @@ import {
   displayProjectKnowledgeDraftStatus,
   getEntryProvenanceStatus,
   hashCanonicalValue,
+  isProjectKnowledgeDocumentSourceManifestEntry,
   flattenProjectKnowledgeSemanticEntries,
   type ProjectKnowledgeDraftStatus,
   type ProjectKnowledgeEntryCategory,
@@ -62,6 +63,7 @@ import { acquireProjectKnowledgeLock } from "./project-knowledge-lock";
 import { backfillProjectKnowledgeCompilerFoundation } from "./project-knowledge-migration.service";
 import {
   verifyProjectKnowledgeEvidence,
+  type ProjectKnowledgeDocumentEvidenceChunk,
   type ProjectKnowledgeEvidenceSnapshot,
 } from "./project-knowledge-provenance";
 import {
@@ -79,12 +81,14 @@ import {
 import {
   PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE,
   ProjectKnowledgeBaseSchema,
+  projectKnowledgeEvidenceRefSourceKey,
   renderProjectKnowledgeEvidenceRefs,
   sortProjectKnowledgeEvidenceRefs,
   type ProjectKnowledgeBase,
 } from "./project-knowledge.schema";
 import {
   buildProjectKnowledgeDraftPreview,
+  collectProjectKnowledgeDraftPreviewDocumentIds,
   type ProjectKnowledgeDraftPreviewCategory,
 } from "./project-knowledge-draft-preview";
 import {
@@ -92,6 +96,7 @@ import {
   omitUnsupportedProjectKnowledgeEntries,
 } from "./project-knowledge-grounding";
 import { isCompatibleProjectKnowledgeParaphrase } from "./project-knowledge-wording-carryover";
+import { getProjectSourceDocumentDisplayInfo } from "@/modules/documents/project-source-documents.service";
 
 type DraftRow = {
   id: string;
@@ -133,7 +138,7 @@ type CurrentKnowledgeRow = {
   provenance_hash: string | null;
 };
 
-type SourceManifestRow = {
+type WorkItemSourceManifestRow = {
   source_snapshot_id: string;
   source_work_item_id: string;
   work_item_type: string;
@@ -143,10 +148,28 @@ type SourceManifestRow = {
   captured_at: string;
 };
 
+type DocumentSourceManifestRow = {
+  source_document_id: string;
+  source_document_version_id: string;
+  document_name: string;
+  document_kind: "document" | "image" | null;
+  file_format: string | null;
+  content_hash: string;
+  captured_at: string;
+};
+
 type EvidenceSnapshotRow = {
   id: string;
   azure_work_item_id: string;
   fields_json: unknown;
+};
+
+type EvidenceDocumentChunkRow = {
+  id: string;
+  document_id: string;
+  source_document_version_id: string;
+  content: string;
+  metadata_json: unknown;
 };
 
 export type ProjectKnowledgeDraft = {
@@ -537,6 +560,9 @@ export async function completeProjectKnowledgeDraft(input: {
   rawOutput: string;
   knowledgeBase: ProjectKnowledgeBase;
   metrics?: Record<string, unknown>;
+  /** Generic immutable source keys; document keys are `document:<documentId>`. */
+  touchedSourceIds?: string[];
+  /** @deprecated Use touchedSourceIds so document-backed entries can be reconciled. */
   touchedSourceWorkItemIds?: string[];
   recoverMissingEvidenceRefs?: boolean;
 }) {
@@ -558,17 +584,19 @@ export async function completeProjectKnowledgeDraft(input: {
       ? ProjectKnowledgeBaseSchema.parse(generationData.baseKnowledgeBase)
       : null;
     const baseVersions = asArray(generationData.baseVersions) as ProjectKnowledgeVersionPrecondition[];
-    const touchedKeys = input.touchedSourceWorkItemIds
+    const touchedSourceIds = input.touchedSourceIds ?? input.touchedSourceWorkItemIds;
+    const touchedKeys = touchedSourceIds
       ? knowledgeEntryKeysForSources(
           [baseKnowledgeBase, parsedKnowledge].filter((value): value is ProjectKnowledgeBase => Boolean(value)),
-          new Set(input.touchedSourceWorkItemIds),
+          new Set(touchedSourceIds),
         )
       : undefined;
     const draftManifest = ProjectKnowledgeSourceManifestSchema.parse(asArray(row.source_manifest_json));
-    const evidenceSnapshots = await loadEvidenceSnapshots(scope, parsedKnowledge, draftManifest, client);
+    const evidenceSources = await loadEvidenceSources(scope, parsedKnowledge, draftManifest, client);
     const verification = verifyProjectKnowledgeEvidence({
       knowledgeBase: parsedKnowledge,
-      snapshots: evidenceSnapshots,
+      snapshots: evidenceSources.snapshots,
+      documentChunks: evidenceSources.documentChunks,
     });
     const strictGrounding = omitUnsupportedProjectKnowledgeEntries(verification.knowledgeBase);
     if (flattenProjectKnowledgeSemanticEntries(parsedKnowledge).length > 0 &&
@@ -873,7 +901,14 @@ export async function publishProjectKnowledgeDraft(input: {
         // time it has ever been indexed (e.g. newly in scope after widening a fetch
         // limit or filter, with an old, untouched updatedDate).
         sourceWorkItemHashes: Object.fromEntries(
-          frozenManifest.map((entry) => [entry.sourceWorkItemId, entry.contentHash]),
+          frozenManifest
+            .filter((entry) => !isProjectKnowledgeDocumentSourceManifestEntry(entry))
+            .map((entry) => [entry.sourceWorkItemId, entry.contentHash]),
+        ),
+        sourceDocumentHashes: Object.fromEntries(
+          frozenManifest
+            .filter(isProjectKnowledgeDocumentSourceManifestEntry)
+            .map((entry) => [`document:${entry.sourceDocumentId}`, entry.contentHash]),
         ),
       },
       baseRevisionId: draft.base_revision_id,
@@ -1050,7 +1085,7 @@ export async function getProjectKnowledgeDraftPreview(input: {
   if (draft.persistedStatus !== "ready_to_publish" || !draft.proposedKnowledge) {
     throw draftStateConflict(draft.persistedStatus);
   }
-  return buildProjectKnowledgeDraftPreview({
+  const preview = buildProjectKnowledgeDraftPreview({
     draftId: draft.id,
     draftVersion: projectKnowledgeDraftVersion(draft),
     status: draft.persistedStatus,
@@ -1060,6 +1095,22 @@ export async function getProjectKnowledgeDraftPreview(input: {
     page: input.page,
     pageSize: input.pageSize,
   });
+  // Provenance evidence refs deliberately store only ids (see
+  // project-knowledge.schema.ts) -- resolve display names for this page's
+  // evidence at read time rather than persisting them into the draft.
+  const { documentIds, versionIds } = collectProjectKnowledgeDraftPreviewDocumentIds(preview.entries);
+  const { documentNames, versionNumbers } = await getProjectSourceDocumentDisplayInfo({
+    scope: input.scope,
+    documentIds,
+    versionIds,
+  });
+  return {
+    ...preview,
+    documentDisplayNames: {
+      documentNames: Object.fromEntries(documentNames),
+      documentVersionNumbers: Object.fromEntries(versionNumbers),
+    },
+  };
 }
 
 export async function applyProjectKnowledgeConflictDecisions(input: {
@@ -1177,10 +1228,17 @@ function combineProjectKnowledgeConflictParticipants(
   }
   const evidenceRefs = sortProjectKnowledgeEvidenceRefs(Array.from(new Map(
     Array.from(selectedParticipants).flatMap((participantId) => byId.get(participantId)?.evidenceRefs ?? [])
-      .map((ref) => [[ref.sourceSnapshotId, ref.sourceField, ref.quote].join("\u0000"), ref]),
+      .map((ref) => [[
+        ref.sourceKind ?? "work_item",
+        ref.sourceSnapshotId ?? "",
+        ref.sourceDocumentVersionId ?? "",
+        ref.sourceField,
+        ref.quote,
+      ].join("\u0000"), ref]),
   ).values()));
   base.evidenceRefs = evidenceRefs;
-  base.sourceWorkItemIds = Array.from(new Set(evidenceRefs.map((ref) => ref.sourceWorkItemId)));
+  base.sourceWorkItemIds = Array.from(new Set(evidenceRefs.flatMap((ref) =>
+    ref.sourceKind === "document" || !ref.sourceWorkItemId ? [] : [ref.sourceWorkItemId])));
   base.evidence = renderProjectKnowledgeEvidenceRefs(evidenceRefs);
   return base as unknown as ProjectKnowledgeEntryValue;
 }
@@ -1304,12 +1362,114 @@ export async function markProjectKnowledgeSourceDrift(
   );
 }
 
+export type ProjectKnowledgeDocumentImpact = {
+  documentId: string;
+  totalEntries: number;
+  entries: Array<{
+    entryVersionId: string;
+    category: string;
+    entryKey: string;
+    title: string | null;
+    status: string;
+  }>;
+};
+
+export type ProjectKnowledgeDocumentSourceDriftAction =
+  | "archived"
+  | "restored"
+  | "replaced"
+  | "ingested"
+  | "metadata_updated";
+
+/**
+ * Finds currently live compiled entries backed by an uploaded document.
+ * Document lifecycle code uses this before archive/replacement to make the
+ * provenance impact explicit and mark the knowledge base stale.
+ */
+export async function getProjectKnowledgeDocumentImpact(input: {
+  scope: ProjectScope;
+  documentId: string;
+  client?: PoolClient;
+}): Promise<ProjectKnowledgeDocumentImpact> {
+  const scope = assertProjectScope(input.scope);
+  const rows = await sqlAll<{
+    entry_version_id: string;
+    category: string;
+    entry_key: string;
+    title: string | null;
+    status: string;
+  }>(
+    `
+      SELECT DISTINCT versions.id AS entry_version_id,
+             versions.category,
+             versions.entry_key,
+             versions.title,
+             versions.status
+      FROM project_knowledge_entry_evidence_refs refs
+      JOIN project_knowledge_entry_versions versions
+        ON versions.id = refs.entry_version_id
+      WHERE refs.project_id = @projectId
+        AND refs.workspace_id = @workspaceId
+        AND refs.azure_project_id = @azureProjectId
+        AND refs.source_kind = 'document'
+        AND refs.source_document_id = @documentId
+        AND versions.status = 'active'
+      ORDER BY versions.category, versions.entry_key, versions.id
+    `,
+    {
+      projectId: scope.projectId,
+      workspaceId: scope.workspaceId,
+      azureProjectId: scope.azureProjectId,
+      documentId: input.documentId,
+    },
+    input.client,
+  );
+  return {
+    documentId: input.documentId,
+    totalEntries: rows.length,
+    entries: rows.map((row) => ({
+      entryVersionId: row.entry_version_id,
+      category: row.category,
+      entryKey: row.entry_key,
+      title: row.title,
+      status: row.status,
+    })),
+  };
+}
+
+/**
+ * Transactional document-lifecycle seam. Archive, restore, replacement, and
+ * ingestion callers invoke this after changing the registry/version state so
+ * the published knowledge cannot remain trusted while its source manifest has
+ * changed. A restore is deliberately stale too: the next compile reselects the
+ * now-active document version rather than reviving old derived claims.
+ */
+export async function markProjectKnowledgeDocumentSourceDrift(input: {
+  scope: ProjectScope;
+  documentId: string;
+  action: ProjectKnowledgeDocumentSourceDriftAction;
+  client: PoolClient;
+}): Promise<ProjectKnowledgeDocumentImpact> {
+  const impact = await getProjectKnowledgeDocumentImpact({
+    scope: input.scope,
+    documentId: input.documentId,
+    client: input.client,
+  });
+  await markProjectKnowledgeSourceDrift(input.scope, {
+    type: `document_${input.action}`,
+    documentId: input.documentId,
+    impactedEntryCount: impact.totalEntries,
+    impactedEntryVersionIds: impact.entries.map((entry) => entry.entryVersionId),
+  }, input.client);
+  return impact;
+}
+
 export async function loadCurrentProjectKnowledgeSourceManifest(
   scopeInput: ProjectScope,
   client?: PoolClient,
 ) {
   const scope = assertProjectScope(scopeInput);
-  const rows = await sqlAll<SourceManifestRow>(
+  const workItemRows = await sqlAll<WorkItemSourceManifestRow>(
     `
       SELECT snapshots.id AS source_snapshot_id,
              snapshots.azure_work_item_id AS source_work_item_id,
@@ -1326,15 +1486,55 @@ export async function loadCurrentProjectKnowledgeSourceManifest(
     { projectId: scope.projectId, azureProjectId: scope.azureProjectId },
     client,
   );
-  return ProjectKnowledgeSourceManifestSchema.parse(rows.map((row) => ({
-    sourceSnapshotId: row.source_snapshot_id,
-    sourceWorkItemId: row.source_work_item_id,
-    workItemType: row.work_item_type,
-    contentHash: row.content_hash,
-    adoRevision: row.ado_revision,
-    sourceUpdatedAt: row.source_updated_at,
-    capturedAt: row.captured_at,
-  })));
+  const documentRows = await sqlAll<DocumentSourceManifestRow>(
+    `
+      SELECT documents.id AS source_document_id,
+             versions.id AS source_document_version_id,
+             documents.document_name,
+             documents.document_kind,
+             versions.file_format,
+             versions.content_hash,
+             versions.created_at AS captured_at
+      FROM project_source_documents documents
+      JOIN project_source_document_versions versions
+        ON versions.id = documents.current_version_id
+       AND versions.document_id = documents.id
+      WHERE documents.project_id = @projectId
+        AND documents.workspace_id = @workspaceId
+        AND documents.azure_project_id = @azureProjectId
+        AND documents.lifecycle_status = 'active'
+        AND versions.parse_status IN ('parsed', 'partially_parsed')
+      ORDER BY documents.document_name, documents.id, versions.id
+    `,
+    {
+      workspaceId: scope.workspaceId,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+    },
+    client,
+  );
+  return ProjectKnowledgeSourceManifestSchema.parse([
+    ...workItemRows.map((row) => ({
+      sourceKind: "work_item" as const,
+      sourceSnapshotId: row.source_snapshot_id,
+      sourceWorkItemId: row.source_work_item_id,
+      workItemType: row.work_item_type,
+      contentHash: row.content_hash,
+      adoRevision: row.ado_revision,
+      sourceUpdatedAt: row.source_updated_at,
+      capturedAt: row.captured_at,
+    })),
+    ...documentRows.map((row) => ({
+      sourceKind: "document" as const,
+      sourceDocumentId: row.source_document_id,
+      sourceDocumentVersionId: row.source_document_version_id,
+      documentName: row.document_name,
+      ...(row.document_kind ? { documentKind: row.document_kind } : {}),
+      ...(row.file_format ? { fileFormat: row.file_format } : {}),
+      contentHash: row.content_hash,
+      capturedAt: row.captured_at,
+    })),
+  ]);
 }
 
 async function loadCurrentKnowledge(scope: ProjectScope, client?: PoolClient, forUpdate = false) {
@@ -1379,17 +1579,31 @@ async function loadActiveEntryVersions(scope: ProjectScope, client?: PoolClient)
     }));
 }
 
-async function loadEvidenceSnapshots(
+async function loadEvidenceSources(
   scope: ProjectScope,
   knowledgeBase: ProjectKnowledgeBase,
   sourceManifest: ProjectKnowledgeSourceManifestEntry[] = [],
   client?: PoolClient,
 ) {
   const snapshotIds = Array.from(new Set([
-    ...allEvidenceRefs(knowledgeBase).map((ref) => ref.sourceSnapshotId),
-    ...sourceManifest.map((entry) => entry.sourceSnapshotId),
+    ...allEvidenceRefs(knowledgeBase).flatMap((ref) =>
+      ref.sourceKind === "document" || !ref.sourceSnapshotId ? [] : [ref.sourceSnapshotId]),
+    ...sourceManifest
+      .filter((entry) => !isProjectKnowledgeDocumentSourceManifestEntry(entry))
+      .map((entry) => entry.sourceSnapshotId),
   ]));
-  return loadEvidenceSnapshotsByIds(scope, snapshotIds, client);
+  const documentVersionIds = Array.from(new Set([
+    ...allEvidenceRefs(knowledgeBase).flatMap((ref) =>
+      ref.sourceKind === "document" && ref.sourceDocumentVersionId ? [ref.sourceDocumentVersionId] : []),
+    ...sourceManifest
+      .filter(isProjectKnowledgeDocumentSourceManifestEntry)
+      .map((entry) => entry.sourceDocumentVersionId),
+  ]));
+  const [snapshots, documentChunks] = await Promise.all([
+    loadEvidenceSnapshotsByIds(scope, snapshotIds, client),
+    loadDocumentEvidenceChunksByVersionIds(scope, documentVersionIds, client),
+  ]);
+  return { snapshots, documentChunks };
 }
 
 async function loadEvidenceSnapshotsByIds(
@@ -1413,6 +1627,45 @@ async function loadEvidenceSnapshotsByIds(
     sourceWorkItemId: row.azure_work_item_id,
     fields: asRecord(row.fields_json),
   }));
+}
+
+async function loadDocumentEvidenceChunksByVersionIds(
+  scope: ProjectScope,
+  sourceDocumentVersionIds: string[],
+  client?: PoolClient,
+) {
+  if (!sourceDocumentVersionIds.length) return [];
+  const rows = await sqlAll<EvidenceDocumentChunkRow>(
+    `
+      SELECT id, document_id, source_document_version_id, content, metadata_json
+      FROM document_chunks
+      WHERE project_id = @projectId AND azure_project_id = @azureProjectId
+        AND workspace_id = @workspaceId
+        AND source_type = 'uploaded_document'
+        AND source_document_version_id = ANY(@sourceDocumentVersionIds::text[])
+      ORDER BY source_document_version_id, chunk_index, id
+    `,
+    {
+      projectId: scope.projectId,
+      workspaceId: scope.workspaceId,
+      azureProjectId: scope.azureProjectId,
+      sourceDocumentVersionIds,
+    },
+    client,
+  );
+  return rows.map((row): ProjectKnowledgeDocumentEvidenceChunk => {
+    const metadata = asRecord(row.metadata_json);
+    const origin = typeof metadata.origin === "string" ? metadata.origin : "";
+    return {
+      id: row.id,
+      sourceDocumentId: row.document_id,
+      sourceDocumentVersionId: row.source_document_version_id,
+      content: row.content,
+      ...(origin === "ocr_text" || origin === "vision_interpretation"
+        ? { verification: "unverified" as const }
+        : {}),
+    };
+  });
 }
 
 async function getDraftRow(
@@ -1783,7 +2036,10 @@ function knowledgeEntryKeysForSources(
   const keys = new Set<string>();
   for (const knowledgeBase of knowledgeBases) {
     for (const entry of flattenProjectKnowledgeSemanticEntries(knowledgeBase)) {
-      if (!entry.sourceWorkItemIds.some((sourceId) => sourceIds.has(sourceId))) continue;
+      const entrySourceIds = entry.evidenceRefs.length
+        ? entry.evidenceRefs.map(projectKnowledgeEvidenceRefSourceKey).filter(Boolean)
+        : entry.sourceWorkItemIds;
+      if (!entrySourceIds.some((sourceId) => sourceIds.has(sourceId))) continue;
       keys.add(`${entry.category}:${entry.entryKey}`);
     }
   }

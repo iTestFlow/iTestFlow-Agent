@@ -47,6 +47,7 @@ const MAX_LIMIT = 100;
 const ACTION_GROUP_LABELS: Record<string, string> = {
   azure_devops: "Azure DevOps",
   rag: "RAG",
+  documents: "Documents",
 };
 
 function scopeParams(workspaceId: string, scope?: ProjectScope): ScopeFilter {

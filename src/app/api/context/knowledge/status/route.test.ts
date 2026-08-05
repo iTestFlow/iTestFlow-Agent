@@ -54,6 +54,7 @@ describe("project knowledge status route", () => {
       snapshot: { id: "snapshot-1", status: "published" },
       generationAvailable: true,
       latestInReviewDraft: null,
+      documentDisplayNames: { documentNames: {}, documentVersionNumbers: {} },
     });
     expect(mocks.hasHealthyWorkerCapability).toHaveBeenCalledWith("project_knowledge_build");
   });

@@ -17,16 +17,10 @@ import {
   type ContextChatbotContextEvidence,
   type ContextChatbotKnowledgeEvidence,
 } from "@/modules/rag/context-chatbot-retrieval.service";
+import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-citations";
+import type { ProjectContextSourceKind } from "@/modules/rag/project-context-source";
 
-export type ContextChatbotCitation = {
-  sourceType: "project_context" | "project_knowledge";
-  sourceId: string;
-  title: string;
-  workItemId?: string;
-  workItemType?: string;
-  category?: string;
-  sourceWorkItemIds?: string[];
-};
+export type ContextChatbotCitation = WorkflowContextCitation;
 
 /** Mirrors evidence-budget's safety margin so history and evidence share one convention. */
 const BUDGET_SAFETY_FRACTION_FOR_HISTORY = 0.9;
@@ -62,6 +56,7 @@ export async function answerContextChatbot(input: {
   message: string;
   history?: ContextChatbotHistoryMessage[];
   selectedWorkItemIds?: string[];
+  sourceKinds?: readonly ProjectContextSourceKind[];
 }) {
   const scope = assertProjectScope(input.scope);
   const question = input.message.trim();
@@ -93,6 +88,7 @@ export async function answerContextChatbot(input: {
     knowledgeLimit: KNOWLEDGE_CANDIDATE_LIMIT,
     maxContextChunksPerWorkItem: MAX_CONTEXT_CHUNKS_PER_WORK_ITEM,
     selectedWorkItemIds: input.selectedWorkItemIds,
+    sourceKinds: input.sourceKinds,
     // Follow-ups ("what about the rejected one?") mean nothing on their own. Retrieval
     // previously got them verbatim while only the prompt saw the conversation, so the
     // model knew what was asked but was grounded on evidence chosen without it.
@@ -195,7 +191,7 @@ function buildSystemPrompt() {
     "Do not use internet search, live Azure DevOps data, pre-training facts, general product assumptions, or external sources.",
     "If the evidence does not support the answer, say that the indexed context and knowledge hub do not contain enough information.",
     "Never invent business rules, states, roles, modules, integrations, requirements, risks, or implementation details.",
-    "When making a claim, cite the local source ID in square brackets, such as [WI:12345] or [KB:business_rule:BR-001].",
+    "When making a claim, cite the local source ID in square brackets, such as [WI:12345], [DOC:document-id], or [KB:business_rule:BR-001].",
     "Be concise, practical, and explicit about uncertainty.",
   ].join("\n");
 }
@@ -267,10 +263,18 @@ function renderKnowledgeItem(item: ContextChatbotKnowledgeEvidence) {
 }
 
 function renderContext(context: ContextChatbotContextEvidence[]) {
-  if (!context.length) return "No indexed work item chunks matched this question.";
+  if (!context.length) return "No indexed context matched this question.";
   return context
-    .map((item) =>
-      [
+    .map((item) => item.sourceType === "uploaded_document"
+      ? [
+        `## ${item.sourceId} - ${item.title}`,
+        `- Document: ${item.documentName}`,
+        item.metadata.section ? `- Section: ${item.metadata.section}` : "",
+        item.metadata.pageNumber ? `- Page: ${item.metadata.pageNumber}` : "",
+        "",
+        item.content,
+      ].filter(Boolean).join("\n")
+      : [
         `## ${item.sourceId} - ${item.title}`,
         `- Type: ${item.workItemType}`,
         `- Work Item ID: ${item.workItemId}`,
@@ -279,9 +283,7 @@ function renderContext(context: ContextChatbotContextEvidence[]) {
         item.metadata.updatedDate ? `- Updated: ${item.metadata.updatedDate}` : "",
         "",
         item.content,
-      ]
-        .filter(Boolean)
-        .join("\n"),
+      ].filter(Boolean).join("\n"),
     )
     .join("\n\n");
 }
@@ -309,6 +311,19 @@ function buildCitations(context: ContextChatbotContextEvidence[], knowledge: Con
   const byId = new Map<string, ContextChatbotCitation>();
 
   context.forEach((item) => {
+    if (item.sourceType === "uploaded_document") {
+      byId.set(item.sourceId, {
+        sourceType: "uploaded_document",
+        sourceId: item.sourceId,
+        title: item.title,
+        documentId: item.documentId,
+        documentVersionId: item.documentVersionId,
+        documentName: item.documentName,
+        section: item.metadata.section,
+        pageNumber: item.metadata.pageNumber,
+      });
+      return;
+    }
     byId.set(item.sourceId, {
       sourceType: "project_context",
       sourceId: item.sourceId,

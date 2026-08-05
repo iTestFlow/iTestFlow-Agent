@@ -24,7 +24,8 @@ export function WorkflowContextCitations({
   className?: string
 }) {
   const contextCount = citations.filter((citation) => citation.sourceType === "project_context").length
-  const knowledgeCount = citations.length - contextCount
+  const documentCount = citations.filter((citation) => citation.sourceType === "uploaded_document").length
+  const knowledgeCount = citations.length - contextCount - documentCount
   return (
     <div className={cn("space-y-2", className)}>
       <div className="flex items-center justify-between gap-3">
@@ -33,6 +34,7 @@ export function WorkflowContextCitations({
             citations={citations}
             contextCount={contextCount}
             knowledgeCount={knowledgeCount}
+            documentCount={documentCount}
             trigger={
               <button
                 type="button"
@@ -55,6 +57,12 @@ export function WorkflowContextCitations({
           <BookOpen className="size-3" />
           {knowledgeCount} knowledge
         </Badge>
+        {documentCount ? (
+          <Badge variant="secondary" className="gap-1">
+            <Database className="size-3" />
+            {documentCount} document{documentCount === 1 ? "" : "s"}
+          </Badge>
+        ) : null}
         <ContextCitationBadges citations={citations} />
       </div>
     </div>
@@ -65,11 +73,13 @@ function ContextCitationsDialog({
   citations,
   contextCount,
   knowledgeCount,
+  documentCount,
   trigger,
 }: {
   citations: WorkflowContextCitation[]
   contextCount: number
   knowledgeCount: number
+  documentCount: number
   trigger: ReactNode
 }) {
   return (
@@ -81,7 +91,7 @@ function ContextCitationsDialog({
         <DialogHeader>
           <DialogTitle>All Context References</DialogTitle>
           <DialogDescription>
-            {citations.length} references used: {contextCount} project context and {knowledgeCount} project knowledge.
+            {citations.length} references used: {contextCount} project context, {knowledgeCount} project knowledge, and {documentCount} documents.
           </DialogDescription>
         </DialogHeader>
         <div className="max-h-[min(65vh,36rem)] overflow-y-scroll pr-3 [scrollbar-gutter:stable]">
@@ -95,6 +105,10 @@ function ContextCitationsDialog({
                 {citation.sourceType === "project_context" ? (
                   <div className="text-xs text-muted-foreground">
                     {citation.workItemType} work item {citation.workItemId}
+                  </div>
+                ) : citation.sourceType === "uploaded_document" ? (
+                  <div className="text-xs text-muted-foreground">
+                    {citation.documentName}{citation.pageNumber ? ` · page ${citation.pageNumber}` : ""}{citation.section ? ` · ${citation.section}` : ""}
                   </div>
                 ) : (
                   <div className="space-y-1 text-xs text-muted-foreground">
@@ -182,12 +196,17 @@ export function ContextCitationBadges({ citations }: { citations: WorkflowContex
 function citationLabel(citation: WorkflowContextCitation) {
   return citation.sourceType === "project_context"
     ? `${citation.sourceId} ${citation.workItemType}`.trim()
+    : citation.sourceType === "uploaded_document"
+      ? `${citation.sourceId} Document`
     : citation.sourceId
 }
 
 function citationTitle(citation: WorkflowContextCitation) {
   if (citation.sourceType === "project_context") {
     return `${citation.title}\n${citation.workItemType} ${citation.sourceId}`
+  }
+  if (citation.sourceType === "uploaded_document") {
+    return `${citation.title}\nDocument: ${citation.documentName}${citation.pageNumber ? `\nPage: ${citation.pageNumber}` : ""}${citation.section ? `\nSection: ${citation.section}` : ""}`
   }
 
   const sources = citation.sourceWorkItemIds.length

@@ -19,6 +19,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Separator } from "@/components/ui/separator"
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector"
 import { patchJson, postJson } from "@/components/workflow/post-json"
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
@@ -50,6 +51,7 @@ import {
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project"
 import type { ProjectKnowledgeEvidenceRef } from "@/modules/rag/project-knowledge.schema"
 import { KnowledgeBuild, type KnowledgeInReviewDraft } from "./knowledge-build"
+import { DocumentsPanel, fetchDocumentCount } from "./documents-panel"
 import {
   KnowledgeCategoryFilterButton,
   KnowledgeEntryCard,
@@ -187,6 +189,17 @@ type KnowledgeStatusResult = {
   snapshot: ProjectKnowledgeSnapshot | null
   generationAvailable?: boolean
   latestInReviewDraft?: KnowledgeInReviewDraft | null
+  documentDisplayNames?: KnowledgeDocumentDisplayNames
+}
+
+/**
+ * Read-time display names for document evidence, resolved server-side.
+ * Provenance never stores names (see project-knowledge.schema.ts), so this
+ * map is looked up alongside the snapshot rather than persisted with it.
+ */
+type KnowledgeDocumentDisplayNames = {
+  documentNames: Record<string, string>
+  documentVersionNumbers: Record<string, number>
 }
 
 type KnowledgeExportResult = {
@@ -196,7 +209,7 @@ type KnowledgeExportResult = {
 
 type TopTab = "hub" | "build"
 type WorkspaceRole = "owner" | "admin" | "member"
-type HubView = "explorer" | "context" | "candidates"
+type HubView = "explorer" | "context" | "candidates" | "documents"
 type KnowledgeCandidateStatus = "legacy_ungrounded" | "grounded" | "rejected" | "integration_requested" | "integrated"
 
 type KnowledgeCandidate = {
@@ -269,11 +282,13 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeStatusLoading, setKnowledgeStatusLoading] = useState(false)
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null)
   const [knowledgeSnapshot, setKnowledgeSnapshot] = useState<ProjectKnowledgeSnapshot | null>(null)
+  const [knowledgeDocumentDisplayNames, setKnowledgeDocumentDisplayNames] = useState<KnowledgeDocumentDisplayNames | null>(null)
   const [generationAvailable, setGenerationAvailable] = useState<boolean | null>(null)
   const [resumableDraft, setResumableDraft] = useState<KnowledgeInReviewDraft | null>(null)
   const [knowledgeExport, setKnowledgeExport] = useState<KnowledgeExportResult | null>(null)
   const [knowledgeExportLoading, setKnowledgeExportLoading] = useState(false)
   const [knowledgeCandidates, setKnowledgeCandidates] = useState<KnowledgeCandidate[]>([])
+  const [documentCount, setDocumentCount] = useState<number | null>(null)
   const [candidateStatus, setCandidateStatus] = useState<KnowledgeCandidateStatus | "all">("all")
   const [candidateLoading, setCandidateLoading] = useState(false)
   const [page, setPage] = useState(1)
@@ -305,12 +320,23 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       setKnowledgeSnapshot(data.snapshot)
       setGenerationAvailable(typeof data.generationAvailable === "boolean" ? data.generationAvailable : null)
       setResumableDraft(data.latestInReviewDraft ?? null)
+      setKnowledgeDocumentDisplayNames(data.documentDisplayNames ?? null)
     } catch {
       setKnowledgeSnapshot(null)
       setGenerationAvailable(null)
       setResumableDraft(null)
+      setKnowledgeDocumentDisplayNames(null)
     } finally {
       setKnowledgeStatusLoading(false)
+    }
+  }, [scope])
+
+  const refreshDocumentCount = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
+    if (!activeScope) return
+    try {
+      setDocumentCount(await fetchDocumentCount(activeScope))
+    } catch {
+      setDocumentCount(0)
     }
   }, [scope])
 
@@ -429,6 +455,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       setStatusLoading(false)
       setContextLoadingMore(false)
       setContextStatusError(null)
+      setDocumentCount(null)
       return
     }
     let cancelled = false
@@ -438,6 +465,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setKnowledgeError(null)
     setKnowledgeExport(null)
     setKnowledgeCandidates([])
+    setDocumentCount(null)
     setCandidateStatus("all")
     setPage(1)
     setSortBy("lastIndexedAt")
@@ -453,6 +481,8 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       sortDirection: "desc",
       query: "",
     })
+
+    void refreshDocumentCount(scope)
 
     void postJson<KnowledgeStatusResult>("/api/context/knowledge/status", { scope })
       .then((data) => {
@@ -474,7 +504,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     return () => {
       cancelled = true
     }
-  }, [loadStatus, scope])
+  }, [loadStatus, refreshDocumentCount, scope])
 
   useEffect(() => {
     if (scope) void refreshKnowledgeCandidates(scope, candidateStatus)
@@ -709,6 +739,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                   <HubViewTab value="explorer" label="Knowledge Explorer" shortLabel="Explorer" count={knowledgeStatusLoading ? "-" : totalKnowledgeItems} />
                   <HubViewTab value="context" label="Indexed Project Context" shortLabel="Indexed Context" count={totalCount} />
                   <HubViewTab value="candidates" label="Candidates" shortLabel="Candidates" count={knowledgeCandidates.length} />
+                  <HubViewTab value="documents" label="Documents" shortLabel="Documents" count={documentCount ?? "-"} />
                 </TabsList>
               </div>
 
@@ -724,7 +755,10 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                         canManage={canBuildKnowledge}
                         onExport={exportKnowledgeWiki}
                       />
-                      <KnowledgeExplorer knowledgeBase={knowledgeSnapshot.knowledgeBase} />
+                      <KnowledgeExplorer
+                        knowledgeBase={knowledgeSnapshot.knowledgeBase}
+                        documentDisplayNames={knowledgeDocumentDisplayNames}
+                      />
                     </div>
                   ) : (
                     <KnowledgeEmptyState
@@ -764,6 +798,16 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                     onAction={updateKnowledgeCandidate}
                   />
                 </TabsContent>
+
+                <TabsContent value="documents" className="mt-0">
+                  {/* Documents are always view-only inside the Knowledge Hub tab, even for
+                      owners/admins: document management lives in the Build Knowledge tab. */}
+                  <DocumentsPanel
+                    scope={scope}
+                    canManage={false}
+                    onCountChange={setDocumentCount}
+                  />
+                </TabsContent>
               </CardContent>
             </Tabs>
           </Card>
@@ -787,7 +831,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                       <CardHeader>
                         <CardTitle className="text-base" role="heading" aria-level={2}>Load Project Index</CardTitle>
                         <p className="text-sm leading-6 text-muted-foreground">
-                          Sync the selected Azure DevOps work items, review what changed, then build project knowledge from that index.
+                          Sync the selected Azure DevOps work items and manage uploaded documents — both feed the knowledge build from this step.
                         </p>
                       </CardHeader>
                       <CardContent>
@@ -807,6 +851,11 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                           onRetryMetadata={retryWorkItemMetadata}
                           onLoad={loadProjectIndexForBuild}
                         />
+                        <Separator className="my-6" />
+                        {/* Documents are the second source kind feeding the same build
+                            manifest, so their management lives inside this sources step.
+                            DocumentsPanel renders its own heading and upload action. */}
+                        <DocumentsPanel scope={scope} canManage onCountChange={setDocumentCount} />
                       </CardContent>
                     </Card>
 
@@ -1341,10 +1390,12 @@ export function KnowledgeExportControls({
 
 export function KnowledgeExplorer({
   knowledgeBase,
+  documentDisplayNames = null,
   compact = false,
   highlightedEntryIdentities = NO_HIGHLIGHTED_KNOWLEDGE_ENTRIES,
 }: {
   knowledgeBase: ProjectKnowledgeBase
+  documentDisplayNames?: KnowledgeDocumentDisplayNames | null
   compact?: boolean
   highlightedEntryIdentities?: string[]
 }) {
@@ -1352,7 +1403,10 @@ export function KnowledgeExplorer({
   const [query, setQuery] = useState("")
   const [page, setPage] = useState(1)
   const scrollRegionRef = useRef<HTMLDivElement | null>(null)
-  const entries = useMemo(() => flattenKnowledgeEntries(knowledgeBase), [knowledgeBase])
+  const entries = useMemo(
+    () => flattenKnowledgeEntries(knowledgeBase, documentDisplayNames),
+    [knowledgeBase, documentDisplayNames],
+  )
   const counts = useMemo(() => getKnowledgeCategoryCounts(knowledgeBase), [knowledgeBase])
   const deferredQuery = useDeferredValue(query)
   const normalizedQuery = normalizeSearch(deferredQuery)
@@ -1546,7 +1600,10 @@ function KnowledgeEmptyState({
   )
 }
 
-function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): KnowledgeExplorerEntry[] {
+function flattenKnowledgeEntries(
+  knowledgeBase: ProjectKnowledgeBase,
+  documentDisplayNames: KnowledgeDocumentDisplayNames | null = null,
+): KnowledgeExplorerEntry[] {
   return KNOWLEDGE_CATEGORIES.flatMap((category) => {
     const items = knowledgeBase[category.key] as AnyKnowledgeItem[]
     return items.map((item, index) => {
@@ -1555,7 +1612,16 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
       const meta = knowledgeMeta(category.key, item)
       const details = knowledgeDetails(category.key, item)
       const evidenceItems = item.evidenceRefs?.map((evidence) => ({
-        sourceWorkItemId: evidence.sourceWorkItemId,
+        sourceKind: evidence.sourceKind === "document" ? "document" as const : "work_item" as const,
+        ...(evidence.sourceWorkItemId ? { sourceWorkItemId: evidence.sourceWorkItemId } : {}),
+        ...(evidence.sourceDocumentId ? { sourceDocumentId: evidence.sourceDocumentId } : {}),
+        ...(evidence.sourceDocumentVersionId ? { sourceDocumentVersionId: evidence.sourceDocumentVersionId } : {}),
+        ...(evidence.sourceDocumentId && documentDisplayNames?.documentNames[evidence.sourceDocumentId]
+          ? { documentName: documentDisplayNames.documentNames[evidence.sourceDocumentId] }
+          : {}),
+        ...(evidence.sourceDocumentVersionId && documentDisplayNames?.documentVersionNumbers[evidence.sourceDocumentVersionId] != null
+          ? { documentVersionNumber: documentDisplayNames.documentVersionNumbers[evidence.sourceDocumentVersionId] }
+          : {}),
         sourceField: evidence.sourceField,
         quote: evidence.quote,
       }))
@@ -1581,7 +1647,9 @@ function flattenKnowledgeEntries(knowledgeBase: ProjectKnowledgeBase): Knowledge
           ...meta,
           ...details.flatMap((detail) => [detail.id, detail.label, detail.value]),
           ...(evidenceItems ?? []).flatMap((evidence) => [
-            evidence.sourceWorkItemId,
+            evidence.sourceWorkItemId ?? "",
+            evidence.sourceDocumentId ?? "",
+            evidence.sourceDocumentVersionId ?? "",
             evidence.sourceField,
             evidence.quote,
           ]),

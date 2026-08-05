@@ -18,7 +18,7 @@ import {
   requirementToRetrievalQuery,
   retrieveStoredProjectContext,
   workItemToLlmContextSource,
-  type LlmContextSource,
+  type LlmWorkItemContextSource,
 } from "./project-context-store.service";
 import {
   isRequirementContextWorkItem,
@@ -30,7 +30,7 @@ import {
 const retrieveStoredProjectContextMock = vi.mocked(retrieveStoredProjectContext);
 const suggestContextStoriesMock = vi.mocked(suggestContextStories);
 
-function storedContext(overrides: Partial<LlmContextSource> = {}): LlmContextSource {
+function storedContext(overrides: Partial<LlmWorkItemContextSource> = {}): LlmWorkItemContextSource {
   return {
     sourceType: "azure_work_item",
     workItemId: "400",
@@ -123,6 +123,7 @@ describe("resolveWorkflowContext (explicit selection path)", () => {
       query: "300 400",
       workItemIds: ["300", "400"],
       topK: 6,
+      sourceKinds: ["azure_work_item"],
     });
   });
 
@@ -185,6 +186,7 @@ describe("resolveWorkflowContextWithoutLLM", () => {
       scope: projectScope(),
       query: requirementToRetrievalQuery(target),
       topK: 8,
+      sourceKinds: ["azure_work_item"],
     });
   });
 
@@ -208,7 +210,7 @@ describe("resolveWorkflowContextWithoutLLM", () => {
 
     expect(resolution.retrievalTopK).toBe(expected);
     expect(retrieveStoredProjectContextMock).toHaveBeenCalledWith(
-      expect.objectContaining({ topK: expected }),
+      expect.objectContaining({ topK: expected, sourceKinds: ["azure_work_item"] }),
     );
   });
 });
@@ -278,7 +280,7 @@ describe("resolveWorkflowContext (LLM selection path)", () => {
     );
     // Candidate ordering handed to the LLM: linked requirements first, then stored hits.
     const { retrievedContext } = suggestContextStoriesMock.mock.calls[0][0];
-    expect((retrievedContext as LlmContextSource[]).map((item) => item.workItemId)).toEqual([
+    expect((retrievedContext as LlmWorkItemContextSource[]).map((item) => item.workItemId)).toEqual([
       "300",
       "400",
       "500",

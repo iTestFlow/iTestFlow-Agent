@@ -20,7 +20,10 @@ const DescriptionTextSchema = z
 const SourceIdsSchema = z
   .array(z.string())
   .transform((ids) => Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean))))
-  .pipe(z.array(RequiredTextSchema).min(1));
+  // Document-only knowledge has no Azure DevOps work-item id. Grounding still
+  // requires at least one immutable evidence ref; this compatibility field is
+  // intentionally allowed to be empty for that second source kind.
+  .pipe(z.array(RequiredTextSchema));
 
 export const PROJECT_KNOWLEDGE_SOURCE_FIELDS = [
   "title",
@@ -31,6 +34,7 @@ export const PROJECT_KNOWLEDGE_SOURCE_FIELDS = [
   "areaPath",
   "iterationPath",
   "metadata",
+  "documentContent",
 ] as const;
 
 export const PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS = [
@@ -38,24 +42,87 @@ export const PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS = [
   "description",
   "acceptanceCriteria",
   "metadata",
+  "documentContent",
 ] as const;
 
-export const ProjectKnowledgeEvidenceRefSchema = z.object({
-  sourceSnapshotId: RequiredTextSchema,
-  sourceWorkItemId: RequiredTextSchema,
-  sourceField: z.enum(PROJECT_KNOWLEDGE_SOURCE_FIELDS),
+const ProjectKnowledgeEvidenceRefCommonShape = {
   quote: RequiredTextSchema,
   locator: z.record(z.string(), z.unknown()).optional(),
   origin: z.enum(["generated_v2", "generated_v4", "migrated_legacy", "reviewer_reanchored"]),
   verification: z.enum(["exact", "normalized", "auto_reanchored", "unverified"]),
+};
+
+const ProjectKnowledgeWorkItemEvidenceRefSchema = z.object({
+  // `optional` deliberately preserves the TypeScript compatibility surface for
+  // pre-M2 fixture literals; preprocess still materializes work_item when this
+  // old field is absent at runtime.
+  sourceKind: z.preprocess((value) => value ?? "work_item", z.literal("work_item").optional()),
+  sourceSnapshotId: RequiredTextSchema,
+  sourceWorkItemId: RequiredTextSchema,
+  sourceDocumentId: z.undefined().optional(),
+  sourceDocumentVersionId: z.undefined().optional(),
+  sourceField: z.enum(PROJECT_KNOWLEDGE_SOURCE_FIELDS).exclude(["documentContent"]),
+  ...ProjectKnowledgeEvidenceRefCommonShape,
 });
 
-export type ProjectKnowledgeEvidenceRef = z.infer<typeof ProjectKnowledgeEvidenceRefSchema>;
+const ProjectKnowledgeDocumentEvidenceRefSchema = z.object({
+  sourceKind: z.literal("document"),
+  sourceSnapshotId: z.undefined().optional(),
+  sourceWorkItemId: z.undefined().optional(),
+  sourceDocumentId: RequiredTextSchema,
+  sourceDocumentVersionId: RequiredTextSchema,
+  sourceField: z.literal("documentContent"),
+  ...ProjectKnowledgeEvidenceRefCommonShape,
+});
+
+/**
+ * The union makes the two immutable identities structural: a document cannot
+ * accidentally be persisted with a synthetic work-item id, and legacy work
+ * item JSON remains valid without a rewrite.
+ */
+export const ProjectKnowledgeEvidenceRefSchema = z.union([
+  ProjectKnowledgeWorkItemEvidenceRefSchema,
+  ProjectKnowledgeDocumentEvidenceRefSchema,
+]);
+
+/**
+ * Public compatibility shape. The runtime schema above is intentionally
+ * stricter and normalizes an omitted sourceKind to work_item; this broader
+ * declaration lets callers construct legacy work-item refs before parsing and
+ * lets document-aware rendering inspect either identity safely.
+ */
+export type ProjectKnowledgeEvidenceRef = {
+  sourceKind?: "work_item" | "document";
+  sourceSnapshotId?: string;
+  sourceWorkItemId?: string;
+  sourceDocumentId?: string;
+  sourceDocumentVersionId?: string;
+  sourceField: (typeof PROJECT_KNOWLEDGE_SOURCE_FIELDS)[number];
+  quote: string;
+  locator?: Record<string, unknown>;
+  origin: "generated_v2" | "generated_v4" | "migrated_legacy" | "reviewer_reanchored";
+  verification: "exact" | "normalized" | "auto_reanchored" | "unverified";
+};
 
 const EvidenceRefsSchema = z
   .array(ProjectKnowledgeEvidenceRefSchema)
   .transform(sortProjectKnowledgeEvidenceRefs)
   .optional();
+
+function requireEntrySourceIdentity(
+  entry: { sourceWorkItemIds: string[]; evidenceRefs?: ProjectKnowledgeEvidenceRef[] },
+  context: z.RefinementCtx,
+) {
+  // Existing work-item payloads remain strict: a bare entry cannot silently
+  // become source-less. The one valid empty compatibility array is a
+  // document-only entry, whose immutable identity lives in evidenceRefs.
+  if (entry.sourceWorkItemIds.length || entry.evidenceRefs?.length) return;
+  context.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["sourceWorkItemIds"],
+    message: "At least one work-item id or immutable evidence reference is required.",
+  });
+}
 
 const GlossaryTypeSchema = z.preprocess(
   (value) => (typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : value),
@@ -74,6 +141,7 @@ export const ProjectKnowledgeModuleSchema = z
     evidence: RequiredTextSchema,
     evidenceRefs: EvidenceRefsSchema,
   })
+  .superRefine(requireEntrySourceIdentity)
   .transform((module) => {
     const provenance = deriveCompatibilityProvenance(module);
     return {
@@ -93,7 +161,7 @@ export const ProjectKnowledgeBusinessRuleSchema = z.object({
   sourceWorkItemIds: SourceIdsSchema,
   evidence: RequiredTextSchema,
   evidenceRefs: EvidenceRefsSchema,
-}).transform((rule) => ({ ...rule, ...deriveCompatibilityProvenance(rule) }));
+}).superRefine(requireEntrySourceIdentity).transform((rule) => ({ ...rule, ...deriveCompatibilityProvenance(rule) }));
 
 export const ProjectKnowledgeStateTransitionSchema = z.object({
   id: RequiredTextSchema,
@@ -106,7 +174,7 @@ export const ProjectKnowledgeStateTransitionSchema = z.object({
   sourceWorkItemIds: SourceIdsSchema,
   evidence: RequiredTextSchema,
   evidenceRefs: EvidenceRefsSchema,
-}).transform((transition) => ({ ...transition, ...deriveCompatibilityProvenance(transition) }));
+}).superRefine(requireEntrySourceIdentity).transform((transition) => ({ ...transition, ...deriveCompatibilityProvenance(transition) }));
 
 export const ProjectKnowledgeGlossaryTermSchema = z.object({
   term: RequiredTextSchema,
@@ -115,11 +183,20 @@ export const ProjectKnowledgeGlossaryTermSchema = z.object({
   sourceWorkItemIds: SourceIdsSchema,
   evidence: RequiredTextSchema,
   evidenceRefs: EvidenceRefsSchema,
-}).transform((term) => ({ ...term, ...deriveCompatibilityProvenance(term) }));
+}).superRefine(requireEntrySourceIdentity).transform((term) => ({ ...term, ...deriveCompatibilityProvenance(term) }));
 
-type ProjectKnowledgeModule = z.infer<typeof ProjectKnowledgeModuleSchema>;
-type ProjectKnowledgeStateTransition = z.infer<typeof ProjectKnowledgeStateTransitionSchema>;
-type ProjectKnowledgeGlossaryTerm = z.infer<typeof ProjectKnowledgeGlossaryTermSchema>;
+type ProjectKnowledgeModule = Omit<z.infer<typeof ProjectKnowledgeModuleSchema>, "evidenceRefs"> & {
+  evidenceRefs?: ProjectKnowledgeEvidenceRef[];
+};
+type ProjectKnowledgeBusinessRule = Omit<z.infer<typeof ProjectKnowledgeBusinessRuleSchema>, "evidenceRefs"> & {
+  evidenceRefs?: ProjectKnowledgeEvidenceRef[];
+};
+type ProjectKnowledgeStateTransition = Omit<z.infer<typeof ProjectKnowledgeStateTransitionSchema>, "evidenceRefs"> & {
+  evidenceRefs?: ProjectKnowledgeEvidenceRef[];
+};
+type ProjectKnowledgeGlossaryTerm = Omit<z.infer<typeof ProjectKnowledgeGlossaryTermSchema>, "evidenceRefs"> & {
+  evidenceRefs?: ProjectKnowledgeEvidenceRef[];
+};
 
 export const ProjectKnowledgeCrossDependencySchema = z
   .object({
@@ -132,6 +209,7 @@ export const ProjectKnowledgeCrossDependencySchema = z
     evidence: RequiredTextSchema,
     evidenceRefs: EvidenceRefsSchema,
   })
+  .superRefine(requireEntrySourceIdentity)
   .transform((dependency) => {
     const provenance = deriveCompatibilityProvenance(dependency);
     return {
@@ -142,7 +220,9 @@ export const ProjectKnowledgeCrossDependencySchema = z
     };
   });
 
-type ProjectKnowledgeCrossDependency = z.infer<typeof ProjectKnowledgeCrossDependencySchema>;
+type ProjectKnowledgeCrossDependency = Omit<z.infer<typeof ProjectKnowledgeCrossDependencySchema>, "evidenceRefs"> & {
+  evidenceRefs?: ProjectKnowledgeEvidenceRef[];
+};
 
 /**
  * An admin-approved synthesis from the Business Owner Assistant, integrated into project
@@ -164,7 +244,7 @@ export const ProjectKnowledgeChatInsightSchema = z.object({
   id: RequiredTextSchema,
   title: RequiredTextSchema,
   content: RequiredTextSchema,
-  sourceWorkItemIds: SourceIdsSchema,
+  sourceWorkItemIds: SourceIdsSchema.pipe(z.array(RequiredTextSchema).min(1)),
   evidence: RequiredTextSchema,
 });
 
@@ -354,8 +434,11 @@ function canonicalLocatorValue(value: unknown): unknown {
 
 function evidenceRefIdentity(ref: ProjectKnowledgeEvidenceRef) {
   return [
-    ref.sourceWorkItemId,
-    ref.sourceSnapshotId,
+    ref.sourceKind ?? "work_item",
+    ref.sourceWorkItemId ?? "",
+    ref.sourceSnapshotId ?? "",
+    ref.sourceDocumentId ?? "",
+    ref.sourceDocumentVersionId ?? "",
     ref.sourceField,
     canonicalLocator(ref.locator),
     normalizeEvidenceQuote(ref.quote),
@@ -387,7 +470,12 @@ export function mergeProjectKnowledgeEvidenceRefs(
 // disagreement from the reviewer. Merge gates and wording carry-over use the relaxed
 // equivalence form below instead.
 export function projectKnowledgeEvidenceContentIdentity(ref: ProjectKnowledgeEvidenceRef) {
-  return [ref.sourceWorkItemId, ref.sourceField, normalizeEvidenceQuote(ref.quote)].join("\u0000");
+  return [
+    ref.sourceKind ?? "work_item",
+    ref.sourceKind === "document" ? ref.sourceDocumentId : ref.sourceWorkItemId,
+    ref.sourceField,
+    normalizeEvidenceQuote(ref.quote),
+  ].join("\u0000");
 }
 
 // Relaxed quote form for merge-gate equivalence ONLY. LLM re-quoting drifts in terminal
@@ -407,7 +495,12 @@ function relaxedEvidenceQuoteForm(value: string) {
 }
 
 export function projectKnowledgeEvidenceContentEquivalenceIdentity(ref: ProjectKnowledgeEvidenceRef) {
-  return [ref.sourceWorkItemId, ref.sourceField, relaxedEvidenceQuoteForm(ref.quote)].join("\u0000");
+  return [
+    ref.sourceKind ?? "work_item",
+    ref.sourceKind === "document" ? ref.sourceDocumentId : ref.sourceWorkItemId,
+    ref.sourceField,
+    relaxedEvidenceQuoteForm(ref.quote),
+  ].join("\u0000");
 }
 
 export function projectKnowledgeEvidenceContentIdentitySet(refs: ProjectKnowledgeEvidenceRef[] | undefined) {
@@ -497,9 +590,23 @@ function deriveCompatibilityProvenance(input: {
   const evidenceRefs = sortProjectKnowledgeEvidenceRefs(input.evidenceRefs);
   return {
     evidenceRefs,
-    sourceWorkItemIds: Array.from(new Set(evidenceRefs.map((ref) => ref.sourceWorkItemId))),
+    sourceWorkItemIds: Array.from(new Set(
+      evidenceRefs.flatMap((ref) => ref.sourceKind !== "document" && ref.sourceWorkItemId
+        ? [ref.sourceWorkItemId]
+        : []),
+    )),
     evidence: renderProjectKnowledgeEvidenceRefs(evidenceRefs),
   };
+}
+
+/**
+ * Source keys are scoped by kind so a document id can never collide with an
+ * Azure DevOps work-item id in incremental compilation bookkeeping.
+ */
+export function projectKnowledgeEvidenceRefSourceKey(ref: ProjectKnowledgeEvidenceRef) {
+  return ref.sourceKind === "document"
+    ? `document:${ref.sourceDocumentId}`
+    : ref.sourceWorkItemId ?? "";
 }
 
 export const PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE = {
@@ -512,9 +619,12 @@ export const PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE = {
       evidence: "string",
       evidenceRefs: [
         {
+          sourceKind: "work_item | document",
           sourceSnapshotId: "string",
           sourceWorkItemId: "string",
-          sourceField: "title | description | acceptanceCriteria | state | tags | areaPath | iterationPath | metadata",
+          sourceDocumentId: "string (document only)",
+          sourceDocumentVersionId: "string (document only)",
+          sourceField: "title | description | acceptanceCriteria | state | tags | areaPath | iterationPath | metadata | documentContent",
           quote: "exact string",
           locator: "optional object",
           origin: "generated_v2",
@@ -572,4 +682,11 @@ export const PROJECT_KNOWLEDGE_REQUIRED_OUTPUT_SHAPE = {
   ],
 } as const;
 
-export type ProjectKnowledgeBase = z.infer<typeof ProjectKnowledgeBaseSchema>;
+export type ProjectKnowledgeBase = {
+  modules: ProjectKnowledgeModule[];
+  businessRules: ProjectKnowledgeBusinessRule[];
+  stateTransitions: ProjectKnowledgeStateTransition[];
+  glossary: ProjectKnowledgeGlossaryTerm[];
+  crossDependencies: ProjectKnowledgeCrossDependency[];
+  chatInsights: ProjectKnowledgeChatInsight[];
+};

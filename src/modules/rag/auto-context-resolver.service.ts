@@ -8,8 +8,9 @@ import { assertProjectScope, type ProjectScope } from "@/modules/projects/projec
 import {
   requirementToRetrievalQuery,
   retrieveStoredProjectContext,
+  isWorkItemLlmContextSource,
   workItemToLlmContextSource,
-  type LlmContextSource,
+  type LlmWorkItemContextSource,
 } from "./project-context-store.service";
 
 export const REQUIREMENT_CONTEXT_WORK_ITEM_TYPES = [
@@ -32,8 +33,13 @@ export type ContextUsedItem = {
 };
 
 export type AutoContextResolution = {
-  selectedContext: LlmContextSource[];
-  relatedWorkItems: LlmContextSource[];
+  /**
+   * This resolver drives Azure-work-item-specific workflow contracts. Document
+   * context is intentionally handled by source-aware RAG/chatbot consumers,
+   * not passed into prompts that require a workItemId and workItemType.
+   */
+  selectedContext: LlmWorkItemContextSource[];
+  relatedWorkItems: LlmWorkItemContextSource[];
   contextUsed: ContextUsedItem[];
   retrievalTopK: number;
 };
@@ -112,7 +118,8 @@ async function resolveWorkflowContextCore(input: {
       scope,
       query: requirementToRetrievalQuery(input.targetRequirement),
       topK: retrievalTopK,
-    })).filter((item) => item.workItemId !== input.targetRequirement.id),
+      sourceKinds: ["azure_work_item"],
+    })).filter(isWorkItemLlmContextSource).filter((item) => item.workItemId !== input.targetRequirement.id),
   );
   const candidates = distinctContextByWorkItem([
     ...linkedRequirementContext,
@@ -191,10 +198,12 @@ async function loadExplicitContext(input: {
     query: input.selectedContextIds.join(" "),
     workItemIds: input.selectedContextIds,
     topK: input.retrievalTopK,
+    sourceKinds: ["azure_work_item"],
   });
-  const foundIds = new Set(stored.map((item) => item.workItemId));
+  const workItemContext = stored.filter(isWorkItemLlmContextSource);
+  const foundIds = new Set(workItemContext.map((item) => item.workItemId));
   const missingIds = input.selectedContextIds.filter((id) => !foundIds.has(id));
-  if (!missingIds.length) return distinctContextByWorkItem(stored);
+  if (!missingIds.length) return distinctContextByWorkItem(workItemContext);
 
   const fetched = await Promise.all(
     missingIds.map((workItemId) =>
@@ -202,7 +211,7 @@ async function loadExplicitContext(input: {
     ),
   );
   return distinctContextByWorkItem([
-    ...stored,
+    ...workItemContext,
     ...fetched.map((item) => workItemToLlmContextSource(item)),
   ]);
 }
@@ -212,7 +221,7 @@ async function selectContextWithLLM(input: {
   provider?: LLMProvider;
   actor?: string;
   targetRequirement: Requirement;
-  candidates: LlmContextSource[];
+  candidates: LlmWorkItemContextSource[];
   maxContextItems: number;
   workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review" | "test_execution_effort";
 }) {
@@ -237,7 +246,7 @@ async function selectContextWithLLM(input: {
   }
 }
 
-function distinctContextByWorkItem(items: LlmContextSource[]) {
+function distinctContextByWorkItem(items: LlmWorkItemContextSource[]) {
   const seen = new Set<string>();
   return items.filter((item) => {
     if (!item.workItemId || seen.has(item.workItemId)) return false;
@@ -247,8 +256,8 @@ function distinctContextByWorkItem(items: LlmContextSource[]) {
 }
 
 function mergePinnedContextItems(input: {
-  pinned: LlmContextSource[];
-  ranked: LlmContextSource[];
+  pinned: LlmWorkItemContextSource[];
+  ranked: LlmWorkItemContextSource[];
   maxItems: number;
 }) {
   return distinctContextByWorkItem([...input.pinned, ...input.ranked]).slice(0, input.maxItems);
@@ -258,7 +267,7 @@ function contextBudget(retrievalTopK: number, pinnedCount: number) {
   return Math.min(25, Math.max(retrievalTopK, pinnedCount));
 }
 
-function toContextUsedItem(item: LlmContextSource, source: ContextUsedItem["source"]): ContextUsedItem {
+function toContextUsedItem(item: LlmWorkItemContextSource, source: ContextUsedItem["source"]): ContextUsedItem {
   return {
     workItemId: item.workItemId,
     title: item.title,

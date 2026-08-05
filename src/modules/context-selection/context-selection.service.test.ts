@@ -87,4 +87,30 @@ describe("ContextSuggestionOutputSchema", () => {
       expect(result.error.issues.some((issue) => issue.path.includes("reason"))).toBe(true);
     }
   });
+
+  it("accepts document suggestions and supplies empty sibling arrays for legacy responses", () => {
+    const documentResult = ContextSuggestionOutputSchema.safeParse({
+      suggestedItems: [],
+      suggestedDocuments: [{
+        documentId: "doc-1",
+        documentVersionId: "docver-2",
+        documentName: "Payment policy.pdf",
+        relevanceScore: 0.72,
+        reason: "It defines the payment confirmation record.",
+      }],
+    });
+    expect(documentResult.success).toBe(true);
+    if (documentResult.success) {
+      expect(documentResult.data.suggestedDocuments[0]).toMatchObject({
+        documentId: "doc-1",
+        documentVersionId: "docver-2",
+      });
+    }
+
+    const legacyResult = ContextSuggestionOutputSchema.safeParse({ suggestedItems: [validItem] });
+    expect(legacyResult.success).toBe(true);
+    if (legacyResult.success) {
+      expect(legacyResult.data.suggestedDocuments).toEqual([]);
+    }
+  });
 });

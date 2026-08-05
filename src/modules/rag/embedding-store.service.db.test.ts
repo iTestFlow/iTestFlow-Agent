@@ -198,6 +198,7 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
       scope,
       query: "charge settlement",
       embeddingProvider: null,
+      sourceKinds: ["azure_work_item"],
     });
     expect(lexicalOnly).toEqual([]);
 
@@ -207,6 +208,7 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
       scope,
       query: "charge settlement",
       embeddingProvider: provider,
+      sourceKinds: ["azure_work_item"],
     });
     expect(hybrid[0]?.workItemId).toBe("201");
     expect(hybrid[0]?.relevanceScore).toBe(1);
@@ -217,6 +219,7 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
       scope,
       query: "telemetry devices",
       embeddingProvider: provider,
+      sourceKinds: ["azure_work_item"],
     });
     expect(agreed[0]?.workItemId).toBe("202");
     for (const source of agreed) {
@@ -241,6 +244,7 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
       scope,
       query: "telemetry devices",
       embeddingProvider: failing,
+      sourceKinds: ["azure_work_item"],
     });
     expect(sources[0]?.workItemId).toBe("202");
     expect(consoleError).toHaveBeenCalled();

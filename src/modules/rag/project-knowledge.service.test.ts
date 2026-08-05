@@ -133,6 +133,7 @@ function kbEvidenceRef(
   quote = `Evidence from ${sourceWorkItemId}`,
 ): ProjectKnowledgeEvidenceRef {
   return {
+    sourceKind: "work_item",
     sourceSnapshotId,
     sourceWorkItemId,
     sourceField: "description",

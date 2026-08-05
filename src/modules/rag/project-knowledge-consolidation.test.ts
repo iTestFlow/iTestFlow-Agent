@@ -9,6 +9,7 @@ function evidenceRef(
   quote: string,
 ): ProjectKnowledgeEvidenceRef {
   return {
+    sourceKind: "work_item",
     sourceSnapshotId,
     sourceWorkItemId,
     sourceField: "description",

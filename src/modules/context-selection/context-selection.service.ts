@@ -50,7 +50,7 @@ export async function suggestContextStories(input: {
     actor: input.actor,
     action: "context_selection.suggest",
     status: "Success",
-    message: `Suggested ${result.validatedOutput.suggestedItems.length} context stories.`,
+    message: `Suggested ${result.validatedOutput.suggestedItems.length + (result.validatedOutput.suggestedDocuments ?? []).length} project context sources.`,
     details: { ...truncationAuditDetails(result.warnings), provider: result.provider, model: result.model, promptVersion: contextSelectionPrompt.version },
   });
 

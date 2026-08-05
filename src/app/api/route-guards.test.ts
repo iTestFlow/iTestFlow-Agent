@@ -18,7 +18,19 @@ const AUTH_MARKERS = [
   "getCurrentSession",
   "requireWorkspaceAccess",
   "requireWorkspaceRole",
+  // Source-document routes centralize the same workflow membership check in
+  // document-route-helpers so every upload/download variant cannot drift.
+  "resolveDocumentReadScope",
+  "resolveDocumentMutationScope",
 ];
+
+function resolvesTrustedProjectScope(text: string) {
+  return (
+    (text.includes("requireWorkflowContext") && text.includes("resolveProjectScope"))
+    || text.includes("resolveDocumentReadScope")
+    || text.includes("resolveDocumentMutationScope")
+  );
+}
 
 const KNOWLEDGE_BUILD_ROUTES = [
   "context/index/route.ts",
@@ -78,7 +90,7 @@ describe("API route guards", () => {
     const missingResolver = routeFiles()
       .map((path) => ({ path, text: readFileSync(path, "utf8") }))
       .filter(({ text }) => text.includes("ProjectScopeSchema"))
-      .filter(({ text }) => !text.includes("requireWorkflowContext") || !text.includes("resolveProjectScope"))
+      .filter(({ text }) => !resolvesTrustedProjectScope(text))
       .map(({ path }) => apiRelative(path));
 
     expect(missingResolver).toEqual([]);
@@ -94,7 +106,7 @@ describe("API route guards", () => {
       .filter(({ text }) => text.includes("ProjectScopeSchema"))
       .filter(({ text }) => {
         const stripped = text
-          .replace(/resolveProjectScope\([^)]*\)/g, "") // the trusted resolver call (consumes the raw scope)
+          .replace(/(?:resolveProjectScope|resolveDocumentReadScope|resolveDocumentMutationScope)\([^)]*\)/g, "") // trusted resolver calls consume the raw scope
           .replace(/parsed\.data\.scope\??\.\w+/g, "") // workspace-hint access: parsed.data.scope(?.)workspaceId
           .replace(/parsed\.data\.scope\s*(\?(?!\.)|&&|\|\|)/g, ""); // truthiness guards: scope ?  / &&  / ||
         return stripped.includes("parsed.data.scope");
@@ -103,6 +115,14 @@ describe("API route guards", () => {
 
     // A non-empty list means a route forwards untrusted client scope downstream.
     expect(offenders).toEqual([]);
+  });
+
+  it("keeps document scope helpers chained to workflow auth and canonical scope resolution", () => {
+    const text = readFileSync(join(API_ROOT, "context/documents/document-route-helpers.ts"), "utf8");
+
+    expect(text).toContain("await requireWorkflowContext(scopeInput.workspaceId)");
+    expect(text).toContain("await resolveProjectScope(ctx, scopeInput)");
+    expect(text).toContain('await requireWorkflowRole(context.ctx, ["owner", "admin"], message)');
   });
 
   it("keeps knowledge build routes limited to owner/admin roles", () => {

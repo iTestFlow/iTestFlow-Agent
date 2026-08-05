@@ -49,6 +49,15 @@ function requiredOutputShape(schemaName: string) {
           reason: "string",
         },
       ],
+      suggestedDocuments: [
+        {
+          documentId: "string",
+          documentVersionId: "string",
+          documentName: "string",
+          relevanceScore: "number from 0 to 1",
+          reason: "string",
+        },
+      ],
     };
   }
 

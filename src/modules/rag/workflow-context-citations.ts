@@ -18,6 +18,16 @@ export const WorkflowContextCitationSchema = z.discriminatedUnion("sourceType", 
     category: z.string().min(1),
     sourceWorkItemIds: z.array(z.string()).default([]),
   }),
+  z.object({
+    sourceType: z.literal("uploaded_document"),
+    sourceId: z.string().min(1),
+    title: z.string().min(1),
+    documentId: z.string().min(1),
+    documentVersionId: z.string().min(1).optional(),
+    documentName: z.string().min(1),
+    section: z.string().min(1).optional(),
+    pageNumber: z.number().int().positive().optional(),
+  }),
 ]);
 
 export const WorkflowContextCitationsSchema = z.array(WorkflowContextCitationSchema).default([]);

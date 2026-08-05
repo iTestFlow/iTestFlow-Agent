@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildProjectKnowledgeDraftPreview } from "./project-knowledge-draft-preview";
+import {
+  buildProjectKnowledgeDraftPreview,
+  collectProjectKnowledgeDraftPreviewDocumentIds,
+} from "./project-knowledge-draft-preview";
 import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeEvidenceRef } from "./project-knowledge.schema";
 
 const evidenceRef: ProjectKnowledgeEvidenceRef = {
@@ -8,6 +11,16 @@ const evidenceRef: ProjectKnowledgeEvidenceRef = {
   sourceWorkItemId: "15",
   sourceField: "acceptanceCriteria",
   quote: "Payment gateway is called.",
+  origin: "generated_v4",
+  verification: "exact",
+};
+
+const documentEvidenceRef: ProjectKnowledgeEvidenceRef = {
+  sourceKind: "document",
+  sourceDocumentId: "doc-1",
+  sourceDocumentVersionId: "doc-1-v2",
+  sourceField: "documentContent",
+  quote: "The gateway is documented in the integration spec.",
   origin: "generated_v4",
   verification: "exact",
 };
@@ -90,6 +103,7 @@ describe("buildProjectKnowledgeDraftPreview", () => {
     });
     expect(result.entries).toHaveLength(2);
     expect(result.entries[0].evidence).toEqual([{
+      sourceKind: "work_item",
       sourceWorkItemId: "15",
       sourceField: "acceptanceCriteria",
       quote: "Payment gateway is called.",
@@ -134,5 +148,75 @@ describe("buildProjectKnowledgeDraftPreview", () => {
       page: 99,
       pageSize: 500,
     })).toMatchObject({ page: 1, pageSize: 50, pageCount: 1 });
+  });
+});
+
+describe("collectProjectKnowledgeDraftPreviewDocumentIds", () => {
+  const knowledgeBaseWithDocumentEvidence = ProjectKnowledgeBaseSchema.parse({
+    modules: [{
+      id: "checkout",
+      name: "Checkout",
+      description: "Completes purchases.",
+      sourceWorkItemIds: [],
+      evidence: documentEvidenceRef.quote,
+      evidenceRefs: [documentEvidenceRef],
+    }],
+    businessRules: [{
+      id: "BR-1",
+      rule: "Payment must succeed before an order is created.",
+      sourceField: "acceptanceCriteria",
+      moduleName: "Checkout",
+      sourceWorkItemIds: ["15"],
+      evidence: evidenceRef.quote,
+      evidenceRefs: [evidenceRef],
+    }],
+    stateTransitions: [],
+    glossary: [{
+      term: "Gateway",
+      type: "system",
+      definition: "The external payment gateway.",
+      sourceWorkItemIds: [],
+      evidence: documentEvidenceRef.quote,
+      // Same document/version id as the module above, to verify dedup across entries.
+      evidenceRefs: [documentEvidenceRef],
+    }],
+    crossDependencies: [],
+  });
+
+  it("collects the distinct document and version ids referenced by a page's evidence", () => {
+    const preview = buildProjectKnowledgeDraftPreview({
+      draftId: "draft-1",
+      draftVersion: "version-1",
+      status: "ready_to_publish",
+      knowledgeBase: knowledgeBaseWithDocumentEvidence,
+      pageSize: 50,
+    });
+
+    expect(collectProjectKnowledgeDraftPreviewDocumentIds(preview.entries)).toEqual({
+      documentIds: ["doc-1"],
+      versionIds: ["doc-1-v2"],
+    });
+  });
+
+  it("returns empty arrays when a page only has work-item evidence", () => {
+    const preview = buildProjectKnowledgeDraftPreview({
+      draftId: "draft-1",
+      draftVersion: "version-1",
+      status: "ready_to_publish",
+      knowledgeBase,
+      pageSize: 50,
+    });
+
+    expect(collectProjectKnowledgeDraftPreviewDocumentIds(preview.entries)).toEqual({
+      documentIds: [],
+      versionIds: [],
+    });
+  });
+
+  it("returns empty arrays for an empty entry list", () => {
+    expect(collectProjectKnowledgeDraftPreviewDocumentIds([])).toEqual({
+      documentIds: [],
+      versionIds: [],
+    });
   });
 });

@@ -20,7 +20,13 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 
 type KnowledgeEvidenceItem = {
-  sourceWorkItemId: string
+  sourceKind?: "work_item" | "document"
+  sourceWorkItemId?: string
+  sourceDocumentId?: string
+  sourceDocumentVersionId?: string
+  /** Resolved at read time by the caller; never persisted into provenance. */
+  documentName?: string
+  documentVersionNumber?: number
   sourceField: string
   quote: string
 }
@@ -28,7 +34,7 @@ type KnowledgeEvidenceItem = {
 type KnowledgeEvidenceGroup = {
   sourceField: string
   quote: string
-  sourceWorkItemIds: string[]
+  sourceLabels: string[]
 }
 
 export type KnowledgeDisplayEntry<TCategory extends string = string> = {
@@ -333,7 +339,7 @@ export const KnowledgeEntryCard = memo(function KnowledgeEntryCard({
                               >
                                 {evidence.sourceField}
                               </Badge>
-                              <SourceWorkItemBadges ids={evidence.sourceWorkItemIds} maxVisible={8} />
+                              <SourceReferenceBadges labels={evidence.sourceLabels} maxVisible={8} />
                             </div>
                             <blockquote className="mt-2.5 min-w-0 max-w-full whitespace-pre-wrap rounded-md border-l-2 border-primary/60 bg-accent/35 px-3 py-2 text-sm italic leading-6 text-muted-foreground [overflow-wrap:anywhere]">
                               {evidence.quote}
@@ -419,22 +425,71 @@ function groupEvidenceItems(items: KnowledgeEvidenceItem[]): KnowledgeEvidenceGr
     const sourceField = item.sourceField.trim()
     const quote = item.quote.trim()
     if (!quote) continue
+    const sourceLabel = evidenceSourceLabel(item)
     const key = `${sourceField}\u0000${quote}`
     const existing = groups.get(key)
     if (existing) {
-      if (!existing.sourceWorkItemIds.includes(item.sourceWorkItemId)) {
-        existing.sourceWorkItemIds.push(item.sourceWorkItemId)
+      if (!existing.sourceLabels.includes(sourceLabel)) {
+        existing.sourceLabels.push(sourceLabel)
       }
       continue
     }
     groups.set(key, {
       sourceField,
       quote,
-      sourceWorkItemIds: [item.sourceWorkItemId],
+      sourceLabels: [sourceLabel],
     })
   }
 
   return Array.from(groups.values())
+}
+
+function evidenceSourceLabel(item: KnowledgeEvidenceItem) {
+  if (item.sourceKind === "document" || item.sourceDocumentId) {
+    if (item.documentName) {
+      const version = item.documentVersionNumber != null ? ` · v${item.documentVersionNumber}` : ""
+      return `${item.documentName}${version}`
+    }
+    // Fallback for a hard-deleted or otherwise unresolvable document: keep
+    // the id-based label rather than hiding the citation.
+    const version = item.sourceDocumentVersionId ? ` · v${item.sourceDocumentVersionId}` : ""
+    return `Document ${item.sourceDocumentId ?? "unknown"}${version}`
+  }
+  return item.sourceWorkItemId ? `#${item.sourceWorkItemId}` : "Unknown source"
+}
+
+function SourceReferenceBadges({
+  labels,
+  maxVisible,
+}: {
+  labels: string[]
+  maxVisible: number
+}) {
+  const visibleLabels = labels.slice(0, maxVisible)
+  const hiddenLabels = labels.slice(maxVisible)
+  return (
+    <div role="group" aria-label="Evidence sources" className="flex w-full min-w-0 max-w-full flex-wrap gap-1">
+      {visibleLabels.map((label) => (
+        <Badge
+          key={label}
+          variant="outline"
+          className="h-auto max-w-full whitespace-normal font-mono text-xs tabular-nums [overflow-wrap:anywhere]"
+        >
+          {label}
+        </Badge>
+      ))}
+      {hiddenLabels.length ? (
+        <Badge
+          variant="outline"
+          className="h-auto max-w-full whitespace-normal font-mono text-xs tabular-nums text-muted-foreground [overflow-wrap:anywhere]"
+          aria-label={`${hiddenLabels.length} more evidence sources`}
+          title={hiddenLabels.join(", ")}
+        >
+          +{hiddenLabels.length}
+        </Badge>
+      ) : null}
+    </div>
+  )
 }
 
 function summaryFromDetails(entry: KnowledgeDisplayEntry) {

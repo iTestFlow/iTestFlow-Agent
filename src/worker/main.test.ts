@@ -33,10 +33,12 @@ const HEARTBEAT_MS = vi.hoisted(() => {
 });
 const CANCELLATION_POLL_MS = 1000;
 const KNOWLEDGE_TYPE = "project_knowledge_build";
+const DOCUMENT_INGEST_TYPE = "uploaded_document_ingest";
 
 vi.mock("@/modules/jobs/job-queue.service", () => jobQueue);
 vi.mock("@/modules/jobs/job-handlers", () => registry);
 vi.mock("@/modules/jobs/project-knowledge-jobs.service", () => ({ PROJECT_KNOWLEDGE_JOB: "project_knowledge_build" }));
+vi.mock("@/modules/jobs/uploaded-document-jobs.service", () => ({ UPLOADED_DOCUMENT_INGEST: "uploaded_document_ingest" }));
 vi.mock("@/modules/jobs/register-handlers", () => registration);
 vi.mock("@/modules/jobs/sync-schedule.service", () => schedule);
 vi.mock("@/modules/jobs/worker-registry.service", () => workerRegistry);
@@ -44,6 +46,7 @@ vi.mock("@/modules/jobs/worker-registry.service", () => workerRegistry);
 import type { Job } from "@/modules/jobs/job-queue.service";
 import {
   attachSupervisorShutdownChannel,
+  dispatchReadyDocumentIngestJobs,
   dispatchReadyKnowledgeJobs,
   processNextJob,
   requeueUnfinishedJobsForShutdown,
@@ -301,6 +304,38 @@ describe("dispatchReadyKnowledgeJobs", () => {
     expect(jobQueue.failJob).toHaveBeenCalledWith("job-a", "extraction exploded", WORKER_ID);
     expect(jobQueue.completeJob).toHaveBeenCalledWith("job-b", WORKER_ID, null);
     expect(jobQueue.completeJob).not.toHaveBeenCalledWith("job-a", expect.anything(), expect.anything());
+  });
+});
+
+describe("dispatchReadyDocumentIngestJobs", () => {
+  function documentJob(id: string): Job {
+    return makeJob({
+      id,
+      jobType: DOCUMENT_INGEST_TYPE,
+      dedupeKey: `uploaded_document_ingest:version-${id}`,
+      payload: { projectId: "proj-1", versionId: `version-${id}` },
+    });
+  }
+
+  it("claims at most the configured two document jobs and leaves the third queued", async () => {
+    const { handler, finish } = deferredHandler();
+    registry.getJobHandler.mockReturnValue(handler);
+    registry.registeredJobTypes.mockReturnValue(["workspace_context_sync", DOCUMENT_INGEST_TYPE]);
+    jobQueue.claimNextJob
+      .mockResolvedValueOnce(documentJob("doc-a"))
+      .mockResolvedValueOnce(documentJob("doc-b"));
+
+    await expect(dispatchReadyDocumentIngestJobs()).resolves.toBe(2);
+    expect(jobQueue.claimNextJob).toHaveBeenCalledTimes(2);
+    expect(jobQueue.claimNextJob).toHaveBeenNthCalledWith(1, WORKER_ID, [DOCUMENT_INGEST_TYPE], { reapStale: true });
+    expect(jobQueue.claimNextJob).toHaveBeenNthCalledWith(2, WORKER_ID, [DOCUMENT_INGEST_TYPE], { reapStale: false });
+    expect(handler).toHaveBeenCalledTimes(2);
+
+    finish("doc-a");
+    finish("doc-b");
+    await expect(waitForActiveJobs(1000)).resolves.toBe(true);
+    expect(jobQueue.completeJob).toHaveBeenCalledWith("doc-a", WORKER_ID, null);
+    expect(jobQueue.completeJob).toHaveBeenCalledWith("doc-b", WORKER_ID, null);
   });
 });
 

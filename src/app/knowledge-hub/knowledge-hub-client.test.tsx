@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -383,5 +386,32 @@ describe("Indexed Project Context progressive loading", () => {
 
     expect(appended.map((item) => item.workItemId)).toEqual(["101", "102", "103"]);
     expect(appended[1]?.title).toBe("Updated title");
+  });
+});
+
+/*
+ * Wiring guard in the route-guards.test.ts style: rendering the full
+ * KnowledgeHubClient is not feasible in jsdom (it composes the entire hub —
+ * pollers, tabs, build workflow), so the placement rules are asserted against
+ * the source. The view-only *behavior* itself (hidden upload actions, the
+ * admin hint) is covered behaviorally in documents-panel.test.tsx.
+ */
+describe("Knowledge Hub client documents tab placement", () => {
+  const clientSource = readFileSync(path.join(process.cwd(), "src/app/knowledge-hub/knowledge-hub-client.tsx"), "utf8");
+
+  it("keeps the hub Documents tab view-only for everyone", () => {
+    const hubDocumentsTab = clientSource.slice(
+      clientSource.indexOf('<TabsContent value="documents"'),
+      clientSource.indexOf('<TabsContent value="build"'),
+    );
+    expect(hubDocumentsTab).toContain("<DocumentsPanel");
+    expect(hubDocumentsTab).toContain("canManage={false}");
+  });
+
+  it("hosts document management inside the Build Knowledge tab", () => {
+    const buildTab = clientSource.slice(clientSource.indexOf('<TabsContent value="build"'));
+    const managedPanel = buildTab.slice(buildTab.indexOf("<DocumentsPanel"), buildTab.indexOf("/>", buildTab.indexOf("<DocumentsPanel")));
+    expect(managedPanel).toContain("canManage");
+    expect(managedPanel).not.toContain("canManage={false}");
   });
 });

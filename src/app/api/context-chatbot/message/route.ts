@@ -19,6 +19,7 @@ import {
 } from "@/modules/analytics/workflow-analytics.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
+import { PROJECT_CONTEXT_SOURCE_KINDS } from "@/modules/rag/project-context-source";
 
 export const runtime = "nodejs";
 
@@ -34,6 +35,7 @@ const RequestSchema = z.object({
     .max(50)
     .default([])
     .transform((ids) => Array.from(new Set(ids))),
+  sourceKinds: z.array(z.enum(PROJECT_CONTEXT_SOURCE_KINDS)).max(PROJECT_CONTEXT_SOURCE_KINDS.length).optional(),
   history: z
     .preprocess(
       (value) => (Array.isArray(value) ? value.slice(-CONTEXT_CHATBOT_HISTORY_REQUEST_LIMIT) : value),
@@ -73,6 +75,7 @@ export async function POST(request: Request) {
       message: parsed.data.message,
       history: parsed.data.history,
       selectedWorkItemIds: parsed.data.selectedWorkItemIds,
+      sourceKinds: parsed.data.sourceKinds,
     });
     completeWorkflowRun({
       scope: trustedScope,

@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildProjectKnowledgeCitationSources,
+  buildProjectSourceDocumentCitationSources,
   generatedProjectKnowledgeForOmissions,
   groundGeneratedProjectKnowledge,
   hasStrictProjectKnowledgeGrounding,
   omitUnsupportedProjectKnowledgeEntries,
   projectKnowledgeBaseToGeneratedPrompt,
   projectKnowledgeCitationHandle,
+  projectSourceDocumentCitationHandle,
   ProjectKnowledgeGeneratedBaseSchema,
 } from "./project-knowledge-grounding";
 
@@ -40,6 +42,54 @@ describe("Project Knowledge grounding", () => {
     expect(projectKnowledgeCitationHandle("snapshot-42", "title"))
       .not.toBe(projectKnowledgeCitationHandle("snapshot-42", "description"));
     expect(sources.every((source) => !source.handle.includes("snapshot-42"))).toBe(true);
+  });
+
+  it("grounds document-only knowledge with a separate immutable handle namespace", () => {
+    const sources = buildProjectSourceDocumentCitationSources([{
+      id: "chunk-7",
+      sourceDocumentId: "document-7",
+      sourceDocumentVersionId: "version-2",
+      documentName: "Checkout policy.pdf",
+      documentType: "pdf",
+      section: "Payment terms",
+      pageNumber: 3,
+      content: "Payment is required before an order is submitted.",
+    }]);
+    const source = sources[0]!;
+    expect(source.handle).toBe(projectSourceDocumentCitationHandle("version-2", "chunk-7"));
+    expect(source.handle).not.toBe(projectKnowledgeCitationHandle("version-2", "documentContent"));
+
+    const result = groundGeneratedProjectKnowledge({
+      sources,
+      generated: ProjectKnowledgeGeneratedBaseSchema.parse({
+        ...emptyGenerated(),
+        businessRules: [{
+          id: "br-payment-before-submit",
+          rule: "Payment is required before submission.",
+          citations: [{ handle: source.handle, quote: "Payment is required before an order is submitted." }],
+        }],
+      }),
+    });
+
+    expect(result.omissions).toEqual([]);
+    expect(result.knowledgeBase.businessRules[0]).toMatchObject({
+      sourceWorkItemIds: [],
+      evidenceRefs: [{
+        sourceKind: "document",
+        sourceDocumentId: "document-7",
+        sourceDocumentVersionId: "version-2",
+        sourceField: "documentContent",
+        locator: expect.objectContaining({
+          documentChunkId: "chunk-7",
+          documentName: "Checkout policy.pdf",
+          section: "Payment terms",
+          pageNumber: 3,
+          citationHandle: source.handle,
+        }),
+      }],
+    });
+    expect(projectKnowledgeBaseToGeneratedPrompt(result.knowledgeBase).businessRules[0]?.citations)
+      .toEqual([{ handle: source.handle, quote: "Payment is required before an order is submitted." }]);
   });
 
   it("resolves handles server-side to immutable provenance and ignores spoofed metadata", () => {
