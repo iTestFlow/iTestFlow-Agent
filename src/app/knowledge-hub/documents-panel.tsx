@@ -1475,6 +1475,21 @@ function newestInProgressVersionTimestamp(items: DocumentListItem[]): string | u
   return newest
 }
 
+/**
+ * Lets callers outside the panel (e.g. the tab badge) learn the document
+ * count without mounting the full panel — Radix Tabs only mounts a
+ * TabsContent's children once its tab becomes active, so the badge would
+ * otherwise show a placeholder until the user visits the Documents tab.
+ */
+export async function fetchDocumentCount(scope: ActiveProjectScope, lifecycleStatus: "active" | "archived" | "all" = "active"): Promise<number> {
+  const response = await getJson<unknown>(documentListUrl(scope, {
+    page: 1,
+    pageSize: 1,
+    lifecycleStatus: lifecycleStatus === "all" ? undefined : lifecycleStatus,
+  }))
+  return normalizeDocumentListResponse(response).totalCount
+}
+
 function documentListUrl(scope: ActiveProjectScope, input: {
   page: number
   pageSize: number

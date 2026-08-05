@@ -51,7 +51,7 @@ import {
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project"
 import type { ProjectKnowledgeEvidenceRef } from "@/modules/rag/project-knowledge.schema"
 import { KnowledgeBuild, type KnowledgeInReviewDraft } from "./knowledge-build"
-import { DocumentsPanel } from "./documents-panel"
+import { DocumentsPanel, fetchDocumentCount } from "./documents-panel"
 import {
   KnowledgeCategoryFilterButton,
   KnowledgeEntryCard,
@@ -331,6 +331,15 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     }
   }, [scope])
 
+  const refreshDocumentCount = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
+    if (!activeScope) return
+    try {
+      setDocumentCount(await fetchDocumentCount(activeScope))
+    } catch {
+      setDocumentCount(0)
+    }
+  }, [scope])
+
   const refreshKnowledgeCandidates = useCallback(async (
     activeScope: ActiveProjectScope | null = scope,
     status: KnowledgeCandidateStatus | "all" = candidateStatus,
@@ -473,6 +482,8 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       query: "",
     })
 
+    void refreshDocumentCount(scope)
+
     void postJson<KnowledgeStatusResult>("/api/context/knowledge/status", { scope })
       .then((data) => {
         if (cancelled) return
@@ -493,7 +504,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     return () => {
       cancelled = true
     }
-  }, [loadStatus, scope])
+  }, [loadStatus, refreshDocumentCount, scope])
 
   useEffect(() => {
     if (scope) void refreshKnowledgeCandidates(scope, candidateStatus)
