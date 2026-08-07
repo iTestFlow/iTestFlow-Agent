@@ -65,6 +65,7 @@ export function ScopeStep({
     suiteCases: ImportableTestCase[] | null;
     suiteCasesLoading: boolean;
     error: string | null;
+    onRetry: () => void;
   };
   cases: DraftCase[];
   onCasesChange: (cases: DraftCase[]) => void;
@@ -236,8 +237,13 @@ export function ScopeStep({
 
           {planSuite.error ? (
             <Alert variant="destructive">
-              <AlertTitle>Could not load from the test plan</AlertTitle>
-              <AlertDescription>{planSuite.error}</AlertDescription>
+              <AlertTitle>Test Plans are unavailable</AlertTitle>
+              <AlertDescription className="space-y-2">
+                <p>{planSuite.error}</p>
+                <Button variant="outline" size="sm" onClick={planSuite.onRetry}>
+                  Retry
+                </Button>
+              </AlertDescription>
             </Alert>
           ) : null}
           {planSuite.suiteCases !== null && planSuite.suiteCases.length === 0 && !planSuite.suiteCasesLoading ? (

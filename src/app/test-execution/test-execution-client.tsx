@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
 import { postJson, patchJson } from "@/components/workflow/post-json";
+import { ApiError } from "@/components/workflow/api-error";
 import { projectWarning, useActiveProject } from "@/components/workflow/test-intelligence-shared";
 import type { RunDetailDto } from "@/modules/test-execution/report-assembler";
 
@@ -81,6 +82,8 @@ export function TestExecutionClient() {
   const [suiteCases, setSuiteCases] = useState<ImportableTestCase[] | null>(null);
   const [suiteCasesLoading, setSuiteCasesLoading] = useState(false);
   const [planSuiteError, setPlanSuiteError] = useState<string | null>(null);
+  /** One plans fetch per project visit; a failure waits for a manual Retry. */
+  const plansRequestedRef = useRef(false);
 
   const [creating, setCreating] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
@@ -134,6 +137,14 @@ export function TestExecutionClient() {
       setStory({ workItemId: draft.storyWorkItemId, title: draft.storyTitle });
       setCases(draft.cases);
     }
+    // Plan/suite pickers are per-project; reset them on project switch.
+    plansRequestedRef.current = false;
+    setPlans([]);
+    setSelectedPlanId("");
+    setSuites([]);
+    setSelectedSuiteId("");
+    setSuiteCases(null);
+    setPlanSuiteError(null);
     return () => {
       disposed = true;
     };
@@ -269,22 +280,34 @@ export function TestExecutionClient() {
     }
   };
 
-  const loadPlans = useCallback(async () => {
-    if (!scope || plans.length > 0 || plansLoading) return;
+  const loadPlans = useCallback(async (force = false) => {
+    if (!scope) return;
+    if (plansRequestedRef.current && !force) return;
+    plansRequestedRef.current = true;
     setPlansLoading(true);
     setPlanSuiteError(null);
     try {
       const body = await postJson<{ testPlans: TestPlanOption[] }>("/api/azure-devops/test-plans", { scope });
       setPlans(body.testPlans);
     } catch (error) {
-      setPlanSuiteError(error instanceof Error ? error.message : "Test plans could not be loaded.");
+      // One attempt per visit — never auto-retry a failing integration call.
+      // 403 means the PAT/project lacks Test Plans access; the rest of the
+      // page (story import, manual cases) still works.
+      if (error instanceof ApiError && (error.status === 403 || error.status === 401)) {
+        setPlanSuiteError(
+          "You don't have access to Test Plans in this project (check the PAT's Test Plans scope or project permissions). Story import and manual cases still work.",
+        );
+      } else {
+        setPlanSuiteError(error instanceof Error ? error.message : "Test plans could not be loaded.");
+      }
     } finally {
       setPlansLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, plans.length, plansLoading]);
+  }, [scope]);
 
-  // Test plans load lazily, the first time the scope step is shown.
+  // Test plans load lazily, ONCE, the first time the scope step is shown;
+  // failures surface with a manual Retry instead of refetching in a loop.
   useEffect(() => {
     if (activeStep === "scope") void loadPlans();
   }, [activeStep, loadPlans]);
@@ -516,6 +539,7 @@ export function TestExecutionClient() {
             suiteCases,
             suiteCasesLoading,
             error: planSuiteError,
+            onRetry: () => void loadPlans(true),
           }}
           cases={cases}
           onCasesChange={setCases}
