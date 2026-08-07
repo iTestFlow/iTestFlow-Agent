@@ -23,6 +23,7 @@ const AZURE_DEVOPS_CAPABILITIES: Record<ProviderCapability, true> = {
   attachFileToWorkItem: true,
   buildWorkItemWebUrl: true,
   fetchLinkedTestCases: true,
+  fetchTestCasesByIds: true,
   fetchTestPlans: true,
   fetchTestSuites: true,
   fetchTestSuiteTree: true,

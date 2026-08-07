@@ -5,6 +5,8 @@ import { runWorkspaceContextSync, WORKSPACE_CONTEXT_SYNC } from "./workspace-syn
 import { PROJECT_KNOWLEDGE_JOB, runProjectKnowledgeJob } from "./project-knowledge.handler";
 import { runUploadedDocumentIngestJob } from "./uploaded-document-ingest.handler";
 import { UPLOADED_DOCUMENT_INGEST } from "./uploaded-document-jobs.service";
+import { runTestExecutionRunJob } from "./test-execution-run.handler";
+import { TEST_EXECUTION_RUN } from "./test-execution-jobs.service";
 
 let registered = false;
 
@@ -14,5 +16,6 @@ export function registerAllJobHandlers(): void {
   registerJobHandler(WORKSPACE_CONTEXT_SYNC, runWorkspaceContextSync);
   registerJobHandler(PROJECT_KNOWLEDGE_JOB, runProjectKnowledgeJob);
   registerJobHandler(UPLOADED_DOCUMENT_INGEST, runUploadedDocumentIngestJob);
+  registerJobHandler(TEST_EXECUTION_RUN, runTestExecutionRunJob);
   registered = true;
 }

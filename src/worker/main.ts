@@ -11,6 +11,9 @@
  *    and runs each concurrently — builds for distinct projects never queue
  *    behind one another (same-project single-flight stays on the queue's
  *    dedupe key). There is intentionally no process-wide build cap.
+ *  - Document ingest lane: bounded (WORKER_DOCUMENT_INGEST_CONCURRENCY, default 2).
+ *  - Test execution lane: bounded browser runs (WORKER_TEST_EXECUTION_CONCURRENCY,
+ *    default 1); long-running, aborts on heartbeat-ownership loss.
  *  - Serial lane: workspace sync and every other job type, one at a time.
  *
  * All active jobs share one batched heartbeat and one cancellation poll,
@@ -51,6 +54,8 @@ import {
 import { getJobHandler, registeredJobTypes, type JobHandler } from "@/modules/jobs/job-handlers";
 import { PROJECT_KNOWLEDGE_JOB } from "@/modules/jobs/project-knowledge-jobs.service";
 import { UPLOADED_DOCUMENT_INGEST } from "@/modules/jobs/uploaded-document-jobs.service";
+import { TEST_EXECUTION_RUN } from "@/modules/jobs/test-execution-jobs.service";
+import { reapOrphanExecutionTempDirs } from "@/modules/integrations/browser-automation/mcp-process";
 import { registerAllJobHandlers } from "@/modules/jobs/register-handlers";
 import { enqueueDueScheduledSyncs } from "@/modules/jobs/sync-schedule.service";
 import {
@@ -67,6 +72,21 @@ const HEARTBEAT_MS = Number(process.env.WORKER_HEARTBEAT_MS ?? String(30 * 1000)
 const SCHEDULER_ENABLED = process.env.WORKER_SCHEDULER !== "false";
 const SCHEDULER_TICK_MS = Number(process.env.WORKER_SCHEDULER_TICK_MS ?? String(60 * 1000));
 const DOCUMENT_INGEST_CONCURRENCY = Math.max(1, Math.trunc(Number(process.env.WORKER_DOCUMENT_INGEST_CONCURRENCY ?? "2")) || 2);
+const TEST_EXECUTION_CONCURRENCY = Math.max(1, Math.trunc(Number(process.env.WORKER_TEST_EXECUTION_CONCURRENCY ?? "1")) || 1);
+// Browser runs hold their lock for many minutes; operators can shorten the
+// reclaim window for this lane without touching the global JOB_STALE_LOCK_MS.
+const TEST_EXECUTION_STALE_LOCK_MS = (() => {
+  const parsed = Math.trunc(Number(process.env.WORKER_TEST_EXECUTION_STALE_LOCK_MS ?? ""));
+  return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : undefined;
+})();
+/**
+ * Job types whose local execution must ABORT when the batched heartbeat loses
+ * ownership: a browser session that keeps running after another worker
+ * reclaims the job would execute the same test twice against the app under
+ * test. Fenced writes already no-op; this stops the side effects too. Scoped
+ * to browser jobs to keep the blast radius zero for existing lanes.
+ */
+const ABORT_ON_OWNERSHIP_LOSS_JOB_TYPES = new Set<string>([TEST_EXECUTION_RUN]);
 const CANCELLATION_POLL_MS = 1000;
 const SHUTDOWN_GRACE_MS = 3000;
 // Failsafe: never wedge on an unreachable database mid-shutdown.
@@ -114,6 +134,10 @@ function ensureJobTimers() {
             // completed between snapshot and response is not a lost lock.
             if (!owned.has(id) && activeJobs.has(id)) {
               console.warn(`[worker] heartbeat lost ownership of job ${id}`);
+              const entry = activeJobs.get(id);
+              if (entry && ABORT_ON_OWNERSHIP_LOSS_JOB_TYPES.has(entry.job.jobType)) {
+                entry.abortController.abort(new Error("Job ownership was lost; aborting to prevent duplicate execution."));
+              }
             }
           }
         })
@@ -224,7 +248,9 @@ async function executeJob(handler: JobHandler, entry: ActiveJob): Promise<void> 
 
 function serialJobTypes(): string[] {
   return registeredJobTypes().filter((jobType) =>
-    jobType !== PROJECT_KNOWLEDGE_JOB && jobType !== UPLOADED_DOCUMENT_INGEST,
+    jobType !== PROJECT_KNOWLEDGE_JOB &&
+    jobType !== UPLOADED_DOCUMENT_INGEST &&
+    jobType !== TEST_EXECUTION_RUN,
   );
 }
 
@@ -310,6 +336,39 @@ async function documentIngestDispatchLoop(): Promise<void> {
       await dispatchReadyDocumentIngestJobs();
     } catch (error) {
       console.error("[worker] document ingest dispatch error; backing off.", error);
+    }
+    await sleep(POLL_MS);
+  }
+}
+
+/**
+ * Bounded browser test-execution lane (default concurrency 1). A browser run
+ * can take tens of minutes, so it must never enter the serial lane, and each
+ * session costs hundreds of MB — the cap is deliberately conservative.
+ */
+export async function dispatchReadyTestExecutionJobs(): Promise<number> {
+  let claimed = 0;
+  while (!shuttingDown) {
+    const activeTestExecutionJobs = [...activeJobs.values()]
+      .filter((entry) => entry.job.jobType === TEST_EXECUTION_RUN).length;
+    if (activeTestExecutionJobs >= TEST_EXECUTION_CONCURRENCY) break;
+    const job = await claimNextJob(WORKER_ID, [TEST_EXECUTION_RUN], {
+      reapStale: claimed === 0,
+      staleLockMs: TEST_EXECUTION_STALE_LOCK_MS,
+    });
+    if (!job) break;
+    startClaimedJob(job);
+    claimed += 1;
+  }
+  return claimed;
+}
+
+async function testExecutionDispatchLoop(): Promise<void> {
+  while (!shuttingDown) {
+    try {
+      await dispatchReadyTestExecutionJobs();
+    } catch (error) {
+      console.error("[worker] test execution dispatch error; backing off.", error);
     }
     await sleep(POLL_MS);
   }
@@ -439,6 +498,9 @@ async function main() {
   const capabilities = registeredJobTypes();
   await registerWorkerInstanceWithRetry(capabilities);
   await removeStaleWorkerInstances();
+  // A crash or hard shutdown can leave chromium temp profiles behind; at boot
+  // no run is active on this worker, so everything under the root is orphaned.
+  await reapOrphanExecutionTempDirs();
   registryHeartbeat = setInterval(() => {
     void heartbeatWorkerInstance(WORKER_ID)
       .then(async (updated) => {
@@ -456,6 +518,7 @@ async function main() {
   const loops = [serialWorkLoop()];
   if (capabilities.includes(PROJECT_KNOWLEDGE_JOB)) loops.push(knowledgeDispatchLoop());
   if (capabilities.includes(UPLOADED_DOCUMENT_INGEST)) loops.push(documentIngestDispatchLoop());
+  if (capabilities.includes(TEST_EXECUTION_RUN)) loops.push(testExecutionDispatchLoop());
   if (SCHEDULER_ENABLED) loops.push(schedulerLoop());
   await Promise.all(loops);
 }

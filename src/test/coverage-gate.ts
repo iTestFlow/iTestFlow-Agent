@@ -39,6 +39,7 @@ const UNIVERSE: Array<{ root: string; exts: string[]; recursive?: boolean }> = [
   { root: "src/components/workflow", exts: [".ts", ".tsx"] },
   { root: "src/app/api", exts: [".ts"] },
   { root: "src/app/test-gap-analysis/lib", exts: [".ts"] },
+  { root: "src/app/test-execution/lib", exts: [".ts"] },
   // Top-level entrypoints only (e.g. middleware.ts, instrumentation*.ts) — NOT recursive,
   // so this does not pull in the rest of src/.
   { root: "src", exts: [".ts"], recursive: false },

@@ -117,6 +117,7 @@ Durable page routes:
 - `/requirements-analysis`
 - `/test-case-design`
 - `/test-gap-analysis`
+- `/test-execution` (plus the nested run report at `/test-execution/runs/[runId]`)
 - `/test-execution-effort`
 - `/report-bug`
 - `/suite-migration`
@@ -289,7 +290,8 @@ The worker entrypoint is `src/worker/main.ts`.
 - Scheduled workspace sync is implemented in `src/modules/jobs/sync-schedule.service.ts` and `workspace-sync.handler.ts`.
 - Background processes register capabilities in `worker_instances` and heartbeat with PostgreSQL time. Automatic Knowledge Hub builds are rejected before enqueue when no healthy `project_knowledge_build` capability is available.
 - Only automatic AI knowledge compilation uses the Knowledge Hub queue. Project indexing, external-LLM finalization, conflict decisions, and publication execute as normal server requests.
-- The worker runs two execution lanes: a Knowledge Hub dispatcher that claims every ready `project_knowledge_build` job and runs those builds concurrently (no process-wide cap; one active build per project is enforced by the queue dedupe key), and a serial lane that processes workspace sync and all other job types one at a time.
+- The worker runs four execution lanes: a Knowledge Hub dispatcher that claims every ready `project_knowledge_build` job and runs those builds concurrently (no process-wide cap; one active build per project is enforced by the queue dedupe key), a bounded document-ingest lane (`WORKER_DOCUMENT_INGEST_CONCURRENCY`, default 2), a bounded browser test-execution lane (`WORKER_TEST_EXECUTION_CONCURRENCY`, default 1; one active run per project via the queue dedupe key plus a partial unique index on `test_execution_runs`), and a serial lane that processes workspace sync and all other job types one at a time.
+- Test-execution jobs additionally abort their local browser session when the batched heartbeat loses job ownership (preventing duplicate execution against the app under test), reap orphaned browser temp profiles at worker startup, and support a per-lane stale-lock override (`WORKER_TEST_EXECUTION_STALE_LOCK_MS`). Browser jobs run with `maxAttempts = 1`: a failed test is a completed job with a terminal result; only infrastructure failures fail the job.
 - Active jobs are tracked in a process-level registry with one batched heartbeat (`WORKER_HEARTBEAT_MS`) and one cancellation poll covering all running jobs; a cancellation request aborts only the requested job.
 - Background processes claim jobs with row locks and mark stale locks retryable according to environment settings. Progress, completion, failure, and knowledge batch-cache reads/writes are additionally fenced by job id and current worker ownership, so a stale worker cannot modify a job that was reclaimed or requeued.
 - Graceful shutdown stops claiming, unregisters worker capacity, allows three seconds for active jobs to finish, then aborts and atomically requeues unfinished owned jobs without consuming a retry. It is triggered by SIGINT/SIGTERM or by the supervisor's stdin shutdown message.
@@ -300,7 +302,8 @@ Multiple worker processes may run against the same database. A job should be wri
 
 - iTestFlow is a hosted workspace app, not a single-user local settings file app.
 - Multi-org is a first-class deployment mode: each Azure DevOps organization has its own workspace, owner, and member list. Session-scoped `active_workspace_id` drives all workspace resolution.
-- PostgreSQL is the only durable data store.
+- PostgreSQL owns all durable structured state. Two content-addressed filesystem stores sit beside it: uploaded document binaries under `DOCUMENT_STORAGE_ROOT` and test-execution evidence (screenshots, console logs) under `EXECUTION_ARTIFACT_STORAGE_ROOT` — both behind the `StorageBackend` port, both required in backups for full restore.
+- Test Execution drives a real browser through a pinned `@playwright/mcp` child process per run (isolated profile, `--caps=testing`, explicit tool allowlist — no eval/upload/storage tools). Plans are constrained typed actions compiled ahead of execution and re-validated in the editor, at run creation, and inside the worker; secrets travel as `{{secret:NAME}}` placeholders and are resolved only in worker memory with output scrubbing.
 - All browser-to-provider access flows through server-side API routes.
 - User Azure DevOps and LLM credentials are private per user/workspace and encrypted before persistence.
 - Shared project context, compiled knowledge, dashboards, jobs, audit logs, and workflow history are workspace scoped.

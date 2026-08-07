@@ -225,6 +225,22 @@ function requiredOutputShape(schemaName: string) {
     };
   }
 
+  if (schemaName === "TestExecutionAgentDecision") {
+    return {
+      decision: "act | step_passed | step_failed | blocked",
+      actionType:
+        "only when decision=act: navigate | click | fill | select | check | uncheck | hover | pressKey | waitForText | screenshot",
+      ref: "for element actions: the exact [ref=…] value from the snapshot",
+      elementDescription: "short human description of the target element",
+      value: "for fill/select; may contain {{secret:NAME}}",
+      url: "for navigate",
+      key: "for pressKey: Enter | Escape | Tab | ArrowUp | ArrowDown | ArrowLeft | ArrowRight",
+      waitText: "for waitForText",
+      actualResult: "REQUIRED for step_passed/step_failed: the observed evidence",
+      reason: "REQUIRED for blocked",
+    };
+  }
+
   return {
     schemaName,
     instruction: "Return a JSON object that matches this schema.",

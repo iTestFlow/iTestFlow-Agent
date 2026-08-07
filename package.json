@@ -32,11 +32,15 @@
     "context:repair": "node --env-file=.env --conditions=react-server --import tsx src/scripts/repair-context-index.ts",
     "context:verify": "node --env-file=.env --conditions=react-server --import tsx src/scripts/verify-context-index.ts",
     "org:enable": "node --env-file=.env --conditions=react-server --import tsx src/scripts/manage-org.ts enable",
-    "org:disable": "node --env-file=.env --conditions=react-server --import tsx src/scripts/manage-org.ts disable"
+    "org:disable": "node --env-file=.env --conditions=react-server --import tsx src/scripts/manage-org.ts disable",
+    "browser:install": "playwright install chromium",
+    "test-execution:smoke": "node --env-file=.env --conditions=react-server --import tsx src/scripts/test-execution-mcp-smoke.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
     "@huggingface/transformers": "^3.5.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@playwright/mcp": "0.0.78",
     "busboy": "^1.6.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

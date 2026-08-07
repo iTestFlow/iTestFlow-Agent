@@ -107,8 +107,9 @@ async function reapStaleJobsWithClient(
   client: Parameters<typeof sqlRun>[2],
   now: string,
   supportedJobTypes?: readonly string[],
+  staleLockMsOverride?: number,
 ): Promise<number> {
-  const cutoff = new Date(Date.now() - staleLockMs()).toISOString();
+  const cutoff = new Date(Date.now() - (staleLockMsOverride ?? staleLockMs())).toISOString();
   const jobTypeClause = supportedJobTypes
     ? "\n       AND job_type = ANY(@supportedJobTypes)"
     : "";
@@ -207,7 +208,7 @@ export async function enqueueJob(input: {
 export async function claimNextJob(
   workerId: string,
   supportedJobTypes?: readonly string[],
-  options?: { reapStale?: boolean },
+  options?: { reapStale?: boolean; staleLockMs?: number },
 ): Promise<Job | null> {
   const normalizedJobTypes = normalizeSupportedJobTypes(supportedJobTypes);
   if (normalizedJobTypes?.length === 0) return null;
@@ -217,7 +218,7 @@ export async function claimNextJob(
     // reapStale=false lets a caller draining many claims in one tick reap once
     // up front instead of once per claim.
     if (options?.reapStale !== false) {
-      await reapStaleJobsWithClient(client, now, normalizedJobTypes);
+      await reapStaleJobsWithClient(client, now, normalizedJobTypes, options?.staleLockMs);
     }
     const jobTypeClause = normalizedJobTypes
       ? " AND job_type = ANY(@supportedJobTypes)"

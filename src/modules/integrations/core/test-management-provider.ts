@@ -18,6 +18,12 @@ export interface TestManagementProvider extends ProviderConnection {
     userStoryId: string;
   }): Promise<TestCase[]>;
 
+  /** Batch-fetch Test Case work items by id, with parsed steps. */
+  fetchTestCasesByIds(input: {
+    projectId: string;
+    testCaseIds: string[];
+  }): Promise<TestCase[]>;
+
   fetchTestPlans(input: {
     projectId: string;
   }): Promise<TestPlan[]>;

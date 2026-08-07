@@ -50,6 +50,12 @@ iTestFlow supports two bootstrap modes:
 | `WORKER_POLL_MS` | optional | Worker idle poll interval, default `2000` |
 | `WORKER_HEARTBEAT_MS` | optional | Active-job heartbeat interval, default `30000`; one batched heartbeat covers all of a worker's active jobs |
 | `JOB_STALE_LOCK_MS` | optional | Stale lock recovery threshold, default `300000` |
+| `WORKER_DOCUMENT_INGEST_CONCURRENCY` | optional | Bounded document-ingest lane concurrency, default `2` |
+| `DOCUMENT_STORAGE_ROOT` | optional | Content-addressed root for uploaded document binaries, default `data/document-store`. Must be included in backups |
+| `DOCUMENT_MAX_UPLOAD_BYTES` | optional | Per-file document upload cap, default 50 MiB (absolute clamp 250 MiB) |
+| `WORKER_TEST_EXECUTION_CONCURRENCY` | optional | Bounded browser test-execution lane concurrency, default `1`. Each session costs roughly 300–700 MB RSS |
+| `WORKER_TEST_EXECUTION_STALE_LOCK_MS` | optional | Per-lane stale-lock override for browser runs (ms, minimum `60000`); defaults to `JOB_STALE_LOCK_MS` |
+| `EXECUTION_ARTIFACT_STORAGE_ROOT` | optional | Content-addressed root for test-execution evidence (screenshots, console logs), default `data/execution-artifacts`. Include in backups for full report fidelity; web and worker must share this filesystem |
 | `RATE_LIMIT_BACKEND` | optional | `postgres` (shared multi-replica) or `memory` (per-process). Defaults to `postgres` when `NODE_ENV=production`, else `memory` |
 | `RATE_LIMIT_TRUSTED_PROXY_HOPS` | optional | Reverse proxies in front of the app; login throttling reads the client IP this many hops from the right of `X-Forwarded-For`. Default `0` |
 | `PROJECT_CONTEXT_TOP_K` | optional | Default RAG retrieval breadth, default `8`, clamped by app code |
@@ -187,18 +193,30 @@ The default supervised application can scale horizontally. Queue locking prevent
 
 Knowledge Hub builds (`project_knowledge_build`) for different projects and organizations do not block one another: each background process starts every ready build immediately and runs them concurrently, while workspace sync and other job types stay on a separate serial lane. One active build per project is still enforced through the queue's dedupe key. LLM provider throttling (429/`Retry-After`) can delay individual LLM requests inside a build, but it does not stall sibling projects' builds; transient retries are jittered so concurrent builds do not retry a throttled provider in lockstep.
 
+Test Execution (`test_execution_run`) runs browsers on its own bounded lane. On every machine that runs the background worker, install the pinned Chromium once before enabling the feature:
+
+```bash
+npm run browser:install        # wraps: npx playwright install chromium
+# On a fresh Linux host also install the OS dependencies once:
+npx playwright install-deps chromium
+```
+
+Web and worker must share the `EXECUTION_ARTIFACT_STORAGE_ROOT` filesystem (the default single-host topology does this automatically) so evidence saved by the worker is downloadable through the web process. Browser runs default to one at a time per worker (`WORKER_TEST_EXECUTION_CONCURRENCY=1`); budget roughly 0.5–1 GB additional RAM per concurrent session before raising it.
+
 Before redeploying split background services, gracefully stop the old pool (SIGTERM). A stopping process unregisters its capacity, gives active jobs three seconds to finish, then aborts and atomically requeues the unfinished ones without consuming a retry, so a surviving process picks them up immediately. Under the supervised `npm start`/`npm run dev` topology, the supervisor triggers the identical path on every OS by writing a shutdown message to the background child's stdin (Windows has no graceful signal delivery). If a process is killed without the graceful path, its replacement recovers the job through stale-lock requeue after `JOB_STALE_LOCK_MS` (5 minutes by default) — that recovery consumes one attempt, and scheduled sync can appear delayed during the window.
 
 ## Backups And Restore
 
-All durable application state lives in PostgreSQL. Back it up with managed automated backups or `pg_dump`.
+All durable structured state lives in PostgreSQL. Two content-addressed filesystem stores must be backed up alongside it for a full restore: `DOCUMENT_STORAGE_ROOT` (uploaded document binaries, default `data/document-store`) and `EXECUTION_ARTIFACT_STORAGE_ROOT` (test-execution evidence, default `data/execution-artifacts`). A database-only restore keeps every report and document record readable, but their file downloads will 404 until the matching store is restored.
 
 ```bash
 # Backup
 pg_dump "$DATABASE_URL" -Fc -f itestflow-$(date +%F).dump
+tar -czf itestflow-files-$(date +%F).tgz data/document-store data/execution-artifacts
 
 # Restore into a fresh database
 pg_restore --clean --if-exists -d "$DATABASE_URL" itestflow-YYYY-MM-DD.dump
+tar -xzf itestflow-files-YYYY-MM-DD.tgz
 ```
 
 After restore:
