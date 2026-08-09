@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Bug, ImageIcon, Loader2, RotateCcw, Send } from "lucide-react";
+import { Bug, Loader2, RotateCcw, Send } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -151,6 +151,8 @@ export function ResultsStep({
                   {caseRun.steps.map((step) => {
                     const action = (step.action ?? {}) as StepActionJson;
                     const observation = (step.observation ?? {}) as StepObservationJson;
+                    const screenshots = step.artifacts.filter((artifact) => artifact.kind === "screenshot");
+                    const otherArtifacts = step.artifacts.filter((artifact) => artifact.kind !== "screenshot");
                     return (
                       <li key={step.id} className="rounded bg-muted/40 px-2 py-1.5 text-sm">
                         <div className="flex items-center gap-2">
@@ -160,27 +162,15 @@ export function ResultsStep({
                           <span className="min-w-0 flex-1 truncate" title={action.instruction}>
                             {action.instruction ?? "(step)"}
                           </span>
-                          {step.artifacts.map((artifact) =>
-                            artifact.kind === "screenshot" ? (
-                              <button
-                                key={artifact.id}
-                                type="button"
-                                className="text-muted-foreground hover:text-foreground"
-                                aria-label={`Open screenshot for step ${step.orderIndex + 1}`}
-                                onClick={() => setLightbox({ id: artifact.id, fileName: artifact.fileName })}
-                              >
-                                <ImageIcon className="h-4 w-4" aria-hidden />
-                              </button>
-                            ) : (
-                              <a
-                                key={artifact.id}
-                                href={artifactUrl(artifact.id)}
-                                className="text-xs text-muted-foreground underline hover:text-foreground"
-                              >
-                                console log
-                              </a>
-                            ),
-                          )}
+                          {otherArtifacts.map((artifact) => (
+                            <a
+                              key={artifact.id}
+                              href={artifactUrl(artifact.id)}
+                              className="text-xs text-muted-foreground underline hover:text-foreground"
+                            >
+                              console log
+                            </a>
+                          ))}
                           <OutcomeBadge outcome={step.outcome ?? step.status} className="shrink-0 scale-90" />
                         </div>
                         {action.expectedResult || observation.actualResult ? (
@@ -211,22 +201,68 @@ export function ResultsStep({
                         {step.errorMessage && !observation.reason ? (
                           <p className="ml-7 mt-1 text-xs text-destructive">{step.errorMessage}</p>
                         ) : null}
+                        {screenshots.length > 0 ? (
+                          <div className="ml-7 mt-2 flex flex-wrap gap-2">
+                            {screenshots.map((artifact) => (
+                              <button
+                                key={artifact.id}
+                                type="button"
+                                className="group overflow-hidden rounded-md border transition-shadow hover:shadow-md"
+                                aria-label={`Open screenshot for step ${step.orderIndex + 1}: ${artifact.fileName}`}
+                                onClick={() => setLightbox({ id: artifact.id, fileName: artifact.fileName })}
+                              >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={artifactUrl(artifact.id)}
+                                  alt={`Screenshot evidence: ${artifact.fileName}`}
+                                  className="h-24 w-40 bg-muted object-cover object-top"
+                                  style={{ aspectRatio: "16 / 10" }}
+                                  loading="lazy"
+                                />
+                                <span className="block truncate px-1.5 py-0.5 text-left text-[10px] text-muted-foreground">
+                                  {artifact.fileName}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
                       </li>
                     );
                   })}
                 </ol>
                 {caseRun.artifacts.length > 0 ? (
                   <div className="flex flex-wrap gap-2 pt-1">
-                    {caseRun.artifacts.map((artifact) => (
-                      <button
-                        key={artifact.id}
-                        type="button"
-                        className="flex items-center gap-1 rounded border px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
-                        onClick={() => setLightbox({ id: artifact.id, fileName: artifact.fileName })}
-                      >
-                        <ImageIcon className="h-3.5 w-3.5" aria-hidden /> {artifact.fileName}
-                      </button>
-                    ))}
+                    {caseRun.artifacts.map((artifact) =>
+                      artifact.kind === "screenshot" ? (
+                        <button
+                          key={artifact.id}
+                          type="button"
+                          className="group overflow-hidden rounded-md border transition-shadow hover:shadow-md"
+                          aria-label={`Open case screenshot: ${artifact.fileName}`}
+                          onClick={() => setLightbox({ id: artifact.id, fileName: artifact.fileName })}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={artifactUrl(artifact.id)}
+                            alt={`Screenshot evidence: ${artifact.fileName}`}
+                            className="h-24 w-40 bg-muted object-cover object-top"
+                            style={{ aspectRatio: "16 / 10" }}
+                            loading="lazy"
+                          />
+                          <span className="block truncate px-1.5 py-0.5 text-left text-[10px] text-muted-foreground">
+                            {artifact.fileName}
+                          </span>
+                        </button>
+                      ) : (
+                        <a
+                          key={artifact.id}
+                          href={artifactUrl(artifact.id)}
+                          className="flex items-center gap-1 rounded border px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
+                        >
+                          {artifact.fileName}
+                        </a>
+                      ),
+                    )}
                   </div>
                 ) : null}
               </div>
