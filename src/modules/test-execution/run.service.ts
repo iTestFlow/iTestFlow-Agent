@@ -466,7 +466,8 @@ export function profileToEnvConfig(profile: {
   loginPlan: unknown;
   loginMode: "session" | "fresh";
   loggedInText: string;
-  users: { handle: string; username: string; passwordSecretName: string | null }[];
+  executionNotes: string;
+  users: { handle: string; username: string; passwordSecretName: string | null; notes: string }[];
 }): EnvConfig {
   return {
     initialUrl: profile.initialUrl,
@@ -480,10 +481,12 @@ export function profileToEnvConfig(profile: {
     loginPlan: (profile.loginPlan as NaturalPlan | null) ?? null,
     loginMode: profile.loginMode,
     loggedInText: profile.loggedInText,
+    executionNotes: profile.executionNotes,
     users: profile.users.map((user) => ({
       handle: user.handle,
       username: user.username,
       passwordSecretName: user.passwordSecretName,
+      notes: user.notes,
     })),
   };
 }

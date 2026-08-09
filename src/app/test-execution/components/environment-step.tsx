@@ -9,6 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import type { NaturalStep } from "@/modules/test-execution/action-schema";
 
 import { TextStepEditor } from "./text-step-editor";
@@ -41,6 +42,7 @@ export type EnvironmentProfileSummary = {
   loginPlan: unknown;
   loginMode: "session" | "fresh";
   loggedInText: string;
+  executionNotes: string;
   users: TestUserDraft[];
   secrets: { secretName: string; title: string; maskedPreview: string }[];
   sessionCapturedAt: string | null;
@@ -58,6 +60,7 @@ export type OneTimeEnvironmentState = {
   loginSteps: NaturalStep[];
   loginMode: "session" | "fresh";
   loggedInText: string;
+  executionNotes: string;
   users: TestUserDraft[];
   secrets: { secretName: string; title: string; value: string }[];
 };
@@ -75,6 +78,7 @@ export function defaultOneTimeEnvironment(): OneTimeEnvironmentState {
     loginSteps: [],
     loginMode: "session",
     loggedInText: "",
+    executionNotes: "",
     users: [],
     secrets: [],
   };
@@ -247,7 +251,17 @@ export function EnvironmentStep({
             <p className="text-sm font-medium">Credentials for the app under test</p>
             <SecretListEditor
               secrets={oneTime?.secrets ?? []}
-              onChange={(secrets) => setOneTime({ secrets })}
+              onChange={(secrets) => {
+                // A deleted or renamed credential must not leave test users
+                // pointing at a name that no longer exists.
+                const names = new Set(secrets.map((secret) => secret.secretName));
+                const users = (oneTime?.users ?? []).map((user) =>
+                  user.passwordSecretName && !names.has(user.passwordSecretName)
+                    ? { ...user, passwordSecretName: null }
+                    : user,
+                );
+                setOneTime({ secrets, users });
+              }}
             />
           </div>
 
@@ -304,6 +318,25 @@ export function EnvironmentStep({
                 </div>
               </div>
             ) : null}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="te-execution-notes">Execution notes for the AI (optional)</Label>
+            <Textarea
+              id="te-execution-notes"
+              value={oneTime?.executionNotes ?? ""}
+              maxLength={2000}
+              rows={3}
+              placeholder={
+                "e.g. Dates use DD/MM/YYYY. The app shows a spinner after login — wait for the dashboard. " +
+                "'Save' sits at the bottom of long forms."
+              }
+              onChange={(event) => setOneTime({ executionNotes: event.target.value })}
+            />
+            <p className="text-xs text-muted-foreground">
+              Context the AI reads on every step: formats, timing quirks, where controls live. It guides execution but never
+              overrides the safety rules or a step&apos;s expected result.
+            </p>
           </div>
 
           <div>
@@ -463,6 +496,18 @@ function SecretListEditor({
 
 const NO_USER_SECRET = "__default__";
 
+/**
+ * Force the schema's handle grammar (^[a-z][a-z0-9_]{0,63}$) while typing, so
+ * a visible handle is always a submittable one — never silently dropped later.
+ */
+export function sanitizeHandle(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "_")
+    .replace(/^[^a-z]+/, "")
+    .slice(0, 64);
+}
+
 function TestUserListEditor({
   users,
   secretNames,
@@ -478,14 +523,15 @@ function TestUserListEditor({
   return (
     <div className="space-y-2">
       {users.map((user, index) => (
-        <div key={index} className="grid items-end gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+        <div key={index} className="grid items-end gap-2 sm:grid-cols-[1fr_1fr_1fr_1fr_auto]">
           <div className="space-y-1">
             <Label htmlFor={`te-user-handle-${index}`}>Handle (used in steps)</Label>
             <Input
               id={`te-user-handle-${index}`}
               value={user.handle}
+              maxLength={64}
               placeholder="expired_user"
-              onChange={(event) => update(index, { handle: event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_") })}
+              onChange={(event) => update(index, { handle: sanitizeHandle(event.target.value) })}
             />
           </div>
           <div className="space-y-1">
@@ -515,6 +561,16 @@ function TestUserListEditor({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`te-user-notes-${index}`}>Notes for the AI</Label>
+            <Input
+              id={`te-user-notes-${index}`}
+              value={user.notes}
+              maxLength={300}
+              placeholder="e.g. subscription expired"
+              onChange={(event) => update(index, { notes: event.target.value })}
+            />
           </div>
           <Button
             type="button"

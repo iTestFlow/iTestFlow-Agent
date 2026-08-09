@@ -107,7 +107,15 @@ export function TestExecutionClient() {
   }, [scope]);
 
   const runTerminal = isTerminalRunStatusValue(runDetail?.run.status ?? null);
-  const dirty = cases.length > 0 && runId === null;
+  // Hand-typed one-time environment content (notes, users, login steps) is as
+  // costly to lose as authored cases — both arm the unsaved-changes guard.
+  const oneTimeDirty =
+    selection?.mode === "one_time" &&
+    (selection.config.executionNotes.trim().length > 0 ||
+      selection.config.users.length > 0 ||
+      selection.config.loginSteps.length > 0 ||
+      selection.config.secrets.length > 0);
+  const dirty = (cases.length > 0 || oneTimeDirty) && runId === null;
   useUnsavedChangesGuard({ dirty, busy: creating });
 
   // ---- bootstrap: profiles, recent runs, draft, active run ----
@@ -240,6 +248,7 @@ export function TestExecutionClient() {
     if (!scope) return;
     setSavingProfile(true);
     try {
+      const sentSecrets = config.secrets.filter((secret) => secret.secretName && secret.value);
       const body = await postJson<{ profile: EnvironmentProfileSummary }>("/api/test-execution/environments", {
         scope,
         config: {
@@ -258,9 +267,10 @@ export function TestExecutionClient() {
               : null,
           loginMode: config.loginMode,
           loggedInText: config.loggedInText.trim(),
-          users: usableTestUsers(config.users),
+          executionNotes: config.executionNotes.trim(),
+          users: usableTestUsers(config.users, sentSecrets.map((secret) => secret.secretName)),
         },
-        secrets: config.secrets.filter((secret) => secret.secretName && secret.value),
+        secrets: sentSecrets,
       });
       setProfiles((previous) => [body.profile, ...previous]);
       setSelection({ mode: "profile", profile: body.profile });
@@ -404,27 +414,31 @@ export function TestExecutionClient() {
       const environment =
         selection.mode === "profile"
           ? { mode: "profile" as const, environmentProfileId: selection.profile.id }
-          : {
-              mode: "one_time" as const,
-              config: {
-                initialUrl: selection.config.initialUrl,
-                allowedOrigin: selection.config.allowedOrigin || safeOrigin(selection.config.initialUrl),
-                viewportWidth: selection.config.viewportWidth,
-                viewportHeight: selection.config.viewportHeight,
-                headless: selection.config.headless,
-                defaultTimeoutMs: selection.config.defaultTimeoutMs,
-                navigationTimeoutMs: selection.config.navigationTimeoutMs,
-                evidenceLevel: selection.config.evidenceLevel,
-                loginPlan:
-                  selection.config.loginSteps.length > 0
-                    ? { schemaVersion: NATURAL_PLAN_SCHEMA_VERSION, steps: selection.config.loginSteps }
-                    : null,
-                loginMode: selection.config.loginMode,
-                loggedInText: selection.config.loggedInText.trim(),
-                users: usableTestUsers(selection.config.users),
-              },
-              secrets: selection.config.secrets.filter((secret) => secret.secretName && secret.value),
-            };
+          : (() => {
+              const sentSecrets = selection.config.secrets.filter((secret) => secret.secretName && secret.value);
+              return {
+                mode: "one_time" as const,
+                config: {
+                  initialUrl: selection.config.initialUrl,
+                  allowedOrigin: selection.config.allowedOrigin || safeOrigin(selection.config.initialUrl),
+                  viewportWidth: selection.config.viewportWidth,
+                  viewportHeight: selection.config.viewportHeight,
+                  headless: selection.config.headless,
+                  defaultTimeoutMs: selection.config.defaultTimeoutMs,
+                  navigationTimeoutMs: selection.config.navigationTimeoutMs,
+                  evidenceLevel: selection.config.evidenceLevel,
+                  loginPlan:
+                    selection.config.loginSteps.length > 0
+                      ? { schemaVersion: NATURAL_PLAN_SCHEMA_VERSION, steps: selection.config.loginSteps }
+                      : null,
+                  loginMode: selection.config.loginMode,
+                  loggedInText: selection.config.loggedInText.trim(),
+                  executionNotes: selection.config.executionNotes.trim(),
+                  users: usableTestUsers(selection.config.users, sentSecrets.map((secret) => secret.secretName)),
+                },
+                secrets: sentSecrets,
+              };
+            })();
       const body = await postJson<{ runId: string }>("/api/test-execution/runs", {
         scope,
         environment,
@@ -664,11 +678,22 @@ export function TestExecutionClient() {
   );
 }
 
-/** Only complete rows leave the browser — half-filled user rows are dropped, not rejected. */
-function usableTestUsers(users: TestUserDraft[]): TestUserDraft[] {
+/**
+ * Only complete rows leave the browser — half-filled user rows are dropped,
+ * not rejected — and a password reference to a secret that is not actually
+ * being sent (e.g. named but left without a value) falls back to null so the
+ * worker's DEFAULT_PASSWORD fallback stays honest.
+ */
+function usableTestUsers(users: TestUserDraft[], sentSecretNames: string[]): TestUserDraft[] {
+  const names = new Set(sentSecretNames);
   return users
     .filter((user) => /^[a-z][a-z0-9_]{0,63}$/.test(user.handle) && user.username.trim().length > 0)
-    .map((user) => ({ ...user, username: user.username.trim() }));
+    .map((user) => ({
+      ...user,
+      username: user.username.trim(),
+      passwordSecretName:
+        user.passwordSecretName && names.has(user.passwordSecretName) ? user.passwordSecretName : null,
+    }));
 }
 
 function safeOrigin(url: string): string {

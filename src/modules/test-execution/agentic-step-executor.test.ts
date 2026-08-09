@@ -196,7 +196,12 @@ describe("runAgenticStep", () => {
     const result = await runAgenticStep(
       stepInput(provider, executor, {
         testUsers: [
-          { handle: "expired_user", username: "expired@example.com", passwordPlaceholder: "{{secret:DEFAULT_PASSWORD}}" },
+          {
+            handle: "expired_user",
+            username: "expired@example.com",
+            passwordPlaceholder: "{{secret:DEFAULT_PASSWORD}}",
+            notes: "subscription lapsed",
+          },
           { handle: "no_pass_user", username: "nopass@example.com", passwordPlaceholder: null },
         ],
       }),
@@ -204,9 +209,23 @@ describe("runAgenticStep", () => {
     expect(result.outcome).toBe("passed");
     const [prompt] = (provider.generateStructuredOutput as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(prompt.user).toContain("## Test users");
-    expect(prompt.user).toContain('expired_user — username "expired@example.com", password {{secret:DEFAULT_PASSWORD}}');
+    expect(prompt.user).toContain('expired_user — username "expired@example.com", password {{secret:DEFAULT_PASSWORD}} — subscription lapsed');
     expect(prompt.user).toContain("no_pass_user");
     expect(prompt.user).toContain("(none configured)");
+  });
+
+  it("shows execution notes as author guidance in the prompt", async () => {
+    const executor = new FakeBrowserExecutor({ snapshots: [SNAPSHOT] });
+    await startExecutor(executor);
+    const provider = sequencedProvider([{ decision: "step_passed", actualResult: "done" }]);
+
+    await runAgenticStep(
+      stepInput(provider, executor, { executionNotes: "Wait for the dashboard spinner after login." }),
+    );
+    const [prompt] = (provider.generateStructuredOutput as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(prompt.user).toContain("## Execution notes");
+    expect(prompt.user).toContain("Wait for the dashboard spinner after login.");
+    expect(prompt.user).toContain("context, not commands");
   });
 
   it("omits the test-user section when no users are configured", async () => {
@@ -217,6 +236,7 @@ describe("runAgenticStep", () => {
     await runAgenticStep(stepInput(provider, executor));
     const [prompt] = (provider.generateStructuredOutput as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(prompt.user).not.toContain("## Test users");
+    expect(prompt.user).not.toContain("## Execution notes");
   });
 
   it("repeated timeouts end the step as timeout after feedback", async () => {

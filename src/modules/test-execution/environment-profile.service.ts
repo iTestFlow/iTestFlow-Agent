@@ -38,6 +38,7 @@ export type EnvironmentProfileView = {
   loginPlan: unknown;
   loginMode: "session" | "fresh";
   loggedInText: string;
+  executionNotes: string;
   users: { handle: string; username: string; passwordSecretName: string | null; notes: string }[];
   lifecycleStatus: "active" | "archived";
   secrets: { secretName: string; title: string; maskedPreview: string }[];
@@ -60,6 +61,7 @@ type ProfileRow = {
   login_plan_json: unknown;
   login_mode: "session" | "fresh";
   logged_in_text: string | null;
+  execution_notes: string | null;
   users_json: unknown;
   lifecycle_status: "active" | "archived";
   session_captured_at: string | null;
@@ -68,7 +70,7 @@ type ProfileRow = {
 
 const PROFILE_COLUMNS = `p.id, p.name, p.initial_url, p.allowed_origin, p.viewport_width, p.viewport_height,
   p.headless, p.default_timeout_ms, p.navigation_timeout_ms, p.evidence_level, p.login_plan_json,
-  p.login_mode, p.logged_in_text, p.users_json, p.lifecycle_status, p.updated_at,
+  p.login_mode, p.logged_in_text, p.execution_notes, p.users_json, p.lifecycle_status, p.updated_at,
   s.captured_at AS session_captured_at`;
 
 const PROFILE_FROM = `test_environment_profiles p
@@ -109,6 +111,7 @@ function toView(row: ProfileRow, secrets: EnvironmentProfileView["secrets"]): En
     loginPlan: row.login_plan_json,
     loginMode: row.login_mode,
     loggedInText: row.logged_in_text ?? "",
+    executionNotes: row.execution_notes ?? "",
     users: Array.isArray(row.users_json)
       ? (row.users_json as EnvironmentProfileView["users"]).map((user) => ({
           handle: String(user.handle ?? ""),
@@ -177,12 +180,12 @@ export async function createEnvironmentProfile(input: {
         `INSERT INTO test_environment_profiles (
            id, workspace_id, project_id, azure_project_id, name, initial_url, allowed_origin,
            viewport_width, viewport_height, headless, default_timeout_ms, navigation_timeout_ms,
-           evidence_level, login_plan_json, login_mode, logged_in_text, users_json,
+           evidence_level, login_plan_json, login_mode, logged_in_text, execution_notes, users_json,
            created_by, created_at, updated_at
          ) VALUES (
            @id, @workspaceId, @projectId, @azureProjectId, @name, @initialUrl, @allowedOrigin,
            @viewportWidth, @viewportHeight, @headless, @defaultTimeoutMs, @navigationTimeoutMs,
-           @evidenceLevel, @loginPlanJson::jsonb, @loginMode, @loggedInText, @usersJson::jsonb,
+           @evidenceLevel, @loginPlanJson::jsonb, @loginMode, @loggedInText, @executionNotes, @usersJson::jsonb,
            @actor, @now, @now
          )`,
         {
@@ -201,6 +204,7 @@ export async function createEnvironmentProfile(input: {
           loginPlanJson: input.config.loginPlan === null ? null : JSON.stringify(input.config.loginPlan),
           loginMode: input.config.loginMode,
           loggedInText: input.config.loggedInText || null,
+          executionNotes: input.config.executionNotes || null,
           usersJson: JSON.stringify(input.config.users),
           actor: input.actor,
           now,
@@ -259,7 +263,8 @@ export async function updateEnvironmentProfile(input: {
              viewport_width = @viewportWidth, viewport_height = @viewportHeight, headless = @headless,
              default_timeout_ms = @defaultTimeoutMs, navigation_timeout_ms = @navigationTimeoutMs,
              evidence_level = @evidenceLevel, login_plan_json = @loginPlanJson::jsonb,
-             login_mode = @loginMode, logged_in_text = @loggedInText, users_json = @usersJson::jsonb,
+             login_mode = @loginMode, logged_in_text = @loggedInText, execution_notes = @executionNotes,
+             users_json = @usersJson::jsonb,
              updated_at = @now
            WHERE id = @id AND workspace_id = @workspaceId AND project_id = @projectId AND azure_project_id = @azureProjectId`,
           {
@@ -280,6 +285,7 @@ export async function updateEnvironmentProfile(input: {
               : JSON.stringify(merged.loginPlan),
             loginMode: merged.loginMode ?? existing.loginMode,
             loggedInText: (merged.loggedInText ?? existing.loggedInText) || null,
+            executionNotes: (merged.executionNotes ?? existing.executionNotes) || null,
             usersJson: JSON.stringify(merged.users ?? existing.users),
             now,
           },

@@ -172,6 +172,7 @@ export async function runTestExecutionRunJob(
       secrets: bundle.secrets,
       secretNames: [...bundle.secrets.keys()],
       testUsers: buildUserRoster(env, bundle.secrets),
+      executionNotes: env.executionNotes,
       allowedOrigin: env.allowedOrigin,
       scrub,
       signal: context.signal,
@@ -294,7 +295,8 @@ type AgentContext = {
   executor: BrowserExecutor;
   secrets: ReadonlyMap<string, string>;
   secretNames: string[];
-  testUsers: { handle: string; username: string; passwordPlaceholder: string | null }[];
+  testUsers: { handle: string; username: string; passwordPlaceholder: string | null; notes: string }[];
+  executionNotes: string;
   allowedOrigin: string;
   scrub: Scrubber;
   signal: AbortSignal;
@@ -322,6 +324,7 @@ function buildUserRoster(
       handle: user.handle,
       username: user.username,
       passwordPlaceholder: secretName ? `{{secret:${secretName}}}` : null,
+      notes: user.notes,
     };
   });
 }
@@ -365,6 +368,7 @@ async function runStep(
     priorStepsSummary,
     secretNames: agent.secretNames,
     testUsers: agent.testUsers,
+    executionNotes: agent.executionNotes,
     secrets: agent.secrets,
     allowedOrigin: agent.allowedOrigin,
     scrub: agent.scrub,

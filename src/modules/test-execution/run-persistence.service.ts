@@ -31,12 +31,14 @@ export const EnvConfigSchema = z.object({
   loginPlan: NaturalPlanSchema.nullable().default(null),
   loginMode: z.enum(["session", "fresh"]).default("session"),
   loggedInText: z.string().default(""),
+  executionNotes: z.string().default(""),
   users: z
     .array(
       z.object({
         handle: z.string(),
         username: z.string(),
         passwordSecretName: z.string().nullable().default(null),
+        notes: z.string().default(""),
       }),
     )
     .default([]),

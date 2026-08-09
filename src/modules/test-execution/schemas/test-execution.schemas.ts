@@ -45,6 +45,8 @@ export const EnvironmentConfigInputSchema = z.object({
   loginMode: z.enum(["session", "fresh"]).default("session"),
   /** Authenticated-only landmark text; required for session reuse (never URL-based). */
   loggedInText: z.string().trim().max(200).default(""),
+  /** Free-text guidance for the execution agent — context, never an override of the safety rules. */
+  executionNotes: z.string().trim().max(2_000).default(""),
   users: z.array(TestUserSchema).max(30).default([]),
 });
 export type EnvironmentConfigInput = z.infer<typeof EnvironmentConfigInputSchema>;

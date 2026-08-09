@@ -484,6 +484,31 @@ describeDb("test-execution run handler (agentic)", () => {
     expect(staleResult.outcome).toBe("already_finalized");
   });
 
+  it("threads execution notes and test-user notes into the agent prompt", async () => {
+    const runId = uniqueTestId("trun");
+    await insertRun(runId, {
+      ...ENV_CONFIG,
+      executionNotes: "Dates use DD/MM/YYYY.",
+      users: [
+        { handle: "expired_user", username: "expired@example.com", passwordSecretName: null, notes: "subscription lapsed" },
+      ],
+    });
+    await insertCase(runId, 0, "Case", [{ instruction: "Do it" }]);
+
+    const provider = sequencedProvider([{ decision: "step_passed", actualResult: "done" }]);
+    setTestExecutionExecutorFactoryForTests(() => new FakeBrowserExecutor());
+    setExecutionArtifactStorageBackendForTests(fakeStorage());
+    setTestExecutionLlmProviderFactoryForTests(async () => provider);
+
+    const result = await runTestExecutionRunJob(makeJob(runId), context(new AbortController().signal));
+    expect(result.outcome).toBe("passed");
+    const [promptInput] = (provider.generateStructuredOutput as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(promptInput.user).toContain("## Execution notes");
+    expect(promptInput.user).toContain("Dates use DD/MM/YYYY.");
+    expect(promptInput.user).toContain("subscription lapsed");
+    expect(promptInput.system).toContain("Execution notes");
+  });
+
   // ---- login session reuse (AgentEx optimize-login) ----
 
   const SESSION_ENV = {
