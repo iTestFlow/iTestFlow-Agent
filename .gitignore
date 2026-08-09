@@ -13,6 +13,8 @@ data/uploads/*
 data/indexes/*
 data/model-cache/*
 data/document-store/*
+data/execution-artifacts/*
+data/tmp/*
 *.log
 tsconfig.tsbuildinfo
 .claude
