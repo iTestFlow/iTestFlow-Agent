@@ -20,7 +20,11 @@ export async function patchJson<T>(url: string, body: unknown, signal?: AbortSig
   return sendJson<T>(url, "PATCH", body, signal);
 }
 
-async function sendJson<T>(url: string, method: "POST" | "PATCH" | "PUT", body: unknown, signal?: AbortSignal) {
+export async function deleteJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return sendJson<T>(url, "DELETE", body, signal);
+}
+
+async function sendJson<T>(url: string, method: "POST" | "PATCH" | "PUT" | "DELETE", body: unknown, signal?: AbortSignal) {
   const response = await fetch(url, {
     method,
     headers: { "Content-Type": "application/json" },

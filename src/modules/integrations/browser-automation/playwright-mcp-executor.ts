@@ -1,5 +1,8 @@
 import "server-only";
 
+import { readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+
 import { buildScrubValues } from "@/modules/test-execution/secret-resolution";
 import type { AgentAction } from "@/modules/test-execution/action-schema";
 
@@ -25,6 +28,13 @@ import { createScrubber, type Scrubber } from "./output-scrubber";
  */
 
 const PAGE_URL_PATTERN = /^- Page URL: (.+)$/m;
+
+/**
+ * Session-reuse tools: adapter-internal ONLY. They are never part of the
+ * agent-facing allowlist, never emitted by action mapping, and callable only
+ * through callInternalTool for login-state capture/injection.
+ */
+const INTERNAL_SESSION_TOOLS = new Set(["browser_storage_state", "browser_set_storage_state"]);
 
 type ToolCallOutcome = { text: string; isError: boolean; images: { data: string; mimeType: string }[] };
 
@@ -70,6 +80,25 @@ export class PlaywrightMcpExecutor implements BrowserExecutor {
       throw new BrowserExecutorError(
         `Playwright MCP tool surface drifted from the pinned version; missing: ${missing.join(", ")}`,
       );
+    }
+
+    // Login session reuse: inject a previously captured storage state via a
+    // transient plaintext file in the per-run temp dir (the file-based tool
+    // contract at 0.0.78). The file lives for milliseconds; the durable copy
+    // is AES-GCM encrypted in the database.
+    if (config.storageStateJson) {
+      const injectPath = path.join(this.session.outputDir, "inject-state.json");
+      try {
+        await writeFile(injectPath, config.storageStateJson, { encoding: "utf8", mode: 0o600 });
+        const restore = await this.callInternalTool("browser_set_storage_state", { filename: injectPath });
+        if (restore.isError) {
+          throw new BrowserExecutorError(
+            `Storage state injection failed: ${this.scrub(restore.text).slice(0, 300)}`,
+          );
+        }
+      } finally {
+        await rm(injectPath, { force: true }).catch(() => undefined);
+      }
     }
 
     const initial = await this.callTool("browser_navigate", { url: config.initialUrl });
@@ -188,6 +217,56 @@ export class PlaywrightMcpExecutor implements BrowserExecutor {
       .map((line) => this.scrub(line.trim()))
       .filter((line) => line.length > 0 && !line.startsWith("- Page ") && !line.startsWith("### "))
       .slice(0, 100);
+  }
+
+  async captureStorageState(): Promise<string | null> {
+    if (!this.session) return null;
+    const capturePath = path.join(this.session.outputDir, "session-state.json");
+    try {
+      const outcome = await this.callInternalTool("browser_storage_state", { filename: capturePath });
+      if (outcome.isError) return null;
+      const stateJson = await readFile(capturePath, "utf8");
+      // Sanity: must be JSON with the storage-state shape before we encrypt it.
+      const parsed = JSON.parse(stateJson) as { cookies?: unknown };
+      return parsed && typeof parsed === "object" ? stateJson : null;
+    } catch {
+      return null;
+    } finally {
+      await rm(capturePath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Privileged path for session capture/injection only. Deliberately
+   * separate from callTool so agent-driven actions can never reach the
+   * storage tools: planAgentAction never emits them and callTool rejects
+   * anything outside the agent allowlist.
+   */
+  private async callInternalTool(
+    name: "browser_storage_state" | "browser_set_storage_state",
+    args: Record<string, unknown>,
+  ): Promise<ToolCallOutcome> {
+    if (!this.session) throw new BrowserExecutorError("Executor session is not started.");
+    if (!INTERNAL_SESSION_TOOLS.has(name)) {
+      throw new BrowserExecutorError(`Tool ${name} is not an internal session tool.`);
+    }
+    if (this.config?.signal.aborted) throw new BrowserExecutorError("Execution aborted.");
+    let response;
+    try {
+      response = await this.session.client.callTool(
+        { name, arguments: args },
+        undefined,
+        { timeout: 30_000 },
+      );
+    } catch (error) {
+      throw new BrowserExecutorError(`MCP call ${name} failed at the protocol level.`, error);
+    }
+    const content = Array.isArray(response.content) ? response.content : [];
+    const text = content
+      .filter((item): item is { type: "text"; text: string } => item.type === "text")
+      .map((item) => item.text)
+      .join("\n");
+    return { text, isError: response.isError === true, images: [] };
   }
 
   async currentUrl(): Promise<string | null> {

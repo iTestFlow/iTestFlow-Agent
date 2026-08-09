@@ -63,6 +63,7 @@
     "src/app/api/test-execution/defect-candidates/[candidateId]/publish/route.ts",
     "src/app/api/test-execution/defect-candidates/[candidateId]/route.ts",
     "src/app/api/test-execution/environments/[environmentId]/route.ts",
+    "src/app/api/test-execution/environments/[environmentId]/session/route.ts",
     "src/app/api/test-execution/environments/route.ts",
     "src/app/api/test-execution/runs/[runId]/artifacts/[artifactId]/route.ts",
     "src/app/api/test-execution/runs/[runId]/cancel/route.ts",

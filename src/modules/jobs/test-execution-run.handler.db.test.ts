@@ -23,6 +23,10 @@ import {
   setTestExecutionLlmProviderFactoryForTests,
 } from "./test-execution-run.handler";
 import { TEST_EXECUTION_RUN } from "./test-execution-jobs.service";
+import {
+  getEnvironmentSessionState,
+  saveEnvironmentSessionState,
+} from "@/modules/test-execution/environment-profile.service";
 
 /**
  * End-to-end handler behavior against real rows with the agentic loop driven
@@ -105,13 +109,28 @@ const ENV_CONFIG = {
   loginPlan: null as unknown,
 };
 
-async function insertRun(runId: string, envConfig: Record<string, unknown> = ENV_CONFIG) {
+async function insertRun(
+  runId: string,
+  envConfig: Record<string, unknown> = ENV_CONFIG,
+  environmentProfileId: string | null = null,
+) {
   await sqlRun(
     `INSERT INTO test_execution_runs (
-       id, workspace_id, project_id, azure_project_id, env_config_json,
+       id, workspace_id, project_id, azure_project_id, environment_profile_id, env_config_json,
        approved_by, approved_at, created_by, created_at, updated_at
-     ) VALUES (@id, @ws, @project, @project, @env::jsonb, @userId, @now, @userId, @now, @now)`,
-    { id: runId, ws, project, env: JSON.stringify(envConfig), userId, now: nowIso() },
+     ) VALUES (@id, @ws, @project, @project, @profileId, @env::jsonb, @userId, @now, @userId, @now, @now)`,
+    { id: runId, ws, project, profileId: environmentProfileId, env: JSON.stringify(envConfig), userId, now: nowIso() },
+  );
+}
+
+async function insertProfile(profileId: string) {
+  await sqlRun(
+    `INSERT INTO test_environment_profiles (
+       id, workspace_id, project_id, azure_project_id, name, initial_url, allowed_origin,
+       created_by, created_at, updated_at
+     ) VALUES (@id, @ws, @project, @project, @name, 'https://app.example.com/login', 'https://app.example.com',
+       @userId, @now, @now)`,
+    { id: profileId, ws, project, name: profileId, userId, now: nowIso() },
   );
 }
 
@@ -229,6 +248,7 @@ describeDb("test-execution run handler (agentic)", () => {
 
   afterAll(async () => {
     await sqlRun(`DELETE FROM test_execution_runs WHERE workspace_id = @ws`, { ws });
+    await sqlRun(`DELETE FROM test_environment_profiles WHERE workspace_id = @ws`, { ws });
     await cleanupFixtures({ workspaceIds: [ws], userIds: [userId] });
   });
 
@@ -462,5 +482,136 @@ describeDb("test-execution run handler (agentic)", () => {
     // A second job (stale reclaim scenario) must not be able to re-finalize.
     const staleResult = await runTestExecutionRunJob(makeJob(runId), context(new AbortController().signal));
     expect(staleResult.outcome).toBe("already_finalized");
+  });
+
+  // ---- login session reuse (AgentEx optimize-login) ----
+
+  const SESSION_ENV = {
+    ...ENV_CONFIG,
+    loginPlan: {
+      schemaVersion: "v2-natural",
+      steps: [{ instruction: "Sign in", expectedResult: "Dashboard" }],
+    },
+    loginMode: "session",
+    loggedInText: "Logout",
+  };
+
+  it("captures an encrypted session after a fresh login when the run is session-eligible", async () => {
+    const profileId = uniqueTestId("tenv");
+    await insertProfile(profileId);
+    const runId = uniqueTestId("trun");
+    await insertRun(runId, SESSION_ENV, profileId);
+    await insertCase(runId, 0, "Case", [{ instruction: "Do it" }]);
+
+    const executor = new FakeBrowserExecutor();
+    executor.storageStateToCapture = '{"cookies":[{"name":"sid"}],"origins":[]}';
+    setTestExecutionExecutorFactoryForTests(() => executor);
+    setExecutionArtifactStorageBackendForTests(fakeStorage());
+    setTestExecutionLlmProviderFactoryForTests(async () =>
+      sequencedProvider([
+        { decision: "step_passed", actualResult: "Logged in" },
+        { decision: "step_passed", actualResult: "done" },
+      ]),
+    );
+
+    const result = await runTestExecutionRunJob(makeJob(runId), context(new AbortController().signal));
+    expect(result.outcome).toBe("passed");
+    expect(executor.startedWith?.storageStateJson).toBeUndefined();
+    expect(executor.captureCount).toBe(1);
+    const stored = await getEnvironmentSessionState({ workspaceId: ws, environmentProfileId: profileId });
+    expect(stored?.stateJson).toBe('{"cookies":[{"name":"sid"}],"origins":[]}');
+  });
+
+  it("reuses a stored session when the landmark is on the page — login skipped, zero extra LLM calls", async () => {
+    const profileId = uniqueTestId("tenv");
+    await insertProfile(profileId);
+    const runId = uniqueTestId("trun");
+    await insertRun(runId, SESSION_ENV, profileId);
+    await insertCase(runId, 0, "Case", [{ instruction: "Do it" }]);
+    await saveEnvironmentSessionState({
+      workspaceId: ws,
+      projectId: project,
+      azureProjectId: project,
+      environmentProfileId: profileId,
+      stateJson: '{"cookies":[{"name":"stored"}],"origins":[]}',
+    });
+
+    const executor = new FakeBrowserExecutor({ snapshots: ['- link "Logout" [ref=e9]\n- button "Save" [ref=e1]'] });
+    setTestExecutionExecutorFactoryForTests(() => executor);
+    setExecutionArtifactStorageBackendForTests(fakeStorage());
+    const provider = sequencedProvider([{ decision: "step_passed", actualResult: "done" }]);
+    setTestExecutionLlmProviderFactoryForTests(async () => provider);
+
+    const result = await runTestExecutionRunJob(makeJob(runId), context(new AbortController().signal));
+    expect(result.outcome).toBe("passed");
+    expect(executor.startedWith?.storageStateJson).toBe('{"cookies":[{"name":"stored"}],"origins":[]}');
+    // Landmark verification is deterministic — the only model call is the test step itself.
+    expect((provider.generateStructuredOutput as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect(executor.captureCount).toBe(0);
+  });
+
+  it("falls back to a fresh login when the stored session misses the landmark, then re-captures", async () => {
+    const profileId = uniqueTestId("tenv");
+    await insertProfile(profileId);
+    const runId = uniqueTestId("trun");
+    await insertRun(runId, SESSION_ENV, profileId);
+    await insertCase(runId, 0, "Case", [{ instruction: "Do it" }]);
+    await saveEnvironmentSessionState({
+      workspaceId: ws,
+      projectId: project,
+      azureProjectId: project,
+      environmentProfileId: profileId,
+      stateJson: '{"cookies":[{"name":"stale"}],"origins":[]}',
+    });
+
+    const executor = new FakeBrowserExecutor({ snapshots: ['- heading "Sign in" [ref=e1]'] });
+    executor.storageStateToCapture = '{"cookies":[{"name":"fresh"}],"origins":[]}';
+    setTestExecutionExecutorFactoryForTests(() => executor);
+    setExecutionArtifactStorageBackendForTests(fakeStorage());
+    setTestExecutionLlmProviderFactoryForTests(async () =>
+      sequencedProvider([
+        { decision: "step_passed", actualResult: "Logged in" },
+        { decision: "step_passed", actualResult: "done" },
+      ]),
+    );
+
+    const result = await runTestExecutionRunJob(makeJob(runId), context(new AbortController().signal));
+    expect(result.outcome).toBe("passed");
+    expect(executor.startedWith?.storageStateJson).toBe('{"cookies":[{"name":"stale"}],"origins":[]}');
+    expect(executor.captureCount).toBe(1);
+    const stored = await getEnvironmentSessionState({ workspaceId: ws, environmentProfileId: profileId });
+    expect(stored?.stateJson).toBe('{"cookies":[{"name":"fresh"}],"origins":[]}');
+  });
+
+  it("loginMode fresh never injects nor captures, even with a stored session", async () => {
+    const profileId = uniqueTestId("tenv");
+    await insertProfile(profileId);
+    const runId = uniqueTestId("trun");
+    await insertRun(runId, { ...SESSION_ENV, loginMode: "fresh" }, profileId);
+    await insertCase(runId, 0, "Case", [{ instruction: "Do it" }]);
+    await saveEnvironmentSessionState({
+      workspaceId: ws,
+      projectId: project,
+      azureProjectId: project,
+      environmentProfileId: profileId,
+      stateJson: '{"cookies":[{"name":"stored"}],"origins":[]}',
+    });
+
+    const executor = new FakeBrowserExecutor();
+    setTestExecutionExecutorFactoryForTests(() => executor);
+    setExecutionArtifactStorageBackendForTests(fakeStorage());
+    setTestExecutionLlmProviderFactoryForTests(async () =>
+      sequencedProvider([
+        { decision: "step_passed", actualResult: "Logged in" },
+        { decision: "step_passed", actualResult: "done" },
+      ]),
+    );
+
+    const result = await runTestExecutionRunJob(makeJob(runId), context(new AbortController().signal));
+    expect(result.outcome).toBe("passed");
+    expect(executor.startedWith?.storageStateJson).toBeUndefined();
+    expect(executor.captureCount).toBe(0);
+    const stored = await getEnvironmentSessionState({ workspaceId: ws, environmentProfileId: profileId });
+    expect(stored?.stateJson).toBe('{"cookies":[{"name":"stored"}],"origins":[]}');
   });
 });

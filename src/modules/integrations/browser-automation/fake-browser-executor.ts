@@ -86,6 +86,16 @@ export class FakeBrowserExecutor implements BrowserExecutor {
     return drained;
   }
 
+  async captureStorageState(): Promise<string | null> {
+    if (!this.started) return null;
+    this.captureCount += 1;
+    return this.storageStateToCapture;
+  }
+
+  captureCount = 0;
+  /** Scripted capture result; null simulates a capture failure. */
+  storageStateToCapture: string | null = '{"cookies":[],"origins":[]}';
+
   async currentUrl(): Promise<string | null> {
     return this.url;
   }

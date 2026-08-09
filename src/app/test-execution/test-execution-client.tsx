@@ -8,9 +8,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
-import { postJson, patchJson } from "@/components/workflow/post-json";
+import { postJson, patchJson, deleteJson } from "@/components/workflow/post-json";
 import { ApiError } from "@/components/workflow/api-error";
 import { projectWarning, useActiveProject } from "@/components/workflow/test-intelligence-shared";
+import { NATURAL_PLAN_SCHEMA_VERSION } from "@/modules/test-execution/action-schema";
 import type { RunDetailDto } from "@/modules/test-execution/report-assembler";
 
 import {
@@ -20,6 +21,7 @@ import {
   type EnvironmentProfileSummary,
   type EnvironmentSelection,
   type OneTimeEnvironmentState,
+  type TestUserDraft,
 } from "./components/environment-step";
 import {
   ScopeStep,
@@ -66,6 +68,7 @@ export function TestExecutionClient() {
   const [profiles, setProfiles] = useState<EnvironmentProfileSummary[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [invalidatingSession, setInvalidatingSession] = useState(false);
   const [selection, setSelection] = useState<EnvironmentSelection | null>(null);
 
   const [story, setStory] = useState({ workItemId: "", title: "" });
@@ -249,7 +252,13 @@ export function TestExecutionClient() {
           defaultTimeoutMs: config.defaultTimeoutMs,
           navigationTimeoutMs: config.navigationTimeoutMs,
           evidenceLevel: config.evidenceLevel,
-          loginPlan: config.loginSteps.length > 0 ? { schemaVersion: "v1", steps: config.loginSteps } : null,
+          loginPlan:
+            config.loginSteps.length > 0
+              ? { schemaVersion: NATURAL_PLAN_SCHEMA_VERSION, steps: config.loginSteps }
+              : null,
+          loginMode: config.loginMode,
+          loggedInText: config.loggedInText.trim(),
+          users: usableTestUsers(config.users),
         },
         secrets: config.secrets.filter((secret) => secret.secretName && secret.value),
       });
@@ -260,6 +269,27 @@ export function TestExecutionClient() {
       toast.error(error instanceof Error ? error.message : "The profile could not be saved.");
     } finally {
       setSavingProfile(false);
+    }
+  };
+
+  const invalidateSession = async (profileId: string) => {
+    if (!scope) return;
+    setInvalidatingSession(true);
+    try {
+      await deleteJson<{ deleted: boolean }>(`/api/test-execution/environments/${profileId}/session`, { scope });
+      const clear = (profile: EnvironmentProfileSummary): EnvironmentProfileSummary =>
+        profile.id === profileId ? { ...profile, sessionCapturedAt: null } : profile;
+      setProfiles((previous) => previous.map(clear));
+      setSelection((previous) =>
+        previous?.mode === "profile" && previous.profile.id === profileId
+          ? { mode: "profile", profile: clear(previous.profile) }
+          : previous,
+      );
+      toast.success("Saved login session invalidated — the next run logs in fresh.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "The saved login session could not be invalidated.");
+    } finally {
+      setInvalidatingSession(false);
     }
   };
 
@@ -387,8 +417,11 @@ export function TestExecutionClient() {
                 evidenceLevel: selection.config.evidenceLevel,
                 loginPlan:
                   selection.config.loginSteps.length > 0
-                    ? { schemaVersion: "v1" as const, steps: selection.config.loginSteps }
+                    ? { schemaVersion: NATURAL_PLAN_SCHEMA_VERSION, steps: selection.config.loginSteps }
                     : null,
+                loginMode: selection.config.loginMode,
+                loggedInText: selection.config.loggedInText.trim(),
+                users: usableTestUsers(selection.config.users),
               },
               secrets: selection.config.secrets.filter((secret) => secret.secretName && secret.value),
             };
@@ -516,6 +549,8 @@ export function TestExecutionClient() {
           onSaveAsProfile={saveAsProfile}
           saving={savingProfile}
           onContinue={() => setActiveStep("scope")}
+          onInvalidateSession={invalidateSession}
+          invalidatingSession={invalidatingSession}
         />
       ) : null}
 
@@ -627,6 +662,13 @@ export function TestExecutionClient() {
       ) : null}
     </div>
   );
+}
+
+/** Only complete rows leave the browser — half-filled user rows are dropped, not rejected. */
+function usableTestUsers(users: TestUserDraft[]): TestUserDraft[] {
+  return users
+    .filter((user) => /^[a-z][a-z0-9_]{0,63}$/.test(user.handle) && user.username.trim().length > 0)
+    .map((user) => ({ ...user, username: user.username.trim() }));
 }
 
 function safeOrigin(url: string): string {

@@ -20,6 +20,13 @@ import { TextStepEditor } from "./text-step-editor";
  * show/hide toggle during entry; saved secrets render masked previews only.
  */
 
+export type TestUserDraft = {
+  handle: string;
+  username: string;
+  passwordSecretName: string | null;
+  notes: string;
+};
+
 export type EnvironmentProfileSummary = {
   id: string;
   name: string;
@@ -32,7 +39,11 @@ export type EnvironmentProfileSummary = {
   navigationTimeoutMs: number;
   evidenceLevel: "minimal" | "on_failure" | "all_steps";
   loginPlan: unknown;
+  loginMode: "session" | "fresh";
+  loggedInText: string;
+  users: TestUserDraft[];
   secrets: { secretName: string; title: string; maskedPreview: string }[];
+  sessionCapturedAt: string | null;
 };
 
 export type OneTimeEnvironmentState = {
@@ -45,6 +56,9 @@ export type OneTimeEnvironmentState = {
   navigationTimeoutMs: number;
   evidenceLevel: "minimal" | "on_failure" | "all_steps";
   loginSteps: NaturalStep[];
+  loginMode: "session" | "fresh";
+  loggedInText: string;
+  users: TestUserDraft[];
   secrets: { secretName: string; title: string; value: string }[];
 };
 
@@ -59,6 +73,9 @@ export function defaultOneTimeEnvironment(): OneTimeEnvironmentState {
     navigationTimeoutMs: 30_000,
     evidenceLevel: "on_failure",
     loginSteps: [],
+    loginMode: "session",
+    loggedInText: "",
+    users: [],
     secrets: [],
   };
 }
@@ -87,6 +104,8 @@ export function EnvironmentStep({
   onSaveAsProfile,
   saving,
   onContinue,
+  onInvalidateSession,
+  invalidatingSession,
 }: {
   profiles: EnvironmentProfileSummary[];
   profilesLoading: boolean;
@@ -95,6 +114,8 @@ export function EnvironmentStep({
   onSaveAsProfile: (name: string, config: OneTimeEnvironmentState) => Promise<void>;
   saving: boolean;
   onContinue: () => void;
+  onInvalidateSession: (profileId: string) => Promise<void>;
+  invalidatingSession: boolean;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [profileName, setProfileName] = useState("");
@@ -158,12 +179,31 @@ export function EnvironmentStep({
                     <p className="truncate text-xs text-muted-foreground">{profile.initialUrl}</p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {profile.secrets.length} secret(s) · {profile.loginPlan ? "login sequence" : "no login"} · evidence: {profile.evidenceLevel.replace(/_/g, " ")}
+                      {profile.users.length > 0 ? ` · ${profile.users.length} test user(s)` : ""}
+                      {profile.sessionCapturedAt ? " · login session saved" : ""}
                     </p>
                   </button>
                 );
               })}
             </div>
           )}
+          {selection?.mode === "profile" && selection.profile.sessionCapturedAt ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/40 px-3 py-2">
+              <p className="text-xs text-muted-foreground">
+                Saved login session from {new Date(selection.profile.sessionCapturedAt).toLocaleString()} — the next run skips
+                login if it is still valid.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={invalidatingSession}
+                onClick={() => void onInvalidateSession(selection.profile.id)}
+              >
+                {invalidatingSession ? "Invalidating…" : "Invalidate session"}
+              </Button>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -212,6 +252,19 @@ export function EnvironmentStep({
           </div>
 
           <div className="space-y-2">
+            <p className="text-sm font-medium">Test users (optional)</p>
+            <p className="text-xs text-muted-foreground">
+              Steps can name a user by handle — e.g. &quot;Login as expired_user&quot;. A user without its own password secret
+              falls back to a secret named DEFAULT_PASSWORD when one exists.
+            </p>
+            <TestUserListEditor
+              users={oneTime?.users ?? []}
+              secretNames={(oneTime?.secrets ?? []).map((secret) => secret.secretName).filter(Boolean)}
+              onChange={(users) => setOneTime({ users })}
+            />
+          </div>
+
+          <div className="space-y-2">
             <p className="text-sm font-medium">Login sequence (runs once per run, before any test case)</p>
             <TextStepEditor
               steps={oneTime?.loginSteps ?? []}
@@ -219,6 +272,38 @@ export function EnvironmentStep({
               availableSecretNames={(oneTime?.secrets ?? []).map((secret) => secret.secretName)}
               idPrefix="te-login"
             />
+            {(oneTime?.loginSteps.length ?? 0) > 0 ? (
+              <div className="grid gap-3 pt-1 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="te-login-mode">Between runs</Label>
+                  <Select
+                    value={oneTime?.loginMode ?? "session"}
+                    onValueChange={(value) => setOneTime({ loginMode: value as OneTimeEnvironmentState["loginMode"] })}
+                  >
+                    <SelectTrigger id="te-login-mode">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="session">Reuse the login session (faster)</SelectItem>
+                      <SelectItem value="fresh">Log in fresh every run</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="te-logged-in-text">Logged-in landmark text</Label>
+                  <Input
+                    id="te-logged-in-text"
+                    value={oneTime?.loggedInText ?? ""}
+                    placeholder='e.g. "Logout" or the account menu name'
+                    onChange={(event) => setOneTime({ loggedInText: event.target.value })}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Text visible only when logged in. Session reuse verifies this before skipping login; without it, every run
+                    logs in fresh.
+                  </p>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div>
@@ -371,6 +456,85 @@ function SecretListEditor({
         onClick={() => onChange([...secrets, { secretName: "", title: "", value: "" }])}
       >
         <Plus className="mr-1 h-4 w-4" /> Add credential
+      </Button>
+    </div>
+  );
+}
+
+const NO_USER_SECRET = "__default__";
+
+function TestUserListEditor({
+  users,
+  secretNames,
+  onChange,
+}: {
+  users: TestUserDraft[];
+  secretNames: string[];
+  onChange: (users: TestUserDraft[]) => void;
+}) {
+  const update = (index: number, patch: Partial<TestUserDraft>) => {
+    onChange(users.map((user, i) => (i === index ? { ...user, ...patch } : user)));
+  };
+  return (
+    <div className="space-y-2">
+      {users.map((user, index) => (
+        <div key={index} className="grid items-end gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+          <div className="space-y-1">
+            <Label htmlFor={`te-user-handle-${index}`}>Handle (used in steps)</Label>
+            <Input
+              id={`te-user-handle-${index}`}
+              value={user.handle}
+              placeholder="expired_user"
+              onChange={(event) => update(index, { handle: event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_") })}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`te-user-username-${index}`}>Username / email</Label>
+            <Input
+              id={`te-user-username-${index}`}
+              value={user.username}
+              placeholder="expired@example.com"
+              onChange={(event) => update(index, { username: event.target.value })}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`te-user-secret-${index}`}>Password secret</Label>
+            <Select
+              value={user.passwordSecretName ?? NO_USER_SECRET}
+              onValueChange={(value) => update(index, { passwordSecretName: value === NO_USER_SECRET ? null : value })}
+            >
+              <SelectTrigger id={`te-user-secret-${index}`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_USER_SECRET}>DEFAULT_PASSWORD (fallback)</SelectItem>
+                {secretNames.map((name) => (
+                  <SelectItem key={name} value={name}>
+                    {name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="text-destructive"
+            aria-label={`Remove test user ${user.handle || index + 1}`}
+            onClick={() => onChange(users.filter((_, i) => i !== index))}
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => onChange([...users, { handle: "", username: "", passwordSecretName: null, notes: "" }])}
+      >
+        <Plus className="mr-1 h-4 w-4" /> Add test user
       </Button>
     </div>
   );

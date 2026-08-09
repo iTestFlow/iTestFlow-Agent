@@ -52,7 +52,9 @@ export function buildMcpArgs(config: McpProcessConfig, outputDir: string): strin
   const args = [
     resolveMcpCliPath(),
     "--isolated",
-    "--caps=testing",
+    // storage caps power login-session capture/injection; those tools are
+    // adapter-internal only and never reachable from agent decisions.
+    "--caps=testing,storage",
     "--browser=chromium",
     `--viewport-size=${config.viewport.width}x${config.viewport.height}`,
     `--timeout-action=${config.actionTimeoutMs}`,

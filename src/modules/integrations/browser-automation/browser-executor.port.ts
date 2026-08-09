@@ -24,6 +24,12 @@ export type BrowserSessionConfig = {
   navigationTimeoutMs: number;
   /** Resolved secret values — worker memory only, never persisted. */
   secrets: ReadonlyMap<string, string>;
+  /**
+   * Previously captured browser storage-state JSON to inject before the
+   * initial navigation (login session reuse). Decrypted worker-side; the
+   * adapter must never persist it beyond a transient injection file.
+   */
+  storageStateJson?: string;
   signal: AbortSignal;
 };
 
@@ -61,6 +67,11 @@ export interface BrowserExecutor {
   captureScreenshot(): Promise<{ bytes: Buffer; mimeType: string }>;
   /** Console error lines emitted since the last drain, scrubbed. */
   drainConsoleErrors(): Promise<string[]>;
+  /**
+   * Capture the current browser storage state (cookies/localStorage) for
+   * encrypted reuse. Best-effort: returns null when capture is unavailable.
+   */
+  captureStorageState(): Promise<string | null>;
   /** Current page URL, when a page is open. */
   currentUrl(): Promise<string | null>;
   /** Idempotent teardown: close the session and kill the browser process tree. */

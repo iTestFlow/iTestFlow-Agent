@@ -29,6 +29,17 @@ export const EnvConfigSchema = z.object({
   navigationTimeoutMs: z.number().int().min(1_000).max(120_000).default(30_000),
   evidenceLevel: z.enum(["minimal", "on_failure", "all_steps"]).default("on_failure"),
   loginPlan: NaturalPlanSchema.nullable().default(null),
+  loginMode: z.enum(["session", "fresh"]).default("session"),
+  loggedInText: z.string().default(""),
+  users: z
+    .array(
+      z.object({
+        handle: z.string(),
+        username: z.string(),
+        passwordSecretName: z.string().nullable().default(null),
+      }),
+    )
+    .default([]),
 });
 export type EnvConfig = z.infer<typeof EnvConfigSchema>;
 
@@ -38,6 +49,7 @@ export type RunExecutionBundle = {
     workspaceId: string;
     projectId: string;
     azureProjectId: string;
+    environmentProfileId: string | null;
     status: string;
     jobId: string | null;
     envConfig: EnvConfig;
@@ -58,6 +70,7 @@ type RunRow = {
   workspace_id: string;
   project_id: string;
   azure_project_id: string;
+  environment_profile_id: string | null;
   status: string;
   job_id: string | null;
   env_config_json: unknown;
@@ -65,7 +78,7 @@ type RunRow = {
 
 export async function loadRunForExecution(runId: string): Promise<RunExecutionBundle | null> {
   const row = await sqlGet<RunRow>(
-    `SELECT id, workspace_id, project_id, azure_project_id, status, job_id, env_config_json
+    `SELECT id, workspace_id, project_id, azure_project_id, environment_profile_id, status, job_id, env_config_json
      FROM test_execution_runs WHERE id = @runId`,
     { runId },
   );
@@ -130,6 +143,7 @@ export async function loadRunForExecution(runId: string): Promise<RunExecutionBu
       workspaceId: row.workspace_id,
       projectId: row.project_id,
       azureProjectId: row.azure_project_id,
+      environmentProfileId: row.environment_profile_id,
       status: row.status,
       jobId: row.job_id,
       envConfig: envParsed.data,

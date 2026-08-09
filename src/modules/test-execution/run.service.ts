@@ -464,6 +464,9 @@ export function profileToEnvConfig(profile: {
   navigationTimeoutMs: number;
   evidenceLevel: "minimal" | "on_failure" | "all_steps";
   loginPlan: unknown;
+  loginMode: "session" | "fresh";
+  loggedInText: string;
+  users: { handle: string; username: string; passwordSecretName: string | null }[];
 }): EnvConfig {
   return {
     initialUrl: profile.initialUrl,
@@ -475,5 +478,12 @@ export function profileToEnvConfig(profile: {
     navigationTimeoutMs: profile.navigationTimeoutMs,
     evidenceLevel: profile.evidenceLevel,
     loginPlan: (profile.loginPlan as NaturalPlan | null) ?? null,
+    loginMode: profile.loginMode,
+    loggedInText: profile.loggedInText,
+    users: profile.users.map((user) => ({
+      handle: user.handle,
+      username: user.username,
+      passwordSecretName: user.passwordSecretName,
+    })),
   };
 }

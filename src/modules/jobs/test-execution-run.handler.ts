@@ -36,6 +36,11 @@ import type { BrowserExecutor } from "@/modules/integrations/browser-automation/
 import { createScrubber, scrubDeep, type Scrubber } from "@/modules/integrations/browser-automation/output-scrubber";
 import { createId, nowIso } from "@/modules/shared/infrastructure/database/db";
 import { writeAuditLog } from "@/modules/audit/audit.service";
+import {
+  deleteEnvironmentSession,
+  getEnvironmentSessionState,
+  saveEnvironmentSessionState,
+} from "@/modules/test-execution/environment-profile.service";
 import { resolveUserLlmConfig } from "@/modules/credentials/credential.service";
 import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import { createLLMProvider } from "@/modules/llm/llm-provider.factory";
@@ -132,6 +137,22 @@ export async function runTestExecutionRunJob(
       job.createdByUserId ?? "",
     );
 
+    // Login session reuse (optimize-login): eligible when the run came from a
+    // saved profile with a login plan, session mode, and a logged-in landmark.
+    const sessionEligible =
+      Boolean(bundle.run.environmentProfileId) &&
+      env.loginMode === "session" &&
+      Boolean(env.loginPlan) &&
+      env.loggedInText.trim().length > 0;
+    let injectedState: string | undefined;
+    if (sessionEligible) {
+      const stored = await getEnvironmentSessionState({
+        workspaceId: bundle.run.workspaceId,
+        environmentProfileId: bundle.run.environmentProfileId as string,
+      });
+      injectedState = stored?.stateJson;
+    }
+
     await executor.start({
       runId,
       initialUrl: env.initialUrl,
@@ -141,6 +162,7 @@ export async function runTestExecutionRunJob(
       defaultTimeoutMs: env.defaultTimeoutMs,
       navigationTimeoutMs: env.navigationTimeoutMs,
       secrets: bundle.secrets,
+      storageStateJson: injectedState,
       signal: context.signal,
     });
 
@@ -149,6 +171,7 @@ export async function runTestExecutionRunJob(
       executor,
       secrets: bundle.secrets,
       secretNames: [...bundle.secrets.keys()],
+      testUsers: buildUserRoster(env, bundle.secrets),
       allowedOrigin: env.allowedOrigin,
       scrub,
       signal: context.signal,
@@ -163,11 +186,43 @@ export async function runTestExecutionRunJob(
     };
 
     if (env.loginPlan) {
-      const loginOutcome = await executeLoginPlan(agentContext, env.loginPlan);
-      if (loginOutcome !== "passed") {
-        await evidence.captureFailure(executor, null, null);
-        await finalizePendingCases(runId, job.id, "blocked_prerequisite");
-        return await finalizeAndSummarize(runId, job.id, provider, { loginOutcome });
+      let loginNeeded = true;
+      // Landmark verification: deterministic, zero LLM calls — the injected
+      // session counts only if the authenticated-only text is on the page.
+      if (injectedState) {
+        const snapshot = await executor.takeSnapshot();
+        if (snapshot.text.toLowerCase().includes(env.loggedInText.trim().toLowerCase())) {
+          loginNeeded = false;
+          sessionAudit(bundle, runId, "test_execution.session_reused", "Reused the saved login session (landmark verified).");
+        } else {
+          sessionAudit(bundle, runId, "test_execution.session_stale", "Saved login session was stale; falling back to a fresh login.");
+          await deleteEnvironmentSession({
+            workspaceId: bundle.run.workspaceId,
+            environmentProfileId: bundle.run.environmentProfileId as string,
+          }).catch(() => undefined);
+        }
+      }
+
+      if (loginNeeded) {
+        const loginOutcome = await executeLoginPlan(agentContext, env.loginPlan);
+        if (loginOutcome !== "passed") {
+          await evidence.captureFailure(executor, null, null);
+          await finalizePendingCases(runId, job.id, "blocked_prerequisite");
+          return await finalizeAndSummarize(runId, job.id, provider, { loginOutcome });
+        }
+        if (sessionEligible && !context.signal.aborted) {
+          const capturedState = await executor.captureStorageState();
+          if (capturedState) {
+            await saveEnvironmentSessionState({
+              workspaceId: bundle.run.workspaceId,
+              projectId: bundle.run.projectId,
+              azureProjectId: bundle.run.azureProjectId,
+              environmentProfileId: bundle.run.environmentProfileId as string,
+              stateJson: capturedState,
+            }).catch(() => undefined);
+            sessionAudit(bundle, runId, "test_execution.session_captured", "Captured an encrypted login session for reuse.");
+          }
+        }
       }
     }
 
@@ -239,12 +294,57 @@ type AgentContext = {
   executor: BrowserExecutor;
   secrets: ReadonlyMap<string, string>;
   secretNames: string[];
+  testUsers: { handle: string; username: string; passwordPlaceholder: string | null }[];
   allowedOrigin: string;
   scrub: Scrubber;
   signal: AbortSignal;
   llmCallBudget: { remaining: number };
   metadata: Record<string, string | undefined>;
 };
+
+/**
+ * Named test users for the agent prompt: handle + username + the PASSWORD
+ * PLACEHOLDER (never a value). A user without its own password secret falls
+ * back to DEFAULT_PASSWORD when the environment defines one.
+ */
+function buildUserRoster(
+  env: RunExecutionBundle["run"]["envConfig"],
+  secrets: ReadonlyMap<string, string>,
+): AgentContext["testUsers"] {
+  return env.users.map((user) => {
+    const secretName =
+      user.passwordSecretName && secrets.has(user.passwordSecretName)
+        ? user.passwordSecretName
+        : secrets.has("DEFAULT_PASSWORD")
+          ? "DEFAULT_PASSWORD"
+          : null;
+    return {
+      handle: user.handle,
+      username: user.username,
+      passwordPlaceholder: secretName ? `{{secret:${secretName}}}` : null,
+    };
+  });
+}
+
+function sessionAudit(
+  bundle: RunExecutionBundle,
+  runId: string,
+  action: string,
+  message: string,
+): void {
+  writeAuditLog({
+    workspaceId: bundle.run.workspaceId,
+    projectId: bundle.run.projectId,
+    azureProjectId: bundle.run.azureProjectId,
+    entityType: "test_environment_profile",
+    entityId: bundle.run.environmentProfileId ?? undefined,
+    action,
+    status: "Info",
+    actor: "worker",
+    message,
+    details: { runId },
+  });
+}
 
 async function runStep(
   agent: AgentContext,
@@ -264,6 +364,7 @@ async function runStep(
     expectedResult: step.expectedResult,
     priorStepsSummary,
     secretNames: agent.secretNames,
+    testUsers: agent.testUsers,
     secrets: agent.secrets,
     allowedOrigin: agent.allowedOrigin,
     scrub: agent.scrub,

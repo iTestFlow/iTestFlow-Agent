@@ -10,6 +10,12 @@ import {
   uniqueTestId,
 } from "@/test/db";
 
+import {
+  deleteEnvironmentSession,
+  getEnvironmentSessionState,
+  saveEnvironmentSessionState,
+} from "./environment-profile.service";
+
 /**
  * Schema-level guarantees for the Test Execution tables (1710000037000-39000):
  * composite project-scope FKs reject cross-workspace rows, source snapshots
@@ -103,6 +109,48 @@ describeDb("test execution schema", () => {
       insertProfile(uniqueTestId("tenv"), { projectId: projectB, workspaceId: wsA, azureProjectId: projectB }),
     ).rejects.toThrow(/foreign key/i);
     await insertProfile(uniqueTestId("tenv"), baseScope(projectA, wsA));
+  });
+
+  it("session state round-trips encrypted, upserts per profile, and expires eagerly", async () => {
+    const profileId = uniqueTestId("tenv");
+    await insertProfile(profileId, baseScope(projectA, wsA));
+    const saveScope = {
+      workspaceId: wsA,
+      projectId: projectA,
+      azureProjectId: projectA,
+      environmentProfileId: profileId,
+    };
+
+    await saveEnvironmentSessionState({ ...saveScope, stateJson: '{"cookies":["first"],"origins":[]}' });
+    const atRest = await sqlGet<{ encrypted_state: string }>(
+      `SELECT encrypted_state FROM test_environment_sessions WHERE profile_id = @profileId`,
+      { profileId },
+    );
+    expect(atRest?.encrypted_state).not.toContain("cookies");
+
+    let stored = await getEnvironmentSessionState({ workspaceId: wsA, environmentProfileId: profileId });
+    expect(stored?.stateJson).toBe('{"cookies":["first"],"origins":[]}');
+
+    // Second save replaces the single per-profile row.
+    await saveEnvironmentSessionState({ ...saveScope, stateJson: '{"cookies":["second"],"origins":[]}' });
+    stored = await getEnvironmentSessionState({ workspaceId: wsA, environmentProfileId: profileId });
+    expect(stored?.stateJson).toBe('{"cookies":["second"],"origins":[]}');
+
+    // Past expiry: the read deletes the row and reports no session.
+    await sqlRun(
+      `UPDATE test_environment_sessions SET expires_at = @past WHERE profile_id = @profileId`,
+      { past: new Date(Date.now() - 1_000).toISOString(), profileId },
+    );
+    stored = await getEnvironmentSessionState({ workspaceId: wsA, environmentProfileId: profileId });
+    expect(stored).toBeNull();
+    const gone = await sqlGet<{ id: string }>(
+      `SELECT id FROM test_environment_sessions WHERE profile_id = @profileId`,
+      { profileId },
+    );
+    expect(gone).toBeFalsy();
+
+    // Idempotent delete on an absent row.
+    expect(await deleteEnvironmentSession({ workspaceId: wsA, environmentProfileId: profileId })).toBe(false);
   });
 
   it("enforces unique secret names per profile", async () => {

@@ -17,6 +17,19 @@ export const SecretInputSchema = z.object({
 });
 export type SecretInput = z.infer<typeof SecretInputSchema>;
 
+/**
+ * Named test user (AgentEx-style handle model): steps reference the handle in
+ * natural language ("Login as expired_user"). A user without its own password
+ * secret falls back to the DEFAULT_PASSWORD secret when one is defined.
+ */
+export const TestUserSchema = z.object({
+  handle: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/, "Handles are lower_snake_case, max 64 chars."),
+  username: z.string().trim().min(1).max(200),
+  passwordSecretName: z.string().regex(SECRET_NAME_PATTERN).nullable().default(null),
+  notes: z.string().trim().max(300).default(""),
+});
+export type TestUserInput = z.infer<typeof TestUserSchema>;
+
 export const EnvironmentConfigInputSchema = z.object({
   name: z.string().trim().min(1).max(120),
   initialUrl: z.string().trim().url().max(2_000),
@@ -28,6 +41,11 @@ export const EnvironmentConfigInputSchema = z.object({
   navigationTimeoutMs: z.number().int().min(1_000).max(120_000).default(30_000),
   evidenceLevel: z.enum(["minimal", "on_failure", "all_steps"]).default("on_failure"),
   loginPlan: NaturalPlanSchema.nullable().default(null),
+  /** session = reuse a captured, encrypted browser session when still valid. */
+  loginMode: z.enum(["session", "fresh"]).default("session"),
+  /** Authenticated-only landmark text; required for session reuse (never URL-based). */
+  loggedInText: z.string().trim().max(200).default(""),
+  users: z.array(TestUserSchema).max(30).default([]),
 });
 export type EnvironmentConfigInput = z.infer<typeof EnvironmentConfigInputSchema>;
 

@@ -46,6 +46,8 @@ export type AgenticStepInput = {
   /** One line per already-finished step of this case, e.g. "1. Open cart — passed". */
   priorStepsSummary: readonly string[];
   secretNames: readonly string[];
+  /** Named test users shown to the agent: handle + username + password PLACEHOLDER. */
+  testUsers?: readonly { handle: string; username: string; passwordPlaceholder: string | null }[];
   secrets: ReadonlyMap<string, string>;
   allowedOrigin: string;
   scrub: Scrubber;
@@ -202,6 +204,7 @@ function buildUserPrompt(
       ? `${snapshotText.slice(0, MAX_SNAPSHOT_PROMPT_CHARS)}\n… (snapshot truncated)`
       : snapshotText;
   const recentActions = transcript.slice(-6);
+  const users = input.testUsers ?? [];
   return [
     `# Test case: ${input.caseTitle}`,
     `## Step ${input.stepIndex + 1} of ${input.stepTotal}`,
@@ -209,6 +212,14 @@ function buildUserPrompt(
     `Expected result: ${input.expectedResult || "(none — pass once the instruction is completed)"}`,
     `Allowed origin: ${input.allowedOrigin}`,
     `Available secret names: ${input.secretNames.length > 0 ? input.secretNames.join(", ") : "(none)"}`,
+    users.length > 0
+      ? `\n## Test users (when a step names a user by handle, use these credentials)\n${users
+          .map(
+            (user) =>
+              `- ${user.handle} — username "${user.username}", password ${user.passwordPlaceholder ?? "(none configured)"}`,
+          )
+          .join("\n")}`
+      : "",
     input.priorStepsSummary.length > 0
       ? `\n## Earlier steps in this case\n${input.priorStepsSummary.join("\n")}`
       : "",
