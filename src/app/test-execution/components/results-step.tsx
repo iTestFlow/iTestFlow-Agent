@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Bug, Loader2, RotateCcw, Send } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -47,7 +47,7 @@ export function ResultsStep({
   onPublishCandidate: (candidateId: string) => Promise<void>;
   publishState: CandidatePublishState;
 }) {
-  const [lightbox, setLightbox] = useState<{ id: string; fileName: string } | null>(null);
+  const [lightbox, setLightbox] = useState<{ id: string; fileName: string; kind: "screenshot" | "console_log" } | null>(null);
 
   const summary = useMemo(() => {
     const counts = new Map<string, number>();
@@ -163,13 +163,16 @@ export function ResultsStep({
                             {action.instruction ?? "(step)"}
                           </span>
                           {otherArtifacts.map((artifact) => (
-                            <a
+                            <button
                               key={artifact.id}
-                              href={artifactUrl(artifact.id)}
+                              type="button"
                               className="text-xs text-muted-foreground underline hover:text-foreground"
+                              onClick={() =>
+                                setLightbox({ id: artifact.id, fileName: artifact.fileName, kind: "console_log" })
+                              }
                             >
                               console log
-                            </a>
+                            </button>
                           ))}
                           <OutcomeBadge outcome={step.outcome ?? step.status} className="shrink-0 scale-90" />
                         </div>
@@ -209,7 +212,9 @@ export function ResultsStep({
                                 type="button"
                                 className="group overflow-hidden rounded-md border transition-shadow hover:shadow-md"
                                 aria-label={`Open screenshot for step ${step.orderIndex + 1}: ${artifact.fileName}`}
-                                onClick={() => setLightbox({ id: artifact.id, fileName: artifact.fileName })}
+                                onClick={() =>
+                                  setLightbox({ id: artifact.id, fileName: artifact.fileName, kind: "screenshot" })
+                                }
                               >
                                 {/* eslint-disable-next-line @next/next/no-img-element */}
                                 <img
@@ -239,7 +244,9 @@ export function ResultsStep({
                           type="button"
                           className="group overflow-hidden rounded-md border transition-shadow hover:shadow-md"
                           aria-label={`Open case screenshot: ${artifact.fileName}`}
-                          onClick={() => setLightbox({ id: artifact.id, fileName: artifact.fileName })}
+                          onClick={() =>
+                            setLightbox({ id: artifact.id, fileName: artifact.fileName, kind: "screenshot" })
+                          }
                         >
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
@@ -254,13 +261,16 @@ export function ResultsStep({
                           </span>
                         </button>
                       ) : (
-                        <a
+                        <button
                           key={artifact.id}
-                          href={artifactUrl(artifact.id)}
+                          type="button"
                           className="flex items-center gap-1 rounded border px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
+                          onClick={() =>
+                            setLightbox({ id: artifact.id, fileName: artifact.fileName, kind: "console_log" })
+                          }
                         >
                           {artifact.fileName}
-                        </a>
+                        </button>
                       ),
                     )}
                   </div>
@@ -304,7 +314,7 @@ export function ResultsStep({
           <DialogHeader>
             <DialogTitle>{lightbox?.fileName}</DialogTitle>
           </DialogHeader>
-          {lightbox ? (
+          {lightbox?.kind === "screenshot" ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={artifactUrl(lightbox.id)}
@@ -312,6 +322,8 @@ export function ResultsStep({
               className="max-h-[80vh] w-full rounded-md border bg-muted object-contain"
               loading="lazy"
             />
+          ) : lightbox ? (
+            <ArtifactTextViewer url={artifactUrl(lightbox.id)} fileName={lightbox.fileName} />
           ) : null}
         </DialogContent>
       </Dialog>
@@ -391,6 +403,49 @@ function DefectCandidateCard({
           ) : null}
         </span>
       </div>
+    </div>
+  );
+}
+
+/** Fetches a text artifact (console log) and renders it scrollably in the dialog. */
+function ArtifactTextViewer({ url, fileName }: { url: string; fileName: string }) {
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    setText(null);
+    setError(null);
+    void fetch(url, { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`The log could not be loaded (${response.status}).`);
+        return response.text();
+      })
+      .then((body) => {
+        if (!disposed) setText(body);
+      })
+      .catch((fetchError) => {
+        if (!disposed) setError(fetchError instanceof Error ? fetchError.message : "The log could not be loaded.");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [url]);
+
+  if (error) {
+    return <p className="text-sm text-destructive" role="alert">{error}</p>;
+  }
+  if (text === null) {
+    return <div className="h-40 animate-pulse rounded-md bg-muted" aria-label={`Loading ${fileName}`} />;
+  }
+  return (
+    <div className="space-y-2">
+      <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap rounded-md border bg-muted p-3 font-mono text-xs">
+        {text || "(the log is empty)"}
+      </pre>
+      <a href={url} download={fileName} className="text-xs text-muted-foreground underline hover:text-foreground">
+        Download {fileName}
+      </a>
     </div>
   );
 }
