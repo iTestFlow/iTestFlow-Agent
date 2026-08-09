@@ -57,6 +57,8 @@ export type RunExecutionBundle = {
     envConfig: EnvConfig;
   };
   secrets: Map<string, string>;
+  /** Friendly labels per secret name — shown to the agent so plain-English step text can name credentials. */
+  secretTitles: Map<string, string>;
   cases: {
     id: string;
     orderIndex: number;
@@ -93,16 +95,18 @@ export async function loadRunForExecution(runId: string): Promise<RunExecutionBu
 
   const secretRows = await sqlAll<{
     secret_name: string;
+    title: string;
     encrypted_secret: string;
     encryption_iv: string;
     encryption_tag: string;
     key_version: number;
   }>(
-    `SELECT secret_name, encrypted_secret, encryption_iv, encryption_tag, key_version
+    `SELECT secret_name, title, encrypted_secret, encryption_iv, encryption_tag, key_version
      FROM test_execution_run_secrets WHERE run_id = @runId`,
     { runId },
   );
   const secrets = new Map<string, string>();
+  const secretTitles = new Map<string, string>();
   for (const secret of secretRows) {
     secrets.set(
       secret.secret_name,
@@ -113,6 +117,7 @@ export async function loadRunForExecution(runId: string): Promise<RunExecutionBu
         keyVersion: secret.key_version,
       }),
     );
+    secretTitles.set(secret.secret_name, secret.title);
   }
 
   const caseRows = await sqlAll<{
@@ -151,6 +156,7 @@ export async function loadRunForExecution(runId: string): Promise<RunExecutionBu
       envConfig: envParsed.data,
     },
     secrets,
+    secretTitles,
     cases: caseRows.map((caseRow) => ({
       id: caseRow.id,
       orderIndex: caseRow.order_index,

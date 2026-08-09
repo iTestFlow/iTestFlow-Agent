@@ -45,7 +45,7 @@ export function ScopeStep({
   onAddImportedCase,
   onAddImportedCases,
   onRemoveImportedCases,
-  availableSecretNames,
+  availableCredentialTitles,
   onContinue,
   onBack,
 }: {
@@ -74,7 +74,7 @@ export function ScopeStep({
   onAddImportedCase: (testCase: ImportableTestCase) => void;
   onAddImportedCases: (testCases: ImportableTestCase[]) => void;
   onRemoveImportedCases: (testCases: ImportableTestCase[]) => void;
-  availableSecretNames: string[];
+  availableCredentialTitles: string[];
   onContinue: () => void;
   onBack: () => void;
 }) {
@@ -326,7 +326,7 @@ export function ScopeStep({
                       <TextStepEditor
                         steps={entry.plan.steps as NaturalStep[]}
                         onChange={(steps) => updateCase(index, { plan: { ...entry.plan, steps } })}
-                        availableSecretNames={availableSecretNames}
+                        availableCredentialTitles={availableCredentialTitles}
                         idPrefix={`te-case-${index}`}
                       />
                     </div>

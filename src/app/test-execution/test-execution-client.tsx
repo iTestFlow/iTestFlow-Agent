@@ -15,10 +15,9 @@ import type { RunDetailDto } from "@/modules/test-execution/report-assembler";
 
 import {
   EnvironmentStep,
-  clampEnvironmentLimits,
   environmentAllowedOrigin,
+  environmentCredentialTitles,
   environmentSecretNames,
-  usableTestUsers,
   type EnvironmentProfileSummary,
   type EnvironmentSelection,
   type OneTimeEnvironmentState,
@@ -34,6 +33,12 @@ import { ReviewExecuteStep } from "./components/review-execute-step";
 import { ResultsStep, type CandidatePublishState } from "./components/results-step";
 import { OutcomeBadge } from "./components/outcome-badge";
 import { azureStepsToNaturalPlan, buildNaturalPlan } from "./lib/manual-step-form";
+import {
+  buildEnvironmentParts,
+  clampEnvironmentLimits,
+  environmentPartsLimitIssue,
+  unknownStepSecrets,
+} from "./lib/environment-payload";
 import {
   clearDraft,
   loadActiveRunId,
@@ -116,6 +121,9 @@ export function TestExecutionClient() {
   const oneTimeDirty =
     selection?.mode === "one_time" &&
     (selection.config.executionNotes.trim().length > 0 ||
+      selection.config.defaultUsername.trim().length > 0 ||
+      selection.config.defaultPassword.length > 0 ||
+      selection.config.defaultOtp.length > 0 ||
       selection.config.users.length > 0 ||
       selection.config.loginSteps.length > 0 ||
       selection.config.secrets.length > 0);
@@ -127,10 +135,23 @@ export function TestExecutionClient() {
     if (!scope) return;
     let disposed = false;
     setProfilesLoading(true);
+    const draft = loadDraft(projectId);
+    if (draft) {
+      setStory({ workItemId: draft.storyWorkItemId, title: draft.storyTitle });
+      setCases(draft.cases);
+    }
+    const draftProfileId = draft?.environmentProfileId ?? null;
+
     void fetch(`/api/test-execution/environments?${scopeQuery}`, { cache: "no-store" })
       .then(async (response) => (response.ok ? response.json() : Promise.reject(new Error("load failed"))))
       .then((body: { profiles: EnvironmentProfileSummary[] }) => {
-        if (!disposed) setProfiles(body.profiles);
+        if (disposed) return;
+        setProfiles(body.profiles);
+        // Restore the profile choice saved with the draft, if it still exists.
+        const draftProfile = draftProfileId ? body.profiles.find((profile) => profile.id === draftProfileId) : null;
+        if (draftProfile) {
+          setSelection((previous) => previous ?? { mode: "profile", profile: draftProfile });
+        }
       })
       .catch(() => undefined)
       .finally(() => !disposed && setProfilesLoading(false));
@@ -148,11 +169,6 @@ export function TestExecutionClient() {
       })
       .catch(() => undefined);
 
-    const draft = loadDraft(projectId);
-    if (draft) {
-      setStory({ workItemId: draft.storyWorkItemId, title: draft.storyTitle });
-      setCases(draft.cases);
-    }
     // Plan/suite pickers are per-project; reset them on project switch.
     plansRequestedRef.current = false;
     setPlans([]);
@@ -253,9 +269,22 @@ export function TestExecutionClient() {
     setSavingProfile(true);
     try {
       const config = clampEnvironmentLimits(rawConfig);
-      const sentSecrets = config.secrets
-        .filter((secret) => secret.secretName && secret.value)
-        .map((secret) => ({ ...secret, title: secret.title.trim() || secret.secretName }));
+      const parts = buildEnvironmentParts({
+        defaultUsername: config.defaultUsername,
+        defaultPassword: config.defaultPassword,
+        defaultOtp: config.defaultOtp,
+        extras: config.secrets,
+        users: config.users,
+      });
+      const limitIssue = environmentPartsLimitIssue(parts);
+      if (limitIssue) {
+        toast.error(limitIssue);
+        return;
+      }
+      const unknownTokens = unknownStepSecrets(config.loginSteps, parts.validSecretNames);
+      if (unknownTokens.length > 0) {
+        toast.warning(`The login sequence mentions unknown credential(s): ${unknownTokens.join(", ")}.`);
+      }
       const body = await postJson<{ profile: EnvironmentProfileSummary }>("/api/test-execution/environments", {
         scope,
         config: {
@@ -272,9 +301,9 @@ export function TestExecutionClient() {
           loginMode: config.loginMode,
           loggedInText: config.loggedInText.trim(),
           executionNotes: config.executionNotes.trim(),
-          users: usableTestUsers(config.users, sentSecrets.map((secret) => secret.secretName)),
+          users: parts.users,
         },
-        secrets: sentSecrets,
+        secrets: parts.secrets,
       });
       setProfiles((previous) => [body.profile, ...previous]);
       setSelection({ mode: "profile", profile: body.profile });
@@ -480,34 +509,47 @@ export function TestExecutionClient() {
     if (!scope || !selection) return;
     setCreating(true);
     try {
-      const environment =
-        selection.mode === "profile"
-          ? { mode: "profile" as const, environmentProfileId: selection.profile.id }
-          : (() => {
-              const config = clampEnvironmentLimits(selection.config);
-              const sentSecrets = config.secrets
-                .filter((secret) => secret.secretName && secret.value)
-                .map((secret) => ({ ...secret, title: secret.title.trim() || secret.secretName }));
-              return {
-                mode: "one_time" as const,
-                config: {
-                  initialUrl: config.initialUrl,
-                  allowedOrigin: config.allowedOrigin || safeOrigin(config.initialUrl),
-                  viewportWidth: config.viewportWidth,
-                  viewportHeight: config.viewportHeight,
-                  headless: config.headless,
-                  defaultTimeoutMs: config.defaultTimeoutMs,
-                  navigationTimeoutMs: config.navigationTimeoutMs,
-                  evidenceLevel: config.evidenceLevel,
-                  loginPlan: buildNaturalPlan(config.loginSteps),
-                  loginMode: config.loginMode,
-                  loggedInText: config.loggedInText.trim(),
-                  executionNotes: config.executionNotes.trim(),
-                  users: usableTestUsers(config.users, sentSecrets.map((secret) => secret.secretName)),
-                },
-                secrets: sentSecrets,
-              };
-            })();
+      let environment;
+      if (selection.mode === "profile") {
+        environment = { mode: "profile" as const, environmentProfileId: selection.profile.id };
+      } else {
+        const config = clampEnvironmentLimits(selection.config);
+        const parts = buildEnvironmentParts({
+          defaultUsername: config.defaultUsername,
+          defaultPassword: config.defaultPassword,
+          defaultOtp: config.defaultOtp,
+          extras: config.secrets,
+          users: config.users,
+        });
+        const limitIssue = environmentPartsLimitIssue(parts);
+        if (limitIssue) {
+          toast.error(limitIssue);
+          return;
+        }
+        const unknownTokens = unknownStepSecrets(config.loginSteps, parts.validSecretNames);
+        if (unknownTokens.length > 0) {
+          toast.warning(`The login sequence mentions unknown credential(s): ${unknownTokens.join(", ")}.`);
+        }
+        environment = {
+          mode: "one_time" as const,
+          config: {
+            initialUrl: config.initialUrl,
+            allowedOrigin: config.allowedOrigin || safeOrigin(config.initialUrl),
+            viewportWidth: config.viewportWidth,
+            viewportHeight: config.viewportHeight,
+            headless: config.headless,
+            defaultTimeoutMs: config.defaultTimeoutMs,
+            navigationTimeoutMs: config.navigationTimeoutMs,
+            evidenceLevel: config.evidenceLevel,
+            loginPlan: buildNaturalPlan(config.loginSteps),
+            loginMode: config.loginMode,
+            loggedInText: config.loggedInText.trim(),
+            executionNotes: config.executionNotes.trim(),
+            users: parts.users,
+          },
+          secrets: parts.secrets,
+        };
+      }
       const body = await postJson<{ runId: string }>("/api/test-execution/runs", {
         scope,
         environment,
@@ -666,7 +708,7 @@ export function TestExecutionClient() {
           onAddImportedCase={addImportedCase}
           onAddImportedCases={addImportedCases}
           onRemoveImportedCases={removeImportedCases}
-          availableSecretNames={environmentSecretNames(selection)}
+          availableCredentialTitles={environmentCredentialTitles(selection)}
           onContinue={() => setActiveStep("review")}
           onBack={() => setActiveStep("environment")}
         />

@@ -19,12 +19,13 @@ import { emptyNaturalStep, validateNaturalStep } from "../lib/manual-step-form";
 export function TextStepEditor({
   steps,
   onChange,
-  availableSecretNames,
+  availableCredentialTitles,
   idPrefix,
 }: {
   steps: NaturalStep[];
   onChange: (steps: NaturalStep[]) => void;
-  availableSecretNames: string[];
+  /** Friendly credential labels the AI can use ("Default password", "Admin API key"). */
+  availableCredentialTitles: string[];
   idPrefix: string;
 }) {
   const update = (index: number, patch: Partial<NaturalStep>) =>
@@ -97,12 +98,16 @@ export function TextStepEditor({
         </ol>
       )}
 
-      {availableSecretNames.length > 0 ? (
+      {availableCredentialTitles.length > 0 ? (
         <p className="text-xs text-muted-foreground">
-          Reference credentials by name — e.g. {availableSecretNames.map((name) => (
-            <code key={name} className="mx-0.5 rounded bg-muted px-1">{`{{secret:${name}}}`}</code>
+          The AI knows these credentials: {availableCredentialTitles.map((title, index) => (
+            <span key={`${title}-${index}`}>
+              {index > 0 ? ", " : ""}
+              <span className="rounded bg-muted px-1 font-medium">{title}</span>
+            </span>
           ))}
-          — values stay encrypted and are never shown to the AI or in reports.
+          . Just mention one in a step — e.g. &quot;Enter the default password&quot;. Values stay encrypted and are never
+          shown to the AI or in reports.
         </p>
       ) : null}
 

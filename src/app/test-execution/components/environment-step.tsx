@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { ChevronDown, Eye, EyeOff, Pencil, Plus, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,25 +13,31 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import type { NaturalPlan, NaturalStep } from "@/modules/test-execution/action-schema";
 
+import {
+  DEFAULT_OTP_SECRET,
+  DEFAULT_PASSWORD_SECRET,
+  RESERVED_SECRET_NAMES,
+  buildEnvironmentParts,
+  clampEnvironmentLimits,
+  environmentPartsLimitIssue,
+  sanitizeHandle,
+  splitDefaultUser,
+  unknownStepSecrets,
+  type TestUserDraft,
+} from "../lib/environment-payload";
 import { buildNaturalPlan } from "../lib/manual-step-form";
 import { TextStepEditor } from "./text-step-editor";
 
 /**
  * Environment step: pick a saved profile, edit one, or configure a one-time
- * run. The same EnvironmentConfigFields form serves both the one-time and the
- * edit-profile modes. Progressive disclosure — URL/login basics up front,
- * viewport/timeouts/evidence level behind "Advanced". Secret inputs are
- * write-only with a show/hide toggle during entry; saved secrets render
- * masked previews only, and replacing a value means re-entering it under the
- * same name.
+ * run. Credentials use a friendly model — Sign-in details (username /
+ * password / optional OTP) plus Label+Value extras; the engine's secret
+ * names are derived and never shown. The same EnvironmentConfigFields form
+ * serves the one-time and edit-profile modes. Secret values are write-only:
+ * saved ones render masked previews, and replacing means typing a new value.
  */
 
-export type TestUserDraft = {
-  handle: string;
-  username: string;
-  passwordSecretName: string | null;
-  notes: string;
-};
+export type { TestUserDraft };
 
 export type EnvironmentProfileSummary = {
   id: string;
@@ -65,8 +72,14 @@ export type OneTimeEnvironmentState = {
   loginMode: "session" | "fresh";
   loggedInText: string;
   executionNotes: string;
+  /** Sign-in details — blank fields contribute nothing. */
+  defaultUsername: string;
+  defaultPassword: string;
+  defaultOtp: string;
+  /** Visible test-user rows (the reserved default user lives in the fields above). */
   users: TestUserDraft[];
-  secrets: { secretName: string; title: string; value: string }[];
+  /** Extra credentials as friendly Label + Value rows; names are derived on submit. */
+  secrets: { title: string; value: string }[];
 };
 
 export function defaultOneTimeEnvironment(): OneTimeEnvironmentState {
@@ -83,6 +96,9 @@ export function defaultOneTimeEnvironment(): OneTimeEnvironmentState {
     loginMode: "session",
     loggedInText: "",
     executionNotes: "",
+    defaultUsername: "",
+    defaultPassword: "",
+    defaultOtp: "",
     users: [],
     secrets: [],
   };
@@ -92,46 +108,36 @@ export type EnvironmentSelection =
   | { mode: "profile"; profile: EnvironmentProfileSummary }
   | { mode: "one_time"; config: OneTimeEnvironmentState };
 
+function oneTimeParts(config: OneTimeEnvironmentState) {
+  return buildEnvironmentParts({
+    defaultUsername: config.defaultUsername,
+    defaultPassword: config.defaultPassword,
+    defaultOtp: config.defaultOtp,
+    extras: config.secrets,
+    users: config.users,
+  });
+}
+
+/** Engine-facing secret names available for the current selection. */
 export function environmentSecretNames(selection: EnvironmentSelection | null): string[] {
   if (!selection) return [];
   return selection.mode === "profile"
     ? selection.profile.secrets.map((secret) => secret.secretName)
-    : selection.config.secrets.map((secret) => secret.secretName);
+    : oneTimeParts(selection.config).validSecretNames;
+}
+
+/** Friendly credential labels for hints ("Default password", "Admin API key"). */
+export function environmentCredentialTitles(selection: EnvironmentSelection | null): string[] {
+  if (!selection) return [];
+  if (selection.mode === "profile") {
+    return selection.profile.secrets.map((secret) => secret.title || secret.secretName);
+  }
+  return oneTimeParts(selection.config).secrets.map((secret) => secret.title);
 }
 
 export function environmentAllowedOrigin(selection: EnvironmentSelection | null): string {
   if (!selection) return "";
   return selection.mode === "profile" ? selection.profile.allowedOrigin : selection.config.allowedOrigin;
-}
-
-/**
- * Only complete rows leave the browser — half-filled user rows are dropped,
- * not rejected — and a password reference to a secret that will not actually
- * exist after this request falls back to null so the worker's
- * DEFAULT_PASSWORD fallback stays honest.
- */
-export function usableTestUsers(users: TestUserDraft[], validSecretNames: string[]): TestUserDraft[] {
-  const names = new Set(validSecretNames);
-  return users
-    .filter((user) => /^[a-z][a-z0-9_]{0,63}$/.test(user.handle) && user.username.trim().length > 0)
-    .map((user) => ({
-      ...user,
-      username: user.username.trim(),
-      passwordSecretName:
-        user.passwordSecretName && names.has(user.passwordSecretName) ? user.passwordSecretName : null,
-    }));
-}
-
-/** Clamp the numeric browser options into the ranges the API schema accepts. */
-export function clampEnvironmentLimits(config: OneTimeEnvironmentState): OneTimeEnvironmentState {
-  const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
-  return {
-    ...config,
-    viewportWidth: clamp(config.viewportWidth, 320, 3840),
-    viewportHeight: clamp(config.viewportHeight, 320, 3840),
-    defaultTimeoutMs: clamp(config.defaultTimeoutMs, 500, 60_000),
-    navigationTimeoutMs: clamp(config.navigationTimeoutMs, 1_000, 120_000),
-  };
 }
 
 /** Everything the PATCH route needs to persist a profile edit. */
@@ -157,6 +163,7 @@ export type ProfileUpdatePayload = {
 };
 
 function profileToDraft(profile: EnvironmentProfileSummary): OneTimeEnvironmentState {
+  const { defaultUsername, otherUsers } = splitDefaultUser(profile.users);
   return {
     initialUrl: profile.initialUrl,
     allowedOrigin: profile.allowedOrigin,
@@ -170,7 +177,10 @@ function profileToDraft(profile: EnvironmentProfileSummary): OneTimeEnvironmentS
     loginMode: profile.loginMode,
     loggedInText: profile.loggedInText,
     executionNotes: profile.executionNotes,
-    users: profile.users.map((user) => ({ ...user })),
+    defaultUsername,
+    defaultPassword: "",
+    defaultOtp: "",
+    users: otherUsers.map((user) => ({ ...user })),
     secrets: [],
   };
 }
@@ -180,6 +190,10 @@ type ProfileEditState = {
   name: string;
   draft: OneTimeEnvironmentState;
   removeSecretNames: string[];
+  /** New values for existing extra credentials, keyed by their secret name. */
+  replacements: Record<string, string>;
+  /** The legacy default user's own password link/notes — preserved verbatim. */
+  defaultUserSeed: { passwordSecretName: string | null; notes: string } | null;
 };
 
 export function EnvironmentStep({
@@ -213,8 +227,12 @@ export function EnvironmentStep({
   const [editUrlError, setEditUrlError] = useState<string | null>(null);
 
   const oneTime = selection?.mode === "one_time" ? selection.config : null;
+  // Switching to a profile card must not destroy a half-typed one-time
+  // config — keep the latest copy so editing resumes where the user left off.
+  const lastOneTimeRef = useRef<OneTimeEnvironmentState | null>(null);
+  if (oneTime) lastOneTimeRef.current = oneTime;
   const setOneTime = (patch: Partial<OneTimeEnvironmentState>) => {
-    const base = oneTime ?? defaultOneTimeEnvironment();
+    const base = oneTime ?? lastOneTimeRef.current ?? defaultOneTimeEnvironment();
     onSelectionChange({ mode: "one_time", config: { ...base, ...patch } });
   };
 
@@ -239,42 +257,68 @@ export function EnvironmentStep({
   };
 
   const startEdit = (profile: EnvironmentProfileSummary) => {
-    setEditing({ profile, name: profile.name, draft: profileToDraft(profile), removeSecretNames: [] });
+    const { defaultUser } = splitDefaultUser(profile.users);
+    setEditing({
+      profile,
+      name: profile.name,
+      draft: profileToDraft(profile),
+      removeSecretNames: [],
+      replacements: {},
+      defaultUserSeed: defaultUser
+        ? { passwordSecretName: defaultUser.passwordSecretName, notes: defaultUser.notes }
+        : null,
+    });
     setEditUrlError(null);
   };
 
-  /**
-   * Secret names that will exist on the profile after this edit is saved:
-   * kept existing ones plus draft rows that would actually be sent (name AND
-   * value — a valueless row is never persisted, so it must not be assignable).
-   */
-  const editValidSecretNames = (state: ProfileEditState): string[] => {
-    const kept = state.profile.secrets
+  /** Existing non-reserved credentials shown in the edit card. */
+  const editExistingExtras = (state: ProfileEditState) =>
+    state.profile.secrets.filter((secret) => !RESERVED_SECRET_NAMES.has(secret.secretName));
+
+  /** Names that survive this edit (kept existing, before new additions). */
+  const editKeptExistingNames = (state: ProfileEditState) =>
+    state.profile.secrets
       .map((secret) => secret.secretName)
       .filter((name) => !state.removeSecretNames.includes(name));
-    const added = state.draft.secrets
-      .filter((secret) => secret.secretName && secret.value)
-      .map((secret) => secret.secretName);
-    return [...new Set([...kept, ...added])];
-  };
+
+  const editParts = (state: ProfileEditState) =>
+    buildEnvironmentParts({
+      defaultUsername: state.draft.defaultUsername,
+      defaultPassword: state.draft.defaultPassword,
+      defaultOtp: state.draft.defaultOtp,
+      extras: state.draft.secrets,
+      users: state.draft.users,
+      existingSecretNames: editKeptExistingNames(state),
+      defaultUserSeed: state.defaultUserSeed,
+    });
 
   const saveProfileEdits = async () => {
     if (!editing) return;
     const draft = clampEnvironmentLimits(editing.draft);
     if (!validateUrls(draft, setEditUrlError)) return;
-    // Same hygiene as the create path: blank steps dropped, valueless secret
-    // rows never sent, titles default to the secret name.
-    const upsertSecrets = draft.secrets
-      .filter((secret) => secret.secretName && secret.value)
-      .map((secret) => ({ ...secret, title: secret.title.trim() || secret.secretName }));
-    const validNames = [
-      ...new Set([
-        ...editing.profile.secrets
-          .map((secret) => secret.secretName)
-          .filter((name) => !editing.removeSecretNames.includes(name)),
-        ...upsertSecrets.map((secret) => secret.secretName),
-      ]),
-    ];
+    const state = { ...editing, draft };
+    const parts = editParts(state);
+    // A removal marked in the UI must win over any value still sitting in a
+    // field — never send the same name as both an upsert and a removal.
+    const partsSecrets = parts.secrets.filter((secret) => !editing.removeSecretNames.includes(secret.secretName));
+    const limitIssue = environmentPartsLimitIssue(
+      { ...parts, secrets: partsSecrets },
+      editKeptExistingNames(state).length,
+    );
+    if (limitIssue) {
+      toast.error(limitIssue);
+      return;
+    }
+    const unknownTokens = unknownStepSecrets(draft.loginSteps, parts.validSecretNames);
+    if (unknownTokens.length > 0) {
+      toast.warning(
+        `The login sequence mentions credential(s) that will not exist after saving: ${unknownTokens.join(", ")}. Runs may block at login.`,
+      );
+    }
+    const existingTitles = new Map(editing.profile.secrets.map((secret) => [secret.secretName, secret.title]));
+    const replacementUpserts = Object.entries(editing.replacements)
+      .filter(([name, value]) => value && !editing.removeSecretNames.includes(name))
+      .map(([name, value]) => ({ secretName: name, title: existingTitles.get(name) || name, value }));
     const saved = await onUpdateProfile(editing.profile.id, {
       config: {
         name: editing.name.trim(),
@@ -290,9 +334,9 @@ export function EnvironmentStep({
         loginMode: draft.loginMode,
         loggedInText: draft.loggedInText.trim(),
         executionNotes: draft.executionNotes.trim(),
-        users: usableTestUsers(draft.users, validNames),
+        users: parts.users,
       },
-      upsertSecrets,
+      upsertSecrets: [...partsSecrets, ...replacementUpserts],
       removeSecretNames: editing.removeSecretNames,
     });
     if (saved) {
@@ -325,6 +369,7 @@ export function EnvironmentStep({
             <div className="grid gap-2 sm:grid-cols-2">
               {profiles.map((profile) => {
                 const selected = selection?.mode === "profile" && selection.profile.id === profile.id;
+                const visibleUsers = splitDefaultUser(profile.users).otherUsers.length;
                 return (
                   <div
                     key={profile.id}
@@ -339,8 +384,8 @@ export function EnvironmentStep({
                       <p className="font-medium">{profile.name}</p>
                       <p className="truncate text-xs text-muted-foreground">{profile.initialUrl}</p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {profile.secrets.length} secret(s) · {profile.loginPlan ? "login sequence" : "no login"} · evidence: {profile.evidenceLevel.replace(/_/g, " ")}
-                        {profile.users.length > 0 ? ` · ${profile.users.length} test user(s)` : ""}
+                        {profile.secrets.length} credential(s) · {profile.loginPlan ? "login sequence" : "no login"} · evidence: {profile.evidenceLevel.replace(/_/g, " ")}
+                        {visibleUsers > 0 ? ` · ${visibleUsers} test user(s)` : ""}
                         {profile.sessionCapturedAt ? " · login session saved" : ""}
                       </p>
                     </button>
@@ -384,8 +429,7 @@ export function EnvironmentStep({
           <CardHeader>
             <CardTitle>Edit profile — {editing.profile.name}</CardTitle>
             <CardDescription>
-              Changes apply to future runs. Secret values are write-only: add a credential with the same name to replace its
-              value.
+              Changes apply to future runs. Saved values stay encrypted — type a new value to replace one.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -406,60 +450,106 @@ export function EnvironmentStep({
               config={editing.draft}
               onPatch={setEditDraft}
               idPrefix="te-edit"
-              availableSecretNames={editValidSecretNames(editing)}
+              secretOptions={editParts(editing)
+                .secrets.filter((secret) => !RESERVED_SECRET_NAMES.has(secret.secretName))
+                .map((secret) => ({ name: secret.secretName, title: secret.title }))
+                .concat(
+                  editExistingExtras(editing)
+                    .filter((secret) => !editing.removeSecretNames.includes(secret.secretName))
+                    .map((secret) => ({ name: secret.secretName, title: secret.title || secret.secretName })),
+                )}
+              credentialTitles={[
+                ...new Set([
+                  ...editParts(editing).secrets.map((secret) => secret.title),
+                  ...(editKeptExistingNames(editing).includes(DEFAULT_PASSWORD_SECRET) ? ["Default password"] : []),
+                  ...(editKeptExistingNames(editing).includes(DEFAULT_OTP_SECRET) ? ["Default one-time code"] : []),
+                  ...editExistingExtras(editing)
+                    .filter((secret) => !editing.removeSecretNames.includes(secret.secretName))
+                    .map((secret) => secret.title || secret.secretName),
+                ]),
+              ]}
               urlError={editUrlError}
               onValidateUrls={() => validateUrls(editing.draft, setEditUrlError)}
-              secretsSlot={
-                <div className="space-y-2">
-                  <p className="text-sm font-medium">Credentials for the app under test</p>
-                  {editing.profile.secrets.length > 0 ? (
-                    <ul className="space-y-1">
-                      {editing.profile.secrets.map((secret) => {
-                        const removed = editing.removeSecretNames.includes(secret.secretName);
-                        return (
-                          <li
-                            key={secret.secretName}
-                            className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm"
-                          >
-                            <span className={`min-w-0 flex-1 truncate ${removed ? "line-through opacity-60" : ""}`}>
-                              <span className="font-mono text-xs">{secret.secretName}</span>
-                              <span className="ml-2 text-xs text-muted-foreground">
-                                {secret.title} · {secret.maskedPreview}
-                              </span>
-                            </span>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              onClick={() =>
+              signInStatus={{
+                passwordSaved: editing.profile.secrets.some((secret) => secret.secretName === DEFAULT_PASSWORD_SECRET),
+                otpSaved: editing.profile.secrets.some((secret) => secret.secretName === DEFAULT_OTP_SECRET),
+                otpRemoved: editing.removeSecretNames.includes(DEFAULT_OTP_SECRET),
+                onToggleRemoveOtp: () =>
+                  setEditing((previous) => {
+                    if (!previous) return previous;
+                    const removing = !previous.removeSecretNames.includes(DEFAULT_OTP_SECRET);
+                    return {
+                      ...previous,
+                      removeSecretNames: removing
+                        ? [...previous.removeSecretNames, DEFAULT_OTP_SECRET]
+                        : previous.removeSecretNames.filter((name) => name !== DEFAULT_OTP_SECRET),
+                      // Removal wins: a value typed before clicking Remove
+                      // must not resurrect the code on save.
+                      draft: removing ? { ...previous.draft, defaultOtp: "" } : previous.draft,
+                    };
+                  }),
+              }}
+              existingCredentialsSlot={
+                editExistingExtras(editing).length > 0 ? (
+                  <ul className="space-y-1.5">
+                    {editExistingExtras(editing).map((secret) => {
+                      const removed = editing.removeSecretNames.includes(secret.secretName);
+                      return (
+                        <li
+                          key={secret.secretName}
+                          className="flex flex-wrap items-center gap-2 rounded-md border px-3 py-1.5 text-sm"
+                        >
+                          <span className={`min-w-0 flex-1 truncate ${removed ? "line-through opacity-60" : ""}`}>
+                            {secret.title || secret.secretName}
+                            <span className="ml-2 text-xs text-muted-foreground">{secret.maskedPreview}</span>
+                          </span>
+                          {!removed ? (
+                            <Input
+                              type="password"
+                              autoComplete="new-password"
+                              className="h-8 w-44"
+                              placeholder="New value (optional)"
+                              value={editing.replacements[secret.secretName] ?? ""}
+                              onChange={(event) =>
                                 setEditing((previous) =>
                                   previous
                                     ? {
                                         ...previous,
-                                        removeSecretNames: removed
-                                          ? previous.removeSecretNames.filter((name) => name !== secret.secretName)
-                                          : [...previous.removeSecretNames, secret.secretName],
+                                        replacements: {
+                                          ...previous.replacements,
+                                          [secret.secretName]: event.target.value,
+                                        },
                                       }
                                     : previous,
                                 )
                               }
-                            >
-                              {removed ? "Undo" : "Remove"}
-                            </Button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  ) : null}
-                  <SecretListEditor
-                    idPrefix="te-edit"
-                    secrets={editing.draft.secrets}
-                    onChange={(secrets) => setEditDraft({ secrets })}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    New values are encrypted on save. Reusing an existing name replaces that credential&apos;s value.
-                  </p>
-                </div>
+                              aria-label={`New value for ${secret.title || secret.secretName}`}
+                            />
+                          ) : null}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() =>
+                              setEditing((previous) =>
+                                previous
+                                  ? {
+                                      ...previous,
+                                      removeSecretNames: removed
+                                        ? previous.removeSecretNames.filter((name) => name !== secret.secretName)
+                                        : [...previous.removeSecretNames, secret.secretName],
+                                    }
+                                  : previous,
+                              )
+                            }
+                          >
+                            {removed ? "Undo" : "Remove"}
+                          </Button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : null
               }
             />
 
@@ -487,9 +577,14 @@ export function EnvironmentStep({
               config={oneTime ?? defaultOneTimeEnvironment()}
               onPatch={setOneTime}
               idPrefix="te"
-              availableSecretNames={(oneTime?.secrets ?? [])
-                .filter((secret) => secret.secretName && secret.value)
-                .map((secret) => secret.secretName)}
+              secretOptions={
+                oneTime
+                  ? oneTimeParts(oneTime)
+                      .secrets.filter((secret) => !RESERVED_SECRET_NAMES.has(secret.secretName))
+                      .map((secret) => ({ name: secret.secretName, title: secret.title }))
+                  : []
+              }
+              credentialTitles={oneTime ? oneTimeParts(oneTime).secrets.map((secret) => secret.title) : []}
               urlError={urlError}
               onValidateUrls={() =>
                 oneTime &&
@@ -497,16 +592,6 @@ export function EnvironmentStep({
                   { ...oneTime, allowedOrigin: oneTime.allowedOrigin || safeOrigin(oneTime.initialUrl) },
                   setUrlError,
                 )
-              }
-              secretsSlot={
-                <div className="space-y-2">
-                  <p className="text-sm font-medium">Credentials for the app under test</p>
-                  <SecretListEditor
-                    idPrefix="te"
-                    secrets={oneTime?.secrets ?? []}
-                    onChange={(secrets) => setOneTime({ secrets })}
-                  />
-                </div>
               }
             />
 
@@ -546,27 +631,44 @@ export function EnvironmentStep({
 
 /**
  * The full environment configuration form, mode-agnostic: the one-time card
- * and the edit-profile card render the same fields and differ only in the
- * credentials slot (value entry vs masked management).
+ * and the edit-profile card render the same fields. Edit mode additionally
+ * passes signInStatus (saved password/OTP indicators) and a slot listing
+ * existing credentials.
  */
 function EnvironmentConfigFields({
   config,
   onPatch,
   idPrefix,
-  availableSecretNames,
-  secretsSlot,
+  secretOptions,
+  credentialTitles,
   urlError,
   onValidateUrls,
+  signInStatus,
+  existingCredentialsSlot,
 }: {
   config: OneTimeEnvironmentState;
   onPatch: (patch: Partial<OneTimeEnvironmentState>) => void;
   idPrefix: string;
-  availableSecretNames: string[];
-  secretsSlot: ReactNode;
+  /** Non-reserved credentials assignable to test users. */
+  secretOptions: { name: string; title: string }[];
+  /** Friendly labels for the step-editor hint. */
+  credentialTitles: string[];
   urlError: string | null;
   onValidateUrls: () => void;
+  signInStatus?: {
+    passwordSaved: boolean;
+    otpSaved: boolean;
+    otpRemoved: boolean;
+    onToggleRemoveOtp: () => void;
+  };
+  existingCredentialsSlot?: ReactNode;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // null = "no explicit choice yet": open automatically while rows exist.
+  const [showExtras, setShowExtras] = useState<boolean | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const extrasCount = config.secrets.length + (existingCredentialsSlot ? 1 : 0);
+  const extrasOpen = showExtras ?? extrasCount > 0;
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2">
@@ -599,18 +701,112 @@ function EnvironmentConfigFields({
         <p className="text-sm text-destructive" role="alert">{urlError}</p>
       ) : null}
 
-      {secretsSlot}
+      <div className="space-y-2">
+        <p className="text-sm font-medium">Sign-in details</p>
+        <p className="text-xs text-muted-foreground">
+          The AI uses these when a step logs in. Leave blank if the app has no login.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="space-y-1.5">
+            <Label htmlFor={`${idPrefix}-signin-username`}>Username or email</Label>
+            <Input
+              id={`${idPrefix}-signin-username`}
+              value={config.defaultUsername}
+              maxLength={200}
+              placeholder="admin@example.com"
+              autoComplete="off"
+              onChange={(event) => onPatch({ defaultUsername: event.target.value })}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor={`${idPrefix}-signin-password`}>Password</Label>
+            <div className="flex gap-1">
+              <Input
+                id={`${idPrefix}-signin-password`}
+                type={showPassword ? "text" : "password"}
+                autoComplete="new-password"
+                value={config.defaultPassword}
+                placeholder={signInStatus?.passwordSaved ? "Saved — type to replace" : ""}
+                onChange={(event) => onPatch({ defaultPassword: event.target.value })}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                onClick={() => setShowPassword((previous) => !previous)}
+              >
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">Encrypted — never shown to the AI or in reports.</p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor={`${idPrefix}-signin-otp`}>One-time code (optional)</Label>
+            <Input
+              id={`${idPrefix}-signin-otp`}
+              type="password"
+              autoComplete="off"
+              value={config.defaultOtp}
+              disabled={signInStatus?.otpRemoved}
+              placeholder={
+                signInStatus?.otpSaved && !signInStatus.otpRemoved ? "Saved — type to replace" : "e.g. a fixed staging OTP"
+              }
+              onChange={(event) => onPatch({ defaultOtp: event.target.value })}
+            />
+            {signInStatus?.otpSaved ? (
+              <button
+                type="button"
+                className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                onClick={signInStatus.onToggleRemoveOtp}
+              >
+                {signInStatus.otpRemoved ? "Keep the saved code" : "Remove the saved code"}
+              </button>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Only for apps with a fixed test code — real MFA blocks the run.
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <button
+          type="button"
+          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+          onClick={() => setShowExtras(!extrasOpen)}
+          aria-expanded={extrasOpen}
+        >
+          <ChevronDown className={`h-4 w-4 transition-transform ${extrasOpen ? "rotate-180" : ""}`} aria-hidden />
+          More credentials (optional){config.secrets.length > 0 ? ` — ${config.secrets.length} added` : ""}
+        </button>
+        {extrasOpen ? (
+          <div className="mt-3 space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Anything else the AI may need — an API key, a second password. Just give it a label; steps can mention it by
+              that label.
+            </p>
+            {existingCredentialsSlot}
+            <ExtraCredentialEditor
+              idPrefix={idPrefix}
+              secrets={config.secrets}
+              onChange={(secrets) => onPatch({ secrets })}
+            />
+          </div>
+        ) : null}
+      </div>
 
       <div className="space-y-2">
         <p className="text-sm font-medium">Test users (optional)</p>
         <p className="text-xs text-muted-foreground">
-          Steps can name a user by handle — e.g. &quot;Login as expired_user&quot;. A user without its own password secret
-          falls back to a secret named DEFAULT_PASSWORD when one exists.
+          Extra accounts steps can name — e.g. &quot;Login as expired_user&quot;. Each uses the default password unless you
+          pick another credential.
         </p>
         <TestUserListEditor
           idPrefix={idPrefix}
           users={config.users}
-          secretNames={availableSecretNames}
+          secretOptions={secretOptions}
           onChange={(users) => onPatch({ users })}
         />
       </div>
@@ -620,7 +816,7 @@ function EnvironmentConfigFields({
         <TextStepEditor
           steps={config.loginSteps}
           onChange={(loginSteps) => onPatch({ loginSteps })}
-          availableSecretNames={availableSecretNames}
+          availableCredentialTitles={credentialTitles}
           idPrefix={`${idPrefix}-login`}
         />
         {config.loginSteps.length > 0 ? (
@@ -729,42 +925,38 @@ function EnvironmentConfigFields({
   );
 }
 
-function SecretListEditor({
+function ExtraCredentialEditor({
   idPrefix,
   secrets,
   onChange,
 }: {
   idPrefix: string;
-  secrets: { secretName: string; title: string; value: string }[];
-  onChange: (secrets: { secretName: string; title: string; value: string }[]) => void;
+  secrets: { title: string; value: string }[];
+  onChange: (secrets: { title: string; value: string }[]) => void;
 }) {
   const [visible, setVisible] = useState<Record<number, boolean>>({});
-  const update = (index: number, patch: Partial<{ secretName: string; title: string; value: string }>) => {
+  const update = (index: number, patch: Partial<{ title: string; value: string }>) => {
     onChange(secrets.map((secret, i) => (i === index ? { ...secret, ...patch } : secret)));
   };
   return (
     <div className="space-y-2">
       {secrets.map((secret, index) => (
-        <div key={index} className="grid items-end gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+        <div key={index} className="grid items-end gap-2 sm:grid-cols-[1fr_1fr_auto]">
           <div className="space-y-1">
-            <Label htmlFor={`${idPrefix}-secret-title-${index}`}>Title</Label>
-            <Input id={`${idPrefix}-secret-title-${index}`} value={secret.title} maxLength={120} placeholder="Admin password" onChange={(event) => update(index, { title: event.target.value })} />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor={`${idPrefix}-secret-name-${index}`}>Name (used as {"{{secret:NAME}}"})</Label>
+            <Label htmlFor={`${idPrefix}-extra-title-${index}`}>Label</Label>
             <Input
-              id={`${idPrefix}-secret-name-${index}`}
-              value={secret.secretName}
-              maxLength={64}
-              placeholder="ADMIN_PASSWORD"
-              onChange={(event) => update(index, { secretName: event.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "_") })}
+              id={`${idPrefix}-extra-title-${index}`}
+              value={secret.title}
+              maxLength={120}
+              placeholder="e.g. Admin API key"
+              onChange={(event) => update(index, { title: event.target.value })}
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor={`${idPrefix}-secret-value-${index}`}>Value (encrypted at rest)</Label>
+            <Label htmlFor={`${idPrefix}-extra-value-${index}`}>Value (encrypted)</Label>
             <div className="flex gap-1">
               <Input
-                id={`${idPrefix}-secret-value-${index}`}
+                id={`${idPrefix}-extra-value-${index}`}
                 type={visible[index] ? "text" : "password"}
                 autoComplete="new-password"
                 value={secret.value}
@@ -774,7 +966,7 @@ function SecretListEditor({
                 type="button"
                 variant="ghost"
                 size="icon"
-                aria-label={visible[index] ? "Hide secret value" : "Show secret value"}
+                aria-label={visible[index] ? "Hide value" : "Show value"}
                 onClick={() => setVisible((previous) => ({ ...previous, [index]: !previous[index] }))}
               >
                 {visible[index] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -786,8 +978,13 @@ function SecretListEditor({
             variant="ghost"
             size="icon"
             className="text-destructive"
-            aria-label={`Remove secret ${secret.secretName || index + 1}`}
-            onClick={() => onChange(secrets.filter((_, i) => i !== index))}
+            aria-label={`Remove credential ${secret.title || index + 1}`}
+            onClick={() => {
+              // Visibility is index-keyed — reset it so deleting a row never
+              // reveals the next row's value in cleartext.
+              setVisible({});
+              onChange(secrets.filter((_, i) => i !== index));
+            }}
           >
             <Trash2 className="h-4 w-4" />
           </Button>
@@ -797,7 +994,7 @@ function SecretListEditor({
         type="button"
         variant="outline"
         size="sm"
-        onClick={() => onChange([...secrets, { secretName: "", title: "", value: "" }])}
+        onClick={() => onChange([...secrets, { title: "", value: "" }])}
       >
         <Plus className="mr-1 h-4 w-4" /> Add credential
       </Button>
@@ -807,38 +1004,27 @@ function SecretListEditor({
 
 const NO_USER_SECRET = "__default__";
 
-/**
- * Force the schema's handle grammar (^[a-z][a-z0-9_]{0,63}$) while typing, so
- * a visible handle is always a submittable one — never silently dropped later.
- */
-export function sanitizeHandle(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[^a-z0-9_]/g, "_")
-    .replace(/^[^a-z]+/, "")
-    .slice(0, 64);
-}
-
 function TestUserListEditor({
   idPrefix,
   users,
-  secretNames,
+  secretOptions,
   onChange,
 }: {
   idPrefix: string;
   users: TestUserDraft[];
-  secretNames: string[];
+  secretOptions: { name: string; title: string }[];
   onChange: (users: TestUserDraft[]) => void;
 }) {
   const update = (index: number, patch: Partial<TestUserDraft>) => {
     onChange(users.map((user, i) => (i === index ? { ...user, ...patch } : user)));
   };
+  const optionNames = new Set(secretOptions.map((option) => option.name));
   return (
     <div className="space-y-2">
       {users.map((user, index) => (
         <div key={index} className="grid items-end gap-2 sm:grid-cols-[1fr_1fr_1fr_1fr_auto]">
           <div className="space-y-1">
-            <Label htmlFor={`${idPrefix}-user-handle-${index}`}>Handle (used in steps)</Label>
+            <Label htmlFor={`${idPrefix}-user-handle-${index}`}>Name used in steps</Label>
             <Input
               id={`${idPrefix}-user-handle-${index}`}
               value={user.handle}
@@ -858,7 +1044,7 @@ function TestUserListEditor({
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor={`${idPrefix}-user-secret-${index}`}>Password secret</Label>
+            <Label htmlFor={`${idPrefix}-user-secret-${index}`}>Password</Label>
             <Select
               value={user.passwordSecretName ?? NO_USER_SECRET}
               onValueChange={(value) => update(index, { passwordSecretName: value === NO_USER_SECRET ? null : value })}
@@ -867,15 +1053,28 @@ function TestUserListEditor({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={NO_USER_SECRET}>DEFAULT_PASSWORD (fallback)</SelectItem>
-                {secretNames.map((name) => (
-                  <SelectItem key={name} value={name}>
-                    {name}
+                <SelectItem value={NO_USER_SECRET}>Same as the default password</SelectItem>
+                {secretOptions.map((option) => (
+                  <SelectItem key={option.name} value={option.name}>
+                    {option.title}
                   </SelectItem>
                 ))}
-                {user.passwordSecretName && !secretNames.includes(user.passwordSecretName) ? (
+                {user.passwordSecretName &&
+                !optionNames.has(user.passwordSecretName) &&
+                RESERVED_SECRET_NAMES.has(user.passwordSecretName) ? (
+                  // A legacy pin to the reserved secrets is VALID — show it
+                  // friendly, never as broken.
+                  <SelectItem value={user.passwordSecretName}>
+                    {user.passwordSecretName === DEFAULT_OTP_SECRET
+                      ? "Default one-time code"
+                      : "Default password (pinned)"}
+                  </SelectItem>
+                ) : null}
+                {user.passwordSecretName &&
+                !optionNames.has(user.passwordSecretName) &&
+                !RESERVED_SECRET_NAMES.has(user.passwordSecretName) ? (
                   // Dangling reference stays VISIBLE (never silently cleared);
-                  // save falls back to DEFAULT_PASSWORD unless re-linked.
+                  // save falls back to the default password unless re-linked.
                   <SelectItem value={user.passwordSecretName} className="text-destructive">
                     {user.passwordSecretName} (missing)
                   </SelectItem>

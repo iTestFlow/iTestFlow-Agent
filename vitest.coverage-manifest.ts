@@ -118,6 +118,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/test-execution/secret-resolution.ts",
   "src/app/api/test-execution/runs/route.ts",
   "src/app/test-execution/lib/draft-storage.ts",
+  "src/app/test-execution/lib/environment-payload.ts",
   "src/app/test-execution/lib/manual-step-form.ts",
   "src/app/test-execution/lib/run-polling.ts",
   "src/app/test-execution/lib/stepper-gating.ts",

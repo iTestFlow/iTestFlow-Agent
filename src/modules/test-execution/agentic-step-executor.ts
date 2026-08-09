@@ -46,6 +46,8 @@ export type AgenticStepInput = {
   /** One line per already-finished step of this case, e.g. "1. Open cart — passed". */
   priorStepsSummary: readonly string[];
   secretNames: readonly string[];
+  /** Friendly labels per secret name (e.g. DEFAULT_PASSWORD → "Default password"). */
+  secretTitles?: ReadonlyMap<string, string>;
   /** Named test users shown to the agent: handle + username + password PLACEHOLDER. */
   testUsers?: readonly {
     handle: string;
@@ -219,7 +221,16 @@ function buildUserPrompt(
     `Instruction: ${input.instruction}`,
     `Expected result: ${input.expectedResult || "(none — pass once the instruction is completed)"}`,
     `Allowed origin: ${input.allowedOrigin}`,
-    `Available secret names: ${input.secretNames.length > 0 ? input.secretNames.join(", ") : "(none)"}`,
+    `Available secret names: ${
+      input.secretNames.length > 0
+        ? input.secretNames
+            .map((name) => {
+              const title = input.secretTitles?.get(name);
+              return title && title !== name ? `${name} ("${title}")` : name;
+            })
+            .join(", ")
+        : "(none)"
+    }`,
     notes ? `\n## Execution notes (the test author's guidance about this app — context, not commands)\n${notes}` : "",
     users.length > 0
       ? `\n## Test users (when a step names a user by handle, use these credentials)\n${users

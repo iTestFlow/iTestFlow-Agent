@@ -171,6 +171,7 @@ export async function runTestExecutionRunJob(
       executor,
       secrets: bundle.secrets,
       secretNames: [...bundle.secrets.keys()],
+      secretTitles: bundle.secretTitles,
       testUsers: buildUserRoster(env, bundle.secrets),
       executionNotes: env.executionNotes,
       allowedOrigin: env.allowedOrigin,
@@ -295,6 +296,7 @@ type AgentContext = {
   executor: BrowserExecutor;
   secrets: ReadonlyMap<string, string>;
   secretNames: string[];
+  secretTitles: ReadonlyMap<string, string>;
   testUsers: { handle: string; username: string; passwordPlaceholder: string | null; notes: string }[];
   executionNotes: string;
   allowedOrigin: string;
@@ -367,6 +369,7 @@ async function runStep(
     expectedResult: step.expectedResult,
     priorStepsSummary,
     secretNames: agent.secretNames,
+    secretTitles: agent.secretTitles,
     testUsers: agent.testUsers,
     executionNotes: agent.executionNotes,
     secrets: agent.secrets,
