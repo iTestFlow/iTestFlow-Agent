@@ -300,7 +300,7 @@ export function ResultsStep({
       </Card>
 
       <Dialog open={lightbox !== null} onOpenChange={(open) => !open && setLightbox(null)}>
-        <DialogContent className="max-w-4xl">
+        <DialogContent className="sm:max-w-[min(92vw,72rem)]">
           <DialogHeader>
             <DialogTitle>{lightbox?.fileName}</DialogTitle>
           </DialogHeader>
@@ -309,8 +309,7 @@ export function ResultsStep({
             <img
               src={artifactUrl(lightbox.id)}
               alt={`Evidence screenshot: ${lightbox.fileName}`}
-              className="max-h-[70vh] w-full rounded-md border object-contain"
-              style={{ aspectRatio: "16 / 9" }}
+              className="max-h-[80vh] w-full rounded-md border bg-muted object-contain"
               loading="lazy"
             />
           ) : null}
