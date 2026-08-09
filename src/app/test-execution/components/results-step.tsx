@@ -95,7 +95,7 @@ export function ResultsStep({
               </CardTitle>
               <CardDescription>
                 {detail.run.storyWorkItemId ? <>Story #{detail.run.storyWorkItemId} · </> : null}
-                Approved by {detail.run.approvedBy} · {detail.cases.length} case(s)
+                Approved by {detail.run.approvedByName ?? "a removed user"} · {detail.cases.length} case(s)
                 {detail.run.startedAt && detail.run.finishedAt ? (
                   <> · duration {formatDuration(detail.run.startedAt, detail.run.finishedAt)}</>
                 ) : null}

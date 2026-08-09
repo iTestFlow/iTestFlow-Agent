@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createId, nowIso, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { createId, nowIso, sqlAll, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import type { AuthenticatedIdentity } from "./auth-provider";
 import type { WorkspaceRole } from "@/modules/workspace/workspace-access.service";
 
@@ -46,6 +46,27 @@ export async function getStoredUserIdentity(userId: string): Promise<StoredUserI
         emailOrUniqueName: row.email_or_unique_name,
       }
     : null;
+}
+
+/**
+ * Batch-resolve user ids to human-readable names for read models (reports,
+ * activity views, "approved by" lines). Falls back to the email/unique name
+ * when a user has no display name; ids with no user row are simply absent
+ * from the map, so callers keep their own last-resort fallback.
+ */
+export async function getUserDisplayNames(userIds: readonly string[]): Promise<Map<string, string>> {
+  const uniqueIds = [...new Set(userIds.map((id) => id?.trim()).filter(Boolean))];
+  if (uniqueIds.length === 0) return new Map();
+  const rows = await sqlAll<{ id: string; display_name: string | null; email_or_unique_name: string | null }>(
+    `SELECT id, display_name, email_or_unique_name FROM users WHERE id = ANY(@userIds)`,
+    { userIds: uniqueIds },
+  );
+  const names = new Map<string, string>();
+  for (const row of rows) {
+    const name = row.display_name?.trim() || row.email_or_unique_name?.trim();
+    if (name) names.set(row.id, name);
+  }
+  return names;
 }
 
 /**

@@ -5,6 +5,7 @@ import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { encryptSecret, maskSecret } from "@/modules/security/encryption.service";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import { enqueueTestExecutionRunJob } from "@/modules/jobs/test-execution-jobs.service";
+import { getUserDisplayNames } from "@/modules/auth/user.service";
 import {
   createId,
   nowIso,
@@ -382,6 +383,8 @@ export async function listRuns(input: {
 
 export type RunDetailRows = {
   run: Record<string, unknown> | undefined;
+  /** Resolved display name of the approver (approved_by is a user id). */
+  approvedByName: string | null;
   cases: Record<string, unknown>[];
   steps: Record<string, unknown>[];
   artifacts: Record<string, unknown>[];
@@ -430,8 +433,12 @@ export async function loadRunDetailRows(input: {
       { runId: input.runId },
     ),
   ]);
+  const approverName = run.approved_by
+    ? (await getUserDisplayNames([String(run.approved_by)])).get(String(run.approved_by)) ?? null
+    : null;
   return {
     run,
+    approvedByName: approverName,
     cases,
     steps,
     artifacts,

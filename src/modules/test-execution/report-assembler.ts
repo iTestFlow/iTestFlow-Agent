@@ -20,6 +20,7 @@ export type RunDetailDto = {
     summary: unknown;
     planSchemaVersion: string;
     approvedBy: string;
+    approvedByName: string | null;
     approvedAt: string;
     startedAt: string | null;
     finishedAt: string | null;
@@ -149,6 +150,7 @@ export function assembleRunDetail(rows: RunDetailRows): RunDetailDto | null {
       summary: run.summary_json,
       planSchemaVersion: str(run.plan_schema_version),
       approvedBy: str(run.approved_by),
+      approvedByName: rows.approvedByName,
       approvedAt: str(run.approved_at),
       startedAt: strOrNull(run.started_at),
       finishedAt: strOrNull(run.finished_at),
