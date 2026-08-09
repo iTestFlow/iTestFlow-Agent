@@ -164,7 +164,7 @@ export function ReviewExecuteStep({
                 {running ? "Executing…" : "Execution finished"}
               </CardTitle>
               <CardDescription aria-live="polite">
-                Run {run.run.id} · status {run.run.status}
+                Status: {run.run.status.replace(/_/g, " ")}
                 {run.run.outcome ? <> · outcome {run.run.outcome.replace(/_/g, " ")}</> : null}
               </CardDescription>
             </div>

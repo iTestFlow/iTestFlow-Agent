@@ -80,6 +80,7 @@
     "src/components/workflow/ai-generation-time.ts",
     "src/components/workflow/api-error.ts",
     "src/components/workflow/copy-button.tsx",
+    "src/components/workflow/error-banner.tsx",
     "src/components/workflow/extra-instructions-field.tsx",
     "src/components/workflow/generated-test-cases-review.tsx",
     "src/components/workflow/generation-mode-toggle.tsx",

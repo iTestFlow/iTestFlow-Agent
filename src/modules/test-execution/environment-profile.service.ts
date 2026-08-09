@@ -165,6 +165,15 @@ export class EnvironmentProfileNameConflictError extends Error {
   }
 }
 
+export const MAX_PROFILE_SECRETS = 30;
+
+export class EnvironmentProfileSecretLimitError extends Error {
+  constructor() {
+    super(`An environment profile can hold at most ${MAX_PROFILE_SECRETS} credentials.`);
+    this.name = "EnvironmentProfileSecretLimitError";
+  }
+}
+
 export async function createEnvironmentProfile(input: {
   workspaceId: string;
   scope: ProjectScope;
@@ -252,6 +261,19 @@ export async function updateEnvironmentProfile(input: {
   const existing = await getEnvironmentProfile(input);
   if (!existing) return null;
   const now = nowIso();
+
+  // The create path caps a profile at MAX_PROFILE_SECRETS via its request
+  // schema; the update schema only caps per-request, so enforce the
+  // resulting total here.
+  const resultingSecretNames = new Set([
+    ...existing.secrets
+      .map((secret) => secret.secretName)
+      .filter((name) => !input.removeSecretNames.includes(name)),
+    ...input.upsertSecrets.map((secret) => secret.secretName),
+  ]);
+  if (resultingSecretNames.size > MAX_PROFILE_SECRETS) {
+    throw new EnvironmentProfileSecretLimitError();
+  }
 
   try {
     await withTransaction(async (client) => {

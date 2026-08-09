@@ -3,15 +3,16 @@
 import { useState } from "react";
 import { ChevronDown, Download, Loader2, Plus, Trash2 } from "lucide-react";
 
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ErrorBanner } from "@/components/workflow/error-banner";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { NaturalStep } from "@/modules/test-execution/action-schema";
 
 import type { DraftCase } from "../lib/draft-storage";
+import { azureStepsToNaturalPlan } from "../lib/manual-step-form";
 import { TextStepEditor } from "./text-step-editor";
 
 /**
@@ -42,6 +43,8 @@ export function ScopeStep({
   cases,
   onCasesChange,
   onAddImportedCase,
+  onAddImportedCases,
+  onRemoveImportedCases,
   availableSecretNames,
   onContinue,
   onBack,
@@ -65,11 +68,12 @@ export function ScopeStep({
     suiteCases: ImportableTestCase[] | null;
     suiteCasesLoading: boolean;
     error: string | null;
-    onRetry: () => void;
   };
   cases: DraftCase[];
   onCasesChange: (cases: DraftCase[]) => void;
   onAddImportedCase: (testCase: ImportableTestCase) => void;
+  onAddImportedCases: (testCases: ImportableTestCase[]) => void;
+  onRemoveImportedCases: (testCases: ImportableTestCase[]) => void;
   availableSecretNames: string[];
   onContinue: () => void;
   onBack: () => void;
@@ -99,31 +103,59 @@ export function ScopeStep({
     entry.plan.steps.length > 0 && entry.plan.steps.every((step) => step.instruction.trim().length > 0);
   const readyCount = cases.filter(caseReady).length;
 
-  const renderImportList = (list: ImportableTestCase[]) => (
-    <ul className="space-y-1.5">
-      {list.map((testCase) => {
-        const azureId = testCase.azureTestCaseId ?? testCase.id;
-        const imported = importedIds.has(azureId);
-        return (
-          <li key={azureId} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
-            <span className="min-w-0 flex-1 truncate">
-              <span className="mr-2 font-mono text-xs text-muted-foreground">#{azureId}</span>
-              {testCase.title}
-              <span className="ml-2 text-xs text-muted-foreground">{testCase.steps.length} step(s)</span>
-            </span>
+  const renderImportList = (list: ImportableTestCase[]) => {
+    // "Importable" must match EXACTLY what the add handler accepts
+    // (azureStepsToNaturalPlan drops blank-only steps), or the Add all
+    // counter can never reach zero and the toggle deadlocks.
+    const importable = list.filter((testCase) => azureStepsToNaturalPlan(testCase.steps) !== null);
+    const remaining = importable.filter(
+      (testCase) => !importedIds.has(testCase.azureTestCaseId ?? testCase.id),
+    );
+    const allAdded = importable.length > 0 && remaining.length === 0;
+    return (
+      <div className="space-y-1.5">
+        {importable.length > 0 ? (
+          <div className="flex justify-end">
             <Button
               size="sm"
-              variant={imported ? "ghost" : "outline"}
-              disabled={imported || testCase.steps.length === 0}
-              onClick={() => onAddImportedCase(testCase)}
+              variant="outline"
+              onClick={() => (allAdded ? onRemoveImportedCases(importable) : onAddImportedCases(remaining))}
             >
-              {imported ? "Added" : <><Plus className="mr-1 h-3.5 w-3.5" aria-hidden /> Add</>}
+              {allAdded ? (
+                <><Trash2 className="mr-1 h-3.5 w-3.5" aria-hidden /> Remove all ({importable.length})</>
+              ) : (
+                <><Plus className="mr-1 h-3.5 w-3.5" aria-hidden /> Add all ({remaining.length})</>
+              )}
             </Button>
-          </li>
-        );
-      })}
-    </ul>
-  );
+          </div>
+        ) : null}
+        <ul className="space-y-1.5">
+          {list.map((testCase) => {
+            const azureId = testCase.azureTestCaseId ?? testCase.id;
+            const imported = importedIds.has(azureId);
+            const addable = azureStepsToNaturalPlan(testCase.steps) !== null;
+            return (
+              <li key={azureId} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+                <span className="min-w-0 flex-1 truncate">
+                  <span className="mr-2 font-mono text-xs text-muted-foreground">#{azureId}</span>
+                  {testCase.title}
+                  <span className="ml-2 text-xs text-muted-foreground">{testCase.steps.length} step(s)</span>
+                </span>
+                <Button
+                  size="sm"
+                  variant={imported ? "ghost" : "outline"}
+                  disabled={imported || !addable}
+                  onClick={() => onAddImportedCase(testCase)}
+                >
+                  {imported ? "Added" : <><Plus className="mr-1 h-3.5 w-3.5" aria-hidden /> Add</>}
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -153,12 +185,7 @@ export function ScopeStep({
             </Button>
           </div>
 
-          {linkedError ? (
-            <Alert variant="destructive">
-              <AlertTitle>Could not load linked test cases</AlertTitle>
-              <AlertDescription>{linkedError}</AlertDescription>
-            </Alert>
-          ) : null}
+          {linkedError ? <ErrorBanner title="Could not load linked test cases" message={linkedError} /> : null}
           {linkedCases !== null && linkedCases.length === 0 && !linkedLoading ? (
             <p className="text-sm text-muted-foreground">
               This story has no linked test cases. Import from a Test Plan below, or add manual cases.
@@ -235,17 +262,7 @@ export function ScopeStep({
             Load test cases
           </Button>
 
-          {planSuite.error ? (
-            <Alert variant="destructive">
-              <AlertTitle>Test Plans are unavailable</AlertTitle>
-              <AlertDescription className="space-y-2">
-                <p>{planSuite.error}</p>
-                <Button variant="outline" size="sm" onClick={planSuite.onRetry}>
-                  Retry
-                </Button>
-              </AlertDescription>
-            </Alert>
-          ) : null}
+          {planSuite.error ? <ErrorBanner title="Test Plans are unavailable" message={planSuite.error} /> : null}
           {planSuite.suiteCases !== null && planSuite.suiteCases.length === 0 && !planSuite.suiteCasesLoading ? (
             <p className="text-sm text-muted-foreground">This suite has no test cases.</p>
           ) : null}

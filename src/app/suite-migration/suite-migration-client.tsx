@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { Callout } from "@/components/qa/callout";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider";
+import { ErrorBanner } from "@/components/workflow/error-banner";
 import { RefreshButton } from "@/components/qa/refresh-button";
 import { SettingSwitch } from "@/components/qa/setting-switch";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -1065,16 +1066,6 @@ function IssueList({ title, items, emptyLabel, tone = "warning" }: { title: stri
         )}
       </div>
     </div>
-  );
-}
-
-function ErrorBanner({ message }: { message: string }) {
-  return (
-    <Alert className="border-destructive/30 bg-destructive/10">
-      <AlertTriangle className="size-4 text-destructive" />
-      <AlertTitle className="justify-self-start text-left">Request failed</AlertTitle>
-      <AlertDescription>{message}</AlertDescription>
-    </Alert>
   );
 }
 

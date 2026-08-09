@@ -11,17 +11,18 @@ import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-
 import { postJson, patchJson, deleteJson } from "@/components/workflow/post-json";
 import { ApiError } from "@/components/workflow/api-error";
 import { projectWarning, useActiveProject } from "@/components/workflow/test-intelligence-shared";
-import { NATURAL_PLAN_SCHEMA_VERSION } from "@/modules/test-execution/action-schema";
 import type { RunDetailDto } from "@/modules/test-execution/report-assembler";
 
 import {
   EnvironmentStep,
+  clampEnvironmentLimits,
   environmentAllowedOrigin,
   environmentSecretNames,
+  usableTestUsers,
   type EnvironmentProfileSummary,
   type EnvironmentSelection,
   type OneTimeEnvironmentState,
-  type TestUserDraft,
+  type ProfileUpdatePayload,
 } from "./components/environment-step";
 import {
   ScopeStep,
@@ -32,7 +33,7 @@ import {
 import { ReviewExecuteStep } from "./components/review-execute-step";
 import { ResultsStep, type CandidatePublishState } from "./components/results-step";
 import { OutcomeBadge } from "./components/outcome-badge";
-import { azureStepsToNaturalPlan } from "./lib/manual-step-form";
+import { azureStepsToNaturalPlan, buildNaturalPlan } from "./lib/manual-step-form";
 import {
   clearDraft,
   loadActiveRunId,
@@ -56,6 +57,8 @@ type RunListEntry = {
   outcome: string | null;
   storyWorkItemId: string | null;
   storyTitle: string | null;
+  environmentName: string | null;
+  caseCount: number;
   createdByName: string | null;
   createdAt: string;
 };
@@ -68,6 +71,7 @@ export function TestExecutionClient() {
   const [profiles, setProfiles] = useState<EnvironmentProfileSummary[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [updatingProfile, setUpdatingProfile] = useState(false);
   const [invalidatingSession, setInvalidatingSession] = useState(false);
   const [selection, setSelection] = useState<EnvironmentSelection | null>(null);
 
@@ -86,7 +90,7 @@ export function TestExecutionClient() {
   const [suiteCases, setSuiteCases] = useState<ImportableTestCase[] | null>(null);
   const [suiteCasesLoading, setSuiteCasesLoading] = useState(false);
   const [planSuiteError, setPlanSuiteError] = useState<string | null>(null);
-  /** One plans fetch per project visit; a failure waits for a manual Retry. */
+  /** One plans fetch per project visit; a failure is a passive banner — switching projects or revisiting refetches. */
   const plansRequestedRef = useRef(false);
 
   const [creating, setCreating] = useState(false);
@@ -244,11 +248,14 @@ export function TestExecutionClient() {
   }, [runDetail]);
 
   // ---- actions ----
-  const saveAsProfile = async (name: string, config: OneTimeEnvironmentState) => {
+  const saveAsProfile = async (name: string, rawConfig: OneTimeEnvironmentState) => {
     if (!scope) return;
     setSavingProfile(true);
     try {
-      const sentSecrets = config.secrets.filter((secret) => secret.secretName && secret.value);
+      const config = clampEnvironmentLimits(rawConfig);
+      const sentSecrets = config.secrets
+        .filter((secret) => secret.secretName && secret.value)
+        .map((secret) => ({ ...secret, title: secret.title.trim() || secret.secretName }));
       const body = await postJson<{ profile: EnvironmentProfileSummary }>("/api/test-execution/environments", {
         scope,
         config: {
@@ -261,10 +268,7 @@ export function TestExecutionClient() {
           defaultTimeoutMs: config.defaultTimeoutMs,
           navigationTimeoutMs: config.navigationTimeoutMs,
           evidenceLevel: config.evidenceLevel,
-          loginPlan:
-            config.loginSteps.length > 0
-              ? { schemaVersion: NATURAL_PLAN_SCHEMA_VERSION, steps: config.loginSteps }
-              : null,
+          loginPlan: buildNaturalPlan(config.loginSteps),
           loginMode: config.loginMode,
           loggedInText: config.loggedInText.trim(),
           executionNotes: config.executionNotes.trim(),
@@ -279,6 +283,35 @@ export function TestExecutionClient() {
       toast.error(error instanceof Error ? error.message : "The profile could not be saved.");
     } finally {
       setSavingProfile(false);
+    }
+  };
+
+  const updateProfile = async (profileId: string, payload: ProfileUpdatePayload): Promise<boolean> => {
+    if (!scope) return false;
+    setUpdatingProfile(true);
+    try {
+      const body = await patchJson<{ profile: EnvironmentProfileSummary }>(
+        `/api/test-execution/environments/${profileId}`,
+        {
+          scope,
+          config: payload.config,
+          upsertSecrets: payload.upsertSecrets,
+          removeSecretNames: payload.removeSecretNames,
+        },
+      );
+      setProfiles((previous) => previous.map((profile) => (profile.id === profileId ? body.profile : profile)));
+      setSelection((previous) =>
+        previous?.mode === "profile" && previous.profile.id === profileId
+          ? { mode: "profile", profile: body.profile }
+          : previous,
+      );
+      toast.success(`Environment profile "${body.profile.name}" updated.`);
+      return true;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "The profile could not be updated.");
+      return false;
+    } finally {
+      setUpdatingProfile(false);
     }
   };
 
@@ -321,9 +354,9 @@ export function TestExecutionClient() {
     }
   };
 
-  const loadPlans = useCallback(async (force = false) => {
+  const loadPlans = useCallback(async () => {
     if (!scope) return;
-    if (plansRequestedRef.current && !force) return;
+    if (plansRequestedRef.current) return;
     plansRequestedRef.current = true;
     setPlansLoading(true);
     setPlanSuiteError(null);
@@ -348,7 +381,8 @@ export function TestExecutionClient() {
   }, [scope]);
 
   // Test plans load lazily, ONCE, the first time the scope step is shown;
-  // failures surface with a manual Retry instead of refetching in a loop.
+  // failures surface as a passive banner (same model as Suite Migration) —
+  // switching projects or revisiting the page refetches.
   useEffect(() => {
     if (activeStep === "scope") void loadPlans();
   }, [activeStep, loadPlans]);
@@ -407,6 +441,41 @@ export function TestExecutionClient() {
     toast.success(`"${testCase.title}" added — review or edit its steps freely.`);
   };
 
+  const addImportedCases = (testCases: ImportableTestCase[]) => {
+    const additions: DraftCase[] = [];
+    let skipped = 0;
+    for (const testCase of testCases) {
+      const plan = azureStepsToNaturalPlan(testCase.steps);
+      if (!plan) {
+        skipped += 1;
+        continue;
+      }
+      additions.push({
+        title: testCase.title,
+        sourceKind: "azure_test_case",
+        azureTestCaseId: testCase.azureTestCaseId ?? testCase.id,
+        plan,
+      });
+    }
+    if (additions.length === 0) {
+      toast.error("None of these test cases have usable steps.");
+      return;
+    }
+    setCases((previous) => [...previous, ...additions]);
+    toast.success(
+      `${additions.length} test case(s) added${skipped > 0 ? ` (${skipped} skipped — no usable steps)` : ""}.`,
+    );
+  };
+
+  const removeImportedCases = (testCases: ImportableTestCase[]) => {
+    const ids = new Set(testCases.map((testCase) => testCase.azureTestCaseId ?? testCase.id));
+    const kept = cases.filter((entry) => !entry.azureTestCaseId || !ids.has(entry.azureTestCaseId));
+    const removed = cases.length - kept.length;
+    if (removed === 0) return;
+    setCases(kept);
+    toast.info(`${removed} test case(s) removed from this run.`);
+  };
+
   const approveAndExecute = async () => {
     if (!scope || !selection) return;
     setCreating(true);
@@ -415,26 +484,26 @@ export function TestExecutionClient() {
         selection.mode === "profile"
           ? { mode: "profile" as const, environmentProfileId: selection.profile.id }
           : (() => {
-              const sentSecrets = selection.config.secrets.filter((secret) => secret.secretName && secret.value);
+              const config = clampEnvironmentLimits(selection.config);
+              const sentSecrets = config.secrets
+                .filter((secret) => secret.secretName && secret.value)
+                .map((secret) => ({ ...secret, title: secret.title.trim() || secret.secretName }));
               return {
                 mode: "one_time" as const,
                 config: {
-                  initialUrl: selection.config.initialUrl,
-                  allowedOrigin: selection.config.allowedOrigin || safeOrigin(selection.config.initialUrl),
-                  viewportWidth: selection.config.viewportWidth,
-                  viewportHeight: selection.config.viewportHeight,
-                  headless: selection.config.headless,
-                  defaultTimeoutMs: selection.config.defaultTimeoutMs,
-                  navigationTimeoutMs: selection.config.navigationTimeoutMs,
-                  evidenceLevel: selection.config.evidenceLevel,
-                  loginPlan:
-                    selection.config.loginSteps.length > 0
-                      ? { schemaVersion: NATURAL_PLAN_SCHEMA_VERSION, steps: selection.config.loginSteps }
-                      : null,
-                  loginMode: selection.config.loginMode,
-                  loggedInText: selection.config.loggedInText.trim(),
-                  executionNotes: selection.config.executionNotes.trim(),
-                  users: usableTestUsers(selection.config.users, sentSecrets.map((secret) => secret.secretName)),
+                  initialUrl: config.initialUrl,
+                  allowedOrigin: config.allowedOrigin || safeOrigin(config.initialUrl),
+                  viewportWidth: config.viewportWidth,
+                  viewportHeight: config.viewportHeight,
+                  headless: config.headless,
+                  defaultTimeoutMs: config.defaultTimeoutMs,
+                  navigationTimeoutMs: config.navigationTimeoutMs,
+                  evidenceLevel: config.evidenceLevel,
+                  loginPlan: buildNaturalPlan(config.loginSteps),
+                  loginMode: config.loginMode,
+                  loggedInText: config.loggedInText.trim(),
+                  executionNotes: config.executionNotes.trim(),
+                  users: usableTestUsers(config.users, sentSecrets.map((secret) => secret.secretName)),
                 },
                 secrets: sentSecrets,
               };
@@ -562,6 +631,8 @@ export function TestExecutionClient() {
           onSelectionChange={setSelection}
           onSaveAsProfile={saveAsProfile}
           saving={savingProfile}
+          onUpdateProfile={updateProfile}
+          updatingProfile={updatingProfile}
           onContinue={() => setActiveStep("scope")}
           onInvalidateSession={invalidateSession}
           invalidatingSession={invalidatingSession}
@@ -589,11 +660,12 @@ export function TestExecutionClient() {
             suiteCases,
             suiteCasesLoading,
             error: planSuiteError,
-            onRetry: () => void loadPlans(true),
           }}
           cases={cases}
           onCasesChange={setCases}
           onAddImportedCase={addImportedCase}
+          onAddImportedCases={addImportedCases}
+          onRemoveImportedCases={removeImportedCases}
           availableSecretNames={environmentSecretNames(selection)}
           onContinue={() => setActiveStep("review")}
           onBack={() => setActiveStep("environment")}
@@ -657,7 +729,12 @@ export function TestExecutionClient() {
               <TableBody>
                 {recentRuns.map((run) => (
                   <TableRow key={run.id}>
-                    <TableCell className="font-mono text-xs">{run.id.slice(0, 13)}…</TableCell>
+                    <TableCell>
+                      <p className="text-sm font-medium">{run.environmentName ?? "One-time environment"}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {run.caseCount} test case{run.caseCount === 1 ? "" : "s"}
+                      </p>
+                    </TableCell>
                     <TableCell>{run.storyWorkItemId ? `#${run.storyWorkItemId} ${run.storyTitle ?? ""}` : "—"}</TableCell>
                     <TableCell><OutcomeBadge outcome={run.outcome ?? run.status} /></TableCell>
                     <TableCell className="text-sm text-muted-foreground">{run.createdByName ?? "—"}</TableCell>
@@ -676,24 +753,6 @@ export function TestExecutionClient() {
       ) : null}
     </div>
   );
-}
-
-/**
- * Only complete rows leave the browser — half-filled user rows are dropped,
- * not rejected — and a password reference to a secret that is not actually
- * being sent (e.g. named but left without a value) falls back to null so the
- * worker's DEFAULT_PASSWORD fallback stays honest.
- */
-function usableTestUsers(users: TestUserDraft[], sentSecretNames: string[]): TestUserDraft[] {
-  const names = new Set(sentSecretNames);
-  return users
-    .filter((user) => /^[a-z][a-z0-9_]{0,63}$/.test(user.handle) && user.username.trim().length > 0)
-    .map((user) => ({
-      ...user,
-      username: user.username.trim(),
-      passwordSecretName:
-        user.passwordSecretName && names.has(user.passwordSecretName) ? user.passwordSecretName : null,
-    }));
 }
 
 function safeOrigin(url: string): string {

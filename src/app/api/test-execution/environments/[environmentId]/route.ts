@@ -11,6 +11,7 @@ import { routeErrorResponse } from "@/modules/shared/errors/route-error-response
 import {
   archiveEnvironmentProfile,
   EnvironmentProfileNameConflictError,
+  EnvironmentProfileSecretLimitError,
   getEnvironmentProfile,
   updateEnvironmentProfile,
 } from "@/modules/test-execution/environment-profile.service";
@@ -76,6 +77,12 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       return NextResponse.json(
         { error: "An environment profile with this name already exists for the project." },
         { status: 409 },
+      );
+    }
+    if (error instanceof EnvironmentProfileSecretLimitError) {
+      return NextResponse.json(
+        { error: "An environment profile can hold at most 30 credentials." },
+        { status: 400 },
       );
     }
     return routeErrorResponse(error, { fallback: "The environment profile could not be updated." });

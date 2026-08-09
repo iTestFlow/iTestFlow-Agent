@@ -347,6 +347,9 @@ export async function listRuns(input: {
     outcome: string | null;
     storyWorkItemId: string | null;
     storyTitle: string | null;
+    /** Saved profile name; null for one-time environments. */
+    environmentName: string | null;
+    caseCount: number;
     createdByName: string | null;
     summary: unknown;
     createdAt: string;
@@ -359,15 +362,21 @@ export async function listRuns(input: {
     outcome: string | null;
     story_work_item_id: string | null;
     story_title: string | null;
+    environment_name: string | null;
+    case_count: string | number;
     created_by: string | null;
     summary_json: unknown;
     created_at: string;
     finished_at: string | null;
   }>(
-    `SELECT id, status, outcome, story_work_item_id, story_title, created_by, summary_json, created_at, finished_at
-     FROM test_execution_runs
-     WHERE workspace_id = @workspaceId AND project_id = @projectId AND azure_project_id = @azureProjectId
-     ORDER BY created_at DESC
+    `SELECT r.id, r.status, r.outcome, r.story_work_item_id, r.story_title, r.created_by,
+            r.summary_json, r.created_at, r.finished_at,
+            p.name AS environment_name,
+            (SELECT COUNT(*) FROM test_execution_case_runs c WHERE c.run_id = r.id) AS case_count
+     FROM test_execution_runs r
+     LEFT JOIN test_environment_profiles p ON p.id = r.environment_profile_id
+     WHERE r.workspace_id = @workspaceId AND r.project_id = @projectId AND r.azure_project_id = @azureProjectId
+     ORDER BY r.created_at DESC
      LIMIT ${Math.min(Math.max(input.limit ?? 20, 1), 100)}`,
     { workspaceId: input.workspaceId, projectId: input.scope.projectId, azureProjectId: input.scope.azureProjectId },
   );
@@ -380,6 +389,8 @@ export async function listRuns(input: {
     outcome: row.outcome,
     storyWorkItemId: row.story_work_item_id,
     storyTitle: row.story_title,
+    environmentName: row.environment_name,
+    caseCount: Number(row.case_count),
     createdByName: row.created_by ? names.get(row.created_by) ?? "a removed user" : null,
     summary: row.summary_json,
     createdAt: row.created_at,
