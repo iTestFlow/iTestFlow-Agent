@@ -1,6 +1,7 @@
 import "server-only";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
+import { getUserDisplayNames } from "@/modules/auth/user.service";
 import { sqlAll } from "@/modules/shared/infrastructure/database/db";
 import type { DashboardRecentActivity } from "@/types/dashboard";
 import type { ActivityLogActionOption, ActivityLogResult } from "@/types/activity-log";
@@ -109,7 +110,16 @@ function formatActionGroupLabel(group: string) {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-function mapRow(row: RecentActivityRow): DashboardRecentActivity {
+// Audit rows written by background processes use these literals, not user ids.
+const SYSTEM_ACTORS = new Set(["worker", "system", "system:worker"]);
+
+function resolveActorDisplayName(actor: string | null, names: ReadonlyMap<string, string>): string | null {
+  if (!actor) return null;
+  if (SYSTEM_ACTORS.has(actor)) return "System";
+  return names.get(actor) ?? "a removed user";
+}
+
+function mapRow(row: RecentActivityRow, actorNames: ReadonlyMap<string, string>): DashboardRecentActivity {
   return {
     id: row.id,
     action: row.action,
@@ -128,6 +138,7 @@ function mapRow(row: RecentActivityRow): DashboardRecentActivity {
       action: row.action,
       status: row.status,
       actor: row.actor,
+      actorDisplayName: resolveActorDisplayName(row.actor, actorNames),
       message: row.message,
       detailsJson: parseDetailsJson(row.details_json),
       createdAt: row.created_at,
@@ -174,12 +185,22 @@ export async function getActivityLog(input: ActivityLogInput): Promise<ActivityL
   const term = (input.search ?? "").trim();
   if (term) {
     params.q = `%${escapeLike(term)}%`;
+    // Search by person: pre-resolve the term against user display names/emails so
+    // the actor clause matches names, not just raw internal ids.
+    const nameMatches = await sqlAll<{ id: string }>(
+      `SELECT id FROM users
+       WHERE display_name ILIKE @q ESCAPE '\\' OR email_or_unique_name ILIKE @q ESCAPE '\\'
+       LIMIT 50`,
+      { q: params.q },
+    );
+    params.actorNameIds = nameMatches.map((row) => row.id);
     auditWhere.push(
       `(message LIKE @q ESCAPE '\\'
         OR action LIKE @q ESCAPE '\\'
         OR COALESCE(entity_id, '') LIKE @q ESCAPE '\\'
         OR COALESCE(entity_type, '') LIKE @q ESCAPE '\\'
-        OR COALESCE(actor, '') LIKE @q ESCAPE '\\')`,
+        OR COALESCE(actor, '') LIKE @q ESCAPE '\\'
+        OR actor = ANY(@actorNameIds))`,
     );
     // Knowledge events carry no actor or entity columns; title/message/event_type is
     // their whole searchable surface.
@@ -251,10 +272,15 @@ export async function getActivityLog(input: ActivityLogInput): Promise<ActivityL
   );
 
   const visible = rows.slice(0, limit);
+  const actorNames = await getUserDisplayNames(
+    visible
+      .map((row) => row.actor)
+      .filter((actor): actor is string => Boolean(actor) && !SYSTEM_ACTORS.has(actor as string)),
+  );
 
   return {
     generatedAt: new Date().toISOString(),
-    items: visible.map(mapRow),
+    items: visible.map((row) => mapRow(row, actorNames)),
     hasMore: rows.length > limit,
     availableActions: await getAvailableActions(scopeFilter),
   };

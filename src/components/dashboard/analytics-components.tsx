@@ -375,10 +375,16 @@ export function RecentActivityList({
               <span>{item.projectName ?? "All projects"}</span>
               <span aria-hidden="true">/</span>
               <time dateTime={item.createdAt} className="tabular-nums">{new Date(item.createdAt).toLocaleString()}</time>
+              {item.audit.actorDisplayName ? (
+                <>
+                  <span aria-hidden="true">/</span>
+                  <span>by {item.audit.actorDisplayName}</span>
+                </>
+              ) : null}
             </div>
             {expanded ? (
               <pre className="mt-3 max-h-96 overflow-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-xs leading-5 text-muted-foreground">
-                {JSON.stringify(item.audit, null, 2)}
+                {JSON.stringify(auditForDisplay(item.audit), null, 2)}
               </pre>
             ) : null}
           </div>
@@ -393,4 +399,11 @@ export function RecentActivityList({
       ) : null}
     </div>
   );
+}
+
+/** Expanded audit payload for display: the raw actor id is replaced by actorDisplayName. */
+function auditForDisplay(audit: DashboardRecentActivity["audit"]) {
+  const rest = { ...audit };
+  delete (rest as { actor?: string | null }).actor;
+  return rest;
 }

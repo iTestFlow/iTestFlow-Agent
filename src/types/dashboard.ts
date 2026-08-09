@@ -184,6 +184,8 @@ export type DashboardAuditLog = {
   action: string;
   status: string;
   actor: string | null;
+  /** Human-readable actor: resolved display name, "System", or null. */
+  actorDisplayName: string | null;
   message: string;
   detailsJson: unknown;
   createdAt: string;

@@ -347,6 +347,7 @@ export async function listRuns(input: {
     outcome: string | null;
     storyWorkItemId: string | null;
     storyTitle: string | null;
+    createdByName: string | null;
     summary: unknown;
     createdAt: string;
     finishedAt: string | null;
@@ -358,16 +359,20 @@ export async function listRuns(input: {
     outcome: string | null;
     story_work_item_id: string | null;
     story_title: string | null;
+    created_by: string | null;
     summary_json: unknown;
     created_at: string;
     finished_at: string | null;
   }>(
-    `SELECT id, status, outcome, story_work_item_id, story_title, summary_json, created_at, finished_at
+    `SELECT id, status, outcome, story_work_item_id, story_title, created_by, summary_json, created_at, finished_at
      FROM test_execution_runs
      WHERE workspace_id = @workspaceId AND project_id = @projectId AND azure_project_id = @azureProjectId
      ORDER BY created_at DESC
      LIMIT ${Math.min(Math.max(input.limit ?? 20, 1), 100)}`,
     { workspaceId: input.workspaceId, projectId: input.scope.projectId, azureProjectId: input.scope.azureProjectId },
+  );
+  const names = await getUserDisplayNames(
+    rows.map((row) => row.created_by).filter((id): id is string => Boolean(id)),
   );
   return rows.map((row) => ({
     id: row.id,
@@ -375,6 +380,7 @@ export async function listRuns(input: {
     outcome: row.outcome,
     storyWorkItemId: row.story_work_item_id,
     storyTitle: row.story_title,
+    createdByName: row.created_by ? names.get(row.created_by) ?? "a removed user" : null,
     summary: row.summary_json,
     createdAt: row.created_at,
     finishedAt: row.finished_at,

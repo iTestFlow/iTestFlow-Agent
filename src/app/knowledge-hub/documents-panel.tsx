@@ -935,7 +935,7 @@ function DocumentTable({
                   <DocumentProcessingStatus version={currentVersion} job={job} archived={isArchived} />
                 </TableCell>
                 <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground md:table-cell">
-                  <div>{currentVersion?.uploadedByDisplayName ?? currentVersion?.uploadedBy ?? "—"}</div>
+                  <div>{currentVersion?.uploadedByDisplayName ?? (currentVersion?.uploadedBy ? "a removed user" : "—")}</div>
                   <div className="text-xs">{formatDate(currentVersion?.createdAt ?? item.document.createdAt)}</div>
                 </TableCell>
                 <TableCell className="hidden tabular-nums lg:table-cell">{item.versionCount}</TableCell>
@@ -1127,7 +1127,7 @@ function DocumentDetailSheet({
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium text-foreground">v{version.versionNumber} · {version.originalFileName}</p>
-                          <p className="mt-1 text-xs text-muted-foreground">{formatFileSize(version.byteSize)} · {version.fileFormat?.toUpperCase() ?? "File"} · {formatDate(version.createdAt)}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{formatFileSize(version.byteSize)} · {version.fileFormat?.toUpperCase() ?? "File"} · {formatDate(version.createdAt)} · by {version.uploadedByDisplayName ?? "a removed user"}</p>
                         </div>
                         <DocumentProcessingStatus version={version} job={jobsByVersionId[version.id]} archived={false} />
                       </div>

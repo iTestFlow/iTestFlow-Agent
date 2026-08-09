@@ -54,6 +54,7 @@ type RunListEntry = {
   outcome: string | null;
   storyWorkItemId: string | null;
   storyTitle: string | null;
+  createdByName: string | null;
   createdAt: string;
 };
 
@@ -599,6 +600,7 @@ export function TestExecutionClient() {
                   <TableHead>Run</TableHead>
                   <TableHead>Story</TableHead>
                   <TableHead>Outcome</TableHead>
+                  <TableHead>Created by</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead />
                 </TableRow>
@@ -609,6 +611,7 @@ export function TestExecutionClient() {
                     <TableCell className="font-mono text-xs">{run.id.slice(0, 13)}…</TableCell>
                     <TableCell>{run.storyWorkItemId ? `#${run.storyWorkItemId} ${run.storyTitle ?? ""}` : "—"}</TableCell>
                     <TableCell><OutcomeBadge outcome={run.outcome ?? run.status} /></TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{run.createdByName ?? "—"}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{new Date(run.createdAt).toLocaleString()}</TableCell>
                     <TableCell>
                       <Button asChild variant="ghost" size="sm">
