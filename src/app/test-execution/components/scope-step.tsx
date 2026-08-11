@@ -89,7 +89,7 @@ export function ScopeStep({
         title: `Manual case ${cases.length + 1}`,
         sourceKind: "manual",
         azureTestCaseId: null,
-        plan: { schemaVersion: "v2-natural", steps: [{ instruction: "", expectedResult: "" }] },
+        plan: { schemaVersion: "v2-natural", steps: [{ instruction: "", expectedResult: "", layerHint: "auto" }] },
       },
     ]);
     setExpandedCase(cases.length);
@@ -163,7 +163,7 @@ export function ScopeStep({
         <CardHeader>
           <CardTitle>Import from a user story</CardTitle>
           <CardDescription>
-            Load the story&apos;s linked test cases. Their written steps are used as-is — the AI performs them in the browser. The Azure test case itself is never changed.
+            Load the story&apos;s linked test cases. Their written steps are used as-is and default to automatic layer selection. The Azure test case itself is never changed.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -274,7 +274,7 @@ export function ScopeStep({
         <CardHeader>
           <CardTitle>Selected test cases ({cases.length})</CardTitle>
           <CardDescription>
-            Cases run top to bottom in one browser session. Steps are plain language — edit them freely; the copies here never change the Azure source.
+            Cases run top to bottom in one shared execution context. Steps are plain language and may use UI, API, or database actions; the copies here never change the Azure source.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">

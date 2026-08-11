@@ -1,10 +1,11 @@
 "use client";
 
 import { useRef, useState, type ReactNode } from "react";
-import { ChevronDown, Eye, EyeOff, Pencil, Plus, Trash2 } from "lucide-react";
+import { Braces, ChevronDown, Database, Eye, EyeOff, Monitor, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -16,13 +17,28 @@ import type { NaturalPlan, NaturalStep } from "@/modules/test-execution/action-s
 import {
   DEFAULT_OTP_SECRET,
   DEFAULT_PASSWORD_SECRET,
+  API_CONNECTION_SECRET_NAMES,
+  CONNECTION_SECRET_NAMES,
+  DATABASE_PASSWORD_SECRET,
   RESERVED_SECRET_NAMES,
+  apiAuthSecretName,
+  buildConnectionSecrets,
   buildEnvironmentParts,
   clampEnvironmentLimits,
+  connectionSecretNamesForConfig,
+  databaseDefaultPort,
+  defaultApiEnvironment,
+  defaultDatabaseEnvironment,
+  environmentReadinessIssue,
+  environmentTargetLabels,
   environmentPartsLimitIssue,
   sanitizeHandle,
   splitDefaultUser,
   unknownStepSecrets,
+  type ApiAuthConfig,
+  type ApiEnvironmentConfig,
+  type DatabaseEnvironmentConfig,
+  type SecretPurpose,
   type TestUserDraft,
 } from "../lib/environment-payload";
 import { buildNaturalPlan } from "../lib/manual-step-form";
@@ -54,12 +70,16 @@ export type EnvironmentProfileSummary = {
   loginMode: "session" | "fresh";
   loggedInText: string;
   executionNotes: string;
+  api: ApiEnvironmentConfig | null;
+  database: DatabaseEnvironmentConfig | null;
   users: TestUserDraft[];
-  secrets: { secretName: string; title: string; maskedPreview: string }[];
+  secrets: { secretName: string; title: string; maskedPreview: string; purpose?: SecretPurpose }[];
   sessionCapturedAt: string | null;
 };
 
 export type OneTimeEnvironmentState = {
+  /** UI stays an explicit draft toggle; the legacy wire contract uses empty URLs when disabled. */
+  uiEnabled: boolean;
   initialUrl: string;
   allowedOrigin: string;
   viewportWidth: number;
@@ -72,6 +92,12 @@ export type OneTimeEnvironmentState = {
   loginMode: "session" | "fresh";
   loggedInText: string;
   executionNotes: string;
+  api: ApiEnvironmentConfig | null;
+  /** Write-only and React-memory-only. It is moved into a purpose-scoped secret on submit. */
+  apiSecret: string;
+  database: DatabaseEnvironmentConfig | null;
+  /** Write-only and React-memory-only. */
+  databasePassword: string;
   /** Sign-in details — blank fields contribute nothing. */
   defaultUsername: string;
   defaultPassword: string;
@@ -84,6 +110,7 @@ export type OneTimeEnvironmentState = {
 
 export function defaultOneTimeEnvironment(): OneTimeEnvironmentState {
   return {
+    uiEnabled: true,
     initialUrl: "",
     allowedOrigin: "",
     viewportWidth: 1280,
@@ -96,6 +123,10 @@ export function defaultOneTimeEnvironment(): OneTimeEnvironmentState {
     loginMode: "session",
     loggedInText: "",
     executionNotes: "",
+    api: null,
+    apiSecret: "",
+    database: null,
+    databasePassword: "",
     defaultUsername: "",
     defaultPassword: "",
     defaultOtp: "",
@@ -110,11 +141,11 @@ export type EnvironmentSelection =
 
 function oneTimeParts(config: OneTimeEnvironmentState) {
   return buildEnvironmentParts({
-    defaultUsername: config.defaultUsername,
-    defaultPassword: config.defaultPassword,
-    defaultOtp: config.defaultOtp,
+    defaultUsername: config.uiEnabled ? config.defaultUsername : "",
+    defaultPassword: config.uiEnabled ? config.defaultPassword : "",
+    defaultOtp: config.uiEnabled ? config.defaultOtp : "",
     extras: config.secrets,
-    users: config.users,
+    users: config.uiEnabled ? config.users : [],
   });
 }
 
@@ -122,7 +153,9 @@ function oneTimeParts(config: OneTimeEnvironmentState) {
 export function environmentSecretNames(selection: EnvironmentSelection | null): string[] {
   if (!selection) return [];
   return selection.mode === "profile"
-    ? selection.profile.secrets.map((secret) => secret.secretName)
+    ? selection.profile.secrets
+        .filter((secret) => isAgentSecret(secret) && (selection.profile.initialUrl || !RESERVED_SECRET_NAMES.has(secret.secretName)))
+        .map((secret) => secret.secretName)
     : oneTimeParts(selection.config).validSecretNames;
 }
 
@@ -130,14 +163,29 @@ export function environmentSecretNames(selection: EnvironmentSelection | null): 
 export function environmentCredentialTitles(selection: EnvironmentSelection | null): string[] {
   if (!selection) return [];
   if (selection.mode === "profile") {
-    return selection.profile.secrets.map((secret) => secret.title || secret.secretName);
+    return selection.profile.secrets
+      .filter((secret) => isAgentSecret(secret) && (selection.profile.initialUrl || !RESERVED_SECRET_NAMES.has(secret.secretName)))
+      .map((secret) => secret.title || secret.secretName);
   }
   return oneTimeParts(selection.config).secrets.map((secret) => secret.title);
 }
 
 export function environmentAllowedOrigin(selection: EnvironmentSelection | null): string {
   if (!selection) return "";
-  return selection.mode === "profile" ? selection.profile.allowedOrigin : selection.config.allowedOrigin;
+  if (selection.mode === "profile") return selection.profile.allowedOrigin;
+  return selection.config.uiEnabled
+    ? selection.config.allowedOrigin || safeOrigin(selection.config.initialUrl)
+    : "";
+}
+
+export function environmentTargets(selection: EnvironmentSelection | null): Array<"UI" | "API" | "DB"> {
+  if (!selection) return [];
+  const target = selection.mode === "profile" ? selection.profile : selection.config;
+  return environmentTargetLabels({
+    initialUrl: selection.mode === "one_time" && !selection.config.uiEnabled ? "" : target.initialUrl,
+    api: target.api,
+    database: target.database,
+  });
 }
 
 /** Everything the PATCH route needs to persist a profile edit. */
@@ -156,15 +204,18 @@ export type ProfileUpdatePayload = {
     loginMode: "session" | "fresh";
     loggedInText: string;
     executionNotes: string;
+    api: ApiEnvironmentConfig | null;
+    database: DatabaseEnvironmentConfig | null;
     users: TestUserDraft[];
   };
-  upsertSecrets: { secretName: string; title: string; value: string }[];
+  upsertSecrets: { secretName: string; title: string; value: string; purpose?: SecretPurpose }[];
   removeSecretNames: string[];
 };
 
 function profileToDraft(profile: EnvironmentProfileSummary): OneTimeEnvironmentState {
   const { defaultUsername, otherUsers } = splitDefaultUser(profile.users);
   return {
+    uiEnabled: Boolean(profile.initialUrl),
     initialUrl: profile.initialUrl,
     allowedOrigin: profile.allowedOrigin,
     viewportWidth: profile.viewportWidth,
@@ -177,6 +228,10 @@ function profileToDraft(profile: EnvironmentProfileSummary): OneTimeEnvironmentS
     loginMode: profile.loginMode,
     loggedInText: profile.loggedInText,
     executionNotes: profile.executionNotes,
+    api: profile.api,
+    apiSecret: "",
+    database: profile.database,
+    databasePassword: "",
     defaultUsername,
     defaultPassword: "",
     defaultOtp: "",
@@ -206,6 +261,7 @@ export function EnvironmentStep({
   onUpdateProfile,
   updatingProfile,
   onContinue,
+  capabilitiesPanel,
   onInvalidateSession,
   invalidatingSession,
 }: {
@@ -218,6 +274,7 @@ export function EnvironmentStep({
   onUpdateProfile: (profileId: string, payload: ProfileUpdatePayload) => Promise<boolean>;
   updatingProfile: boolean;
   onContinue: () => void;
+  capabilitiesPanel?: ReactNode;
   onInvalidateSession: (profileId: string) => Promise<void>;
   invalidatingSession: boolean;
 }) {
@@ -233,27 +290,43 @@ export function EnvironmentStep({
   if (oneTime) lastOneTimeRef.current = oneTime;
   const setOneTime = (patch: Partial<OneTimeEnvironmentState>) => {
     const base = oneTime ?? lastOneTimeRef.current ?? defaultOneTimeEnvironment();
+    setUrlError(null);
     onSelectionChange({ mode: "one_time", config: { ...base, ...patch } });
   };
 
   const setEditDraft = (patch: Partial<OneTimeEnvironmentState>) => {
+    setEditUrlError(null);
     setEditing((previous) => (previous ? { ...previous, draft: { ...previous.draft, ...patch } } : previous));
   };
 
-  const validateUrls = (config: OneTimeEnvironmentState, report: (message: string | null) => void): boolean => {
-    try {
-      const initial = new URL(config.initialUrl);
-      const origin = new URL(config.allowedOrigin || initial.origin);
-      if (initial.origin !== origin.origin) {
-        report("The initial URL must be inside the allowed origin.");
-        return false;
-      }
-      report(null);
-      return true;
-    } catch {
-      report("Enter a full URL including https:// — e.g. https://app.example.com/login.");
-      return false;
-    }
+  const validateTargets = (
+    config: OneTimeEnvironmentState,
+    report: (message: string | null) => void,
+    profile?: EnvironmentProfileSummary,
+    removedNames: string[] = [],
+  ): boolean => {
+    const activeApiSecret = config.api ? apiAuthSecretName(config.api.auth) : null;
+    const issue = environmentReadinessIssue({
+      initialUrl: config.uiEnabled ? config.initialUrl : "",
+      allowedOrigin: config.uiEnabled ? config.allowedOrigin : "",
+      api: config.api,
+      apiSecret: config.apiSecret,
+      apiSecretSaved: Boolean(
+        activeApiSecret &&
+          profile?.secrets.some(
+            (secret) => secret.secretName === activeApiSecret && !removedNames.includes(secret.secretName),
+          ),
+      ),
+      database: config.database,
+      databasePassword: config.databasePassword,
+      databasePasswordSaved: Boolean(
+        profile?.secrets.some(
+          (secret) => secret.secretName === DATABASE_PASSWORD_SECRET && !removedNames.includes(secret.secretName),
+        ),
+      ),
+    });
+    report(issue);
+    return issue === null;
   };
 
   const startEdit = (profile: EnvironmentProfileSummary) => {
@@ -273,21 +346,25 @@ export function EnvironmentStep({
 
   /** Existing non-reserved credentials shown in the edit card. */
   const editExistingExtras = (state: ProfileEditState) =>
-    state.profile.secrets.filter((secret) => !RESERVED_SECRET_NAMES.has(secret.secretName));
+    state.profile.secrets.filter(
+      (secret) => isAgentSecret(secret) && !RESERVED_SECRET_NAMES.has(secret.secretName),
+    );
 
   /** Names that survive this edit (kept existing, before new additions). */
   const editKeptExistingNames = (state: ProfileEditState) =>
     state.profile.secrets
+      .filter(isAgentSecret)
       .map((secret) => secret.secretName)
+      .filter((name) => state.draft.uiEnabled || !RESERVED_SECRET_NAMES.has(name))
       .filter((name) => !state.removeSecretNames.includes(name));
 
   const editParts = (state: ProfileEditState) =>
     buildEnvironmentParts({
-      defaultUsername: state.draft.defaultUsername,
-      defaultPassword: state.draft.defaultPassword,
-      defaultOtp: state.draft.defaultOtp,
+      defaultUsername: state.draft.uiEnabled ? state.draft.defaultUsername : "",
+      defaultPassword: state.draft.uiEnabled ? state.draft.defaultPassword : "",
+      defaultOtp: state.draft.uiEnabled ? state.draft.defaultOtp : "",
       extras: state.draft.secrets,
-      users: state.draft.users,
+      users: state.draft.uiEnabled ? state.draft.users : [],
       existingSecretNames: editKeptExistingNames(state),
       defaultUserSeed: state.defaultUserSeed,
     });
@@ -295,21 +372,38 @@ export function EnvironmentStep({
   const saveProfileEdits = async () => {
     if (!editing) return;
     const draft = clampEnvironmentLimits(editing.draft);
-    if (!validateUrls(draft, setEditUrlError)) return;
+    if (!validateTargets(draft, setEditUrlError, editing.profile, editing.removeSecretNames)) return;
     const state = { ...editing, draft };
     const parts = editParts(state);
     // A removal marked in the UI must win over any value still sitting in a
     // field — never send the same name as both an upsert and a removal.
     const partsSecrets = parts.secrets.filter((secret) => !editing.removeSecretNames.includes(secret.secretName));
+    const connectionUpserts = buildConnectionSecrets(draft);
+    const requiredConnectionNames = new Set(connectionSecretNamesForConfig(draft));
+    const implicitConnectionRemovals = CONNECTION_SECRET_NAMES.filter(
+      (name) =>
+        editing.profile.secrets.some((secret) => secret.secretName === name) && !requiredConnectionNames.has(name),
+    );
+    const implicitUiCredentialRemovals = draft.uiEnabled
+      ? []
+      : editing.profile.secrets
+          .map((secret) => secret.secretName)
+          .filter((name) => RESERVED_SECRET_NAMES.has(name));
+    const removeSecretNames = [
+      ...new Set([...editing.removeSecretNames, ...implicitConnectionRemovals, ...implicitUiCredentialRemovals]),
+    ];
+    const keptExistingNames = editing.profile.secrets
+      .map((secret) => secret.secretName)
+      .filter((name) => !removeSecretNames.includes(name));
     const limitIssue = environmentPartsLimitIssue(
-      { ...parts, secrets: partsSecrets },
-      editKeptExistingNames(state).length,
+      { ...parts, secrets: [...partsSecrets, ...connectionUpserts] },
+      keptExistingNames,
     );
     if (limitIssue) {
       toast.error(limitIssue);
       return;
     }
-    const unknownTokens = unknownStepSecrets(draft.loginSteps, parts.validSecretNames);
+    const unknownTokens = draft.uiEnabled ? unknownStepSecrets(draft.loginSteps, parts.validSecretNames) : [];
     if (unknownTokens.length > 0) {
       toast.warning(
         `The login sequence mentions credential(s) that will not exist after saving: ${unknownTokens.join(", ")}. Runs may block at login.`,
@@ -319,25 +413,28 @@ export function EnvironmentStep({
     const replacementUpserts = Object.entries(editing.replacements)
       .filter(([name, value]) => value && !editing.removeSecretNames.includes(name))
       .map(([name, value]) => ({ secretName: name, title: existingTitles.get(name) || name, value }));
+    const upsertNames = new Set(connectionUpserts.map((secret) => secret.secretName));
     const saved = await onUpdateProfile(editing.profile.id, {
       config: {
         name: editing.name.trim(),
-        initialUrl: draft.initialUrl,
-        allowedOrigin: draft.allowedOrigin || safeOrigin(draft.initialUrl),
+        initialUrl: draft.uiEnabled ? draft.initialUrl : "",
+        allowedOrigin: draft.uiEnabled ? draft.allowedOrigin || safeOrigin(draft.initialUrl) : "",
         viewportWidth: draft.viewportWidth,
         viewportHeight: draft.viewportHeight,
         headless: draft.headless,
         defaultTimeoutMs: draft.defaultTimeoutMs,
         navigationTimeoutMs: draft.navigationTimeoutMs,
         evidenceLevel: draft.evidenceLevel,
-        loginPlan: buildNaturalPlan(draft.loginSteps),
+        loginPlan: draft.uiEnabled ? buildNaturalPlan(draft.loginSteps) : null,
         loginMode: draft.loginMode,
         loggedInText: draft.loggedInText.trim(),
         executionNotes: draft.executionNotes.trim(),
+        api: draft.api,
+        database: draft.database,
         users: parts.users,
       },
-      upsertSecrets: [...partsSecrets, ...replacementUpserts],
-      removeSecretNames: editing.removeSecretNames,
+      upsertSecrets: [...partsSecrets, ...replacementUpserts, ...connectionUpserts],
+      removeSecretNames: removeSecretNames.filter((name) => !upsertNames.has(name)),
     });
     if (saved) {
       setEditing(null);
@@ -347,7 +444,15 @@ export function EnvironmentStep({
 
   const readyToContinue =
     selection?.mode === "profile" ||
-    (oneTime !== null && oneTime.initialUrl.length > 0 && urlError === null);
+    (oneTime !== null &&
+      environmentReadinessIssue({
+        initialUrl: oneTime.uiEnabled ? oneTime.initialUrl : "",
+        allowedOrigin: oneTime.uiEnabled ? oneTime.allowedOrigin : "",
+        api: oneTime.api,
+        apiSecret: oneTime.apiSecret,
+        database: oneTime.database,
+        databasePassword: oneTime.databasePassword,
+      }) === null);
 
   return (
     <div className="space-y-4">
@@ -355,7 +460,7 @@ export function EnvironmentStep({
         <CardHeader>
           <CardTitle>Saved environment profiles</CardTitle>
           <CardDescription>
-            An environment describes where tests run: target URL, browser options, login sequence, and encrypted credentials.
+            Keep the web app, API, and database for a deployment together so every layer of a test reaches the same data.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -381,10 +486,15 @@ export function EnvironmentStep({
                       aria-pressed={selected}
                       className="min-w-0 flex-1 text-left"
                     >
-                      <p className="font-medium">{profile.name}</p>
-                      <p className="truncate text-xs text-muted-foreground">{profile.initialUrl}</p>
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-medium">{profile.name}</span>
+                        {environmentTargetLabels(profile).map((target) => (
+                          <Badge key={target} variant="outline" className="h-4 px-1.5 text-[10px]">{target}</Badge>
+                        ))}
+                      </span>
+                      <p className="truncate text-xs text-muted-foreground">{profileTargetSummary(profile)}</p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {profile.secrets.length} credential(s) · {profile.loginPlan ? "login sequence" : "no login"} · evidence: {profile.evidenceLevel.replace(/_/g, " ")}
+                        {profile.secrets.length} encrypted credential(s) · {profile.loginPlan ? "login sequence" : "no login"} · evidence: {profile.evidenceLevel.replace(/_/g, " ")}
                         {visibleUsers > 0 ? ` · ${visibleUsers} test user(s)` : ""}
                         {profile.sessionCapturedAt ? " · login session saved" : ""}
                       </p>
@@ -404,7 +514,7 @@ export function EnvironmentStep({
               })}
             </div>
           )}
-          {selection?.mode === "profile" && selection.profile.sessionCapturedAt ? (
+          {selection?.mode === "profile" && selection.profile.initialUrl && selection.profile.sessionCapturedAt ? (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/40 px-3 py-2">
               <p className="text-xs text-muted-foreground">
                 Saved login session from {new Date(selection.profile.sessionCapturedAt).toLocaleString()} — the next run skips
@@ -469,7 +579,10 @@ export function EnvironmentStep({
                 ]),
               ]}
               urlError={editUrlError}
-              onValidateUrls={() => validateUrls(editing.draft, setEditUrlError)}
+              onValidateTargets={() =>
+                validateTargets(editing.draft, setEditUrlError, editing.profile, editing.removeSecretNames)
+              }
+              savedConnectionSecretNames={editing.profile.secrets.map((secret) => secret.secretName)}
               signInStatus={{
                 passwordSaved: editing.profile.secrets.some((secret) => secret.secretName === DEFAULT_PASSWORD_SECRET),
                 otpSaved: editing.profile.secrets.some((secret) => secret.secretName === DEFAULT_OTP_SECRET),
@@ -555,7 +668,7 @@ export function EnvironmentStep({
 
             <div className="flex flex-wrap items-center gap-2 border-t pt-3">
               <Button
-                disabled={updatingProfile || !editing.name.trim() || !editing.draft.initialUrl}
+                disabled={updatingProfile || !editing.name.trim()}
                 onClick={() => void saveProfileEdits()}
               >
                 {updatingProfile ? "Saving…" : "Save changes"}
@@ -586,9 +699,9 @@ export function EnvironmentStep({
               }
               credentialTitles={oneTime ? oneTimeParts(oneTime).secrets.map((secret) => secret.title) : []}
               urlError={urlError}
-              onValidateUrls={() =>
+              onValidateTargets={() =>
                 oneTime &&
-                validateUrls(
+                validateTargets(
                   { ...oneTime, allowedOrigin: oneTime.allowedOrigin || safeOrigin(oneTime.initialUrl) },
                   setUrlError,
                 )
@@ -603,9 +716,9 @@ export function EnvironmentStep({
                 </div>
                 <Button
                   variant="outline"
-                  disabled={saving || !profileName.trim() || !oneTime.initialUrl}
+                  disabled={saving || !profileName.trim() || !readyToContinue}
                   onClick={() => {
-                    if (!validateUrls(oneTime, setUrlError)) return;
+                    if (!validateTargets(oneTime, setUrlError)) return;
                     void onSaveAsProfile(profileName.trim(), {
                       ...oneTime,
                       allowedOrigin: oneTime.allowedOrigin || safeOrigin(oneTime.initialUrl),
@@ -619,6 +732,8 @@ export function EnvironmentStep({
           </CardContent>
         </Card>
       )}
+
+      {capabilitiesPanel}
 
       <div className="flex justify-end">
         <Button disabled={!readyToContinue} onClick={onContinue}>
@@ -642,7 +757,8 @@ function EnvironmentConfigFields({
   secretOptions,
   credentialTitles,
   urlError,
-  onValidateUrls,
+  onValidateTargets,
+  savedConnectionSecretNames = [],
   signInStatus,
   existingCredentialsSlot,
 }: {
@@ -654,7 +770,9 @@ function EnvironmentConfigFields({
   /** Friendly labels for the step-editor hint. */
   credentialTitles: string[];
   urlError: string | null;
-  onValidateUrls: () => void;
+  onValidateTargets: () => void;
+  /** Names only, never values; used to render safe "saved" placeholders. */
+  savedConnectionSecretNames?: string[];
   signInStatus?: {
     passwordSaved: boolean;
     otpSaved: boolean;
@@ -667,40 +785,112 @@ function EnvironmentConfigFields({
   // null = "no explicit choice yet": open automatically while rows exist.
   const [showExtras, setShowExtras] = useState<boolean | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const lastApiRef = useRef<ApiEnvironmentConfig>(config.api ?? defaultApiEnvironment());
+  const lastDatabaseRef = useRef<DatabaseEnvironmentConfig>(config.database ?? defaultDatabaseEnvironment());
+  if (config.api) lastApiRef.current = config.api;
+  if (config.database) lastDatabaseRef.current = config.database;
+  const savedConnectionNames = new Set(savedConnectionSecretNames);
   const extrasCount = config.secrets.length + (existingCredentialsSlot ? 1 : 0);
   const extrasOpen = showExtras ?? extrasCount > 0;
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-initial-url`}>
-            Initial URL <span aria-hidden className="text-destructive">*</span>
-          </Label>
-          <Input
-            id={`${idPrefix}-initial-url`}
-            value={config.initialUrl}
-            placeholder="https://app.example.com/login"
-            onChange={(event) => onPatch({ initialUrl: event.target.value })}
-            onBlur={onValidateUrls}
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium">Execution targets</legend>
+        <p className="text-xs text-muted-foreground">Enable any combination. One test step can switch layers when its work requires it.</p>
+        <div className="grid gap-2 sm:grid-cols-3">
+          <TargetToggle
+            id={`${idPrefix}-target-ui`}
+            icon={<Monitor className="h-4 w-4" aria-hidden />}
+            label="Web application"
+            description="Browser and UI actions"
+            checked={config.uiEnabled}
+            onCheckedChange={(checked) => onPatch({ uiEnabled: checked })}
           />
-          <p className="text-xs text-muted-foreground">The page the browser opens first.</p>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-allowed-origin`}>Allowed origin</Label>
-          <Input
-            id={`${idPrefix}-allowed-origin`}
-            value={config.allowedOrigin}
-            placeholder="Defaults to the initial URL's origin"
-            onChange={(event) => onPatch({ allowedOrigin: event.target.value })}
-            onBlur={onValidateUrls}
+          <TargetToggle
+            id={`${idPrefix}-target-api`}
+            icon={<Braces className="h-4 w-4" aria-hidden />}
+            label="API"
+            description="HTTP requests and contracts"
+            checked={config.api !== null}
+            onCheckedChange={(checked) => onPatch({ api: checked ? lastApiRef.current : null, apiSecret: "" })}
           />
-          <p className="text-xs text-muted-foreground">Navigation outside this origin is blocked at run time.</p>
+          <TargetToggle
+            id={`${idPrefix}-target-db`}
+            icon={<Database className="h-4 w-4" aria-hidden />}
+            label="Database"
+            description="Queries and approved DML"
+            checked={config.database !== null}
+            onCheckedChange={(checked) =>
+              onPatch({ database: checked ? lastDatabaseRef.current : null, databasePassword: "" })
+            }
+          />
         </div>
-      </div>
+      </fieldset>
+
+      {config.uiEnabled ? (
+        <section className="space-y-3 rounded-lg border p-3" aria-labelledby={`${idPrefix}-ui-heading`}>
+          <div>
+            <h3 id={`${idPrefix}-ui-heading`} className="flex items-center gap-2 text-sm font-medium">
+              <Monitor className="h-4 w-4" aria-hidden /> Web application
+            </h3>
+            <p className="text-xs text-muted-foreground">The browser remains inside the allowed origin.</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor={`${idPrefix}-initial-url`}>Initial URL</Label>
+              <Input
+                id={`${idPrefix}-initial-url`}
+                value={config.initialUrl}
+                placeholder="https://app.example.com/login"
+                onChange={(event) => onPatch({ initialUrl: event.target.value })}
+                onBlur={onValidateTargets}
+              />
+              <p className="text-xs text-muted-foreground">The page the browser opens first.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`${idPrefix}-allowed-origin`}>Allowed origin</Label>
+              <Input
+                id={`${idPrefix}-allowed-origin`}
+                value={config.allowedOrigin}
+                placeholder="Defaults to the initial URL's origin"
+                onChange={(event) => onPatch({ allowedOrigin: event.target.value })}
+                onBlur={onValidateTargets}
+              />
+              <p className="text-xs text-muted-foreground">Navigation outside this origin is blocked at run time.</p>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {config.api ? (
+        <ApiTargetFields
+          idPrefix={idPrefix}
+          value={config.api}
+          secretValue={config.apiSecret}
+          secretSaved={Boolean(apiAuthSecretName(config.api.auth) && savedConnectionNames.has(apiAuthSecretName(config.api.auth)!))}
+          onChange={(api) => onPatch({ api })}
+          onSecretChange={(apiSecret) => onPatch({ apiSecret })}
+          onBlur={onValidateTargets}
+        />
+      ) : null}
+
+      {config.database ? (
+        <DatabaseTargetFields
+          idPrefix={idPrefix}
+          value={config.database}
+          password={config.databasePassword}
+          passwordSaved={savedConnectionNames.has(DATABASE_PASSWORD_SECRET)}
+          onChange={(database) => onPatch({ database })}
+          onPasswordChange={(databasePassword) => onPatch({ databasePassword })}
+          onBlur={onValidateTargets}
+        />
+      ) : null}
+
       {urlError ? (
         <p className="text-sm text-destructive" role="alert">{urlError}</p>
       ) : null}
 
+      {config.uiEnabled ? (
       <div className="space-y-2">
         <p className="text-sm font-medium">Sign-in details</p>
         <p className="text-xs text-muted-foreground">
@@ -770,6 +960,7 @@ function EnvironmentConfigFields({
           </div>
         </div>
       </div>
+      ) : null}
 
       <div>
         <button
@@ -784,8 +975,8 @@ function EnvironmentConfigFields({
         {extrasOpen ? (
           <div className="mt-3 space-y-2">
             <p className="text-xs text-muted-foreground">
-              Anything else the AI may need — an API key, a second password. Just give it a label; steps can mention it by
-              that label.
+              Agent-visible test values such as a second account password or fixed reference ID. API and database
+              connection credentials belong in their protected target fields above.
             </p>
             {existingCredentialsSlot}
             <ExtraCredentialEditor
@@ -797,6 +988,7 @@ function EnvironmentConfigFields({
         ) : null}
       </div>
 
+      {config.uiEnabled ? (
       <div className="space-y-2">
         <p className="text-sm font-medium">Test users (optional)</p>
         <p className="text-xs text-muted-foreground">
@@ -810,7 +1002,9 @@ function EnvironmentConfigFields({
           onChange={(users) => onPatch({ users })}
         />
       </div>
+      ) : null}
 
+      {config.uiEnabled ? (
       <div className="space-y-2">
         <p className="text-sm font-medium">Login sequence (runs once per run, before any test case)</p>
         <TextStepEditor
@@ -818,6 +1012,7 @@ function EnvironmentConfigFields({
           onChange={(loginSteps) => onPatch({ loginSteps })}
           availableCredentialTitles={credentialTitles}
           idPrefix={`${idPrefix}-login`}
+          showLayerHint={false}
         />
         {config.loginSteps.length > 0 ? (
           <div className="grid gap-3 pt-1 sm:grid-cols-2">
@@ -853,6 +1048,7 @@ function EnvironmentConfigFields({
           </div>
         ) : null}
       </div>
+      ) : null}
 
       <div className="space-y-1.5">
         <Label htmlFor={`${idPrefix}-execution-notes`}>Execution notes for the AI (optional)</Label>
@@ -885,14 +1081,18 @@ function EnvironmentConfigFields({
         </button>
         {showAdvanced ? (
           <div className="mt-3 grid gap-3 sm:grid-cols-3">
-            <div className="space-y-1.5">
-              <Label htmlFor={`${idPrefix}-viewport-w`}>Viewport width</Label>
-              <Input id={`${idPrefix}-viewport-w`} inputMode="numeric" value={config.viewportWidth} onChange={(event) => onPatch({ viewportWidth: Number(event.target.value) || 1280 })} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${idPrefix}-viewport-h`}>Viewport height</Label>
-              <Input id={`${idPrefix}-viewport-h`} inputMode="numeric" value={config.viewportHeight} onChange={(event) => onPatch({ viewportHeight: Number(event.target.value) || 720 })} />
-            </div>
+            {config.uiEnabled ? (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`${idPrefix}-viewport-w`}>Viewport width</Label>
+                  <Input id={`${idPrefix}-viewport-w`} inputMode="numeric" value={config.viewportWidth} onChange={(event) => onPatch({ viewportWidth: Number(event.target.value) || 1280 })} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`${idPrefix}-viewport-h`}>Viewport height</Label>
+                  <Input id={`${idPrefix}-viewport-h`} inputMode="numeric" value={config.viewportHeight} onChange={(event) => onPatch({ viewportHeight: Number(event.target.value) || 720 })} />
+                </div>
+              </>
+            ) : null}
             <div className="space-y-1.5">
               <Label htmlFor={`${idPrefix}-evidence`}>Evidence level</Label>
               <Select value={config.evidenceLevel} onValueChange={(value) => onPatch({ evidenceLevel: value as OneTimeEnvironmentState["evidenceLevel"] })}>
@@ -906,23 +1106,468 @@ function EnvironmentConfigFields({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${idPrefix}-timeout`}>Action timeout (ms)</Label>
-              <Input id={`${idPrefix}-timeout`} inputMode="numeric" value={config.defaultTimeoutMs} onChange={(event) => onPatch({ defaultTimeoutMs: Number(event.target.value) || 10_000 })} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${idPrefix}-nav-timeout`}>Navigation timeout (ms)</Label>
-              <Input id={`${idPrefix}-nav-timeout`} inputMode="numeric" value={config.navigationTimeoutMs} onChange={(event) => onPatch({ navigationTimeoutMs: Number(event.target.value) || 30_000 })} />
-            </div>
-            <div className="flex items-center gap-2 pt-6">
-              <Checkbox id={`${idPrefix}-headless`} checked={config.headless} onCheckedChange={(checked) => onPatch({ headless: checked === true })} />
-              <Label htmlFor={`${idPrefix}-headless`} className="font-normal">Headless browser</Label>
-            </div>
+            {config.uiEnabled ? (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`${idPrefix}-timeout`}>Browser action timeout (ms)</Label>
+                  <Input id={`${idPrefix}-timeout`} inputMode="numeric" value={config.defaultTimeoutMs} onChange={(event) => onPatch({ defaultTimeoutMs: Number(event.target.value) || 10_000 })} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`${idPrefix}-nav-timeout`}>Navigation timeout (ms)</Label>
+                  <Input id={`${idPrefix}-nav-timeout`} inputMode="numeric" value={config.navigationTimeoutMs} onChange={(event) => onPatch({ navigationTimeoutMs: Number(event.target.value) || 30_000 })} />
+                </div>
+                <div className="flex items-center gap-2 pt-6">
+                  <Checkbox id={`${idPrefix}-headless`} checked={config.headless} onCheckedChange={(checked) => onPatch({ headless: checked === true })} />
+                  <Label htmlFor={`${idPrefix}-headless`} className="font-normal">Headless browser</Label>
+                </div>
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>
     </div>
   );
+}
+
+function TargetToggle({
+  id,
+  icon,
+  label,
+  description,
+  checked,
+  onCheckedChange,
+}: {
+  id: string;
+  icon: ReactNode;
+  label: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <Label
+      htmlFor={id}
+      className={`flex cursor-pointer items-start gap-2 rounded-lg border p-3 transition-colors ${
+        checked ? "border-primary bg-primary/5" : "hover:bg-muted/50"
+      }`}
+    >
+      <Checkbox id={id} checked={checked} onCheckedChange={(value) => onCheckedChange(value === true)} />
+      <span className="min-w-0">
+        <span className="flex items-center gap-1.5 font-medium">{icon}{label}</span>
+        <span className="block text-xs font-normal text-muted-foreground">{description}</span>
+      </span>
+    </Label>
+  );
+}
+
+function ApiTargetFields({
+  idPrefix,
+  value,
+  secretValue,
+  secretSaved,
+  onChange,
+  onSecretChange,
+  onBlur,
+}: {
+  idPrefix: string;
+  value: ApiEnvironmentConfig;
+  secretValue: string;
+  secretSaved: boolean;
+  onChange: (value: ApiEnvironmentConfig) => void;
+  onSecretChange: (value: string) => void;
+  onBlur: () => void;
+}) {
+  const [showSecret, setShowSecret] = useState(false);
+  const authSecretName = apiAuthSecretName(value.auth);
+  const apiKeyAuth = value.auth.type === "api_key" ? value.auth : null;
+  const basicAuth = value.auth.type === "basic" ? value.auth : null;
+  const oauthAuth = value.auth.type === "oauth2_client_credentials" ? value.auth : null;
+  const setAuthType = (type: ApiAuthConfig["type"]) => {
+    const auth: ApiAuthConfig =
+      type === "none"
+        ? { type: "none" }
+        : type === "bearer"
+          ? { type: "bearer" }
+          : type === "api_key"
+            ? { type: "api_key", location: "header", name: "X-API-Key" }
+            : type === "basic"
+              ? { type: "basic", username: "" }
+              : { type: "oauth2_client_credentials", tokenUrl: "", clientId: "", scopes: [] };
+    onSecretChange("");
+    onChange({ ...value, auth });
+  };
+  const contractKind = value.contract?.kind ?? "none";
+
+  return (
+    <section className="space-y-3 rounded-lg border p-3" aria-labelledby={`${idPrefix}-api-heading`}>
+      <div>
+        <h3 id={`${idPrefix}-api-heading`} className="flex items-center gap-2 text-sm font-medium">
+          <Braces className="h-4 w-4" aria-hidden /> API connection
+        </h3>
+        <p className="text-xs text-muted-foreground">Requests use relative paths under this base URL. Credentials never enter the AI prompt.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-api-base-url`}>Base URL</Label>
+          <Input
+            id={`${idPrefix}-api-base-url`}
+            value={value.baseUrl}
+            placeholder="https://api.example.com/v1"
+            onChange={(event) => onChange({ ...value, baseUrl: event.target.value })}
+            onBlur={onBlur}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-api-auth`}>Authentication</Label>
+          <Select value={value.auth.type} onValueChange={(type) => setAuthType(type as ApiAuthConfig["type"])}>
+            <SelectTrigger id={`${idPrefix}-api-auth`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">None</SelectItem>
+              <SelectItem value="bearer">Bearer token</SelectItem>
+              <SelectItem value="api_key">API key</SelectItem>
+              <SelectItem value="basic">Basic authentication</SelectItem>
+              <SelectItem value="oauth2_client_credentials">OAuth 2 client credentials</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        {apiKeyAuth ? (
+          <>
+            <div className="space-y-1.5">
+              <Label htmlFor={`${idPrefix}-api-key-name`}>Key name</Label>
+              <Input
+                id={`${idPrefix}-api-key-name`}
+                value={apiKeyAuth.name}
+                placeholder="X-API-Key"
+                onChange={(event) => onChange({ ...value, auth: { ...apiKeyAuth, name: event.target.value } })}
+                onBlur={onBlur}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`${idPrefix}-api-key-location`}>Send key in</Label>
+              <Select
+                value={apiKeyAuth.location}
+                onValueChange={(location) =>
+                  onChange({ ...value, auth: { ...apiKeyAuth, location: location as "header" | "query" } })
+                }
+              >
+                <SelectTrigger id={`${idPrefix}-api-key-location`}><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="header">Header</SelectItem><SelectItem value="query">Query parameter</SelectItem></SelectContent>
+              </Select>
+            </div>
+          </>
+        ) : null}
+
+        {basicAuth ? (
+          <div className="space-y-1.5">
+            <Label htmlFor={`${idPrefix}-api-basic-user`}>API username</Label>
+            <Input
+              id={`${idPrefix}-api-basic-user`}
+              value={basicAuth.username}
+              autoComplete="off"
+              onChange={(event) => onChange({ ...value, auth: { ...basicAuth, username: event.target.value } })}
+              onBlur={onBlur}
+            />
+          </div>
+        ) : null}
+
+        {oauthAuth ? (
+          <>
+            <div className="space-y-1.5">
+              <Label htmlFor={`${idPrefix}-api-oauth-token-url`}>Token URL</Label>
+              <Input
+                id={`${idPrefix}-api-oauth-token-url`}
+                value={oauthAuth.tokenUrl}
+                placeholder="https://identity.example.com/oauth/token"
+                onChange={(event) => onChange({ ...value, auth: { ...oauthAuth, tokenUrl: event.target.value } })}
+                onBlur={onBlur}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`${idPrefix}-api-oauth-client-id`}>Client ID</Label>
+              <Input
+                id={`${idPrefix}-api-oauth-client-id`}
+                value={oauthAuth.clientId}
+                autoComplete="off"
+                onChange={(event) => onChange({ ...value, auth: { ...oauthAuth, clientId: event.target.value } })}
+                onBlur={onBlur}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`${idPrefix}-api-oauth-scopes`}>Scopes</Label>
+              <Input
+                id={`${idPrefix}-api-oauth-scopes`}
+                value={oauthAuth.scopes.join(" ")}
+                placeholder="orders.read orders.write"
+                onChange={(event) =>
+                  onChange({ ...value, auth: { ...oauthAuth, scopes: splitList(event.target.value) } })
+                }
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`${idPrefix}-api-oauth-audience`}>Audience (optional)</Label>
+              <Input
+                id={`${idPrefix}-api-oauth-audience`}
+                value={oauthAuth.audience ?? ""}
+                onChange={(event) =>
+                  onChange({ ...value, auth: { ...oauthAuth, audience: event.target.value || undefined } })
+                }
+              />
+            </div>
+          </>
+        ) : null}
+
+        {authSecretName ? (
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor={`${idPrefix}-api-secret`}>{apiSecretFieldLabel(value.auth)}</Label>
+            <div className="flex gap-1 sm:max-w-md">
+              <Input
+                id={`${idPrefix}-api-secret`}
+                type={showSecret ? "text" : "password"}
+                autoComplete="new-password"
+                value={secretValue}
+                placeholder={secretSaved ? "Saved — type to replace" : "Required"}
+                onChange={(event) => onSecretChange(event.target.value)}
+                onBlur={onBlur}
+              />
+              <Button type="button" variant="ghost" size="icon" aria-label={showSecret ? "Hide API credential" : "Show API credential"} onClick={() => setShowSecret((current) => !current)}>
+                {showSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">Encrypted and passed directly to the API executor; never exposed as an agent credential.</p>
+          </div>
+        ) : null}
+
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-api-contract`}>API contract</Label>
+          <Select
+            value={contractKind}
+            onValueChange={(kind) =>
+              onChange({
+                ...value,
+                contract:
+                  kind === "none"
+                    ? null
+                    : kind === "revision"
+                      ? value.contract?.kind === "revision" ? value.contract : { kind: "revision", revisionId: "" }
+                      : { kind: "same_origin_url", url: "" },
+              })
+            }
+          >
+            <SelectTrigger id={`${idPrefix}-api-contract`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">No contract</SelectItem>
+              <SelectItem value="same_origin_url">OpenAPI URL</SelectItem>
+              {contractKind === "revision" ? <SelectItem value="revision">Approved revision</SelectItem> : null}
+            </SelectContent>
+          </Select>
+        </div>
+        {value.contract?.kind === "same_origin_url" ? (
+          <div className="space-y-1.5">
+            <Label htmlFor={`${idPrefix}-api-contract-url`}>OpenAPI URL</Label>
+            <Input
+              id={`${idPrefix}-api-contract-url`}
+              value={value.contract.url}
+              placeholder="https://api.example.com/openapi.json"
+              onChange={(event) => onChange({ ...value, contract: { kind: "same_origin_url", url: event.target.value } })}
+              onBlur={onBlur}
+            />
+          </div>
+        ) : value.contract?.kind === "revision" ? (
+          <div className="space-y-1.5">
+            <Label>Approved revision</Label>
+            <Input value={value.contract.revisionId} disabled aria-label="Approved API contract revision" />
+          </div>
+        ) : null}
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-api-timeout`}>Request timeout (ms)</Label>
+          <Input
+            id={`${idPrefix}-api-timeout`}
+            inputMode="numeric"
+            value={value.requestTimeoutMs}
+            onChange={(event) => onChange({ ...value, requestTimeoutMs: Number(event.target.value) || 30_000 })}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-api-mutations`}>Mutation access</Label>
+          <Select
+            value={value.mutationMode}
+            onValueChange={(mutationMode) =>
+              onChange({ ...value, mutationMode: mutationMode as ApiEnvironmentConfig["mutationMode"] })
+            }
+          >
+            <SelectTrigger id={`${idPrefix}-api-mutations`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="disabled">Read operations only</SelectItem>
+              <SelectItem value="approved_catalog">Approved catalog mutations</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DatabaseTargetFields({
+  idPrefix,
+  value,
+  password,
+  passwordSaved,
+  onChange,
+  onPasswordChange,
+  onBlur,
+}: {
+  idPrefix: string;
+  value: DatabaseEnvironmentConfig;
+  password: string;
+  passwordSaved: boolean;
+  onChange: (value: DatabaseEnvironmentConfig) => void;
+  onPasswordChange: (value: string) => void;
+  onBlur: () => void;
+}) {
+  const [showPassword, setShowPassword] = useState(false);
+  const setDriver = (driver: DatabaseEnvironmentConfig["driver"]) => {
+    const defaults = defaultDatabaseEnvironment(driver);
+    onChange({ ...value, driver, port: databaseDefaultPort(driver), schemas: defaults.schemas });
+  };
+  return (
+    <section className="space-y-3 rounded-lg border p-3" aria-labelledby={`${idPrefix}-db-heading`}>
+      <div>
+        <h3 id={`${idPrefix}-db-heading`} className="flex items-center gap-2 text-sm font-medium">
+          <Database className="h-4 w-4" aria-hidden /> Database connection
+        </h3>
+        <p className="text-xs text-muted-foreground">Use a dedicated least-privilege test account. DDL and multi-statement SQL are always blocked.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-db-driver`}>Driver</Label>
+          <Select value={value.driver} onValueChange={(driver) => setDriver(driver as DatabaseEnvironmentConfig["driver"])}>
+            <SelectTrigger id={`${idPrefix}-db-driver`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="postgres">PostgreSQL</SelectItem>
+              <SelectItem value="sqlserver">SQL Server</SelectItem>
+              <SelectItem value="mysql">MySQL</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5 lg:col-span-2">
+          <Label htmlFor={`${idPrefix}-db-host`}>Host or IP address</Label>
+          <Input
+            id={`${idPrefix}-db-host`}
+            value={value.host}
+            placeholder="db.staging.internal"
+            onChange={(event) => onChange({ ...value, host: event.target.value })}
+            onBlur={onBlur}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-db-port`}>Port</Label>
+          <Input
+            id={`${idPrefix}-db-port`}
+            inputMode="numeric"
+            value={value.port}
+            onChange={(event) => onChange({ ...value, port: Number(event.target.value) || 0 })}
+            onBlur={onBlur}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-db-name`}>Database name</Label>
+          <Input
+            id={`${idPrefix}-db-name`}
+            value={value.databaseName}
+            placeholder="itestflow_qa"
+            onChange={(event) => {
+              const databaseName = event.target.value;
+              const tracksMysqlDatabase = value.driver === "mysql" &&
+                (value.schemas.length === 0 || (value.schemas.length === 1 && value.schemas[0] === value.databaseName));
+              onChange({ ...value, databaseName, schemas: tracksMysqlDatabase && databaseName ? [databaseName] : value.schemas });
+            }}
+            onBlur={onBlur}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-db-user`}>Username</Label>
+          <Input
+            id={`${idPrefix}-db-user`}
+            value={value.username}
+            autoComplete="off"
+            onChange={(event) => onChange({ ...value, username: event.target.value })}
+            onBlur={onBlur}
+          />
+        </div>
+        <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
+          <Label htmlFor={`${idPrefix}-db-password`}>Password</Label>
+          <div className="flex gap-1 sm:max-w-md">
+            <Input
+              id={`${idPrefix}-db-password`}
+              type={showPassword ? "text" : "password"}
+              autoComplete="new-password"
+              value={password}
+              placeholder={passwordSaved ? "Saved — type to replace" : "Required"}
+              onChange={(event) => onPasswordChange(event.target.value)}
+              onBlur={onBlur}
+            />
+            <Button type="button" variant="ghost" size="icon" aria-label={showPassword ? "Hide database password" : "Show database password"} onClick={() => setShowPassword((current) => !current)}>
+              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">Encrypted and passed directly to the database driver; never shown to the AI.</p>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-db-tls`}>TLS</Label>
+          <Select value={value.tlsMode} onValueChange={(tlsMode) => onChange({ ...value, tlsMode: tlsMode as DatabaseEnvironmentConfig["tlsMode"] })}>
+            <SelectTrigger id={`${idPrefix}-db-tls`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="verify-full">Verify certificate and host</SelectItem>
+              <SelectItem value="require">Require encryption</SelectItem>
+              <SelectItem value="disable">Disabled</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-db-access`}>Query access</Label>
+          <Select value={value.accessMode} onValueChange={(accessMode) => onChange({ ...value, accessMode: accessMode as DatabaseEnvironmentConfig["accessMode"] })}>
+            <SelectTrigger id={`${idPrefix}-db-access`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="read_only">Read-only</SelectItem>
+              <SelectItem value="cataloged_dml">Approved catalog DML</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-db-schemas`}>Allowed schemas</Label>
+          <Input
+            id={`${idPrefix}-db-schemas`}
+            value={value.schemas.join(", ")}
+            placeholder={value.driver === "sqlserver" ? "dbo" : value.driver === "postgres" ? "public" : "Defaults to database name"}
+            onChange={(event) => onChange({ ...value, schemas: splitList(event.target.value) })}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-db-connect-timeout`}>Connect timeout (ms)</Label>
+          <Input id={`${idPrefix}-db-connect-timeout`} inputMode="numeric" value={value.connectTimeoutMs} onChange={(event) => onChange({ ...value, connectTimeoutMs: Number(event.target.value) || 10_000 })} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-db-statement-timeout`}>Statement timeout (ms)</Label>
+          <Input id={`${idPrefix}-db-statement-timeout`} inputMode="numeric" value={value.statementTimeoutMs} onChange={(event) => onChange({ ...value, statementTimeoutMs: Number(event.target.value) || 30_000 })} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function apiSecretFieldLabel(auth: ApiAuthConfig): string {
+  return auth.type === "bearer"
+    ? "Bearer token"
+    : auth.type === "api_key"
+      ? "API key value"
+      : auth.type === "basic"
+        ? "API password"
+        : "OAuth client secret";
+}
+
+function splitList(value: string): string[] {
+  return value.split(/[\s,]+/).map((part) => part.trim()).filter(Boolean);
 }
 
 function ExtraCredentialEditor({
@@ -1114,6 +1759,21 @@ function TestUserListEditor({
       </Button>
     </div>
   );
+}
+
+function isAgentSecret(secret: { secretName: string; purpose?: SecretPurpose }): boolean {
+  return (secret.purpose ?? "agent_value") === "agent_value" &&
+    !API_CONNECTION_SECRET_NAMES.includes(secret.secretName as (typeof API_CONNECTION_SECRET_NAMES)[number]) &&
+    secret.secretName !== DATABASE_PASSWORD_SECRET;
+}
+
+function profileTargetSummary(profile: EnvironmentProfileSummary): string {
+  const targets = [
+    profile.initialUrl,
+    profile.api?.baseUrl,
+    profile.database ? `${profile.database.driver}://${profile.database.host}:${profile.database.port}/${profile.database.databaseName}` : null,
+  ].filter((value): value is string => Boolean(value));
+  return targets.join(" · ") || "No configured target";
 }
 
 function safeOrigin(url: string): string {

@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   listRuns: vi.fn(),
   findActiveRun: vi.fn(),
   getEnvironmentProfile: vi.fn(),
+  freezeSameOriginOpenApiContract: vi.fn(),
   startWorkflowRun: vi.fn(() => "analytics-run-1"),
   checkRateLimit: vi.fn(async () => ({ allowed: true, retryAfterSeconds: 0 })),
 }));
@@ -37,6 +38,10 @@ vi.mock("@/modules/test-execution/run.service", async (importOriginal) => {
 vi.mock("@/modules/test-execution/environment-profile.service", () => ({
   getEnvironmentProfile: mocks.getEnvironmentProfile,
 }));
+vi.mock("@/modules/test-execution/openapi-contract.service", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/test-execution/openapi-contract.service")>();
+  return { ...actual, freezeSameOriginOpenApiContract: mocks.freezeSameOriginOpenApiContract };
+});
 vi.mock("@/modules/analytics/workflow-analytics.service", () => ({
   startWorkflowRun: mocks.startWorkflowRun,
   completeWorkflowRun: vi.fn(),
@@ -50,8 +55,10 @@ vi.mock("@/modules/security/rate-limit", async (importOriginal) => {
 import { WorkflowAuthError } from "@/modules/credentials/scoped-resolution.service";
 import {
   ActiveRunConflictError,
+  RunEnvironmentSnapshotConflictError,
   RunPlanValidationError,
 } from "@/modules/test-execution/run.service";
+import { OpenApiContractImportError } from "@/modules/test-execution/openapi-contract.service";
 import { TestExecutionUnavailableError } from "@/modules/jobs/test-execution-jobs.service";
 import { GET, POST } from "./route";
 
@@ -87,6 +94,12 @@ beforeEach(() => {
   mocks.requireWorkflowContext.mockResolvedValue(ctx);
   mocks.resolveProjectScope.mockResolvedValue(scope);
   mocks.getUserAzureAdapter.mockResolvedValue({});
+  mocks.freezeSameOriginOpenApiContract.mockResolvedValue({
+    revisionId: "tacr_frozen_1",
+    revision: 1,
+    operationCount: 1,
+    reused: false,
+  });
   mocks.createRunWithSnapshots.mockResolvedValue({ runId: "trun_1", jobId: "job_1" });
 });
 
@@ -100,6 +113,61 @@ describe("POST /api/test-execution/runs", () => {
     expect(mocks.startWorkflowRun).toHaveBeenCalledWith(
       expect.objectContaining({ workflowType: "test_execution" }),
     );
+  });
+
+  it("freezes a same-origin OpenAPI URL before snapshotting the run", async () => {
+    const body = structuredClone(validBody);
+    Object.assign(body.environment.config, {
+      api: {
+        baseUrl: "https://api.example.test/v1",
+        contract: { kind: "same_origin_url", url: "https://api.example.test/openapi.json" },
+        auth: { type: "none" },
+        requestTimeoutMs: 2_500,
+        mutationMode: "disabled",
+      },
+    });
+
+    const response = await POST(jsonRequest("/api/test-execution/runs", body));
+
+    expect(response.status).toBe(202);
+    expect(mocks.freezeSameOriginOpenApiContract).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: ctx.workspace.id,
+      baseUrl: "https://api.example.test/v1",
+      sourceUrl: "https://api.example.test/openapi.json",
+      timeoutMs: 2_500,
+      signal: expect.any(AbortSignal),
+    }));
+    expect(mocks.createRunWithSnapshots).toHaveBeenCalledWith(expect.objectContaining({
+      environment: expect.objectContaining({
+        config: expect.objectContaining({
+          api: expect.objectContaining({
+            contract: { kind: "revision", revisionId: "tacr_frozen_1" },
+          }),
+        }),
+      }),
+    }));
+  });
+
+  it("returns the safe OpenAPI import failure without creating a run", async () => {
+    const body = structuredClone(validBody);
+    Object.assign(body.environment.config, {
+      api: {
+        baseUrl: "https://api.example.test/v1",
+        contract: { kind: "same_origin_url", url: "https://api.example.test/openapi.json" },
+        auth: { type: "none" },
+        requestTimeoutMs: 2_500,
+        mutationMode: "disabled",
+      },
+    });
+    mocks.freezeSameOriginOpenApiContract.mockRejectedValue(
+      new OpenApiContractImportError("The OpenAPI URL is not allowed by the workspace egress policy.", 403),
+    );
+
+    const response = await POST(jsonRequest("/api/test-execution/runs", body));
+
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toMatch(/egress policy/i);
+    expect(mocks.createRunWithSnapshots).not.toHaveBeenCalled();
   });
 
   it("rejects unauthenticated callers with the auth mapping", async () => {
@@ -133,6 +201,13 @@ describe("POST /api/test-execution/runs", () => {
     const response = await POST(jsonRequest("/api/test-execution/runs", validBody));
     expect(response.status).toBe(409);
     expect((await response.json()).activeRunId).toBe("trun_active");
+  });
+
+  it("requires review again when a saved environment changed before freezing", async () => {
+    mocks.createRunWithSnapshots.mockRejectedValue(new RunEnvironmentSnapshotConflictError());
+    const response = await POST(jsonRequest("/api/test-execution/runs", validBody));
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatch(/changed after review/i);
   });
 
   it("maps worker-capacity unavailability to 503 with Retry-After", async () => {
@@ -181,4 +256,3 @@ describe("GET /api/test-execution/runs", () => {
     expect(response.status).toBe(400);
   });
 });
-

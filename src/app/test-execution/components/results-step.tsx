@@ -5,6 +5,7 @@ import { Bug, Loader2, RotateCcw, Send } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -24,9 +25,9 @@ import { OutcomeBadge } from "./outcome-badge";
 
 export type CandidatePublishState = Record<string, { pending: boolean; error: string | null; azureBugId: string | null }>;
 
-type StepActionJson = { instruction?: string; expectedResult?: string };
+type StepActionJson = { instruction?: string; expectedResult?: string; layerHint?: "auto" | "ui" | "api" | "db" | "mixed" };
 type StepObservationJson = {
-  actionsTaken?: { description: string; result: string; detail?: string }[];
+  actionsTaken?: { description: string; result: string; detail?: string; layer?: string }[];
   actualResult?: string;
   reason?: string;
   iterations?: number;
@@ -75,6 +76,7 @@ export function ResultsStep({
           return {
             instruction: action.instruction ?? "",
             expectedResult: action.expectedResult ?? "",
+            layerHint: action.layerHint ?? "auto",
           };
         }),
       },
@@ -153,6 +155,7 @@ export function ResultsStep({
                     const observation = (step.observation ?? {}) as StepObservationJson;
                     const screenshots = step.artifacts.filter((artifact) => artifact.kind === "screenshot");
                     const otherArtifacts = step.artifacts.filter((artifact) => artifact.kind !== "screenshot");
+                    const layerActions = step.actions ?? [];
                     return (
                       <li key={step.id} className="rounded bg-muted/40 px-2 py-1.5 text-sm">
                         <div className="flex items-center gap-2">
@@ -162,6 +165,9 @@ export function ResultsStep({
                           <span className="min-w-0 flex-1 truncate" title={action.instruction}>
                             {action.instruction ?? "(step)"}
                           </span>
+                          {action.layerHint && action.layerHint !== "auto" ? (
+                            <Badge variant="outline" className="shrink-0 uppercase">{action.layerHint}</Badge>
+                          ) : null}
                           {otherArtifacts.map((artifact) => (
                             <button
                               key={artifact.id}
@@ -186,14 +192,39 @@ export function ResultsStep({
                         {observation.reason ? (
                           <p className="ml-7 mt-1 text-xs text-muted-foreground">{observation.reason}</p>
                         ) : null}
-                        {observation.actionsTaken && observation.actionsTaken.length > 0 ? (
+                        {layerActions.length > 0 ? (
                           <details className="ml-7 mt-1">
                             <summary className="cursor-pointer text-xs text-muted-foreground">
-                              AI actions ({observation.actionsTaken.length})
+                              Layer actions ({layerActions.length})
+                            </summary>
+                            <ol className="mt-1 space-y-1 text-xs text-muted-foreground">
+                              {layerActions.map((record) => (
+                                <li key={record.id} className="rounded border bg-background px-2 py-1.5">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <Badge variant="outline" className="uppercase">{record.layer || "action"}</Badge>
+                                    <span className="font-medium text-foreground">{humanizeActionType(record.actionType)}</span>
+                                    <span>· {record.status.replace(/_/g, " ")}</span>
+                                    {record.finishedAt ? <span>· {formatActionDuration(record.startedAt, record.finishedAt)}</span> : null}
+                                  </div>
+                                  {summarizeActionEvidence(record.request, record.observation) ? (
+                                    <p className="mt-0.5 break-words font-mono text-[11px]">
+                                      {summarizeActionEvidence(record.request, record.observation)}
+                                    </p>
+                                  ) : null}
+                                  {record.errorMessage ? <p className="mt-0.5 text-destructive">{record.errorMessage}</p> : null}
+                                </li>
+                              ))}
+                            </ol>
+                          </details>
+                        ) : observation.actionsTaken && observation.actionsTaken.length > 0 ? (
+                          <details className="ml-7 mt-1">
+                            <summary className="cursor-pointer text-xs text-muted-foreground">
+                              Browser actions ({observation.actionsTaken.length})
                             </summary>
                             <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
                               {observation.actionsTaken.map((record, recordIndex) => (
-                                <li key={recordIndex}>
+                                <li key={recordIndex} className="flex flex-wrap items-center gap-1">
+                                  {record.layer ? <Badge variant="outline" className="uppercase">{record.layer}</Badge> : null}
                                   {record.description} → {record.result}
                                   {record.detail ? ` (${record.detail})` : ""}
                                 </li>
@@ -448,6 +479,47 @@ function ArtifactTextViewer({ url, fileName }: { url: string; fileName: string }
       </a>
     </div>
   );
+}
+
+export function humanizeActionType(value: string): string {
+  return value.replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Action";
+}
+
+/** Render a compact allowlisted summary; never dump arbitrary response bodies or result rows. */
+export function summarizeActionEvidence(request: unknown, observation: unknown): string {
+  const parts: string[] = [];
+  const req = asRecord(request);
+  const result = asRecord(observation);
+  const method = scalar(req?.method);
+  const path = scalar(req?.path) || scalar(req?.url);
+  const operation = scalar(req?.operationName) || scalar(req?.operation) || scalar(req?.catalogName);
+  const statement = scalar(req?.statementName) || scalar(req?.queryName);
+  if (method || path) parts.push([method?.toUpperCase(), path].filter(Boolean).join(" "));
+  else if (operation || statement) parts.push(operation || statement || "");
+
+  const status = scalar(result?.statusCode) || scalar(result?.status);
+  const rowCount = scalar(result?.rowCount);
+  const command = scalar(result?.command);
+  const summary = scalar(result?.summary) || scalar(result?.actualResult) || scalar(result?.message);
+  if (status) parts.push(`status ${status}`);
+  if (command) parts.push(command);
+  if (rowCount) parts.push(`${rowCount} row(s)`);
+  if (summary) parts.push(summary.slice(0, 180));
+  return parts.filter(Boolean).join(" · ");
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function scalar(value: unknown): string {
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+
+function formatActionDuration(startedAt: string, finishedAt: string): string {
+  const ms = Date.parse(finishedAt) - Date.parse(startedAt);
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  return ms < 1_000 ? `${ms}ms` : `${(ms / 1_000).toFixed(1)}s`;
 }
 
 function formatDuration(startedAt: string, finishedAt: string): string {

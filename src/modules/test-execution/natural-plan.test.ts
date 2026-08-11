@@ -56,6 +56,25 @@ describe("validateNaturalPlan", () => {
     expect(result.ok).toBe(false);
     expect(result.findings[0]?.code).toBe("invalid_plan");
   });
+
+  it("rejects explicit or mixed layers that the frozen environment cannot execute", () => {
+    const result = validateNaturalPlan({
+      schemaVersion: NATURAL_PLAN_SCHEMA_VERSION,
+      steps: [
+        { instruction: "Read the API", expectedResult: "OK", layerHint: "api" },
+        { instruction: "Compare layers", expectedResult: "Same", layerHint: "mixed" },
+      ],
+    }, {
+      availableSecretNames: [],
+      availableLayers: ["ui"],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.findings).toEqual([
+      expect.objectContaining({ severity: "error", code: "invalid_plan", stepIndex: 0 }),
+      expect.objectContaining({ severity: "error", code: "invalid_plan", stepIndex: 1 }),
+    ]);
+  });
 });
 
 describe("collectNaturalPlanSecretReferences", () => {

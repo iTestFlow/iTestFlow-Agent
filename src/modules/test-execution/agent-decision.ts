@@ -40,7 +40,9 @@ export function validateAgentDecision(raw: unknown, context: DecisionContext): V
   if (!parsed.success) {
     return { kind: "invalid", feedback: "Your response did not match the required JSON shape." };
   }
-  const decision = parsed.data;
+  const decodedArguments = decodeLegacyBrowserArguments(parsed.data.argumentsJson);
+  if (decodedArguments.kind === "invalid") return decodedArguments;
+  const decision = { ...parsed.data, ...decodedArguments.fields };
 
   if (decision.decision === "step_passed" || decision.decision === "step_failed") {
     const actualResult = decision.actualResult?.trim();
@@ -142,6 +144,36 @@ export function validateAgentDecision(raw: unknown, context: DecisionContext): V
     default:
       return { kind: "invalid", feedback: `Unsupported actionType "${actionType}".` };
   }
+}
+
+function decodeLegacyBrowserArguments(argumentsJson?: string):
+  | { kind: "ok"; fields: Partial<{
+      ref: string;
+      elementDescription: string;
+      value: string;
+      url: string;
+      key: string;
+      waitText: string;
+    }> }
+  | { kind: "invalid"; feedback: string } {
+  if (!argumentsJson) return { kind: "ok", fields: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(argumentsJson);
+  } catch {
+    return { kind: "invalid", feedback: "argumentsJson must encode one valid JSON object." };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { kind: "invalid", feedback: "argumentsJson must encode one JSON object." };
+  }
+  const input = parsed as Record<string, unknown>;
+  const fields: Record<string, string> = {};
+  for (const key of ["ref", "elementDescription", "value", "url", "key"] as const) {
+    if (typeof input[key] === "string") fields[key] = input[key];
+  }
+  if (typeof input.waitText === "string") fields.waitText = input.waitText;
+  if (typeof input.text === "string") fields.waitText = input.text;
+  return { kind: "ok", fields };
 }
 
 /** Compact, scrub-safe transcript line for observations and the report. */

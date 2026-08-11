@@ -17,9 +17,15 @@ export const MAX_PLAN_STEPS = 100;
 export const MAX_INSTRUCTION_LENGTH = 2_000;
 export const MAX_EXPECTED_RESULT_LENGTH = 2_000;
 
+export const TEST_EXECUTION_LAYER_HINTS = ["auto", "ui", "api", "db", "mixed"] as const;
+export const LayerHintSchema = z.enum(TEST_EXECUTION_LAYER_HINTS);
+export type LayerHint = z.infer<typeof LayerHintSchema>;
+
 export const NaturalStepSchema = z.object({
   instruction: z.string().trim().min(1).max(MAX_INSTRUCTION_LENGTH),
   expectedResult: z.string().trim().max(MAX_EXPECTED_RESULT_LENGTH).default(""),
+  /** Additive and defaulted so every previously frozen v2-natural plan remains readable. */
+  layerHint: LayerHintSchema.default("auto"),
 });
 export type NaturalStep = z.infer<typeof NaturalStepSchema>;
 
@@ -89,6 +95,8 @@ export type AgentAction =
 export const AgentDecisionSchema = z.object({
   decision: z.enum(["act", "step_passed", "step_failed", "blocked"]),
   actionType: z.string().optional(),
+  /** Compact layer-specific payload; legacy scalar UI fields remain accepted. */
+  argumentsJson: z.string().max(20_000).optional(),
   ref: z.string().optional(),
   elementDescription: z.string().optional(),
   value: z.string().optional(),

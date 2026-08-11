@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { LLMProvider } from "@/modules/llm/llm-types";
+import type { LLMRequestLogMetadata } from "@/modules/llm/llm-request-log.service";
 import { TEST_EXECUTION_AGENT_PROMPT } from "@/modules/llm/prompts";
 import { collectSnapshotRefs } from "@/modules/integrations/browser-automation/aria-snapshot";
 import type {
@@ -22,7 +23,7 @@ import type { ExecutionOutcome } from "./run-state";
  * the transcript, or persisted observations.
  */
 
-export const MAX_ITERATIONS_PER_STEP = 8;
+export const MAX_ITERATIONS_PER_STEP = 16;
 export const STEP_WALL_CLOCK_MS = 3 * 60_000;
 export const MAX_CONSECUTIVE_INVALID_DECISIONS = 2;
 export const MAX_CONSECUTIVE_LLM_FAILURES = 2;
@@ -64,7 +65,7 @@ export type AgenticStepInput = {
   /** Shared per-run LLM call budget (mutated in place). */
   llmCallBudget: { remaining: number };
   /** Request-log metadata (action, prompt name/version, project scope). */
-  metadata: Record<string, string | undefined>;
+  metadata: LLMRequestLogMetadata;
 };
 
 export type AgenticStepResult = {
@@ -116,7 +117,8 @@ export async function runAgenticStep(input: AgenticStepInput): Promise<AgenticSt
         schema: AgentDecisionSchema,
         system: TEST_EXECUTION_AGENT_PROMPT.system,
         user,
-        metadata: input.metadata,
+        signal: input.signal,
+        metadata: { ...input.metadata, logRetention: "metadata_only" },
       });
       rawDecision = result.validatedOutput;
       consecutiveLlmFailures = 0;

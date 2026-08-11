@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { PoolClient } from "pg";
+
 import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { encryptSecret, maskSecret } from "@/modules/security/encryption.service";
@@ -43,6 +45,20 @@ export class RunPlanValidationError extends Error {
   }
 }
 
+export class RunCapabilityValidationError extends Error {
+  constructor(readonly reason: "unavailable" | "duplicate_stable_key" = "unavailable") {
+    super("One or more integration capabilities are unavailable, unapproved, or incompatible with the environment.");
+    this.name = "RunCapabilityValidationError";
+  }
+}
+
+export class RunEnvironmentSnapshotConflictError extends Error {
+  constructor() {
+    super("The selected environment profile changed after review. Refresh it and approve the run again.");
+    this.name = "RunEnvironmentSnapshotConflictError";
+  }
+}
+
 export type CreateRunInput = {
   workspaceId: string;
   scope: ProjectScope;
@@ -50,12 +66,16 @@ export type CreateRunInput = {
   adapter: AzureDevOpsAdapter;
   environment: {
     profileId: string | null;
+    /** Optimistic version captured with the reviewed saved-profile config. */
+    profileUpdatedAt: string | null;
     config: EnvConfig;
     /** One-time secrets (empty when a profile is used). */
     oneTimeSecrets: SecretInput[];
   };
   story: { workItemId: string; title: string } | null;
   cases: RunCaseInput[];
+  /** Approved operation revisions selected at review and frozen into the run. */
+  capabilityRevisionIds?: string[];
 };
 
 export async function createRunWithSnapshots(input: CreateRunInput): Promise<{ runId: string; jobId: string | null }> {
@@ -63,9 +83,16 @@ export async function createRunWithSnapshots(input: CreateRunInput): Promise<{ r
   //    problems block; unknown-secret references are warnings surfaced in the
   //    review step (the agent would hit them as blocked at run time).
   const secretNames = await collectAvailableSecretNames(input);
+  const availableLayers: Array<"ui" | "api" | "db"> = [];
+  if (input.environment.config.initialUrl) availableLayers.push("ui");
+  if (input.environment.config.api) availableLayers.push("api");
+  if (input.environment.config.database) availableLayers.push("db");
   const allFindings: PlanFinding[] = [];
   for (const caseInput of input.cases) {
-    const validation = validateNaturalPlan(caseInput.plan, { availableSecretNames: secretNames });
+    const validation = validateNaturalPlan(caseInput.plan, {
+      availableSecretNames: secretNames,
+      availableLayers,
+    });
     if (!validation.ok) allFindings.push(...validation.findings);
   }
   if (allFindings.some((finding) => finding.severity === "error")) {
@@ -103,6 +130,8 @@ export async function createRunWithSnapshots(input: CreateRunInput): Promise<{ r
   const now = nowIso();
   try {
     await withTransaction(async (client) => {
+      await lockReviewedEnvironmentProfile(client, input);
+
       await sqlRun(
         `INSERT INTO test_execution_runs (
            id, workspace_id, project_id, azure_project_id, environment_profile_id, env_config_json,
@@ -129,20 +158,173 @@ export async function createRunWithSnapshots(input: CreateRunInput): Promise<{ r
         client,
       );
 
+      const capabilityRevisionIds = input.capabilityRevisionIds ?? [];
+      if (new Set(capabilityRevisionIds).size !== capabilityRevisionIds.length) {
+        throw new RunCapabilityValidationError("duplicate_stable_key");
+      }
+      if (capabilityRevisionIds.length > 0) {
+        const selectedCapabilities = await sqlAll<{ id: string; stable_key: string }>(
+          `SELECT id, stable_key
+           FROM test_integration_operation_revisions
+           WHERE id = ANY(@capabilityRevisionIds)
+             AND workspace_id = @workspaceId
+             AND project_id = @projectId
+             AND azure_project_id = @azureProjectId`,
+          {
+            capabilityRevisionIds,
+            workspaceId: input.workspaceId,
+            projectId: input.scope.projectId,
+            azureProjectId: input.scope.azureProjectId,
+          },
+          client,
+        );
+        if (selectedCapabilities.length !== capabilityRevisionIds.length) {
+          throw new RunCapabilityValidationError();
+        }
+        const stableKeys = selectedCapabilities.map((capability) => capability.stable_key);
+        if (new Set(stableKeys).size !== stableKeys.length) {
+          throw new RunCapabilityValidationError("duplicate_stable_key");
+        }
+        // Serialize run approval with revise/approve/archive transitions for
+        // each selected logical operation. The transition service uses this
+        // exact advisory-lock identity.
+        for (const stableKey of [...stableKeys].sort()) {
+          await sqlGet(
+            `SELECT pg_advisory_xact_lock(hashtext(@lockKey))`,
+            {
+              lockKey: `${input.workspaceId}:${input.scope.projectId}:${input.scope.azureProjectId}:${stableKey}`,
+            },
+            client,
+          );
+        }
+
+        const inserted = await sqlRun(
+          `INSERT INTO test_execution_run_capabilities (
+             id, run_id, workspace_id, project_id, azure_project_id,
+             capability_kind, operation_revision_id, created_at
+           )
+           SELECT 'trcap_' || md5(random()::text || o.id), @runId,
+                  o.workspace_id, o.project_id, o.azure_project_id,
+                  'operation', o.id, @now
+           FROM test_integration_operation_revisions o
+           WHERE o.id = ANY(@capabilityRevisionIds)
+             AND o.workspace_id = @workspaceId
+             AND o.project_id = @projectId
+             AND o.azure_project_id = @azureProjectId
+             AND o.approval_status = 'approved'
+             AND NOT EXISTS (
+               SELECT 1
+               FROM test_integration_operation_revisions newer_approved
+               WHERE newer_approved.workspace_id = o.workspace_id
+                 AND newer_approved.project_id = o.project_id
+                 AND newer_approved.azure_project_id = o.azure_project_id
+                 AND newer_approved.stable_key = o.stable_key
+                 AND newer_approved.approval_status = 'approved'
+                 AND newer_approved.revision > o.revision
+             )
+             AND NOT EXISTS (
+               SELECT 1
+               FROM test_integration_operation_revisions archived
+               WHERE archived.workspace_id = o.workspace_id
+                 AND archived.project_id = o.project_id
+                 AND archived.azure_project_id = o.azure_project_id
+                 AND archived.stable_key = o.stable_key
+                 AND archived.approval_status = 'archived'
+                 AND archived.revision > o.revision
+             )
+             AND (
+               (o.layer = 'api' AND @hasApi = true)
+               OR (o.layer = 'db' AND o.database_driver = @databaseDriver)
+             )
+             AND (
+               o.safety_class = 'read'
+               OR (o.layer = 'api' AND @apiMutationEnabled = true)
+               OR (o.layer = 'db' AND @databaseMutationEnabled = true)
+             )`,
+          {
+            runId,
+            capabilityRevisionIds,
+            workspaceId: input.workspaceId,
+            projectId: input.scope.projectId,
+            azureProjectId: input.scope.azureProjectId,
+            hasApi: input.environment.config.api !== null,
+            databaseDriver: input.environment.config.database?.driver ?? null,
+            apiMutationEnabled:
+              input.environment.config.api?.mutationMode === "approved_catalog",
+            databaseMutationEnabled:
+              input.environment.config.database?.accessMode === "cataloged_dml",
+            now,
+          },
+          client,
+        );
+        if (inserted !== capabilityRevisionIds.length) {
+          throw new RunCapabilityValidationError();
+        }
+      }
+
+      const apiContractRevisionId =
+        input.environment.config.api?.contract?.kind === "revision"
+          ? input.environment.config.api.contract.revisionId
+          : null;
+      if (apiContractRevisionId) {
+        const inserted = await sqlRun(
+          `INSERT INTO test_execution_run_capabilities (
+             id, run_id, workspace_id, project_id, azure_project_id,
+             capability_kind, api_contract_revision_id, created_at
+           )
+           SELECT @id, @runId, c.workspace_id, c.project_id, c.azure_project_id,
+                  'api_contract', c.id, @now
+           FROM test_api_contract_revisions c
+           WHERE c.id = @apiContractRevisionId
+             AND c.workspace_id = @workspaceId
+             AND c.project_id = @projectId
+             AND c.azure_project_id = @azureProjectId`,
+          {
+            id: createId("trcap"),
+            runId,
+            apiContractRevisionId,
+            workspaceId: input.workspaceId,
+            projectId: input.scope.projectId,
+            azureProjectId: input.scope.azureProjectId,
+            now,
+          },
+          client,
+        );
+        if (inserted !== 1) throw new RunCapabilityValidationError();
+      }
+
+      // No capability row may be added after this transaction publishes the
+      // run. A database trigger enforces the marker for every later insert.
+      await sqlRun(
+        `UPDATE test_execution_runs
+         SET capability_snapshot_frozen_at = @now
+         WHERE id = @runId AND capability_snapshot_frozen_at IS NULL`,
+        { runId, now },
+        client,
+      );
+
       // Per-run secret snapshot: profile rows copied verbatim (AES-GCM is
       // location-independent), one-time secrets encrypted directly.
       if (input.environment.profileId) {
         await sqlRun(
           `INSERT INTO test_execution_run_secrets (
              id, run_id, workspace_id, project_id, azure_project_id, secret_name, title,
-             encrypted_secret, encryption_iv, encryption_tag, key_version, masked_preview, created_at
+             purpose, encrypted_secret, encryption_iv, encryption_tag, key_version, masked_preview, created_at
            )
            SELECT 'trs_' || md5(random()::text || s.id), @runId, s.workspace_id, s.project_id, s.azure_project_id,
-                  s.secret_name, s.title, s.encrypted_secret, s.encryption_iv, s.encryption_tag,
+                  s.secret_name, s.title, s.purpose, s.encrypted_secret, s.encryption_iv, s.encryption_tag,
                   s.key_version, s.masked_preview, @now
            FROM test_environment_secrets s
-           WHERE s.profile_id = @profileId AND s.workspace_id = @workspaceId`,
-          { runId, profileId: input.environment.profileId, workspaceId: input.workspaceId, now },
+           WHERE s.profile_id = @profileId AND s.workspace_id = @workspaceId
+             AND s.project_id = @projectId AND s.azure_project_id = @azureProjectId`,
+          {
+            runId,
+            profileId: input.environment.profileId,
+            workspaceId: input.workspaceId,
+            projectId: input.scope.projectId,
+            azureProjectId: input.scope.azureProjectId,
+            now,
+          },
           client,
         );
       }
@@ -151,9 +333,9 @@ export async function createRunWithSnapshots(input: CreateRunInput): Promise<{ r
         await sqlRun(
           `INSERT INTO test_execution_run_secrets (
              id, run_id, workspace_id, project_id, azure_project_id, secret_name, title,
-             encrypted_secret, encryption_iv, encryption_tag, key_version, masked_preview, created_at
+             purpose, encrypted_secret, encryption_iv, encryption_tag, key_version, masked_preview, created_at
            ) VALUES (@id, @runId, @workspaceId, @projectId, @azureProjectId, @secretName, @title,
-             @ciphertext, @iv, @tag, @keyVersion, @maskedPreview, @now)
+             @purpose, @ciphertext, @iv, @tag, @keyVersion, @maskedPreview, @now)
            ON CONFLICT (run_id, secret_name) DO NOTHING`,
           {
             id: createId("trs"),
@@ -163,6 +345,7 @@ export async function createRunWithSnapshots(input: CreateRunInput): Promise<{ r
             azureProjectId: input.scope.azureProjectId,
             secretName: secret.secretName,
             title: secret.title,
+            purpose: secret.purpose,
             ciphertext: encrypted.ciphertext,
             iv: encrypted.iv,
             tag: encrypted.tag,
@@ -306,12 +489,50 @@ export async function createRunWithSnapshots(input: CreateRunInput): Promise<{ r
 async function collectAvailableSecretNames(input: CreateRunInput): Promise<string[]> {
   if (input.environment.profileId) {
     const rows = await sqlAll<{ secret_name: string }>(
-      `SELECT secret_name FROM test_environment_secrets WHERE profile_id = @profileId AND workspace_id = @workspaceId`,
+      `SELECT secret_name FROM test_environment_secrets
+       WHERE profile_id = @profileId AND workspace_id = @workspaceId AND purpose = 'agent_value'`,
       { profileId: input.environment.profileId, workspaceId: input.workspaceId },
     );
     return rows.map((row) => row.secret_name);
   }
-  return input.environment.oneTimeSecrets.map((secret) => secret.secretName);
+  return input.environment.oneTimeSecrets
+    .filter((secret) => secret.purpose === "agent_value")
+    .map((secret) => secret.secretName);
+}
+
+/**
+ * Keep the reviewed saved-profile version and its encrypted secret rows under
+ * one database snapshot. Profile mutations take a row lock and advance
+ * updated_at before touching secrets, so this share lock either observes the
+ * reviewed version or rejects the run without freezing a torn configuration.
+ */
+async function lockReviewedEnvironmentProfile(
+  client: PoolClient,
+  input: CreateRunInput,
+): Promise<void> {
+  if (!input.environment.profileId) return;
+  const profile = await sqlGet<{ updated_at: string; lifecycle_status: string }>(
+    `SELECT updated_at, lifecycle_status
+     FROM test_environment_profiles
+     WHERE id = @profileId AND workspace_id = @workspaceId
+       AND project_id = @projectId AND azure_project_id = @azureProjectId
+     FOR SHARE`,
+    {
+      profileId: input.environment.profileId,
+      workspaceId: input.workspaceId,
+      projectId: input.scope.projectId,
+      azureProjectId: input.scope.azureProjectId,
+    },
+    client,
+  );
+  if (
+    !profile ||
+    profile.lifecycle_status !== "active" ||
+    !input.environment.profileUpdatedAt ||
+    profile.updated_at !== input.environment.profileUpdatedAt
+  ) {
+    throw new RunEnvironmentSnapshotConflictError();
+  }
 }
 
 function isActiveRunUniqueViolation(error: unknown): boolean {
@@ -404,6 +625,7 @@ export type RunDetailRows = {
   approvedByName: string | null;
   cases: Record<string, unknown>[];
   steps: Record<string, unknown>[];
+  actions?: Record<string, unknown>[];
   artifacts: Record<string, unknown>[];
   candidates: Record<string, unknown>[];
   job: { id: string; status: string; cancelRequestedAt: string | null } | null;
@@ -426,13 +648,22 @@ export async function loadRunDetailRows(input: {
     params,
   );
   if (!run) return null;
-  const [cases, steps, artifacts, candidates, job] = await Promise.all([
+  const [cases, steps, actions, artifacts, candidates, job] = await Promise.all([
     sqlAll<Record<string, unknown>>(
       `SELECT * FROM test_execution_case_runs WHERE run_id = @runId AND ${scopeWhere} ORDER BY order_index`,
       params,
     ),
     sqlAll<Record<string, unknown>>(
       `SELECT * FROM test_execution_step_runs WHERE run_id = @runId AND ${scopeWhere} ORDER BY order_index`,
+      params,
+    ),
+    sqlAll<Record<string, unknown>>(
+      `SELECT id, step_run_id, case_run_id, run_id, order_index, layer, action_type, safety_class,
+              request_json, status, observation_json, error_category, error_message,
+              started_at, finished_at
+       FROM test_execution_action_runs
+       WHERE run_id = @runId AND ${scopeWhere}
+       ORDER BY step_run_id, order_index`,
       params,
     ),
     sqlAll<Record<string, unknown>>(
@@ -458,6 +689,7 @@ export async function loadRunDetailRows(input: {
     approvedByName: approverName,
     cases,
     steps,
+    actions,
     artifacts,
     candidates,
     job: job ? { id: job.id, status: job.status, cancelRequestedAt: job.cancel_requested_at } : null,
@@ -479,6 +711,8 @@ export function profileToEnvConfig(profile: {
   loggedInText: string;
   executionNotes: string;
   users: { handle: string; username: string; passwordSecretName: string | null; notes: string }[];
+  api: EnvConfig["api"];
+  database: EnvConfig["database"];
 }): EnvConfig {
   return {
     initialUrl: profile.initialUrl,
@@ -499,5 +733,7 @@ export function profileToEnvConfig(profile: {
       passwordSecretName: user.passwordSecretName,
       notes: user.notes,
     })),
+    api: profile.api,
+    database: profile.database,
   };
 }

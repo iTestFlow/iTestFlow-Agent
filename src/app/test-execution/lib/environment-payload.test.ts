@@ -4,8 +4,15 @@ import {
   DEFAULT_OTP_SECRET,
   DEFAULT_PASSWORD_SECRET,
   DEFAULT_USER_HANDLE,
+  API_BEARER_TOKEN_SECRET,
+  DATABASE_PASSWORD_SECRET,
+  buildConnectionSecrets,
   buildEnvironmentParts,
   clampEnvironmentLimits,
+  defaultApiEnvironment,
+  defaultDatabaseEnvironment,
+  environmentReadinessIssue,
+  environmentTargetLabels,
   environmentPartsLimitIssue,
   sanitizeHandle,
   slugifySecretName,
@@ -205,6 +212,12 @@ describe("environmentPartsLimitIssue", () => {
     expect(environmentPartsLimitIssue({ secrets, users: [], validSecretNames: [] }, 29)).toMatch(/credentials/);
     expect(environmentPartsLimitIssue({ secrets, users: [], validSecretNames: [] }, 0)).toBeNull();
   });
+
+  it("counts secret names after an update instead of double-counting replacements", () => {
+    const existing = Array.from({ length: 30 }, (_, index) => `SECRET_${index}`);
+    const replacement = [{ secretName: "SECRET_0", title: "Replacement", value: "new" }];
+    expect(environmentPartsLimitIssue({ secrets: replacement, users: [], validSecretNames: [] }, existing)).toBeNull();
+  });
 });
 
 describe("unknownStepSecrets", () => {
@@ -215,5 +228,82 @@ describe("unknownStepSecrets", () => {
     ];
     expect(unknownStepSecrets(steps, ["DEFAULT_PASSWORD"])).toEqual(["GONE_KEY"]);
     expect(unknownStepSecrets(steps, ["DEFAULT_PASSWORD", "GONE_KEY"])).toEqual([]);
+  });
+});
+
+describe("multi-layer environment helpers", () => {
+  it("builds purpose-scoped connection secrets without exposing them as agent credentials", () => {
+    const api = { ...defaultApiEnvironment(), baseUrl: "https://api.example.com", auth: { type: "bearer" as const } };
+    const database = { ...defaultDatabaseEnvironment("postgres"), host: "db.internal", databaseName: "shop", username: "qa" };
+    expect(buildConnectionSecrets({ api, apiSecret: "token", database, databasePassword: "password" })).toEqual([
+      {
+        secretName: API_BEARER_TOKEN_SECRET,
+        title: "API bearer token",
+        value: "token",
+        purpose: "api_auth",
+      },
+      {
+        secretName: DATABASE_PASSWORD_SECRET,
+        title: "Database password",
+        value: "password",
+        purpose: "db_connection",
+      },
+    ]);
+  });
+
+  it("requires at least one complete target and the selected connection credentials", () => {
+    expect(
+      environmentReadinessIssue({
+        initialUrl: "",
+        allowedOrigin: "",
+        api: null,
+        apiSecret: "",
+        database: null,
+        databasePassword: "",
+      }),
+    ).toMatch(/at least one/i);
+
+    const api = { ...defaultApiEnvironment(), baseUrl: "https://api.example.com", auth: { type: "bearer" as const } };
+    expect(
+      environmentReadinessIssue({
+        initialUrl: "",
+        allowedOrigin: "",
+        api,
+        apiSecret: "",
+        database: null,
+        databasePassword: "",
+      }),
+    ).toMatch(/API credential/i);
+    expect(
+      environmentReadinessIssue({
+        initialUrl: "",
+        allowedOrigin: "",
+        api,
+        apiSecret: "",
+        apiSecretSaved: true,
+        database: null,
+        databasePassword: "",
+      }),
+    ).toBeNull();
+  });
+
+  it("validates same-origin OpenAPI discovery and labels configured layers", () => {
+    const api = {
+      ...defaultApiEnvironment(),
+      baseUrl: "https://api.example.com/v1",
+      contract: { kind: "same_origin_url" as const, url: "https://other.example.com/openapi.json" },
+    };
+    expect(
+      environmentReadinessIssue({
+        initialUrl: "https://app.example.com",
+        allowedOrigin: "https://app.example.com",
+        api,
+        apiSecret: "",
+        database: defaultDatabaseEnvironment(),
+        databasePassword: "pw",
+      }),
+    ).toMatch(/OpenAPI URL/i);
+    expect(environmentTargetLabels({ initialUrl: "https://app.example.com", api, database: defaultDatabaseEnvironment() }))
+      .toEqual(["UI", "API", "DB"]);
   });
 });

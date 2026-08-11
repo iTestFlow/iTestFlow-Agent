@@ -16,11 +16,17 @@ import {
 } from "@/modules/jobs/test-execution-jobs.service";
 import { getEnvironmentProfile } from "@/modules/test-execution/environment-profile.service";
 import {
+  freezeSameOriginOpenApiContract,
+  OpenApiContractImportError,
+} from "@/modules/test-execution/openapi-contract.service";
+import {
   ActiveRunConflictError,
   createRunWithSnapshots,
   findActiveRun,
   listRuns,
   profileToEnvConfig,
+  RunCapabilityValidationError,
+  RunEnvironmentSnapshotConflictError,
   RunPlanValidationError,
 } from "@/modules/test-execution/run.service";
 import { RunCreateSchema } from "@/modules/test-execution/schemas/test-execution.schemas";
@@ -81,15 +87,44 @@ export async function POST(request: Request) {
       if (!profile || profile.lifecycleStatus !== "active") {
         return NextResponse.json({ error: "The selected environment profile was not found." }, { status: 404 });
       }
-      environment = { profileId: profile.id, config: profileToEnvConfig(profile), oneTimeSecrets: [] };
+      environment = {
+        profileId: profile.id,
+        profileUpdatedAt: profile.updatedAt,
+        config: profileToEnvConfig(profile),
+        oneTimeSecrets: [],
+      };
     } else {
       environment = {
         profileId: null,
+        profileUpdatedAt: null,
         config: {
           ...parsed.data.environment.config,
           loginPlan: parsed.data.environment.config.loginPlan ?? null,
         },
         oneTimeSecrets: parsed.data.environment.secrets,
+      };
+    }
+
+    const pendingContract = environment.config.api?.contract;
+    if (environment.config.api && pendingContract?.kind === "same_origin_url") {
+      const frozenContract = await freezeSameOriginOpenApiContract({
+        workspaceId: ctx.workspace.id,
+        scope,
+        actor: ctx.userId,
+        baseUrl: environment.config.api.baseUrl,
+        sourceUrl: pendingContract.url,
+        timeoutMs: environment.config.api.requestTimeoutMs,
+        signal: request.signal,
+      });
+      environment = {
+        ...environment,
+        config: {
+          ...environment.config,
+          api: {
+            ...environment.config.api,
+            contract: { kind: "revision", revisionId: frozenContract.revisionId },
+          },
+        },
       };
     }
 
@@ -107,15 +142,31 @@ export async function POST(request: Request) {
       environment,
       story: parsed.data.story,
       cases: parsed.data.cases,
+      capabilityRevisionIds: parsed.data.capabilityRevisionIds,
     });
     return NextResponse.json({ ...created, analyticsRunId }, { status: 202 });
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
+    if (error instanceof OpenApiContractImportError) {
+      return NextResponse.json({ error: error.clientMessage }, { status: error.status });
+    }
     if (error instanceof RunPlanValidationError) {
       return NextResponse.json(
         { error: "The execution plan is not valid for this environment.", findings: error.findings },
         { status: 422 },
+      );
+    }
+    if (error instanceof RunCapabilityValidationError) {
+      return NextResponse.json(
+        { error: "One or more integration capabilities are unavailable, unapproved, or incompatible with the environment." },
+        { status: 422 },
+      );
+    }
+    if (error instanceof RunEnvironmentSnapshotConflictError) {
+      return NextResponse.json(
+        { error: "The selected environment profile changed after review. Refresh it and approve the run again." },
+        { status: 409 },
       );
     }
     if (error instanceof ActiveRunConflictError) {

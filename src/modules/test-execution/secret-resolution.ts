@@ -51,16 +51,33 @@ export function substituteSecretPlaceholders(
 /**
  * Every representation of a secret value that must never appear in persisted
  * text: the raw value plus the encodings a browser or log line commonly
- * produces. Short values (< 4 chars) are excluded — scrubbing them would
- * mangle unrelated text while providing no real secrecy.
+ * produces. Short values remain present; createScrubber matches them only at
+ * token boundaries to avoid mangling ordinary words.
  */
 export function buildScrubValues(secrets: ReadonlyMap<string, string>): string[] {
+  return buildScrubValuesFromValues(secrets.values());
+}
+
+/**
+ * Build scrub representations for arbitrary sensitive runtime values. Values
+ * are retained by default, while callers may set a stricter minimum.
+ */
+export function buildScrubValuesFromValues(
+  sensitiveValues: Iterable<string>,
+  options: { minimumLength?: number } = {},
+): string[] {
+  const minimumLength = options.minimumLength ?? 1;
   const values = new Set<string>();
-  for (const secret of secrets.values()) {
-    if (secret.length < 4) continue;
+  for (const secret of sensitiveValues) {
+    if (!secret || secret.length < minimumLength) continue;
     values.add(secret);
     values.add(encodeURIComponent(secret));
     values.add(Buffer.from(secret, "utf8").toString("base64"));
+    // JSON.stringify escapes quotes, slashes, control characters, and newlines.
+    // Store the inner representation so replacing it leaves surrounding JSON
+    // string quotes intact and the persisted document remains parseable.
+    const jsonEncoded = JSON.stringify(secret);
+    if (jsonEncoded) values.add(jsonEncoded.slice(1, -1));
   }
   return [...values];
 }

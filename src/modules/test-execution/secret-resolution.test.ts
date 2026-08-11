@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildScrubValues,
+  buildScrubValuesFromValues,
   extractSecretReferences,
   isValidSecretName,
   substituteSecretPlaceholders,
@@ -54,7 +55,17 @@ describe("buildScrubValues", () => {
     expect(values).toContain(Buffer.from("p@ss word", "utf8").toString("base64"));
   });
 
-  it("skips values too short to scrub safely", () => {
-    expect(buildScrubValues(new Map([["K", "abc"]]))).toEqual([]);
+  it("retains short values for delimiter-aware scrubbing", () => {
+    expect(buildScrubValues(new Map([["K", "pw"]]))).toContain("pw");
+  });
+
+  it("includes the inner JSON-escaped representation without breaking JSON quoting", () => {
+    const secret = "line one\nquoted \"value\"";
+    const escaped = JSON.stringify(secret).slice(1, -1);
+    expect(buildScrubValues(new Map([["K", secret]]))).toContain(escaped);
+  });
+
+  it("can include short values that were dynamically classified as sensitive", () => {
+    expect(buildScrubValuesFromValues(["pin"], { minimumLength: 1 })).toContain("pin");
   });
 });

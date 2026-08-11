@@ -20,7 +20,7 @@ const draft = {
       azureTestCaseId: null,
       plan: {
         schemaVersion: "v2-natural" as const,
-        steps: [{ instruction: "Open the dashboard", expectedResult: "" }],
+        steps: [{ instruction: "Open the dashboard", expectedResult: "", layerHint: "auto" as const }],
       },
     },
   ],
@@ -35,6 +35,19 @@ describe("draft storage", () => {
     expect(loadDraft("proj-b")).toBeNull();
     clearDraft("proj-a");
     expect(loadDraft("proj-a")).toBeNull();
+  });
+
+  it("normalizes pre-layer-hint v2 drafts to Auto", () => {
+    window.localStorage.setItem(
+      "itestflow.testExecution.draft.proj-a",
+      JSON.stringify({
+        ...draft,
+        version: 2,
+        savedAt: new Date().toISOString(),
+        cases: [{ ...draft.cases[0], plan: { ...draft.cases[0].plan, steps: [{ instruction: "Legacy", expectedResult: "" }] } }],
+      }),
+    );
+    expect(loadDraft("proj-a")?.cases[0].plan.steps[0].layerHint).toBe("auto");
   });
 
   it("rejects corrupt, versionless, or old-version payloads instead of crashing", () => {

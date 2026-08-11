@@ -40,6 +40,31 @@ describe("validateAgentDecision — actions", () => {
     });
   });
 
+  it("decodes the compact argumentsJson envelope used by multi-layer prompts", () => {
+    expect(validateAgentDecision({
+      decision: "act",
+      actionType: "fill",
+      argumentsJson: JSON.stringify({
+        ref: "e2",
+        elementDescription: "Password",
+        value: "{{secret:PASSWORD}}",
+      }),
+    }, context)).toEqual({
+      kind: "action",
+      action: {
+        type: "fill",
+        ref: "e2",
+        elementDescription: "Password",
+        value: "{{secret:PASSWORD}}",
+      },
+    });
+    expect(validateAgentDecision({
+      decision: "act",
+      actionType: "click",
+      argumentsJson: "not-json",
+    }, context).kind).toBe("invalid");
+  });
+
   it("rejects hallucinated refs with actionable feedback", () => {
     const result = validateAgentDecision(
       { decision: "act", actionType: "click", ref: "e99", elementDescription: "x" },

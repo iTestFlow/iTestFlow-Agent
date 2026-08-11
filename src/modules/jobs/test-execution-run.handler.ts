@@ -11,6 +11,20 @@ import {
   runAgenticStep,
   type AgenticStepResult,
 } from "@/modules/test-execution/agentic-step-executor";
+import {
+  runMultiLayerStep,
+  type MultiLayerStepResult,
+} from "@/modules/test-execution/multi-layer-step-executor";
+import { CaseCaptureStore } from "@/modules/test-execution/case-capture-store";
+import { extractExplicitApiReadPaths } from "@/modules/test-execution/explicit-api-paths";
+import type { IntegrationCapability } from "@/modules/test-execution/multi-layer-action";
+import type { MultiLayerRuntime } from "@/modules/test-execution/multi-layer-runtime.port";
+import { buildOpenApiIntegrationCapabilities } from "@/modules/test-execution/openapi-contract-normalizer";
+import {
+  TestExecutionLayerRuntime,
+  type TestExecutionLayerRuntimeOptions,
+} from "@/modules/test-execution/test-execution-layer-runtime";
+import { assertTestExecutionEgressAllowed } from "@/modules/test-execution/egress-policy.service";
 import { buildScrubValues } from "@/modules/test-execution/secret-resolution";
 import type { ExecutionOutcome } from "@/modules/test-execution/run-state";
 import { putExecutionArtifact } from "@/modules/test-execution/artifact-storage.service";
@@ -23,12 +37,15 @@ import {
   finalizeRunForCancellation,
   finalizeRunForInfrastructureError,
   finalizeStep,
+  finalizeActionRun,
   insertArtifactRecord,
   listCaseOutcomes,
   loadRunForExecution,
+  markInterruptedActionsUncertain,
   markCaseRunning,
   markRunRunning,
   markStepRunning,
+  startActionRun,
   type RunExecutionBundle,
 } from "@/modules/test-execution/run-persistence.service";
 import { PlaywrightMcpExecutor } from "@/modules/integrations/browser-automation/playwright-mcp-executor";
@@ -77,6 +94,18 @@ function createExecutor(): BrowserExecutor {
   return executorFactoryOverride ? executorFactoryOverride() : new PlaywrightMcpExecutor();
 }
 
+type LayerRuntimeFactory = (options: TestExecutionLayerRuntimeOptions) => MultiLayerRuntime;
+let layerRuntimeFactoryOverride: LayerRuntimeFactory | null = null;
+
+/** Test seam for API/DB-only handler tests; production always uses the guarded runtime. */
+export function setTestExecutionLayerRuntimeFactoryForTests(factory: LayerRuntimeFactory | null): void {
+  layerRuntimeFactoryOverride = factory;
+}
+
+function createLayerRuntime(options: TestExecutionLayerRuntimeOptions): MultiLayerRuntime {
+  return layerRuntimeFactoryOverride ? layerRuntimeFactoryOverride(options) : new TestExecutionLayerRuntime(options);
+}
+
 type ProviderFactory = (workspaceId: string, userId: string) => Promise<LLMProvider>;
 let providerFactoryOverride: ProviderFactory | null = null;
 
@@ -109,6 +138,7 @@ export async function runTestExecutionRunJob(
 
   const bundle = await loadRunForExecution(runId);
   if (!bundle) return { outcome: "missing_run", runId };
+  const reclaimingRun = bundle.run.status === "running";
   if (bundle.run.status !== "queued" && !(bundle.run.status === "running" && bundle.run.jobId === job.id)) {
     return { outcome: "already_finalized", runId, runStatus: bundle.run.status };
   }
@@ -118,28 +148,40 @@ export async function runTestExecutionRunJob(
   // The bundle was loaded before the claim; all fenced writes key off this.
   bundle.run.jobId = job.id;
 
-  const scrub = createScrubber(buildScrubValues(bundle.secrets));
   const env = bundle.run.envConfig;
-  const executor = createExecutor();
+  const allSecretValues = new Map<string, string>([
+    ...bundle.secrets,
+    ...bundle.connectionSecrets,
+  ]);
+  const scrub = createScrubber(buildScrubValues(allSecretValues));
+  const executor = env.initialUrl ? createExecutor() : null;
+  let layerRuntime: MultiLayerRuntime | null = null;
   const evidence = new EvidenceBudget(bundle, job.id, context.workerId);
   const llmCallBudget = { remaining: MAX_AGENT_LLM_CALLS_PER_RUN };
 
-  // Reclaim after a shutdown requeue: a case left 'running' was interrupted
-  // mid-browser-session; it cannot be resumed deterministically.
+  // Reclaim after a shutdown requeue. Any external action whose terminal
+  // observation was not durably recorded is uncertain and must never replay.
+  await markInterruptedActionsUncertain(runId, job.id);
   for (const caseRun of bundle.cases.filter((entry) => entry.status === "running")) {
     await finalizeRemainingSteps(runId, job.id, caseRun.id, "infrastructure_error");
     await finalizeCase(runId, job.id, caseRun.id, "infrastructure_error", "Interrupted by a worker restart.");
   }
 
   try {
+    // Login actions do not have case/step rows to anchor an action-ledger
+    // record. After a worker loss, never replay a possibly effectful login
+    // submit/OTP action; terminate conservatively instead.
+    if (reclaimingRun && env.loginPlan) {
+      throw new Error("A worker restart interrupted a run with a login prerequisite; the login sequence was not replayed.");
+    }
     const provider = await loadInitiatingUserProvider(
       bundle.run.workspaceId,
       job.createdByUserId ?? "",
     );
 
-    // Login session reuse (optimize-login): eligible when the run came from a
-    // saved profile with a login plan, session mode, and a logged-in landmark.
+    // Login session reuse applies only to environments with a UI target.
     const sessionEligible =
+      Boolean(executor) &&
       Boolean(bundle.run.environmentProfileId) &&
       env.loginMode === "session" &&
       Boolean(env.loginPlan) &&
@@ -153,22 +195,52 @@ export async function runTestExecutionRunJob(
       injectedState = stored?.stateJson;
     }
 
-    await executor.start({
-      runId,
-      initialUrl: env.initialUrl,
-      allowedOrigin: env.allowedOrigin,
-      viewport: { width: env.viewportWidth, height: env.viewportHeight },
-      headless: env.headless,
-      defaultTimeoutMs: env.defaultTimeoutMs,
-      navigationTimeoutMs: env.navigationTimeoutMs,
-      secrets: bundle.secrets,
-      storageStateJson: injectedState,
+    if (executor) {
+      await executor.start({
+        runId,
+        initialUrl: env.initialUrl,
+        allowedOrigin: env.allowedOrigin,
+        viewport: { width: env.viewportWidth, height: env.viewportHeight },
+        headless: env.headless,
+        defaultTimeoutMs: env.defaultTimeoutMs,
+        navigationTimeoutMs: env.navigationTimeoutMs,
+        secrets: bundle.secrets,
+        storageStateJson: injectedState,
+        signal: context.signal,
+      });
+    }
+
+    layerRuntime = createLayerRuntime({
+      workspaceId: bundle.run.workspaceId,
+      env,
+      browser: executor,
+      connectionSecrets: bundle.connectionSecrets,
       signal: context.signal,
+      assertApiTarget: async (url, kind) => {
+        await assertTestExecutionEgressAllowed({
+          workspaceId: bundle.run.workspaceId,
+          targetKind: kind,
+          protocol: url.protocol === "https:" ? "https" : "http",
+          host: url.hostname,
+          port: url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80,
+        });
+      },
+      assertDatabaseTarget: async ({ host, port }) => {
+        await assertTestExecutionEgressAllowed({
+          workspaceId: bundle.run.workspaceId,
+          targetKind: "database",
+          protocol: "tcp",
+          host,
+          port,
+        });
+      },
     });
 
     const agentContext = {
       provider,
       executor,
+      runtime: layerRuntime,
+      capabilities: buildCapabilities(bundle),
       secrets: bundle.secrets,
       secretNames: [...bundle.secrets.keys()],
       secretTitles: bundle.secretTitles,
@@ -188,6 +260,7 @@ export async function runTestExecutionRunJob(
     };
 
     if (env.loginPlan) {
+      if (!executor) throw new Error("The environment has a login plan but no UI target.");
       let loginNeeded = true;
       // Landmark verification: deterministic, zero LLM calls — the injected
       // session counts only if the authenticated-only text is on the page.
@@ -287,13 +360,16 @@ export async function runTestExecutionRunJob(
     });
     throw error;
   } finally {
-    await executor.dispose().catch(() => undefined);
+    await layerRuntime?.dispose().catch(() => undefined);
+    await executor?.dispose().catch(() => undefined);
   }
 }
 
 type AgentContext = {
   provider: LLMProvider;
-  executor: BrowserExecutor;
+  executor: BrowserExecutor | null;
+  runtime: MultiLayerRuntime;
+  capabilities: IntegrationCapability[];
   secrets: ReadonlyMap<string, string>;
   secretNames: string[];
   secretTitles: ReadonlyMap<string, string>;
@@ -331,6 +407,24 @@ function buildUserRoster(
   });
 }
 
+/** The run contains immutable, approved revisions pinned at approval time. */
+function buildCapabilities(bundle: RunExecutionBundle): IntegrationCapability[] {
+  const approvedOperations = bundle.capabilities.map((capability) => ({
+    id: capability.id,
+    name: capability.displayName,
+    layer: capability.layer,
+    safetyClass: capability.safetyClass,
+    approved: true,
+    driver: capability.databaseDriver ?? undefined,
+    parameterSchema: capability.parameterSchema,
+    definition: capability.definition,
+  }));
+  const contractReads = bundle.apiContracts.flatMap((contract) =>
+    buildOpenApiIntegrationCapabilities(contract.id, contract.normalizedSpec),
+  );
+  return [...approvedOperations, ...contractReads];
+}
+
 function sessionAudit(
   bundle: RunExecutionBundle,
   runId: string,
@@ -358,6 +452,7 @@ async function runStep(
   stepIndex: number,
   priorStepsSummary: readonly string[],
 ): Promise<AgenticStepResult> {
+  if (!agent.executor) throw new Error("UI is not configured for the environment login plan.");
   const step = steps[stepIndex];
   return runAgenticStep({
     provider: agent.provider,
@@ -414,6 +509,7 @@ async function executeCase(
   const stepRows = bundle.steps.get(caseRun.id) ?? [];
   const stepOutcomes: ExecutionOutcome[] = [];
   const priorStepsSummary: string[] = [];
+  const captures = new CaseCaptureStore();
 
   for (const [stepIndex, planStep] of parsed.data.steps.entries()) {
     if (agent.signal.aborted) throw new Error("Execution aborted.");
@@ -428,13 +524,58 @@ async function executeCase(
       stepTotal: parsed.data.steps.length,
     });
 
-    const result = await runStep(agent, caseRun.title, parsed.data.steps, stepIndex, priorStepsSummary);
+    const result: MultiLayerStepResult = await runMultiLayerStep({
+      provider: agent.provider,
+      runtime: agent.runtime,
+      caseTitle: caseRun.title,
+      stepIndex,
+      stepTotal: parsed.data.steps.length,
+      instruction: planStep.instruction,
+      expectedResult: planStep.expectedResult,
+      layerHint: planStep.layerHint,
+      priorStepsSummary,
+      executionNotes: agent.executionNotes,
+      secretNames: agent.secretNames,
+      secretTitles: agent.secretTitles,
+      testUsers: agent.testUsers,
+      secrets: agent.secrets,
+      allowedOrigin: agent.allowedOrigin || undefined,
+      allowedApiReadPaths: extractExplicitApiReadPaths(
+        planStep.instruction,
+        planStep.expectedResult,
+        agent.executionNotes,
+      ),
+      capabilities: agent.capabilities,
+      apiMutationsEnabled: env.api?.mutationMode === "approved_catalog",
+      databaseDmlEnabled: env.database?.accessMode === "cataloged_dml",
+      databaseDriver: env.database?.driver,
+      captures,
+      persist: {
+        start: (input) => startActionRun({
+          ...input,
+          runId,
+          jobId,
+          workspaceId: bundle.run.workspaceId,
+          projectId: bundle.run.projectId,
+          azureProjectId: bundle.run.azureProjectId,
+          caseRunId: caseRun.id,
+          stepRunId: row.id,
+        }),
+        finish: (input) => finalizeActionRun({ runId, jobId, ...input }),
+      },
+      scrub: agent.scrub,
+      signal: agent.signal,
+      llmCallBudget: agent.llmCallBudget,
+      metadata: agent.metadata,
+    });
     const observation = scrubDeep(
       {
         actionsTaken: result.actionsTaken,
         actualResult: result.actualResult,
         reason: result.reason,
         iterations: result.iterations,
+        observedLayers: result.observedLayers,
+        captures: captures.persistable(),
         expectedResult: planStep.expectedResult,
       },
       agent.scrub,
@@ -447,18 +588,18 @@ async function executeCase(
     stepOutcomes.push(result.outcome);
 
     if (!stepOutcomeContinuesCase(result.outcome)) {
-      await evidence.captureFailure(agent.executor, caseRun.id, row.id);
+      if (agent.executor) await evidence.captureFailure(agent.executor, caseRun.id, row.id);
       await finalizeRemainingSteps(runId, jobId, caseRun.id, "not_run");
       break;
     }
     priorStepsSummary.push(`${stepIndex + 1}. ${planStep.instruction} — passed`);
-    if (env.evidenceLevel === "all_steps") {
+    if (env.evidenceLevel === "all_steps" && agent.executor) {
       await evidence.captureScreenshot(agent.executor, caseRun.id, row.id, `step-${stepIndex + 1}.png`);
     }
   }
 
   const caseOutcome = rollUpCaseOutcome(stepOutcomes);
-  if (caseOutcome === "passed" && env.evidenceLevel !== "minimal") {
+  if (caseOutcome === "passed" && env.evidenceLevel !== "minimal" && agent.executor) {
     await evidence.captureScreenshot(agent.executor, caseRun.id, null, "case-final.png");
   }
   await finalizeCase(runId, jobId, caseRun.id, caseOutcome);

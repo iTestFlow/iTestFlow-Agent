@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { REDACTION_MARKER, createScrubber, scrubDeep } from "./output-scrubber";
+import { REDACTION_MARKER, addScrubValues, createScrubber, scrubDeep } from "./output-scrubber";
 
 describe("createScrubber", () => {
   it("replaces every occurrence of every scrub value", () => {
@@ -16,9 +16,20 @@ describe("createScrubber", () => {
     expect(scrub("x password123 y")).not.toContain("123");
   });
 
-  it("ignores short values and is identity with no values", () => {
-    expect(createScrubber(["abc"])("abc abc")).toBe("abc abc");
+  it("redacts short delimited tokens without mangling ordinary words", () => {
+    const scrub = createScrubber(["pw"]);
+    expect(scrub("password=pw pw/pw")).toBe(
+      `password=${REDACTION_MARKER} ${REDACTION_MARKER}/${REDACTION_MARKER}`,
+    );
+    expect(scrub("pwrite upward power")).toBe("pwrite upward power");
     expect(createScrubber([])("anything")).toBe("anything");
+  });
+
+  it("can learn sensitive runtime values, including short captures", () => {
+    const scrub = createScrubber([]);
+    const extended = addScrubValues(scrub, ["pin", "runtime-secret"]);
+    expect(extended).toBe(scrub);
+    expect(extended("pin and runtime-secret")).toBe(`${REDACTION_MARKER} and ${REDACTION_MARKER}`);
   });
 });
 

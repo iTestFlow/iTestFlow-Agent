@@ -13,8 +13,16 @@ import {
 } from "@/modules/shared/infrastructure/database/db";
 
 import type {
+  ApiEnvironmentConfig,
+  DatabaseEnvironmentConfig,
   EnvironmentConfigInput,
   SecretInput,
+  SecretPurpose,
+} from "./schemas/test-execution.schemas";
+import {
+  ApiEnvironmentConfigSchema,
+  DatabaseEnvironmentConfigSchema,
+  EnvironmentConfigInputSchema,
 } from "./schemas/test-execution.schemas";
 
 /**
@@ -40,8 +48,10 @@ export type EnvironmentProfileView = {
   loggedInText: string;
   executionNotes: string;
   users: { handle: string; username: string; passwordSecretName: string | null; notes: string }[];
+  api: ApiEnvironmentConfig | null;
+  database: DatabaseEnvironmentConfig | null;
   lifecycleStatus: "active" | "archived";
-  secrets: { secretName: string; title: string; maskedPreview: string }[];
+  secrets: { secretName: string; title: string; maskedPreview: string; purpose: SecretPurpose }[];
   /** When a reusable login session was captured for this profile, if any. */
   sessionCapturedAt: string | null;
   updatedAt: string;
@@ -50,8 +60,8 @@ export type EnvironmentProfileView = {
 type ProfileRow = {
   id: string;
   name: string;
-  initial_url: string;
-  allowed_origin: string;
+  initial_url: string | null;
+  allowed_origin: string | null;
   viewport_width: number;
   viewport_height: number;
   headless: boolean;
@@ -63,6 +73,8 @@ type ProfileRow = {
   logged_in_text: string | null;
   execution_notes: string | null;
   users_json: unknown;
+  api_config_json: unknown;
+  db_config_json: unknown;
   lifecycle_status: "active" | "archived";
   session_captured_at: string | null;
   updated_at: string;
@@ -70,7 +82,8 @@ type ProfileRow = {
 
 const PROFILE_COLUMNS = `p.id, p.name, p.initial_url, p.allowed_origin, p.viewport_width, p.viewport_height,
   p.headless, p.default_timeout_ms, p.navigation_timeout_ms, p.evidence_level, p.login_plan_json,
-  p.login_mode, p.logged_in_text, p.execution_notes, p.users_json, p.lifecycle_status, p.updated_at,
+  p.login_mode, p.logged_in_text, p.execution_notes, p.users_json, p.api_config_json, p.db_config_json,
+  p.lifecycle_status, p.updated_at,
   s.captured_at AS session_captured_at`;
 
 const PROFILE_FROM = `test_environment_profiles p
@@ -82,15 +95,26 @@ function scopeParams(scope: ProjectScope) {
 
 async function loadSecretViews(profileIds: string[]): Promise<Map<string, EnvironmentProfileView["secrets"]>> {
   if (profileIds.length === 0) return new Map();
-  const rows = await sqlAll<{ profile_id: string; secret_name: string; title: string; masked_preview: string }>(
-    `SELECT profile_id, secret_name, title, masked_preview
+  const rows = await sqlAll<{
+    profile_id: string;
+    secret_name: string;
+    title: string;
+    masked_preview: string;
+    purpose: SecretPurpose;
+  }>(
+    `SELECT profile_id, secret_name, title, masked_preview, purpose
      FROM test_environment_secrets WHERE profile_id = ANY(@profileIds) ORDER BY secret_name`,
     { profileIds },
   );
   const bySecret = new Map<string, EnvironmentProfileView["secrets"]>();
   for (const row of rows) {
     const list = bySecret.get(row.profile_id) ?? [];
-    list.push({ secretName: row.secret_name, title: row.title, maskedPreview: row.masked_preview });
+    list.push({
+      secretName: row.secret_name,
+      title: row.title,
+      maskedPreview: row.masked_preview,
+      purpose: row.purpose,
+    });
     bySecret.set(row.profile_id, list);
   }
   return bySecret;
@@ -100,8 +124,8 @@ function toView(row: ProfileRow, secrets: EnvironmentProfileView["secrets"]): En
   return {
     id: row.id,
     name: row.name,
-    initialUrl: row.initial_url,
-    allowedOrigin: row.allowed_origin,
+    initialUrl: row.initial_url ?? "",
+    allowedOrigin: row.allowed_origin ?? "",
     viewportWidth: row.viewport_width,
     viewportHeight: row.viewport_height,
     headless: row.headless,
@@ -120,6 +144,8 @@ function toView(row: ProfileRow, secrets: EnvironmentProfileView["secrets"]): En
           notes: String(user.notes ?? ""),
         }))
       : [],
+    api: parseStoredConfig(row.api_config_json, "api"),
+    database: parseStoredConfig(row.db_config_json, "database"),
     lifecycleStatus: row.lifecycle_status,
     secrets,
     sessionCapturedAt: row.session_captured_at,
@@ -174,6 +200,13 @@ export class EnvironmentProfileSecretLimitError extends Error {
   }
 }
 
+export class EnvironmentProfileUpdateConflictError extends Error {
+  constructor() {
+    super("The environment profile changed while it was being updated. Refresh it and try again.");
+    this.name = "EnvironmentProfileUpdateConflictError";
+  }
+}
+
 export async function createEnvironmentProfile(input: {
   workspaceId: string;
   scope: ProjectScope;
@@ -181,6 +214,7 @@ export async function createEnvironmentProfile(input: {
   config: EnvironmentConfigInput;
   secrets: SecretInput[];
 }): Promise<EnvironmentProfileView> {
+  const config = EnvironmentConfigInputSchema.parse(input.config);
   const id = createId("tenv");
   const now = nowIso();
   try {
@@ -190,31 +224,35 @@ export async function createEnvironmentProfile(input: {
            id, workspace_id, project_id, azure_project_id, name, initial_url, allowed_origin,
            viewport_width, viewport_height, headless, default_timeout_ms, navigation_timeout_ms,
            evidence_level, login_plan_json, login_mode, logged_in_text, execution_notes, users_json,
+           api_config_json, db_config_json,
            created_by, created_at, updated_at
          ) VALUES (
            @id, @workspaceId, @projectId, @azureProjectId, @name, @initialUrl, @allowedOrigin,
            @viewportWidth, @viewportHeight, @headless, @defaultTimeoutMs, @navigationTimeoutMs,
            @evidenceLevel, @loginPlanJson::jsonb, @loginMode, @loggedInText, @executionNotes, @usersJson::jsonb,
+           @apiConfigJson::jsonb, @dbConfigJson::jsonb,
            @actor, @now, @now
          )`,
         {
           id,
           workspaceId: input.workspaceId,
           ...scopeParams(input.scope),
-          name: input.config.name,
-          initialUrl: input.config.initialUrl,
-          allowedOrigin: input.config.allowedOrigin,
-          viewportWidth: input.config.viewportWidth,
-          viewportHeight: input.config.viewportHeight,
-          headless: input.config.headless,
-          defaultTimeoutMs: input.config.defaultTimeoutMs,
-          navigationTimeoutMs: input.config.navigationTimeoutMs,
-          evidenceLevel: input.config.evidenceLevel,
-          loginPlanJson: input.config.loginPlan === null ? null : JSON.stringify(input.config.loginPlan),
-          loginMode: input.config.loginMode,
-          loggedInText: input.config.loggedInText || null,
-          executionNotes: input.config.executionNotes || null,
-          usersJson: JSON.stringify(input.config.users),
+          name: config.name,
+          initialUrl: config.initialUrl || null,
+          allowedOrigin: config.allowedOrigin || null,
+          viewportWidth: config.viewportWidth,
+          viewportHeight: config.viewportHeight,
+          headless: config.headless,
+          defaultTimeoutMs: config.defaultTimeoutMs,
+          navigationTimeoutMs: config.navigationTimeoutMs,
+          evidenceLevel: config.evidenceLevel,
+          loginPlanJson: config.loginPlan === null ? null : JSON.stringify(config.loginPlan),
+          loginMode: config.loginMode,
+          loggedInText: config.loggedInText || null,
+          executionNotes: config.executionNotes || null,
+          usersJson: JSON.stringify(config.users),
+          apiConfigJson: config.api === null ? null : JSON.stringify(config.api),
+          dbConfigJson: config.database === null ? null : JSON.stringify(config.database),
           actor: input.actor,
           now,
         },
@@ -242,7 +280,7 @@ export async function createEnvironmentProfile(input: {
     action: "test_execution.environment_created",
     status: "Success",
     actor: input.actor,
-    message: `Environment profile "${input.config.name}" created.`,
+    message: `Environment profile "${config.name}" created.`,
   });
   const view = await getEnvironmentProfile({ ...input, environmentProfileId: id });
   if (!view) throw new Error("Environment profile vanished after creation.");
@@ -260,7 +298,6 @@ export async function updateEnvironmentProfile(input: {
 }): Promise<EnvironmentProfileView | null> {
   const existing = await getEnvironmentProfile(input);
   if (!existing) return null;
-  const now = nowIso();
 
   // The create path caps a profile at MAX_PROFILE_SECRETS via its request
   // schema; the update schema only caps per-request, so enforce the
@@ -276,9 +313,34 @@ export async function updateEnvironmentProfile(input: {
   }
 
   try {
+    let profileStillExists = true;
     await withTransaction(async (client) => {
+      const locked = await sqlGet<{ updated_at: string }>(
+        `SELECT updated_at FROM test_environment_profiles
+         WHERE id = @id AND workspace_id = @workspaceId
+           AND project_id = @projectId AND azure_project_id = @azureProjectId
+         FOR UPDATE`,
+        {
+          id: input.environmentProfileId,
+          workspaceId: input.workspaceId,
+          ...scopeParams(input.scope),
+        },
+        client,
+      );
+      if (!locked) {
+        profileStillExists = false;
+        return;
+      }
+      if (locked.updated_at !== existing.updatedAt) {
+        throw new EnvironmentProfileUpdateConflictError();
+      }
+      const updatedAt = nextProfileUpdatedAt(locked.updated_at);
+
       if (input.config && Object.keys(input.config).length > 0) {
-        const merged = { ...existing, ...renameConfigKeys(input.config) };
+        const merged = EnvironmentConfigInputSchema.parse({
+          ...existing,
+          ...renameConfigKeys(input.config),
+        });
         await sqlRun(
           `UPDATE test_environment_profiles SET
              name = @name, initial_url = @initialUrl, allowed_origin = @allowedOrigin,
@@ -286,7 +348,8 @@ export async function updateEnvironmentProfile(input: {
              default_timeout_ms = @defaultTimeoutMs, navigation_timeout_ms = @navigationTimeoutMs,
              evidence_level = @evidenceLevel, login_plan_json = @loginPlanJson::jsonb,
              login_mode = @loginMode, logged_in_text = @loggedInText, execution_notes = @executionNotes,
-             users_json = @usersJson::jsonb,
+             users_json = @usersJson::jsonb, api_config_json = @apiConfigJson::jsonb,
+             db_config_json = @dbConfigJson::jsonb,
              updated_at = @now
            WHERE id = @id AND workspace_id = @workspaceId AND project_id = @projectId AND azure_project_id = @azureProjectId`,
           {
@@ -294,8 +357,8 @@ export async function updateEnvironmentProfile(input: {
             workspaceId: input.workspaceId,
             ...scopeParams(input.scope),
             name: merged.name,
-            initialUrl: merged.initialUrl,
-            allowedOrigin: merged.allowedOrigin,
+            initialUrl: merged.initialUrl || null,
+            allowedOrigin: merged.allowedOrigin || null,
             viewportWidth: merged.viewportWidth,
             viewportHeight: merged.viewportHeight,
             headless: merged.headless,
@@ -309,7 +372,24 @@ export async function updateEnvironmentProfile(input: {
             loggedInText: (merged.loggedInText ?? existing.loggedInText) || null,
             executionNotes: (merged.executionNotes ?? existing.executionNotes) || null,
             usersJson: JSON.stringify(merged.users ?? existing.users),
-            now,
+            apiConfigJson: merged.api === null ? null : JSON.stringify(merged.api),
+            dbConfigJson: merged.database === null ? null : JSON.stringify(merged.database),
+            now: updatedAt,
+          },
+          client,
+        );
+      } else if (input.upsertSecrets.length > 0 || input.removeSecretNames.length > 0) {
+        // Secret rows and their reviewed profile version move together. Run
+        // creation holds a share lock on this row while copying secrets.
+        await sqlRun(
+          `UPDATE test_environment_profiles SET updated_at = @updatedAt
+           WHERE id = @id AND workspace_id = @workspaceId
+             AND project_id = @projectId AND azure_project_id = @azureProjectId`,
+          {
+            id: input.environmentProfileId,
+            workspaceId: input.workspaceId,
+            ...scopeParams(input.scope),
+            updatedAt,
           },
           client,
         );
@@ -337,6 +417,7 @@ export async function updateEnvironmentProfile(input: {
         );
       }
     });
+    if (!profileStillExists) return null;
   } catch (error) {
     if (isUniqueViolation(error, "uq_test_environment_profiles_name")) {
       throw new EnvironmentProfileNameConflictError();
@@ -358,6 +439,16 @@ export async function updateEnvironmentProfile(input: {
     message: `Environment profile updated (${input.upsertSecrets.length} secret(s) upserted, ${input.removeSecretNames.length} removed).`,
   });
   return getEnvironmentProfile(input);
+}
+
+function nextProfileUpdatedAt(previous: string): string {
+  const candidate = nowIso();
+  const previousMs = Date.parse(previous);
+  const candidateMs = Date.parse(candidate);
+  if (Number.isFinite(previousMs) && Number.isFinite(candidateMs) && candidateMs <= previousMs) {
+    return new Date(previousMs + 1).toISOString();
+  }
+  return candidate;
 }
 
 export async function archiveEnvironmentProfile(input: {
@@ -409,11 +500,11 @@ async function insertProfileSecret(
   await sqlRun(
     `INSERT INTO test_environment_secrets (
        id, profile_id, workspace_id, project_id, azure_project_id, secret_name, title,
-       encrypted_secret, encryption_iv, encryption_tag, key_version, masked_preview,
+       purpose, encrypted_secret, encryption_iv, encryption_tag, key_version, masked_preview,
        created_by, created_at, updated_at
      ) VALUES (
        @id, @profileId, @workspaceId, @projectId, @azureProjectId, @secretName, @title,
-       @ciphertext, @iv, @tag, @keyVersion, @maskedPreview, @actor, @now, @now
+       @purpose, @ciphertext, @iv, @tag, @keyVersion, @maskedPreview, @actor, @now, @now
      )`,
     {
       id: createId("tsec"),
@@ -423,6 +514,7 @@ async function insertProfileSecret(
       azureProjectId: scope.azureProjectId,
       secretName: secret.secretName,
       title: secret.title,
+      purpose: secret.purpose,
       ciphertext: encrypted.ciphertext,
       iv: encrypted.iv,
       tag: encrypted.tag,
@@ -439,6 +531,19 @@ function renameConfigKeys(config: Partial<EnvironmentConfigInput>): Partial<Envi
   loginPlan?: unknown;
 } {
   return config as Partial<EnvironmentProfileView> & { loginPlan?: unknown };
+}
+
+function parseStoredConfig<T extends "api" | "database">(
+  value: unknown,
+  kind: T,
+): T extends "api" ? ApiEnvironmentConfig | null : DatabaseEnvironmentConfig | null {
+  if (value === null || value === undefined) return null as never;
+  const schema = kind === "api" ? ApiEnvironmentConfigSchema : DatabaseEnvironmentConfigSchema;
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`Environment profile has an invalid stored ${kind} configuration.`);
+  }
+  return parsed.data as never;
 }
 
 function isUniqueViolation(error: unknown, constraint: string): boolean {

@@ -12,6 +12,12 @@ export type LLMRequestLogMetadata = {
   azureProjectName?: string;
   azureOrganizationUrl?: string;
   targetWorkItemId?: string;
+  /**
+   * Some workflows send live application data to the model. Those callers can
+   * retain request timing/model metadata without duplicating the prompt or
+   * provider payload in the audit database.
+   */
+  logRetention?: "full" | "metadata_only";
 };
 
 export type LLMRequestLogInput = LLMRequestLogMetadata & {
@@ -33,6 +39,7 @@ const SENSITIVE_KEY_PATTERN = /(api[_-]?key|authorization|token|pat|password|sec
 
 export function writeLLMRequestLog(input: LLMRequestLogInput) {
   const now = nowIso();
+  const retained = applyLLMLogRetention(input);
   const params = {
     id: createId("llmreq"),
     projectId: input.projectId ?? null,
@@ -46,14 +53,14 @@ export function writeLLMRequestLog(input: LLMRequestLogInput) {
     schemaName: input.schemaName,
     promptName: input.promptName ?? null,
     promptVersion: input.promptVersion ?? null,
-    systemPrompt: input.systemPrompt,
-    userPrompt: input.userPrompt,
-    requestBodyJson: stringifyForLog(input.requestBody),
-    responseBodyJson: stringifyForLog(input.responseBody),
-    rawOutput: input.rawOutput ?? null,
-    validatedOutputJson: stringifyForLog(input.validatedOutput),
+    systemPrompt: retained.systemPrompt,
+    userPrompt: retained.userPrompt,
+    requestBodyJson: stringifyForLog(retained.requestBody),
+    responseBodyJson: stringifyForLog(retained.responseBody),
+    rawOutput: retained.rawOutput ?? null,
+    validatedOutputJson: stringifyForLog(retained.validatedOutput),
     status: input.status,
-    errorDetails: input.errorDetails ?? null,
+    errorDetails: retained.errorDetails ?? null,
     durationMs: input.durationMs,
     createdAt: now,
     updatedAt: now,
@@ -77,6 +84,43 @@ export function writeLLMRequestLog(input: LLMRequestLogInput) {
       params,
     ),
   );
+}
+
+const METADATA_ONLY_MARKER = "[REDACTED: metadata-only retention]";
+
+export function applyLLMLogRetention(input: Pick<
+  LLMRequestLogInput,
+  | "logRetention"
+  | "systemPrompt"
+  | "userPrompt"
+  | "requestBody"
+  | "responseBody"
+  | "rawOutput"
+  | "validatedOutput"
+  | "errorDetails"
+>) {
+  if (input.logRetention !== "metadata_only") {
+    return {
+      systemPrompt: input.systemPrompt,
+      userPrompt: input.userPrompt,
+      requestBody: input.requestBody,
+      responseBody: input.responseBody,
+      rawOutput: input.rawOutput,
+      validatedOutput: input.validatedOutput,
+      errorDetails: input.errorDetails,
+    };
+  }
+  return {
+    systemPrompt: METADATA_ONLY_MARKER,
+    userPrompt: METADATA_ONLY_MARKER,
+    requestBody: undefined,
+    responseBody: undefined,
+    rawOutput: undefined,
+    validatedOutput: undefined,
+    // Provider errors can echo request fragments or model output. Status and
+    // duration remain sufficient metadata for this retention mode.
+    errorDetails: undefined,
+  };
 }
 
 export function sanitizeLLMLogPayload(value: unknown): unknown {

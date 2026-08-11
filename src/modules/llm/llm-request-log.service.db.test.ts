@@ -144,4 +144,43 @@ describeDb("LLM request log (DB-backed)", () => {
     );
     expect(JSON.parse(row!.request_body_json)).toEqual({ unserializable: true });
   });
+
+  it("does not persist content-bearing error details in metadata-only mode", async () => {
+    const schemaName = uniqueTestId("schema_metadata_only");
+    schemaNames.push(schemaName);
+
+    writeLLMRequestLog({
+      provider: "openai",
+      model: "gpt-test",
+      schemaName,
+      logRetention: "metadata_only",
+      systemPrompt: "live system content",
+      userPrompt: "live user content",
+      requestBody: { input: "live request" },
+      responseBody: { output: "live response" },
+      rawOutput: "live raw output",
+      validatedOutput: { output: "live validated output" },
+      status: "Failed",
+      errorDetails: "Provider echoed a live response and secret value.",
+      durationMs: 7,
+    });
+    await flushBackgroundWrites();
+
+    const row = await sqlGet<{
+      system_prompt: string;
+      request_body_json: string | null;
+      raw_output: string | null;
+      error_details: string | null;
+    }>(
+      `SELECT system_prompt, request_body_json, raw_output, error_details
+       FROM llm_request_logs WHERE schema_name = @schemaName`,
+      { schemaName },
+    );
+    expect(row).toMatchObject({
+      system_prompt: "[REDACTED: metadata-only retention]",
+      request_body_json: null,
+      raw_output: null,
+      error_details: null,
+    });
+  });
 });

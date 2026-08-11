@@ -4,7 +4,11 @@ import type { LLMProvider } from "@/modules/llm/llm-types";
 import { FakeBrowserExecutor } from "@/modules/integrations/browser-automation/fake-browser-executor";
 import { createScrubber } from "@/modules/integrations/browser-automation/output-scrubber";
 
-import { runAgenticStep, type AgenticStepInput } from "./agentic-step-executor";
+import {
+  MAX_ITERATIONS_PER_STEP,
+  runAgenticStep,
+  type AgenticStepInput,
+} from "./agentic-step-executor";
 
 /**
  * The loop under test with a sequenced fake provider (each entry is one model
@@ -282,7 +286,7 @@ describe("runAgenticStep", () => {
     const executor = new FakeBrowserExecutor({ snapshots: [SNAPSHOT] });
     await startExecutor(executor);
     const provider = sequencedProvider(
-      Array.from({ length: 10 }, () => ({
+      Array.from({ length: MAX_ITERATIONS_PER_STEP }, () => ({
         decision: "act",
         actionType: "click",
         ref: "e1",
@@ -292,6 +296,6 @@ describe("runAgenticStep", () => {
 
     const result = await runAgenticStep(stepInput(provider, executor));
     expect(result.outcome).toBe("needs_review");
-    expect(result.iterations).toBe(8);
+    expect(result.iterations).toBe(MAX_ITERATIONS_PER_STEP);
   });
 });

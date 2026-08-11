@@ -1,4 +1,5 @@
 import type { NaturalPlan } from "@/modules/test-execution/action-schema";
+import { TEST_EXECUTION_LAYER_HINTS, type LayerHint } from "@/modules/test-execution/action-schema";
 
 /**
  * localStorage draft + active-run persistence, keyed per project so switching
@@ -62,10 +63,28 @@ export function loadDraft(projectId: string): TestExecutionDraft | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as TestExecutionDraft;
     if (parsed?.version !== DRAFT_VERSION || !Array.isArray(parsed.cases)) return null;
-    return parsed;
+    return {
+      ...parsed,
+      cases: parsed.cases.map((entry) => ({
+        ...entry,
+        plan: {
+          ...entry.plan,
+          steps: entry.plan.steps.map((step) => ({
+            ...step,
+            layerHint: normalizeLayerHint((step as { layerHint?: unknown }).layerHint),
+          })),
+        },
+      })),
+    };
   } catch {
     return null;
   }
+}
+
+function normalizeLayerHint(value: unknown): LayerHint {
+  return typeof value === "string" && TEST_EXECUTION_LAYER_HINTS.includes(value as LayerHint)
+    ? value as LayerHint
+    : "auto";
 }
 
 export function clearDraft(projectId: string): void {

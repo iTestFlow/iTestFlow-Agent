@@ -5,6 +5,7 @@ import {
   NaturalStepSchema,
   type NaturalPlan,
   type NaturalStep,
+  type LayerHint,
 } from "@/modules/test-execution/action-schema";
 
 /**
@@ -13,7 +14,7 @@ import {
  */
 
 export function emptyNaturalStep(): NaturalStep {
-  return { instruction: "", expectedResult: "" };
+  return { instruction: "", expectedResult: "", layerHint: "auto" };
 }
 
 export function validateNaturalStep(step: NaturalStep): string | null {
@@ -36,7 +37,13 @@ export function describeNaturalStep(step: NaturalStep, maxLength = 140): string 
 
 export function buildNaturalPlan(steps: NaturalStep[]): NaturalPlan | null {
   const cleaned = steps
-    .map((step) => ({ instruction: step.instruction.trim(), expectedResult: step.expectedResult.trim() }))
+    .map((step) => ({
+      instruction: step.instruction.trim(),
+      expectedResult: step.expectedResult.trim(),
+      // Old drafts and imported cases predate layer hints. Normalizing here
+      // keeps their wire shape valid without forcing authors to revisit them.
+      layerHint: step.layerHint ?? "auto",
+    }))
     .filter((step) => step.instruction.length > 0);
   if (cleaned.length === 0) return null;
   return { schemaVersion: NATURAL_PLAN_SCHEMA_VERSION, steps: cleaned };
@@ -50,6 +57,22 @@ export function azureStepsToNaturalPlan(
     steps.map((step) => ({
       instruction: step.action.slice(0, MAX_INSTRUCTION_LENGTH),
       expectedResult: (step.expectedResult ?? "").slice(0, MAX_EXPECTED_RESULT_LENGTH),
+      layerHint: "auto",
     })),
   );
+}
+
+export function layerHintEnvironmentIssue(
+  hint: LayerHint | undefined,
+  configuredTargets: readonly string[],
+): string | null {
+  const normalizedHint = hint ?? "auto";
+  const configured = new Set(configuredTargets.map((target) => target.toLowerCase()));
+  if ((normalizedHint === "ui" || normalizedHint === "api" || normalizedHint === "db") && !configured.has(normalizedHint)) {
+    return `requires ${normalizedHint.toUpperCase()}, but that target is not configured.`;
+  }
+  if (normalizedHint === "mixed" && configured.size < 2) {
+    return "is Mixed, but fewer than two targets are configured.";
+  }
+  return null;
 }

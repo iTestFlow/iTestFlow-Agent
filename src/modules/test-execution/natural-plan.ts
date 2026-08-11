@@ -17,6 +17,8 @@ export type PlanFinding = {
 
 export type PlanValidationContext = {
   availableSecretNames: readonly string[];
+  /** Omit for draft-only validation; run approval supplies the frozen targets. */
+  availableLayers?: readonly ("ui" | "api" | "db")[];
 };
 
 export type PlanValidationResult =
@@ -40,6 +42,22 @@ export function validateNaturalPlan(
 
   const findings: PlanFinding[] = [];
   parsed.data.steps.forEach((step, stepIndex) => {
+    const availableLayers = context.availableLayers;
+    if (availableLayers) {
+      const unavailable = (step.layerHint === "ui" || step.layerHint === "api" || step.layerHint === "db") &&
+        !availableLayers.includes(step.layerHint);
+      const insufficientMixedTargets = step.layerHint === "mixed" && new Set(availableLayers).size < 2;
+      if (unavailable || insufficientMixedTargets) {
+        findings.push({
+          severity: "error",
+          code: "invalid_plan",
+          message: unavailable
+            ? `Step ${stepIndex + 1} requires the ${step.layerHint.toUpperCase()} layer, but that target is not configured.`
+            : `Step ${stepIndex + 1} is Mixed and requires at least two configured execution layers.`,
+          stepIndex,
+        });
+      }
+    }
     for (const name of extractSecretReferences(`${step.instruction}\n${step.expectedResult}`)) {
       if (!context.availableSecretNames.includes(name)) {
         findings.push({
@@ -51,6 +69,9 @@ export function validateNaturalPlan(
       }
     }
   });
+  if (findings.some((finding) => finding.severity === "error")) {
+    return { ok: false, findings };
+  }
   return { ok: true, plan: parsed.data, findings };
 }
 

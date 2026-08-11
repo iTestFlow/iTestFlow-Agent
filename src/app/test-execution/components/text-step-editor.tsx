@@ -3,10 +3,16 @@
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { NaturalStep } from "@/modules/test-execution/action-schema";
+import {
+  TEST_EXECUTION_LAYER_HINTS,
+  type LayerHint,
+  type NaturalStep,
+} from "@/modules/test-execution/action-schema";
 
 import { emptyNaturalStep, validateNaturalStep } from "../lib/manual-step-form";
 
@@ -21,12 +27,15 @@ export function TextStepEditor({
   onChange,
   availableCredentialTitles,
   idPrefix,
+  showLayerHint = true,
 }: {
   steps: NaturalStep[];
   onChange: (steps: NaturalStep[]) => void;
   /** Friendly credential labels the AI can use ("Default password", "Admin API key"). */
   availableCredentialTitles: string[];
   idPrefix: string;
+  /** Login plans are browser setup and deliberately hide the multi-layer hint. */
+  showLayerHint?: boolean;
 }) {
   const update = (index: number, patch: Partial<NaturalStep>) =>
     onChange(steps.map((step, i) => (i === index ? { ...step, ...patch } : step)));
@@ -42,7 +51,7 @@ export function TextStepEditor({
     <div className="space-y-3">
       {steps.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No steps yet. Write each step the way you would for a manual tester — the AI performs it in the browser.
+          No steps yet. Write each step the way you would for a manual tester — the agent chooses among the configured layers.
         </p>
       ) : (
         <ol className="space-y-3">
@@ -65,14 +74,34 @@ export function TextStepEditor({
                         onChange={(event) => update(index, { instruction: event.target.value })}
                       />
                     </div>
-                    <div className="space-y-1">
-                      <Label htmlFor={`${idPrefix}-expected-${index}`}>Expected result</Label>
-                      <Input
-                        id={`${idPrefix}-expected-${index}`}
-                        placeholder="What should be true afterwards? (optional)"
-                        value={step.expectedResult}
-                        onChange={(event) => update(index, { expectedResult: event.target.value })}
-                      />
+                    <div className={`grid gap-2 ${showLayerHint ? "sm:grid-cols-[minmax(0,1fr)_11rem]" : ""}`}>
+                      <div className="space-y-1">
+                        <Label htmlFor={`${idPrefix}-expected-${index}`}>Expected result</Label>
+                        <Input
+                          id={`${idPrefix}-expected-${index}`}
+                          placeholder="What should be true afterwards? (optional)"
+                          value={step.expectedResult}
+                          onChange={(event) => update(index, { expectedResult: event.target.value })}
+                        />
+                      </div>
+                      {showLayerHint ? (
+                        <div className="space-y-1">
+                          <Label htmlFor={`${idPrefix}-layer-${index}`}>Execution layer</Label>
+                          <Select
+                            value={step.layerHint ?? "auto"}
+                            onValueChange={(value) => update(index, { layerHint: value as LayerHint })}
+                          >
+                            <SelectTrigger id={`${idPrefix}-layer-${index}`} aria-describedby={`${idPrefix}-layer-help`}>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {TEST_EXECUTION_LAYER_HINTS.map((hint) => (
+                                <SelectItem key={hint} value={hint}>{layerHintLabel(hint)}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      ) : null}
                     </div>
                     {error ? (
                       <p className="text-xs text-destructive" role="alert">
@@ -111,9 +140,20 @@ export function TextStepEditor({
         </p>
       ) : null}
 
+      {showLayerHint ? (
+        <p id={`${idPrefix}-layer-help`} className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+          <Badge variant="outline">Auto</Badge> lets the agent choose and switch layers. Choose UI, API, or DB to restrict a
+          step; Mixed requires evidence from more than one configured layer.
+        </p>
+      ) : null}
+
       <Button size="sm" variant="outline" onClick={() => onChange([...steps, emptyNaturalStep()])}>
         <Plus className="mr-1 h-4 w-4" /> Add step
       </Button>
     </div>
   );
+}
+
+function layerHintLabel(hint: LayerHint): string {
+  return hint === "auto" ? "Auto" : hint === "db" ? "Database" : hint === "mixed" ? "Mixed" : hint.toUpperCase();
 }

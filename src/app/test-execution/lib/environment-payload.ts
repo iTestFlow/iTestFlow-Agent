@@ -14,6 +14,251 @@ export const DEFAULT_OTP_SECRET = "DEFAULT_OTP";
 export const DEFAULT_USER_HANDLE = "default";
 export const RESERVED_SECRET_NAMES = new Set([DEFAULT_PASSWORD_SECRET, DEFAULT_OTP_SECRET]);
 
+export const API_BEARER_TOKEN_SECRET = "api.bearer_token";
+export const API_KEY_SECRET = "api.api_key";
+export const API_BASIC_PASSWORD_SECRET = "api.basic_password";
+export const API_OAUTH_CLIENT_SECRET = "api.oauth_client_secret";
+export const DATABASE_PASSWORD_SECRET = "db.password";
+
+export const API_CONNECTION_SECRET_NAMES = [
+  API_BEARER_TOKEN_SECRET,
+  API_KEY_SECRET,
+  API_BASIC_PASSWORD_SECRET,
+  API_OAUTH_CLIENT_SECRET,
+] as const;
+export const CONNECTION_SECRET_NAMES = [...API_CONNECTION_SECRET_NAMES, DATABASE_PASSWORD_SECRET] as const;
+
+export type SecretPurpose = "agent_value" | "api_auth" | "db_connection";
+
+export type ApiAuthConfig =
+  | { type: "none" }
+  | { type: "bearer" }
+  | { type: "api_key"; location: "header" | "query"; name: string }
+  | { type: "basic"; username: string }
+  | {
+      type: "oauth2_client_credentials";
+      tokenUrl: string;
+      clientId: string;
+      scopes: string[];
+      audience?: string;
+    };
+
+export type ApiEnvironmentConfig = {
+  baseUrl: string;
+  contract: null | { kind: "revision"; revisionId: string } | { kind: "same_origin_url"; url: string };
+  auth: ApiAuthConfig;
+  requestTimeoutMs: number;
+  mutationMode: "disabled" | "approved_catalog";
+};
+
+export type DatabaseEnvironmentConfig = {
+  driver: "postgres" | "sqlserver" | "mysql";
+  host: string;
+  port: number;
+  databaseName: string;
+  username: string;
+  tlsMode: "disable" | "require" | "verify-full";
+  schemas: string[];
+  accessMode: "read_only" | "cataloged_dml";
+  connectTimeoutMs: number;
+  statementTimeoutMs: number;
+};
+
+export type ConnectionSecretInput = {
+  secretName: string;
+  title: string;
+  value: string;
+  purpose: "api_auth" | "db_connection";
+};
+
+export function defaultApiEnvironment(): ApiEnvironmentConfig {
+  return {
+    baseUrl: "",
+    contract: null,
+    auth: { type: "none" },
+    requestTimeoutMs: 30_000,
+    mutationMode: "disabled",
+  };
+}
+
+export function defaultDatabaseEnvironment(
+  driver: DatabaseEnvironmentConfig["driver"] = "postgres",
+): DatabaseEnvironmentConfig {
+  return {
+    driver,
+    host: "",
+    port: databaseDefaultPort(driver),
+    databaseName: "",
+    username: "",
+    tlsMode: "require",
+    schemas: [driver === "sqlserver" ? "dbo" : driver === "mysql" ? "" : "public"].filter(Boolean),
+    accessMode: "read_only",
+    connectTimeoutMs: 10_000,
+    statementTimeoutMs: 30_000,
+  };
+}
+
+export function databaseDefaultPort(driver: DatabaseEnvironmentConfig["driver"]): number {
+  return driver === "postgres" ? 5432 : driver === "sqlserver" ? 1433 : 3306;
+}
+
+export function apiAuthSecretName(auth: ApiAuthConfig): string | null {
+  switch (auth.type) {
+    case "bearer":
+      return API_BEARER_TOKEN_SECRET;
+    case "api_key":
+      return API_KEY_SECRET;
+    case "basic":
+      return API_BASIC_PASSWORD_SECRET;
+    case "oauth2_client_credentials":
+      return API_OAUTH_CLIENT_SECRET;
+    default:
+      return null;
+  }
+}
+
+/** Convert connection password/token fields held only in React memory into write-only secret inputs. */
+export function buildConnectionSecrets(input: {
+  api: ApiEnvironmentConfig | null;
+  apiSecret: string;
+  database: DatabaseEnvironmentConfig | null;
+  databasePassword: string;
+}): ConnectionSecretInput[] {
+  const result: ConnectionSecretInput[] = [];
+  const apiSecretName = input.api ? apiAuthSecretName(input.api.auth) : null;
+  if (apiSecretName && input.apiSecret) {
+    result.push({
+      secretName: apiSecretName,
+      title: apiSecretTitle(apiSecretName),
+      value: input.apiSecret,
+      purpose: "api_auth",
+    });
+  }
+  if (input.database && input.databasePassword) {
+    result.push({
+      secretName: DATABASE_PASSWORD_SECRET,
+      title: "Database password",
+      value: input.databasePassword,
+      purpose: "db_connection",
+    });
+  }
+  return result;
+}
+
+export function connectionSecretNamesForConfig(input: {
+  api: ApiEnvironmentConfig | null;
+  database: DatabaseEnvironmentConfig | null;
+}): string[] {
+  const apiName = input.api ? apiAuthSecretName(input.api.auth) : null;
+  return [apiName, input.database ? DATABASE_PASSWORD_SECRET : null].filter((name): name is string => Boolean(name));
+}
+
+export function environmentTargetLabels(input: {
+  initialUrl: string;
+  api: ApiEnvironmentConfig | null;
+  database: DatabaseEnvironmentConfig | null;
+}): Array<"UI" | "API" | "DB"> {
+  return [input.initialUrl.trim() ? "UI" : null, input.api ? "API" : null, input.database ? "DB" : null].filter(
+    (label): label is "UI" | "API" | "DB" => label !== null,
+  );
+}
+
+/** Friendly client-side validation; the API remains the final authority. */
+export function environmentReadinessIssue(input: {
+  initialUrl: string;
+  allowedOrigin: string;
+  api: ApiEnvironmentConfig | null;
+  apiSecret: string;
+  apiSecretSaved?: boolean;
+  database: DatabaseEnvironmentConfig | null;
+  databasePassword: string;
+  databasePasswordSaved?: boolean;
+}): string | null {
+  const hasUi = input.initialUrl.trim().length > 0;
+  if (!hasUi && !input.api && !input.database) return "Enable at least one UI, API, or database target.";
+
+  if (hasUi) {
+    const initial = parseHttpUrl(input.initialUrl);
+    const origin = parseHttpUrl(input.allowedOrigin || initial?.origin || "");
+    if (!initial || !origin) return "Enter a full HTTP or HTTPS URL for the UI target.";
+    if (initial.origin !== origin.origin) return "The initial URL must be inside the allowed origin.";
+  }
+
+  if (input.api) {
+    const base = parseHttpUrl(input.api.baseUrl);
+    if (!base) return "Enter a full HTTP or HTTPS API base URL.";
+    if (input.api.contract?.kind === "revision" && !input.api.contract.revisionId.trim()) {
+      return "Choose a valid API contract revision or remove the contract.";
+    }
+    if (input.api.contract?.kind === "same_origin_url") {
+      const contract = parseHttpUrl(input.api.contract.url);
+      if (!contract || contract.origin !== base.origin) return "The OpenAPI URL must use the API base URL origin.";
+    }
+    if (input.api.auth.type === "api_key" && !input.api.auth.name.trim()) return "Enter the API key parameter name.";
+    if (input.api.auth.type === "basic" && !input.api.auth.username.trim()) return "Enter the API username.";
+    if (input.api.auth.type === "oauth2_client_credentials") {
+      if (!parseHttpUrl(input.api.auth.tokenUrl) || !input.api.auth.clientId.trim()) {
+        return "Enter the OAuth token URL and client ID.";
+      }
+    }
+    if (!Number.isInteger(input.api.requestTimeoutMs) || input.api.requestTimeoutMs < 500 || input.api.requestTimeoutMs > 60_000) {
+      return "Enter an API request timeout from 500 to 60000 ms.";
+    }
+    if (apiAuthSecretName(input.api.auth) && !input.apiSecret && !input.apiSecretSaved) {
+      return "Enter the API credential required by the selected authentication method.";
+    }
+  }
+
+  if (input.database) {
+    if (!input.database.host.trim() || !input.database.databaseName.trim() || !input.database.username.trim()) {
+      return "Enter the database host, name, and username.";
+    }
+    if (!Number.isInteger(input.database.port) || input.database.port < 1 || input.database.port > 65_535) {
+      return "Enter a database port from 1 to 65535.";
+    }
+    if (
+      input.database.schemas.length === 0 ||
+      input.database.schemas.some((schema) => !/^[A-Za-z_][A-Za-z0-9_$]{0,127}$/.test(schema))
+    ) {
+      return "Enter at least one valid allowed database schema.";
+    }
+    if (
+      !Number.isInteger(input.database.connectTimeoutMs) ||
+      input.database.connectTimeoutMs < 500 ||
+      input.database.connectTimeoutMs > 60_000 ||
+      !Number.isInteger(input.database.statementTimeoutMs) ||
+      input.database.statementTimeoutMs < 500 ||
+      input.database.statementTimeoutMs > 60_000
+    ) {
+      return "Enter database timeouts from 500 to 60000 ms.";
+    }
+    if (!input.databasePassword && !input.databasePasswordSaved) return "Enter the database password.";
+  }
+  return null;
+}
+
+function apiSecretTitle(secretName: string): string {
+  switch (secretName) {
+    case API_BEARER_TOKEN_SECRET:
+      return "API bearer token";
+    case API_KEY_SECRET:
+      return "API key";
+    case API_BASIC_PASSWORD_SECRET:
+      return "API basic password";
+    default:
+      return "API OAuth client secret";
+  }
+}
+
+function parseHttpUrl(value: string): URL | null {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export type TestUserDraft = {
   handle: string;
   username: string;
@@ -163,12 +408,15 @@ export function buildEnvironmentParts(input: EnvironmentPartsInput): Environment
  */
 export function environmentPartsLimitIssue(
   parts: EnvironmentParts,
-  existingSecretCount = 0,
+  existingSecrets: number | string[] = 0,
 ): string | null {
   if (parts.users.length > 30) {
     return "Too many test users — at most 30 including the default sign-in user.";
   }
-  if (parts.secrets.length + existingSecretCount > 30) {
+  const secretCount = Array.isArray(existingSecrets)
+    ? new Set([...existingSecrets, ...parts.secrets.map((secret) => secret.secretName)]).size
+    : parts.secrets.length + existingSecrets;
+  if (secretCount > 30) {
     return "Too many credentials — at most 30 including the sign-in password and one-time code.";
   }
   return null;

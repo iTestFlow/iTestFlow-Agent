@@ -9,23 +9,83 @@ export const REDACTION_MARKER = "[REDACTED]";
 
 export type Scrubber = (text: string) => string;
 
+type MutableScrubberState = {
+  values: Set<string>;
+  substringValues: string[];
+  tokenValues: string[];
+};
+
+const mutableScrubbers = new WeakMap<Scrubber, MutableScrubberState>();
+
 /**
  * Build a scrubber for the given secret representations (see
  * buildScrubValues in test-execution/secret-resolution). Longer values are
  * replaced first so partial overlaps cannot leak suffixes.
  */
 export function createScrubber(scrubValues: readonly string[]): Scrubber {
-  const ordered = [...new Set(scrubValues)]
+  const state: MutableScrubberState = {
+    values: new Set(scrubValues.filter((value) => value.length > 0)),
+    substringValues: [],
+    tokenValues: [],
+  };
+  refreshOrder(state);
+  const scrub: Scrubber = (text: string) => scrubWithState(text, state);
+  mutableScrubbers.set(scrub, state);
+  return scrub;
+}
+
+/**
+ * Extend an existing scrubber with values discovered during execution. The
+ * returned function must be retained: scrubbers created here are updated in
+ * place, while a caller-supplied scrubber is safely composed with a new one.
+ */
+export function addScrubValues(scrub: Scrubber, scrubValues: readonly string[]): Scrubber {
+  const additions = scrubValues.filter((value) => value.length > 0);
+  if (additions.length === 0) return scrub;
+  const existing = mutableScrubbers.get(scrub);
+  if (existing) {
+    for (const value of additions) existing.values.add(value);
+    refreshOrder(existing);
+    return scrub;
+  }
+
+  const state: MutableScrubberState = {
+    values: new Set(additions),
+    substringValues: [],
+    tokenValues: [],
+  };
+  refreshOrder(state);
+  const composed: Scrubber = (text: string) => scrubWithState(scrub(text), state);
+  mutableScrubbers.set(composed, state);
+  return composed;
+}
+
+function refreshOrder(state: MutableScrubberState): void {
+  state.substringValues = [...state.values]
     .filter((value) => value.length >= 4)
     .sort((a, b) => b.length - a.length);
-  if (ordered.length === 0) return (text) => text;
-  return (text: string) => {
-    let output = text;
-    for (const value of ordered) {
-      output = output.split(value).join(REDACTION_MARKER);
-    }
-    return output;
-  };
+  state.tokenValues = [...state.values]
+    .filter((value) => value.length > 0 && value.length < 4)
+    .sort((a, b) => b.length - a.length);
+}
+
+function scrubWithState(text: string, state: MutableScrubberState): string {
+  let output = text;
+  for (const value of state.substringValues) {
+    output = output.split(value).join(REDACTION_MARKER);
+  }
+  for (const value of state.tokenValues) {
+    const pattern = new RegExp(
+      `(^|[^A-Za-z0-9_])${escapeRegExp(value)}(?=$|[^A-Za-z0-9_])`,
+      "g",
+    );
+    output = output.replace(pattern, (_match, prefix: string) => `${prefix}${REDACTION_MARKER}`);
+  }
+  return output;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** Scrub every string leaf of a JSON-safe value (observations, candidates). */

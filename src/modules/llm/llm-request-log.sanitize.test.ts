@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { sanitizeLLMLogPayload } from "@/modules/llm/llm-request-log.service";
+import {
+  applyLLMLogRetention,
+  sanitizeLLMLogPayload,
+} from "@/modules/llm/llm-request-log.service";
 
 describe("sanitizeLLMLogPayload (secret redaction)", () => {
   it("redacts sensitive keys at the top level", () => {
@@ -39,5 +42,33 @@ describe("sanitizeLLMLogPayload (secret redaction)", () => {
     expect(sanitizeLLMLogPayload("hello")).toBe("hello");
     expect(sanitizeLLMLogPayload(42)).toBe(42);
     expect(sanitizeLLMLogPayload(null)).toBe(null);
+  });
+});
+
+describe("applyLLMLogRetention", () => {
+  const payload = {
+    systemPrompt: "system with live data",
+    userPrompt: "page snapshot and response body",
+    requestBody: { secret: "request" },
+    responseBody: { rows: [{ password: "response" }] },
+    rawOutput: "raw model output",
+    validatedOutput: { decision: "act" },
+    errorDetails: "provider echoed page snapshot content",
+  };
+
+  it("preserves the existing full logging behavior by default", () => {
+    expect(applyLLMLogRetention(payload)).toEqual(payload);
+  });
+
+  it("removes every prompt and payload field in metadata-only mode", () => {
+    expect(applyLLMLogRetention({ ...payload, logRetention: "metadata_only" })).toEqual({
+      systemPrompt: "[REDACTED: metadata-only retention]",
+      userPrompt: "[REDACTED: metadata-only retention]",
+      requestBody: undefined,
+      responseBody: undefined,
+      rawOutput: undefined,
+      validatedOutput: undefined,
+      errorDetails: undefined,
+    });
   });
 });

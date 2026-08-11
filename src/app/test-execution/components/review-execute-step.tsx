@@ -5,6 +5,7 @@ import { Ban, Loader2, Play, ShieldAlert } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -17,6 +18,7 @@ import {
 import { validateNaturalPlan, type PlanFinding } from "@/modules/test-execution/natural-plan";
 
 import type { DraftCase } from "../lib/draft-storage";
+import { layerHintEnvironmentIssue } from "../lib/manual-step-form";
 import type { RunDetailDto } from "@/modules/test-execution/report-assembler";
 import { OutcomeBadge } from "./outcome-badge";
 
@@ -31,6 +33,8 @@ export function ReviewExecuteStep({
   cases,
   environmentLabel,
   allowedOrigin,
+  environmentTargets,
+  capabilityCount,
   availableSecretNames,
   storyWorkItemId,
   run,
@@ -44,6 +48,8 @@ export function ReviewExecuteStep({
   cases: DraftCase[];
   environmentLabel: string;
   allowedOrigin: string;
+  environmentTargets: Array<"UI" | "API" | "DB">;
+  capabilityCount: number;
   availableSecretNames: string[];
   storyWorkItemId: string | null;
   run: RunDetailDto | null;
@@ -61,13 +67,30 @@ export function ReviewExecuteStep({
     for (const entry of cases) {
       const result = validateNaturalPlan(entry.plan, { availableSecretNames });
       all.push(...result.findings.map((finding) => ({ ...finding, message: `${entry.title}: ${finding.message}` })));
+      entry.plan.steps.forEach((step, stepIndex) => {
+        const hint = step.layerHint ?? "auto";
+        const layerIssue = layerHintEnvironmentIssue(hint, environmentTargets);
+        if (layerIssue) {
+          all.push({
+            severity: "error",
+            code: "invalid_plan",
+            stepIndex,
+            message: `${entry.title}: Step ${stepIndex + 1} ${layerIssue}`,
+          });
+        }
+      });
     }
     return all;
-  }, [cases, availableSecretNames]);
+  }, [cases, availableSecretNames, environmentTargets]);
   const blocking = findings.filter((finding) => finding.severity === "error");
   const warnings = findings.filter((finding) => finding.severity === "warning");
 
   const totalSteps = cases.reduce((sum, entry) => sum + entry.plan.steps.length, 0);
+  const hintCounts = cases.flatMap((entry) => entry.plan.steps).reduce<Record<string, number>>((counts, step) => {
+    const hint = step.layerHint ?? "auto";
+    counts[hint] = (counts[hint] ?? 0) + 1;
+    return counts;
+  }, {});
   const running = run !== null && (run.run.status === "queued" || run.run.status === "running");
   const terminal = run !== null && !running;
 
@@ -87,10 +110,18 @@ export function ReviewExecuteStep({
                 <dt className="text-muted-foreground">Environment</dt>
                 <dd className="font-medium">{environmentLabel}</dd>
               </div>
-              <div className="flex justify-between gap-2 sm:justify-start">
-                <dt className="text-muted-foreground">Allowed origin</dt>
-                <dd className="truncate font-mono text-xs leading-6">{allowedOrigin}</dd>
+              <div className="flex items-center justify-between gap-2 sm:justify-start">
+                <dt className="text-muted-foreground">Targets</dt>
+                <dd className="flex flex-wrap gap-1">
+                  {environmentTargets.map((target) => <Badge key={target} variant="outline">{target}</Badge>)}
+                </dd>
               </div>
+              {allowedOrigin ? (
+                <div className="flex justify-between gap-2 sm:justify-start">
+                  <dt className="text-muted-foreground">UI origin</dt>
+                  <dd className="truncate font-mono text-xs leading-6">{allowedOrigin}</dd>
+                </div>
+              ) : null}
               <div className="flex justify-between gap-2 sm:justify-start">
                 <dt className="text-muted-foreground">Test cases</dt>
                 <dd className="font-medium tabular-nums">{cases.length}</dd>
@@ -98,6 +129,18 @@ export function ReviewExecuteStep({
               <div className="flex justify-between gap-2 sm:justify-start">
                 <dt className="text-muted-foreground">Total steps</dt>
                 <dd className="font-medium tabular-nums">{totalSteps}</dd>
+              </div>
+              <div className="flex items-start justify-between gap-2 sm:justify-start">
+                <dt className="text-muted-foreground">Layer guidance</dt>
+                <dd className="flex flex-wrap gap-1">
+                  {Object.entries(hintCounts).map(([hint, count]) => (
+                    <Badge key={hint} variant="secondary" className="uppercase">{hint} {count}</Badge>
+                  ))}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-2 sm:justify-start">
+                <dt className="text-muted-foreground">Approved capabilities</dt>
+                <dd className="font-medium tabular-nums">{capabilityCount}</dd>
               </div>
               {storyWorkItemId ? (
                 <div className="flex justify-between gap-2 sm:justify-start">
@@ -107,7 +150,7 @@ export function ReviewExecuteStep({
               ) : null}
               <div className="flex justify-between gap-2 sm:justify-start">
                 <dt className="text-muted-foreground">Execution order</dt>
-                <dd>Sequential, shared browser session</dd>
+                <dd>Sequential, shared run context</dd>
               </div>
             </dl>
 
@@ -228,7 +271,7 @@ export function ReviewExecuteStep({
           <DialogHeader>
             <DialogTitle>Cancel this run?</DialogTitle>
             <DialogDescription>
-              The browser session stops within a second. Finished cases keep their results; the in-flight case is marked canceled and remaining cases stay not run.
+              Active layer resources are stopped at the next safe checkpoint. Finished cases keep their results; the in-flight case is marked canceled and remaining cases stay not run.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

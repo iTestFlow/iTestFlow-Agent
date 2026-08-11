@@ -51,6 +51,7 @@ export type RunDetailDto = {
       errorMessage: string | null;
       startedAt: string | null;
       finishedAt: string | null;
+      actions: ActionRunRef[];
       artifacts: ArtifactRef[];
     }[];
     artifacts: ArtifactRef[];
@@ -65,6 +66,21 @@ export type RunDetailDto = {
     updatedAt: string;
   }[];
   job: { id: string; status: string; cancelRequestedAt: string | null } | null;
+};
+
+export type ActionRunRef = {
+  id: string;
+  orderIndex: number;
+  layer: string;
+  actionType: string;
+  safetyClass: string;
+  request: unknown;
+  status: string;
+  observation: unknown;
+  errorCategory: string | null;
+  errorMessage: string | null;
+  startedAt: string;
+  finishedAt: string | null;
 };
 
 export type ArtifactRef = {
@@ -119,6 +135,27 @@ export function assembleRunDetail(rows: RunDetailRows): RunDetailDto | null {
     }
   }
 
+  const actionsByStep = new Map<string, ActionRunRef[]>();
+  for (const row of rows.actions ?? []) {
+    const stepId = str(row.step_run_id);
+    const list = actionsByStep.get(stepId) ?? [];
+    list.push({
+      id: str(row.id),
+      orderIndex: num(row.order_index),
+      layer: str(row.layer),
+      actionType: str(row.action_type),
+      safetyClass: str(row.safety_class),
+      request: redactSensitiveFields(row.request_json),
+      status: str(row.status),
+      observation: redactSensitiveFields(row.observation_json),
+      errorCategory: strOrNull(row.error_category),
+      errorMessage: strOrNull(row.error_message),
+      startedAt: str(row.started_at),
+      finishedAt: strOrNull(row.finished_at),
+    });
+    actionsByStep.set(stepId, list);
+  }
+
   const stepsByCase = new Map<string, RunDetailDto["cases"][number]["steps"]>();
   for (const row of rows.steps) {
     const caseId = str(row.case_run_id);
@@ -133,6 +170,7 @@ export function assembleRunDetail(rows: RunDetailRows): RunDetailDto | null {
       errorMessage: strOrNull(row.error_message),
       startedAt: strOrNull(row.started_at),
       finishedAt: strOrNull(row.finished_at),
+      actions: actionsByStep.get(str(row.id)) ?? [],
       artifacts: artifactsByStep.get(str(row.id)) ?? [],
     });
     stepsByCase.set(caseId, list);
@@ -187,12 +225,69 @@ export function assembleRunDetail(rows: RunDetailRows): RunDetailDto | null {
   };
 }
 
-/** The env config is non-secret by construction; drop the login plan anyway —
- * the report never needs it and its values (though placeholder-only) are noise. */
+/**
+ * Report an explicit allowlist. Secrets are stored separately, but target
+ * hosts, database identities, test users, and execution notes are still
+ * connection-sensitive metadata that ordinary report readers do not need.
+ */
 function sanitizeEnvConfig(envConfig: unknown): unknown {
-  if (envConfig && typeof envConfig === "object") {
-    const { loginPlan: _omitted, ...rest } = envConfig as Record<string, unknown>;
-    return { ...rest, hasLoginPlan: Boolean(_omitted) };
-  }
-  return envConfig;
+  if (!envConfig || typeof envConfig !== "object" || Array.isArray(envConfig)) return {};
+  const config = envConfig as Record<string, unknown>;
+  const api = objectOrNull(config.api);
+  const database = objectOrNull(config.database);
+  const auth = objectOrNull(api?.auth);
+  return {
+    initialUrl: typeof config.initialUrl === "string" ? config.initialUrl : "",
+    allowedOrigin: typeof config.allowedOrigin === "string" ? config.allowedOrigin : "",
+    viewportWidth: num(config.viewportWidth),
+    viewportHeight: num(config.viewportHeight),
+    headless: config.headless !== false,
+    defaultTimeoutMs: num(config.defaultTimeoutMs),
+    navigationTimeoutMs: num(config.navigationTimeoutMs),
+    evidenceLevel: str(config.evidenceLevel),
+    loginMode: str(config.loginMode),
+    hasLoginPlan: Boolean(config.loginPlan),
+    testUserCount: Array.isArray(config.users) ? config.users.length : 0,
+    hasApi: Boolean(api),
+    api: api
+      ? {
+          authType: str(auth?.type),
+          hasContract: Boolean(api.contract),
+          requestTimeoutMs: num(api.requestTimeoutMs),
+          mutationMode: str(api.mutationMode),
+        }
+      : null,
+    hasDatabase: Boolean(database),
+    database: database
+      ? {
+          driver: str(database.driver),
+          tlsMode: str(database.tlsMode),
+          accessMode: str(database.accessMode),
+          schemaCount: Array.isArray(database.schemas) ? database.schemas.length : 0,
+          connectTimeoutMs: num(database.connectTimeoutMs),
+          statementTimeoutMs: num(database.statementTimeoutMs),
+        }
+      : null,
+  };
+}
+
+function objectOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+const SENSITIVE_KEY = /(?:authorization|cookie|password|passwd|secret|token|api[-_]?key|credential)/i;
+
+function redactSensitiveFields(value: unknown, depth = 0): unknown {
+  if (depth > 12) return "<truncated>";
+  if (Array.isArray(value)) return value.map((entry) => redactSensitiveFields(entry, depth + 1));
+  const object = objectOrNull(value);
+  if (!object) return value;
+  return Object.fromEntries(
+    Object.entries(object).map(([key, child]) => [
+      key,
+      SENSITIVE_KEY.test(key) ? "<redacted>" : redactSensitiveFields(child, depth + 1),
+    ]),
+  );
 }

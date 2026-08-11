@@ -12,6 +12,7 @@ import {
   archiveEnvironmentProfile,
   EnvironmentProfileNameConflictError,
   EnvironmentProfileSecretLimitError,
+  EnvironmentProfileUpdateConflictError,
   getEnvironmentProfile,
   updateEnvironmentProfile,
 } from "@/modules/test-execution/environment-profile.service";
@@ -83,6 +84,12 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       return NextResponse.json(
         { error: "An environment profile can hold at most 30 credentials." },
         { status: 400 },
+      );
+    }
+    if (error instanceof EnvironmentProfileUpdateConflictError) {
+      return NextResponse.json(
+        { error: "The environment profile changed while it was being updated. Refresh it and try again." },
+        { status: 409 },
       );
     }
     return routeErrorResponse(error, { fallback: "The environment profile could not be updated." });
