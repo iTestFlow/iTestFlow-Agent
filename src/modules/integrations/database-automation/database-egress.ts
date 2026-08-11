@@ -1,9 +1,11 @@
 import "server-only";
 
 import { isIP, connect, type Socket } from "node:net";
-import { domainToASCII } from "node:url";
 
-import { assertTestExecutionEgressAllowed } from "@/modules/test-execution/egress-policy.service";
+import {
+  assertTestExecutionEgressAllowed,
+  normalizeEgressHostname,
+} from "@/modules/test-execution/egress-policy.service";
 
 import { DatabaseExecutorError, type DatabaseExecutorConfig } from "./database-executor.port";
 
@@ -112,19 +114,8 @@ function bindingFromAuthorization(
     throw new Error("The egress policy did not provide a concrete authorized address.");
   }
   return {
-    hostname: normalizeConnectionHostname(target.host),
+    hostname: normalizeEgressHostname(target.host),
     port: target.port,
     address,
   };
-}
-
-function normalizeConnectionHostname(value: string): string {
-  const trimmed = value.trim().toLowerCase();
-  const unbracketed = trimmed.startsWith("[") && trimmed.endsWith("]")
-    ? trimmed.slice(1, -1)
-    : trimmed;
-  if (isIP(unbracketed)) return unbracketed;
-  const ascii = domainToASCII(unbracketed.replace(/\.$/, ""));
-  if (!ascii) throw new Error("The authorized database hostname is invalid.");
-  return ascii;
 }

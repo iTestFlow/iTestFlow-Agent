@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
+import { canonicalSha256 } from "@/modules/shared/canonical-json";
 
 import type { Requirement, TestCase } from "@/modules/integrations/core/integration-types";
 
@@ -18,20 +18,8 @@ export type SourceSnapshotInput = {
   contentHash: string;
 };
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`);
-    return `{${entries.join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
-
 export function hashSnapshotPayload(payload: Record<string, unknown>): string {
-  return createHash("sha256").update(canonicalJson(payload), "utf8").digest("hex");
+  return canonicalSha256(payload);
 }
 
 export function buildStorySnapshot(story: Requirement): SourceSnapshotInput {

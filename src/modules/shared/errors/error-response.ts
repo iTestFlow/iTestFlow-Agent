@@ -1,5 +1,7 @@
 import "server-only";
 
+import { ZodError } from "zod";
+
 import { isIntegrationError, type IntegrationErrorCode } from "@/modules/integrations/core/integration-error";
 import { AppErrorCode, isAppError, type ErrorTechnicalContext } from "./app-error";
 import { sanitizeAzureError } from "@/shared/lib/sanitize-azure-error";
@@ -58,6 +60,16 @@ export function toFriendlyErrorResponse(error: unknown, options: FriendlyErrorOp
   }
   if (isAppError(error)) {
     return { body: toErrorResponse(error, options), status: statusForServerError(error, options) };
+  }
+  // Uncaught schema validation (e.g. a stored/legacy payload failing a parse
+  // deep in a service) is client-correctable input, not a server fault.
+  if (error instanceof ZodError) {
+    const issue = error.issues[0];
+    const path = issue?.path?.join(".") ?? "";
+    return {
+      body: { error: issue ? `${path ? `${path}: ` : ""}${issue.message}` : "The request payload is not valid." },
+      status: options.status ?? 400,
+    };
   }
   return normalizePlainError(error, options);
 }

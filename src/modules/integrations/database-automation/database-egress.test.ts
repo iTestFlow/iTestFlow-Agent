@@ -7,7 +7,9 @@ const egress = vi.hoisted(() => ({
   assertAllowed: vi.fn(),
 }));
 
-vi.mock("@/modules/test-execution/egress-policy.service", () => ({
+vi.mock("@/modules/test-execution/egress-policy.service", async (importOriginal) => ({
+  // Keep the real pure hostname normalization; only the policy check is mocked.
+  ...(await importOriginal<typeof import("@/modules/test-execution/egress-policy.service")>()),
   assertTestExecutionEgressAllowed: egress.assertAllowed,
 }));
 

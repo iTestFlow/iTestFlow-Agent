@@ -11,6 +11,8 @@ import {
   sqlGet,
   withTransaction,
 } from "@/modules/shared/infrastructure/database/db";
+import { isForbiddenRequestHeader, isSensitiveKey } from "@/modules/shared/sensitive-data";
+import { validateSqlTemplate } from "@/modules/integrations/database-automation/sql-policy";
 import { IntegrationOperationRevisionInputSchema } from "./schemas/test-execution.schemas";
 import { validateCapabilityParameterSchema } from "./multi-layer-action";
 
@@ -267,6 +269,7 @@ function validateOperation(input: {
     parsed.data.safetyClass,
     parsed.data.definition,
     parsed.data.parameterSchema,
+    parsed.data.databaseDriver,
   );
   return parsed.data;
 }
@@ -276,6 +279,7 @@ function validateDefinition(
   safetyClass: "read" | "mutation",
   definition: Record<string, unknown>,
   parameterSchema: Record<string, unknown>,
+  databaseDriver: "postgres" | "sqlserver" | "mysql" | null,
 ): void {
   const declaredParameters = schemaPropertyNames(parameterSchema);
   if (layer === "api") {
@@ -313,23 +317,20 @@ function validateDefinition(
 
   const sql = typeof definition.sql === "string" ? definition.sql.trim() : "";
   if (!sql) throw new IntegrationOperationError("Database operations require a SQL template.");
-  const withoutTrailingSemicolon = sql.replace(/;\s*$/, "");
-  if (withoutTrailingSemicolon.includes(";")) {
-    throw new IntegrationOperationError("Database operation templates must contain one statement.");
+  if (!databaseDriver) throw new IntegrationOperationError("Database operations require a driver.");
+  // Authoring runs the SAME validator as runtime (minus the environment's
+  // schema allowlist and bind values), so an operation that saves can
+  // actually execute instead of becoming a dead capability.
+  try {
+    validateSqlTemplate({
+      sql,
+      intent: safetyClass === "read" ? "select" : "mutation",
+      driver: databaseDriver,
+      declaredParameters,
+    });
+  } catch (error) {
+    throw new IntegrationOperationError(error instanceof Error ? error.message : "The SQL template failed validation.");
   }
-  if (/\b(?:CREATE|ALTER|DROP|TRUNCATE|GRANT|REVOKE|CALL|EXEC(?:UTE)?|BEGIN|COMMIT|ROLLBACK)\b/i.test(sql)) {
-    throw new IntegrationOperationError("DDL, procedures, and transaction control are not permitted.");
-  }
-  const leadingKeyword = /^\s*(?:WITH\b[\s\S]*?\b)?(SELECT|INSERT|UPDATE|DELETE)\b/i.exec(sql)?.[1]?.toUpperCase();
-  const isRead = leadingKeyword === "SELECT";
-  const isMutation = leadingKeyword === "INSERT" || leadingKeyword === "UPDATE" || leadingKeyword === "DELETE";
-  if ((safetyClass === "read" && !isRead) || (safetyClass === "mutation" && !isMutation)) {
-    throw new IntegrationOperationError("The SQL template does not match the selected safety class.");
-  }
-  validateTemplateParameters(
-    new Set([...sql.matchAll(/(?<!:):([A-Za-z_][A-Za-z0-9_]*)/g)].map((match) => match[1])),
-    declaredParameters,
-  );
 }
 
 function isSafeApiOperationPath(path: string): boolean {
@@ -374,7 +375,7 @@ function validateTemplateParameters(used: ReadonlySet<string>, declared: Readonl
 }
 
 function isForbiddenOperationHeader(name: string): boolean {
-  return /^(authorization|cookie|host|content-length|connection|transfer-encoding|upgrade|proxy-|forwarded$|x-forwarded-|x-http-method-override$|x-method-override$|x-original-url$|x-rewrite-url$)/i.test(name.trim());
+  return isForbiddenRequestHeader(name);
 }
 
 function findLiteralCredential(value: unknown, key = ""): boolean {
@@ -382,7 +383,7 @@ function findLiteralCredential(value: unknown, key = ""): boolean {
   if (value && typeof value === "object") {
     return Object.entries(value as Record<string, unknown>).some(([childKey, entry]) => findLiteralCredential(entry, childKey));
   }
-  if (!/(authorization|password|passwd|secret|token|api[-_]?key|cookie)/i.test(key)) return false;
+  if (!isSensitiveKey(key)) return false;
   return typeof value === "string" && value.length > 0 && !/^\{\{param:[A-Za-z_][A-Za-z0-9_]*\}\}$/.test(value);
 }
 

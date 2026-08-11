@@ -12,7 +12,8 @@ export type Scrubber = (text: string) => string;
 type MutableScrubberState = {
   values: Set<string>;
   substringValues: string[];
-  tokenValues: string[];
+  /** Precompiled boundary patterns for short values (compiled once per value set, not per scrub call). */
+  tokenPatterns: RegExp[];
 };
 
 const mutableScrubbers = new WeakMap<Scrubber, MutableScrubberState>();
@@ -26,7 +27,7 @@ export function createScrubber(scrubValues: readonly string[]): Scrubber {
   const state: MutableScrubberState = {
     values: new Set(scrubValues.filter((value) => value.length > 0)),
     substringValues: [],
-    tokenValues: [],
+    tokenPatterns: [],
   };
   refreshOrder(state);
   const scrub: Scrubber = (text: string) => scrubWithState(text, state);
@@ -44,15 +45,16 @@ export function addScrubValues(scrub: Scrubber, scrubValues: readonly string[]):
   if (additions.length === 0) return scrub;
   const existing = mutableScrubbers.get(scrub);
   if (existing) {
+    const before = existing.values.size;
     for (const value of additions) existing.values.add(value);
-    refreshOrder(existing);
+    if (existing.values.size !== before) refreshOrder(existing);
     return scrub;
   }
 
   const state: MutableScrubberState = {
     values: new Set(additions),
     substringValues: [],
-    tokenValues: [],
+    tokenPatterns: [],
   };
   refreshOrder(state);
   const composed: Scrubber = (text: string) => scrubWithState(scrub(text), state);
@@ -64,9 +66,13 @@ function refreshOrder(state: MutableScrubberState): void {
   state.substringValues = [...state.values]
     .filter((value) => value.length >= 4)
     .sort((a, b) => b.length - a.length);
-  state.tokenValues = [...state.values]
+  state.tokenPatterns = [...state.values]
     .filter((value) => value.length > 0 && value.length < 4)
-    .sort((a, b) => b.length - a.length);
+    .sort((a, b) => b.length - a.length)
+    .map((value) => new RegExp(
+      `(^|[^A-Za-z0-9_])${escapeRegExp(value)}(?=$|[^A-Za-z0-9_])`,
+      "g",
+    ));
 }
 
 function scrubWithState(text: string, state: MutableScrubberState): string {
@@ -74,11 +80,8 @@ function scrubWithState(text: string, state: MutableScrubberState): string {
   for (const value of state.substringValues) {
     output = output.split(value).join(REDACTION_MARKER);
   }
-  for (const value of state.tokenValues) {
-    const pattern = new RegExp(
-      `(^|[^A-Za-z0-9_])${escapeRegExp(value)}(?=$|[^A-Za-z0-9_])`,
-      "g",
-    );
+  for (const pattern of state.tokenPatterns) {
+    pattern.lastIndex = 0;
     output = output.replace(pattern, (_match, prefix: string) => `${prefix}${REDACTION_MARKER}`);
   }
   return output;

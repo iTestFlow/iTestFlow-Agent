@@ -110,7 +110,6 @@ export type RunExecutionBundle = {
   secretTitles: Map<string, string>;
   /** Executor-only API/DB credentials, keyed by their reserved internal names. */
   connectionSecrets: Map<string, string>;
-  secretPurposes: Map<string, SecretPurpose>;
   capabilities: FrozenIntegrationCapability[];
   apiContracts: FrozenApiContract[];
   cases: {
@@ -133,6 +132,31 @@ type RunRow = {
   job_id: string | null;
   env_config_json: unknown;
 };
+
+/**
+ * Decrypted secret values frozen for a run — all purposes. Used only to build
+ * the read-time redaction barrier for the run-detail API; write-time scrubbing
+ * in the worker remains the primary protection. Run-scoped secret rows mean
+ * this remains correct even after the environment profile's secrets rotate.
+ */
+export async function loadRunSecretValuesForRedaction(runId: string): Promise<string[]> {
+  const rows = await sqlAll<{
+    encrypted_secret: string;
+    encryption_iv: string;
+    encryption_tag: string;
+    key_version: number;
+  }>(
+    `SELECT encrypted_secret, encryption_iv, encryption_tag, key_version
+     FROM test_execution_run_secrets WHERE run_id = @runId`,
+    { runId },
+  );
+  return rows.map((row) => decryptSecret({
+    ciphertext: row.encrypted_secret,
+    iv: row.encryption_iv,
+    tag: row.encryption_tag,
+    keyVersion: row.key_version,
+  }));
+}
 
 export async function loadRunForExecution(runId: string): Promise<RunExecutionBundle | null> {
   const row = await sqlGet<RunRow>(
@@ -163,7 +187,6 @@ export async function loadRunForExecution(runId: string): Promise<RunExecutionBu
   const secrets = new Map<string, string>();
   const secretTitles = new Map<string, string>();
   const connectionSecrets = new Map<string, string>();
-  const secretPurposes = new Map<string, SecretPurpose>();
   for (const secret of secretRows) {
     const value = decryptSecret({
       ciphertext: secret.encrypted_secret,
@@ -171,7 +194,6 @@ export async function loadRunForExecution(runId: string): Promise<RunExecutionBu
       tag: secret.encryption_tag,
       keyVersion: secret.key_version,
     });
-    secretPurposes.set(secret.secret_name, secret.purpose);
     if (secret.purpose === "agent_value") {
       secrets.set(secret.secret_name, value);
       secretTitles.set(secret.secret_name, secret.title);
@@ -256,7 +278,6 @@ export async function loadRunForExecution(runId: string): Promise<RunExecutionBu
     secrets,
     secretTitles,
     connectionSecrets,
-    secretPurposes,
     capabilities: capabilityRows.map((capability) => ({
       id: capability.id,
       stableKey: capability.stable_key,
@@ -554,25 +575,58 @@ export async function listCaseOutcomes(runId: string): Promise<ExecutionOutcome[
   return rows.map((row) => row.outcome ?? "not_run");
 }
 
-/** User cancellation: in-flight rows → canceled, untouched rows → not_run, run → canceled. */
-export async function finalizeRunForCancellation(runId: string, jobId: string): Promise<void> {
-  const now = nowIso();
+/**
+ * In-flight actions at run finalization: a dispatched mutation's external
+ * outcome is unknowable → uncertain; anything else takes the terminal
+ * status/category. One statement shared by the cancellation and
+ * infrastructure finalizers so the classification cannot drift.
+ */
+async function finalizeInFlightActions(input: {
+  runId: string;
+  jobId: string;
+  now: string;
+  terminalStatus: "canceled" | "failed";
+  terminalCategory: "canceled" | "infrastructure";
+  mutationMessage: string;
+  terminalMessage: string;
+}): Promise<void> {
   await sqlRun(
     `UPDATE test_execution_action_runs
-     SET status = CASE WHEN safety_class = 'mutation' THEN 'uncertain' ELSE 'canceled' END,
+     SET status = CASE WHEN safety_class = 'mutation' THEN 'uncertain' ELSE @terminalStatus END,
          error_category = CASE
            WHEN safety_class = 'mutation' THEN 'uncertain_side_effect'
-           ELSE 'canceled'
+           ELSE @terminalCategory
          END,
          error_message = CASE
-           WHEN safety_class = 'mutation'
-             THEN 'Cancellation occurred after a state-changing action started; verify the target before retrying.'
-           ELSE 'Execution was canceled.'
+           WHEN safety_class = 'mutation' THEN @mutationMessage
+           ELSE @terminalMessage
          END,
          finished_at = @now, updated_at = @now
      WHERE run_id = @runId AND status = 'running' AND ${RUN_FENCE}`,
-    { runId, jobId, now },
+    {
+      runId: input.runId,
+      jobId: input.jobId,
+      now: input.now,
+      terminalStatus: input.terminalStatus,
+      terminalCategory: input.terminalCategory,
+      mutationMessage: input.mutationMessage,
+      terminalMessage: input.terminalMessage,
+    },
   );
+}
+
+/** User cancellation: in-flight rows → canceled, untouched rows → not_run, run → canceled. */
+export async function finalizeRunForCancellation(runId: string, jobId: string): Promise<void> {
+  const now = nowIso();
+  await finalizeInFlightActions({
+    runId,
+    jobId,
+    now,
+    terminalStatus: "canceled",
+    terminalCategory: "canceled",
+    mutationMessage: "Cancellation occurred after a state-changing action started; verify the target before retrying.",
+    terminalMessage: "Execution was canceled.",
+  });
   await sqlRun(
     `UPDATE test_execution_step_runs
      SET status = 'completed', outcome = CASE WHEN status = 'running' THEN 'canceled' ELSE 'not_run' END,
@@ -602,22 +656,15 @@ export async function finalizeRunForInfrastructureError(
   message: string,
 ): Promise<void> {
   const now = nowIso();
-  await sqlRun(
-    `UPDATE test_execution_action_runs
-     SET status = CASE WHEN safety_class = 'mutation' THEN 'uncertain' ELSE 'failed' END,
-         error_category = CASE
-           WHEN safety_class = 'mutation' THEN 'uncertain_side_effect'
-           ELSE 'infrastructure'
-         END,
-         error_message = CASE
-           WHEN safety_class = 'mutation'
-             THEN 'Infrastructure failed after a state-changing action started; verify the target before retrying.'
-           ELSE @message
-         END,
-         finished_at = @now, updated_at = @now
-     WHERE run_id = @runId AND status = 'running' AND ${RUN_FENCE}`,
-    { runId, jobId, now, message },
-  );
+  await finalizeInFlightActions({
+    runId,
+    jobId,
+    now,
+    terminalStatus: "failed",
+    terminalCategory: "infrastructure",
+    mutationMessage: "Infrastructure failed after a state-changing action started; verify the target before retrying.",
+    terminalMessage: message,
+  });
   await sqlRun(
     `UPDATE test_execution_step_runs
      SET status = 'completed',

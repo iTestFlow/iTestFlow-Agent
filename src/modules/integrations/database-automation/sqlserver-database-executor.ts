@@ -10,6 +10,13 @@ import {
   type DatabaseEgressBinding,
 } from "./database-egress";
 import {
+  assertNotCanceled,
+  cancellationError,
+  escapeLikePattern,
+  queryError,
+  rollbackOutcome,
+} from "./database-executor.shared";
+import {
   DatabaseExecutorError,
   type DatabaseExecutionRequest,
   type DatabaseExecutionResult,
@@ -101,6 +108,7 @@ export class SqlServerDatabaseExecutor implements DatabaseExecutor {
         : { ok: true as const };
       if (error instanceof DatabaseExecutorError) throw error;
       if (this.config.signal.aborted) {
+        this.resetConnection();
         throw cancellationError(
           "SQL Server",
           request.kind === "mutation" && (commitStarted || !rollback.ok),
@@ -108,6 +116,7 @@ export class SqlServerDatabaseExecutor implements DatabaseExecutor {
         );
       }
       if (!rollback.ok && mutationDispatched) {
+        this.resetConnection();
         throw new DatabaseExecutorError(
           "SQL Server transport failed and rollback could not be confirmed.",
           "transport",
@@ -119,6 +128,7 @@ export class SqlServerDatabaseExecutor implements DatabaseExecutor {
         return queryError(validated.command, Date.now() - started, error.code, error.message);
       }
       const timeout = /timeout|cancel/i.test(errorMessage(error));
+      this.resetConnection();
       throw new DatabaseExecutorError(timeout ? "SQL Server query timed out or was canceled." : "SQL Server transport failed.", timeout ? "timeout" : "transport", mutationDispatched, error);
     } finally {
       this.config.signal.removeEventListener("abort", cancel);
@@ -129,6 +139,13 @@ export class SqlServerDatabaseExecutor implements DatabaseExecutor {
     const pool = this.pool;
     this.pool = null;
     if (pool) await pool.close().catch(() => undefined);
+  }
+
+  /** Drop a possibly poisoned pool so ensureConnected rebuilds cleanly. */
+  private resetConnection(): void {
+    const pool = this.pool;
+    this.pool = null;
+    if (pool) void pool.close().catch(() => undefined);
   }
 
   private async ensureConnected() {
@@ -180,17 +197,29 @@ export class SqlServerDatabaseExecutor implements DatabaseExecutor {
 
   private async inspectSchema(pool: SqlPoolLike, tablePattern?: string) {
     const started = Date.now();
-    const request = pool.request();
-    request.input("schemas", this.config.schemas.join(","));
-    request.input("pattern", tablePattern ? `%${tablePattern}%` : null);
-    const result = await request.query<Record<string, unknown>>(`
-      SELECT TOP (500) TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name,
-             COLUMN_NAME AS column_name, DATA_TYPE AS data_type, IS_NULLABLE AS is_nullable
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_SCHEMA IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@schemas, ','))
-        AND (@pattern IS NULL OR TABLE_NAME LIKE @pattern)
-      ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION`);
-    return normalizeSqlServer(result, "SELECT", Date.now() - started, this.config);
+    // Inside the classified error path: a schema-introspection failure is a
+    // normal query error/transport failure, never a whole-step infra error.
+    try {
+      const request = pool.request();
+      const escaped = tablePattern ? escapeLikePattern(tablePattern) : null;
+      request.input("schemas", this.config.schemas.join(","));
+      request.input("pattern", escaped ? `%${escaped}%` : null);
+      const result = await request.query<Record<string, unknown>>(`
+        SELECT TOP (500) TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name,
+               COLUMN_NAME AS column_name, DATA_TYPE AS data_type, IS_NULLABLE AS is_nullable
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@schemas, ','))
+          AND (@pattern IS NULL OR TABLE_NAME LIKE @pattern ESCAPE '\\')
+        ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION`);
+      return normalizeSqlServer(result, "SELECT", Date.now() - started, this.config);
+    } catch (error) {
+      if (error instanceof DatabaseExecutorError) throw error;
+      if (isSqlServerQueryError(error)) {
+        return queryError("SELECT", Date.now() - started, error.code, error.message);
+      }
+      this.resetConnection();
+      throw new DatabaseExecutorError("SQL Server schema inspection failed.", "transport", false, error);
+    }
   }
 }
 
@@ -230,37 +259,3 @@ function isSqlServerQueryError(error: unknown): error is Error & { code: string 
   return typeof code === "string" && /^(EREQUEST|EARGS|EINJECT)$/.test(code);
 }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : ""; }
-function queryError(command: string, durationMs: number, sqlState: string, errorMessage: string): DatabaseExecutionResult {
-  return { status: "query_error", command, rowCount: 0, columns: [], rows: [], safeRows: [], truncated: false, durationMs, sqlState, errorMessage };
-}
-
-type RollbackOutcome = { ok: true } | { ok: false; error: unknown };
-
-async function rollbackOutcome(rollback: () => Promise<unknown>): Promise<RollbackOutcome> {
-  try {
-    await rollback();
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error };
-  }
-}
-
-function assertNotCanceled(signal: AbortSignal, driver: string): void {
-  if (signal.aborted) throw cancellationError(driver, false);
-}
-
-function cancellationError(
-  driver: string,
-  uncertainSideEffect: boolean,
-  rollback?: RollbackOutcome,
-): DatabaseExecutorError {
-  const rollbackFailed = rollback?.ok === false;
-  return new DatabaseExecutorError(
-    rollbackFailed
-      ? `${driver} execution was canceled, but rollback could not be confirmed.`
-      : `${driver} execution was canceled before commit.`,
-    "transport",
-    uncertainSideEffect,
-    rollbackFailed ? rollback.error : undefined,
-  );
-}

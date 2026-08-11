@@ -1,4 +1,4 @@
-const SENSITIVE_COLUMN = /(password|passwd|secret|token|authorization|cookie|api[_-]?key|private[_-]?key)/i;
+import { isSensitiveKey } from "@/modules/shared/sensitive-data";
 
 export function boundedDatabaseRows(
   rows: readonly Record<string, unknown>[],
@@ -16,7 +16,7 @@ export function boundedDatabaseRows(
   }
   const safeRows = bounded.map((row) => Object.fromEntries(Object.entries(row).map(([column, value]) => [
     column,
-    SENSITIVE_COLUMN.test(column) ? "[REDACTED]" : normalizeDatabaseValue(value),
+    isSensitiveKey(column) ? "[REDACTED]" : normalizeDatabaseValue(value),
   ])));
   return { rows: bounded.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, normalizeDatabaseValue(value)]))), safeRows, truncated };
 }

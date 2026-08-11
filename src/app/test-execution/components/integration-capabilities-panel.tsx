@@ -84,14 +84,14 @@ export function IntegrationCapabilitiesPanel({
     return params.toString();
   }, [scope]);
 
-  const loadOperations = useCallback(async () => {
+  const loadOperations = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError(null);
     try {
       const loadVisibility = async (includeAll: boolean) => {
         const params = new URLSearchParams(query);
         params.set("includeAll", String(includeAll));
-        const response = await fetch(`/api/test-execution/integration-operations?${params}`, { cache: "no-store" });
+        const response = await fetch(`/api/test-execution/integration-operations?${params}`, { cache: "no-store", signal });
         const body = await response.json().catch(() => ({})) as { operations?: unknown[]; error?: string };
         if (!response.ok) throw new Error(body.error || `Capabilities could not be loaded (${response.status}).`);
         return body.operations ?? [];
@@ -101,24 +101,31 @@ export function IntegrationCapabilitiesPanel({
       const batches = await Promise.all(canManage
         ? [loadVisibility(true), loadVisibility(false)]
         : [loadVisibility(false)]);
+      if (signal?.aborted) return;
       const unique = new Map<string, IntegrationOperationView>();
       for (const item of batches.flat().map(normalizeIntegrationOperation)) {
         if (item) unique.set(item.id, item);
       }
       setOperations([...unique.values()]);
     } catch (loadError) {
+      // A superseded request must not clobber the fresher scope's state.
+      if (signal?.aborted || (loadError instanceof DOMException && loadError.name === "AbortError")) return;
       setError(loadError instanceof Error ? loadError.message : "Capabilities could not be loaded.");
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [canManage, query]);
 
   useEffect(() => {
     setOperations([]);
     onSelectedIdsChange([]);
-    void loadOperations();
+    const controller = new AbortController();
+    void loadOperations(controller.signal);
     // Selection is least-privilege and project-scoped: changing project never
-    // carries an approved operation revision into the next scope.
+    // carries an approved operation revision into the next scope, and the
+    // in-flight fetch of the previous scope is aborted so a late response
+    // cannot overwrite the new scope's operations.
+    return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadOperations, scope.projectId]);
 

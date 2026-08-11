@@ -180,7 +180,9 @@ describeDb("LLM request log (DB-backed)", () => {
       system_prompt: "[REDACTED: metadata-only retention]",
       request_body_json: null,
       raw_output: null,
-      error_details: null,
+      // Failed rows keep a bounded first-line excerpt (V7-4) — never the
+      // prompts/payloads themselves — so the audit table stays diagnosable.
+      error_details: "Provider echoed a live response and secret value. [REDACTED: metadata-only retention]",
     });
   });
 });

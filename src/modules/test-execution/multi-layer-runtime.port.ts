@@ -5,6 +5,8 @@ import type { ExecutionLayer, MultiLayerAction } from "./multi-layer-action";
 export type LayerRuntimeObservation = {
   status: "ok" | "failed" | "blocked" | "uncertain";
   category?: "policy" | "prerequisite" | "timeout" | "transport" | "action";
+  /** Stable machine code identifying the policy/failure wall, when known. */
+  code?: string;
   summary: string;
   durationMs: number;
   /** Bounded and redacted evidence safe to show to the model and persist. */

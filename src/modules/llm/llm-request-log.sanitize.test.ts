@@ -68,7 +68,28 @@ describe("applyLLMLogRetention", () => {
       responseBody: undefined,
       rawOutput: undefined,
       validatedOutput: undefined,
-      errorDetails: undefined,
+      // Failed rows keep a bounded first-line excerpt so the audit table is
+      // not blind on failures (V7-4); prompts/payloads stay fully removed.
+      errorDetails: "provider echoed page snapshot content [REDACTED: metadata-only retention]",
     });
+  });
+
+  it("bounds the retained metadata-only error excerpt to one short line", () => {
+    const retained = applyLLMLogRetention({
+      ...payload,
+      logRetention: "metadata_only",
+      errorDetails: `${"x".repeat(300)}\nsecond line with payload fragments`,
+    });
+    expect(retained.errorDetails).not.toContain("second line");
+    expect(retained.errorDetails).toContain("[REDACTED: metadata-only retention]");
+    expect((retained.errorDetails ?? "").length).toBeLessThan(260);
+  });
+
+  it("keeps errorDetails undefined in metadata-only mode when there was no error", () => {
+    expect(applyLLMLogRetention({
+      ...payload,
+      errorDetails: undefined,
+      logRetention: "metadata_only",
+    }).errorDetails).toBeUndefined();
   });
 });

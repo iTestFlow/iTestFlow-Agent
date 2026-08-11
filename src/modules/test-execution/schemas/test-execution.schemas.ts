@@ -254,7 +254,17 @@ export const RunCaseInputSchema = z.object({
 export type RunCaseInput = z.infer<typeof RunCaseInputSchema>;
 
 export const RunEnvironmentSelectionSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("profile"), environmentProfileId: z.string().min(1) }),
+  z.object({
+    mode: z.literal("profile"),
+    environmentProfileId: z.string().min(1),
+    /**
+     * The profile's updated_at as rendered on the review screen — an opaque
+     * token the server compares (under the profile row lock) against the
+     * current version, so a run can never freeze a profile the approver
+     * did not actually review. V7-1.
+     */
+    reviewedProfileUpdatedAt: z.string().min(1),
+  }),
   z.object({
     mode: z.literal("one_time"),
     config: EnvironmentConfigFieldsSchema.omit({ name: true }).superRefine(validateEnvironmentTargets),

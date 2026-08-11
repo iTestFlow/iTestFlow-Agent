@@ -8,10 +8,6 @@ import {
   stepOutcomeContinuesCase,
 } from "@/modules/test-execution/outcome-classifier";
 import {
-  runAgenticStep,
-  type AgenticStepResult,
-} from "@/modules/test-execution/agentic-step-executor";
-import {
   runMultiLayerStep,
   type MultiLayerStepResult,
 } from "@/modules/test-execution/multi-layer-step-executor";
@@ -24,7 +20,6 @@ import {
   TestExecutionLayerRuntime,
   type TestExecutionLayerRuntimeOptions,
 } from "@/modules/test-execution/test-execution-layer-runtime";
-import { assertTestExecutionEgressAllowed } from "@/modules/test-execution/egress-policy.service";
 import { buildScrubValues } from "@/modules/test-execution/secret-resolution";
 import type { ExecutionOutcome } from "@/modules/test-execution/run-state";
 import { putExecutionArtifact } from "@/modules/test-execution/artifact-storage.service";
@@ -75,8 +70,9 @@ import type { JobHandlerContext } from "./job-handlers";
  * (maxAttempts=1, so they are terminal too, with the run finalized as error).
  * Cases execute strictly sequentially in one shared authenticated browser
  * context; each natural-language step runs through the bounded agentic loop
- * (agentic-step-executor). The optional login plan runs once up front, and
- * its failure blocks every case as blocked_prerequisite.
+ * (multi-layer-step-executor — the single engine; login runs the same engine
+ * in its UI-only "login" mode). The optional login plan runs once up front,
+ * and its failure blocks every case as blocked_prerequisite.
  */
 
 export const MAX_ARTIFACTS_PER_RUN = 50;
@@ -168,12 +164,6 @@ export async function runTestExecutionRunJob(
   }
 
   try {
-    // Login actions do not have case/step rows to anchor an action-ledger
-    // record. After a worker loss, never replay a possibly effectful login
-    // submit/OTP action; terminate conservatively instead.
-    if (reclaimingRun && env.loginPlan) {
-      throw new Error("A worker restart interrupted a run with a login prerequisite; the login sequence was not replayed.");
-    }
     const provider = await loadInitiatingUserProvider(
       bundle.run.workspaceId,
       job.createdByUserId ?? "",
@@ -216,24 +206,8 @@ export async function runTestExecutionRunJob(
       browser: executor,
       connectionSecrets: bundle.connectionSecrets,
       signal: context.signal,
-      assertApiTarget: async (url, kind) => {
-        await assertTestExecutionEgressAllowed({
-          workspaceId: bundle.run.workspaceId,
-          targetKind: kind,
-          protocol: url.protocol === "https:" ? "https" : "http",
-          host: url.hostname,
-          port: url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80,
-        });
-      },
-      assertDatabaseTarget: async ({ host, port }) => {
-        await assertTestExecutionEgressAllowed({
-          workspaceId: bundle.run.workspaceId,
-          targetKind: "database",
-          protocol: "tcp",
-          host,
-          port,
-        });
-      },
+      // Egress authorization happens inside the guarded executors via
+      // workspaceId; the assertTarget options remain test-only seams.
     });
 
     const agentContext = {
@@ -279,6 +253,14 @@ export async function runTestExecutionRunJob(
       }
 
       if (loginNeeded) {
+        // Login actions do not have case/step rows to anchor an action-ledger
+        // record. After a worker loss, never (re)play a possibly effectful
+        // login submit/OTP action — but only when a login would actually run:
+        // a landmark-verified saved session lets the reclaimed run continue
+        // its remaining cases without touching the login flow.
+        if (reclaimingRun) {
+          throw new Error("A worker restart interrupted a run with a login prerequisite; the login sequence was not replayed.");
+        }
         const loginOutcome = await executeLoginPlan(agentContext, env.loginPlan);
         if (loginOutcome !== "passed") {
           await evidence.captureFailure(executor, null, null);
@@ -445,30 +427,41 @@ function sessionAudit(
   });
 }
 
-async function runStep(
+/**
+ * Run one login-plan step through the unified engine in login mode: UI-only
+ * layers, no capabilities, no persistence rows — the same validated loop the
+ * test steps use, so prompt/validator semantics can never drift again (V7-3).
+ */
+async function runLoginStep(
   agent: AgentContext,
-  caseTitle: string,
   steps: readonly NaturalStep[],
   stepIndex: number,
   priorStepsSummary: readonly string[],
-): Promise<AgenticStepResult> {
+): Promise<MultiLayerStepResult> {
   if (!agent.executor) throw new Error("UI is not configured for the environment login plan.");
   const step = steps[stepIndex];
-  return runAgenticStep({
+  return runMultiLayerStep({
     provider: agent.provider,
-    executor: agent.executor,
-    caseTitle,
+    runtime: agent.runtime,
+    mode: "login",
+    caseTitle: "Environment login",
     stepIndex,
     stepTotal: steps.length,
     instruction: step.instruction,
     expectedResult: step.expectedResult,
+    layerHint: "ui",
     priorStepsSummary,
+    executionNotes: agent.executionNotes,
     secretNames: agent.secretNames,
     secretTitles: agent.secretTitles,
     testUsers: agent.testUsers,
-    executionNotes: agent.executionNotes,
     secrets: agent.secrets,
-    allowedOrigin: agent.allowedOrigin,
+    allowedOrigin: agent.allowedOrigin || undefined,
+    allowedApiReadPaths: new Set<string>(),
+    capabilities: [],
+    apiMutationsEnabled: false,
+    databaseDmlEnabled: false,
+    captures: new CaseCaptureStore(),
     scrub: agent.scrub,
     signal: agent.signal,
     llmCallBudget: agent.llmCallBudget,
@@ -479,7 +472,7 @@ async function runStep(
 async function executeLoginPlan(agent: AgentContext, loginPlan: NaturalPlan): Promise<ExecutionOutcome> {
   const summary: string[] = [];
   for (const [index, step] of loginPlan.steps.entries()) {
-    const result = await runStep(agent, "Environment login", loginPlan.steps, index, summary);
+    const result = await runLoginStep(agent, loginPlan.steps, index, summary);
     if (result.outcome !== "passed") {
       return result.outcome === "needs_review" ? "blocked_prerequisite" : result.outcome;
     }

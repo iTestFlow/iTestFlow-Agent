@@ -1,4 +1,8 @@
 import type { NaturalStep } from "@/modules/test-execution/action-schema";
+import {
+  API_CONNECTION_SECRET_NAMES as CANONICAL_API_CONNECTION_SECRET_NAMES,
+  DATABASE_PASSWORD_SECRET_NAME,
+} from "@/modules/test-execution/schemas/test-execution.schemas";
 
 /**
  * Pure payload assembly for the Environment step's simplified credential
@@ -14,18 +18,17 @@ export const DEFAULT_OTP_SECRET = "DEFAULT_OTP";
 export const DEFAULT_USER_HANDLE = "default";
 export const RESERVED_SECRET_NAMES = new Set([DEFAULT_PASSWORD_SECRET, DEFAULT_OTP_SECRET]);
 
-export const API_BEARER_TOKEN_SECRET = "api.bearer_token";
-export const API_KEY_SECRET = "api.api_key";
-export const API_BASIC_PASSWORD_SECRET = "api.basic_password";
-export const API_OAUTH_CLIENT_SECRET = "api.oauth_client_secret";
-export const DATABASE_PASSWORD_SECRET = "db.password";
-
-export const API_CONNECTION_SECRET_NAMES = [
+// Reserved connection-secret keys come from ONE canonical list (the API
+// schema); the client only re-exports them so the two can never drift.
+export const [
   API_BEARER_TOKEN_SECRET,
   API_KEY_SECRET,
   API_BASIC_PASSWORD_SECRET,
   API_OAUTH_CLIENT_SECRET,
-] as const;
+] = CANONICAL_API_CONNECTION_SECRET_NAMES;
+export const DATABASE_PASSWORD_SECRET = DATABASE_PASSWORD_SECRET_NAME;
+
+export const API_CONNECTION_SECRET_NAMES = CANONICAL_API_CONNECTION_SECRET_NAMES;
 export const CONNECTION_SECRET_NAMES = [...API_CONNECTION_SECRET_NAMES, DATABASE_PASSWORD_SECRET] as const;
 
 export type SecretPurpose = "agent_value" | "api_auth" | "db_connection";

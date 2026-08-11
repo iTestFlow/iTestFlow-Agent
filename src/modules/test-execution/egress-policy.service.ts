@@ -7,6 +7,7 @@ import { domainToASCII } from "node:url";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import {
   createId,
+  isPgUniqueViolation,
   nowIso,
   sqlAll,
   sqlGet,
@@ -91,6 +92,26 @@ export async function listWorkspaceEgressRules(workspaceId: string): Promise<Wor
   return rows.map(toView);
 }
 
+/**
+ * Redirect chains and multi-hop adapters authorize every hop; a very short
+ * TTL avoids one identical rule SELECT per hop without meaningfully delaying
+ * policy changes (writes below invalidate immediately in this process).
+ */
+const RULE_CACHE_TTL_MS = 2_000;
+const ruleCache = new Map<string, { at: number; rules: WorkspaceEgressRuleView[] }>();
+
+async function listEnabledRulesCached(workspaceId: string): Promise<WorkspaceEgressRuleView[]> {
+  const cached = ruleCache.get(workspaceId);
+  if (cached && Date.now() - cached.at < RULE_CACHE_TTL_MS) return cached.rules;
+  const rules = (await listWorkspaceEgressRules(workspaceId)).filter((rule) => rule.enabled);
+  ruleCache.set(workspaceId, { at: Date.now(), rules });
+  return rules;
+}
+
+function invalidateRuleCache(workspaceId: string): void {
+  ruleCache.delete(workspaceId);
+}
+
 export async function createWorkspaceEgressRule(input: {
   workspaceId: string;
   actor: string;
@@ -113,6 +134,7 @@ export async function createWorkspaceEgressRule(input: {
       { id, workspaceId: input.workspaceId, actor: input.actor, now, ...rule },
     );
     if (!row) throw new TestExecutionEgressError("The egress rule could not be saved.", 500);
+    invalidateRuleCache(input.workspaceId);
     const view = toView(row);
     auditRule(input, view, "test_execution.egress_rule_created");
     return view;
@@ -155,6 +177,7 @@ export async function updateWorkspaceEgressRule(input: {
       },
     );
     if (!row) return null;
+    invalidateRuleCache(input.workspaceId);
     const view = toView(row);
     auditRule(input, view, "test_execution.egress_rule_updated");
     return view;
@@ -178,6 +201,7 @@ export async function deleteWorkspaceEgressRule(input: {
     { id: input.ruleId, workspaceId: input.workspaceId },
   );
   if (!deleted) return false;
+  invalidateRuleCache(input.workspaceId);
   writeAuditLog({
     workspaceId: input.workspaceId,
     entityType: "workspace_test_egress_rule",
@@ -214,7 +238,7 @@ export async function assertTestExecutionEgressAllowed(input: {
   }
   const host = normalizeRequestedHost(input.host);
   const addresses = await resolveAddresses(host);
-  const rules = (await listWorkspaceEgressRules(input.workspaceId)).filter((rule) => rule.enabled);
+  const rules = await listEnabledRulesCached(input.workspaceId);
   const matchingRules = rules.filter((candidate) =>
     candidate.targetKind === input.targetKind &&
     candidate.protocol === input.protocol &&
@@ -336,6 +360,17 @@ function stripIpv6Brackets(value: string): string {
   return value.startsWith("[") && value.endsWith("]") ? value.slice(1, -1) : value;
 }
 
+/**
+ * Normalize a connection hostname the same way the policy boundary does:
+ * brackets stripped, IPs canonicalized, DNS names lowercased/ASCII. Shared
+ * with the database egress adapter so the two can never disagree.
+ */
+export function normalizeEgressHostname(value: string): string {
+  const trimmed = stripIpv6Brackets(value.trim().toLowerCase()).replace(/\.$/, "");
+  if (isIP(trimmed)) return normalizeIp(trimmed);
+  return normalizeDnsName(trimmed);
+}
+
 function normalizeIp(value: string): string {
   const version = isIP(value);
   if (version === 4) return value.split(".").map(Number).join(".");
@@ -379,7 +414,12 @@ function hostIsLocallyRestricted(host: string): boolean {
   return host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local");
 }
 
-function addressIsRestricted(address: string): boolean {
+/**
+ * Whether a concrete IP is private/loopback/link-local/special-purpose —
+ * including the IPv4 embedded in transitional IPv6 forms. Exported for the
+ * transitional-embedding unit tests.
+ */
+export function addressIsRestricted(address: string): boolean {
   if (isIP(address) === 4) {
     return [
       "0.0.0.0/8",
@@ -394,8 +434,14 @@ function addressIsRestricted(address: string): boolean {
     ].some((cidr) => ipMatchesCidr(address, cidr));
   }
   if (isIP(address) === 6) {
-    const mapped = ipv4FromMappedIpv6(address);
-    if (mapped) return addressIsRestricted(mapped);
+    // Transitional embeddings (IPv4-mapped, NAT64, 6to4, IPv4-compatible,
+    // Teredo) are judged by their embedded IPv4: a private embedded address
+    // is restricted, a public one follows normal policy. The prefixes
+    // themselves are deliberately NOT blanket-restricted — NAT64/6to4 can
+    // legitimately embed public destinations.
+    if (embeddedIpv4Addresses(address).some((embedded) => addressIsRestricted(embedded))) {
+      return true;
+    }
     return ["::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8"]
       .some((cidr) => ipMatchesCidr(address, cidr));
   }
@@ -456,15 +502,43 @@ function ipv6ToBigInt(address: string): bigint | null {
   return groups.reduce((value, group) => (value << BigInt(16)) | BigInt(group), BigInt(0));
 }
 
-function ipv4FromMappedIpv6(address: string): string | null {
+/**
+ * Extract the IPv4 address(es) embedded in an IPv6 transitional form:
+ * IPv4-mapped ::ffff:0:0/96, NAT64 well-known 64:ff9b::/96, 6to4 2002::/16
+ * (bits 16–48), deprecated IPv4-compatible ::/96, and Teredo 2001::/32
+ * (server address in bits 32–63; client address XOR-obfuscated in the low
+ * 32 bits). Returns an empty list for ordinary IPv6 addresses.
+ */
+function embeddedIpv4Addresses(address: string): string[] {
   const value = ipv6ToBigInt(address);
-  if (value === null || (value >> BigInt(32)) !== BigInt(0xffff)) return null;
+  if (value === null) return [];
+  const low32 = value & BigInt(0xffff_ffff);
+  const results: string[] = [];
+  // IPv4-mapped ::ffff:a.b.c.d
+  if ((value >> BigInt(32)) === BigInt(0xffff)) results.push(dottedIpv4(low32));
+  // NAT64 well-known prefix 64:ff9b::a.b.c.d
+  if ((value >> BigInt(96)) === BigInt(0x0064_ff9b)) results.push(dottedIpv4(low32));
+  // IPv4-compatible ::a.b.c.d (deprecated; excludes :: and ::1)
+  if ((value >> BigInt(32)) === BigInt(0) && low32 > BigInt(1)) results.push(dottedIpv4(low32));
+  // 6to4 2002:AABB:CCDD:: embeds AABBCCDD
+  if ((value >> BigInt(112)) === BigInt(0x2002)) {
+    results.push(dottedIpv4((value >> BigInt(80)) & BigInt(0xffff_ffff)));
+  }
+  // Teredo 2001:0000:server:flags:port:client(inverted)
+  if ((value >> BigInt(96)) === BigInt(0x2001_0000)) {
+    results.push(dottedIpv4((value >> BigInt(64)) & BigInt(0xffff_ffff)));
+    results.push(dottedIpv4(low32 ^ BigInt(0xffff_ffff)));
+  }
+  return [...new Set(results)];
+}
+
+function dottedIpv4(value: bigint): string {
   const ipv4 = Number(value & BigInt(0xffff_ffff));
   return [24, 16, 8, 0].map((shift) => String((ipv4 >>> shift) & 255)).join(".");
 }
 
 function isUniqueViolation(error: unknown): boolean {
-  return Boolean(error) && typeof error === "object" && (error as { code?: string }).code === "23505";
+  return isPgUniqueViolation(error);
 }
 
 function auditRule(

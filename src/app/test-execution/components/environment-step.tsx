@@ -75,6 +75,8 @@ export type EnvironmentProfileSummary = {
   users: TestUserDraft[];
   secrets: { secretName: string; title: string; maskedPreview: string; purpose?: SecretPurpose }[];
   sessionCapturedAt: string | null;
+  /** Version token compared at run creation — the profile the user reviewed. */
+  updatedAt: string;
 };
 
 export type OneTimeEnvironmentState = {

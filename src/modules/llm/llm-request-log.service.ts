@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createId, enqueueBackgroundWrite, nowIso, sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { isSensitiveKey } from "@/modules/shared/sensitive-data";
 import type { LLMProviderName } from "./llm-types";
 
 export type LLMRequestLogMetadata = {
@@ -35,7 +36,6 @@ export type LLMRequestLogInput = LLMRequestLogMetadata & {
   durationMs: number;
 };
 
-const SENSITIVE_KEY_PATTERN = /(api[_-]?key|authorization|token|pat|password|secret|x-api-key|personalAccessToken)/i;
 
 export function writeLLMRequestLog(input: LLMRequestLogInput) {
   const now = nowIso();
@@ -117,10 +117,17 @@ export function applyLLMLogRetention(input: Pick<
     responseBody: undefined,
     rawOutput: undefined,
     validatedOutput: undefined,
-    // Provider errors can echo request fragments or model output. Status and
-    // duration remain sufficient metadata for this retention mode.
-    errorDetails: undefined,
+    // Provider errors can echo request fragments or model output, so the full
+    // details are not retained — but a bounded first-line excerpt keeps
+    // failed rows diagnosable instead of leaving the audit table blind.
+    errorDetails: input.errorDetails ? metadataOnlyErrorExcerpt(input.errorDetails) : undefined,
   };
+}
+
+function metadataOnlyErrorExcerpt(details: string): string {
+  const firstLine = details.split(/\r?\n/, 1)[0]?.trim() ?? "";
+  const bounded = firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine;
+  return `${bounded} ${METADATA_ONLY_MARKER}`.trim();
 }
 
 export function sanitizeLLMLogPayload(value: unknown): unknown {
@@ -130,7 +137,7 @@ export function sanitizeLLMLogPayload(value: unknown): unknown {
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
       key,
-      SENSITIVE_KEY_PATTERN.test(key) ? "[REDACTED]" : sanitizeLLMLogPayload(entry),
+      isSensitiveKey(key) ? "[REDACTED]" : sanitizeLLMLogPayload(entry),
     ]),
   );
 }

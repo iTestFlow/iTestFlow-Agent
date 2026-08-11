@@ -134,7 +134,9 @@ describe("POST /api/test-execution/runs", () => {
       workspaceId: ctx.workspace.id,
       baseUrl: "https://api.example.test/v1",
       sourceUrl: "https://api.example.test/openapi.json",
-      timeoutMs: 2_500,
+      // Discovery downloads a whole OpenAPI document: the tight per-request
+      // budget is floored (V4-5) instead of reused verbatim.
+      timeoutMs: 30_000,
       signal: expect.any(AbortSignal),
     }));
     expect(mocks.createRunWithSnapshots).toHaveBeenCalledWith(expect.objectContaining({
@@ -228,11 +230,70 @@ describe("POST /api/test-execution/runs", () => {
     mocks.getEnvironmentProfile.mockResolvedValue(null);
     const body = {
       ...validBody,
-      environment: { mode: "profile", environmentProfileId: "tenv_missing" },
+      environment: {
+        mode: "profile",
+        environmentProfileId: "tenv_missing",
+        reviewedProfileUpdatedAt: "2026-01-01T00:00:00.000Z",
+      },
     };
     const response = await POST(jsonRequest("/api/test-execution/runs", body));
     expect(response.status).toBe(404);
     expect(mocks.createRunWithSnapshots).not.toHaveBeenCalled();
+  });
+
+  it("rejects a profile selection without the reviewed version token", async () => {
+    const body = {
+      ...validBody,
+      environment: { mode: "profile", environmentProfileId: "tenv_1" },
+    };
+    const response = await POST(jsonRequest("/api/test-execution/runs", body));
+    expect(response.status).toBe(400);
+    expect(mocks.createRunWithSnapshots).not.toHaveBeenCalled();
+  });
+
+  it("freezes the CLIENT's reviewed profile version, not the re-fetched one (V7-1)", async () => {
+    mocks.getEnvironmentProfile.mockResolvedValue({
+      id: "tenv_1",
+      lifecycleStatus: "active",
+      // The server-side row has already moved on...
+      updatedAt: "2026-02-02T00:00:00.000Z",
+      name: "Staging",
+      initialUrl: "",
+      allowedOrigin: "",
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      headless: true,
+      defaultTimeoutMs: 10_000,
+      navigationTimeoutMs: 30_000,
+      evidenceLevel: "on_failure",
+      loginPlan: null,
+      loginMode: "session",
+      loggedInText: "",
+      executionNotes: "",
+      users: [],
+      api: null,
+      database: null,
+      secrets: [],
+      sessionCapturedAt: null,
+    });
+    const body = {
+      ...validBody,
+      environment: {
+        mode: "profile",
+        environmentProfileId: "tenv_1",
+        // ...but the approver reviewed THIS version; the lock check must
+        // compare against it so a changed profile 409s instead of freezing.
+        reviewedProfileUpdatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    };
+    const response = await POST(jsonRequest("/api/test-execution/runs", body));
+    expect(response.status).toBe(202);
+    expect(mocks.createRunWithSnapshots).toHaveBeenCalledWith(expect.objectContaining({
+      environment: expect.objectContaining({
+        profileId: "tenv_1",
+        profileUpdatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    }));
   });
 });
 

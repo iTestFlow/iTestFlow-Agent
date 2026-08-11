@@ -15,6 +15,7 @@ import {
 } from "@/modules/integrations/database-automation/database-executor.port";
 
 import type { EnvConfig } from "./run-persistence.service";
+import { configuredEnvironmentLayers } from "./environment-layers";
 import type { MultiLayerAction } from "./multi-layer-action";
 import type { LayerRuntimeObservation, MultiLayerRuntime } from "./multi-layer-runtime.port";
 
@@ -36,11 +37,9 @@ export class TestExecutionLayerRuntime implements MultiLayerRuntime {
   private database: DatabaseExecutor | null = null;
 
   constructor(private readonly options: TestExecutionLayerRuntimeOptions) {
-    const layers: Array<"ui" | "api" | "db"> = [];
-    if (options.env.initialUrl && options.browser) layers.push("ui");
-    if (options.env.api) layers.push("api");
-    if (options.env.database) layers.push("db");
-    this.configuredLayers = new Set(layers);
+    this.configuredLayers = new Set(configuredEnvironmentLayers(options.env, {
+      browserAvailable: Boolean(options.browser),
+    }));
   }
 
   async inspectUi() {
@@ -57,27 +56,29 @@ export class TestExecutionLayerRuntime implements MultiLayerRuntime {
     }
     if (action.type === "ui_action") return this.executeUi(action.action);
     if (action.type === "api_request") {
-      return this.executeApi({
+      return this.executeApi(() => ({
         method: action.arguments.method,
         path: action.arguments.path,
         query: action.arguments.query,
         headers: action.arguments.headers,
-      });
+      }));
     }
     if (action.type === "api_execute_operation") {
-      return this.executeApi(renderApiOperation(action.capability.definition, action.arguments.parameters));
+      // Rendering happens inside executeApi's try: a template/parameter error
+      // is a normal blocked/failed observation, not a whole-step infra error.
+      return this.executeApi(() => renderApiOperation(action.capability.definition, action.arguments.parameters));
     }
     if (action.type === "db_schema") {
-      return this.executeDatabase({ kind: "schema", tablePattern: action.arguments.tablePattern });
+      return this.executeDatabase(() => ({ kind: "schema", tablePattern: action.arguments.tablePattern }));
     }
     if (action.type === "db_select") {
-      return this.executeDatabase({ kind: "select", sql: action.arguments.sql, parameters: action.arguments.parameters });
+      return this.executeDatabase(() => ({ kind: "select", sql: action.arguments.sql, parameters: action.arguments.parameters }));
     }
-    return this.executeDatabase({
+    return this.executeDatabase(() => ({
       kind: action.capability.safetyClass === "mutation" ? "mutation" : "select",
       sql: requiredString(action.capability.definition, "sql", "Database operation has no SQL template."),
       parameters: action.arguments.parameters,
-    });
+    }));
   }
 
   async dispose(): Promise<void> {
@@ -90,28 +91,53 @@ export class TestExecutionLayerRuntime implements MultiLayerRuntime {
 
   private async executeUi(action: Parameters<BrowserExecutor["performAgentAction"]>[0]): Promise<LayerRuntimeObservation> {
     const browser = this.options.browser;
-    if (!browser) return { status: "blocked", category: "prerequisite", summary: "UI is not configured.", durationMs: 0 };
+    if (!browser) return { status: "blocked", category: "prerequisite", code: "ui-not-configured", summary: "UI is not configured.", durationMs: 0 };
     const result = await browser.performAgentAction(action);
-    const snapshot = await browser.takeSnapshot();
+    // A navigation/context change can make the immediate post-action snapshot
+    // fail. Never substitute stale state: retry once after a short settle,
+    // then report the real action result without a snapshot — the agent loop
+    // can issue ui_snapshot next iteration.
+    let snapshot: Awaited<ReturnType<BrowserExecutor["takeSnapshot"]>> | null = null;
+    let snapshotUnavailable = false;
+    try {
+      snapshot = await browser.takeSnapshot();
+    } catch {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        snapshot = await browser.takeSnapshot();
+      } catch {
+        snapshotUnavailable = true;
+      }
+    }
+    const unavailableNote = snapshotUnavailable ? " (post-action snapshot unavailable)" : "";
     if (result.status === "ok") {
       return {
         status: "ok",
-        summary: result.observation.detail ?? `UI ${action.type} completed.`,
+        summary: `${result.observation.detail ?? `UI ${action.type} completed.`}${unavailableNote}`,
         durationMs: result.observation.durationMs,
-        data: { url: result.observation.url ?? snapshot.url },
-        uiSnapshot: snapshot,
+        data: { url: result.observation.url ?? snapshot?.url },
+        ...(snapshot ? { uiSnapshot: snapshot } : {}),
       };
     }
     return {
       status: result.reason === "policy_violation" ? "blocked" : "failed",
       category: result.reason === "policy_violation" ? "policy" : result.reason === "timeout" ? "timeout" : "action",
-      summary: result.observation.detail ?? `UI action failed: ${result.reason}.`,
+      ...(result.reason === "policy_violation" ? { code: "ui-policy-violation" } : {}),
+      summary: `${result.observation.detail ?? `UI action failed: ${result.reason}.`}${unavailableNote}`,
       durationMs: result.observation.durationMs,
-      uiSnapshot: snapshot,
+      ...(snapshot ? { uiSnapshot: snapshot } : {}),
     };
   }
 
-  private async executeApi(request: ApiExecutionRequest): Promise<LayerRuntimeObservation> {
+  private async executeApi(buildRequest: () => ApiExecutionRequest): Promise<LayerRuntimeObservation> {
+    // Render/definition errors are normal blocked observations the agent can
+    // react to — never whole-step infrastructure errors.
+    let request: ApiExecutionRequest;
+    try {
+      request = buildRequest();
+    } catch (error) {
+      return blockedFromRenderError(error, "invalid-api-operation");
+    }
     try {
       const result = await (await this.ensureApi()).execute(request);
       return {
@@ -134,16 +160,26 @@ export class TestExecutionLayerRuntime implements MultiLayerRuntime {
         return { status: "uncertain", category: error.category === "timeout" ? "timeout" : "transport", summary: error.message, durationMs: 0 };
       }
       if (error.category === "policy" || error.category === "prerequisite") {
-        return { status: "blocked", category: error.category, summary: error.message, durationMs: 0 };
+        return { status: "blocked", category: error.category, code: error.code, summary: error.message, durationMs: 0 };
       }
-      return { status: "failed", category: error.category, summary: error.message, durationMs: 0 };
+      return { status: "failed", category: error.category, code: error.code, summary: error.message, durationMs: 0 };
     }
   }
 
-  private async executeDatabase(request: DatabaseExecutionRequest): Promise<LayerRuntimeObservation> {
+  private async executeDatabase(buildRequest: () => DatabaseExecutionRequest): Promise<LayerRuntimeObservation> {
+    let request: DatabaseExecutionRequest;
+    try {
+      request = buildRequest();
+    } catch (error) {
+      return blockedFromRenderError(error, "invalid-database-operation");
+    }
     try {
       const result = await (await this.ensureDatabase()).execute(request);
       if (result.status === "query_error") {
+        // Deliberate: a server-side query error is a normal observation with
+        // status "ok" so the agent sees the SQL error text and can adapt its
+        // next query. The summary carries the error; it is NOT step evidence
+        // of success. Pinned by test — do not "fix" this into a failure.
         return {
           status: "ok",
           summary: `Database returned ${result.sqlState ?? "an error"}: ${result.errorMessage ?? "query failed"}`,
@@ -170,9 +206,9 @@ export class TestExecutionLayerRuntime implements MultiLayerRuntime {
         return { status: "uncertain", category: error.category === "timeout" ? "timeout" : "transport", summary: error.message, durationMs: 0 };
       }
       if (error.category === "policy" || error.category === "prerequisite") {
-        return { status: "blocked", category: error.category, summary: error.message, durationMs: 0 };
+        return { status: "blocked", category: error.category, code: error.code, summary: error.message, durationMs: 0 };
       }
-      return { status: "failed", category: error.category, summary: error.message, durationMs: 0 };
+      return { status: "failed", category: error.category, code: error.code, summary: error.message, durationMs: 0 };
     }
   }
 
@@ -207,6 +243,13 @@ export class TestExecutionLayerRuntime implements MultiLayerRuntime {
     });
     return this.database;
   }
+}
+
+function blockedFromRenderError(error: unknown, fallbackCode: string): LayerRuntimeObservation {
+  const message = error instanceof Error ? error.message : "The operation request could not be rendered.";
+  const category = error instanceof ApiExecutorError && error.category === "policy" ? "policy" as const : "prerequisite" as const;
+  const code = error instanceof ApiExecutorError && error.code ? error.code : fallbackCode;
+  return { status: "blocked", category, code, summary: message, durationMs: 0 };
 }
 
 function renderApiOperation(

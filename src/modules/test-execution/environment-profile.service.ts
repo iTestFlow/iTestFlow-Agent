@@ -5,6 +5,7 @@ import { decryptSecret, encryptSecret, maskSecret } from "@/modules/security/enc
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import {
   createId,
+  isPgUniqueViolation,
   nowIso,
   sqlAll,
   sqlGet,
@@ -21,6 +22,7 @@ import type {
 } from "./schemas/test-execution.schemas";
 import {
   ApiEnvironmentConfigSchema,
+  DATABASE_PASSWORD_SECRET_NAME,
   DatabaseEnvironmentConfigSchema,
   EnvironmentConfigInputSchema,
 } from "./schemas/test-execution.schemas";
@@ -207,6 +209,37 @@ export class EnvironmentProfileUpdateConflictError extends Error {
   }
 }
 
+export class EnvironmentProfileConfigSecretMismatchError extends Error {
+  constructor(readonly issue: string) {
+    super(issue);
+    this.name = "EnvironmentProfileConfigSecretMismatchError";
+  }
+}
+
+/**
+ * Every connection credential the config references must exist after the
+ * write — a profile whose database config outlives its db.password (or whose
+ * API auth outlives its secret) would fail at run time instead of save time.
+ */
+function connectionSecretIssue(
+  config: { hasDatabase: boolean; apiAuthType: string | null },
+  secretNames: ReadonlySet<string>,
+): string | null {
+  if (config.hasDatabase && !secretNames.has(DATABASE_PASSWORD_SECRET_NAME)) {
+    return `The database configuration requires the "${DATABASE_PASSWORD_SECRET_NAME}" connection secret.`;
+  }
+  const required =
+    config.apiAuthType === "bearer" ? "api.bearer_token"
+    : config.apiAuthType === "api_key" ? "api.api_key"
+    : config.apiAuthType === "basic" ? "api.basic_password"
+    : config.apiAuthType === "oauth2_client_credentials" ? "api.oauth_client_secret"
+    : null;
+  if (required && !secretNames.has(required)) {
+    return `The API authentication mode requires the "${required}" connection secret.`;
+  }
+  return null;
+}
+
 export async function createEnvironmentProfile(input: {
   workspaceId: string;
   scope: ProjectScope;
@@ -215,6 +248,11 @@ export async function createEnvironmentProfile(input: {
   secrets: SecretInput[];
 }): Promise<EnvironmentProfileView> {
   const config = EnvironmentConfigInputSchema.parse(input.config);
+  const createIssue = connectionSecretIssue(
+    { hasDatabase: Boolean(config.database), apiAuthType: config.api?.auth?.type ?? null },
+    new Set(input.secrets.map((secret) => secret.secretName)),
+  );
+  if (createIssue) throw new EnvironmentProfileConfigSecretMismatchError(createIssue);
   const id = createId("tenv");
   const now = nowIso();
   try {
@@ -312,6 +350,22 @@ export async function updateEnvironmentProfile(input: {
     throw new EnvironmentProfileSecretLimitError();
   }
 
+  // Merge once, up front: the same parsed config drives both the write below
+  // and the config↔secret cross-validation (a ZodError here surfaces as 400).
+  const mergedConfig = input.config && Object.keys(input.config).length > 0
+    ? EnvironmentConfigInputSchema.parse({
+        ...existing,
+        ...renameConfigKeys(input.config),
+      })
+    : null;
+  const effectiveApi = mergedConfig ? mergedConfig.api : existing.api;
+  const effectiveDatabase = mergedConfig ? mergedConfig.database : existing.database;
+  const secretIssue = connectionSecretIssue(
+    { hasDatabase: Boolean(effectiveDatabase), apiAuthType: effectiveApi?.auth?.type ?? null },
+    resultingSecretNames,
+  );
+  if (secretIssue) throw new EnvironmentProfileConfigSecretMismatchError(secretIssue);
+
   try {
     let profileStillExists = true;
     await withTransaction(async (client) => {
@@ -336,11 +390,8 @@ export async function updateEnvironmentProfile(input: {
       }
       const updatedAt = nextProfileUpdatedAt(locked.updated_at);
 
-      if (input.config && Object.keys(input.config).length > 0) {
-        const merged = EnvironmentConfigInputSchema.parse({
-          ...existing,
-          ...renameConfigKeys(input.config),
-        });
+      if (mergedConfig) {
+        const merged = mergedConfig;
         await sqlRun(
           `UPDATE test_environment_profiles SET
              name = @name, initial_url = @initialUrl, allowed_origin = @allowedOrigin,
@@ -547,12 +598,7 @@ function parseStoredConfig<T extends "api" | "database">(
 }
 
 function isUniqueViolation(error: unknown, constraint: string): boolean {
-  return (
-    Boolean(error) &&
-    typeof error === "object" &&
-    (error as { code?: string }).code === "23505" &&
-    String((error as { constraint?: string }).constraint ?? "").includes(constraint)
-  );
+  return isPgUniqueViolation(error, constraint);
 }
 
 /* --------------------------------------------------------------------------

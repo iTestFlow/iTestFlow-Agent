@@ -1,4 +1,10 @@
-import type { RunDetailRows } from "./run.service";
+import { scrubDeep, type Scrubber } from "@/modules/integrations/browser-automation/output-scrubber";
+import {
+  redactExactValuesDeep,
+  redactSensitiveKeysDeep,
+} from "@/modules/shared/sensitive-data";
+
+import type { RunDetailChangeRows, RunDetailRows } from "./run.service";
 
 /**
  * Pure composition of the run detail DTO — the polling target during
@@ -6,7 +12,20 @@ import type { RunDetailRows } from "./run.service";
  * from loadRunDetailRows (already scope-checked); output is JSON-safe and
  * contains no secrets (step rows persist placeholders only) and no storage
  * keys (artifact downloads go through the authorized route by id).
+ *
+ * Persisted observations are sanitized at write time (the execution worker
+ * scrubs before persisting) — that is the primary protection. The redaction
+ * applied here is a second, read-time barrier: key-based redaction plus the
+ * run's own secret values (exact scalar + substring), so a value that slipped
+ * past a name check still never leaves the API.
  */
+
+export type RunDetailRedaction = {
+  /** Substring scrubber built from the run's secret values (>= 4 chars). */
+  scrubText?: Scrubber;
+  /** Exact scalar forms of the run's secret values, any length. */
+  exactValues?: ReadonlySet<string>;
+};
 
 export type RunDetailDto = {
   run: {
@@ -66,6 +85,29 @@ export type RunDetailDto = {
     updatedAt: string;
   }[];
   job: { id: string; status: string; cancelRequestedAt: string | null } | null;
+  /** Change cursor for incremental polling; poll with ?afterCursor=<value>. */
+  nextCursor?: string;
+};
+
+export type RunStepDto = RunDetailDto["cases"][number]["steps"][number];
+export type RunCaseDto = RunDetailDto["cases"][number];
+
+/**
+ * Incremental poll payload: only case/step/action rows that changed past the
+ * client's cursor. The run row, artifacts, candidates, and job are tiny and
+ * always present; the client merges by id (idempotent — duplicate delivery
+ * around the snapshot boundary is safe).
+ */
+export type RunDetailDeltaDto = {
+  run: RunDetailDto["run"];
+  changedCases: Omit<RunCaseDto, "steps" | "artifacts">[];
+  changedSteps: (Omit<RunStepDto, "actions" | "artifacts"> & { caseRunId: string })[];
+  changedActions: (ActionRunRef & { stepRunId: string; caseRunId: string })[];
+  artifacts: ArtifactRef[];
+  defectCandidates: RunDetailDto["defectCandidates"];
+  job: RunDetailDto["job"];
+  nextCursor: string;
+  hasMore: boolean;
 };
 
 export type ActionRunRef = {
@@ -104,11 +146,23 @@ function num(value: unknown): number {
   return typeof value === "number" ? value : Number(value ?? 0) || 0;
 }
 
-export function assembleRunDetail(rows: RunDetailRows): RunDetailDto | null {
-  const run = rows.run;
-  if (!run) return null;
+type RedactPayload = (value: unknown) => unknown;
 
-  const artifacts: ArtifactRef[] = rows.artifacts.map((row) => ({
+// Key-based redaction always applies; value-based layers apply when the
+// caller supplies the run's secret material.
+function buildRedactPayload(redaction: RunDetailRedaction): RedactPayload {
+  return (value: unknown): unknown => {
+    let output = redactSensitiveKeysDeep(value, "<redacted>");
+    if (redaction.exactValues && redaction.exactValues.size > 0) {
+      output = redactExactValuesDeep(output, redaction.exactValues, "<redacted>");
+    }
+    if (redaction.scrubText) output = scrubDeep(output, redaction.scrubText);
+    return output;
+  };
+}
+
+function mapArtifactRow(row: Record<string, unknown>): ArtifactRef {
+  return {
     id: str(row.id),
     kind: str(row.kind),
     mimeType: str(row.mime_type),
@@ -117,7 +171,102 @@ export function assembleRunDetail(rows: RunDetailRows): RunDetailDto | null {
     caseRunId: strOrNull(row.case_run_id),
     stepRunId: strOrNull(row.step_run_id),
     createdAt: str(row.created_at),
-  }));
+  };
+}
+
+function mapActionRow(row: Record<string, unknown>, redactPayload: RedactPayload): ActionRunRef {
+  return {
+    id: str(row.id),
+    orderIndex: num(row.order_index),
+    layer: str(row.layer),
+    actionType: str(row.action_type),
+    safetyClass: str(row.safety_class),
+    request: redactPayload(row.request_json),
+    status: str(row.status),
+    observation: redactPayload(row.observation_json),
+    errorCategory: strOrNull(row.error_category),
+    errorMessage: strOrNull(row.error_message),
+    startedAt: str(row.started_at),
+    finishedAt: strOrNull(row.finished_at),
+  };
+}
+
+function mapStepRow(
+  row: Record<string, unknown>,
+  redactPayload: RedactPayload,
+): Omit<RunStepDto, "actions" | "artifacts"> {
+  return {
+    id: str(row.id),
+    orderIndex: num(row.order_index),
+    action: row.action_json,
+    status: str(row.status),
+    outcome: strOrNull(row.outcome),
+    observation: redactPayload(row.observation_json),
+    errorMessage: strOrNull(row.error_message),
+    startedAt: strOrNull(row.started_at),
+    finishedAt: strOrNull(row.finished_at),
+  };
+}
+
+function mapCaseRow(row: Record<string, unknown>): Omit<RunCaseDto, "steps" | "artifacts"> {
+  return {
+    id: str(row.id),
+    orderIndex: num(row.order_index),
+    title: str(row.title),
+    sourceKind: str(row.source_kind),
+    sourceSnapshotId: strOrNull(row.source_snapshot_id),
+    compileSource: str(row.compile_source),
+    compilePromptVersion: strOrNull(row.compile_prompt_version),
+    compileModel: strOrNull(row.compile_model),
+    status: str(row.status),
+    outcome: strOrNull(row.outcome),
+    errorMessage: strOrNull(row.error_message),
+    startedAt: strOrNull(row.started_at),
+    finishedAt: strOrNull(row.finished_at),
+  };
+}
+
+function mapRunRow(run: Record<string, unknown>, approvedByName: string | null): RunDetailDto["run"] {
+  return {
+    id: str(run.id),
+    status: str(run.status),
+    outcome: strOrNull(run.outcome),
+    storyWorkItemId: strOrNull(run.story_work_item_id),
+    storyTitle: strOrNull(run.story_title),
+    environmentProfileId: strOrNull(run.environment_profile_id),
+    envConfig: sanitizeEnvConfig(run.env_config_json),
+    summary: run.summary_json,
+    planSchemaVersion: str(run.plan_schema_version),
+    approvedBy: str(run.approved_by),
+    approvedByName,
+    approvedAt: str(run.approved_at),
+    startedAt: strOrNull(run.started_at),
+    finishedAt: strOrNull(run.finished_at),
+    errorMessage: strOrNull(run.error_message),
+    createdAt: str(run.created_at),
+  };
+}
+
+function mapCandidateRow(row: Record<string, unknown>, redactPayload: RedactPayload) {
+  return {
+    id: str(row.id),
+    caseRunId: str(row.case_run_id),
+    status: str(row.status),
+    draft: redactPayload(row.draft_json),
+    evidence: redactPayload(row.evidence_json),
+    updatedAt: str(row.updated_at),
+  };
+}
+
+export function assembleRunDetail(
+  rows: RunDetailRows,
+  redaction: RunDetailRedaction = {},
+): RunDetailDto | null {
+  const run = rows.run;
+  if (!run) return null;
+  const redactPayload = buildRedactPayload(redaction);
+
+  const artifacts: ArtifactRef[] = rows.artifacts.map(mapArtifactRow);
   const artifactsByStep = new Map<string, ArtifactRef[]>();
   const artifactsByCase = new Map<string, ArtifactRef[]>();
   const runLevelArtifacts: ArtifactRef[] = [];
@@ -139,20 +288,7 @@ export function assembleRunDetail(rows: RunDetailRows): RunDetailDto | null {
   for (const row of rows.actions ?? []) {
     const stepId = str(row.step_run_id);
     const list = actionsByStep.get(stepId) ?? [];
-    list.push({
-      id: str(row.id),
-      orderIndex: num(row.order_index),
-      layer: str(row.layer),
-      actionType: str(row.action_type),
-      safetyClass: str(row.safety_class),
-      request: redactSensitiveFields(row.request_json),
-      status: str(row.status),
-      observation: redactSensitiveFields(row.observation_json),
-      errorCategory: strOrNull(row.error_category),
-      errorMessage: strOrNull(row.error_message),
-      startedAt: str(row.started_at),
-      finishedAt: strOrNull(row.finished_at),
-    });
+    list.push(mapActionRow(row, redactPayload));
     actionsByStep.set(stepId, list);
   }
 
@@ -161,15 +297,7 @@ export function assembleRunDetail(rows: RunDetailRows): RunDetailDto | null {
     const caseId = str(row.case_run_id);
     const list = stepsByCase.get(caseId) ?? [];
     list.push({
-      id: str(row.id),
-      orderIndex: num(row.order_index),
-      action: row.action_json,
-      status: str(row.status),
-      outcome: strOrNull(row.outcome),
-      observation: row.observation_json,
-      errorMessage: strOrNull(row.error_message),
-      startedAt: strOrNull(row.started_at),
-      finishedAt: strOrNull(row.finished_at),
+      ...mapStepRow(row, redactPayload),
       actions: actionsByStep.get(str(row.id)) ?? [],
       artifacts: artifactsByStep.get(str(row.id)) ?? [],
     });
@@ -177,51 +305,43 @@ export function assembleRunDetail(rows: RunDetailRows): RunDetailDto | null {
   }
 
   return {
-    run: {
-      id: str(run.id),
-      status: str(run.status),
-      outcome: strOrNull(run.outcome),
-      storyWorkItemId: strOrNull(run.story_work_item_id),
-      storyTitle: strOrNull(run.story_title),
-      environmentProfileId: strOrNull(run.environment_profile_id),
-      envConfig: sanitizeEnvConfig(run.env_config_json),
-      summary: run.summary_json,
-      planSchemaVersion: str(run.plan_schema_version),
-      approvedBy: str(run.approved_by),
-      approvedByName: rows.approvedByName,
-      approvedAt: str(run.approved_at),
-      startedAt: strOrNull(run.started_at),
-      finishedAt: strOrNull(run.finished_at),
-      errorMessage: strOrNull(run.error_message),
-      createdAt: str(run.created_at),
-    },
+    run: mapRunRow(run, rows.approvedByName),
     cases: rows.cases.map((row) => ({
-      id: str(row.id),
-      orderIndex: num(row.order_index),
-      title: str(row.title),
-      sourceKind: str(row.source_kind),
-      sourceSnapshotId: strOrNull(row.source_snapshot_id),
-      compileSource: str(row.compile_source),
-      compilePromptVersion: strOrNull(row.compile_prompt_version),
-      compileModel: strOrNull(row.compile_model),
-      status: str(row.status),
-      outcome: strOrNull(row.outcome),
-      errorMessage: strOrNull(row.error_message),
-      startedAt: strOrNull(row.started_at),
-      finishedAt: strOrNull(row.finished_at),
+      ...mapCaseRow(row),
       steps: stepsByCase.get(str(row.id)) ?? [],
       artifacts: artifactsByCase.get(str(row.id)) ?? [],
     })),
     runArtifacts: runLevelArtifacts,
-    defectCandidates: rows.candidates.map((row) => ({
-      id: str(row.id),
-      caseRunId: str(row.case_run_id),
-      status: str(row.status),
-      draft: row.draft_json,
-      evidence: row.evidence_json,
-      updatedAt: str(row.updated_at),
-    })),
+    defectCandidates: rows.candidates.map((row) => mapCandidateRow(row, redactPayload)),
     job: rows.job,
+    nextCursor: rows.cursor,
+  };
+}
+
+/** Compose the incremental poll payload from loadRunDetailChangeRows output. */
+export function assembleRunDetailDelta(
+  rows: RunDetailChangeRows,
+  approvedByName: string | null,
+  redaction: RunDetailRedaction = {},
+): RunDetailDeltaDto {
+  const redactPayload = buildRedactPayload(redaction);
+  return {
+    run: mapRunRow(rows.run, approvedByName),
+    changedCases: rows.cases.map(mapCaseRow),
+    changedSteps: rows.steps.map((row) => ({
+      ...mapStepRow(row, redactPayload),
+      caseRunId: str(row.case_run_id),
+    })),
+    changedActions: rows.actions.map((row) => ({
+      ...mapActionRow(row, redactPayload),
+      stepRunId: str(row.step_run_id),
+      caseRunId: str(row.case_run_id),
+    })),
+    artifacts: rows.artifacts.map(mapArtifactRow),
+    defectCandidates: rows.candidates.map((row) => mapCandidateRow(row, redactPayload)),
+    job: rows.job,
+    nextCursor: rows.nextCursor,
+    hasMore: rows.hasMore,
   };
 }
 
@@ -275,19 +395,4 @@ function objectOrNull(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
-}
-
-const SENSITIVE_KEY = /(?:authorization|cookie|password|passwd|secret|token|api[-_]?key|credential)/i;
-
-function redactSensitiveFields(value: unknown, depth = 0): unknown {
-  if (depth > 12) return "<truncated>";
-  if (Array.isArray(value)) return value.map((entry) => redactSensitiveFields(entry, depth + 1));
-  const object = objectOrNull(value);
-  if (!object) return value;
-  return Object.fromEntries(
-    Object.entries(object).map(([key, child]) => [
-      key,
-      SENSITIVE_KEY.test(key) ? "<redacted>" : redactSensitiveFields(child, depth + 1),
-    ]),
-  );
 }

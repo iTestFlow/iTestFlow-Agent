@@ -11,7 +11,7 @@ import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-
 import { postJson, patchJson, deleteJson } from "@/components/workflow/post-json";
 import { ApiError } from "@/components/workflow/api-error";
 import { projectWarning, useActiveProject } from "@/components/workflow/test-intelligence-shared";
-import type { RunDetailDto } from "@/modules/test-execution/report-assembler";
+import type { RunDetailDeltaDto, RunDetailDto } from "@/modules/test-execution/report-assembler";
 import type { WorkspaceRole } from "@/modules/workspace/workspace-access.service";
 
 import {
@@ -52,7 +52,7 @@ import {
   saveDraft,
   type DraftCase,
 } from "./lib/draft-storage";
-import { runPollDelay } from "./lib/run-polling";
+import { runPollDelay, mergeRunDetailDelta } from "./lib/run-polling";
 import {
   TEST_EXECUTION_STEPS,
   deriveStepperState,
@@ -72,6 +72,54 @@ type RunListEntry = {
   createdByName: string | null;
   createdAt: string;
 };
+
+/**
+ * One source of truth for turning the one-time environment editor state into
+ * the API payload: clamped limits, uiEnabled-driven field blanking, derived
+ * secrets, and the shared limit/unknown-token checks (V9-5). Used by both
+ * "save as profile" and "approve & execute".
+ */
+function buildOneTimeEnvironmentSubmission(rawConfig: OneTimeEnvironmentState):
+  | { ok: true; config: Record<string, unknown>; secrets: ReturnType<typeof buildEnvironmentParts>["secrets"]; warning: string | null }
+  | { ok: false; issue: string } {
+  const config = clampEnvironmentLimits(rawConfig);
+  const parts = buildEnvironmentParts({
+    defaultUsername: config.uiEnabled ? config.defaultUsername : "",
+    defaultPassword: config.uiEnabled ? config.defaultPassword : "",
+    defaultOtp: config.uiEnabled ? config.defaultOtp : "",
+    extras: config.secrets,
+    users: config.uiEnabled ? config.users : [],
+  });
+  const connectionSecrets = buildConnectionSecrets(config);
+  const secrets = [...parts.secrets, ...connectionSecrets];
+  const limitIssue = environmentPartsLimitIssue({ ...parts, secrets });
+  if (limitIssue) return { ok: false, issue: limitIssue };
+  const unknownTokens = config.uiEnabled ? unknownStepSecrets(config.loginSteps, parts.validSecretNames) : [];
+  return {
+    ok: true,
+    warning: unknownTokens.length > 0
+      ? `The login sequence mentions unknown credential(s): ${unknownTokens.join(", ")}.`
+      : null,
+    config: {
+      initialUrl: config.uiEnabled ? config.initialUrl : "",
+      allowedOrigin: config.uiEnabled ? config.allowedOrigin || safeOrigin(config.initialUrl) : "",
+      viewportWidth: config.viewportWidth,
+      viewportHeight: config.viewportHeight,
+      headless: config.headless,
+      defaultTimeoutMs: config.defaultTimeoutMs,
+      navigationTimeoutMs: config.navigationTimeoutMs,
+      evidenceLevel: config.evidenceLevel,
+      loginPlan: config.uiEnabled ? buildNaturalPlan(config.loginSteps) : null,
+      loginMode: config.loginMode,
+      loggedInText: config.loggedInText.trim(),
+      executionNotes: config.executionNotes.trim(),
+      api: config.api,
+      database: config.database,
+      users: parts.users,
+    },
+    secrets,
+  };
+}
 
 export function TestExecutionClient({ workspaceRole }: { workspaceRole: WorkspaceRole | null }) {
   const scope = useActiveProject();
@@ -218,19 +266,47 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
   }, [projectId, cases, story, selection, runId]);
 
   // ---- run polling ----
-  const pollState = useRef({ startedAt: 0, failures: 0, timer: null as ReturnType<typeof setTimeout> | null });
-  const fetchRunDetail = useCallback(async () => {
+  const pollState = useRef({
+    startedAt: 0,
+    failures: 0,
+    timer: null as ReturnType<typeof setTimeout> | null,
+    /** Change cursor for incremental polls; null forces a full snapshot. */
+    cursor: null as string | null,
+  });
+  const fetchRunDetail = useCallback(async (forceFull = false): Promise<void> => {
     if (!runId || !scopeQuery) return;
     try {
-      const response = await fetch(`/api/test-execution/runs/${runId}?${scopeQuery}`, { cache: "no-store" });
+      const previous = pollStateDetailRef.current;
+      const cursor = pollState.current.cursor;
+      const incremental = !forceFull && Boolean(cursor && previous);
+      const url = incremental
+        ? `/api/test-execution/runs/${runId}?${scopeQuery}&afterCursor=${cursor}`
+        : `/api/test-execution/runs/${runId}?${scopeQuery}`;
+      const response = await fetch(url, { cache: "no-store" });
       if (response.status === 404) {
         saveActiveRunId(projectId, null);
         setRunId(null);
         return;
       }
       if (!response.ok) throw new Error("poll failed");
-      const detail: RunDetailDto = await response.json();
+      let detail: RunDetailDto;
+      if (incremental) {
+        const body: { delta: RunDetailDeltaDto } = await response.json();
+        // A capped delta or an unresolvable parent means the incremental
+        // state is stale; one full snapshot restores it (duplicates are safe).
+        const merged = body.delta.hasMore || !previous
+          ? null
+          : mergeRunDetailDelta(previous, body.delta);
+        if (!merged) {
+          pollState.current.cursor = null;
+          return fetchRunDetail(true);
+        }
+        detail = merged;
+      } else {
+        detail = await response.json();
+      }
       pollState.current.failures = 0;
+      pollState.current.cursor = detail.nextCursor ?? null;
       setRunDetail(detail);
       if (isTerminalRunStatusValue(detail.run.status)) {
         saveActiveRunId(projectId, null);
@@ -247,6 +323,7 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
     if (!runId) return;
     const state = pollState.current;
     state.startedAt = Date.now();
+    state.cursor = null;
     let disposed = false;
     const tick = async () => {
       if (disposed) return;
@@ -287,45 +364,16 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
     if (!scope) return;
     setSavingProfile(true);
     try {
-      const config = clampEnvironmentLimits(rawConfig);
-      const parts = buildEnvironmentParts({
-        defaultUsername: config.uiEnabled ? config.defaultUsername : "",
-        defaultPassword: config.uiEnabled ? config.defaultPassword : "",
-        defaultOtp: config.uiEnabled ? config.defaultOtp : "",
-        extras: config.secrets,
-        users: config.uiEnabled ? config.users : [],
-      });
-      const connectionSecrets = buildConnectionSecrets(config);
-      const limitIssue = environmentPartsLimitIssue({ ...parts, secrets: [...parts.secrets, ...connectionSecrets] });
-      if (limitIssue) {
-        toast.error(limitIssue);
+      const submission = buildOneTimeEnvironmentSubmission(rawConfig);
+      if (!submission.ok) {
+        toast.error(submission.issue);
         return;
       }
-      const unknownTokens = config.uiEnabled ? unknownStepSecrets(config.loginSteps, parts.validSecretNames) : [];
-      if (unknownTokens.length > 0) {
-        toast.warning(`The login sequence mentions unknown credential(s): ${unknownTokens.join(", ")}.`);
-      }
+      if (submission.warning) toast.warning(submission.warning);
       const body = await postJson<{ profile: EnvironmentProfileSummary }>("/api/test-execution/environments", {
         scope,
-        config: {
-          name,
-          initialUrl: config.uiEnabled ? config.initialUrl : "",
-          allowedOrigin: config.uiEnabled ? config.allowedOrigin || safeOrigin(config.initialUrl) : "",
-          viewportWidth: config.viewportWidth,
-          viewportHeight: config.viewportHeight,
-          headless: config.headless,
-          defaultTimeoutMs: config.defaultTimeoutMs,
-          navigationTimeoutMs: config.navigationTimeoutMs,
-          evidenceLevel: config.evidenceLevel,
-          loginPlan: config.uiEnabled ? buildNaturalPlan(config.loginSteps) : null,
-          loginMode: config.loginMode,
-          loggedInText: config.loggedInText.trim(),
-          executionNotes: config.executionNotes.trim(),
-          api: config.api,
-          database: config.database,
-          users: parts.users,
-        },
-        secrets: [...parts.secrets, ...connectionSecrets],
+        config: { name, ...submission.config },
+        secrets: submission.secrets,
       });
       setProfiles((previous) => [body.profile, ...previous]);
       setSelection({ mode: "profile", profile: body.profile });
@@ -533,46 +581,24 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
     try {
       let environment;
       if (selection.mode === "profile") {
-        environment = { mode: "profile" as const, environmentProfileId: selection.profile.id };
+        environment = {
+          mode: "profile" as const,
+          environmentProfileId: selection.profile.id,
+          // The version the approver actually reviewed — the server 409s if
+          // the profile changed since (see lockReviewedEnvironmentProfile).
+          reviewedProfileUpdatedAt: selection.profile.updatedAt,
+        };
       } else {
-        const config = clampEnvironmentLimits(selection.config);
-        const parts = buildEnvironmentParts({
-          defaultUsername: config.uiEnabled ? config.defaultUsername : "",
-          defaultPassword: config.uiEnabled ? config.defaultPassword : "",
-          defaultOtp: config.uiEnabled ? config.defaultOtp : "",
-          extras: config.secrets,
-          users: config.uiEnabled ? config.users : [],
-        });
-        const connectionSecrets = buildConnectionSecrets(config);
-        const limitIssue = environmentPartsLimitIssue({ ...parts, secrets: [...parts.secrets, ...connectionSecrets] });
-        if (limitIssue) {
-          toast.error(limitIssue);
+        const submission = buildOneTimeEnvironmentSubmission(selection.config);
+        if (!submission.ok) {
+          toast.error(submission.issue);
           return;
         }
-        const unknownTokens = config.uiEnabled ? unknownStepSecrets(config.loginSteps, parts.validSecretNames) : [];
-        if (unknownTokens.length > 0) {
-          toast.warning(`The login sequence mentions unknown credential(s): ${unknownTokens.join(", ")}.`);
-        }
+        if (submission.warning) toast.warning(submission.warning);
         environment = {
           mode: "one_time" as const,
-          config: {
-            initialUrl: config.uiEnabled ? config.initialUrl : "",
-            allowedOrigin: config.uiEnabled ? config.allowedOrigin || safeOrigin(config.initialUrl) : "",
-            viewportWidth: config.viewportWidth,
-            viewportHeight: config.viewportHeight,
-            headless: config.headless,
-            defaultTimeoutMs: config.defaultTimeoutMs,
-            navigationTimeoutMs: config.navigationTimeoutMs,
-            evidenceLevel: config.evidenceLevel,
-            loginPlan: config.uiEnabled ? buildNaturalPlan(config.loginSteps) : null,
-            loginMode: config.loginMode,
-            loggedInText: config.loggedInText.trim(),
-            executionNotes: config.executionNotes.trim(),
-            api: config.api,
-            database: config.database,
-            users: parts.users,
-          },
-          secrets: [...parts.secrets, ...connectionSecrets],
+          config: submission.config,
+          secrets: submission.secrets,
         };
       }
       const body = await postJson<{ runId: string }>("/api/test-execution/runs", {

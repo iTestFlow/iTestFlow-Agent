@@ -47,6 +47,10 @@ export const requestPinnedHttp: PinnedHttpRequest = async (
       method: init.method ?? "GET",
       path: `${url.pathname}${url.search}`,
       headers,
+      // Deliberate: no keep-alive agent. Every request opens a fresh socket
+      // to the address authorized for THIS hop, so a pooled connection can
+      // never be reused after DNS/policy state changes. The per-request
+      // socket cost is accepted for that guarantee.
       agent: false,
       // HTTPS continues to validate against the configured DNS name. IP URL
       // targets are checked as IP identities and intentionally omit SNI.

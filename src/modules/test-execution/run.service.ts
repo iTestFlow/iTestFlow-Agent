@@ -10,6 +10,7 @@ import { enqueueTestExecutionRunJob } from "@/modules/jobs/test-execution-jobs.s
 import { getUserDisplayNames } from "@/modules/auth/user.service";
 import {
   createId,
+  isPgUniqueViolation,
   nowIso,
   sqlAll,
   sqlGet,
@@ -18,6 +19,7 @@ import {
 } from "@/modules/shared/infrastructure/database/db";
 
 import { NATURAL_PLAN_SCHEMA_VERSION, type NaturalPlan } from "./action-schema";
+import { configuredEnvironmentLayers } from "./environment-layers";
 import { validateNaturalPlan, type PlanFinding } from "./natural-plan";
 import { buildStorySnapshot, buildTestCaseSnapshot, type SourceSnapshotInput } from "./snapshot.service";
 import type { EnvConfig } from "./run-persistence.service";
@@ -83,10 +85,7 @@ export async function createRunWithSnapshots(input: CreateRunInput): Promise<{ r
   //    problems block; unknown-secret references are warnings surfaced in the
   //    review step (the agent would hit them as blocked at run time).
   const secretNames = await collectAvailableSecretNames(input);
-  const availableLayers: Array<"ui" | "api" | "db"> = [];
-  if (input.environment.config.initialUrl) availableLayers.push("ui");
-  if (input.environment.config.api) availableLayers.push("api");
-  if (input.environment.config.database) availableLayers.push("db");
+  const availableLayers = configuredEnvironmentLayers(input.environment.config);
   const allFindings: PlanFinding[] = [];
   for (const caseInput of input.cases) {
     const validation = validateNaturalPlan(caseInput.plan, {
@@ -536,12 +535,7 @@ async function lockReviewedEnvironmentProfile(
 }
 
 function isActiveRunUniqueViolation(error: unknown): boolean {
-  return (
-    Boolean(error) &&
-    typeof error === "object" &&
-    (error as { code?: string }).code === "23505" &&
-    String((error as { constraint?: string }).constraint ?? "").includes("uq_test_execution_runs_active_project")
-  );
+  return isPgUniqueViolation(error, "uq_test_execution_runs_active_project");
 }
 
 export async function findActiveRun(input: {
@@ -629,7 +623,22 @@ export type RunDetailRows = {
   artifacts: Record<string, unknown>[];
   candidates: Record<string, unknown>[];
   job: { id: string; status: string; cancelRequestedAt: string | null } | null;
+  /**
+   * Change-sequence boundary captured BEFORE the snapshot rows were read.
+   * A change landing during the read may be delivered again incrementally
+   * (safe — the client merge is idempotent); it can never be skipped.
+   */
+  cursor: string;
 };
+
+/** Current global change-sequence boundary ("0" before any stamped write). */
+async function readChangeSequenceBoundary(): Promise<string> {
+  const row = await sqlGet<{ boundary: string }>(
+    `SELECT CASE WHEN is_called THEN last_value ELSE 0 END::text AS boundary
+     FROM test_execution_change_seq`,
+  );
+  return row?.boundary ?? "0";
+}
 
 export async function loadRunDetailRows(input: {
   workspaceId: string;
@@ -643,6 +652,7 @@ export async function loadRunDetailRows(input: {
     projectId: input.scope.projectId,
     azureProjectId: input.scope.azureProjectId,
   };
+  const cursor = await readChangeSequenceBoundary();
   const run = await sqlGet<Record<string, unknown>>(
     `SELECT * FROM test_execution_runs WHERE id = @runId AND ${scopeWhere}`,
     params,
@@ -693,6 +703,111 @@ export async function loadRunDetailRows(input: {
     artifacts,
     candidates,
     job: job ? { id: job.id, status: job.status, cancelRequestedAt: job.cancel_requested_at } : null,
+    cursor,
+  };
+}
+
+/** Per-type page bound for incremental polls; a capped poll signals hasMore
+ * and the client falls back to one full snapshot fetch. */
+const RUN_DETAIL_CHANGES_LIMIT = 1_000;
+
+export type RunDetailChangeRows = {
+  run: Record<string, unknown>;
+  cases: Record<string, unknown>[];
+  steps: Record<string, unknown>[];
+  actions: Record<string, unknown>[];
+  artifacts: Record<string, unknown>[];
+  candidates: Record<string, unknown>[];
+  job: { id: string; status: string; cancelRequestedAt: string | null } | null;
+  nextCursor: string;
+  hasMore: boolean;
+};
+
+/**
+ * Incremental run-detail rows: only case/step/action rows whose change_seq
+ * moved past the client's cursor. The run row, artifacts, candidates, and job
+ * are tiny and always included; the heavy JSONB payloads (actions) ship only
+ * when they actually changed (V10-5).
+ */
+export async function loadRunDetailChangeRows(input: {
+  workspaceId: string;
+  scope: ProjectScope;
+  runId: string;
+  afterCursor: string;
+}): Promise<RunDetailChangeRows | null> {
+  const scopeWhere = `workspace_id = @workspaceId AND project_id = @projectId AND azure_project_id = @azureProjectId`;
+  const params = {
+    runId: input.runId,
+    workspaceId: input.workspaceId,
+    projectId: input.scope.projectId,
+    azureProjectId: input.scope.azureProjectId,
+    afterCursor: input.afterCursor,
+    limit: RUN_DETAIL_CHANGES_LIMIT,
+  };
+  const run = await sqlGet<Record<string, unknown>>(
+    `SELECT * FROM test_execution_runs WHERE id = @runId AND ${scopeWhere}`,
+    params,
+  );
+  if (!run) return null;
+  const [cases, steps, actions, artifacts, candidates, job] = await Promise.all([
+    sqlAll<Record<string, unknown>>(
+      `SELECT * FROM test_execution_case_runs
+       WHERE run_id = @runId AND ${scopeWhere} AND change_seq > @afterCursor::bigint
+       ORDER BY change_seq LIMIT @limit`,
+      params,
+    ),
+    sqlAll<Record<string, unknown>>(
+      `SELECT * FROM test_execution_step_runs
+       WHERE run_id = @runId AND ${scopeWhere} AND change_seq > @afterCursor::bigint
+       ORDER BY change_seq LIMIT @limit`,
+      params,
+    ),
+    sqlAll<Record<string, unknown>>(
+      `SELECT id, step_run_id, case_run_id, run_id, order_index, layer, action_type, safety_class,
+              request_json, status, observation_json, error_category, error_message,
+              started_at, finished_at, change_seq
+       FROM test_execution_action_runs
+       WHERE run_id = @runId AND ${scopeWhere} AND change_seq > @afterCursor::bigint
+       ORDER BY change_seq LIMIT @limit`,
+      params,
+    ),
+    sqlAll<Record<string, unknown>>(
+      `SELECT id, run_id, case_run_id, step_run_id, kind, mime_type, byte_size, file_name, created_at
+       FROM test_execution_artifacts WHERE run_id = @runId AND ${scopeWhere} ORDER BY created_at`,
+      params,
+    ),
+    sqlAll<Record<string, unknown>>(
+      `SELECT * FROM test_defect_candidates WHERE run_id = @runId AND ${scopeWhere} ORDER BY created_at`,
+      params,
+    ),
+    sqlGet<{ id: string; status: string; cancel_requested_at: string | null }>(
+      `SELECT id, status, cancel_requested_at FROM jobs
+       WHERE id = (SELECT job_id FROM test_execution_runs WHERE id = @runId)`,
+      { runId: input.runId },
+    ),
+  ]);
+  const hasMore =
+    cases.length >= RUN_DETAIL_CHANGES_LIMIT ||
+    steps.length >= RUN_DETAIL_CHANGES_LIMIT ||
+    actions.length >= RUN_DETAIL_CHANGES_LIMIT;
+  // Without a cap, the cursor advances to the largest sequence seen (the run
+  // row included). With a cap, the client falls back to a full snapshot, so
+  // the cursor value is not used to resume mid-page.
+  let nextCursor = BigInt(input.afterCursor || "0");
+  for (const row of [run, ...cases, ...steps, ...actions]) {
+    const seq = row.change_seq === undefined || row.change_seq === null ? null : BigInt(String(row.change_seq));
+    if (seq !== null && seq > nextCursor) nextCursor = seq;
+  }
+  return {
+    run,
+    cases,
+    steps,
+    actions,
+    artifacts,
+    candidates,
+    job: job ? { id: job.id, status: job.status, cancelRequestedAt: job.cancel_requested_at } : null,
+    nextCursor: nextCursor.toString(),
+    hasMore,
   };
 }
 

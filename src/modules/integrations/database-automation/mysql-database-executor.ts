@@ -6,7 +6,15 @@ import { boundedDatabaseRows } from "./database-result";
 import {
   assertDatabaseEgressAllowed,
   createPinnedDatabaseSocket,
+  type DatabaseEgressBinding,
 } from "./database-egress";
+import {
+  assertNotCanceled,
+  cancellationError,
+  escapeLikePattern,
+  queryError,
+  rollbackOutcome,
+} from "./database-executor.shared";
 import {
   DatabaseExecutorError,
   type DatabaseExecutionRequest,
@@ -16,11 +24,18 @@ import {
 } from "./database-executor.port";
 import { compileNamedParameters, validateSql } from "./sql-policy";
 
-type MysqlConnectionLike = Pick<Connection, "query" | "beginTransaction" | "commit" | "rollback" | "end" | "destroy">;
+type MysqlConnectionLike = Pick<Connection, "query" | "beginTransaction" | "commit" | "rollback" | "end" | "destroy"> & {
+  threadId?: number;
+};
+
+/** Bounds for the KILL QUERY control connection so cancellation cannot hang. */
+const CONTROL_CONNECT_TIMEOUT_MS = 5_000;
+const CONTROL_STATEMENT_TIMEOUT_MS = 5_000;
 
 export class MysqlDatabaseExecutor implements DatabaseExecutor {
   readonly driver = "mysql" as const;
   private connection: MysqlConnectionLike | null = null;
+  private binding: DatabaseEgressBinding | null = null;
 
   constructor(
     private readonly config: DatabaseExecutorConfig,
@@ -39,6 +54,14 @@ export class MysqlDatabaseExecutor implements DatabaseExecutor {
     let transactionStarted = false;
     let mutationDispatched = false;
     let commitStarted = false;
+    // mysql2's client-side `timeout` abandons the socket without cancelling
+    // the server statement. Server-side KILL QUERY (through a bounded control
+    // connection pinned to the same authorized address) is the real cancel;
+    // if it cannot be issued the poisoned connection is destroyed instead.
+    const cancel = () => {
+      void this.killActiveStatement(connection);
+    };
+    this.config.signal.addEventListener("abort", cancel, { once: true });
     try {
       if (request.kind === "select") await connection.query("START TRANSACTION READ ONLY");
       else await connection.beginTransaction();
@@ -71,6 +94,7 @@ export class MysqlDatabaseExecutor implements DatabaseExecutor {
         : { ok: true as const };
       if (error instanceof DatabaseExecutorError) throw error;
       if (this.config.signal.aborted) {
+        this.resetConnection();
         throw cancellationError(
           "MySQL",
           request.kind === "mutation" && (commitStarted || !rollback.ok),
@@ -78,6 +102,7 @@ export class MysqlDatabaseExecutor implements DatabaseExecutor {
         );
       }
       if (!rollback.ok && mutationDispatched) {
+        this.resetConnection();
         throw new DatabaseExecutorError(
           "MySQL transport failed and rollback could not be confirmed.",
           "transport",
@@ -90,12 +115,20 @@ export class MysqlDatabaseExecutor implements DatabaseExecutor {
       if (isMysqlQueryError(error) && !(request.kind === "mutation" && commitStarted)) {
         return queryError(validated.command, Date.now() - started, error.sqlState, error.message);
       }
+      const timedOut = /timeout/i.test(errorMessage(error));
+      // A client-side statement timeout leaves the server statement running
+      // and the connection mid-protocol: cancel server-side, then discard the
+      // connection either way so the next call reconnects cleanly.
+      if (timedOut) await this.killActiveStatement(connection);
+      this.resetConnection();
       throw new DatabaseExecutorError(
-        /timeout/i.test(errorMessage(error)) ? "MySQL query timed out." : "MySQL transport failed.",
-        /timeout/i.test(errorMessage(error)) ? "timeout" : "transport",
+        timedOut ? "MySQL query timed out." : "MySQL transport failed.",
+        timedOut ? "timeout" : "transport",
         mutationDispatched,
         error,
       );
+    } finally {
+      this.config.signal.removeEventListener("abort", cancel);
     }
   }
 
@@ -103,6 +136,68 @@ export class MysqlDatabaseExecutor implements DatabaseExecutor {
     const connection = this.connection;
     this.connection = null;
     if (connection) await connection.end().catch(() => undefined);
+  }
+
+  /** Drop a possibly poisoned connection so ensureConnected rebuilds cleanly. */
+  private resetConnection(): void {
+    const connection = this.connection;
+    this.connection = null;
+    if (connection) {
+      try {
+        connection.destroy();
+      } catch {
+        // The socket is already gone; nothing to release.
+      }
+    }
+  }
+
+  /**
+   * Best-effort server-side cancellation via KILL QUERY on a short-lived
+   * control connection. The control connection reuses the already-authorized
+   * pinned address — never a fresh hostname resolution — so the cancel path
+   * cannot become a DNS-rebinding hole in the egress policy. On any failure
+   * the primary connection is destroyed and never reused.
+   */
+  private async killActiveStatement(connection: MysqlConnectionLike): Promise<void> {
+    const threadId = connection.threadId;
+    const binding = this.binding;
+    if (!binding || typeof threadId !== "number" || !Number.isInteger(threadId) || threadId <= 0) {
+      this.resetConnection();
+      return;
+    }
+    let control: MysqlConnectionLike | null = null;
+    try {
+      const controlSignal = AbortSignal.timeout(CONTROL_CONNECT_TIMEOUT_MS + CONTROL_STATEMENT_TIMEOUT_MS);
+      control = await this.createConnection({
+        host: binding.hostname,
+        port: this.config.port,
+        database: this.config.databaseName,
+        user: this.config.username,
+        password: this.config.password,
+        connectTimeout: Math.min(this.config.connectTimeoutMs, CONTROL_CONNECT_TIMEOUT_MS),
+        ssl: this.config.tlsMode === "disable"
+          ? undefined
+          : {
+              rejectUnauthorized: this.config.tlsMode === "verify-full",
+              verifyIdentity: this.config.tlsMode === "verify-full",
+            },
+        stream: () => createPinnedDatabaseSocket(binding, controlSignal),
+        namedPlaceholders: false,
+      });
+      await control.query({ sql: `KILL QUERY ${threadId}`, timeout: CONTROL_STATEMENT_TIMEOUT_MS });
+    } catch {
+      // Cancellation could not be confirmed: the primary connection must not
+      // be returned to reuse.
+      this.resetConnection();
+    } finally {
+      if (control) {
+        try {
+          control.destroy();
+        } catch {
+          // Control connection teardown is best-effort.
+        }
+      }
+    }
   }
 
   private async ensureConnected() {
@@ -130,6 +225,7 @@ export class MysqlDatabaseExecutor implements DatabaseExecutor {
         namedPlaceholders: false,
       });
       this.connection = connection;
+      this.binding = binding;
       return connection;
     } catch (error) {
       throw new DatabaseExecutorError("MySQL connection failed.", "transport", false, error);
@@ -138,16 +234,28 @@ export class MysqlDatabaseExecutor implements DatabaseExecutor {
 
   private async inspectSchema(connection: MysqlConnectionLike, tablePattern?: string) {
     const started = Date.now();
-    const [rows, fields] = await connection.query({
-      sql: `SELECT table_schema, table_name, column_name, data_type, is_nullable
-            FROM information_schema.columns
-            WHERE table_schema IN (?) AND (? IS NULL OR table_name LIKE ?)
-            ORDER BY table_schema, table_name, ordinal_position
-            LIMIT 500`,
-      values: [this.config.schemas, tablePattern ?? null, tablePattern ? `%${tablePattern}%` : null],
-      timeout: this.config.statementTimeoutMs,
-    });
-    return normalizeMysql(rows, fields as FieldPacket[] | undefined, "SELECT", Date.now() - started, this.config);
+    // Inside the classified error path: a schema-introspection failure is a
+    // normal query error/transport failure, never a whole-step infra error.
+    try {
+      const escaped = tablePattern ? escapeLikePattern(tablePattern) : null;
+      const [rows, fields] = await connection.query({
+        sql: `SELECT table_schema, table_name, column_name, data_type, is_nullable
+              FROM information_schema.columns
+              WHERE table_schema IN (?) AND (? IS NULL OR table_name LIKE ?)
+              ORDER BY table_schema, table_name, ordinal_position
+              LIMIT 500`,
+        values: [this.config.schemas, escaped, escaped ? `%${escaped}%` : null],
+        timeout: this.config.statementTimeoutMs,
+      });
+      return normalizeMysql(rows, fields as FieldPacket[] | undefined, "SELECT", Date.now() - started, this.config);
+    } catch (error) {
+      if (error instanceof DatabaseExecutorError) throw error;
+      if (isMysqlQueryError(error)) {
+        return queryError("SELECT", Date.now() - started, error.sqlState, error.message);
+      }
+      this.resetConnection();
+      throw new DatabaseExecutorError("MySQL schema inspection failed.", "transport", false, error);
+    }
   }
 }
 
@@ -172,37 +280,3 @@ function isMysqlQueryError(error: unknown): error is Error & { code: string; err
   );
 }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : ""; }
-function queryError(command: string, durationMs: number, sqlState: string, errorMessage: string): DatabaseExecutionResult {
-  return { status: "query_error", command, rowCount: 0, columns: [], rows: [], safeRows: [], truncated: false, durationMs, sqlState, errorMessage };
-}
-
-type RollbackOutcome = { ok: true } | { ok: false; error: unknown };
-
-async function rollbackOutcome(rollback: () => Promise<unknown>): Promise<RollbackOutcome> {
-  try {
-    await rollback();
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error };
-  }
-}
-
-function assertNotCanceled(signal: AbortSignal, driver: string): void {
-  if (signal.aborted) throw cancellationError(driver, false);
-}
-
-function cancellationError(
-  driver: string,
-  uncertainSideEffect: boolean,
-  rollback?: RollbackOutcome,
-): DatabaseExecutorError {
-  const rollbackFailed = rollback?.ok === false;
-  return new DatabaseExecutorError(
-    rollbackFailed
-      ? `${driver} execution was canceled, but rollback could not be confirmed.`
-      : `${driver} execution was canceled before commit.`,
-    "transport",
-    uncertainSideEffect,
-    rollbackFailed ? rollback.error : undefined,
-  );
-}

@@ -6,6 +6,13 @@ import { Client, type ClientConfig, type QueryResult } from "pg";
 import { boundedDatabaseRows } from "./database-result";
 import { assertDatabaseEgressAllowed } from "./database-egress";
 import {
+  assertNotCanceled,
+  cancellationError,
+  escapeLikePattern,
+  queryError,
+  rollbackOutcome,
+} from "./database-executor.shared";
+import {
   DatabaseExecutorError,
   type DatabaseExecutionRequest,
   type DatabaseExecutionResult,
@@ -83,6 +90,7 @@ export class PostgresDatabaseExecutor implements DatabaseExecutor {
         : { ok: true as const };
       if (error instanceof DatabaseExecutorError) throw error;
       if (this.config.signal.aborted) {
+        this.resetConnection();
         throw cancellationError(
           "PostgreSQL",
           request.kind === "mutation" && (commitStarted || !rollback.ok),
@@ -90,6 +98,7 @@ export class PostgresDatabaseExecutor implements DatabaseExecutor {
         );
       }
       if (!rollback.ok && mutationDispatched) {
+        this.resetConnection();
         throw new DatabaseExecutorError(
           "PostgreSQL transport failed and rollback could not be confirmed.",
           "transport",
@@ -102,6 +111,7 @@ export class PostgresDatabaseExecutor implements DatabaseExecutor {
       if (isPgQueryError(error) && !(request.kind === "mutation" && commitStarted)) {
         return queryError(validated.command, Date.now() - started, error.code, error.message);
       }
+      this.resetConnection();
       throw connectionError(error, mutationDispatched);
     }
   }
@@ -111,6 +121,14 @@ export class PostgresDatabaseExecutor implements DatabaseExecutor {
     this.client = null;
     this.connected = false;
     if (client) await client.end().catch(() => undefined);
+  }
+
+  /** Drop a possibly poisoned client so ensureConnected rebuilds cleanly. */
+  private resetConnection(): void {
+    const client = this.client;
+    this.client = null;
+    this.connected = false;
+    if (client) void client.end().catch(() => undefined);
   }
 
   private async ensureConnected() {
@@ -151,16 +169,28 @@ export class PostgresDatabaseExecutor implements DatabaseExecutor {
 
   private async inspectSchema(client: PgClientLike, tablePattern?: string): Promise<DatabaseExecutionResult> {
     const started = Date.now();
-    const result = await client.query({
-      text: `SELECT table_schema, table_name, column_name, data_type, is_nullable
-             FROM information_schema.columns
-             WHERE table_schema = ANY($1::text[])
-               AND ($2::text IS NULL OR table_name ILIKE $2)
-             ORDER BY table_schema, table_name, ordinal_position
-             LIMIT 500`,
-      values: [this.config.schemas, tablePattern ? `%${tablePattern}%` : null],
-    });
-    return normalizeResult(result, "SELECT", Date.now() - started, this.config);
+    // Inside the classified error path: a schema-introspection failure is a
+    // normal query error/transport failure, never a whole-step infra error.
+    try {
+      const escaped = tablePattern ? escapeLikePattern(tablePattern) : null;
+      const result = await client.query({
+        text: `SELECT table_schema, table_name, column_name, data_type, is_nullable
+               FROM information_schema.columns
+               WHERE table_schema = ANY($1::text[])
+                 AND ($2::text IS NULL OR table_name ILIKE $2)
+               ORDER BY table_schema, table_name, ordinal_position
+               LIMIT 500`,
+        values: [this.config.schemas, escaped ? `%${escaped}%` : null],
+      });
+      return normalizeResult(result, "SELECT", Date.now() - started, this.config);
+    } catch (error) {
+      if (error instanceof DatabaseExecutorError) throw error;
+      if (isPgQueryError(error)) {
+        return queryError("SELECT", Date.now() - started, error.code, error.message);
+      }
+      this.resetConnection();
+      throw new DatabaseExecutorError("PostgreSQL schema inspection failed.", "transport", false, error);
+    }
   }
 }
 
@@ -202,37 +232,3 @@ function connectionError(error: unknown, uncertain: boolean) {
   return new DatabaseExecutorError(message, /timeout/i.test(message) ? "timeout" : "transport", uncertain, error);
 }
 
-function queryError(command: string, durationMs: number, sqlState: string, errorMessage: string): DatabaseExecutionResult {
-  return { status: "query_error", command, rowCount: 0, columns: [], rows: [], safeRows: [], truncated: false, durationMs, sqlState, errorMessage };
-}
-
-type RollbackOutcome = { ok: true } | { ok: false; error: unknown };
-
-async function rollbackOutcome(rollback: () => Promise<unknown>): Promise<RollbackOutcome> {
-  try {
-    await rollback();
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error };
-  }
-}
-
-function assertNotCanceled(signal: AbortSignal, driver: string): void {
-  if (signal.aborted) throw cancellationError(driver, false);
-}
-
-function cancellationError(
-  driver: string,
-  uncertainSideEffect: boolean,
-  rollback?: RollbackOutcome,
-): DatabaseExecutorError {
-  const rollbackFailed = rollback?.ok === false;
-  return new DatabaseExecutorError(
-    rollbackFailed
-      ? `${driver} execution was canceled, but rollback could not be confirmed.`
-      : `${driver} execution was canceled before commit.`,
-    "transport",
-    uncertainSideEffect,
-    rollbackFailed ? rollback.error : undefined,
-  );
-}

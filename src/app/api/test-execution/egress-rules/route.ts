@@ -1,11 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import {
-  authErrorResponse,
-  requireWorkflowContext,
-  requireWorkflowRole,
-} from "@/modules/credentials/scoped-resolution.service";
+import { authErrorResponse } from "@/modules/credentials/scoped-resolution.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import {
   createWorkspaceEgressRule,
@@ -14,22 +10,14 @@ import {
 } from "@/modules/test-execution/egress-policy.service";
 import { WorkspaceEgressRuleInputSchema } from "@/modules/test-execution/schemas/test-execution.schemas";
 
+import { requireEgressAdmin } from "./egress-admin";
+
 export const runtime = "nodejs";
 
 const CreateSchema = z.object({
   workspaceId: z.string().trim().min(1),
   rule: WorkspaceEgressRuleInputSchema,
 });
-
-async function requireEgressAdmin(workspaceId: string) {
-  const ctx = await requireWorkflowContext(workspaceId);
-  await requireWorkflowRole(
-    ctx,
-    ["owner", "admin"],
-    "Only workspace owners and admins can manage test-execution egress rules.",
-  );
-  return ctx;
-}
 
 export async function GET(request: Request) {
   const workspaceId = new URL(request.url).searchParams.get("workspaceId")?.trim() ?? "";

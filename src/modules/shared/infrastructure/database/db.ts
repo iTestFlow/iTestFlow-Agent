@@ -184,3 +184,15 @@ export function nowIso() {
 export function createId(prefix: string) {
   return `${prefix}_${randomUUID()}`;
 }
+
+/**
+ * PostgreSQL unique-constraint violation (SQLSTATE 23505), optionally
+ * narrowed to one constraint name. Single copy for every service that maps
+ * duplicates to a friendly conflict response.
+ */
+export function isPgUniqueViolation(error: unknown, constraint?: string): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; constraint?: unknown };
+  if (candidate.code !== "23505") return false;
+  return constraint === undefined || String(candidate.constraint ?? "").includes(constraint);
+}

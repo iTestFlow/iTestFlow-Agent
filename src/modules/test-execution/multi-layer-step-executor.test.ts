@@ -73,6 +73,70 @@ function input(runtime: MultiLayerRuntime, decisions: Record<string, unknown>[],
   };
 }
 
+describe("runMultiLayerStep in login mode", () => {
+  it("rejects API/DB proposals even when the runtime has those layers configured", async () => {
+    const runtime = new FakeRuntime(new Set(["ui", "api", "db"]), []);
+    const apiDecision = {
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({ method: "GET", path: "/session" }),
+    };
+    const result = await runMultiLayerStep(input(runtime, [apiDecision, apiDecision], {
+      mode: "login",
+      layerHint: "ui",
+    }));
+    expect(result.outcome).toBe("needs_review");
+    expect(result.actionsTaken).toEqual([
+      expect.objectContaining({ result: "rejected", detail: expect.stringContaining("not configured") }),
+      expect.objectContaining({ result: "rejected" }),
+    ]);
+    expect(runtime.actions).toHaveLength(0);
+  });
+
+  it("completes a login step with in-memory secret substitution, never persisting the value", async () => {
+    const runtime = new FakeRuntime(new Set(["ui"]), [{ status: "ok", summary: "Signed in", durationMs: 1 }]);
+    const llm = provider([
+      {
+        decision: "act",
+        actionType: "fill",
+        ref: "e1",
+        elementDescription: "Password",
+        value: "{{secret:DEFAULT_PASSWORD}}",
+      },
+      { decision: "step_passed", actualResult: "Dashboard visible" },
+    ]);
+    const result = await runMultiLayerStep(input(runtime, [], {
+      provider: llm,
+      mode: "login",
+      layerHint: "ui",
+      secretNames: ["DEFAULT_PASSWORD"],
+      secrets: new Map([["DEFAULT_PASSWORD", "login-password"]]),
+      scrub: createScrubber(["login-password"]),
+    }));
+    expect(result.outcome).toBe("passed");
+    expect(runtime.actions[0]).toMatchObject({
+      type: "ui_action",
+      action: { type: "fill", value: "login-password" },
+    });
+    const prompts = vi.mocked(llm.generateStructuredOutput).mock.calls.map(([request]) => request.user).join("\n");
+    expect(prompts).not.toContain("login-password");
+    expect(prompts).toContain("Configured layers: ui");
+  });
+
+  it("eagerly inspects the UI so a login verdict always carries UI evidence", async () => {
+    const runtime = new FakeRuntime(new Set(["ui", "api"]), []);
+    const result = await runMultiLayerStep(input(runtime, [
+      { decision: "step_passed", actualResult: "Dashboard heading visible after login" },
+    ], {
+      mode: "login",
+      layerHint: "ui",
+    }));
+    expect(result.outcome).toBe("passed");
+    expect(result.observedLayers).toEqual(["ui"]);
+    expect(runtime.inspectCount).toBe(1);
+  });
+});
+
 describe("runMultiLayerStep", () => {
   it("inspects UI eagerly, resolves an in-memory fill value, and never persists it", async () => {
     const runtime = new FakeRuntime(new Set(["ui"]), [{ status: "ok", summary: "Form updated", durationMs: 1 }]);
@@ -95,36 +159,49 @@ describe("runMultiLayerStep", () => {
     }));
 
     expect(result.outcome).toBe("failed_assertion");
-    expect(runtime.inspectCount).toBe(2);
+    // Third inspection is the confirm-before-strike re-snapshot: the fake
+    // page never changes, so the fill's transition looks like no progress.
+    expect(runtime.inspectCount).toBe(3);
     expect(runtime.actions[0]).toMatchObject({
       type: "ui_action",
       action: { type: "fill", value: "runtime-password" },
     });
     expect(start).toHaveBeenCalledWith(expect.objectContaining({
-      safetyClass: "mutation",
+      safetyClass: "ui",
       request: expect.objectContaining({ value: "<not persisted>" }),
     }));
   });
 
-  it("blocks replay of an identical UI navigation mutation", async () => {
-    const runtime = new FakeRuntime(new Set(["ui"]), [{
-      status: "ok",
+  it("permits repeating an identical UI action and escalates only on no observable progress", async () => {
+    // Each navigation lands on the SAME page state: an identical action with
+    // an identical no-change transition. Occurrence 1 passes silently,
+    // occurrence 2 returns validator feedback, occurrence 3 ends the step
+    // for review — never an instant blocked_policy (V1-1).
+    const staleSnapshot = { text: '- heading "Orders" [ref=e2]', url: "https://app.example.test/orders" };
+    const observations: LayerRuntimeObservation[] = Array.from({ length: 4 }, () => ({
+      status: "ok" as const,
       summary: "Navigation completed",
       durationMs: 1,
-      uiSnapshot: { text: '- heading "Orders" [ref=e2]', url: "https://app.example.test/orders" },
-    }]);
+      uiSnapshot: staleSnapshot,
+    }));
+    const runtime = new FakeRuntime(new Set(["ui"]), observations);
+    runtime.inspectUi = async () => {
+      runtime.inspectCount += 1;
+      return staleSnapshot;
+    };
     const navigate = {
       decision: "act",
       actionType: "navigate",
       url: "https://app.example.test/orders",
     };
 
-    const result = await runMultiLayerStep(input(runtime, [navigate, navigate], { layerHint: "ui" }));
+    const result = await runMultiLayerStep(input(runtime, [navigate, navigate, navigate, navigate], { layerHint: "ui" }));
 
-    expect(result.outcome).toBe("blocked_policy");
-    expect(result.reason).toContain("identical mutation");
-    expect(runtime.actions).toHaveLength(1);
-    expect(runtime.inspectCount).toBe(1);
+    expect(result.outcome).toBe("needs_review");
+    expect(result.reason).toContain("without any observable page change");
+    // Repeats are executed (not hard-blocked); the guard ends the loop after
+    // the third identical no-change transition.
+    expect(runtime.actions).toHaveLength(3);
   });
 
   it("executes an API-only step without inspecting or starting UI", async () => {
@@ -235,8 +312,11 @@ describe("runMultiLayerStep", () => {
       finishCategory: "uncertain_side_effect",
     },
     {
-      name: "a policy block",
-      observations: [{ status: "blocked", category: "policy", summary: "Rule denied", durationMs: 1 }],
+      name: "a repeated identical policy block",
+      observations: [
+        { status: "blocked", category: "policy", summary: "Rule denied", durationMs: 1 },
+        { status: "blocked", category: "policy", summary: "Rule denied", durationMs: 1 },
+      ],
       outcome: "blocked_policy",
       finishCategory: "blocked_policy",
     },
@@ -645,7 +725,7 @@ describe("runMultiLayerStep", () => {
     expect(prompt).toContain("orderId=42");
   });
 
-  it("fingerprints the resolved mutation so capture and literal aliases cannot replay it", async () => {
+  it("fingerprints the resolved mutation: alias replays get feedback, persistence ends the step", async () => {
     const captures = new CaseCaptureStore();
     captures.captureJson({ name: "orderId", pointer: "/id", document: { id: 42 } });
     const capability = {
@@ -659,15 +739,25 @@ describe("runMultiLayerStep", () => {
     };
     const runtime = new FakeRuntime(new Set(["api"]), [{ status: "ok", summary: "HTTP 200", durationMs: 1 }]);
     const result = await runMultiLayerStep(input(runtime, [
+      // Executed once via the capture alias; the literal 42 resolves to the
+      // SAME mutation. First replay → validator feedback; proposing it again
+      // without intervening progress → needs_review (never blocked_policy).
       { decision: "act", actionType: "api_execute_operation", argumentsJson: JSON.stringify({ operationId: "update", parameters: { id: "{{capture:orderId}}" } }) },
+      { decision: "act", actionType: "api_execute_operation", argumentsJson: JSON.stringify({ operationId: "update", parameters: { id: 42 } }) },
       { decision: "act", actionType: "api_execute_operation", argumentsJson: JSON.stringify({ operationId: "update", parameters: { id: 42 } }) },
     ], {
       captures,
       capabilities: [capability],
       apiMutationsEnabled: true,
     }));
-    expect(result.outcome).toBe("blocked_policy");
+    expect(result.outcome).toBe("needs_review");
+    expect(result.reason).toContain("replay");
     expect(runtime.actions).toHaveLength(1);
+    expect(result.actionsTaken).toEqual([
+      expect.objectContaining({ result: "ok" }),
+      expect.objectContaining({ result: "rejected" }),
+      expect.objectContaining({ result: "rejected" }),
+    ]);
   });
 
   it("ranks a relevant operation into a bounded large-contract prompt", async () => {

@@ -51,6 +51,8 @@ export class ApiExecutorError extends Error {
     readonly category: "policy" | "prerequisite" | "timeout" | "transport",
     readonly uncertainSideEffect = false,
     readonly cause?: unknown,
+    /** Stable machine code for the policy wall (e.g. "forbidden-header"). */
+    readonly code?: string,
   ) {
     super(message);
     this.name = "ApiExecutorError";

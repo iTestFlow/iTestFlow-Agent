@@ -85,6 +85,7 @@ describe("assembleRunDetail", () => {
       artifacts: [],
       candidates: [],
       job: null,
+      cursor: "0",
     });
 
     expect(detail?.run.envConfig).toMatchObject({

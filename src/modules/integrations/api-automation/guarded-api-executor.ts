@@ -2,6 +2,7 @@ import "server-only";
 
 import type { ApiAuthConfig } from "@/modules/test-execution/schemas/test-execution.schemas";
 import { assertTestExecutionEgressAllowed } from "@/modules/test-execution/egress-policy.service";
+import { isForbiddenRequestHeader, isSensitiveKey } from "@/modules/shared/sensitive-data";
 
 import {
   ApiExecutorError,
@@ -16,8 +17,6 @@ const DEFAULT_MAX_REQUEST_BYTES = 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_OAUTH_RESPONSE_BYTES = 64 * 1024;
 const MAX_REDIRECTS = 5;
-const SENSITIVE_KEY = /(authorization|cookie|set-cookie|password|passwd|secret|token|api[_-]?key|private[_-]?key)/i;
-const FORBIDDEN_REQUEST_HEADER = /^(authorization|cookie|host|content-length|connection|transfer-encoding|upgrade|proxy-|forwarded$|x-forwarded-|x-http-method-override$|x-method-override$|x-original-url$|x-rewrite-url$)/i;
 
 type FetchLike = typeof fetch;
 type ApiHop =
@@ -149,24 +148,40 @@ export class GuardedApiExecutor implements ApiExecutor {
   }
 
   private resolveTarget(path: string, query?: ApiExecutionRequest["query"]) {
-    if (path.startsWith("//")) throw new ApiExecutorError("Protocol-relative API paths are forbidden.", "policy");
+    if (path.startsWith("//")) throw new ApiExecutorError("Protocol-relative API paths are forbidden.", "policy", false, undefined, "path-invalid");
+    // WHATWG URL treats backslashes like slashes in special URLs, so "\\evil"
+    // would parse protocol-relative. Reject them before parsing.
+    if (path.includes("\\")) throw new ApiExecutorError("API paths may not contain backslashes.", "policy", false, undefined, "path-invalid");
     let target: URL;
     try {
       // API/OpenAPI operation paths conventionally start with '/', while a
       // configured base URL may include a prefix. Resolve `/orders` beneath
-      // `/api/v1/`, but continue accepting an already-prefixed `/api/v1/orders`.
+      // `/api/v1/`, and accept an already-prefixed `/api/v1/orders` — but a
+      // path that collides with the base prefix at a NON-segment boundary
+      // (`/api/v10/...` against `/api/v1/`) is rejected instead of being
+      // silently re-rooted to a different endpoint.
+      const basePath = this.baseUrl.pathname; // normalized with trailing "/"
+      const alreadyPrefixed = path.startsWith(basePath) || `${path}/` === basePath;
+      if (path.startsWith("/") && basePath !== "/" && !alreadyPrefixed && path.startsWith(basePath.slice(0, -1))) {
+        throw new ApiExecutorError("API path is outside the configured base URL.", "policy", false, undefined, "path-out-of-base");
+      }
       const relativeToPrefix =
-        path.startsWith("/") &&
-        this.baseUrl.pathname !== "/" &&
-        !path.startsWith(this.baseUrl.pathname)
+        path.startsWith("/") && basePath !== "/" && !alreadyPrefixed
           ? path.slice(1)
           : path;
       target = new URL(relativeToPrefix, this.baseUrl);
     } catch (error) {
-      throw new ApiExecutorError("API path is invalid.", "policy", false, error);
+      if (error instanceof ApiExecutorError) throw error;
+      throw new ApiExecutorError("API path is invalid.", "policy", false, error, "path-invalid");
     }
     if (!this.isWithinBase(target)) {
-      throw new ApiExecutorError("API path escapes the configured base URL.", "policy");
+      throw new ApiExecutorError("API path escapes the configured base URL.", "policy", false, undefined, "path-out-of-base");
+    }
+    // new URL() normalizes literal "../"; only percent-encoded traversal can
+    // survive into pathname, where a backend may decode it. Canonicalize and
+    // reject rather than forward.
+    if (hasEncodedTraversalSegment(target.pathname)) {
+      throw new ApiExecutorError("API path contains a traversal segment.", "policy", false, undefined, "path-traversal");
     }
     for (const [name, value] of Object.entries(query ?? {})) {
       if (value !== null) target.searchParams.set(name, String(value));
@@ -177,7 +192,7 @@ export class GuardedApiExecutor implements ApiExecutor {
   private isWithinBase(target: URL) {
     return (
       target.origin === this.baseUrl.origin &&
-      target.pathname.startsWith(this.baseUrl.pathname) &&
+      (target.pathname.startsWith(this.baseUrl.pathname) || `${target.pathname}/` === this.baseUrl.pathname) &&
       target.username.length === 0 &&
       target.password.length === 0
     );
@@ -195,8 +210,8 @@ export class GuardedApiExecutor implements ApiExecutor {
   private async buildHeaders(request: ApiExecutionRequest) {
     const headers = new Headers({ Accept: "application/json, text/plain;q=0.9, */*;q=0.5" });
     for (const [name, value] of Object.entries(request.headers ?? {})) {
-      if (FORBIDDEN_REQUEST_HEADER.test(name.trim())) {
-        throw new ApiExecutorError(`Request header "${name}" is forbidden.`, "policy");
+      if (isForbiddenRequestHeader(name)) {
+        throw new ApiExecutorError(`Request header "${name}" is forbidden.`, "policy", false, undefined, "forbidden-header");
       }
       headers.set(name, value);
     }
@@ -431,12 +446,12 @@ export function redactSensitiveData(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
     key,
-    SENSITIVE_KEY.test(key) ? "[REDACTED]" : redactSensitiveData(entry),
+    isSensitiveKey(key) ? "[REDACTED]" : redactSensitiveData(entry),
   ]));
 }
 
 function redactHeaders(headers: Record<string, string>) {
-  return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, SENSITIVE_KEY.test(key) ? "[REDACTED]" : value]));
+  return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, isSensitiveKey(key) ? "[REDACTED]" : value]));
 }
 
 function normalizedBaseUrl(value: string) {
@@ -463,3 +478,18 @@ function safeUrlForEvidence(url: URL, auth: ApiAuthConfig) {
 
 function isRedirectStatus(status: number) { return [301, 302, 303, 307, 308].includes(status); }
 function isMutationMethod(method: string) { return !["GET", "HEAD"].includes(method.toUpperCase()); }
+
+/** True when a decoded path segment is "." / ".." or smuggles a separator. */
+function hasEncodedTraversalSegment(pathname: string): boolean {
+  for (const segment of pathname.split("/")) {
+    let decoded = segment;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      return true; // Malformed encoding never reaches the backend.
+    }
+    if (decoded === "." || decoded === "..") return true;
+    if (decoded.includes("\\") || decoded.split("/").some((part) => part === "." || part === "..")) return true;
+  }
+  return false;
+}

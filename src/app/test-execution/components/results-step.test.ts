@@ -9,10 +9,11 @@ describe("multi-layer result evidence", () => {
   });
 
   it("renders only allowlisted metadata and never arbitrary bodies or credentials", () => {
+    // Persisted observations nest the layer payload under `data`.
     expect(
       summarizeActionEvidence(
         { method: "get", path: "/orders/42", authorization: "Bearer secret" },
-        { statusCode: 200, rowCount: 1, body: { password: "secret" } },
+        { data: { status: 200, rowCount: 1, body: { password: "secret" } } },
       ),
     ).toBe("GET /orders/42 · status 200 · 1 row(s)");
   });

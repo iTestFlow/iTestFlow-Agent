@@ -10,6 +10,7 @@ import { resolveProjectScope } from "@/modules/projects/workspace-projects.servi
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import {
   archiveEnvironmentProfile,
+  EnvironmentProfileConfigSecretMismatchError,
   EnvironmentProfileNameConflictError,
   EnvironmentProfileSecretLimitError,
   EnvironmentProfileUpdateConflictError,
@@ -85,6 +86,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         { error: "An environment profile can hold at most 30 credentials." },
         { status: 400 },
       );
+    }
+    if (error instanceof EnvironmentProfileConfigSecretMismatchError) {
+      return NextResponse.json({ error: error.issue }, { status: 400 });
     }
     if (error instanceof EnvironmentProfileUpdateConflictError) {
       return NextResponse.json(

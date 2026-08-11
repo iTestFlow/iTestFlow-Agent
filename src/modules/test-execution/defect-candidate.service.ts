@@ -6,6 +6,7 @@ import { postBugReportToAzureDevOps } from "@/modules/bug-reporting/bug-posting.
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import {
   createId,
+  isPgUniqueViolation,
   nowIso,
   sqlAll,
   sqlGet,
@@ -374,5 +375,5 @@ async function collectEvidenceAttachments(candidate: CandidateRow) {
 }
 
 function isUniqueViolation(error: unknown): boolean {
-  return Boolean(error) && typeof error === "object" && (error as { code?: string }).code === "23505";
+  return isPgUniqueViolation(error);
 }

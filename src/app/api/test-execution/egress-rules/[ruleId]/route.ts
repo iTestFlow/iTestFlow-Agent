@@ -1,17 +1,15 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import {
-  authErrorResponse,
-  requireWorkflowContext,
-  requireWorkflowRole,
-} from "@/modules/credentials/scoped-resolution.service";
+import { authErrorResponse } from "@/modules/credentials/scoped-resolution.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import {
   deleteWorkspaceEgressRule,
   TestExecutionEgressError,
   updateWorkspaceEgressRule,
 } from "@/modules/test-execution/egress-policy.service";
+
+import { requireEgressAdmin } from "../egress-admin";
 
 export const runtime = "nodejs";
 type RouteParams = { params: Promise<{ ruleId: string }> };
@@ -33,16 +31,6 @@ const UpdateSchema = z.object({
   ),
 });
 const DeleteSchema = z.object({ workspaceId: z.string().trim().min(1) });
-
-async function requireEgressAdmin(workspaceId: string) {
-  const ctx = await requireWorkflowContext(workspaceId);
-  await requireWorkflowRole(
-    ctx,
-    ["owner", "admin"],
-    "Only workspace owners and admins can manage test-execution egress rules.",
-  );
-  return ctx;
-}
 
 export async function PATCH(request: Request, { params }: RouteParams) {
   const parsed = UpdateSchema.safeParse(await request.json().catch(() => null));

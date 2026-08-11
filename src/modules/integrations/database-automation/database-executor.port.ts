@@ -47,6 +47,8 @@ export class DatabaseExecutorError extends Error {
     readonly category: "policy" | "prerequisite" | "timeout" | "transport",
     readonly uncertainSideEffect = false,
     readonly cause?: unknown,
+    /** Stable machine code for the policy wall (e.g. "forbidden-sql"). */
+    readonly code?: string,
   ) {
     super(message);
     this.name = "DatabaseExecutorError";

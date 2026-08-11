@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import type { RunDetailDto } from "@/modules/test-execution/report-assembler";
+import type { LayerHint } from "@/modules/test-execution/action-schema";
 
 import type { DraftCase } from "../lib/draft-storage";
 import { OutcomeBadge } from "./outcome-badge";
@@ -25,7 +26,7 @@ import { OutcomeBadge } from "./outcome-badge";
 
 export type CandidatePublishState = Record<string, { pending: boolean; error: string | null; azureBugId: string | null }>;
 
-type StepActionJson = { instruction?: string; expectedResult?: string; layerHint?: "auto" | "ui" | "api" | "db" | "mixed" };
+type StepActionJson = { instruction?: string; expectedResult?: string; layerHint?: LayerHint };
 type StepObservationJson = {
   actionsTaken?: { description: string; result: string; detail?: string; layer?: string }[];
   actualResult?: string;
@@ -490,6 +491,9 @@ export function summarizeActionEvidence(request: unknown, observation: unknown):
   const parts: string[] = [];
   const req = asRecord(request);
   const result = asRecord(observation);
+  // Persisted observations nest the layer payload under `data`; older records
+  // carried the fields at the root. Read both.
+  const data = asRecord(result?.data) ?? result;
   const method = scalar(req?.method);
   const path = scalar(req?.path) || scalar(req?.url);
   const operation = scalar(req?.operationName) || scalar(req?.operation) || scalar(req?.catalogName);
@@ -497,9 +501,9 @@ export function summarizeActionEvidence(request: unknown, observation: unknown):
   if (method || path) parts.push([method?.toUpperCase(), path].filter(Boolean).join(" "));
   else if (operation || statement) parts.push(operation || statement || "");
 
-  const status = scalar(result?.statusCode) || scalar(result?.status);
-  const rowCount = scalar(result?.rowCount);
-  const command = scalar(result?.command);
+  const status = scalar(data?.status);
+  const rowCount = scalar(data?.rowCount);
+  const command = scalar(data?.command);
   const summary = scalar(result?.summary) || scalar(result?.actualResult) || scalar(result?.message);
   if (status) parts.push(`status ${status}`);
   if (command) parts.push(command);

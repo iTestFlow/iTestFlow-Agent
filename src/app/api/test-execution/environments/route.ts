@@ -10,6 +10,7 @@ import { resolveProjectScope } from "@/modules/projects/workspace-projects.servi
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import {
   createEnvironmentProfile,
+  EnvironmentProfileConfigSecretMismatchError,
   EnvironmentProfileNameConflictError,
   listEnvironmentProfiles,
 } from "@/modules/test-execution/environment-profile.service";
@@ -68,6 +69,9 @@ export async function POST(request: Request) {
         { error: "An environment profile with this name already exists for the project." },
         { status: 409 },
       );
+    }
+    if (error instanceof EnvironmentProfileConfigSecretMismatchError) {
+      return NextResponse.json({ error: error.issue }, { status: 400 });
     }
     return routeErrorResponse(error, { fallback: "The environment profile could not be created." });
   }

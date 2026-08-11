@@ -1,5 +1,7 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
+
 import { collectSnapshotRefs } from "@/modules/integrations/browser-automation/aria-snapshot";
 import {
   addScrubValues,
@@ -9,8 +11,10 @@ import {
 import type { LLMRequestLogMetadata } from "@/modules/llm/llm-request-log.service";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { TEST_EXECUTION_AGENT_PROMPT } from "@/modules/llm/prompts";
+import { canonicalJson } from "@/modules/shared/canonical-json";
+import { redactExactValuesDeep } from "@/modules/shared/sensitive-data";
 
-import { AgentDecisionSchema, type AgentAction, type LayerHint } from "./action-schema";
+import { AgentDecisionSchema, type AgentAction, type AgentActionType, type LayerHint } from "./action-schema";
 import { CaseCaptureStore } from "./case-capture-store";
 import {
   describeMultiLayerAction,
@@ -31,6 +35,18 @@ const MAX_CONSECUTIVE_ACTION_FAILURES = 2;
 const MAX_SNAPSHOT_CHARS = 20_000;
 const MAX_OBSERVATION_CHARS = 8_000;
 const MAX_CAPABILITY_MANIFEST_CHARS = 12_000;
+/** Settle wait before confirming a suspected no-progress UI transition. */
+const NO_PROGRESS_SETTLE_MS = 400;
+
+/**
+ * UI actions that interact with the page and can therefore make (or fail to
+ * make) observable progress. Passive observation/wait actions are exempt from
+ * the no-progress guard: a successful waitForText is *defined* by the page
+ * not changing.
+ */
+const EFFECTFUL_UI_ACTION_TYPES: ReadonlySet<AgentActionType> = new Set([
+  "navigate", "click", "fill", "select", "check", "uncheck", "hover", "pressKey",
+]);
 
 export type MultiLayerActionRecord = {
   layer: ExecutionLayer;
@@ -67,6 +83,15 @@ export type ActionPersistenceHooks = {
 export type MultiLayerStepInput = {
   provider: LLMProvider;
   runtime: MultiLayerRuntime;
+  /**
+   * One engine, two modes (merge ≠ genericize):
+   * - "test_step" (default): UI/API/DB with normal step-completion criteria.
+   * - "login": layers restricted to UI only — the validator deterministically
+   *   rejects any api/db action — with the login plan's own completion
+   *   criteria and credential-safe handling. Login has no case/step rows, so
+   *   callers pass no persist hooks.
+   */
+  mode?: "test_step" | "login";
   caseTitle: string;
   stepIndex: number;
   stepTotal: number;
@@ -106,7 +131,14 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
   const transcript: MultiLayerActionRecord[] = [];
   const recentObservations: Array<{ layer: ExecutionLayer; summary: string; data?: unknown }> = [];
   const observedLayers = new Set<ExecutionLayer>();
-  const mutationFingerprints = new Set<string>();
+  // Replay protection is specifically for API/DB mutations. UI repeat safety
+  // is governed by observed progress (the no-progress guard below), never by
+  // fingerprint hard-blocks — a repeated Create click that visibly progresses
+  // is intentionally permitted. All of this state is per step.
+  const executedMutations = new Set<string>();
+  const mutationReplayStrikes = new Map<string, number>();
+  const noProgressStrikes = new Map<string, number>();
+  const policyStrikes = new Map<string, number>();
   const capabilityMap = new Map(input.capabilities.map((capability) => [capability.id, capability]));
   const deadline = Date.now() + MULTI_LAYER_STEP_WALL_CLOCK_MS;
   let uiSnapshot: { text: string; url: string | null } | null = null;
@@ -115,6 +147,17 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
   let modelFailureCount = 0;
   let actionFailureCount = 0;
   let scrub = input.scrub;
+
+  /**
+   * A mutation replay strike resets only after a *different* effectful action
+   * that showed observed progress — a passive read must never launder a
+   * replay strike (mutation → read → mutation would escalate never).
+   */
+  const resetOtherReplayStrikes = (except: string | null) => {
+    for (const key of [...mutationReplayStrikes.keys()]) {
+      if (key !== except) mutationReplayStrikes.delete(key);
+    }
+  };
 
   const finish = (
     outcome: ExecutionOutcome,
@@ -133,7 +176,20 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
     observedLayers: [...observedLayers],
   });
 
-  if (shouldInspectUiInitially(input.layerHint, input.runtime.configuredLayers)) {
+  // Login mode restricts the engine to the UI layer: any api/db proposal is
+  // deterministically rejected by the shared validator as unconfigured.
+  const configuredLayers: ReadonlySet<ExecutionLayer> = input.mode === "login"
+    ? new Set<ExecutionLayer>([...input.runtime.configuredLayers].filter((layer) => layer === "ui"))
+    : input.runtime.configuredLayers;
+
+  // The step context is constant for the whole loop — rank the capability
+  // manifest once per step, not once per model call.
+  const capabilityManifestLines = boundedCapabilityManifest(
+    input.capabilities,
+    `${input.caseTitle} ${input.instruction} ${input.expectedResult}`,
+  );
+
+  if (shouldInspectUiInitially(input.layerHint, configuredLayers)) {
     uiSnapshot = await input.runtime.inspectUi();
     observedLayers.add("ui");
   }
@@ -144,7 +200,7 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
     if (input.llmCallBudget.remaining <= 0) return finish("needs_review", iteration - 1, { reason: "The run's AI call budget was exhausted." });
 
     const refs = collectSnapshotRefs(uiSnapshot?.text ?? "");
-    const user = scrub(buildMultiLayerPrompt(input, uiSnapshot, transcript, recentObservations, feedback));
+    const user = scrub(buildMultiLayerPrompt(input, configuredLayers, capabilityManifestLines, uiSnapshot, transcript, recentObservations, feedback));
     input.llmCallBudget.remaining -= 1;
 
     let raw: unknown;
@@ -180,7 +236,7 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
 
     const validated = validateMultiLayerDecision(raw, {
       layerHint: input.layerHint,
-      configuredLayers: input.runtime.configuredLayers,
+      configuredLayers,
       snapshotRefs: refs,
       allowedOrigin: input.allowedOrigin,
       allowedApiReadPaths: input.allowedApiReadPaths,
@@ -258,10 +314,35 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
     }
     invalidCount = 0;
     const safetyClass = actionSafetyClass(action);
+    // Fingerprints derive from the RESOLVED action so a capture/literal alias
+    // of the same mutation is recognized as a replay. They stay in worker
+    // memory only and are never persisted.
     const fingerprint = safetyClass === "mutation" ? mutationFingerprint(resolvedAction) : null;
-    if (fingerprint && mutationFingerprints.has(fingerprint)) {
-      return finish("blocked_policy", iteration, { reason: "An identical mutation was already attempted in this step and cannot be replayed." });
+    if (fingerprint && executedMutations.has(fingerprint)) {
+      // Feedback-first replay handling: the replay itself is never executed.
+      // First proposal after execution gets validator feedback; proposing the
+      // same replay again without intervening progress ends in human review.
+      const strikes = (mutationReplayStrikes.get(fingerprint) ?? 0) + 1;
+      mutationReplayStrikes.set(fingerprint, strikes);
+      const message = "An identical mutation was already executed in this step. Use the earlier observation instead of replaying it.";
+      transcript.push({
+        layer: action.layer,
+        actionType: action.type,
+        description: describeMultiLayerAction(action),
+        result: "rejected",
+        detail: message,
+      });
+      if (strikes >= 2) {
+        return finish("needs_review", iteration, {
+          reason: "The same mutation was proposed again after replay feedback; a human should review the step.",
+        });
+      }
+      feedback = `${message} If the step genuinely requires executing it twice, report blocked with the reason.`;
+      continue;
     }
+
+    const isEffectfulUi = action.type === "ui_action" && EFFECTFUL_UI_ACTION_TYPES.has(action.action.type);
+    const preUiDigest = isEffectfulUi ? snapshotDigest(uiSnapshot) : null;
 
     const description = describeMultiLayerAction(action);
     const request = scrubDeep(persistableActionRequest(action), scrub);
@@ -277,12 +358,14 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
       if (!actionRunId) throw new Error("The worker no longer owns this run.");
     }
 
-    if (fingerprint) mutationFingerprints.add(fingerprint);
+    if (fingerprint) executedMutations.add(fingerprint);
     let observation: LayerRuntimeObservation;
     try {
       observation = await input.runtime.execute(resolvedAction);
     } catch (error) {
       const detail = scrub(error instanceof Error ? error.message : "Layer execution failed.").slice(0, 1_000);
+      // Only API/DB mutations have unknowable external outcomes worth a human
+      // review; UI actions and reads report plain infrastructure failures.
       const uncertain = safetyClass === "mutation";
       if (actionRunId && input.persist) {
         const finalized = await input.persist.finish({
@@ -303,8 +386,14 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
     const captureErrorsRaw = applyCaptures(action, observation, input.captures);
     scrub = addScrubValues(scrub, input.captures.sensitiveScrubValues());
     const captureErrors = captureErrorsRaw.map((error) => scrub(error));
+    // Exact scalar redaction (any-length string secrets, >=4-digit numeric
+    // secrets) backs up the substring scrubber, which must skip short values.
+    const exactSensitiveValues = collectExactSensitiveValues(input.captures, input.secrets);
     const sanitizedSummary = scrub(observation.summary).slice(0, 1_000);
-    const safeData = scrubObservationData(observation.data, scrub);
+    const safeData = scrubObservationData(
+      redactExactValuesDeep(observation.data, exactSensitiveValues, "[REDACTED]"),
+      scrub,
+    );
     recentObservations.push({ layer: action.layer, summary: sanitizedSummary, data: safeData });
     if (recentObservations.length > 6) recentObservations.shift();
 
@@ -312,7 +401,11 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
       summary: sanitizedSummary,
       durationMs: observation.durationMs,
       data: safeData,
-      captures: input.captures.persistable(),
+      captures: redactExactValuesDeep(
+        scrubDeep(input.captures.persistable(), scrub),
+        exactSensitiveValues,
+        "<redacted>",
+      ),
       captureErrors,
     };
     if (actionRunId && input.persist) {
@@ -333,6 +426,42 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
         ? `The external action completed, but captures failed: ${captureErrors.join("; ")}. Do not repeat a mutation; use the available observation.`
         : null;
       transcript.push({ layer: action.layer, actionType: action.type, description, result: captureErrors.length ? "failed" : "ok", detail: sanitizedSummary });
+
+      if (isEffectfulUi && preUiDigest) {
+        let postUiDigest = snapshotDigest(uiSnapshot);
+        if (postUiDigest !== null && postUiDigest === preUiDigest) {
+          // Confirm before striking: async rendering can make a real change
+          // look like no progress. One settle re-inspection, only on this
+          // suspect path — the normal path pays no added latency.
+          try {
+            await settleDelay(NO_PROGRESS_SETTLE_MS, input.signal);
+            uiSnapshot = await input.runtime.inspectUi();
+            postUiDigest = snapshotDigest(uiSnapshot);
+          } catch {
+            // Keep the original snapshot; the digest comparison stands.
+          }
+        }
+        if (postUiDigest !== null && postUiDigest === preUiDigest) {
+          // The action's own transition changed nothing (pre == post).
+          const key = `ui:${stableJson(action.action)}:${preUiDigest}`;
+          const strikes = (noProgressStrikes.get(key) ?? 0) + 1;
+          noProgressStrikes.set(key, strikes);
+          if (strikes >= 3) {
+            return finish("needs_review", iteration, {
+              reason: "The same UI action was repeated without any observable page change.",
+            });
+          }
+          if (strikes === 2) {
+            feedback = "The repeated UI action produced no observable page change. Choose a different action or report the step outcome.";
+          }
+        } else {
+          // Visible UI progress counts as effectful progress for replay resets.
+          resetOtherReplayStrikes(null);
+        }
+      } else if (safetyClass === "mutation") {
+        // A different successful mutation is effectful observed progress.
+        resetOtherReplayStrikes(fingerprint);
+      }
       continue;
     }
 
@@ -345,7 +474,21 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
     });
     if (observation.status === "uncertain") return finish("needs_review", iteration, { reason: sanitizedSummary });
     if (observation.status === "blocked") {
-      return finish(observation.category === "policy" ? "blocked_policy" : "blocked_prerequisite", iteration, { reason: sanitizedSummary });
+      if (observation.category !== "policy") {
+        return finish("blocked_prerequisite", iteration, { reason: sanitizedSummary });
+      }
+      // Feedback-first policy handling: the first rejection from a given
+      // policy wall is surfaced to the model; only repeating into the SAME
+      // wall (stable code where available, normalized text otherwise) ends
+      // the step. A different policy wall is a fresh first strike.
+      const wall = policyWallFingerprint(action, observation);
+      const strikes = (policyStrikes.get(wall) ?? 0) + 1;
+      policyStrikes.set(wall, strikes);
+      if (strikes >= 2) {
+        return finish("blocked_policy", iteration, { reason: sanitizedSummary });
+      }
+      feedback = `A policy rejected the previous action: ${sanitizedSummary}. Do not retry it; choose a different approach or report the step outcome.`;
+      continue;
     }
     actionFailureCount += 1;
     if (actionFailureCount >= MAX_CONSECUTIVE_ACTION_FAILURES) {
@@ -363,15 +506,13 @@ function shouldInspectUiInitially(hint: LayerHint, layers: ReadonlySet<Execution
 
 function buildMultiLayerPrompt(
   input: MultiLayerStepInput,
+  configuredLayers: ReadonlySet<ExecutionLayer>,
+  capabilityLines: readonly string[],
   snapshot: { text: string; url: string | null } | null,
   transcript: readonly MultiLayerActionRecord[],
   observations: readonly { layer: ExecutionLayer; summary: string; data?: unknown }[],
   feedback: string | null,
 ) {
-  const capabilityLines = boundedCapabilityManifest(
-    input.capabilities,
-    `${input.caseTitle} ${input.instruction} ${input.expectedResult}`,
-  );
   const users = input.testUsers ?? [];
   const snapshotText = snapshot?.text
     ? snapshot.text.length > MAX_SNAPSHOT_CHARS
@@ -384,7 +525,7 @@ function buildMultiLayerPrompt(
     `Instruction: ${input.instruction}`,
     `Expected result: ${input.expectedResult || "(none)"}`,
     `Layer hint: ${input.layerHint}`,
-    `Configured layers: ${[...input.runtime.configuredLayers].join(", ")}`,
+    `Configured layers: ${[...configuredLayers].join(", ")}`,
     input.allowedOrigin ? `UI allowed origin: ${input.allowedOrigin}` : "",
     `Exact dynamic API read paths: ${[...input.allowedApiReadPaths].join(", ") || "(none)"}`,
     "## Approved operation capabilities",
@@ -479,22 +620,81 @@ function resolveAction(
 ): MultiLayerAction {
   if (action.type === "ui_action") {
     const browserAction = action.action.type === "fill" || action.action.type === "select"
-      ? { ...action.action, value: captures.resolve(action.action.value, secrets) }
+      ? { ...action.action, value: resolvedText(captures, secrets, action.action.value, "value") }
       : action.action.type === "navigate"
-        ? { ...action.action, url: captures.resolve(action.action.url, secrets) }
+        ? { ...action.action, url: resolvedText(captures, secrets, action.action.url, "url") }
         : action.action;
     return { ...action, action: browserAction as AgentAction };
   }
   if (action.type === "api_request") {
-    return { ...action, arguments: { ...action.arguments, query: captures.resolve(action.arguments.query, secrets), headers: captures.resolve(action.arguments.headers, secrets) } };
+    return { ...action, arguments: {
+      ...action.arguments,
+      path: resolvedText(captures, secrets, action.arguments.path, "path"),
+      query: captures.resolve(action.arguments.query, secrets),
+      headers: captures.resolve(action.arguments.headers, secrets),
+    } };
   }
   if (action.type === "api_execute_operation" || action.type === "db_execute_operation") {
     return { ...action, arguments: { ...action.arguments, parameters: captures.resolve(action.arguments.parameters, secrets) } };
   }
   if (action.type === "db_select") {
-    return { ...action, arguments: { ...action.arguments, parameters: captures.resolve(action.arguments.parameters, secrets) } };
+    // Placeholders inside SQL text are rewritten to named bind parameters —
+    // never spliced into the SQL string — so capture/secret values stay
+    // parameterized and cannot alter the statement.
+    const rewritten = rewriteSqlPlaceholders(action.arguments.sql, action.arguments.parameters, captures, secrets);
+    return { ...action, arguments: {
+      ...action.arguments,
+      sql: rewritten.sql,
+      parameters: captures.resolve(rewritten.parameters, secrets),
+    } };
   }
   return action;
+}
+
+/** Resolve placeholders in a string field and coerce scalar results to text. */
+function resolvedText(
+  captures: CaseCaptureStore,
+  secrets: ReadonlyMap<string, string>,
+  value: string,
+  label: string,
+): string {
+  const resolved = captures.resolve<unknown>(value, secrets);
+  if (typeof resolved === "string") return resolved;
+  if (typeof resolved === "number" && Number.isFinite(resolved)) return String(resolved);
+  if (typeof resolved === "boolean") return String(resolved);
+  throw new Error(`The ${label} resolved to a non-text capture value; use a string-compatible capture.`);
+}
+
+/**
+ * Replace {{capture:...}}/{{secret:...}} placeholders inside SQL text with
+ * generated named parameters and return the augmented parameter map. The
+ * resolved values ride the driver's bind path, keeping the SQL text static.
+ */
+function rewriteSqlPlaceholders(
+  sql: string,
+  parameters: Record<string, unknown>,
+  captures: CaseCaptureStore,
+  secrets: ReadonlyMap<string, string>,
+): { sql: string; parameters: Record<string, unknown> } {
+  const output: Record<string, unknown> = { ...parameters };
+  const nameFor = (base: string) => {
+    let name = base.replace(/[^A-Za-z0-9_]/g, "_").slice(0, 56);
+    if (!/^[A-Za-z_]/.test(name)) name = `p_${name}`;
+    let candidate = name;
+    let suffix = 2;
+    while (Object.prototype.hasOwnProperty.call(output, candidate)) candidate = `${name}_${suffix++}`;
+    return candidate;
+  };
+  const rewritten = sql.replace(
+    /\{\{(capture|secret):([A-Za-z][A-Za-z0-9_.-]{0,63})\}\}/g,
+    (placeholder, kind: string, name: string) => {
+      const parameter = nameFor(`${kind}_${name}`);
+      // Resolving through the store enforces the sensitive-capture guard.
+      output[parameter] = captures.resolve<unknown>(placeholder, secrets);
+      return `:${parameter}`;
+    },
+  );
+  return { sql: rewritten, parameters: output };
 }
 
 function applyCaptures(action: MultiLayerAction, observation: LayerRuntimeObservation, store: CaseCaptureStore): string[] {
@@ -520,18 +720,71 @@ function applyCaptures(action: MultiLayerAction, observation: LayerRuntimeObserv
 
 function actionSafetyClass(action: MultiLayerAction): "ui" | "read" | "mutation" {
   if (action.type === "ui_snapshot") return "read";
-  // Browser actions can dispatch application mutations (clicking Submit,
-  // typing into autosave fields, navigation side effects). Treat an unknown
-  // in-flight outcome conservatively, just like API/DB mutations.
-  if (action.type === "ui_action") return "mutation";
+  // UI actions are governed by observed progress (the no-progress guard),
+  // never by mutation fingerprinting: classing them as mutations hard-blocked
+  // legitimate repeats and produced false uncertain_side_effect outcomes.
+  if (action.type === "ui_action") return "ui";
   if (action.type === "api_execute_operation" || action.type === "db_execute_operation") return action.capability.safetyClass;
   return "read";
 }
 
 function mutationFingerprint(action: MultiLayerAction) {
-  if (action.type === "ui_action") return `ui:${stableJson(action.action)}`;
   if (action.type !== "api_execute_operation" && action.type !== "db_execute_operation") return "";
   return `${action.layer}:${action.capability.id}:${stableJson(action.arguments.parameters)}`;
+}
+
+/** Digest of the observable UI state; null when no snapshot exists. */
+function snapshotDigest(snapshot: { text: string; url: string | null } | null): string | null {
+  if (!snapshot) return null;
+  return createHash("sha1").update(snapshot.url ?? "").update(" ").update(snapshot.text).digest("hex");
+}
+
+function settleDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new Error("Execution aborted."));
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("Execution aborted."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Exact scalar forms of every sensitive value known to this step. */
+function collectExactSensitiveValues(
+  captures: CaseCaptureStore,
+  secrets: ReadonlyMap<string, string>,
+): Set<string> {
+  const values = captures.sensitiveExactValues();
+  for (const value of secrets.values()) {
+    if (value) values.add(value);
+  }
+  return values;
+}
+
+/**
+ * Identity of the policy wall an action ran into. Prefers the runtime's
+ * stable machine code; falls back to summary text with dynamic parts
+ * (quoted strings, numbers) normalized away so fingerprints stay stable.
+ */
+function policyWallFingerprint(action: MultiLayerAction, observation: LayerRuntimeObservation): string {
+  const target = action.type === "api_request"
+    ? action.arguments.path
+    : action.type === "api_execute_operation" || action.type === "db_execute_operation"
+      ? action.capability.id
+      : action.type === "ui_action"
+        ? action.action.type
+        : action.type;
+  const reason = observation.code ?? normalizePolicyText(observation.summary);
+  return `${action.layer}:${action.type}:${target}:${reason}`;
+}
+
+function normalizePolicyText(text: string): string {
+  return text.toLowerCase().replace(/"[^"]*"/g, "?").replace(/[0-9]+/g, "#").slice(0, 200);
 }
 
 function requiredEvidenceIssue(
@@ -610,23 +863,7 @@ function boundedJson(value: unknown) {
 }
 
 function stableJson(value: unknown) {
-  try {
-    return JSON.stringify(sortJson(value));
-  } catch {
-    return "<unserializable>";
-  }
-}
-
-function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortJson);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entry]) => [key, sortJson(entry)]),
-    );
-  }
-  return value;
+  return canonicalJson(value);
 }
 
 function inputError(error: unknown) {

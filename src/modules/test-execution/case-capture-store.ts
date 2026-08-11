@@ -1,3 +1,5 @@
+import { collectSensitiveValues, isSensitiveKey } from "@/modules/shared/sensitive-data";
+
 import {
   buildScrubValuesFromValues,
   substituteSecretPlaceholders,
@@ -50,13 +52,34 @@ export class CaseCaptureStore {
     }));
   }
 
-  /** Representations added to the execution scrubber after a sensitive capture. */
+  /**
+   * Substring representations added to the execution scrubber after a
+   * sensitive capture. Booleans/nulls are skipped and values below 4 chars
+   * are excluded: substring-replacing "true"/"1" poisons every later JSON
+   * payload. Short values remain protected by exact scalar redaction
+   * (sensitiveExactValues) and by the structural sensitive flag.
+   */
   sensitiveScrubValues(): string[] {
     const values = [...this.captures.values()]
       .filter((capture) => capture.sensitive)
       .map((capture) => scalarScrubText(capture.value))
       .filter((value): value is string => value !== null);
-    return buildScrubValuesFromValues(values, { minimumLength: 1 });
+    return buildScrubValuesFromValues(values, { minimumLength: 4 });
+  }
+
+  /**
+   * Exact scalar forms of sensitive capture values, at any length — feeds
+   * whole-scalar redaction of persisted observations, which cannot corrupt
+   * JSON and therefore safely covers 1–3 character secrets.
+   */
+  sensitiveExactValues(): Set<string> {
+    const values = new Set<string>();
+    for (const capture of this.captures.values()) {
+      if (!capture.sensitive) continue;
+      const text = scalarScrubText(capture.value);
+      if (text !== null) values.add(text);
+    }
+    return values;
   }
 
   set(capture: RuntimeCaptureInput, overwrite = false): void {
@@ -96,10 +119,17 @@ export class CaseCaptureStore {
     sensitive?: boolean;
     overwrite?: boolean;
   }): void {
+    const value = resolveJsonPointer(input.document, input.pointer);
     this.set({
       name: input.name,
-      value: resolveJsonPointer(input.document, input.pointer),
-      sensitive: input.sensitive === true || looksSensitive(input.name) || pointerLooksSensitive(input.pointer),
+      value,
+      // Provenance first (name/pointer), then value-aliasing: a value equal to
+      // one stored under a sensitive key elsewhere in the same document is
+      // sensitive even when captured through an innocent-looking path.
+      sensitive: input.sensitive === true
+        || looksSensitive(input.name)
+        || pointerLooksSensitive(input.pointer)
+        || valueAliasesSensitive(value, input.document),
       sourceLayer: "api",
     }, input.overwrite);
   }
@@ -118,10 +148,14 @@ export class CaseCaptureStore {
     if (!Object.prototype.hasOwnProperty.call(row, input.column)) {
       throw new Error(`Cannot capture column "${input.column}"; it is not present in row ${rowIndex}.`);
     }
+    const value = row[input.column];
     this.set({
       name: input.name,
-      value: row[input.column],
-      sensitive: input.sensitive === true || looksSensitive(input.name) || looksSensitive(input.column),
+      value,
+      sensitive: input.sensitive === true
+        || looksSensitive(input.name)
+        || looksSensitive(input.column)
+        || valueAliasesSensitive(value, input.rows),
       sourceLayer: "db",
     }, input.overwrite);
   }
@@ -201,7 +235,19 @@ function resolveString(
 }
 
 function looksSensitive(name: string) {
-  return /(password|passwd|secret|token|authorization|credential|cookie|session|api[_-]?key|private[_-]?key)/i.test(name);
+  return isSensitiveKey(name);
+}
+
+/**
+ * A3 value-alias fallback: the captured scalar equals a value that appears
+ * under a sensitive-named key/column somewhere in the same source document.
+ * Over-redaction of coincidental equal values is accepted — safe, cosmetic.
+ */
+function valueAliasesSensitive(value: unknown, sourceDocument: unknown): boolean {
+  if (value === null || typeof value === "boolean") return false;
+  const text = typeof value === "string" ? value : typeof value === "number" ? String(value) : null;
+  if (!text) return false;
+  return collectSensitiveValues(sourceDocument).has(text);
 }
 
 function pointerLooksSensitive(pointer: string): boolean {

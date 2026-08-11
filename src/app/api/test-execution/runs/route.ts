@@ -34,6 +34,9 @@ import { startWorkflowRun } from "@/modules/analytics/workflow-analytics.service
 
 export const runtime = "nodejs";
 
+/** Minimum budget for fetching an OpenAPI document at run creation (F6/V4-5). */
+const OPENAPI_DISCOVERY_TIMEOUT_FLOOR_MS = 30_000;
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const parsedScope = ProjectScopeSchema.safeParse(Object.fromEntries(url.searchParams));
@@ -89,7 +92,10 @@ export async function POST(request: Request) {
       }
       environment = {
         profileId: profile.id,
-        profileUpdatedAt: profile.updatedAt,
+        // The CLIENT's reviewed version — never the freshly re-fetched row's —
+        // so the lock check inside run creation actually detects a profile
+        // that changed after the approver reviewed it (V7-1).
+        profileUpdatedAt: parsed.data.environment.reviewedProfileUpdatedAt,
         config: profileToEnvConfig(profile),
         oneTimeSecrets: [],
       };
@@ -113,7 +119,10 @@ export async function POST(request: Request) {
         actor: ctx.userId,
         baseUrl: environment.config.api.baseUrl,
         sourceUrl: pendingContract.url,
-        timeoutMs: environment.config.api.requestTimeoutMs,
+        // Contract discovery downloads a full OpenAPI document — much larger
+        // than a single API call — so the tight per-request budget gets a
+        // dedicated floor instead of spuriously timing out.
+        timeoutMs: Math.max(environment.config.api.requestTimeoutMs, OPENAPI_DISCOVERY_TIMEOUT_FLOOR_MS),
         signal: request.signal,
       });
       environment = {
