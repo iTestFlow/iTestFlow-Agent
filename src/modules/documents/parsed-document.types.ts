@@ -5,7 +5,7 @@
  * into RAG chunks without needing to understand any file-format details.
  */
 
-export const DOCUMENT_FORMATS = ["pdf", "docx", "xlsx", "csv", "txt", "md"] as const;
+export const DOCUMENT_FORMATS = ["pdf", "docx", "xlsx", "csv", "txt", "md", "png", "jpeg", "webp"] as const;
 
 export type DocumentFormat = (typeof DOCUMENT_FORMATS)[number];
 

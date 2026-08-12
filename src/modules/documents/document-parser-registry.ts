@@ -24,7 +24,7 @@ import { textDocumentParser } from "./parsers/text-document.parser";
  */
 export const DOCUMENT_PARSE_RECIPE_VERSION = "1.1.0";
 
-const PARSERS: Record<DocumentFormat, DocumentParser> = {
+const PARSERS: Partial<Record<DocumentFormat, DocumentParser>> = {
   pdf: pdfDocumentParser,
   docx: docxDocumentParser,
   xlsx: xlsxDocumentParser,
@@ -40,7 +40,14 @@ export function createDocumentParser(format: DocumentFormat | string): DocumentP
       message: `No document parser is registered for “${String(format)}”.`,
     });
   }
-  return PARSERS[format];
+  const parser = PARSERS[format];
+  if (!parser) {
+    throw new DocumentParseError({
+      code: "unsupported_format",
+      message: `No document parser is registered for “${String(format)}”.`,
+    });
+  }
+  return parser;
 }
 
 export async function parseDocument(input: DocumentParseInput & { format: DocumentFormat | string }): Promise<ParsedDocument> {

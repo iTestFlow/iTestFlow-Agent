@@ -7,7 +7,11 @@ import { getDocumentStorageBackend } from "@/modules/documents/document-storage.
 import {
   createDocumentWithVersion,
 } from "@/modules/documents/project-source-documents.service";
-import { validateDocumentUpload, type ValidatedDocumentUpload } from "@/modules/documents/document-upload-validation";
+import {
+  canonicalDocumentMimeType,
+  validateDocumentUpload,
+  type ValidatedDocumentUpload,
+} from "@/modules/documents/document-upload-validation";
 import {
   removeStreamedDocumentMultipart,
   streamDocumentUploadMultipart,
@@ -100,7 +104,7 @@ export async function POST(request: Request) {
           storageBackend: storage.kind,
           storageKey: stored.storageKey,
           originalFileName: safeDocumentDownloadName(item.file.originalFileName, `upload.${item.validation.format}`),
-          mimeType: canonicalMimeType(item.validation),
+          mimeType: canonicalDocumentMimeType(item.validation.format),
           fileFormat: item.validation.format,
           byteSize: item.file.byteSize,
           contentHash: item.file.contentSha256,
@@ -181,17 +185,6 @@ async function validateUploadedFiles(files: StreamedDocumentUpload[]) {
     result.push({ file, validation });
   }
   return result;
-}
-
-function canonicalMimeType(validation: ValidatedDocumentUpload) {
-  switch (validation.format) {
-    case "pdf": return "application/pdf";
-    case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    case "csv": return "text/csv";
-    case "txt": return "text/plain";
-    case "md": return "text/markdown";
-  }
 }
 
 function writeDocumentAudit(input: {

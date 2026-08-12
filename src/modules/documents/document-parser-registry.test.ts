@@ -3,7 +3,7 @@ import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import { describe, expect, it, vi } from "vitest";
 
-import { parseDocument } from "./document-parser-registry";
+import { createDocumentParser, parseDocument } from "./document-parser-registry";
 
 /** Builds a minimal single-part OOXML package around the given document.xml body. */
 async function buildDocx(documentXml: string) {
@@ -24,6 +24,12 @@ async function buildDocx(documentXml: string) {
 }
 
 describe("document parser registry", () => {
+  it.each(["png", "jpeg", "webp"] as const)("fails closed for %s until an OCR parser is registered", (format) => {
+    expect(() => createDocumentParser(format)).toThrow(
+      expect.objectContaining({ code: "unsupported_format", message: expect.stringMatching(/no document parser/i) }),
+    );
+  });
+
   it("preserves heading and RTL text in Markdown sections", async () => {
     const result = await parseDocument({
       format: "md",
