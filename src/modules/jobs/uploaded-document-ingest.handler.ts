@@ -244,6 +244,14 @@ function buildDocumentChunks(input: {
   parsed: Awaited<ReturnType<typeof parseDocument>>;
 }): { chunks: IndexedDocumentChunk[]; truncated: boolean } {
   const chunks: IndexedDocumentChunk[] = [];
+  const documentOcr = input.parsed.documentMetadata.ocr;
+  const ocrProvenance = documentOcr
+    ? {
+        origin: "ocr_text",
+        engine: documentOcr.engine,
+        engineVersion: documentOcr.engineVersion,
+      }
+    : {};
   let truncated = false;
   for (const [sectionIndex, section] of input.parsed.sections.entries()) {
     if (chunks.length >= MAX_UPLOADED_DOCUMENT_CHUNKS) {
@@ -271,6 +279,7 @@ function buildDocumentChunks(input: {
         section: section.sectionKey,
         pageNumber: section.pageNumber ?? null,
         metadata: {
+          ...(section.kind === "ocr_region" ? ocrProvenance : {}),
           ...section.metadata,
           sectionKind: section.kind,
           sectionKey: section.sectionKey,

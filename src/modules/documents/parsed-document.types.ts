@@ -70,6 +70,17 @@ export type ParsedDocumentSection = {
   metadata?: Record<string, unknown>;
 };
 
+export type OcrDocumentMetadata = {
+  engine: "tesseract.js";
+  engineVersion: string;
+  language: "eng" | "ara";
+  confidence: number;
+  status: "parsed" | "partially_parsed" | "no_text" | "low_confidence";
+  minConfidence: number;
+  acceptedRegionCount: number;
+  rejectedRegionCount: number;
+};
+
 export type ParsedDocumentMetadata = {
   format: DocumentFormat;
   extractedTextChars: number;
@@ -77,6 +88,7 @@ export type ParsedDocumentMetadata = {
   parsedPageCount?: number;
   sheetCount?: number;
   parsedSheetCount?: number;
+  ocr?: OcrDocumentMetadata;
   [key: string]: unknown;
 };
 

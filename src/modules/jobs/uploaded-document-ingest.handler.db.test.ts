@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 
+import sharp from "sharp";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 
 // The handler's only expensive/non-deterministic dependency is the local
@@ -28,6 +29,7 @@ import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
   createDocumentWithVersion,
   getProjectSourceDocumentVersion,
+  listProjectSourceDocumentChunks,
 } from "@/modules/documents/project-source-documents.service";
 import { createLocalFilesystemStorageBackend } from "@/modules/documents/storage/local-filesystem-backend";
 import { UPLOADED_DOCUMENT_INGEST } from "@/modules/jobs/uploaded-document-jobs.service";
@@ -195,6 +197,69 @@ describeDb("uploaded document ingest handler (DB-backed, embeddings mocked)", ()
     );
     expect(ftsRows.length).toBe(chunks.length);
   });
+
+  it("persists OCR status and region provenance through version metadata and chunks", async () => {
+    const backend = createLocalFilesystemStorageBackend();
+    const content = await sharp(Buffer.from(
+      '<svg width="640" height="140" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><text x="320" y="95" text-anchor="middle" font-family="DejaVu Sans" font-size="64">OCR SOURCE</text></svg>',
+    )).png().toBuffer();
+    const contentHash = sha256Hex(content);
+    const stored = await backend.put({
+      workspaceId: WS,
+      contentSha256: contentHash,
+      content: Readable.from([content]),
+      expectedByteSize: content.length,
+    });
+    const created = await createDocumentWithVersion({
+      scope,
+      documentName: "OCR provenance sample",
+      languageHint: "en",
+      createdBy: uniqueTestId("user"),
+      version: {
+        storageKey: stored.storageKey,
+        originalFileName: "ocr-source.png",
+        mimeType: "image/png",
+        fileFormat: "png",
+        byteSize: stored.byteSize,
+        contentHash,
+        uploadedBy: uniqueTestId("user"),
+      },
+    });
+
+    const result = await runUploadedDocumentIngestJob(
+      buildJob({ projectId: PROJECT, versionId: created.version.id }),
+      buildContext().context,
+    );
+
+    expect(result).toMatchObject({ outcome: "parsed", parseStatus: "parsed", chunkCount: 1 });
+    const version = await getProjectSourceDocumentVersion({ scope, versionId: created.version.id });
+    expect(version?.metadata.ocr).toEqual(expect.objectContaining({
+      engine: "tesseract.js",
+      language: "eng",
+      status: "parsed",
+      acceptedRegionCount: 1,
+      rejectedRegionCount: 0,
+    }));
+    const chunks = await listProjectSourceDocumentChunks({
+      scope,
+      documentId: created.document.id,
+      sourceDocumentVersionId: created.version.id,
+    });
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toMatchObject({
+      documentId: created.document.id,
+      sourceDocumentVersionId: created.version.id,
+      section: "ocr-region-1",
+      metadata: {
+        origin: "ocr_text",
+        engine: "tesseract.js",
+        engineVersion: expect.any(String),
+        language: "eng",
+        confidence: expect.any(Number),
+        bbox: { x0: expect.any(Number), y0: expect.any(Number), x1: expect.any(Number), y1: expect.any(Number) },
+      },
+    });
+  }, 30_000);
 
   it("a corrupted DOCX buffer completes without throwing and ends parse_failed with parse_error set", async () => {
     const backend = createLocalFilesystemStorageBackend();
