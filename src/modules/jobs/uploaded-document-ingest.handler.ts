@@ -113,6 +113,7 @@ export const runUploadedDocumentIngestJob: JobHandler = async (job, context) => 
       format: version.fileFormat,
       data: sourceBytes,
       fileName: version.originalFileName,
+      languageHint: document.languageHint,
       signal: context.signal,
     });
     context.signal.throwIfAborted();

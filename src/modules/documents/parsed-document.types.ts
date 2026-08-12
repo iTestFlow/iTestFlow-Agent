@@ -42,6 +42,7 @@ export type DocumentParseErrorCode = (typeof DOCUMENT_PARSE_ERROR_CODES)[number]
 
 export type ParsedDocumentWarningCode =
   | "no_extractable_text"
+  | "low_confidence"
   | "page_parse_failed"
   | "sheet_limit_reached"
   | "cell_limit_reached"
@@ -91,6 +92,8 @@ export type DocumentParseInput = {
   data: Uint8Array;
   /** Display metadata only; never use this value for a filesystem path. */
   fileName?: string;
+  /** Optional OCR language name or alias. Image OCR supports English and Arabic. */
+  languageHint?: string | null;
   /** Lower this per call when a worker needs a tighter execution budget. */
   maxExtractedTextChars?: number;
   /** The worker's cancellation signal, checked at parser phase boundaries. */

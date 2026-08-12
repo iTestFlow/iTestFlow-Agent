@@ -24,10 +24,8 @@ async function buildDocx(documentXml: string) {
 }
 
 describe("document parser registry", () => {
-  it.each(["png", "jpeg", "webp"] as const)("fails closed for %s until an OCR parser is registered", (format) => {
-    expect(() => createDocumentParser(format)).toThrow(
-      expect.objectContaining({ code: "unsupported_format", message: expect.stringMatching(/no document parser/i) }),
-    );
+  it.each(["png", "jpeg", "webp"] as const)("registers the local OCR parser for %s", (format) => {
+    expect(createDocumentParser(format)).toMatchObject({ format });
   });
 
   it("preserves heading and RTL text in Markdown sections", async () => {
