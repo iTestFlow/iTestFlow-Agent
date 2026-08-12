@@ -12,8 +12,11 @@
       "cwd": "."
     },
     "itestflow-mempalace": {
-      "command": "mempalace-mcp",
+      "command": "uvx",
       "args": [
+        "--from",
+        "mempalace==3.7.0",
+        "mempalace-mcp",
         "--palace",
         ".mempalace/palace"
       ],

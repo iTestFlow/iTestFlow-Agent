@@ -7,11 +7,20 @@ The tracked MCP adapter pins Memory 0.1.55. If `memory` is not on `PATH`, prefix
 the commands in the managed section below with
 `npx --yes --package @aictx/memory@0.1.55 --`.
 
-MemPalace 3.6 or newer uses the tracked `mempalace.yaml` taxonomy while keeping
+MemPalace 3.7.0 uses the tracked `mempalace.yaml` taxonomy while keeping
 its generated palace checkout-local. Query it with
-`mempalace --palace .mempalace/palace search "<task phrase>" --wing itestflow_agent`.
+`uvx --from mempalace==3.7.0 mempalace --palace .mempalace/palace search "<task phrase>" --wing itestflow_agent`.
 Create or refresh that local index with
-`mempalace --palace .mempalace/palace mine . --wing itestflow_agent`.
+`uvx --from mempalace==3.7.0 mempalace --palace .mempalace/palace mine . --wing itestflow_agent`.
+These commands require `uvx`; follow the uv prerequisite and recovery steps in
+`README.md` on a fresh clone. Validate the tracked setup with
+`npm run check:agent-memory`.
+
+MemPalace 3.7.0 does not provide exact path/glob-to-room routing in its tracked
+taxonomy. Root files can therefore be content-scored into different rooms; use
+wing-wide semantic search for root guidance and configuration. Directory-owned
+application, domain, platform, test, documentation, and tooling sources route
+by their path segments.
 Do not run `mempalace init` in this repository: it rewrites the tracked taxonomy
 and adds canonical project files to `.gitignore`.
 

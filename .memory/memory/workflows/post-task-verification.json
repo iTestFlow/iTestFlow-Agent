@@ -1,6 +1,6 @@
 {
   "body_path": "memory/workflows/post-task-verification.md",
-  "content_hash": "sha256:c29e2d51332cdeb3d27ecd294283180759b49e24493c97c8ab029d7120d0d029",
+  "content_hash": "sha256:82766aa8deab157d173fec46c07570bebbb3f0abdb2638b9bcfe761744d31801",
   "created_at": "2026-08-12T23:13:53+03:00",
   "evidence": [
     {
@@ -12,7 +12,7 @@
     "applies_to": [
       "package.json"
     ],
-    "category": "testing",
+    "category": "convention",
     "load_modes": [
       "coding",
       "debugging",
@@ -34,9 +34,10 @@
   "tags": [
     "verification",
     "testing",
-    "workflow"
+    "workflow",
+    "quality-bar"
   ],
   "title": "Post-task verification",
   "type": "workflow",
-  "updated_at": "2026-08-12T23:13:53+03:00"
+  "updated_at": "2026-08-12T23:54:38+03:00"
 }

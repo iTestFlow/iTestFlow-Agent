@@ -1,1 +1,1 @@
-Every repository MemPalace CLI or MCP launch must pass `--palace .mempalace/palace`. `mempalace.yaml` controls wing/room taxonomy but does not replace explicit runtime palace selection. The runtime directory and generated entity/embedder files are ignored; only the taxonomy and adapter are canonical.
+Use native Memory for durable source-controlled project facts. Launch MemPalace 3.7.0 through the pinned uvx adapter and always pass `--palace .mempalace/palace`; its generated index stays checkout-local and all `.memory/**` paths are excluded from mining.

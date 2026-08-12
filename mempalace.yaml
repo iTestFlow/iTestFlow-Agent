@@ -1,10 +1,7 @@
 wing: itestflow_agent
 exclude_patterns:
 - .git/**
-- .memory/index/**
-- .memory/context/**
-- .memory/exports/**
-- .memory/recovery/**
+- .memory/**
 - .mempalace/**
 - .next/**
 - .next-dev/**
@@ -17,13 +14,13 @@ exclude_patterns:
 rooms:
 - name: application
   description: Next.js routes, pages, components, and browser-facing behavior
-  keywords: [src/app, src/components, app, components, ui]
+  keywords: [app, components, ui]
 - name: domain
   description: Product workflows, domain rules, and integration boundaries
-  keywords: [src/modules, modules, workflow, azure-devops, llm]
+  keywords: [modules, workflow, azure-devops, llm]
 - name: platform
   description: Shared libraries, data access, workers, security, and configuration
-  keywords: [src/lib, src/shared, src/worker, migrations, security, database]
+  keywords: [lib, shared, worker, migrations, security, database]
 - name: tests
   description: Unit, integration, coverage, fixtures, and verification configuration
   keywords: [test, tests, vitest, coverage]

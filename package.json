@@ -5,6 +5,7 @@
   "private": true,
   "description": "Local-first test intelligence command center for Azure DevOps testing workflows.",
   "scripts": {
+    "check:agent-memory": "node scripts/check-agent-memory-setup.mjs",
     "dev": "node scripts/run-app.mjs dev",
     "web:dev": "node scripts/next-dev.mjs",
     "build": "next build",

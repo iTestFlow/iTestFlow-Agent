@@ -1,6 +1,6 @@
 {
   "body_path": "memory/constraints/mempalace-state-is-selected-by-an-explicit-relative-palace-path.md",
-  "content_hash": "sha256:0ddd9eb8370c0dc68dda9a6f4ec8eb719eef023e03038763a15e2fb0949f1c5d",
+  "content_hash": "sha256:244b41e6ade1c2ff2672ae91a3681c63771e3a61d28f235cb585ac224691133b",
   "created_at": "2026-08-12T23:16:17+03:00",
   "evidence": [
     {
@@ -41,8 +41,12 @@
     "task": "Repair bootstrap quality and record the repo-local agent knowledge contract"
   },
   "status": "active",
-  "tags": [],
-  "title": "MemPalace state is selected by an explicit relative palace path",
+  "tags": [
+    "agent-guidance",
+    "memory",
+    "mempalace"
+  ],
+  "title": "Repository agent knowledge is pinned and checkout-local",
   "type": "constraint",
-  "updated_at": "2026-08-12T23:16:17+03:00"
+  "updated_at": "2026-08-12T23:39:41+03:00"
 }
