@@ -62,8 +62,8 @@ import { Textarea } from "@/components/ui/textarea"
 import type { ActiveProjectScope } from "@/shared/lib/active-project"
 
 export const DOCUMENT_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
-export const DOCUMENT_UPLOAD_EXTENSIONS = ["pdf", "docx", "xlsx", "csv", "txt", "md"] as const
-export const DOCUMENT_UPLOAD_ACCEPT = ".pdf,.docx,.xlsx,.csv,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain,text/markdown"
+export const DOCUMENT_UPLOAD_EXTENSIONS = ["pdf", "docx", "xlsx", "csv", "txt", "md", "png", "jpg", "jpeg", "webp"] as const
+export const DOCUMENT_UPLOAD_ACCEPT = ".pdf,.docx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain,text/markdown,image/png,image/jpeg,image/webp"
 
 type DocumentLifecycleStatus = "active" | "archived" | string
 type DocumentParseStatus = "pending" | "parsing" | "parsed" | "partially_parsed" | "parse_failed" | string
@@ -85,6 +85,7 @@ export type SourceDocumentVersion = {
   uploadedByDisplayName?: string | null
   createdAt?: string | null
   updatedAt?: string | null
+  metadata?: Record<string, unknown>
 }
 
 export type SourceDocument = {
@@ -110,6 +111,7 @@ export type SourceDocumentChunk = {
   chunkIndex: number
   content: string
   createdAt?: string | null
+  metadata?: Record<string, unknown>
 }
 
 export type DocumentIngestJob = {
@@ -155,6 +157,7 @@ type UploadRow = {
   key: string
   file: File
   error?: string
+  validationError?: boolean
   state: "ready" | "uploading" | "queued"
   versionId?: string
   jobId?: string
@@ -178,7 +181,7 @@ const EMPTY_UPLOAD_METADATA: UploadMetadata = {
   title: "",
   description: "",
   tags: "",
-  languageHint: "",
+  languageHint: "eng",
 }
 
 const ACTIVE_PARSE_STATUSES = new Set(["pending", "parsing"])
@@ -462,7 +465,7 @@ export function DocumentsPanel({
           <h2 className="text-base font-semibold text-foreground">Project documents</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             {canManage
-              ? "Upload text documents to make them available as project context after processing."
+              ? "Upload documents and images to make them available as project context after processing."
               : "Documents used as project context. Ask a workspace owner or admin to manage documents from the Build Knowledge tab."}
           </p>
         </div>
@@ -632,7 +635,7 @@ export function DocumentUploadDialog({
     setSubmitting(false)
   }, [open])
 
-  const validRows = rows.filter((row) => !row.error)
+  const validRows = rows.filter((row) => !row.validationError)
   const readyRows = validRows.filter((row) => row.state === "ready")
   const acceptsOnlyOneFile = Boolean(replaceDocumentId)
   const acceptedFileCount = validRows.filter((row) => row.state === "queued").length
@@ -646,11 +649,13 @@ export function DocumentUploadDialog({
         rowIdRef.current += 1
         const duplicate = existing.has(fileIdentity(file))
         existing.add(fileIdentity(file))
+        const error = duplicate ? "This file is already selected." : validateDocumentUploadFile(file)
         return {
           key: `document-upload-${rowIdRef.current}`,
           file,
           state: "ready" as const,
-          error: duplicate ? "This file is already selected." : validateDocumentUploadFile(file),
+          error,
+          validationError: Boolean(error),
         }
       })
       return acceptsOnlyOneFile ? [...current, ...additions].slice(-1) : [...current, ...additions]
@@ -669,31 +674,36 @@ export function DocumentUploadDialog({
     }
     setSubmitting(true)
     setSubmitError(null)
-    setRows((current) => current.map((row) => row.error ? row : { ...row, state: "uploading" }))
+    const readyKeys = new Set(readyRows.map((row) => row.key))
+    setRows((current) => current.map((row) => readyKeys.has(row.key) ? { ...row, state: "uploading", error: undefined } : row))
     try {
-      const formData = buildDocumentUploadFormData(scope, metadata, readyRows.map((row) => row.file))
       const endpoint = replaceDocumentId
         ? `/api/context/documents/${encodeURIComponent(replaceDocumentId)}/versions`
         : "/api/context/documents/upload"
-      const response = await postForm<unknown>(endpoint, formData)
-      const uploads = normalizeDocumentUploadResponse(response)
-      if (!uploads.length) throw new Error("The server accepted the upload without returning a document record.")
-      let uploadIndex = 0
-      setRows((current) => current.map((row) => {
-        if (row.error || row.state !== "uploading") return row
-        const upload = uploads[uploadIndex]
-        uploadIndex += 1
-        return upload
-          ? { ...row, state: "queued", versionId: upload.version.id, jobId: upload.job?.id }
-          : { ...row, state: "ready", error: "The server did not accept this file." }
+      const results = await Promise.all(readyRows.map(async (row) => {
+        try {
+          const response = await postForm<unknown>(endpoint, buildDocumentUploadFormData(scope, metadata, [row.file]))
+          const upload = normalizeDocumentUploadResponse(response)[0]
+          if (!upload) throw new Error("The server did not accept this file.")
+          return { key: row.key, upload }
+        } catch (uploadError) {
+          return { key: row.key, error: errorMessage(uploadError, "This document could not be uploaded.") }
+        }
       }))
-      onAccepted(uploads)
-      toast.success(`${uploads.length} document${uploads.length === 1 ? "" : "s"} queued for processing.`)
-    } catch (uploadError) {
-      const message = errorMessage(uploadError, "The documents could not be uploaded.")
-      setSubmitError(message)
-      setRows((current) => current.map((row) => row.state === "uploading" ? { ...row, state: "ready" } : row))
-      toast.error(message)
+      const uploads = results.flatMap((result) => result.upload ? [result.upload] : [])
+      setRows((current) => current.map((row) => {
+        const result = results.find((candidate) => candidate.key === row.key)
+        if (!result) return row
+        return result.upload
+          ? { ...row, state: "queued", error: undefined, versionId: result.upload.version.id, jobId: result.upload.job?.id }
+          : { ...row, state: "ready", error: result.error }
+      }))
+      if (uploads.length) {
+        onAccepted(uploads)
+        toast.success(`${uploads.length} document${uploads.length === 1 ? "" : "s"} queued for processing.`)
+      }
+      const failures = results.filter((result) => result.error)
+      if (failures.length) toast.error(`${failures.length} document${failures.length === 1 ? "" : "s"} could not be uploaded.`)
     } finally {
       setSubmitting(false)
     }
@@ -725,13 +735,17 @@ export function DocumentUploadDialog({
                 <p className="text-xs text-muted-foreground">A title applies when uploading a single file.</p>
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor={`${inputId}-language`}>Language hint <span className="text-muted-foreground">(optional)</span></Label>
-                <Input
+                <Label htmlFor={`${inputId}-language`}>OCR language</Label>
+                <select
                   id={`${inputId}-language`}
-                  value={metadata.languageHint}
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={metadata.languageHint || "eng"}
                   onChange={(event) => setMetadata((current) => ({ ...current, languageHint: event.target.value }))}
-                  placeholder="e.g. English or Arabic"
-                />
+                >
+                  <option value="eng">English</option>
+                  <option value="ara">Arabic — العربية</option>
+                </select>
+                <p className="text-xs text-muted-foreground">Used for local OCR of PNG, JPEG, and WebP images.</p>
               </div>
               <div className="space-y-1.5 sm:col-span-2">
                 <Label htmlFor={`${inputId}-description`}>Description <span className="text-muted-foreground">(optional)</span></Label>
@@ -803,7 +817,7 @@ export function DocumentUploadDialog({
                 Drop files here or choose files
               </Label>
               <p id={`${inputId}-help`} className="mt-1 text-xs text-muted-foreground">
-                PDF, DOCX, XLSX, CSV, TXT, or Markdown. Up to {formatFileSize(DOCUMENT_UPLOAD_MAX_BYTES)} per file.
+                PDF, DOCX, XLSX, CSV, TXT, Markdown, PNG, JPEG, or WebP. Up to {formatFileSize(DOCUMENT_UPLOAD_MAX_BYTES)} per file.
               </p>
               <input
                 ref={fileInputRef}
@@ -1137,6 +1151,7 @@ function DocumentDetailSheet({
                           {version.parseWarnings.map((warning, index) => <li key={`${version.id}-${index}`} className="flex gap-1.5"><TriangleAlert className="mt-0.5 size-3 shrink-0" aria-hidden="true" />{warning}</li>)}
                         </ul>
                       ) : null}
+                      <OcrVersionSummary metadata={version.metadata} />
                     </div>
                   ))}
                 </div>
@@ -1156,6 +1171,8 @@ function DocumentDetailSheet({
                       <article key={chunk.id} className="rounded-lg border border-border bg-card p-3">
                         <div className="mb-2 flex flex-wrap gap-1.5">
                           {chunk.section ? <Badge variant="outline">{chunk.section}</Badge> : null}
+                          {ocrRegionSummary(chunk.metadata) ? <Badge variant="outline">{ocrRegionSummary(chunk.metadata)}</Badge> : null}
+                          {ocrRegionLocation(chunk.metadata) ? <Badge variant="outline">{ocrRegionLocation(chunk.metadata)}</Badge> : null}
                           {chunk.pageNumber ? <Badge variant="outline">Page {chunk.pageNumber}</Badge> : null}
                           <Badge variant="secondary">Chunk {chunk.chunkIndex + 1}</Badge>
                         </div>
@@ -1213,6 +1230,7 @@ function DocumentDetailSheet({
             open={metadataOpen}
             onOpenChange={setMetadataOpen}
             document={detail.document}
+            imageDocument={detail.versions.some(isImageVersion)}
             onSave={async (metadata) => {
               await onUpdateMetadata(detail.document.id, metadata)
               setMetadataOpen(false)
@@ -1228,11 +1246,13 @@ function DocumentMetadataDialog({
   open,
   onOpenChange,
   document: sourceDocument,
+  imageDocument,
   onSave,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   document: SourceDocument
+  imageDocument: boolean
   onSave: (metadata: EditableDocumentMetadata) => Promise<void>
 }) {
   const titleId = useId()
@@ -1326,14 +1346,14 @@ function DocumentMetadataDialog({
           </div>
           <div className="space-y-2">
             <Label htmlFor={languageId}>Language hint</Label>
-            <Input
-              id={languageId}
-              value={languageHint}
-              onChange={(event) => setLanguageHint(event.target.value)}
-              maxLength={64}
-              placeholder="For example: English or Arabic"
-              disabled={saving}
-            />
+            {imageDocument ? (
+              <select id={languageId} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={languageHint} onChange={(event) => setLanguageHint(event.target.value)} disabled={saving}>
+                <option value="eng">English</option>
+                <option value="ara">Arabic — العربية</option>
+              </select>
+            ) : (
+              <Input id={languageId} value={languageHint} onChange={(event) => setLanguageHint(event.target.value)} maxLength={64} placeholder="For example: English or Arabic" disabled={saving} />
+            )}
           </div>
           {saveError ? <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{saveError}</p> : null}
           <DialogFooter>
@@ -1427,7 +1447,7 @@ export function validateDocumentUploadFile(file: Pick<File, "name" | "size">) {
   if (file.size > DOCUMENT_UPLOAD_MAX_BYTES) return `This file exceeds the ${formatFileSize(DOCUMENT_UPLOAD_MAX_BYTES)} limit.`
   const extension = file.name.split(".").pop()?.toLowerCase()
   if (!extension || !DOCUMENT_UPLOAD_EXTENSIONS.includes(extension as (typeof DOCUMENT_UPLOAD_EXTENSIONS)[number])) {
-    return "Unsupported file type. Choose a PDF, DOCX, XLSX, CSV, TXT, or Markdown file."
+    return "Unsupported file type. Choose a PDF, DOCX, XLSX, CSV, TXT, Markdown, PNG, JPEG, or WebP file."
   }
   return undefined
 }
@@ -1651,6 +1671,7 @@ function normalizeVersion(value: unknown): SourceDocumentVersion | null {
     uploadedByDisplayName: textValue(record?.uploadedByDisplayName ?? record?.uploaded_by_display_name),
     createdAt: textValue(record?.createdAt ?? record?.created_at),
     updatedAt: textValue(record?.updatedAt ?? record?.updated_at),
+    metadata: asRecord(record?.metadata ?? record?.metadata_json) ?? undefined,
   }
 }
 
@@ -1666,8 +1687,60 @@ function normalizeChunk(value: unknown): SourceDocumentChunk | null {
     chunkIndex: numberValue(record?.chunkIndex ?? record?.chunk_index) ?? 0,
     content,
     createdAt: textValue(record?.createdAt ?? record?.created_at),
+    metadata: asRecord(record?.metadata ?? record?.metadata_json) ?? undefined,
   }
 }
+
+function OcrVersionSummary({ metadata }: { metadata?: Record<string, unknown> }) {
+  const summary = ocrSummary(metadata)
+  if (!summary) return null
+  return (
+    <dl className="mt-3 grid gap-3 border-t border-border pt-3 text-sm sm:grid-cols-2">
+      <DetailValue label="OCR language" value={summary.language} />
+      <DetailValue label="OCR status" value={summary.status} />
+      <DetailValue label="OCR confidence" value={summary.confidence} />
+      <DetailValue label="OCR regions" value={summary.regions} />
+    </dl>
+  )
+}
+
+function ocrSummary(metadata?: Record<string, unknown>) {
+  const ocr = asRecord(metadata?.ocr)
+  if (!ocr) return null
+  const confidence = numberValue(ocr.confidence)
+  const accepted = numberValue(ocr.acceptedRegionCount) ?? 0
+  const rejected = numberValue(ocr.rejectedRegionCount) ?? 0
+  return {
+    language: textValue(ocr.language),
+    status: textValue(ocr.status)?.replace(/_/g, " "),
+    confidence: confidence === null ? null : `${Math.round(confidence)}%`,
+    regions: `${accepted} accepted · ${rejected} rejected`,
+  }
+}
+
+function ocrRegionSummary(metadata?: Record<string, unknown>) {
+  if (textValue(metadata?.origin) !== "ocr_text") return null
+  const confidence = numberValue(metadata?.confidence)
+  const language = textValue(metadata?.language)
+  return [language, confidence === null ? null : `${Math.round(confidence)}% confidence`].filter(Boolean).join(" · ")
+}
+
+function ocrRegionLocation(metadata?: Record<string, unknown>) {
+  const bbox = asRecord(metadata?.bbox)
+  if (!bbox) return null
+  const x0 = numberValue(bbox.x0)
+  const y0 = numberValue(bbox.y0)
+  const x1 = numberValue(bbox.x1)
+  const y1 = numberValue(bbox.y1)
+  if ([x0, y0, x1, y1].some((value) => value === null || !Number.isFinite(value) || value < 0) || x1! <= x0! || y1! <= y0!) return null
+  return `Region x ${Math.round(x0!)}, y ${Math.round(y0!)} · ${Math.round(x1! - x0!)}×${Math.round(y1! - y0!)} px`
+}
+
+function isImageVersion(version: SourceDocumentVersion) {
+  return version.mimeType?.toLowerCase().startsWith("image/")
+    || ["png", "jpg", "jpeg", "webp"].includes(version.fileFormat?.toLowerCase() ?? "")
+}
+
 
 function normalizeJob(value: unknown): DocumentIngestJob | null {
   const record = asRecord(value)
