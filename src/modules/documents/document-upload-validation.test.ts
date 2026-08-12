@@ -11,6 +11,29 @@ import {
 } from "./document-upload-validation";
 
 describe("validateDocumentUpload", () => {
+  it("accepts a valid PNG after verifying its bytes and dimensions", async () => {
+    const bytes = new Uint8Array(
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+
+    const result = await validateDocumentUpload({
+      fileName: "screenshot.png",
+      data: bytes,
+      declaredMimeType: "image/png",
+    });
+
+    expect(result).toMatchObject({
+      format: "png",
+      extension: "png",
+      byteLength: bytes.byteLength,
+      detectedMimeType: "image/png",
+      image: { width: 1, height: 1 },
+    });
+  });
+
   it("accepts a real OOXML spreadsheet after inspecting its archive", async () => {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["Name"], ["Ada"]]), "Plan");
