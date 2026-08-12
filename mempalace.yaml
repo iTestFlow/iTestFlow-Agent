@@ -1,0 +1,38 @@
+wing: itestflow_agent
+exclude_patterns:
+- .git/**
+- .memory/index/**
+- .memory/context/**
+- .memory/exports/**
+- .memory/recovery/**
+- .mempalace/**
+- .next/**
+- .next-dev/**
+- node_modules/**
+- coverage/**
+- dist/**
+- data/**
+- graphify-out/**
+- '**/*.log'
+rooms:
+- name: application
+  description: Next.js routes, pages, components, and browser-facing behavior
+  keywords: [src/app, src/components, app, components, ui]
+- name: domain
+  description: Product workflows, domain rules, and integration boundaries
+  keywords: [src/modules, modules, workflow, azure-devops, llm]
+- name: platform
+  description: Shared libraries, data access, workers, security, and configuration
+  keywords: [src/lib, src/shared, src/worker, migrations, security, database]
+- name: tests
+  description: Unit, integration, coverage, fixtures, and verification configuration
+  keywords: [test, tests, vitest, coverage]
+- name: docs
+  description: Product intent, architecture, deployment, and integration documentation
+  keywords: [README, PROJECT_ARCHITECTURE, docs]
+- name: tooling
+  description: Repository scripts, build configuration, and maintenance commands
+  keywords: [scripts, package.json, config]
+- name: general
+  description: Tracked files not matched by a focused room
+  keywords: []

@@ -1,0 +1,1 @@
+iTestFlow Agent is a local-first, workspace-scoped test intelligence application for Azure DevOps. It supports project knowledge, requirement analysis, test design and coverage review, execution planning, defect reporting, suite operations, dashboards, and auditable human review before external writes.

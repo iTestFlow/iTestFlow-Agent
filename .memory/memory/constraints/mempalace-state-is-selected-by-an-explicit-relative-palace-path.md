@@ -1,0 +1,1 @@
+Every repository MemPalace CLI or MCP launch must pass `--palace .mempalace/palace`. `mempalace.yaml` controls wing/room taxonomy but does not replace explicit runtime palace selection. The runtime directory and generated entity/embedder files are ignored; only the taxonomy and adapter are canonical.

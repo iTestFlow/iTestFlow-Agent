@@ -1,0 +1,48 @@
+{
+  "body_path": "memory/syntheses/agent-knowledge-workflow.md",
+  "content_hash": "sha256:06c1a06bde4c1f0f776c84088cb5cf1882fc35ff4a440d52a18bef37fcd4c10c",
+  "created_at": "2026-08-12T23:16:17+03:00",
+  "evidence": [
+    {
+      "id": "AGENTS.md",
+      "kind": "file"
+    },
+    {
+      "id": ".mcp.json",
+      "kind": "file"
+    },
+    {
+      "id": "mempalace.yaml",
+      "kind": "file"
+    },
+    {
+      "id": ".gitignore",
+      "kind": "file"
+    }
+  ],
+  "facets": {
+    "applies_to": [
+      "AGENTS.md",
+      ".mcp.json",
+      "mempalace.yaml",
+      ".gitignore"
+    ],
+    "category": "agent-guidance"
+  },
+  "id": "synthesis.agent-knowledge-workflow",
+  "scope": {
+    "branch": null,
+    "kind": "project",
+    "project": "project.itestflow-agent",
+    "task": null
+  },
+  "source": {
+    "kind": "agent",
+    "task": "Repair bootstrap quality and record the repo-local agent knowledge contract"
+  },
+  "status": "active",
+  "tags": [],
+  "title": "Agent knowledge workflow",
+  "type": "synthesis",
+  "updated_at": "2026-08-12T23:16:17+03:00"
+}

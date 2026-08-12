@@ -1,0 +1,17 @@
+{
+  "confidence": "high",
+  "content_hash": "sha256:b142e0961a4a7057fedfeda5d167b566f7edc41df228d94ff9c62347e278b390",
+  "created_at": "2026-08-12T23:16:17+03:00",
+  "evidence": [
+    {
+      "id": ".mcp.json",
+      "kind": "file"
+    }
+  ],
+  "from": "constraint.mempalace-state-is-selected-by-an-explicit-relative-palace-path",
+  "id": "rel.constraint-mempalace-state-is-selected-by-an-explicit-relative-palace-path-affects-project-itestflow-agent",
+  "predicate": "affects",
+  "status": "active",
+  "to": "project.itestflow-agent",
+  "updated_at": "2026-08-12T23:16:17+03:00"
+}

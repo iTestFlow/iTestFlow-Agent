@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "itestflow-memory": {
+      "command": "npx",
+      "args": [
+        "--yes",
+        "--package",
+        "@aictx/memory@0.1.55",
+        "--",
+        "memory-mcp"
+      ],
+      "cwd": "."
+    },
+    "itestflow-mempalace": {
+      "command": "mempalace-mcp",
+      "args": [
+        "--palace",
+        ".mempalace/palace"
+      ],
+      "cwd": ".",
+      "env": {
+        "MEMPALACE_EMBEDDING_MODEL": "minilm"
+      }
+    }
+  }
+}

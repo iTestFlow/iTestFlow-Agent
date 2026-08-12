@@ -1,0 +1,21 @@
+{
+  "confidence": "high",
+  "content_hash": "sha256:49ab3114be77eafaff05873a5938f0073babaadeaea0a0699e0f67f134596637",
+  "created_at": "2026-08-12T23:13:53+03:00",
+  "evidence": [
+    {
+      "id": "synthesis.feature-map",
+      "kind": "memory"
+    },
+    {
+      "id": "project.itestflow-agent",
+      "kind": "memory"
+    }
+  ],
+  "from": "synthesis.feature-map",
+  "id": "rel.synthesis-feature-map-documents-project-itestflow-agent",
+  "predicate": "documents",
+  "status": "active",
+  "to": "project.itestflow-agent",
+  "updated_at": "2026-08-12T23:13:53+03:00"
+}
