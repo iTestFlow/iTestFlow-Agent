@@ -182,6 +182,8 @@ Dashboards:
 Knowledge Hub and RAG:
 
 - `/knowledge-hub` indexes filtered Azure DevOps work items, compiles project knowledge, and exports a Markdown wiki.
+- Workspace owners and admins can upload PDF, DOCX, XLSX, CSV, TXT, Markdown, PNG, JPEG, and WebP sources within the active project scope. Uploads are isolated per file, and the dedicated document-ingest lane isolates sibling job failures. PNG/JPEG/WebP parsing runs local Tesseract with bundled, preflight-verified English and Arabic model data; no model is downloaded and no source image leaves the worker. Decoded images are capped by `OCR_MAX_IMAGE_PIXELS` (default `40000000`), and regions below `OCR_MIN_CONFIDENCE` (default `50`) are excluded while status, warnings, and rejected counts remain available. No accepted text produces a successful zero-chunk version.
+- OCR chunks retain engine/version, language, confidence, region identity, and `{x0,y0,x1,y1}` source-image provenance. They reuse the existing project-scoped document/version/chunk persistence, permission checks, archive/reprocess replacement, hybrid retrieval, and citation source identity.
 - `/api/context/index`, `/api/context/status`, and `/api/context/suggestions` manage project context indexing and retrieval.
 - `/api/context/knowledge/*` manages background build jobs, draft review (conflicts/decisions/preview/publish), log, candidates, promotion, manual drafting/finalization/validation, status, and export.
 - RAG storage, compiled knowledge, retrieval, linting, and citations live under `src/modules/rag`.
