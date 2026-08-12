@@ -1,0 +1,17 @@
+{
+  "confidence": "high",
+  "content_hash": "sha256:159461e1ebbc0f1909045dc24ee941a345511f8e50ba92198457e9e476ebf534",
+  "created_at": "2026-08-13T02:00:30+03:00",
+  "evidence": [
+    {
+      "id": "9e63379b14a9bd66bf15ac6ccb393c25fbbdf5db",
+      "kind": "commit"
+    }
+  ],
+  "from": "gotcha.tesseract-worker-needs-model-preflight",
+  "id": "rel.gotcha-tesseract-worker-needs-model-preflight-affects-project-itestflow-agent",
+  "predicate": "affects",
+  "status": "active",
+  "to": "project.itestflow-agent",
+  "updated_at": "2026-08-13T02:00:30+03:00"
+}
