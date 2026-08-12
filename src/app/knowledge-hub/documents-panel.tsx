@@ -21,7 +21,8 @@ import { DataToolbar } from "@/components/qa/data-toolbar"
 import { EmptyState } from "@/components/qa/empty-state"
 import { ErrorState } from "@/components/qa/error-state"
 import { StatusChip } from "@/components/qa/status-chip"
-import { patchJson, postForm, postJson } from "@/components/workflow/post-json"
+import { patchJson, postForm, postJson, readJsonResponse } from "@/components/workflow/post-json"
+import { ApiError } from "@/components/workflow/api-error"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -637,6 +638,10 @@ export function DocumentUploadDialog({
 
   const validRows = rows.filter((row) => !row.validationError)
   const readyRows = validRows.filter((row) => row.state === "ready")
+  const readyByteSize = readyRows.reduce((total, row) => total + row.file.size, 0)
+  const batchSizeError = !replaceDocumentId && readyByteSize > DOCUMENT_UPLOAD_MAX_BYTES
+    ? `Selected files exceed the combined ${formatFileSize(DOCUMENT_UPLOAD_MAX_BYTES)} request limit.`
+    : null
   const acceptsOnlyOneFile = Boolean(replaceDocumentId)
   const acceptedFileCount = validRows.filter((row) => row.state === "queued").length
 
@@ -668,6 +673,10 @@ export function DocumentUploadDialog({
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (batchSizeError) {
+      setSubmitError(batchSizeError)
+      return
+    }
     if (!readyRows.length) {
       setSubmitError("Choose at least one supported file before uploading.")
       return
@@ -680,21 +689,28 @@ export function DocumentUploadDialog({
       const endpoint = replaceDocumentId
         ? `/api/context/documents/${encodeURIComponent(replaceDocumentId)}/versions`
         : "/api/context/documents/upload"
-      const results = await Promise.all(readyRows.map(async (row) => {
+      const results = replaceDocumentId ? await Promise.all(readyRows.map(async (row) => {
         try {
-          const response = await postForm<unknown>(endpoint, buildDocumentUploadFormData(scope, metadata, [row.file]))
+          const requestMetadata = replaceDocumentId
+            ? { title: "", description: "", tags: "", languageHint: "" }
+            : {
+                ...metadata,
+                title: validRows.length === 1 ? metadata.title : "",
+                languageHint: isImageFile(row.file) ? metadata.languageHint : "",
+              }
+          const response = await postForm<unknown>(endpoint, buildDocumentUploadFormData(scope, requestMetadata, [row.file]))
           const upload = normalizeDocumentUploadResponse(response)[0]
           if (!upload) throw new Error("The server did not accept this file.")
           return { key: row.key, upload }
         } catch (uploadError) {
           return { key: row.key, error: errorMessage(uploadError, "This document could not be uploaded.") }
         }
-      }))
-      const uploads = results.flatMap((result) => result.upload ? [result.upload] : [])
+      })) : await submitInitialUploadBatch(endpoint, scope, metadata, validRows.length, readyRows)
+      const uploads = results.flatMap((result) => "upload" in result && result.upload ? [result.upload] : [])
       setRows((current) => current.map((row) => {
         const result = results.find((candidate) => candidate.key === row.key)
         if (!result) return row
-        return result.upload
+        return "upload" in result && result.upload
           ? { ...row, state: "queued", error: undefined, versionId: result.upload.version.id, jobId: result.upload.job?.id }
           : { ...row, state: "ready", error: result.error }
       }))
@@ -878,12 +894,13 @@ export function DocumentUploadDialog({
           ) : null}
 
           {submitError ? <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{submitError}</p> : null}
+          {batchSizeError && submitError !== batchSizeError ? <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{batchSizeError}</p> : null}
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
               {acceptedFileCount ? "Done" : "Cancel"}
             </Button>
-            <Button type="submit" disabled={submitting || !readyRows.length}>
+            <Button type="submit" disabled={submitting || !readyRows.length || Boolean(batchSizeError)}>
               {submitting ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <FileUp className="size-4" aria-hidden="true" />}
               {submitting ? "Uploading…" : replaceDocumentId ? "Upload replacement" : "Upload documents"}
             </Button>
@@ -1675,6 +1692,47 @@ function normalizeVersion(value: unknown): SourceDocumentVersion | null {
   }
 }
 
+async function submitInitialUploadBatch(
+  endpoint: string,
+  scope: ActiveProjectScope,
+  metadata: UploadMetadata,
+  validRowCount: number,
+  readyRows: UploadRow[],
+) {
+  const includesImage = readyRows.some((row) => isImageFile(row.file))
+  const requestMetadata = {
+    ...metadata,
+    title: validRowCount === 1 ? metadata.title : "",
+    languageHint: includesImage ? metadata.languageHint : "",
+  }
+  try {
+    const httpResponse = await fetch(endpoint, { method: "POST", body: buildDocumentUploadFormData(scope, requestMetadata, readyRows.map((row) => row.file)), cache: "no-store" })
+    let response: unknown
+    try {
+      response = await readJsonResponse<unknown>(httpResponse)
+    } catch (error) {
+      const payload = error instanceof ApiError ? asRecord(error.payload) : null
+      if (!arrayValue(payload?.failures).length) throw error
+      response = payload
+    }
+    const record = asRecord(response)
+    if (!httpResponse.ok && !arrayValue(record?.failures).length) throw new Error(errorFromResponse(response) ?? "These documents could not be uploaded.")
+    const uploads = normalizeDocumentUploadResponse(response)
+    const failures = arrayValue(record?.failures).map(asRecord)
+    return readyRows.map((row, clientIndex) => {
+      const failure = failures.find((item) => numberValue(item?.clientIndex) === clientIndex)
+      if (failure) return { key: row.key, error: textValue(failure.error) ?? "This document could not be uploaded." }
+      const uploadRecord = arrayValue(record?.uploads).map(asRecord).find((item) => numberValue(item?.clientIndex) === clientIndex)
+      const uploadIndex = uploadRecord ? arrayValue(record?.uploads).map(asRecord).indexOf(uploadRecord) : -1
+      const upload = uploadIndex >= 0 ? uploads[uploadIndex] : undefined
+      return upload ? { key: row.key, upload } : { key: row.key, error: "The server did not accept this file." }
+    })
+  } catch (uploadError) {
+    const error = errorMessage(uploadError, "These documents could not be uploaded.")
+    return readyRows.map((row) => ({ key: row.key, error }))
+  }
+}
+
 function normalizeChunk(value: unknown): SourceDocumentChunk | null {
   const record = asRecord(value)
   const id = textValue(record?.id)
@@ -1739,6 +1797,11 @@ function ocrRegionLocation(metadata?: Record<string, unknown>) {
 function isImageVersion(version: SourceDocumentVersion) {
   return version.mimeType?.toLowerCase().startsWith("image/")
     || ["png", "jpg", "jpeg", "webp"].includes(version.fileFormat?.toLowerCase() ?? "")
+}
+
+function isImageFile(file: File) {
+  const extension = file.name.split(".").pop()?.toLowerCase()
+  return file.type.toLowerCase().startsWith("image/") || ["png", "jpg", "jpeg", "webp"].includes(extension ?? "")
 }
 
 

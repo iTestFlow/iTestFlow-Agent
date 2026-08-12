@@ -38,6 +38,7 @@ const TRAINED_DATA: Record<OcrLanguage, OcrModelSpec> = {
 };
 const DEFAULT_MIN_CONFIDENCE = 50;
 const DEFAULT_WORKER_STARTUP_TIMEOUT_MS = 30_000;
+const DEFAULT_RECOGNIZE_TIMEOUT_MS = 120_000;
 
 export async function createLocalOcrWorker(
   language: OcrLanguage,
@@ -86,11 +87,12 @@ async function validateOcrModel(language: OcrLanguage, model: OcrModelSpec) {
 
 export function createImageDocumentParser(
   format: ImageDocumentFormat,
-  dependencies: { createWorker?: OcrWorkerFactory; minConfidence?: number; workerStartupTimeoutMs?: number } = {},
+  dependencies: { createWorker?: OcrWorkerFactory; minConfidence?: number; workerStartupTimeoutMs?: number; recognizeTimeoutMs?: number } = {},
 ): DocumentParser {
   const createWorker = dependencies.createWorker ?? createLocalOcrWorker;
   const minConfidence = resolveMinConfidence(dependencies.minConfidence);
   const workerStartupTimeoutMs = dependencies.workerStartupTimeoutMs ?? DEFAULT_WORKER_STARTUP_TIMEOUT_MS;
+  const recognizeTimeoutMs = dependencies.recognizeTimeoutMs ?? resolveRecognizeTimeoutMs();
   return {
     format,
     async parse(input: DocumentParseInput) {
@@ -111,7 +113,7 @@ export function createImageDocumentParser(
       let recognitionFailure: unknown;
       try {
         assertNotAborted(input.signal);
-        recognition = await recognizeUntilAbort(worker, input);
+        recognition = await recognizeUntilAbort(worker, input, recognizeTimeoutMs);
       } catch (cause) {
         recognitionFailure = isDocumentParseError(cause)
           ? cause
@@ -220,14 +222,36 @@ function resolveMinConfidence(value?: number) {
   return Number.isFinite(candidate) && candidate >= 0 && candidate <= 100 ? candidate : DEFAULT_MIN_CONFIDENCE;
 }
 
-async function recognizeUntilAbort(worker: OcrWorkerPort, input: DocumentParseInput) {
-  if (!input.signal) return worker.recognize(input.data);
+export function resolveRecognizeTimeoutMs(environment = process.env) {
+  const candidate = Number(environment.OCR_RECOGNIZE_TIMEOUT_MS ?? DEFAULT_RECOGNIZE_TIMEOUT_MS);
+  return Number.isSafeInteger(candidate) && candidate >= 1_000 && candidate <= 600_000
+    ? candidate
+    : DEFAULT_RECOGNIZE_TIMEOUT_MS;
+}
+
+async function recognizeUntilAbort(worker: OcrWorkerPort, input: DocumentParseInput, timeoutMs: number) {
   const signal = input.signal;
-  return new Promise<OcrRecognition>((resolve, reject) => {
-    const onAbort = () => reject(new DocumentParseError({ code: "cancelled", message: "Document parsing was cancelled." }));
-    signal.addEventListener("abort", onAbort, { once: true });
-    worker.recognize(input.data).then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  if (signal?.aborted) throw cancelledError();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let removeAbortListener: () => void = () => undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => reject(new DocumentParseError({
+      code: "corrupted",
+      message: "The local OCR engine did not finish within the permitted time.",
+    })), Math.max(1, timeoutMs));
   });
+  const abortPromise = signal ? new Promise<never>((_resolve, reject) => {
+    const onAbort = () => reject(cancelledError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+    if (signal.aborted) onAbort();
+  }) : new Promise<never>(() => undefined);
+  try {
+    return await Promise.race([worker.recognize(input.data), abortPromise, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    removeAbortListener();
+  }
 }
 
 async function waitForWorkerStartup(startup: Promise<OcrWorkerPort>, signal: AbortSignal | undefined, timeoutMs: number) {

@@ -121,6 +121,7 @@ export async function POST(request: Request, { params }: RouteParams) {
           metadata: {
             detectedMimeType: validation.detectedMimeType ?? null,
             uploadByteLength: validation.byteLength,
+            ...(validation.image ? { image: validation.image } : {}),
           },
         },
       });

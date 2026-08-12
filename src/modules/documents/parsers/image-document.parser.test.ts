@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createImageDocumentParser,
   createLocalOcrWorker,
+  resolveRecognizeTimeoutMs,
   type OcrRecognition,
   type OcrModelSpec,
   type TesseractWorkerCreator,
@@ -203,6 +204,38 @@ describe("image document parser", () => {
 
     await expect(parser.parse({ data: bytes })).rejects.toMatchObject({ code: "corrupted" });
     expect(worker.terminate).toHaveBeenCalledOnce();
+  });
+
+  it("bounds recognition time and terminates a hung worker", async () => {
+    const worker: OcrWorkerPort = {
+      recognize: vi.fn(() => new Promise<OcrRecognition>(() => undefined)),
+      terminate: vi.fn(async () => undefined),
+    };
+    const parser = createImageDocumentParser("png", { createWorker: async () => worker, recognizeTimeoutMs: 10 });
+
+    await expect(parser.parse({ data: Buffer.from("image") })).rejects.toMatchObject({
+      code: "corrupted",
+      message: expect.stringMatching(/did not finish/i),
+    });
+    expect(worker.terminate).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [undefined, 120_000],
+    ["2500", 2_500],
+    ["0", 120_000],
+    ["Infinity", 120_000],
+    ["600001", 120_000],
+  ])("resolves OCR_RECOGNIZE_TIMEOUT_MS %s safely", async (configured, expected) => {
+    const original = process.env.OCR_RECOGNIZE_TIMEOUT_MS;
+    if (configured === undefined) delete process.env.OCR_RECOGNIZE_TIMEOUT_MS;
+    else process.env.OCR_RECOGNIZE_TIMEOUT_MS = configured;
+    try {
+      expect(resolveRecognizeTimeoutMs()).toBe(expected);
+    } finally {
+      if (original === undefined) delete process.env.OCR_RECOGNIZE_TIMEOUT_MS;
+      else process.env.OCR_RECOGNIZE_TIMEOUT_MS = original;
+    }
   });
 
   it("maps worker startup failure to a safe parse error", async () => {

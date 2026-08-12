@@ -196,7 +196,11 @@ describe("POST context document version", () => {
 
     expect(response.status).toBe(202);
     expect(mocks.createVersionForDocument).toHaveBeenCalledWith(expect.objectContaining({
-      version: expect.objectContaining({ mimeType, fileFormat: format }),
+      version: expect.objectContaining({
+        mimeType,
+        fileFormat: format,
+        metadata: expect.objectContaining({ image: { width: 1, height: 1 } }),
+      }),
     }));
   });
 

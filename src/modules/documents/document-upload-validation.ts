@@ -146,6 +146,12 @@ export async function validateDocumentUpload(input: DocumentUploadValidationInpu
   }
 
   const detected = await detectFileType(input.data);
+  if (["png", "jpeg", "webp"].includes(format) && !detected) {
+    throw new DocumentParseError({
+      code: "unsupported_format",
+      message: "The image bytes do not match a supported PNG, JPEG, or WebP signature.",
+    });
+  }
   assertDetectedTypeCompatible(format, detected?.mime, detected?.ext);
 
   let zipArchive: ZipArchiveInspection | undefined;

@@ -156,6 +156,7 @@ export const runUploadedDocumentIngestJob: JobHandler = async (job, context) => 
       parseRecipeVersion: DOCUMENT_PARSE_RECIPE_VERSION,
       chunkCount: chunkBuild.chunks.length,
       metadata: {
+        ...version.metadata,
         ...parsed.documentMetadata,
         indexedChunkCount: chunkBuild.chunks.length,
         indexedAt: nowIso(),

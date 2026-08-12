@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DocumentParseError } from "@/modules/documents/parsed-document.types";
 
 const mocks = vi.hoisted(() => ({
   createReadStream: vi.fn(),
@@ -125,7 +126,78 @@ describe("POST context document upload", () => {
 
     expect(response.status).toBe(202);
     expect(mocks.createDocumentWithVersion).toHaveBeenCalledWith(expect.objectContaining({
-      version: expect.objectContaining({ mimeType, fileFormat: format }),
+      version: expect.objectContaining({
+        mimeType,
+        fileFormat: format,
+        metadata: expect.objectContaining({ image: { width: 1, height: 1 } }),
+      }),
     }));
+  });
+
+  it("keeps valid siblings when another file fails validation in the same request", async () => {
+    const files = [
+      { tempPath: "C:/temp/bad", originalFileName: "bad.png", mimeType: "image/png", byteSize: 3, contentSha256: "b".repeat(64) },
+      { tempPath: "C:/temp/good", originalFileName: "good.png", mimeType: "image/png", byteSize: 4, contentSha256: "c".repeat(64) },
+    ];
+    mocks.streamDocumentUploadMultipart.mockResolvedValue({ fields: {}, files });
+    mocks.readFile.mockResolvedValueOnce(Buffer.from("bad")).mockResolvedValueOnce(Buffer.from("good"));
+    let activeValidations = 0;
+    let maxActiveValidations = 0;
+    mocks.validateDocumentUpload
+      .mockImplementationOnce(async () => {
+        activeValidations += 1;
+        maxActiveValidations = Math.max(maxActiveValidations, activeValidations);
+        activeValidations -= 1;
+        throw new DocumentParseError({ code: "corrupted", message: "Invalid image bytes." });
+      })
+      .mockImplementationOnce(async () => {
+        activeValidations += 1;
+        maxActiveValidations = Math.max(maxActiveValidations, activeValidations);
+        activeValidations -= 1;
+        return { format: "png", detectedMimeType: "image/png", byteLength: 4, image: { width: 1, height: 1 } };
+      });
+
+    const response = await POST(new Request("http://localhost/api/context/documents/upload", { method: "POST" }));
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toMatchObject({
+      uploads: [expect.objectContaining({ clientIndex: 1, versionId: "version-1" })],
+      failures: [{ clientIndex: 0, fileName: "bad.png", error: "Invalid image bytes." }],
+    });
+    expect(maxActiveValidations).toBe(1);
+    expect(mocks.createDocumentWithVersion).toHaveBeenCalledOnce();
+    expect(mocks.enqueueUploadedDocumentIngestJob).toHaveBeenCalledOnce();
+    expect(mocks.writeAuditLog).toHaveBeenCalledOnce();
+    expect(mocks.removeStreamedDocumentMultipart).toHaveBeenCalledOnce();
+  });
+
+  it("persists a shared OCR hint only on image documents in a mixed batch", async () => {
+    mocks.parseDocumentUploadFields.mockReturnValue({ success: true, data: { scope, tags: [], languageHint: "eng" } });
+    mocks.streamDocumentUploadMultipart.mockResolvedValue({ fields: {}, files: [
+      { tempPath: "C:/temp/image", originalFileName: "scan.png", mimeType: "image/png", byteSize: 5, contentSha256: "a".repeat(64) },
+      { tempPath: "C:/temp/pdf", originalFileName: "policy.pdf", mimeType: "application/pdf", byteSize: 5, contentSha256: "b".repeat(64) },
+    ] });
+    mocks.readFile.mockResolvedValue(Buffer.from("hello"));
+    mocks.validateDocumentUpload
+      .mockResolvedValueOnce({ format: "png", detectedMimeType: "image/png", byteLength: 5, image: { width: 1, height: 1 } })
+      .mockResolvedValueOnce({ format: "pdf", detectedMimeType: "application/pdf", byteLength: 5 });
+
+    const response = await POST(new Request("http://localhost/api/context/documents/upload", { method: "POST" }));
+
+    expect(response.status).toBe(202);
+    expect(mocks.createDocumentWithVersion).toHaveBeenNthCalledWith(1, expect.objectContaining({ languageHint: "eng" }));
+    expect(mocks.createDocumentWithVersion).toHaveBeenNthCalledWith(2, expect.objectContaining({ languageHint: undefined }));
+  });
+
+  it("does not expose operational storage errors in per-file failures", async () => {
+    mocks.validateDocumentUpload.mockResolvedValue({ format: "png", detectedMimeType: "image/png", byteLength: 5, image: { width: 1, height: 1 } });
+    mocks.getDocumentStorageBackend.mockReturnValue({ kind: "local_fs", put: vi.fn().mockRejectedValue(new Error("postgres://secret-token@private-host")) });
+
+    const response = await POST(new Request("http://localhost/api/context/documents/upload", { method: "POST" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.failures[0].error).toBe("Upload failed for this file.");
+    expect(JSON.stringify(body)).not.toContain("secret-token");
   });
 });

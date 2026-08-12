@@ -261,6 +261,16 @@ describe("validateDocumentUpload", () => {
     ).rejects.toMatchObject({ code: "unsupported_format" } satisfies Partial<DocumentParseError>);
   });
 
+  it("rejects SVG bytes disguised as a PNG before image decoding", async () => {
+    await expect(
+      validateDocumentUpload({
+        fileName: "spoofed.png",
+        data: svgBuffer(),
+        declaredMimeType: "image/png",
+      }),
+    ).rejects.toMatchObject({ code: "unsupported_format" } satisfies Partial<DocumentParseError>);
+  });
+
   it("rejects a ZIP entry via the per-entry uncompressed-size cap before any parser opens the archive", async () => {
     const zip = new JSZip();
     zip.file("xl/worksheets/sheet1.xml", new Uint8Array(1_024), { compression: "STORE" });

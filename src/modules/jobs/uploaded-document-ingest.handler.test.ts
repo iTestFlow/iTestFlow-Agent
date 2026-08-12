@@ -24,6 +24,7 @@ vi.mock("@/modules/documents/project-source-documents.service", () => ({
   getProjectSourceDocumentVersion: async () => ({
     id: "version-1", documentId: "document-1", storageKey: "stored/image.png", byteSize: 5,
     fileFormat: "png", originalFileName: "sample.png",
+    metadata: { detectedMimeType: "image/png", uploadByteLength: 5, image: { width: 100, height: 50 } },
   }),
   getProjectSourceDocument: async () => ({
     id: "document-1", documentName: "Arabic scan", languageHint: "ar", lifecycleStatus: mocks.lifecycleStatus,
@@ -116,6 +117,9 @@ it("persists OCR engine provenance on chunks and OCR status counts on the versio
     parseStatus: "partially_parsed",
     chunkCount: 1,
     metadata: expect.objectContaining({
+      detectedMimeType: "image/png",
+      uploadByteLength: 5,
+      image: { width: 100, height: 50 },
       ocr: expect.objectContaining({ acceptedRegionCount: 1, rejectedRegionCount: 1, status: "partially_parsed" }),
     }),
   }));
