@@ -720,6 +720,11 @@ describe("runMultiLayerStep", () => {
     expect(prompt).toContain("guest: guest@example.test, password (none)");
     expect(prompt).toContain("Step 1 passed");
     expect(prompt).toContain("orderId=42");
+    // An API run with no contract and no named endpoints must not be told
+    // its capabilities are "(none)" — the model reads that as an unusable
+    // layer and reports the step blocked.
+    expect(prompt).not.toContain("Approved operation capabilities");
+    expect(prompt).not.toContain("Offered operations");
   });
 
   it("fingerprints the resolved mutation: alias replays get feedback, persistence ends the step", async () => {

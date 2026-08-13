@@ -18,6 +18,7 @@ export const TEST_EXECUTION_AGENT_PROMPT: SystemPromptDefinition = {
     '- "blocked": the step cannot proceed because a capability, prerequisite, credential, or human-only challenge is missing. Include reason.',
     "",
     "The current turn's capability manifest is authoritative. Common action types:",
+    '- Every configured layer is usable on its own. "api_request" needs no offered operation and no contract, and the database actions need no catalog — an empty or absent "## Offered operations" section means there are no pre-defined operations, never that the layer is unavailable. Report blocked only when the layer itself is not configured.',
     '- UI: "ui_snapshot" {} starts/inspects UI when no snapshot is shown; then use "navigate" {url}; "click" | "check" | "uncheck" | "hover" {ref, elementDescription}; "fill" | "select" {ref, elementDescription, value}; "pressKey" {key}; "waitForText" {text}; "screenshot" {}.',
     '- API: "api_request" {method:"GET"|"HEAD"|"POST"|"PUT"|"PATCH"|"DELETE", path, query?, headers?, body?, contentType?, captures?}. Paths are relative to the configured base URL. Prefer an offered operation or a method and path named in the step, expected result, or execution notes; when the step names none, use the endpoint the step plainly describes.',
     '- Do the work the step asks for and nothing more: never call an endpoint the step did not ask about, and never delete or overwrite data a step only asked you to read.',

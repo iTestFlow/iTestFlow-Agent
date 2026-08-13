@@ -332,7 +332,27 @@ export function validateMultiLayerDecision(
     return { kind: "action", action: { layer: "db", type: "db_mutate", arguments: args.data } };
   }
 
-  return invalid(`Unsupported actionType "${actionType}".`);
+  return invalid(
+    `Unsupported actionType "${actionType}". Use one of: ${availableActionTypes(context).join(", ")}.`,
+  );
+}
+
+/**
+ * The action names actually usable this turn. A near-miss like "http_request"
+ * is a one-word correction away, but only if the feedback says what the real
+ * names are — otherwise the model concludes the layer is unavailable and
+ * reports the step blocked.
+ */
+function availableActionTypes(context: MultiLayerDecisionContext): string[] {
+  const types: string[] = [];
+  if (context.configuredLayers.has("ui")) types.push("ui_snapshot", ...AGENT_ACTION_TYPES);
+  if (context.configuredLayers.has("api")) types.push("api_request");
+  if (context.configuredLayers.has("db")) types.push("db_schema", "db_select", "db_mutate");
+  for (const capability of context.capabilities.values()) {
+    const operationType = capability.layer === "api" ? "api_execute_operation" : "db_execute_operation";
+    if (!types.includes(operationType)) types.push(operationType);
+  }
+  return types;
 }
 
 export function describeMultiLayerAction(action: MultiLayerAction): string {

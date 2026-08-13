@@ -537,4 +537,21 @@ describe("validateMultiLayerDecision", () => {
       feedback: expect.stringContaining("only call API operations named in its frozen steps"),
     });
   });
+
+  it("names the usable action types when the model invents one", () => {
+    // A near-miss like "http_request" is one correction away, but only if the
+    // feedback says the real names — otherwise the model concludes the layer
+    // is unavailable and reports the step blocked.
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "http_request",
+      argumentsJson: JSON.stringify({ method: "POST", path: "/booking" }),
+    }, context());
+
+    expect(result).toMatchObject({ kind: "invalid" });
+    const feedback = (result as { feedback: string }).feedback;
+    expect(feedback).toContain("api_request");
+    expect(feedback).toContain("db_select");
+    expect(feedback).toContain("ui_snapshot");
+  });
 });

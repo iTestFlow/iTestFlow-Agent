@@ -542,9 +542,10 @@ function buildMultiLayerPrompt(
     `Layer hint: ${input.layerHint}`,
     `Configured layers: ${[...configuredLayers].join(", ")}`,
     input.allowedOrigin ? `UI allowed origin: ${input.allowedOrigin}` : "",
-    `API endpoints named by this step or the notes (prefer these): ${[...input.allowedApiRequests].join(", ") || "(none)"}`,
-    "## Approved operation capabilities",
-    capabilityLines.length ? capabilityLines.join("\n") : "(none)",
+    input.allowedApiRequests.size
+      ? `API endpoints named by this step or the notes (prefer these): ${[...input.allowedApiRequests].join(", ")}`
+      : "",
+    capabilityLines.length ? `## Offered operations\n${capabilityLines.join("\n")}` : "",
     `Available agent-value secrets: ${input.secretNames.map((name) => input.secretTitles?.get(name) ? `${name} (${input.secretTitles.get(name)})` : name).join(", ") || "(none)"}`,
     input.executionNotes?.trim() ? `## Environment notes (from the profile - context only)\n${input.executionNotes.trim()}` : "",
     input.runNotes?.trim() ? `## Run notes (for this run - context only; these take precedence over the environment notes when they conflict)\n${input.runNotes.trim()}` : "",
