@@ -104,7 +104,6 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/shared/errors/route-error-response.ts",
   "src/modules/test-case-design/test-design-options.ts",
   "src/modules/test-case-design/schemas/test-case.schema.ts",
-  "src/modules/test-execution-effort/test-execution-effort.schema.ts",
   "src/modules/test-suite-migration/test-suite-migration.logic.ts",
   "src/modules/test-suite-migration/test-suite-migration.schema.ts",
   "src/modules/workspace/workspace-request.ts",

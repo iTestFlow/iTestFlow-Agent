@@ -366,8 +366,8 @@ describeDb("saved chatbot answers reach retrieval (DB-backed)", () => {
     // loadProjectKnowledgeContext, which for four rounds of review only ever returned the
     // compiler's own compiled snapshot (project_knowledge_base.validated_output) -- a
     // table integration never touched. An insight could become fully "integrated" and
-    // still be invisible to every Requirement Analysis / Test Design / Test Case Review /
-    // Test Execution Effort prompt for the life of the project. Proving it in the
+    // still be invisible to every Requirement Analysis / Test Design / Test Case Review
+    // prompt for the life of the project. Proving it in the
     // assistant's own evidence (the tests above) does not prove this; the assistant reads
     // project_knowledge_entries directly and was never the affected path.
     //

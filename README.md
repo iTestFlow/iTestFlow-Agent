@@ -8,7 +8,7 @@
 Workspace-scoped test intelligence for Azure DevOps, grounded in project knowledge and controlled by human review.
 </p>
 
-iTestFlow brings requirement analysis, test design, coverage review, execution planning, defect reporting, and test-suite operations into authenticated QA workspaces. It connects to real Azure DevOps and LLM provider APIs while keeping credentials, indexed context, audit history, jobs, and workflow records in PostgreSQL.
+iTestFlow brings requirement analysis, test design, coverage review, defect reporting, and test-suite operations into authenticated QA workspaces. It connects to real Azure DevOps and LLM provider APIs while keeping credentials, indexed context, audit history, jobs, and workflow records in PostgreSQL.
 
 ## Contents
 
@@ -48,7 +48,6 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 - **Requirements Analysis** finds ambiguities, risks, omissions, and testability concerns, then publishes reviewed comments to Azure DevOps.
 - **Test Case Design** generates editable positive, negative, boundary, and edge-case scenarios and publishes approved cases to Azure Test Plans.
 - **Test Gap Analysis** maps requirement details and acceptance criteria to linked test cases, identifies missing coverage, and creates selected additions.
-- **Test Execution Effort** estimates manual execution time, assumptions, complexity, risks, and recommendations for linked test cases.
 - **Report Bug** converts QA notes into reviewed Azure DevOps Bug work items with fields, relationships, and attachments.
 
 ### Utilities and Governance
@@ -109,7 +108,6 @@ These links work while the local development or production server is running on 
 | Testing | [Requirements Analysis](http://127.0.0.1:3000/requirements-analysis) | Analyze a real Azure DevOps requirement |
 | Testing | [Test Case Design](http://127.0.0.1:3000/test-case-design) | Generate, review, and publish test cases |
 | Testing | [Test Gap Analysis](http://127.0.0.1:3000/test-gap-analysis) | Review traceability and missing coverage |
-| Testing | [Test Execution Effort](http://127.0.0.1:3000/test-execution-effort) | Estimate manual QA execution effort |
 | Testing | [Report Bug](http://127.0.0.1:3000/report-bug) | Generate and post Azure DevOps bugs |
 | Utilities | [Suite Migration](http://127.0.0.1:3000/suite-migration) | Preview and execute Test Suite copy or move |
 | Utilities | [Bulk Task Creation](http://127.0.0.1:3000/bulk-task-creation) | Create multiple tasks across selected User Stories |
@@ -173,7 +171,7 @@ npm run org:enable -- <orgUrlOrName>  # to re-enable later
 4. Select the active Azure DevOps project in the top bar.
 5. Open `/knowledge-hub`, choose work-item filters, and index project context.
 6. Build the compiled knowledge base if you want richer grounding and assistant answers.
-7. Enter a real Azure DevOps work-item ID in Requirements Analysis, Test Case Design, Test Gap Analysis, or Test Execution Effort.
+7. Enter a real Azure DevOps work-item ID in Requirements Analysis, Test Case Design, or Test Gap Analysis.
 8. Review and edit every AI-generated result.
 9. Publish only approved comments, test cases, suggested additions, bugs, or tasks.
 10. Use Dashboards and Activity Log to review outcomes and trace recent actions.

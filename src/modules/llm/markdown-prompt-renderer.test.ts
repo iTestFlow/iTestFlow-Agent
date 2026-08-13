@@ -5,7 +5,6 @@ import {
   buildExistingTestCaseReviewMarkdownPrompt,
   buildRequirementAnalysisMarkdownPrompt,
   buildTestCaseGenerationMarkdownPrompt,
-  buildTestExecutionEffortMarkdownPrompt,
   cleanPromptText,
   extractWorkItemId,
 } from "@/modules/llm/markdown-prompt-renderer";
@@ -122,7 +121,6 @@ describe("buildRequirementAnalysisMarkdownPrompt", () => {
       buildRequirementAnalysisMarkdownPrompt(inputs).prompt,
       buildTestCaseGenerationMarkdownPrompt(inputs).prompt,
       buildExistingTestCaseReviewMarkdownPrompt(inputs).prompt,
-      buildTestExecutionEffortMarkdownPrompt(inputs).prompt,
     ];
 
     for (const prompt of prompts) {
