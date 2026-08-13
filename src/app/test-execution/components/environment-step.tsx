@@ -1341,7 +1341,8 @@ function ApiTargetFields({
         ) : null}
 
         <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-api-contract`}>API contract</Label>
+          <Label htmlFor={`${idPrefix}-api-contract`}>API definition</Label>
+          <p className="text-xs text-muted-foreground">Add a Swagger or OpenAPI JSON URL to discover documented API endpoints for this run.</p>
           <Select
             value={contractKind}
             onValueChange={(kind) =>
@@ -1358,15 +1359,15 @@ function ApiTargetFields({
           >
             <SelectTrigger id={`${idPrefix}-api-contract`}><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="none">No contract</SelectItem>
-              <SelectItem value="same_origin_url">OpenAPI URL</SelectItem>
+              <SelectItem value="none">No API definition</SelectItem>
+              <SelectItem value="same_origin_url">Swagger / OpenAPI URL</SelectItem>
               {contractKind === "revision" ? <SelectItem value="revision">Approved revision</SelectItem> : null}
             </SelectContent>
           </Select>
         </div>
         {value.contract?.kind === "same_origin_url" ? (
           <div className="space-y-1.5">
-            <Label htmlFor={`${idPrefix}-api-contract-url`}>OpenAPI URL</Label>
+            <Label htmlFor={`${idPrefix}-api-contract-url`}>Swagger / OpenAPI URL</Label>
             <Input
               id={`${idPrefix}-api-contract-url`}
               value={value.contract.url}
@@ -1374,6 +1375,7 @@ function ApiTargetFields({
               onChange={(event) => onChange({ ...value, contract: { kind: "same_origin_url", url: event.target.value } })}
               onBlur={onBlur}
             />
+            <p className="text-xs text-muted-foreground">For example: https://api.example.com/openapi.json. It must use the same origin as the API base URL.</p>
           </div>
         ) : value.contract?.kind === "revision" ? (
           <div className="space-y-1.5">
