@@ -593,6 +593,11 @@ async function executeCase(
   const stepOutcomes: ExecutionOutcome[] = [];
   const priorStepsSummary: string[] = [];
   const captures = new CaseCaptureStore();
+  // The case-final screenshot is evidence for the whole case, not for its last
+  // step, so "the case used the UI" accumulates across steps: any step that
+  // drove the page leaves a page worth photographing, even when the case ends
+  // on an API- or database-only step.
+  let caseUsedUi = false;
 
   for (const [stepIndex, planStep] of parsed.data.steps.entries()) {
     if (agent.signal.aborted) throw new Error("Execution aborted.");
@@ -666,23 +671,50 @@ async function executeCase(
         : (result.reason ?? result.actualResult ?? `Step ${result.outcome.replace(/_/g, " ")}.`).slice(0, 500);
     await finalizeStep(runId, jobId, row.id, result.outcome, observation as Record<string, unknown>, errorMessage);
     stepOutcomes.push(result.outcome);
+    const usedUi = stepUsedUi(result);
+    if (usedUi) caseUsedUi = true;
 
     if (!stepOutcomeContinuesCase(result.outcome)) {
-      if (agent.executor) await evidence.captureFailure(agent.executor, caseRun.id, row.id);
+      // A case that drove the browser earlier still gets its failure shot even
+      // when the failing step itself was API/DB-only: when an API assertion
+      // disagrees with a UI flow, the page is the thing worth looking at.
+      if (agent.executor && (usedUi || caseUsedUi)) {
+        await evidence.captureFailure(agent.executor, caseRun.id, row.id);
+      }
       await finalizeRemainingSteps(runId, jobId, caseRun.id, "not_run");
       break;
     }
     priorStepsSummary.push(`${stepIndex + 1}. ${planStep.instruction} — passed`);
-    if (env.evidenceLevel === "all_steps" && agent.executor) {
+    if (env.evidenceLevel === "all_steps" && agent.executor && usedUi) {
       await evidence.captureScreenshot(agent.executor, caseRun.id, row.id, `step-${stepIndex + 1}.png`);
     }
   }
 
   const caseOutcome = rollUpCaseOutcome(stepOutcomes);
-  if (caseOutcome === "passed" && env.evidenceLevel !== "minimal" && agent.executor) {
+  if (caseOutcome === "passed" && env.evidenceLevel !== "minimal" && agent.executor && caseUsedUi) {
     await evidence.captureScreenshot(agent.executor, caseRun.id, null, "case-final.png");
   }
   await finalizeCase(runId, jobId, caseRun.id, caseOutcome);
+}
+
+/**
+ * Whether a step actually drove the browser. Screenshots and console logs are
+ * evidence only for such a step: an API/database step in a UI-capable
+ * environment would otherwise attach whatever page happens to be open.
+ *
+ * `observedLayers` records layers whose action SUCCEEDED, so on its own it
+ * misses the step whose UI action failed — exactly when a screenshot matters
+ * most. The transcript closes that gap, but only through the two executable UI
+ * action types: the synthetic "model"/"rejected" records carry "ui" as a
+ * fallback layer while touching no page.
+ */
+function stepUsedUi(result: MultiLayerStepResult): boolean {
+  return (
+    result.observedLayers.includes("ui") ||
+    result.actionsTaken.some(
+      (record) => record.actionType === "ui_action" || record.actionType === "ui_snapshot",
+    )
+  );
 }
 
 async function finalizeAndSummarize(

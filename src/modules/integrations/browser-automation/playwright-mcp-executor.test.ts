@@ -67,7 +67,6 @@ describe("PlaywrightMcpExecutor redundant navigation", () => {
   it.each([
     ["a trailing slash", "https://app.example.com/products", "/products/"],
     ["a relative target", "https://app.example.com/login", "/login"],
-    ["a query string the site rewrote", "https://app.example.com/search?ref=nav", "/search"],
   ])("treats %s as the same page", async (_label, currentUrl, requested) => {
     const executor = navigationHarness(currentUrl);
 
@@ -75,6 +74,20 @@ describe("PlaywrightMcpExecutor redundant navigation", () => {
 
     expect(result.status).toBe("ok");
     expect(executor.callTool).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a different query string", "https://app.example.com/reports?range=7d", "/reports?range=90d"],
+    ["a query string where there was none", "https://app.example.com/reports", "/reports?range=90d"],
+    ["a different fragment", "https://app.example.com/docs#intro", "/docs#billing"],
+  ])("still navigates for %s", async (_label, currentUrl, requested) => {
+    // Same path, different content: skipping this would silently drop a
+    // navigation the step asked for.
+    const executor = navigationHarness(currentUrl);
+
+    await executor.performAgentAction({ type: "navigate", url: requested });
+
+    expect(executor.callTool).toHaveBeenCalled();
   });
 
   it("still navigates when the target is a different page", async () => {

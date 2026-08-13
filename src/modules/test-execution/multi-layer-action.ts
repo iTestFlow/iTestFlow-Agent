@@ -39,6 +39,14 @@ export const ApiRequestArgumentsSchema = z.object({
   headers: z.record(z.string().max(100), z.string().max(4_000)).default({}),
   /** JSON body for mutation methods; size is bounded by the executor's request cap. */
   body: ParameterValueSchema.optional(),
+  /**
+   * How the body is encoded. Many APIs document "Request Parameters" and read
+   * form fields, not JSON — sending the wrong encoding makes the server report
+   * the parameters as missing, so the agent has to be able to choose.
+   */
+  contentType: z
+    .enum(["application/json", "application/x-www-form-urlencoded", "text/plain"])
+    .optional(),
   captures: z.array(CaptureSchema).max(20).default([]),
 });
 

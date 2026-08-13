@@ -71,10 +71,12 @@ export class TestExecutionLayerRuntime implements MultiLayerRuntime {
         path: action.arguments.path,
         query: action.arguments.query,
         headers: action.arguments.headers,
-        // Ad-hoc bodies are always JSON; the executor sets Content-Type.
+        // The agent picks the encoding: an API documenting "Request
+        // Parameters" usually reads form fields, and sending JSON to it makes
+        // the server report every parameter as missing.
         ...(action.arguments.body === undefined
           ? {}
-          : { body: action.arguments.body, contentType: "application/json" as const }),
+          : { body: action.arguments.body, contentType: action.arguments.contentType ?? "application/json" }),
       }));
     }
     if (action.type === "api_execute_operation") {

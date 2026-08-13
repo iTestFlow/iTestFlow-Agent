@@ -360,17 +360,20 @@ export class PlaywrightMcpExecutor implements BrowserExecutor {
   }
 
   /**
-   * Whether the browser is already showing the requested page. Compares the
-   * path only: a query string or fragment the site rewrote on arrival does
-   * not make it a different page, and the agent's next snapshot shows it the
-   * real state regardless.
+   * Whether the browser is already showing the requested page. The query
+   * string and fragment are part of the identity: /reports?range=7d and
+   * /reports?range=90d are different pages, and treating them as one would
+   * silently skip a navigation the step asked for.
    */
   private isCurrentPage(requestedUrl: string): boolean {
     if (!this.lastKnownUrl) return false;
     try {
       const target = new URL(requestedUrl, this.allowedOrigin);
       const current = new URL(this.lastKnownUrl);
-      return current.origin === target.origin && samePath(current.pathname, target.pathname);
+      return current.origin === target.origin
+        && samePath(current.pathname, target.pathname)
+        && current.search === target.search
+        && current.hash === target.hash;
     } catch {
       return false;
     }

@@ -353,4 +353,34 @@ describe("TestExecutionLayerRuntime", () => {
     expect(apiDispose).toHaveBeenCalledTimes(1);
     expect(dbDispose).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["form encoding when the agent asks for it", "application/x-www-form-urlencoded", "application/x-www-form-urlencoded"],
+    ["JSON when the agent omits it", undefined, "application/json"],
+  ] as const)("sends %s", async (_label, requested, expected) => {
+    const execute = vi.fn(async () => ({
+      statusCode: 200, statusText: "OK", headers: {}, safeHeaders: {}, body: {}, safeBody: {},
+      contentType: "application/json", truncated: false, durationMs: 1, url: "https://api.test/createAccount",
+    }));
+    const runtime = new TestExecutionLayerRuntime({
+      boundary,
+      env: { ...baseEnv, api: apiConfig },
+      browser: null,
+      connectionSecrets: new Map(),
+      signal,
+      apiFactory: () => ({ execute, dispose: vi.fn(async () => undefined) }),
+    });
+
+    await runtime.execute({
+      layer: "api",
+      type: "api_request",
+      arguments: {
+        method: "POST", path: "/createAccount", query: {}, headers: {},
+        body: { name: "Jane" }, captures: [],
+        ...(requested ? { contentType: requested } : {}),
+      },
+    });
+
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ contentType: expected }));
+  });
 });

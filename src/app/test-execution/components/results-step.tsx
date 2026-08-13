@@ -220,6 +220,9 @@ export function ResultsStep({
                                       {summarizeActionEvidence(record.request, record.observation)}
                                     </p>
                                   ) : null}
+                                  {record.layer === "api" || record.layer === "db" ? (
+                                    <ActionPayloadDisclosure request={record.request} observation={record.observation} />
+                                  ) : null}
                                   {record.errorMessage ? <p className="mt-0.5 text-destructive">{record.errorMessage}</p> : null}
                                 </li>
                               ))}
@@ -493,6 +496,58 @@ function ArtifactTextViewer({ url, fileName }: { url: string; fileName: string }
 
 export function humanizeActionType(value: string): string {
   return value.replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Action";
+}
+
+export const MAX_ACTION_PAYLOAD_CHARS = 20_000;
+
+export type ActionPayload = { text: string; truncated: boolean };
+
+/**
+ * Bounded pretty-print of one persisted action payload. The report assembler
+ * already redacted it server-side, so nothing is rewritten here — a payload is
+ * only capped, because a single response body or result set can be megabytes.
+ */
+export function formatActionPayload(value: unknown): ActionPayload | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "object" && Object.keys(value).length === 0) return null;
+  const text = JSON.stringify(value, null, 2);
+  return text.length > MAX_ACTION_PAYLOAD_CHARS
+    ? { text: text.slice(0, MAX_ACTION_PAYLOAD_CHARS), truncated: true }
+    : { text, truncated: false };
+}
+
+/**
+ * Request and response of one API/database action. Browser steps keep their
+ * screenshot evidence; these layers have no page to photograph, so the
+ * reviewer needs the payloads themselves — collapsed, never auto-expanded.
+ */
+function ActionPayloadDisclosure({ request, observation }: { request: unknown; observation: unknown }) {
+  const requestPayload = formatActionPayload(request);
+  const observationPayload = formatActionPayload(observation);
+  if (!requestPayload && !observationPayload) return null;
+  return (
+    <details className="mt-1">
+      <summary className="cursor-pointer text-[11px] text-muted-foreground">Request &amp; response</summary>
+      <div className="mt-1 space-y-1.5">
+        {requestPayload ? <ActionPayloadBlock label="Request" payload={requestPayload} /> : null}
+        {observationPayload ? <ActionPayloadBlock label="Response" payload={observationPayload} /> : null}
+      </div>
+    </details>
+  );
+}
+
+function ActionPayloadBlock({ label, payload }: { label: string; payload: ActionPayload }) {
+  return (
+    <div className="space-y-0.5">
+      <p className="text-[11px] font-medium text-foreground">{label}</p>
+      <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border bg-background px-2 py-1.5 font-mono text-[11px]">
+        {payload.text}
+      </pre>
+      {payload.truncated ? (
+        <p className="text-[11px] italic">Truncated at {MAX_ACTION_PAYLOAD_CHARS.toLocaleString()} characters.</p>
+      ) : null}
+    </div>
+  );
 }
 
 /** Render a compact allowlisted summary; never dump arbitrary response bodies or result rows. */

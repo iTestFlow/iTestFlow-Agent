@@ -755,12 +755,15 @@ export async function finalizeRunForCancellation(runId: string, jobId: string): 
   );
 }
 
-/** Infrastructure failure: in-flight rows → infrastructure_error, untouched → not_run, run → error. */
+/**
+ * Infrastructure failure: in-flight rows → infrastructure_error, untouched →
+ * not_run, run → error. Returns whether this caller flipped the run row.
+ */
 export async function finalizeRunForInfrastructureError(
   runId: string,
   jobId: string,
   message: string,
-): Promise<void> {
+): Promise<boolean> {
   const now = nowIso();
   await finalizeInFlightActions({
     runId,
@@ -788,13 +791,76 @@ export async function finalizeRunForInfrastructureError(
      WHERE run_id = @runId AND status <> 'completed' AND ${RUN_FENCE}`,
     { runId, jobId, now, message },
   );
-  await sqlRun(
+  const updated = await sqlRun(
     `UPDATE test_execution_runs
      SET status = 'error', outcome = 'infrastructure_error', error_message = @message,
          finished_at = @now, updated_at = @now
      WHERE id = @runId AND status = 'running' AND job_id = @jobId`,
     { runId, jobId, now, message },
   );
+  return updated > 0;
+}
+
+const ORPHANED_RUN_MESSAGE =
+  "The worker executing this run stopped before it finished; the run was closed out by another worker. " +
+  "Any state-changing action still in flight has an unknown outcome — verify the target before rerunning.";
+
+/**
+ * Close out runs abandoned by a dead worker: the process vanished between its
+ * last heartbeat and its own finalization, `reapStaleJobsWithClient` reclaimed
+ * the lock (test-execution jobs are maxAttempts = 1, so that branch always
+ * fails the job), and nothing finalized the RUN. Left alone it stays 'running'
+ * with finished_at NULL and — through uq_test_execution_runs_active_project —
+ * blocks every future run for that project.
+ *
+ * Deliberately NOT swept:
+ *  - a job still 'pending' (shutdown requeue, waiting for capacity) or
+ *    'running' — those runs still have an owner that will finalize them.
+ *  - a run with no job_id: only markRunRunning ever writes that column, so the
+ *    row is still 'queued', and createRunWithSnapshots already finalizes a
+ *    queued run when its enqueue fails.
+ *
+ * Safe on every worker at once. The SELECT is advisory; each run is closed by
+ * the same fenced single-statement UPDATEs its own worker would have used
+ * (run still 'running' AND owned by that job), so a racing sweeper matches
+ * zero rows instead of overwriting — no lost update, no double finalization.
+ * A sweeper that dies mid-sequence leaves the run 'running', so the next tick
+ * simply redoes the remaining statements.
+ */
+export type OrphanedRunRecovery = {
+  runId: string;
+  workspaceId: string;
+  projectId: string;
+  azureProjectId: string;
+};
+
+export async function finalizeOrphanedRuns(): Promise<OrphanedRunRecovery[]> {
+  const rows = await sqlAll<{ id: string; job_id: string; workspace_id: string; project_id: string; azure_project_id: string }>(
+    // Only 'running': markRunRunning is the sole writer of job_id and it sets
+    // that status in the same statement, so a run with an owning job is never
+    // 'queued'. Selecting 'queued' here would be dead today and quietly
+    // no-op tomorrow — finalizeRunForInfrastructureError is fenced on
+    // 'running', so a queued row would be selected every tick and never
+    // closed, making the gap look fixed while the project stayed wedged.
+    // Job statuses spell it 'cancelled'; run statuses spell it 'canceled'.
+    `SELECT r.id, r.job_id, r.workspace_id, r.project_id, r.azure_project_id
+     FROM test_execution_runs r
+     JOIN jobs j ON j.id = r.job_id
+     WHERE r.status = 'running'
+       AND j.status IN ('failed', 'completed', 'cancelled')`,
+  );
+  const recovered: OrphanedRunRecovery[] = [];
+  for (const row of rows) {
+    if (await finalizeRunForInfrastructureError(row.id, row.job_id, ORPHANED_RUN_MESSAGE)) {
+      recovered.push({
+        runId: row.id,
+        workspaceId: row.workspace_id,
+        projectId: row.project_id,
+        azureProjectId: row.azure_project_id,
+      });
+    }
+  }
+  return recovered;
 }
 
 export async function insertArtifactRecord(input: {

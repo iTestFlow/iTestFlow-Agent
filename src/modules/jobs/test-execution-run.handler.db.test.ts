@@ -7,6 +7,7 @@ import type { StorageBackend } from "@/modules/documents/storage/storage-backend
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { setExecutionArtifactStorageBackendForTests } from "@/modules/test-execution/artifact-storage.service";
 import { FakeBrowserExecutor } from "@/modules/integrations/browser-automation/fake-browser-executor";
+import type { LayerHint } from "@/modules/test-execution/action-schema";
 import { configuredEnvironmentLayers } from "@/modules/test-execution/environment-layers";
 import type { MultiLayerAction } from "@/modules/test-execution/multi-layer-action";
 import type { MultiLayerRuntime } from "@/modules/test-execution/multi-layer-runtime.port";
@@ -245,7 +246,12 @@ function recordLayerRuntime(): RuntimeRecorder {
   return recorder;
 }
 
-async function insertCase(runId: string, orderIndex: number, title: string, steps: { instruction: string; expectedResult?: string }[]) {
+async function insertCase(
+  runId: string,
+  orderIndex: number,
+  title: string,
+  steps: { instruction: string; expectedResult?: string; layerHint?: LayerHint }[],
+) {
   const caseId = uniqueTestId("tcr");
   await sqlRun(
     `INSERT INTO test_execution_case_runs (
@@ -262,7 +268,11 @@ async function insertCase(runId: string, orderIndex: number, title: string, step
       title,
       plan: JSON.stringify({
         schemaVersion: "v2-natural",
-        steps: steps.map((step) => ({ instruction: step.instruction, expectedResult: step.expectedResult ?? "" })),
+        steps: steps.map((step) => ({
+          instruction: step.instruction,
+          expectedResult: step.expectedResult ?? "",
+          layerHint: step.layerHint,
+        })),
       }),
       now: nowIso(),
     },
@@ -280,7 +290,11 @@ async function insertCase(runId: string, orderIndex: number, title: string, step
         ws,
         project,
         orderIndex: index,
-        action: JSON.stringify({ instruction: step.instruction, expectedResult: step.expectedResult ?? "" }),
+        action: JSON.stringify({
+          instruction: step.instruction,
+          expectedResult: step.expectedResult ?? "",
+          layerHint: step.layerHint,
+        }),
         now: nowIso(),
       },
     );
@@ -395,6 +409,169 @@ describeDb("test-execution run handler (agentic)", () => {
     expect(artifacts.some((a) => a.kind === "console_log")).toBe(true);
     expect(executor.executedActions).toHaveLength(1);
     expect(executor.disposeCount).toBeGreaterThan(0);
+  });
+
+  // ---- layer-aware browser evidence ----
+
+  /** UI target plus an API target: every step could get a screenshot, but only UI steps should. */
+  const UI_AND_API_ENV = {
+    ...ENV_CONFIG,
+    executionPolicyVersion: "intent-v1",
+    api: {
+      baseUrl: "https://api.example.com/v1",
+      contract: null,
+      auth: { type: "none" },
+      requestTimeoutMs: 30_000,
+    },
+  };
+
+  it("captures failure evidence only for the step that used the UI layer", async () => {
+    const runId = uniqueTestId("trun");
+    await insertRun(runId, UI_AND_API_ENV);
+    const apiCase = await insertCase(runId, 0, "API only", [
+      { instruction: "Call GET /orders/42 and confirm it settled", expectedResult: "The order is settled", layerHint: "api" },
+    ]);
+    const uiCase = await insertCase(runId, 1, "UI case", [
+      { instruction: "Open the dashboard", expectedResult: "Welcome banner", layerHint: "ui" },
+    ]);
+
+    const executor = new FakeBrowserExecutor({ consoleErrors: ["Mixed content blocked"] });
+    setTestExecutionExecutorFactoryForTests(() => executor);
+    setExecutionArtifactStorageBackendForTests(fakeStorage());
+    const recorder = recordLayerRuntime();
+    setTestExecutionLlmProviderFactoryForTests(async () =>
+      sequencedProvider([
+        {
+          decision: "act",
+          actionType: "api_request",
+          argumentsJson: JSON.stringify({ method: "GET", path: "/orders/42" }),
+        },
+        { decision: "step_failed", actualResult: "The order is still pending." },
+        { decision: "step_failed", actualResult: "The dashboard shows an error page." },
+      ]),
+    );
+
+    const result = await runTestExecutionRunJob(makeJob(runId), context(new AbortController().signal));
+
+    expect(result.outcome).toBe("failed");
+    expect(recorder.actions.map((action) => action.type)).toEqual(["api_request"]);
+    const artifacts = await sqlAll<{ kind: string; case_run_id: string | null }>(
+      `SELECT kind, case_run_id FROM test_execution_artifacts WHERE run_id = @runId`,
+      { runId },
+    );
+    // The API step never drove the page, so neither the screenshot of whatever
+    // page was open nor that page's console noise is evidence for it.
+    expect(artifacts.filter((artifact) => artifact.case_run_id === apiCase)).toEqual([]);
+    expect(
+      artifacts.filter((artifact) => artifact.case_run_id === uiCase).map((artifact) => artifact.kind).sort(),
+    ).toEqual(["console_log", "screenshot"]);
+    expect(executor.screenshotCount).toBe(1);
+  });
+
+  it("skips the case-final screenshot for a passing case that never used the UI", async () => {
+    const runId = uniqueTestId("trun");
+    await insertRun(runId, UI_AND_API_ENV);
+    const apiCase = await insertCase(runId, 0, "API only", [
+      { instruction: "Call GET /orders/42 and confirm it settled", expectedResult: "The order is settled", layerHint: "api" },
+    ]);
+    const uiCase = await insertCase(runId, 1, "UI case", [
+      { instruction: "Open the dashboard", expectedResult: "Welcome banner", layerHint: "ui" },
+    ]);
+
+    const executor = new FakeBrowserExecutor();
+    setTestExecutionExecutorFactoryForTests(() => executor);
+    setExecutionArtifactStorageBackendForTests(fakeStorage());
+    recordLayerRuntime();
+    setTestExecutionLlmProviderFactoryForTests(async () =>
+      sequencedProvider([
+        {
+          decision: "act",
+          actionType: "api_request",
+          argumentsJson: JSON.stringify({ method: "GET", path: "/orders/42" }),
+        },
+        { decision: "step_passed", actualResult: "The order is settled." },
+        { decision: "step_passed", actualResult: "Welcome banner visible." },
+      ]),
+    );
+
+    const result = await runTestExecutionRunJob(makeJob(runId), context(new AbortController().signal));
+
+    expect(result.outcome).toBe("passed");
+    const artifacts = await sqlAll<{ file_name: string; case_run_id: string | null }>(
+      `SELECT file_name, case_run_id FROM test_execution_artifacts WHERE run_id = @runId`,
+      { runId },
+    );
+    expect(artifacts.filter((artifact) => artifact.case_run_id === apiCase)).toEqual([]);
+    expect(artifacts.filter((artifact) => artifact.case_run_id === uiCase)).toEqual([
+      { file_name: "case-final.png", case_run_id: uiCase },
+    ]);
+  });
+
+  it("still captures failure evidence when the UI action itself failed", async () => {
+    // observedLayers only records layers whose action SUCCEEDED, so a failed
+    // UI action leaves it empty — exactly when the screenshot matters most.
+    const runId = uniqueTestId("trun");
+    await insertRun(runId, UI_AND_API_ENV);
+    const caseId = await insertCase(runId, 0, "UI failure", [
+      { instruction: "Click Save", expectedResult: "Saved", layerHint: "auto" },
+    ]);
+
+    const executor = new FakeBrowserExecutor({
+      snapshots: ['- button "Save" [ref=e1]'],
+      actionScript: [
+        { status: "failed", reason: "element_state", observation: { durationMs: 2, detail: "not clickable" } },
+        { status: "failed", reason: "element_state", observation: { durationMs: 2, detail: "not clickable" } },
+      ],
+    });
+    setTestExecutionExecutorFactoryForTests(() => executor);
+    setExecutionArtifactStorageBackendForTests(fakeStorage());
+    setTestExecutionLlmProviderFactoryForTests(async () =>
+      sequencedProvider([
+        { decision: "act", actionType: "navigate", url: "https://app.example.com/save" },
+        { decision: "act", actionType: "navigate", url: "https://app.example.com/save" },
+      ]),
+    );
+
+    await runTestExecutionRunJob(makeJob(runId), context(new AbortController().signal));
+
+    const artifacts = await sqlAll<{ file_name: string }>(
+      `SELECT file_name FROM test_execution_artifacts WHERE run_id = @runId AND case_run_id = @caseId`,
+      { runId, caseId },
+    );
+    expect(artifacts.map((artifact) => artifact.file_name)).toContain("failure.png");
+  });
+
+  it("captures failure evidence for a case that drove the browser before an API step failed", async () => {
+    const runId = uniqueTestId("trun");
+    await insertRun(runId, UI_AND_API_ENV);
+    const caseId = await insertCase(runId, 0, "Mixed", [
+      { instruction: "Open the dashboard", expectedResult: "Welcome banner", layerHint: "ui" },
+      { instruction: "Call GET /orders/42 and confirm it settled", expectedResult: "settled", layerHint: "api" },
+    ]);
+
+    const executor = new FakeBrowserExecutor();
+    setTestExecutionExecutorFactoryForTests(() => executor);
+    setExecutionArtifactStorageBackendForTests(fakeStorage());
+    recordLayerRuntime();
+    setTestExecutionLlmProviderFactoryForTests(async () =>
+      sequencedProvider([
+        { decision: "step_passed", actualResult: "Welcome banner visible." },
+        {
+          decision: "act",
+          actionType: "api_request",
+          argumentsJson: JSON.stringify({ method: "GET", path: "/orders/42" }),
+        },
+        { decision: "step_failed", actualResult: "The order is not settled." },
+      ]),
+    );
+
+    await runTestExecutionRunJob(makeJob(runId), context(new AbortController().signal));
+
+    const artifacts = await sqlAll<{ file_name: string }>(
+      `SELECT file_name FROM test_execution_artifacts WHERE run_id = @runId AND case_run_id = @caseId`,
+      { runId, caseId },
+    );
+    expect(artifacts.map((artifact) => artifact.file_name)).toContain("failure.png");
   });
 
   it("keeps secret placeholders in persisted rows while the executor receives the value", async () => {

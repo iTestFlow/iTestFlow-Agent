@@ -469,4 +469,36 @@ describe("validateMultiLayerDecision", () => {
       argumentsJson: JSON.stringify({ sql: "SELECT 1" }),
     }, context({ layerHint: "api" })).kind).toBe("invalid");
   });
+
+  it("lets the agent choose a form encoding for documented request parameters", () => {
+    // An API documenting "Request Parameters" reads form fields; sending JSON
+    // makes the server report every parameter as missing.
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({
+        method: "POST",
+        path: "/createAccount",
+        body: { name: "Jane" },
+        contentType: "application/x-www-form-urlencoded",
+      }),
+    }, context({ allowedApiRequests: new Set(["POST /createAccount"]) }));
+
+    expect(result).toMatchObject({
+      kind: "action",
+      action: { type: "api_request", arguments: { contentType: "application/x-www-form-urlencoded" } },
+    });
+  });
+
+  it("rejects an unsupported body encoding", () => {
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({
+        method: "POST", path: "/createAccount", body: { a: 1 }, contentType: "multipart/form-data",
+      }),
+    }, context({ allowedApiRequests: new Set(["POST /createAccount"]) }));
+
+    expect(result).toMatchObject({ kind: "invalid" });
+  });
 });

@@ -8,7 +8,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunDetailDto } from "@/modules/test-execution/report-assembler";
 
 import type { DraftCase } from "../lib/draft-storage";
-import { ResultsStep, humanizeActionType, summarizeActionEvidence } from "./results-step";
+import {
+  MAX_ACTION_PAYLOAD_CHARS,
+  ResultsStep,
+  formatActionPayload,
+  humanizeActionType,
+  summarizeActionEvidence,
+} from "./results-step";
 
 afterEach(() => cleanup());
 
@@ -96,6 +102,44 @@ function renderResults({
   ));
 }
 
+type ActionRef = RunDetailDto["cases"][number]["steps"][number]["actions"][number];
+
+function layerAction(overrides: Partial<ActionRef> = {}): ActionRef {
+  return {
+    id: "action-1",
+    orderIndex: 0,
+    layer: "api",
+    actionType: "api_request",
+    safetyClass: "mutation",
+    request: { method: "POST", path: "/orders", body: { sku: "A-1" } },
+    status: "completed",
+    observation: { summary: "Created", data: { status: 201, body: { id: 4021 } } },
+    errorCategory: null,
+    errorMessage: null,
+    startedAt: "2026-08-12T00:00:00.000Z",
+    finishedAt: "2026-08-12T00:00:01.000Z",
+    ...overrides,
+  };
+}
+
+function detailWithActions(actions: ActionRef[]): RunDetailDto {
+  return detailWithCase({
+    steps: [{
+      id: "step-1",
+      orderIndex: 0,
+      action: { instruction: "Submit checkout", expectedResult: "Order is created", layerHint: "api" },
+      status: "completed",
+      outcome: "failed",
+      observation: null,
+      errorMessage: null,
+      startedAt: "2026-08-12T00:00:00.000Z",
+      finishedAt: "2026-08-12T00:01:00.000Z",
+      actions,
+      artifacts: [],
+    }],
+  });
+}
+
 describe("multi-layer result evidence", () => {
   it("labels generic action types for the timeline", () => {
     expect(humanizeActionType("api.execute_operation")).toBe("Api Execute Operation");
@@ -110,6 +154,47 @@ describe("multi-layer result evidence", () => {
         { data: { status: 200, rowCount: 1, body: { password: "secret" } } },
       ),
     ).toBe("GET /orders/42 · status 200 · 1 row(s)");
+  });
+
+  it("offers the API request and response as a collapsed disclosure under the summary", () => {
+    renderResults({ detail: detailWithActions([layerAction()]) });
+
+    expect(screen.getByText(/POST \/orders · status 201/)).toBeInTheDocument();
+    const disclosure = screen.getByText("Request & response").closest("details");
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(screen.getByText(/"sku": "A-1"/)).toBeInTheDocument();
+    expect(screen.getByText(/"id": 4021/)).toBeInTheDocument();
+  });
+
+  it("keeps UI actions on today's summary-only rendering", () => {
+    renderResults({
+      detail: detailWithActions([layerAction({
+        layer: "ui",
+        actionType: "ui_action",
+        safetyClass: "ui",
+        request: { action: "fill", ref: "e2", value: "<not persisted>" },
+        observation: { summary: "Field filled" },
+      })]),
+    });
+
+    expect(screen.queryByText("Request & response")).not.toBeInTheDocument();
+  });
+
+  it("caps an oversized payload and says so", () => {
+    const rows = Array.from({ length: 3_000 }, (_, index) => ({ id: index, sku: `SKU-${index}` }));
+    const payload = formatActionPayload({ data: { rows } });
+    expect(payload?.truncated).toBe(true);
+    expect(payload?.text).toHaveLength(MAX_ACTION_PAYLOAD_CHARS);
+
+    renderResults({ detail: detailWithActions([layerAction({ observation: { data: { rows } } })]) });
+
+    expect(screen.getByText(/^Truncated at/)).toBeInTheDocument();
+  });
+
+  it("omits the disclosure when the action persisted no payloads", () => {
+    renderResults({ detail: detailWithActions([layerAction({ layer: "db", request: {}, observation: null })]) });
+
+    expect(screen.queryByText("Request & response")).not.toBeInTheDocument();
   });
 });
 

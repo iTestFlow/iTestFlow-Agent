@@ -56,6 +56,8 @@ import { PROJECT_KNOWLEDGE_JOB } from "@/modules/jobs/project-knowledge-jobs.ser
 import { UPLOADED_DOCUMENT_INGEST } from "@/modules/jobs/uploaded-document-jobs.service";
 import { TEST_EXECUTION_RUN } from "@/modules/jobs/test-execution-jobs.service";
 import { reapOrphanExecutionTempDirs } from "@/modules/integrations/browser-automation/mcp-process";
+import { writeAuditLog } from "@/modules/audit/audit.service";
+import { finalizeOrphanedRuns } from "@/modules/test-execution/run-persistence.service";
 import { registerAllJobHandlers } from "@/modules/jobs/register-handlers";
 import { enqueueDueScheduledSyncs } from "@/modules/jobs/sync-schedule.service";
 import {
@@ -73,6 +75,13 @@ const SCHEDULER_ENABLED = process.env.WORKER_SCHEDULER !== "false";
 const SCHEDULER_TICK_MS = Number(process.env.WORKER_SCHEDULER_TICK_MS ?? String(60 * 1000));
 const DOCUMENT_INGEST_CONCURRENCY = Math.max(1, Math.trunc(Number(process.env.WORKER_DOCUMENT_INGEST_CONCURRENCY ?? "2")) || 2);
 const TEST_EXECUTION_CONCURRENCY = Math.max(1, Math.trunc(Number(process.env.WORKER_TEST_EXECUTION_CONCURRENCY ?? "1")) || 1);
+// Guarded like the other numeric env reads: a non-numeric WORKER_HEARTBEAT_MS
+// would otherwise make this NaN, and `Date.now() >= NaN` is false forever —
+// the periodic sweep would silently stop after the first pass.
+const ORPHANED_RUN_SWEEP_MS = (() => {
+  const candidates = [HEARTBEAT_MS, POLL_MS].filter((value) => Number.isFinite(value) && value > 0);
+  return candidates.length > 0 ? Math.max(...candidates) : 30 * 1000;
+})();
 // Browser runs hold their lock for many minutes; operators can shorten the
 // reclaim window for this lane without touching the global JOB_STALE_LOCK_MS.
 const TEST_EXECUTION_STALE_LOCK_MS = (() => {
@@ -363,8 +372,46 @@ export async function dispatchReadyTestExecutionJobs(): Promise<number> {
   return claimed;
 }
 
+/**
+ * Reclaiming a dead worker's job lock is only half the recovery: without this
+ * its run stays 'running' forever and the project's one-active-run slot stays
+ * wedged. Safe to run from every worker (see finalizeOrphanedRuns) and never
+ * throws — a failed sweep must not stop the lane.
+ */
+async function sweepOrphanedTestExecutionRuns(): Promise<void> {
+  try {
+    const recovered = await finalizeOrphanedRuns();
+    if (recovered.length === 0) return;
+    console.warn(`[worker] finalized ${recovered.length} orphaned test execution run(s)`);
+    // A run flipping to error under an operator belongs in the Activity Log,
+    // not only in worker stdout.
+    for (const run of recovered) {
+      writeAuditLog({
+        workspaceId: run.workspaceId,
+        projectId: run.projectId,
+        azureProjectId: run.azureProjectId,
+        entityType: "test_execution_run",
+        entityId: run.runId,
+        action: "test_execution.run_orphan_recovered",
+        status: "Failed",
+        actor: "worker",
+        message: "The execution worker stopped before this run finished; the run was closed out.",
+      });
+    }
+  } catch (error) {
+    console.error("[worker] orphaned run sweep failed.", error);
+  }
+}
+
 async function testExecutionDispatchLoop(): Promise<void> {
+  let nextSweepAt = 0;
   while (!shuttingDown) {
+    // A run can only be orphaned once its lock went stale (minutes), so the
+    // sweep rides the heartbeat cadence rather than the idle poll interval.
+    if (Date.now() >= nextSweepAt) {
+      await sweepOrphanedTestExecutionRuns();
+      nextSweepAt = Date.now() + ORPHANED_RUN_SWEEP_MS;
+    }
     try {
       await dispatchReadyTestExecutionJobs();
     } catch (error) {
@@ -501,6 +548,9 @@ async function main() {
   // A crash or hard shutdown can leave chromium temp profiles behind; at boot
   // no run is active on this worker, so everything under the root is orphaned.
   await reapOrphanExecutionTempDirs();
+  // Same premise for the run rows: a hard restart (deploy, OOM, node --watch)
+  // is the common way a run is abandoned, so recover before claiming new work.
+  if (capabilities.includes(TEST_EXECUTION_RUN)) await sweepOrphanedTestExecutionRuns();
   registryHeartbeat = setInterval(() => {
     void heartbeatWorkerInstance(WORKER_ID)
       .then(async (updated) => {
