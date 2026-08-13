@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createId, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
+import type { PoolClient } from "pg";
 
 export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -165,7 +166,7 @@ export async function enqueueJob(input: {
   maxAttempts?: number;
   runAfter?: string;
   createdByUserId?: string | null;
-}): Promise<string | null> {
+}, client?: PoolClient): Promise<string | null> {
   const id = createId("job");
   const now = nowIso();
   // ON CONFLICT on the partial unique index (workspace, type, dedupe_key for
@@ -195,6 +196,7 @@ export async function enqueueJob(input: {
       createdByUserId: input.createdByUserId ?? null,
       now,
     },
+    client,
   );
   return inserted?.id ?? null;
 }

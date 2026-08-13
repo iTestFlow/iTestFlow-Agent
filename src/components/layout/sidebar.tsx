@@ -17,6 +17,7 @@ import {
   Settings,
   ShieldCheck,
   Timer,
+  PlayCircle,
   type LucideIcon,
 } from "lucide-react"
 
@@ -48,6 +49,7 @@ const navigation: NavNode[] = [
       { label: "Test Gap Analysis", href: "/test-gap-analysis", icon: Radar },
       { label: "Report Bug", href: "/report-bug", icon: Bug },
       { label: "Test Execution Effort", href: "/test-execution-effort", icon: Timer },
+      { label: "Automated Test Execution", href: "/test-execution", icon: PlayCircle },
     ],
   },
   {

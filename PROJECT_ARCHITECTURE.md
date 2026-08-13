@@ -327,3 +327,8 @@ Update this document when you:
 - Make an architecture decision that future development should follow.
 
 Keep updates short and factual. Prefer changing the relevant section instead of appending a chronological changelog.
+## Playwright MCP automated execution
+
+`src/modules/test-execution/` owns workspace transport configuration, the bounded LLM-to-MCP agent, exact tool allowlisting, execution persistence, protected artifact import, and the background job handler. API routes under `src/app/api/test-execution/playwright/` always resolve membership and trusted project scope before reading a run, cancelling it, serving an artifact, or publishing Azure outcomes. The start route expands the selected suite and descendants, snapshots non-secret transport metadata, creates the durable run/case/step rows, and enqueues a single-attempt `playwright_mcp_execution` job.
+
+The worker executes cases serially with one isolated MCP connection per case. LLM decisions can invoke only advertised tools in the fixed allowlist; `browser_run_code_unsafe` and unrelated MCP tools are rejected. iTestFlow is the system of record during execution and review. Azure Test Points are updated only by the explicit publish route, with local outcomes mapped to Azure outcomes.

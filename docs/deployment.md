@@ -212,6 +212,14 @@ Rollback past migration `1710000007000_project_anchor_backfill` is backup-based.
 
 ## Local Development
 
+### Playwright MCP execution
+
+Workspace owners and admins configure Streamable HTTP or stdio from Settings. HTTP endpoints require HTTPS except for localhost, and remote origins must appear in the comma-separated `PLAYWRIGHT_MCP_HTTP_ALLOWED_ORIGINS` deployment setting. Saving validates the MCP connection and its required navigation/snapshot tools before persistence. A bearer token is optional and encrypted with `APP_ENCRYPTION_KEY`; an artifact base URL restricts protected trace imports to the configured origin and path prefix.
+
+Stdio is deployment-managed. Set `PLAYWRIGHT_MCP_STDIO_COMMAND` and a JSON string array in `PLAYWRIGHT_MCP_STDIO_ARGS`; these values are never accepted from the browser. The command must start a compatible Playwright MCP server already installed in the deployment. Every test case gets a fresh MCP session, cases run serially, and the reusable PostgreSQL worker must advertise the `playwright_mcp_execution` capability.
+
+Apply `npm run db:migrate` before enabling the feature. Execution history and metadata remain until workspace deletion; content-addressed artifacts use `DOCUMENT_STORAGE_ROOT`. Azure Test Point outcomes are written only when a user clicks **Publish reviewed results**.
+
 ```bash
 cp .env.example .env
 docker compose up -d postgres

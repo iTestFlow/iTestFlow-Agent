@@ -1,0 +1,3 @@
+{"actor":"agent","event":"memory.created","id":"fact.itestflow-agent-product-boundary","timestamp":"2026-08-13T11:27:47+03:00"}
+{"actor":"agent","event":"memory.created","id":"constraint.trusted-workspace-and-project-scope","timestamp":"2026-08-13T11:27:47+03:00"}
+{"actor":"agent","event":"memory.created","id":"constraint.repository-verification-lanes","timestamp":"2026-08-13T11:27:47+03:00"}

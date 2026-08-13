@@ -15,5 +15,13 @@ data/model-cache/*
 data/document-store/*
 *.log
 tsconfig.tsbuildinfo
+graphify-out/
 .claude
 .codex
+
+.memory/index/
+.memory/context/
+.memory/exports/
+.memory/recovery/
+.memory/.backup/
+.memory/.lock

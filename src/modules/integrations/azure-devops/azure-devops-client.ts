@@ -440,6 +440,22 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       .map((workItem) => mapAzureTestCase(workItem as never, input.projectId));
   }
 
+  async fetchTestCasesByIds(input: { projectId: string; testCaseIds: string[] }): Promise<TestCase[]> {
+    const ids = [...new Set(input.testCaseIds.map(Number).filter(Number.isSafeInteger))];
+    if (!ids.length) return [];
+    const testCases: TestCase[] = [];
+    for (let index = 0; index < ids.length; index += 200) {
+      const workItems = await this.requestJson<{ value?: Array<JsonValue> }>(
+        `${encodeURIComponent(input.projectId)}/_apis/wit/workitemsbatch?api-version=7.1`,
+        { method: "POST", body: JSON.stringify({ ids: ids.slice(index, index + 200), $expand: "Relations" }) },
+      );
+      testCases.push(...(workItems.value ?? [])
+        .filter((workItem) => this.isFieldsInScope((workItem as { fields?: Record<string, unknown> }).fields))
+        .map((workItem) => mapAzureTestCase(workItem as never, input.projectId)));
+    }
+    return testCases;
+  }
+
   async addWorkItemComment(input: {
     projectId: string;
     workItemId: string;
