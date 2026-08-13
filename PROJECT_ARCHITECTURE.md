@@ -55,7 +55,7 @@ iTestFlow helps QA, product, and delivery teams:
 - Index filtered Azure DevOps work items into project context.
 - Compile durable project knowledge with revisions, publish-time lint checks, citations, and Markdown export.
 - Ask grounded questions through the Business Owner Assistant.
-- Analyze requirements, design test cases, review gaps, estimate execution effort, report bugs, migrate suites, and bulk-create tasks.
+- Analyze requirements, design test cases, review gaps, report bugs, migrate suites, and bulk-create tasks.
 - Publish only reviewed artifacts back to Azure DevOps.
 - Review dashboards, activity history, audit logs, jobs, and workspace-level settings.
 
@@ -117,7 +117,6 @@ Durable page routes:
 - `/requirements-analysis`
 - `/test-case-design`
 - `/test-gap-analysis`
-- `/test-execution-effort`
 - `/report-bug`
 - `/suite-migration`
 - `/bulk-task-creation`
@@ -215,12 +214,6 @@ Test Gap Analysis:
 - `/api/existing-test-case-review/*` runs automatic/manual review.
 - `/api/test-coverage-matrix/suggested-additions/publish` creates selected Azure Test Case additions and links them to the user story.
 - Service, prompt, and schema code live under `src/modules/existing-test-case-review`.
-
-Test Execution Effort:
-
-- `/test-execution-effort` estimates realistic manual QA execution effort for linked test cases.
-- `/api/test-execution-effort/prepare`, `/generate`, `/external-prompt`, and `/manual/submit` fetch scoped data, build prompts, call or validate LLM output, and return structured estimates.
-- Service, prompt, schema, and data-loading code live under `src/modules/test-execution-effort`.
 
 Bug Reporting:
 

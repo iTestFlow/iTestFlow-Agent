@@ -12,8 +12,8 @@ import { caughtErrorMessage } from "@/shared/lib/api-error-message";
  * Shared Azure DevOps work-item lookup: a debounced "load by ID" hook plus a
  * drop-in preview component built on {@link WorkItemSummaryCard}. Extracted so
  * the workflow clients (Requirement Analysis, Test Case Design, Test Coverage
- * Matrix) get the same "confirm the entered ID" affordance that Create Bug and
- * Test Execution Effort already have. Purely a preview — it never gates any
+ * Matrix) get the same "confirm the entered ID" affordance that Create Bug already
+ * has. Purely a preview — it never gates any
  * action; the caller keeps owning its `targetWorkItemId` and submit logic.
  */
 

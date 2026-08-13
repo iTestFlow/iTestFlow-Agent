@@ -52,7 +52,7 @@ export async function resolveWorkflowContext(input: {
   targetRequirement: Requirement;
   selectedContextIds?: string[];
   retrievalTopK: number;
-  workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review" | "test_execution_effort";
+  workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review";
 }): Promise<AutoContextResolution> {
   return resolveWorkflowContextCore(input);
 }
@@ -78,7 +78,7 @@ async function resolveWorkflowContextCore(input: {
   targetRequirement: Requirement;
   selectedContextIds?: string[];
   retrievalTopK: number;
-  workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review" | "test_execution_effort";
+  workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review";
 }): Promise<AutoContextResolution> {
   const scope = assertProjectScope(input.scope);
   const retrievalTopK = clampTopK(input.retrievalTopK);
@@ -223,7 +223,7 @@ async function selectContextWithLLM(input: {
   targetRequirement: Requirement;
   candidates: LlmWorkItemContextSource[];
   maxContextItems: number;
-  workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review" | "test_execution_effort";
+  workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review";
 }) {
   if (!input.provider) return [];
   if (!input.actor) throw new Error("Audit actor is required for LLM context selection.");

@@ -49,8 +49,6 @@ const EXTERNAL_LLM_MANUAL_ROUTES = [
   "existing-test-case-review/manual/submit/route.ts",
   "bugs/manual/draft/route.ts",
   "bugs/manual/submit/route.ts",
-  "test-execution-effort/external-prompt/route.ts",
-  "test-execution-effort/manual/submit/route.ts",
   "context/knowledge/manual/draft/route.ts",
   "context/knowledge/manual/validate/route.ts",
   "context/knowledge/manual/finalize/route.ts",
