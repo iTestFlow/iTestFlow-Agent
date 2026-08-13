@@ -9,6 +9,7 @@ import {
 } from "./action-schema";
 import { validateAgentDecision } from "./agent-decision";
 import { extractSecretReferences } from "./secret-resolution";
+import { isForbiddenRequestHeader } from "@/modules/shared/sensitive-data";
 
 export const EXECUTION_LAYERS = ["ui", "api", "db"] as const;
 export type ExecutionLayer = (typeof EXECUTION_LAYERS)[number];
@@ -244,7 +245,12 @@ export function validateMultiLayerDecision(
     const issue = layerPolicyIssue("api", context);
     if (issue) return invalid(issue);
     const args = ApiRequestArgumentsSchema.safeParse(decoded.value);
-    if (!args.success) return invalid(firstZodIssue(args.error));
+    if (!args.success) {
+      // "path: Required" alone leaves the model guessing at the shape; show it.
+      return invalid(
+        `${firstZodIssue(args.error)} api_request takes {method, path, query?, headers?, body?, contentType?}, where path is relative to the base URL, for example "/booking".`,
+      );
+    }
     if ((args.data.method === "GET" || args.data.method === "HEAD") && args.data.body !== undefined) {
       return invalid("GET and HEAD requests do not take a body.");
     }
@@ -259,8 +265,8 @@ export function validateMultiLayerDecision(
       && !matchesAllowedRequest(args.data.method, args.data.path, args.data.query, context.allowedApiRequests)) {
       return invalid("This run may only call API operations named in its frozen steps. Re-approve the run to use the current model.");
     }
-    const forbidden = Object.keys(args.data.headers).find(isForbiddenAdHocHeader);
-    if (forbidden) return invalid(`Header "${forbidden}" is environment-owned or unsafe.`);
+    const headerIssue = normalizeRequestHeaders(args.data);
+    if (headerIssue) return invalid(headerIssue);
     const referenceIssue = placeholderIssue(args.data, context);
     if (referenceIssue) return invalid(referenceIssue);
     return { kind: "action", action: { layer: "api", type: "api_request", arguments: args.data } };
@@ -452,17 +458,48 @@ function normalizePath(path: string, query: Record<string, string | number | boo
 }
 
 function isForbiddenAdHocHeader(name: string) {
-  const normalized = name.trim().toLowerCase();
-  const safeHeaders = new Set([
-    "accept",
-    "accept-language",
-    "if-match",
-    "if-none-match",
-    "if-modified-since",
-    "if-unmodified-since",
-    "range",
-  ]);
-  return !safeHeaders.has(normalized);
+  return isForbiddenRequestHeader(name);
+}
+
+const SUPPORTED_CONTENT_TYPES = [
+  "application/json",
+  "application/x-www-form-urlencoded",
+  "text/plain",
+] as const;
+
+/**
+ * Headers follow the same deny-list the executor enforces — environment-owned
+ * auth, transport-owned, and smuggling vectors — rather than a short
+ * allow-list, so an API that needs its own header is not blocked from being
+ * tested.
+ *
+ * Content-Type is the exception that needs translating rather than passing
+ * through: the executor derives it from the body encoding and would overwrite
+ * whatever was set here, so a model that says "Content-Type: form" in a header
+ * would silently send JSON. Fold it into contentType instead, and mutate the
+ * validated arguments so the executor sees one source of truth.
+ */
+function normalizeRequestHeaders(args: {
+  headers: Record<string, string>;
+  contentType?: typeof SUPPORTED_CONTENT_TYPES[number];
+}): string | null {
+  const forbidden = Object.keys(args.headers).find(isForbiddenAdHocHeader);
+  if (forbidden) return `Header "${forbidden}" is environment-owned or unsafe.`;
+
+  const contentTypeKey = Object.keys(args.headers).find(
+    (name) => name.trim().toLowerCase() === "content-type",
+  );
+  if (!contentTypeKey) return null;
+  const declared = (args.headers[contentTypeKey] ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  delete args.headers[contentTypeKey];
+  if (!declared) return null;
+  const supported = SUPPORTED_CONTENT_TYPES.find((candidate) => candidate === declared);
+  if (!supported) {
+    return `Content type "${declared}" is not supported. Use one of: ${SUPPORTED_CONTENT_TYPES.join(", ")}.`;
+  }
+  // An explicit contentType argument is the more specific signal; keep it.
+  args.contentType ??= supported;
+  return null;
 }
 
 function firstZodIssue(error: z.ZodError) {

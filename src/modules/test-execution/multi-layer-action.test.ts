@@ -554,4 +554,79 @@ describe("validateMultiLayerDecision", () => {
     expect(feedback).toContain("db_select");
     expect(feedback).toContain("ui_snapshot");
   });
+
+  it("accepts Content-Type and folds it into the body encoding", () => {
+    // The executor derives Content-Type from the encoding and would overwrite
+    // the header, so a header-only declaration must not silently send JSON.
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({
+        method: "POST", path: "/booking", body: { name: "Jane" },
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      }),
+    }, context());
+
+    expect(result).toMatchObject({
+      kind: "action",
+      action: { arguments: { contentType: "application/x-www-form-urlencoded", headers: {} } },
+    });
+  });
+
+  it("keeps an explicit contentType over a conflicting header", () => {
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({
+        method: "POST", path: "/booking", body: { a: 1 },
+        contentType: "application/json",
+        headers: { "content-type": "text/plain" },
+      }),
+    }, context());
+
+    expect(result).toMatchObject({ action: { arguments: { contentType: "application/json" } } });
+  });
+
+  it("allows an API-specific header but still blocks environment-owned ones", () => {
+    const withHeader = (headers: Record<string, string>) => validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({ method: "GET", path: "/booking", headers }),
+    }, context());
+
+    expect(withHeader({ "X-API-Version": "2" }).kind).toBe("action");
+    expect(withHeader({ Accept: "application/json" }).kind).toBe("action");
+    for (const blocked of ["Authorization", "Cookie", "Host", "X-HTTP-Method-Override"]) {
+      expect(withHeader({ [blocked]: "x" })).toMatchObject({ kind: "invalid" });
+    }
+  });
+
+  it("rejects an unsupported content type with the supported list", () => {
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({
+        method: "POST", path: "/booking", body: { a: 1 },
+        headers: { "Content-Type": "multipart/form-data" },
+      }),
+    }, context());
+
+    expect(result).toMatchObject({
+      kind: "invalid",
+      feedback: expect.stringContaining("application/x-www-form-urlencoded"),
+    });
+  });
+
+  it("shows the expected argument shape when the request will not parse", () => {
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({ method: "POST", url: "/booking" }),
+    }, context());
+
+    expect(result).toMatchObject({
+      kind: "invalid",
+      feedback: expect.stringContaining("path is relative to the base URL"),
+    });
+  });
 });
