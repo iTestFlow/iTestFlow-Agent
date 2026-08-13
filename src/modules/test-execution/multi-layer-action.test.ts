@@ -629,4 +629,42 @@ describe("validateMultiLayerDecision", () => {
       feedback: expect.stringContaining("path is relative to the base URL"),
     });
   });
+
+  it("reads arguments from the decision when there is no argumentsJson", () => {
+    // UI actions carry their arguments at the top level, so a model copying
+    // that shape for an API call must not have them silently stripped.
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      method: "POST",
+      path: "/booking",
+      body: { firstname: "Jane" },
+    }, context());
+
+    expect(result).toMatchObject({
+      kind: "action",
+      action: { type: "api_request", arguments: { method: "POST", path: "/booking" } },
+    });
+  });
+
+  it("still prefers argumentsJson when both shapes are present", () => {
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      path: "/ignored",
+      argumentsJson: JSON.stringify({ method: "GET", path: "/booking" }),
+    }, context());
+
+    expect(result).toMatchObject({ action: { arguments: { path: "/booking" } } });
+  });
+
+  it("reads a top-level database statement too", () => {
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "db_select",
+      sql: "SELECT id FROM public.orders",
+    }, context());
+
+    expect(result).toMatchObject({ kind: "action", action: { type: "db_select" } });
+  });
 });

@@ -4,6 +4,7 @@ import Ajv, { type ValidateFunction } from "ajv";
 import {
   AGENT_ACTION_TYPES,
   AgentDecisionSchema,
+  type AgentDecision,
   type AgentAction,
   type LayerHint,
 } from "./action-schema";
@@ -238,7 +239,7 @@ export function validateMultiLayerDecision(
     return issue ? invalid(issue) : { kind: "action", action: { layer: "ui", type: "ui_snapshot" } };
   }
 
-  const decoded = decodeArguments(decision.argumentsJson);
+  const decoded = decodeArguments(decision);
   if (!decoded.ok) return invalid(decoded.feedback);
 
   if (actionType === "api_request") {
@@ -384,17 +385,35 @@ function layerPolicyIssue(layer: ExecutionLayer, context: MultiLayerDecisionCont
   return null;
 }
 
-function decodeArguments(value?: string): { ok: true; value: unknown } | { ok: false; feedback: string } {
-  if (!value) return { ok: true, value: {} };
-  try {
-    const parsed = JSON.parse(value);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { ok: false, feedback: "argumentsJson must encode one JSON object." };
+/** Keys that belong to the decision itself, never to a layer's arguments. */
+const DECISION_LEVEL_KEYS = new Set([
+  "decision", "actionType", "argumentsJson", "actualResult", "reason",
+  "ref", "elementDescription", "value", "url", "key", "waitText",
+]);
+
+function decodeArguments(
+  decision: AgentDecision,
+): { ok: true; value: unknown } | { ok: false; feedback: string } {
+  if (decision.argumentsJson) {
+    try {
+      const parsed = JSON.parse(decision.argumentsJson);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { ok: false, feedback: "argumentsJson must encode one JSON object." };
+      }
+      return { ok: true, value: parsed };
+    } catch {
+      return { ok: false, feedback: "argumentsJson must encode one valid JSON object." };
     }
-    return { ok: true, value: parsed };
-  } catch {
-    return { ok: false, feedback: "argumentsJson must encode one valid JSON object." };
   }
+  // No argumentsJson: read the arguments from the decision itself, which is
+  // where UI actions carry theirs. Rejecting this shape only taught the model
+  // that the layer was unusable.
+  return {
+    ok: true,
+    value: Object.fromEntries(
+      Object.entries(decision).filter(([name]) => !DECISION_LEVEL_KEYS.has(name)),
+    ),
+  };
 }
 
 function placeholderIssue(value: unknown, context: MultiLayerDecisionContext): string | null {

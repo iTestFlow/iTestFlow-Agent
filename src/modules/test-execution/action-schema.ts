@@ -105,5 +105,11 @@ export const AgentDecisionSchema = z.object({
   waitText: z.string().optional(),
   actualResult: z.string().optional(),
   reason: z.string().optional(),
-});
+// UI arguments sit at the top level, so a model that puts API/DB arguments
+// there too is copying the shape it was just shown. Keep those keys instead of
+// stripping them silently, and let the action validator read them as a
+// fallback. Deliberately passthrough rather than declaring each field: adding
+// many optional typed properties to this flat schema is what previously tripped
+// the provider's silent structured-output fallback.
+}).passthrough();
 export type AgentDecision = z.infer<typeof AgentDecisionSchema>;

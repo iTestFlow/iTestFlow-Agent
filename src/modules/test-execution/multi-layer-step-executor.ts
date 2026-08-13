@@ -15,7 +15,7 @@ import { canonicalJson } from "@/modules/shared/canonical-json";
 import { redactExactValuesDeep } from "@/modules/shared/sensitive-data";
 import type { DiscoveredDatabaseObject } from "@/modules/integrations/database-automation/database-executor.port";
 
-import { AgentDecisionSchema, type AgentAction, type AgentActionType, type LayerHint } from "./action-schema";
+import { AGENT_ACTION_TYPES, AgentDecisionSchema, type AgentAction, type AgentActionType, type LayerHint } from "./action-schema";
 import { CaseCaptureStore } from "./case-capture-store";
 import { boundedDatabaseObjectManifest } from "./database-object-manifest";
 import {
@@ -193,6 +193,13 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
 
   // The step context is constant for the whole loop — rank the capability
   // manifest once per step, not once per model call.
+  // A rejected proposal belongs to the layer the step is working in.
+  const rejectionLayer: ExecutionLayer = configuredLayers.has(input.layerHint as ExecutionLayer)
+    ? input.layerHint as ExecutionLayer
+    : configuredLayers.size === 1
+      ? [...configuredLayers][0]
+      : "ui";
+
   const capabilityManifestLines = boundedCapabilityManifest(
     input.capabilities,
     `${input.caseTitle} ${input.instruction} ${input.expectedResult}`,
@@ -277,7 +284,7 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
     if (validated.kind === "blocked") return finish("blocked_prerequisite", iteration, { reason: validated.reason });
     if (validated.kind === "invalid") {
       invalidCount += 1;
-      transcript.push({ layer: inferredLayer(raw), actionType: "rejected", description: "Proposed action rejected", result: "rejected", detail: validated.feedback });
+      transcript.push({ layer: inferredLayer(raw, rejectionLayer), actionType: "rejected", description: "Proposed action rejected", result: "rejected", detail: validated.feedback });
       if (invalidCount >= MAX_CONSECUTIVE_INVALID) return finish("needs_review", iteration, { reason: validated.feedback });
       feedback = validated.feedback;
       continue;
@@ -873,13 +880,18 @@ function persistenceErrorCategory(observation: LayerRuntimeObservation):
   return observation.status === "ok" ? undefined : "assertion";
 }
 
-function inferredLayer(raw: unknown): ExecutionLayer {
+/**
+ * Layer to file a rejected proposal under. An unrecognized action type says
+ * nothing about the layer, so it belongs to the step's own layer rather than
+ * being reported as a UI action the agent never attempted.
+ */
+function inferredLayer(raw: unknown, fallback: ExecutionLayer): ExecutionLayer {
   const actionType = raw && typeof raw === "object" ? (raw as Record<string, unknown>).actionType : null;
-  return typeof actionType === "string" && actionType.startsWith("api_")
-    ? "api"
-    : typeof actionType === "string" && actionType.startsWith("db_")
-      ? "db"
-      : "ui";
+  if (typeof actionType !== "string") return fallback;
+  if (actionType.startsWith("api_")) return "api";
+  if (actionType.startsWith("db_")) return "db";
+  if (actionType.startsWith("ui_") || (AGENT_ACTION_TYPES as readonly string[]).includes(actionType)) return "ui";
+  return fallback;
 }
 
 function scrubObservationData(data: unknown, scrub: Scrubber): unknown {
