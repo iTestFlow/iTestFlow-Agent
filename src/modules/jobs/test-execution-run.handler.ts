@@ -242,6 +242,7 @@ export async function runTestExecutionRunJob(
       testUsers: buildUserRoster(env, bundle.secrets),
       executionNotes: env.executionNotes,
       runNotes: env.runNotes,
+      apiBaseUrl: env.api?.baseUrl ?? null,
       allowedOrigin: env.allowedOrigin,
       legacyPolicy,
       databaseObjects: databaseAccess.objects,
@@ -383,6 +384,8 @@ type AgentContext = {
   executionNotes: string;
   /** Per-run guidance frozen at approval; wins over environment notes. */
   runNotes: string;
+  /** Lets a same-origin absolute URL in a step resolve to its path. */
+  apiBaseUrl: string | null;
   allowedOrigin: string;
   /** Present only for runs frozen before intent-v1 (see legacyExecutionPolicyFor). */
   legacyPolicy?: LegacyExecutionPolicy;
@@ -415,12 +418,10 @@ function explicitApiRequestsFor(
   agent: AgentContext,
   planStep: { instruction: string; expectedResult: string },
 ): Set<string> {
-  const requests = extractExplicitApiRequests(
-    planStep.instruction,
-    planStep.expectedResult,
-    agent.executionNotes,
-    agent.runNotes,
-  );
+  const requests = extractExplicitApiRequests({
+    sources: [planStep.instruction, planStep.expectedResult, agent.executionNotes, agent.runNotes],
+    apiBaseUrl: agent.apiBaseUrl,
+  });
   return agent.legacyPolicy ? readOnlyExplicitApiRequests(requests) : requests;
 }
 
