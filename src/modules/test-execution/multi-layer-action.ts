@@ -248,8 +248,16 @@ export function validateMultiLayerDecision(
     if ((args.data.method === "GET" || args.data.method === "HEAD") && args.data.body !== undefined) {
       return invalid("GET and HEAD requests do not take a body.");
     }
-    if (!matchesAllowedRequest(args.data.method, args.data.path, args.data.query, context.allowedApiRequests)) {
-      return invalid("The API operation could not be identified. Add a Swagger/OpenAPI URL or mention the HTTP method and path in the test step.");
+    // Approving a run authorizes the actions its steps require against the
+    // configured target, so an endpoint the agent worked out from the step is
+    // allowed: the wire still confines every request to the API origin and
+    // base path, strips environment-owned headers, persists mutations before
+    // dispatch, and never blindly retries an uncertain one. Legacy-intent runs
+    // are the exception — they keep the read-only, explicitly-named surface
+    // they were originally approved with.
+    if (context.legacyPolicy
+      && !matchesAllowedRequest(args.data.method, args.data.path, args.data.query, context.allowedApiRequests)) {
+      return invalid("This run may only call API operations named in its frozen steps. Re-approve the run to use the current model.");
     }
     const forbidden = Object.keys(args.data.headers).find(isForbiddenAdHocHeader);
     if (forbidden) return invalid(`Header "${forbidden}" is environment-owned or unsafe.`);

@@ -74,15 +74,14 @@ describe("validateMultiLayerDecision", () => {
       decision: "act",
       actionType: "api_request",
       argumentsJson: JSON.stringify({ method: "GET", path: "/orders/42", query: { full: false, admin: true } }),
-    }, context()).kind).toBe("invalid");
+    }, context()).kind).toBe("action");
+    // Approval authorizes the work the step needs against the configured
+    // target, so a path the step did not spell out is no longer refused.
     expect(validateMultiLayerDecision({
       decision: "act",
       actionType: "api_request",
-      argumentsJson: JSON.stringify({ method: "GET", path: "/admin" }),
-    }, context())).toEqual({
-      kind: "invalid",
-      feedback: "The API operation could not be identified. Add a Swagger/OpenAPI URL or mention the HTTP method and path in the test step.",
-    });
+      argumentsJson: JSON.stringify({ method: "GET", path: "/booking" }),
+    }, context()).kind).toBe("action");
     expect(validateMultiLayerDecision({
       decision: "act",
       actionType: "api_request",
@@ -113,10 +112,10 @@ describe("validateMultiLayerDecision", () => {
       decision: "act",
       actionType: "api_request",
       argumentsJson: JSON.stringify({ method: "POST", path: "/orders" }),
-    }, context({ allowedApiRequests: new Set(["GET /orders"]) }))).toEqual({
-      kind: "invalid",
-      feedback: "The API operation could not be identified. Add a Swagger/OpenAPI URL or mention the HTTP method and path in the test step.",
-    });
+    }, context({
+      allowedApiRequests: new Set(["GET /orders"]),
+      legacyPolicy: { apiMutationsEnabled: true, databaseDmlEnabled: true },
+    })).kind).toBe("invalid");
     expect(validateMultiLayerDecision({
       decision: "act",
       actionType: "api_request",
@@ -273,7 +272,10 @@ describe("validateMultiLayerDecision", () => {
       decision: "act",
       actionType: "api_request",
       argumentsJson: JSON.stringify({ method: "GET", path: "/orders/42?full=true", query: { ignored: null } }),
-    }, context({ allowedApiRequests: new Set(["GET http://["]) })).kind).toBe("invalid");
+    }, context({
+      allowedApiRequests: new Set(["GET http://["]),
+      legacyPolicy: { apiMutationsEnabled: false, databaseDmlEnabled: false },
+    })).kind).toBe("invalid");
     expect(validateMultiLayerDecision({
       decision: "act",
       actionType: "api_execute_operation",
@@ -500,5 +502,39 @@ describe("validateMultiLayerDecision", () => {
     }, context({ allowedApiRequests: new Set(["POST /createAccount"]) }));
 
     expect(result).toMatchObject({ kind: "invalid" });
+  });
+
+  it("lets an intent-v1 run call an endpoint the step only described", () => {
+    // "get booking ids" against a booking API means GET /booking. Approval
+    // authorizes the work the step needs; the wire still confines it to the
+    // configured origin and base path.
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({ method: "GET", path: "/booking" }),
+    }, context({ allowedApiRequests: new Set() }));
+
+    expect(result).toMatchObject({ kind: "action", action: { type: "api_request" } });
+  });
+
+  it("keeps a legacy frozen run to the endpoints it was approved with", () => {
+    const legacy = context({
+      allowedApiRequests: new Set(["GET /orders"]),
+      legacyPolicy: { apiMutationsEnabled: true, databaseDmlEnabled: true },
+    });
+
+    expect(validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({ method: "GET", path: "/orders" }),
+    }, legacy).kind).toBe("action");
+    expect(validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({ method: "GET", path: "/booking" }),
+    }, legacy)).toMatchObject({
+      kind: "invalid",
+      feedback: expect.stringContaining("only call API operations named in its frozen steps"),
+    });
   });
 });

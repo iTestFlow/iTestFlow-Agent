@@ -1161,7 +1161,7 @@ describeDb("test-execution run handler (agentic)", () => {
     const step = await stepObservation(runId);
     expect(step?.observation_json.actionsTaken[0]).toMatchObject({
       result: "rejected",
-      detail: expect.stringContaining("could not be identified"),
+      detail: expect.stringContaining("only call API operations named in its frozen steps"),
     });
   });
 

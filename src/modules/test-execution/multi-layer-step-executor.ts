@@ -542,7 +542,7 @@ function buildMultiLayerPrompt(
     `Layer hint: ${input.layerHint}`,
     `Configured layers: ${[...configuredLayers].join(", ")}`,
     input.allowedOrigin ? `UI allowed origin: ${input.allowedOrigin}` : "",
-    `Explicit API requests from the frozen step or notes: ${[...input.allowedApiRequests].join(", ") || "(none)"}`,
+    `API endpoints named by this step or the notes (prefer these): ${[...input.allowedApiRequests].join(", ") || "(none)"}`,
     "## Approved operation capabilities",
     capabilityLines.length ? capabilityLines.join("\n") : "(none)",
     `Available agent-value secrets: ${input.secretNames.map((name) => input.secretTitles?.get(name) ? `${name} (${input.secretTitles.get(name)})` : name).join(", ") || "(none)"}`,
