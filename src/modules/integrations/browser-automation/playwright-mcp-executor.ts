@@ -103,10 +103,19 @@ export class PlaywrightMcpExecutor implements BrowserExecutor {
 
     const initial = await this.callTool("browser_navigate", { url: config.initialUrl });
     if (initial.isError) {
-      await this.dispose();
-      throw new BrowserExecutorError(
-        `Could not open the environment's initial URL: ${this.scrub(initial.text).slice(0, 500)}`,
-      );
+      // Some real-world applications keep a parser-blocking resource open
+      // indefinitely. Playwright MCP waits for DOMContentLoaded, so it reports
+      // a navigation timeout even though the browser has rendered a usable page
+      // (and the following snapshot can interact with it). Keep the timeout for
+      // genuinely unavailable pages, but recover when a fresh snapshot proves
+      // the current document is on the configured, permitted origin.
+      const recovered = await this.recoverUsableInitialPage(initial.text);
+      if (!recovered) {
+        await this.dispose();
+        throw new BrowserExecutorError(
+          `Could not open the environment's initial URL: ${this.scrub(initial.text).slice(0, 500)}`,
+        );
+      }
     }
   }
 
@@ -319,6 +328,24 @@ export class PlaywrightMcpExecutor implements BrowserExecutor {
     if (urlMatch) this.lastKnownUrl = urlMatch[1].trim();
 
     return { text, isError: response.isError === true, images };
+  }
+
+  /**
+   * A timeout is recoverable only for the startup navigation, and only after
+   * the browser itself confirms it has a page at the environment's origin.
+   * This deliberately does not soften action/navigation failures later in a
+   * run, where a timeout is evidence that the requested step did not finish.
+   */
+  private async recoverUsableInitialPage(navigationError: string): Promise<boolean> {
+    if (!/timeout/i.test(navigationError)) return false;
+
+    try {
+      const snapshot = await this.takeSnapshot();
+      if (!snapshot.text.trim() || !snapshot.url) return false;
+      return new URL(snapshot.url).origin === this.allowedOrigin;
+    } catch {
+      return false;
+    }
   }
 
   private ok(detail?: string): ActionExecutionResult {
