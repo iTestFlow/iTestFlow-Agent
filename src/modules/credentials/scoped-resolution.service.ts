@@ -93,6 +93,8 @@ export async function getUserAzureAdapter(
   ctx: WorkflowContext,
   project: ProjectScope,
 ): Promise<AzureDevOpsAdapter> {
+  const providerId = resolveWorkspaceProviderId(ctx.workspace);
+  if (providerId !== "azure-devops") throw new WorkflowAuthError("This workflow requires an Azure DevOps workspace.", 400);
   const pat = await resolveUserAzurePat(ctx.workspace.id, ctx.userId);
   if (!pat) {
     throw new WorkflowAuthError(
@@ -101,7 +103,7 @@ export async function getUserAzureAdapter(
     );
   }
   return createIntegrationProvider({
-    providerId: resolveWorkspaceProviderId(ctx.workspace),
+    providerId,
     settings: { organizationUrl: ctx.workspace.azureOrgUrl, personalAccessToken: pat },
     projectScope: { azureProjectId: project.azureProjectId, azureProjectName: project.azureProjectName },
     hooks: expirePatOnUnauthorized(ctx),
@@ -110,6 +112,8 @@ export async function getUserAzureAdapter(
 
 /** Org-level adapter (no project binding) for org-wide reads: list projects, profile. */
 export async function getUserAzureAdapterOrgLevel(ctx: WorkflowContext): Promise<AzureDevOpsAdapter> {
+  const providerId = resolveWorkspaceProviderId(ctx.workspace);
+  if (providerId !== "azure-devops") throw new WorkflowAuthError("This workflow requires an Azure DevOps workspace.", 400);
   const pat = await resolveUserAzurePat(ctx.workspace.id, ctx.userId);
   if (!pat) {
     throw new WorkflowAuthError(
@@ -118,7 +122,7 @@ export async function getUserAzureAdapterOrgLevel(ctx: WorkflowContext): Promise
     );
   }
   return createIntegrationProvider({
-    providerId: resolveWorkspaceProviderId(ctx.workspace),
+    providerId,
     settings: { organizationUrl: ctx.workspace.azureOrgUrl, personalAccessToken: pat },
     projectScope: undefined,
     hooks: expirePatOnUnauthorized(ctx),

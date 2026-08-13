@@ -1,6 +1,6 @@
 import type { ProviderCapability } from "./capabilities";
 
-export type ProviderId = "azure-devops";
+export type ProviderId = "azure-devops" | "jira-cloud";
 
 export type ProviderCategory = "work-management" | "test-management";
 

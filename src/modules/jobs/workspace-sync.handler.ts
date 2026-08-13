@@ -41,8 +41,9 @@ export async function runWorkspaceContextSync(job: Job): Promise<void> {
     azureProjectName: project.azure_project_name,
     azureOrganizationUrl: project.azure_organization_url,
   };
+  if (project.provider_id !== "azure-devops") throw new Error("Jira workspace sync is not configured in this worker version.");
   const adapter = createIntegrationProvider({
-    providerId: project.provider_id,
+    providerId: "azure-devops",
     settings: { organizationUrl: scope.azureOrganizationUrl, personalAccessToken: pat },
     projectScope: { azureProjectId: scope.azureProjectId, azureProjectName: scope.azureProjectName },
   });
