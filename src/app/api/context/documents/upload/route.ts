@@ -7,7 +7,12 @@ import { getDocumentStorageBackend } from "@/modules/documents/document-storage.
 import {
   createDocumentWithVersion,
 } from "@/modules/documents/project-source-documents.service";
-import { validateDocumentUpload, type ValidatedDocumentUpload } from "@/modules/documents/document-upload-validation";
+import {
+  canonicalDocumentMimeType,
+  validateDocumentUpload,
+  type ValidatedDocumentUpload,
+} from "@/modules/documents/document-upload-validation";
+import { isDocumentParseError } from "@/modules/documents/parsed-document.types";
 import {
   removeStreamedDocumentMultipart,
   streamDocumentUploadMultipart,
@@ -74,14 +79,13 @@ export async function POST(request: Request) {
       );
     }
 
-    // Validate every file before persisting any registry rows, so an invalid
-    // later file cannot leave an earlier file accepted in a nominally failed
-    // multi-file request.
-    const validated = await validateUploadedFiles(multipart.files);
     const storage = getDocumentStorageBackend();
     const uploads: Array<Record<string, unknown>> = [];
+    const failures: Array<{ clientIndex: number; fileName: string; error: string }> = [];
 
-    for (const item of validated) {
+    for (const [clientIndex, file] of multipart.files.entries()) {
+      try {
+      const item = await validateUploadedFile(file);
       const stored = await storage.put({
         workspaceId: ctx.workspace.id,
         contentSha256: item.file.contentSha256,
@@ -94,13 +98,13 @@ export async function POST(request: Request) {
         documentName,
         description: metadata.data.description,
         tags: metadata.data.tags,
-        languageHint: metadata.data.languageHint,
+        languageHint: ["png", "jpeg", "webp"].includes(item.validation.format) ? metadata.data.languageHint : undefined,
         createdBy: ctx.userId,
         version: {
           storageBackend: storage.kind,
           storageKey: stored.storageKey,
           originalFileName: safeDocumentDownloadName(item.file.originalFileName, `upload.${item.validation.format}`),
-          mimeType: canonicalMimeType(item.validation),
+          mimeType: canonicalDocumentMimeType(item.validation.format),
           fileFormat: item.validation.format,
           byteSize: item.file.byteSize,
           contentHash: item.file.contentSha256,
@@ -108,6 +112,7 @@ export async function POST(request: Request) {
           metadata: {
             detectedMimeType: item.validation.detectedMimeType ?? null,
             uploadByteLength: item.validation.byteLength,
+            ...(item.validation.image ? { image: item.validation.image } : {}),
           },
         },
       });
@@ -142,6 +147,7 @@ export async function POST(request: Request) {
         },
       });
       uploads.push({
+        clientIndex,
         documentId: result.document.id,
         versionId: result.version.id,
         jobId: queued?.job.id ?? null,
@@ -152,9 +158,16 @@ export async function POST(request: Request) {
         duplicateContentMatches: result.duplicateContentMatches,
         queueError: queueError ?? null,
       });
+      } catch (error) {
+        failures.push({
+          clientIndex,
+          fileName: file.originalFileName,
+          error: isDocumentParseError(error) ? error.message : "Upload failed for this file.",
+        });
+      }
     }
 
-    return NextResponse.json({ uploads }, { status: 202 });
+    return NextResponse.json({ uploads, failures }, { status: uploads.length ? 202 : 400 });
   } catch (error) {
     if (isDocumentIngestUnavailableError(error)) {
       return NextResponse.json(
@@ -168,30 +181,15 @@ export async function POST(request: Request) {
   }
 }
 
-async function validateUploadedFiles(files: StreamedDocumentUpload[]) {
-  const result: Array<{ file: StreamedDocumentUpload; validation: ValidatedDocumentUpload }> = [];
-  for (const file of files) {
-    const data = await readFile(file.tempPath);
-    if (data.byteLength !== file.byteSize) throw new Error("The temporary upload size changed before validation.");
-    const validation = await validateDocumentUpload({
-      fileName: file.originalFileName,
-      data,
-      declaredMimeType: file.mimeType,
-    });
-    result.push({ file, validation });
-  }
-  return result;
-}
-
-function canonicalMimeType(validation: ValidatedDocumentUpload) {
-  switch (validation.format) {
-    case "pdf": return "application/pdf";
-    case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    case "csv": return "text/csv";
-    case "txt": return "text/plain";
-    case "md": return "text/markdown";
-  }
+async function validateUploadedFile(file: StreamedDocumentUpload): Promise<{ file: StreamedDocumentUpload; validation: ValidatedDocumentUpload }> {
+  const data = await readFile(file.tempPath);
+  if (data.byteLength !== file.byteSize) throw new Error("The temporary upload size changed before validation.");
+  const validation = await validateDocumentUpload({
+    fileName: file.originalFileName,
+    data,
+    declaredMimeType: file.mimeType,
+  });
+  return { file, validation };
 }
 
 function writeDocumentAudit(input: {

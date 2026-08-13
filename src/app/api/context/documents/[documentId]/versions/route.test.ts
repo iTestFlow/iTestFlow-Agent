@@ -44,6 +44,12 @@ vi.mock("@/modules/documents/streaming-multipart-upload", () => ({
   removeStreamedDocumentMultipart: mocks.removeStreamedDocumentMultipart,
 }));
 vi.mock("@/modules/documents/document-upload-validation", () => ({
+  canonicalDocumentMimeType: (format: string) => ({
+    pdf: "application/pdf",
+    png: "image/png",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+  })[format],
   validateDocumentUpload: mocks.validateDocumentUpload,
 }));
 vi.mock("@/modules/documents/document-storage.service", () => ({
@@ -169,6 +175,32 @@ describe("POST context document version", () => {
     expect(mocks.writeAuditLog).toHaveBeenCalledWith(expect.objectContaining({
       action: "documents.version_uploaded",
       details: expect.objectContaining({ impactedKnowledgeEntries: 2 }),
+    }));
+  });
+
+  it.each([
+    ["png", "image/png"],
+    ["jpeg", "image/jpeg"],
+    ["webp", "image/webp"],
+  ] as const)("stores the canonical %s MIME type for a replacement image", async (format, mimeType) => {
+    mocks.validateDocumentUpload.mockResolvedValue({
+      format,
+      detectedMimeType: mimeType,
+      byteLength: 5,
+      image: { width: 1, height: 1 },
+    });
+
+    const response = await POST(new Request("http://localhost/api/context/documents/document-1/versions", { method: "POST" }), {
+      params: Promise.resolve({ documentId: "document-1" }),
+    });
+
+    expect(response.status).toBe(202);
+    expect(mocks.createVersionForDocument).toHaveBeenCalledWith(expect.objectContaining({
+      version: expect.objectContaining({
+        mimeType,
+        fileFormat: format,
+        metadata: expect.objectContaining({ image: { width: 1, height: 1 } }),
+      }),
     }));
   });
 

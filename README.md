@@ -157,6 +157,10 @@ Generate the encryption key with:
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
+Knowledge Hub accepts PDF, DOCX, XLSX, CSV, TXT, Markdown, PNG, JPEG, and WebP uploads. Image text extraction uses bundled English and Arabic Tesseract models entirely on the worker: it neither downloads models at runtime nor sends images to an external service. `OCR_MAX_IMAGE_PIXELS` defaults to `40000000`, `OCR_MIN_CONFIDENCE` to `50`, and `OCR_RECOGNIZE_TIMEOUT_MS` to `120000`; see [.env.example](.env.example).
+
+Each selected file is submitted and reported independently. OCR records its language, engine, confidence, region count, warning/status, and source-image bounding box. Low-confidence regions are omitted while diagnostics remain visible; an image with no accepted text completes with zero chunks. Uploaded-document chunks use the existing project-scoped storage, retrieval, permissions, citation, archive, and reprocessing paths.
+
 **Note**: Bootstrap is additive. To disable an org without losing data, use:
 ```bash
 npm run org:disable -- <orgUrlOrName>
