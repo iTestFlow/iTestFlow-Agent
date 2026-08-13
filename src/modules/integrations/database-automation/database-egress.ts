@@ -3,7 +3,7 @@ import "server-only";
 import { isIP, connect, type Socket } from "node:net";
 
 import {
-  assertTestExecutionEgressAllowed,
+  assertBoundaryEgressAllowed,
   normalizeEgressHostname,
 } from "@/modules/test-execution/egress-policy.service";
 
@@ -21,9 +21,8 @@ export async function assertDatabaseEgressAllowed(
 ): Promise<DatabaseEgressBinding> {
   const target = { host: config.host, port: config.port };
   try {
-    if (config.workspaceId) {
-      const authorization = await assertTestExecutionEgressAllowed({
-        workspaceId: config.workspaceId,
+    if (config.boundary) {
+      const authorization = await assertBoundaryEgressAllowed(config.boundary, {
         targetKind: "database",
         protocol: "tcp",
         ...target,
@@ -34,10 +33,10 @@ export async function assertDatabaseEgressAllowed(
       const authorization = await config.assertTarget(target);
       return bindingFromAuthorization(target, authorization);
     }
-    throw new Error("Workspace egress context is not configured.");
+    throw new Error("Execution boundary is not configured.");
   } catch (error) {
     throw new DatabaseExecutorError(
-      "Database target is denied by the workspace egress policy.",
+      "Database target is denied by the test-execution network policy.",
       "policy",
       false,
       error,

@@ -31,6 +31,12 @@ export function validateSql(input: {
   intent: SqlIntent;
   driver: DatabaseDriverName;
   allowedSchemas: readonly string[];
+  /**
+   * Driver-canonicalized "schema.table" keys discovered for this run. When
+   * supplied, every referenced object must be one of them — the discovered
+   * set bounds reads and mutations alike.
+   */
+  allowedTables?: ReadonlySet<string>;
   parameters: Readonly<Record<string, unknown>>;
 }): ValidatedSql {
   const sql = input.sql.trim().replace(/;\s*$/, "");
@@ -57,6 +63,13 @@ export function validateSql(input: {
     throw policy(input.intent === "select" ? "Only SELECT is allowed for read actions." : "Approved mutations may use only INSERT, UPDATE, or DELETE.");
   }
   if (input.intent === "select" && hasNonEmptyInto(ast)) throw policy("SELECT INTO is not allowed.");
+  // An UPDATE/DELETE without a WHERE clause rewrites or removes an entire
+  // table. This is a hard block: WHERE-less statements are never executed.
+  // (A WHERE clause is the tester's boundary, not a row ceiling — a run
+  // authorized to change data may legitimately match many rows.)
+  if ((type === "update" || type === "delete") && !hasWhereClause(ast)) {
+    throw policy("UPDATE and DELETE statements must include a WHERE clause.");
+  }
 
   const tables = parser.tableList(sql, { database: DIALECT[input.driver] });
   for (const table of tables) {
@@ -70,6 +83,9 @@ export function validateSql(input: {
     }
     if (!input.allowedSchemas.some((allowed) => allowed.toLowerCase() === schema.toLowerCase())) {
       throw policy(`Schema "${schema}" is outside the environment allowlist.`);
+    }
+    if (input.allowedTables && !input.allowedTables.has(`${schema.toLowerCase()}.${(tableName ?? "").toLowerCase()}`)) {
+      throw policy(`Table "${schema}.${tableName ?? "unknown"}" is not among the discovered database objects for this run.`);
     }
   }
 
@@ -105,58 +121,6 @@ export function validateSql(input: {
     command: type.toUpperCase() as ValidatedSql["command"],
     parameterNames,
   };
-}
-
-/**
- * Authoring-time gate for stored operation SQL templates. Runs the same
- * checks as validateSql minus the environment specifics — the schema
- * allowlist (environment-scoped) and parameter values (bind-time) are
- * re-verified at run time. Everything else must agree, so an operation that
- * saves can actually execute instead of becoming a dead capability.
- */
-export function validateSqlTemplate(input: {
-  sql: string;
-  intent: SqlIntent;
-  driver: DatabaseDriverName;
-  declaredParameters: ReadonlySet<string>;
-}): void {
-  const sql = input.sql.trim().replace(/;\s*$/, "");
-  if (!sql) throw policy("SQL is empty.");
-  if (sql.includes(";")) throw policy("Exactly one SQL statement is allowed.");
-  if (containsSqlComment(sql, input.driver)) throw policy("SQL comments are not allowed.");
-  if (FORBIDDEN_SQL.test(sql)) throw policy("The SQL contains a forbidden database capability.");
-
-  let ast: unknown;
-  try {
-    ast = parser.astify(sql, { database: DIALECT[input.driver] });
-  } catch (error) {
-    throw new DatabaseExecutorError("SQL could not be parsed safely for the configured driver.", "policy", false, error, "sql-parse-failed");
-  }
-  if (Array.isArray(ast)) throw policy("Exactly one SQL statement is allowed.");
-  const type = stringField(ast, "type").toLowerCase();
-  const allowedTypes = input.intent === "select" ? ["select"] : ["insert", "update", "delete"];
-  if (!allowedTypes.includes(type)) {
-    throw policy(input.intent === "select" ? "Only SELECT is allowed for read actions." : "Approved mutations may use only INSERT, UPDATE, or DELETE.");
-  }
-  if (input.intent === "select" && hasNonEmptyInto(ast)) throw policy("SELECT INTO is not allowed.");
-
-  const tables = parser.tableList(sql, { database: DIALECT[input.driver] });
-  for (const table of tables) {
-    const [, schema, tableName] = table.split("::");
-    if (!schema || schema === "null") {
-      throw policy(`Table "${tableName || "unknown"}" must be schema-qualified; CTE table references are not supported.`);
-    }
-  }
-
-  // Bounding is validated (a non-boundable select is rejected here rather
-  // than at every run); the regenerated text is discarded — runtime rebinds.
-  const finalSql = input.intent === "select" ? enforceSelectRowBound(sql, ast, input.driver) : sql;
-
-  const parameterNames = new Set(findParameterSites(finalSql, input.driver).map((site) => site.name));
-  const missing = [...parameterNames].find((name) => !input.declaredParameters.has(name));
-  if (missing) throw policy(`SQL parameter ":${missing}" is missing from the parameter schema.`);
-  const unused = [...input.declaredParameters].find((name) => !parameterNames.has(name));
-  if (unused) throw policy(`Parameter schema property "${unused}" is not used by the SQL template.`);
 }
 
 export function compileNamedParameters(
@@ -398,6 +362,13 @@ function hasNonEmptyInto(ast: unknown) {
   if (!into) return false;
   if (typeof into !== "object") return true;
   return Object.values(into as Record<string, unknown>).some((value) => value !== null && value !== undefined && value !== "");
+}
+
+/** True when an UPDATE/DELETE AST carries a WHERE node of any shape. */
+function hasWhereClause(ast: unknown) {
+  if (!ast || typeof ast !== "object") return false;
+  const where = (ast as Record<string, unknown>).where;
+  return where !== null && where !== undefined;
 }
 
 function policy(message: string) {

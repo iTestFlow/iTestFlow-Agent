@@ -12,8 +12,16 @@ import {
   type MultiLayerStepResult,
 } from "@/modules/test-execution/multi-layer-step-executor";
 import { CaseCaptureStore } from "@/modules/test-execution/case-capture-store";
-import { extractExplicitApiReadPaths } from "@/modules/test-execution/explicit-api-paths";
-import type { IntegrationCapability } from "@/modules/test-execution/multi-layer-action";
+import { extractExplicitApiRequests, readOnlyExplicitApiRequests } from "@/modules/test-execution/explicit-api-paths";
+import { deriveExecutionBoundary } from "@/modules/test-execution/execution-boundary";
+import { databaseAccessFromObjects } from "@/modules/test-execution/database-object-manifest";
+import { ensureRunDatabaseDiscovery } from "@/modules/test-execution/run-database-discovery.service";
+import type {
+  DatabaseAccess,
+  DiscoveredDatabaseObject,
+} from "@/modules/integrations/database-automation/database-executor.port";
+import { EXECUTION_POLICY_VERSION } from "@/modules/test-execution/schemas/test-execution.schemas";
+import type { IntegrationCapability, LegacyExecutionPolicy } from "@/modules/test-execution/multi-layer-action";
 import type { MultiLayerRuntime } from "@/modules/test-execution/multi-layer-runtime.port";
 import { buildOpenApiIntegrationCapabilities } from "@/modules/test-execution/openapi-contract-normalizer";
 import {
@@ -200,14 +208,27 @@ export async function runTestExecutionRunJob(
       });
     }
 
+    // The execution boundary is a pure function of the frozen environment
+    // config: derived once per run and enforced inside the guarded executors
+    // on every hop. The assertTarget options remain test-only seams.
+    const boundary = deriveExecutionBoundary(env);
+    // Legacy-intent runs keep the schema allowlist they were approved with;
+    // intent-v1 runs ask the account what it can actually see.
+    const legacyPolicy = legacyExecutionPolicyFor(env);
+    const databaseAccess = await resolveDatabaseAccess({
+      bundle,
+      env,
+      boundary,
+      legacy: Boolean(legacyPolicy),
+      signal: context.signal,
+    });
     layerRuntime = createLayerRuntime({
-      workspaceId: bundle.run.workspaceId,
+      boundary,
       env,
       browser: executor,
       connectionSecrets: bundle.connectionSecrets,
       signal: context.signal,
-      // Egress authorization happens inside the guarded executors via
-      // workspaceId; the assertTarget options remain test-only seams.
+      databaseAccess: databaseAccess.access,
     });
 
     const agentContext = {
@@ -220,7 +241,10 @@ export async function runTestExecutionRunJob(
       secretTitles: bundle.secretTitles,
       testUsers: buildUserRoster(env, bundle.secrets),
       executionNotes: env.executionNotes,
+      runNotes: env.runNotes,
       allowedOrigin: env.allowedOrigin,
+      legacyPolicy,
+      databaseObjects: databaseAccess.objects,
       scrub,
       signal: context.signal,
       llmCallBudget,
@@ -357,12 +381,77 @@ type AgentContext = {
   secretTitles: ReadonlyMap<string, string>;
   testUsers: { handle: string; username: string; passwordPlaceholder: string | null; notes: string }[];
   executionNotes: string;
+  /** Per-run guidance frozen at approval; wins over environment notes. */
+  runNotes: string;
   allowedOrigin: string;
+  /** Present only for runs frozen before intent-v1 (see legacyExecutionPolicyFor). */
+  legacyPolicy?: LegacyExecutionPolicy;
+  /** Discovered database objects offered to the agent, ranked per step. */
+  databaseObjects: DiscoveredDatabaseObject[];
   scrub: Scrubber;
   signal: AbortSignal;
   llmCallBudget: { remaining: number };
   metadata: Record<string, string | undefined>;
 };
+
+/**
+ * A frozen run without an executionPolicyVersion stamp was approved under the
+ * pre-simplification model: its mutation gates (and read-only ad-hoc API
+ * surface — see explicitApiRequestsFor) are re-enforced exactly as approved,
+ * so a queued pre-deploy run can never resume with broader authority.
+ */
+function legacyExecutionPolicyFor(
+  env: RunExecutionBundle["run"]["envConfig"],
+): LegacyExecutionPolicy | undefined {
+  if (env.executionPolicyVersion === EXECUTION_POLICY_VERSION) return undefined;
+  return {
+    apiMutationsEnabled: env.api?.mutationMode === "approved_catalog",
+    databaseDmlEnabled: env.database?.accessMode === "cataloged_dml",
+  };
+}
+
+/** Explicit "METHOD /path" tokens from the frozen step text and notes. */
+function explicitApiRequestsFor(
+  agent: AgentContext,
+  planStep: { instruction: string; expectedResult: string },
+): Set<string> {
+  const requests = extractExplicitApiRequests(
+    planStep.instruction,
+    planStep.expectedResult,
+    agent.executionNotes,
+    agent.runNotes,
+  );
+  return agent.legacyPolicy ? readOnlyExplicitApiRequests(requests) : requests;
+}
+
+/**
+ * intent-v1 runs derive their database surface from what the account can see;
+ * legacy-intent runs keep the frozen schema allowlist they were approved with
+ * (and never gain the discovered-object manifest).
+ */
+async function resolveDatabaseAccess(input: {
+  bundle: RunExecutionBundle;
+  env: RunExecutionBundle["run"]["envConfig"];
+  boundary: ReturnType<typeof deriveExecutionBoundary>;
+  legacy: boolean;
+  signal: AbortSignal;
+}): Promise<{ access?: DatabaseAccess; objects: DiscoveredDatabaseObject[] }> {
+  const database = input.env.database;
+  if (!database) return { objects: [] };
+  if (input.legacy) {
+    // Legacy runs had no per-table discovery: the schema allowlist alone
+    // bounded them, so `tables` stays unset to preserve that exact authority.
+    return { access: { schemas: database.schemas ?? [] }, objects: [] };
+  }
+  const discovery = await ensureRunDatabaseDiscovery({
+    bundle: input.bundle,
+    env: input.env,
+    boundary: input.boundary,
+    signal: input.signal,
+  });
+  if (!discovery.available) return { objects: [] };
+  return { access: databaseAccessFromObjects(discovery.objects), objects: discovery.objects };
+}
 
 /**
  * Named test users for the agent prompt: handle + username + the PASSWORD
@@ -452,15 +541,15 @@ async function runLoginStep(
     layerHint: "ui",
     priorStepsSummary,
     executionNotes: agent.executionNotes,
+    runNotes: agent.runNotes,
     secretNames: agent.secretNames,
     secretTitles: agent.secretTitles,
     testUsers: agent.testUsers,
     secrets: agent.secrets,
     allowedOrigin: agent.allowedOrigin || undefined,
-    allowedApiReadPaths: new Set<string>(),
+    allowedApiRequests: new Set<string>(),
     capabilities: [],
-    apiMutationsEnabled: false,
-    databaseDmlEnabled: false,
+    legacyPolicy: agent.legacyPolicy,
     captures: new CaseCaptureStore(),
     scrub: agent.scrub,
     signal: agent.signal,
@@ -528,19 +617,16 @@ async function executeCase(
       layerHint: planStep.layerHint,
       priorStepsSummary,
       executionNotes: agent.executionNotes,
+      runNotes: agent.runNotes,
       secretNames: agent.secretNames,
       secretTitles: agent.secretTitles,
       testUsers: agent.testUsers,
       secrets: agent.secrets,
       allowedOrigin: agent.allowedOrigin || undefined,
-      allowedApiReadPaths: extractExplicitApiReadPaths(
-        planStep.instruction,
-        planStep.expectedResult,
-        agent.executionNotes,
-      ),
+      allowedApiRequests: explicitApiRequestsFor(agent, planStep),
       capabilities: agent.capabilities,
-      apiMutationsEnabled: env.api?.mutationMode === "approved_catalog",
-      databaseDmlEnabled: env.database?.accessMode === "cataloged_dml",
+      databaseObjects: agent.databaseObjects,
+      legacyPolicy: agent.legacyPolicy,
       databaseDriver: env.database?.driver,
       captures,
       persist: {

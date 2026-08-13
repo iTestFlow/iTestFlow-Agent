@@ -51,7 +51,6 @@ export type ApiEnvironmentConfig = {
   contract: null | { kind: "revision"; revisionId: string } | { kind: "same_origin_url"; url: string };
   auth: ApiAuthConfig;
   requestTimeoutMs: number;
-  mutationMode: "disabled" | "approved_catalog";
 };
 
 export type DatabaseEnvironmentConfig = {
@@ -60,9 +59,8 @@ export type DatabaseEnvironmentConfig = {
   port: number;
   databaseName: string;
   username: string;
+  /** "disable" is legacy-only: readable and preserved, never newly selectable. */
   tlsMode: "disable" | "require" | "verify-full";
-  schemas: string[];
-  accessMode: "read_only" | "cataloged_dml";
   connectTimeoutMs: number;
   statementTimeoutMs: number;
 };
@@ -80,7 +78,6 @@ export function defaultApiEnvironment(): ApiEnvironmentConfig {
     contract: null,
     auth: { type: "none" },
     requestTimeoutMs: 30_000,
-    mutationMode: "disabled",
   };
 }
 
@@ -93,9 +90,7 @@ export function defaultDatabaseEnvironment(
     port: databaseDefaultPort(driver),
     databaseName: "",
     username: "",
-    tlsMode: "require",
-    schemas: [driver === "sqlserver" ? "dbo" : driver === "mysql" ? "" : "public"].filter(Boolean),
-    accessMode: "read_only",
+    tlsMode: "verify-full",
     connectTimeoutMs: 10_000,
     statementTimeoutMs: 30_000,
   };
@@ -218,12 +213,6 @@ export function environmentReadinessIssue(input: {
     }
     if (!Number.isInteger(input.database.port) || input.database.port < 1 || input.database.port > 65_535) {
       return "Enter a database port from 1 to 65535.";
-    }
-    if (
-      input.database.schemas.length === 0 ||
-      input.database.schemas.some((schema) => !/^[A-Za-z_][A-Za-z0-9_$]{0,127}$/.test(schema))
-    ) {
-      return "Enter at least one valid allowed database schema.";
     }
     if (
       !Number.isInteger(input.database.connectTimeoutMs) ||

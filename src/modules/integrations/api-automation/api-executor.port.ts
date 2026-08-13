@@ -1,9 +1,10 @@
 import type { ApiAuthConfig } from "@/modules/test-execution/schemas/test-execution.schemas";
+import type { ExecutionBoundary } from "@/modules/test-execution/execution-boundary";
 import type { TestExecutionEgressAuthorization } from "@/modules/test-execution/egress-policy.service";
 
 export type ApiExecutorConfig = {
-  /** Workspace whose allowlist authorizes every outbound API/OAuth hop. */
-  workspaceId?: string;
+  /** Derived execution boundary that authorizes every outbound API/OAuth hop. */
+  boundary?: ExecutionBoundary;
   baseUrl: string;
   auth: ApiAuthConfig;
   connectionSecrets: ReadonlyMap<string, string>;
@@ -11,7 +12,7 @@ export type ApiExecutorConfig = {
   signal: AbortSignal;
   maxRequestBytes?: number;
   maxResponseBytes?: number;
-  /** Test/embedding seam. Production callers should provide workspaceId. */
+  /** Test/embedding seam. Production callers should provide the boundary. */
   assertTarget?: (
     url: URL,
     kind: "api" | "oauth",

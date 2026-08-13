@@ -56,6 +56,7 @@ iTestFlow supports two bootstrap modes:
 | `WORKER_TEST_EXECUTION_CONCURRENCY` | optional | Bounded browser test-execution lane concurrency, default `1`. Each session costs roughly 300–700 MB RSS |
 | `WORKER_TEST_EXECUTION_STALE_LOCK_MS` | optional | Per-lane stale-lock override for browser runs (ms, minimum `60000`); defaults to `JOB_STALE_LOCK_MS` |
 | `EXECUTION_ARTIFACT_STORAGE_ROOT` | optional | Content-addressed root for test-execution evidence (screenshots, console logs), default `data/execution-artifacts`. Include in backups for full report fidelity; web and worker must share this filesystem |
+| `TEST_EXECUTION_PRIVATE_NETWORK_CIDRS` | optional | Comma-separated CIDRs/IPs of private networks test-execution runs may reach (e.g. `127.0.0.1/32,10.20.0.0/16`). Outbound traffic is confined to each run's configured targets; private/loopback destinations are denied unless listed here. Link-local/metadata, multicast, and reserved addresses are never allowed |
 | `RATE_LIMIT_BACKEND` | optional | `postgres` (shared multi-replica) or `memory` (per-process). Defaults to `postgres` when `NODE_ENV=production`, else `memory` |
 | `RATE_LIMIT_TRUSTED_PROXY_HOPS` | optional | Reverse proxies in front of the app; login throttling reads the client IP this many hops from the right of `X-Forwarded-For`. Default `0` |
 | `PROJECT_CONTEXT_TOP_K` | optional | Default RAG retrieval breadth, default `8`, clamped by app code |

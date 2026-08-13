@@ -10,21 +10,31 @@ import type { BrowserExecutor } from "@/modules/integrations/browser-automation/
 import { createDatabaseExecutor } from "@/modules/integrations/database-automation/database-executor.factory";
 import {
   DatabaseExecutorError,
+  type DatabaseAccess,
   type DatabaseExecutionRequest,
   type DatabaseExecutor,
 } from "@/modules/integrations/database-automation/database-executor.port";
 
 import type { EnvConfig } from "./run-persistence.service";
 import { configuredEnvironmentLayers } from "./environment-layers";
+import type { ExecutionBoundary } from "./execution-boundary";
+import { DATABASE_DISCOVERY_UNAVAILABLE_MESSAGE } from "./run-database-discovery.service";
 import type { MultiLayerAction } from "./multi-layer-action";
 import type { LayerRuntimeObservation, MultiLayerRuntime } from "./multi-layer-runtime.port";
 
 export type TestExecutionLayerRuntimeOptions = {
-  workspaceId: string;
+  /** Derived once per run by the caller; authorizes every API/OAuth/DB hop. */
+  boundary: ExecutionBoundary;
   env: EnvConfig;
   browser: BrowserExecutor | null;
   connectionSecrets: ReadonlyMap<string, string>;
   signal: AbortSignal;
+  /**
+   * Objects the run's database account was discovered to have. Absent means
+   * discovery failed or was not run: the DB layer reports a prerequisite block
+   * while UI/API steps continue normally.
+   */
+  databaseAccess?: DatabaseAccess;
   assertApiTarget?: (url: URL, kind: "api" | "oauth") => Promise<void>;
   assertDatabaseTarget?: (input: { host: string; port: number }) => Promise<void>;
   apiFactory?: () => ApiExecutor;
@@ -61,18 +71,32 @@ export class TestExecutionLayerRuntime implements MultiLayerRuntime {
         path: action.arguments.path,
         query: action.arguments.query,
         headers: action.arguments.headers,
+        // Ad-hoc bodies are always JSON; the executor sets Content-Type.
+        ...(action.arguments.body === undefined
+          ? {}
+          : { body: action.arguments.body, contentType: "application/json" as const }),
       }));
     }
     if (action.type === "api_execute_operation") {
       // Rendering happens inside executeApi's try: a template/parameter error
       // is a normal blocked/failed observation, not a whole-step infra error.
-      return this.executeApi(() => renderApiOperation(action.capability.definition, action.arguments.parameters));
+      return this.executeApi(() => {
+        const request = renderApiOperation(action.capability.definition, action.arguments.parameters);
+        // v2 contract bodies ride a dedicated argument channel (validated
+        // against the pinned body schema) — never the parameter map.
+        return action.arguments.body === undefined
+          ? request
+          : { ...request, body: action.arguments.body };
+      });
     }
     if (action.type === "db_schema") {
       return this.executeDatabase(() => ({ kind: "schema", tablePattern: action.arguments.tablePattern }));
     }
     if (action.type === "db_select") {
       return this.executeDatabase(() => ({ kind: "select", sql: action.arguments.sql, parameters: action.arguments.parameters }));
+    }
+    if (action.type === "db_mutate") {
+      return this.executeDatabase(() => ({ kind: "mutation", sql: action.arguments.sql, parameters: action.arguments.parameters }));
     }
     return this.executeDatabase(() => ({
       kind: action.capability.safetyClass === "mutation" ? "mutation" : "select",
@@ -217,7 +241,7 @@ export class TestExecutionLayerRuntime implements MultiLayerRuntime {
     const config = this.options.env.api;
     if (!config) throw new ApiExecutorError("API is not configured.", "prerequisite");
     this.api = this.options.apiFactory?.() ?? new GuardedApiExecutor({
-      workspaceId: this.options.workspaceId,
+      boundary: this.options.boundary,
       baseUrl: config.baseUrl,
       auth: config.auth,
       connectionSecrets: this.options.connectionSecrets,
@@ -232,15 +256,21 @@ export class TestExecutionLayerRuntime implements MultiLayerRuntime {
     if (this.database) return this.database;
     const config = this.options.env.database;
     if (!config) throw new DatabaseExecutorError("Database is not configured.", "prerequisite");
+    // Discovery failure disables only the DB layer — UI/API steps proceed.
+    if (!this.options.databaseAccess) {
+      throw new DatabaseExecutorError(DATABASE_DISCOVERY_UNAVAILABLE_MESSAGE, "prerequisite", false, undefined, "database-discovery-unavailable");
+    }
     await this.options.assertDatabaseTarget?.({ host: config.host, port: config.port });
     const password = this.options.connectionSecrets.get("db.password");
     if (!password) throw new DatabaseExecutorError("Database password is not configured.", "prerequisite");
-    this.database = this.options.databaseFactory?.() ?? createDatabaseExecutor({
+    const database = this.options.databaseFactory?.() ?? createDatabaseExecutor({
       ...config,
-      workspaceId: this.options.workspaceId,
+      boundary: this.options.boundary,
       password,
       signal: this.options.signal,
     });
+    database.setDatabaseAccess(this.options.databaseAccess);
+    this.database = database;
     return this.database;
   }
 }

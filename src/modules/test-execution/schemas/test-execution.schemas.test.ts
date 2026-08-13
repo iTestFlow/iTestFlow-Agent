@@ -5,7 +5,6 @@ import {
   EnvironmentCreateSchema,
   RunEnvironmentSelectionSchema,
   SecretInputSchema,
-  WorkspaceEgressRuleInputSchema,
 } from "./test-execution.schemas";
 
 describe("test execution environment schemas", () => {
@@ -141,26 +140,48 @@ describe("test execution environment schemas", () => {
     expect(result.success).toBe(false);
   });
 
-  it("validates egress port ranges", () => {
-    expect(
-      WorkspaceEgressRuleInputSchema.safeParse({
-        name: "QA API",
-        targetKind: "api",
-        protocol: "https",
-        hostPattern: "api.example.com",
-        portFrom: 443,
-        portTo: 443,
-      }).success,
-    ).toBe(true);
-    expect(
-      WorkspaceEgressRuleInputSchema.safeParse({
-        name: "Invalid",
-        targetKind: "database",
-        protocol: "tcp",
-        hostPattern: "db.example.com",
-        portFrom: 6000,
-        portTo: 5000,
-      }).success,
-    ).toBe(false);
+  it("strips deprecated authorization fields instead of rejecting legacy inputs", () => {
+    const parsed = EnvironmentConfigInputSchema.parse({
+      name: "Legacy",
+      api: {
+        baseUrl: "https://api.example.com/v1",
+        mutationMode: "approved_catalog",
+      },
+      database: {
+        driver: "postgres",
+        host: "db.internal.example",
+        port: 5432,
+        databaseName: "qa",
+        username: "itestflow",
+        schemas: ["public"],
+        accessMode: "cataloged_dml",
+        tlsMode: "require",
+      },
+    });
+
+    expect(parsed.api).not.toHaveProperty("mutationMode");
+    expect(parsed.database).not.toHaveProperty("accessMode");
+    expect(parsed.database?.tlsMode).toBe("require");
+  });
+
+  it("verifies TLS by default and still reads the legacy disable mode", () => {
+    const database = {
+      driver: "postgres" as const,
+      host: "db.internal.example",
+      port: 5432,
+      databaseName: "qa",
+      username: "itestflow",
+    };
+
+    // A database target configured today verifies the server certificate.
+    const fresh = EnvironmentConfigInputSchema.parse({ name: "Fresh", database });
+    expect(fresh.database?.tlsMode).toBe("verify-full");
+
+    // "disable" survives only as a compatibility read for legacy profiles.
+    const legacy = EnvironmentConfigInputSchema.parse({
+      name: "Legacy TLS",
+      database: { ...database, tlsMode: "disable" },
+    });
+    expect(legacy.database?.tlsMode).toBe("disable");
   });
 });

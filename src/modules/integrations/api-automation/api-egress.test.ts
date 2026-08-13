@@ -5,22 +5,32 @@ const egress = vi.hoisted(() => ({
 }));
 
 vi.mock("@/modules/test-execution/egress-policy.service", () => ({
-  assertTestExecutionEgressAllowed: egress.assertAllowed,
+  assertBoundaryEgressAllowed: egress.assertAllowed,
 }));
+
+import type { ExecutionBoundary } from "@/modules/test-execution/execution-boundary";
 
 import { GuardedApiExecutor } from "./guarded-api-executor";
 
-describe("GuardedApiExecutor workspace egress policy", () => {
+const boundary: ExecutionBoundary = {
+  version: "itestflow.boundary.v1",
+  targets: [
+    { kind: "api", protocol: "https", host: "api.example.test", port: 443 },
+    { kind: "api", protocol: "http", host: "api.example.test", port: 8080 },
+  ],
+};
+
+describe("GuardedApiExecutor boundary egress policy", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    egress.assertAllowed.mockResolvedValue({ ruleId: "rule-1", resolvedAddresses: ["203.0.113.20"] });
+    egress.assertAllowed.mockResolvedValue({ resolvedAddresses: ["203.0.113.20"] });
   });
 
   it("re-authorizes the concrete host and port before every redirected fetch hop", async () => {
     const events: string[] = [];
-    egress.assertAllowed.mockImplementation(async (target: { host: string }) => {
+    egress.assertAllowed.mockImplementation(async (_boundary: ExecutionBoundary, target: { host: string }) => {
       events.push(`guard:${target.host}`);
-      return { ruleId: "rule-1", resolvedAddresses: ["203.0.113.20"] };
+      return { resolvedAddresses: ["203.0.113.20"] };
     });
     const fetchMock = vi.fn(async (url: URL | RequestInfo) => {
       const target = new URL(String(url));
@@ -30,7 +40,7 @@ describe("GuardedApiExecutor workspace egress policy", () => {
         : new Response("ok", { status: 200 });
     });
     const executor = new GuardedApiExecutor({
-      workspaceId: "workspace-1",
+      boundary,
       baseUrl: "https://api.example.test/v1/",
       auth: { type: "none" },
       connectionSecrets: new Map(),
@@ -41,14 +51,13 @@ describe("GuardedApiExecutor workspace egress policy", () => {
     await executor.execute({ method: "GET", path: "orders" });
 
     expect(egress.assertAllowed).toHaveBeenCalledTimes(2);
-    expect(egress.assertAllowed).toHaveBeenNthCalledWith(1, {
-      workspaceId: "workspace-1",
+    expect(egress.assertAllowed).toHaveBeenNthCalledWith(1, boundary, {
       targetKind: "api",
       protocol: "https",
       host: "api.example.test",
       port: 443,
     });
-    expect(egress.assertAllowed).toHaveBeenNthCalledWith(2, expect.objectContaining({
+    expect(egress.assertAllowed).toHaveBeenNthCalledWith(2, boundary, expect.objectContaining({
       host: "api.example.test",
       port: 443,
     }));
@@ -60,11 +69,11 @@ describe("GuardedApiExecutor workspace egress policy", () => {
     ]);
   });
 
-  it("converts a workspace denial into a policy error before transport", async () => {
+  it("converts a boundary denial into a policy error before transport", async () => {
     egress.assertAllowed.mockRejectedValue(new Error("denied"));
     const fetchMock = vi.fn();
     const executor = new GuardedApiExecutor({
-      workspaceId: "workspace-1",
+      boundary,
       baseUrl: "http://api.example.test:8080/v1/",
       auth: { type: "none" },
       connectionSecrets: new Map(),
@@ -76,7 +85,7 @@ describe("GuardedApiExecutor workspace egress policy", () => {
       category: "policy",
       uncertainSideEffect: false,
     });
-    expect(egress.assertAllowed).toHaveBeenCalledWith(expect.objectContaining({
+    expect(egress.assertAllowed).toHaveBeenCalledWith(boundary, expect.objectContaining({
       protocol: "http",
       host: "api.example.test",
       port: 8080,
@@ -86,8 +95,8 @@ describe("GuardedApiExecutor workspace egress policy", () => {
 
   it("pins each production hop to the address returned by that authorization", async () => {
     egress.assertAllowed
-      .mockResolvedValueOnce({ ruleId: "rule-1", resolvedAddresses: ["203.0.113.20"] })
-      .mockResolvedValueOnce({ ruleId: "rule-1", resolvedAddresses: ["203.0.113.21"] });
+      .mockResolvedValueOnce({ resolvedAddresses: ["203.0.113.20"] })
+      .mockResolvedValueOnce({ resolvedAddresses: ["203.0.113.21"] });
     const pinnedRequest = vi.fn(async (url: URL, init: RequestInit, address: string) => {
       void init;
       void address;
@@ -96,7 +105,7 @@ describe("GuardedApiExecutor workspace egress policy", () => {
         : new Response("ok", { status: 200 });
     });
     const executor = new GuardedApiExecutor({
-      workspaceId: "workspace-1",
+      boundary,
       baseUrl: "https://api.example.test/v1/",
       auth: { type: "none" },
       connectionSecrets: new Map(),

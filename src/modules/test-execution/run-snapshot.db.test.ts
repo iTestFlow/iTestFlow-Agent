@@ -7,7 +7,7 @@ vi.mock("@/modules/jobs/test-execution-jobs.service", () => ({
   })),
 }));
 
-import { sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { nowIso, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import {
   cleanupFixtures,
   describeDb,
@@ -22,10 +22,6 @@ import {
   createEnvironmentProfile,
   updateEnvironmentProfile,
 } from "./environment-profile.service";
-import {
-  createIntegrationOperation,
-  transitionIntegrationOperation,
-} from "./integration-capabilities.service";
 import { loadRunForExecution, EnvConfigSchema } from "./run-persistence.service";
 import {
   createRunWithSnapshots,
@@ -73,7 +69,7 @@ const cases = [
   },
 ];
 
-function oneTimeRun(capabilityRevisionIds: string[] = []) {
+function oneTimeRun(config = apiEnvironment) {
   return createRunWithSnapshots({
     workspaceId,
     scope,
@@ -82,12 +78,11 @@ function oneTimeRun(capabilityRevisionIds: string[] = []) {
     environment: {
       profileId: null,
       profileUpdatedAt: null,
-      config: apiEnvironment,
+      config,
       oneTimeSecrets: [],
     },
     story: null,
     cases,
-    capabilityRevisionIds,
   });
 }
 
@@ -105,101 +100,63 @@ describeDb("run snapshot selection", () => {
     await sqlRun(`DELETE FROM test_environment_profiles WHERE workspace_id = @workspaceId`, {
       workspaceId,
     });
-    // Operation revisions are immutable except through their project cascade.
+    // Contract revisions are immutable except through their project cascade.
     await cleanupFixtures({ workspaceIds: [workspaceId], userIds: [userId] });
   });
 
-  it("pins only the currently effective approved operation revision", async () => {
-    const draft = await createIntegrationOperation({
-      workspaceId,
-      scope,
-      actor: userId,
-      operation: {
-        stableKey: `api.health.${uniqueTestId("key").toLowerCase()}`,
-        displayName: "Read health",
-        layer: "api",
-        sourceKind: "manual",
-        safetyClass: "read",
-        databaseDriver: null,
-        apiContractRevisionId: null,
-        parameterSchema: {},
-        definition: { method: "GET", path: "/health" },
+  it("pins the reviewed API contract revision and stamps the capability freeze marker", async () => {
+    const contractRevisionId = uniqueTestId("tacr");
+    await sqlRun(
+      `INSERT INTO test_api_contract_revisions (
+         id, workspace_id, project_id, azure_project_id, stable_key, display_name,
+         revision, source_kind, content_hash, normalized_spec_json, operation_count,
+         created_by, created_at
+       ) VALUES (
+         @id, @workspaceId, @projectId, @projectId, @stableKey, 'Orders API',
+         1, 'upload', @contentHash, '{"openapi":"3.1.0"}'::jsonb, 0, @userId, @now
+       )`,
+      {
+        id: contractRevisionId,
+        workspaceId,
+        projectId,
+        stableKey: `orders.api.${contractRevisionId.toLowerCase()}`,
+        contentHash: "a".repeat(64),
+        userId,
+        now: nowIso(),
       },
-    });
-    const approved = await transitionIntegrationOperation({
-      workspaceId,
-      scope,
-      actor: userId,
-      operationRevisionId: draft.id,
-      action: "approve",
-    });
-    const successorDraft = await transitionIntegrationOperation({
-      workspaceId,
-      scope,
-      actor: userId,
-      operationRevisionId: approved!.id,
-      action: "revise",
-      changes: { displayName: "Read health v2" },
-    });
-
-    // A draft successor does not hide the last approved revision.
-    const firstRun = await oneTimeRun([approved!.id]);
-    const firstBundle = await loadRunForExecution(firstRun.runId);
-    expect(firstBundle?.capabilities).toEqual([
-      expect.objectContaining({ id: approved!.id, revision: approved!.revision }),
-    ]);
-    await sqlRun(`DELETE FROM test_execution_runs WHERE id = @runId`, {
-      runId: firstRun.runId,
-    });
-
-    const archived = await transitionIntegrationOperation({
-      workspaceId,
-      scope,
-      actor: userId,
-      operationRevisionId: successorDraft!.id,
-      action: "archive",
-    });
-    await expect(oneTimeRun([approved!.id])).rejects.toBeInstanceOf(
-      RunCapabilityValidationError,
     );
 
-    const replacementDraft = await transitionIntegrationOperation({
-      workspaceId,
-      scope,
-      actor: userId,
-      operationRevisionId: archived!.id,
-      action: "revise",
-      changes: { displayName: "Read health replacement" },
-    });
-    const replacementApproved = await transitionIntegrationOperation({
-      workspaceId,
-      scope,
-      actor: userId,
-      operationRevisionId: replacementDraft!.id,
-      action: "approve",
-    });
-
-    await expect(oneTimeRun([approved!.id])).rejects.toBeInstanceOf(
-      RunCapabilityValidationError,
-    );
-    await expect(
-      oneTimeRun([replacementApproved!.id, replacementApproved!.id]),
-    ).rejects.toMatchObject({ reason: "duplicate_stable_key" });
-    await expect(oneTimeRun([approved!.id, replacementApproved!.id])).rejects.toMatchObject({
-      reason: "duplicate_stable_key",
-    });
-
-    const replacementRun = await oneTimeRun([replacementApproved!.id]);
-    const replacementBundle = await loadRunForExecution(replacementRun.runId);
-    expect(replacementBundle?.capabilities).toEqual([
-      expect.objectContaining({
-        id: replacementApproved!.id,
-        revision: replacementApproved!.revision,
-      }),
+    const run = await oneTimeRun(EnvConfigSchema.parse({
+      api: {
+        baseUrl: "https://api.example.com",
+        contract: { kind: "revision", revisionId: contractRevisionId },
+        auth: { type: "none" },
+      },
+    }));
+    const bundle = await loadRunForExecution(run.runId);
+    expect(bundle?.apiContracts).toEqual([
+      expect.objectContaining({ id: contractRevisionId, revision: 1, operationCount: 0 }),
     ]);
+    // Operation pinning was removed with the manual capability catalog: a new
+    // run derives its API/DB surface from the frozen environment alone.
+    expect(bundle?.capabilities).toEqual([]);
+    const frozen = await sqlGet<{ capability_snapshot_frozen_at: string | null }>(
+      `SELECT capability_snapshot_frozen_at FROM test_execution_runs WHERE id = @runId`,
+      { runId: run.runId },
+    );
+    expect(frozen?.capability_snapshot_frozen_at).toBeTruthy();
     await sqlRun(`DELETE FROM test_execution_runs WHERE id = @runId`, {
-      runId: replacementRun.runId,
+      runId: run.runId,
     });
+
+    // An unknown (or out-of-scope) contract revision rejects the run.
+    await expect(oneTimeRun(EnvConfigSchema.parse({
+      api: {
+        baseUrl: "https://api.example.com",
+        contract: { kind: "revision", revisionId: uniqueTestId("tacr_missing") },
+        auth: { type: "none" },
+      },
+    }))).rejects.toBeInstanceOf(RunCapabilityValidationError);
   });
 
   it("versions secret-only profile updates and rejects a stale reviewed snapshot", async () => {

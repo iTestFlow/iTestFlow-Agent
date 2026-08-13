@@ -19,9 +19,10 @@ import {
 } from "@/modules/shared/infrastructure/database/db";
 
 import {
-  assertTestExecutionEgressAllowed,
+  assertBoundaryEgressAllowed,
   TestExecutionEgressError,
 } from "./egress-policy.service";
+import type { ExecutionBoundary } from "./execution-boundary";
 import {
   normalizeOpenApiDocument,
   OpenApiNormalizationError,
@@ -51,7 +52,7 @@ export type FrozenOpenApiContractResult = {
 
 /** Fetch and reduce an untrusted same-origin document without persisting it. */
 export async function fetchAndNormalizeSameOriginOpenApi(input: {
-  workspaceId: string;
+  boundary: ExecutionBoundary;
   baseUrl: string;
   sourceUrl: string;
   timeoutMs?: number;
@@ -63,8 +64,7 @@ export async function fetchAndNormalizeSameOriginOpenApi(input: {
   }
   let authorizedAddress: string;
   try {
-    const authorization = await assertTestExecutionEgressAllowed({
-      workspaceId: input.workspaceId,
+    const authorization = await assertBoundaryEgressAllowed(input.boundary, {
       targetKind: "openapi",
       protocol: source.protocol === "https:" ? "https" : "http",
       host: source.hostname,
@@ -78,7 +78,7 @@ export async function fetchAndNormalizeSameOriginOpenApi(input: {
     if (error instanceof OpenApiContractImportError) throw error;
     if (error instanceof TestExecutionEgressError) {
       throw new OpenApiContractImportError(
-        "The OpenAPI URL is not allowed by the workspace egress policy.",
+        "The OpenAPI URL is not allowed by the test-execution network policy.",
         403,
       );
     }
@@ -153,6 +153,7 @@ export async function freezeSameOriginOpenApiContract(input: {
   workspaceId: string;
   scope: ProjectScope;
   actor: string;
+  boundary: ExecutionBoundary;
   baseUrl: string;
   sourceUrl: string;
   timeoutMs?: number;

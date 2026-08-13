@@ -11,8 +11,14 @@ import {
 } from "@/modules/integrations/database-automation/database-executor.port";
 
 import { TestExecutionLayerRuntime } from "./test-execution-layer-runtime";
+import type { ExecutionBoundary } from "./execution-boundary";
+import type { MultiLayerAction } from "./multi-layer-action";
 
 const signal = new AbortController().signal;
+// Executors are injected via factories in these tests, so an empty boundary suffices.
+const boundary: ExecutionBoundary = { version: "itestflow.boundary.v1", targets: [] };
+// Discovery result these tests run under: the DB layer is unavailable without one.
+const testDatabaseAccess = { schemas: ["public"], tables: new Set(["public.orders", "public.customers"]) };
 const baseEnv = {
   initialUrl: "",
   allowedOrigin: "",
@@ -26,6 +32,7 @@ const baseEnv = {
   loginMode: "session" as const,
   loggedInText: "",
   executionNotes: "",
+  runNotes: "",
   users: [],
   api: null,
   database: null,
@@ -60,7 +67,7 @@ describe("TestExecutionLayerRuntime", () => {
       dispose: vi.fn(async () => undefined),
     };
     const runtime = new TestExecutionLayerRuntime({
-      workspaceId: "ws-test",
+      boundary,
       env: { ...baseEnv, api: { baseUrl: "https://api.test/", contract: null, auth: { type: "none" }, requestTimeoutMs: 30_000, mutationMode: "disabled" } },
       browser: null, connectionSecrets: new Map(), signal, apiFactory: () => api,
     });
@@ -73,9 +80,9 @@ describe("TestExecutionLayerRuntime", () => {
   it("compiles approved API templates and database operations", async () => {
     const apiExecute = vi.fn(async () => ({ statusCode: 201, statusText: "Created", headers: {}, safeHeaders: {}, body: {}, safeBody: {}, contentType: "application/json", truncated: false, durationMs: 1, url: "https://api.test/orders/42" }));
     const dbExecute = vi.fn(async () => ({ status: "ok" as const, command: "UPDATE", rowCount: 1, columns: [], rows: [], safeRows: [], truncated: false, durationMs: 2 }));
-    const database: DatabaseExecutor = { driver: "postgres", execute: dbExecute, dispose: vi.fn(async () => undefined) };
+    const database: DatabaseExecutor = { driver: "postgres", discoverObjects: vi.fn(async () => ({ objects: [], truncated: false })), setDatabaseAccess: vi.fn(), execute: dbExecute, dispose: vi.fn(async () => undefined) };
     const runtime = new TestExecutionLayerRuntime({
-      workspaceId: "ws-test",
+      boundary,
       env: {
         ...baseEnv,
         api: { baseUrl: "https://api.test/", contract: null, auth: { type: "none" }, requestTimeoutMs: 30_000, mutationMode: "approved_catalog" },
@@ -85,6 +92,7 @@ describe("TestExecutionLayerRuntime", () => {
       connectionSecrets: new Map([["db.password", "pw"]]),
       signal,
       apiFactory: () => ({ execute: apiExecute, dispose: vi.fn(async () => undefined) }),
+      databaseAccess: testDatabaseAccess,
       databaseFactory: () => database,
     });
     await runtime.execute({
@@ -121,7 +129,7 @@ describe("TestExecutionLayerRuntime", () => {
       signal,
     });
     const runtime = new TestExecutionLayerRuntime({
-      workspaceId: "ws-test",
+      boundary,
       env: { ...baseEnv, initialUrl: "https://app.test/", allowedOrigin: "https://app.test" },
       browser,
       connectionSecrets: new Map(),
@@ -159,7 +167,7 @@ describe("TestExecutionLayerRuntime", () => {
         url: "https://api.test/missing",
       });
     const runtime = new TestExecutionLayerRuntime({
-      workspaceId: "ws-test",
+      boundary,
       env: { ...baseEnv, api: apiConfig },
       browser: null,
       connectionSecrets: new Map(),
@@ -199,13 +207,14 @@ describe("TestExecutionLayerRuntime", () => {
         durationMs: 2,
       });
     const runtime = new TestExecutionLayerRuntime({
-      workspaceId: "ws-test",
+      boundary,
       env: { ...baseEnv, database: databaseConfig },
       browser: null,
       connectionSecrets: new Map([["db.password", "pw"]]),
       signal,
       assertDatabaseTarget: vi.fn(async () => undefined),
-      databaseFactory: () => ({ driver: "postgres", execute, dispose: vi.fn(async () => undefined) }),
+      databaseAccess: testDatabaseAccess,
+      databaseFactory: () => ({ driver: "postgres", discoverObjects: vi.fn(async () => ({ objects: [], truncated: false })), setDatabaseAccess: vi.fn(), execute, dispose: vi.fn(async () => undefined) }),
     });
 
     const action = { layer: "db" as const, type: "db_select" as const, arguments: { sql: "SELECT id FROM public.orders", parameters: {}, captures: [] } };
@@ -215,9 +224,69 @@ describe("TestExecutionLayerRuntime", () => {
     expect(result.dbRows).toEqual([{ id: 1, password: "raw" }]);
   });
 
+  it("dispatches ad-hoc mutations and binds the run's discovered objects to the executor", async () => {
+    const execute = vi.fn(async () => ({
+      status: "ok" as const, command: "UPDATE", rowCount: 1, columns: [], rows: [], safeRows: [],
+      truncated: false, durationMs: 2,
+    }));
+    const setDatabaseAccess = vi.fn();
+    const runtime = new TestExecutionLayerRuntime({
+      boundary,
+      env: { ...baseEnv, database: databaseConfig },
+      browser: null,
+      connectionSecrets: new Map([["db.password", "pw"]]),
+      signal,
+      assertDatabaseTarget: vi.fn(async () => undefined),
+      databaseAccess: testDatabaseAccess,
+      databaseFactory: () => ({
+        driver: "postgres",
+        discoverObjects: vi.fn(async () => ({ objects: [], truncated: false })),
+        setDatabaseAccess,
+        execute,
+        dispose: vi.fn(async () => undefined),
+      }),
+    });
+
+    await expect(runtime.execute({
+      layer: "db",
+      type: "db_mutate",
+      arguments: { sql: "UPDATE public.orders SET status=:s WHERE id=:id", parameters: { s: "done", id: 1 }, captures: [] },
+    })).resolves.toMatchObject({ status: "ok" });
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ kind: "mutation" }));
+    // The discovered set is bound once, before any statement runs.
+    expect(setDatabaseAccess).toHaveBeenCalledWith(testDatabaseAccess);
+  });
+
+  it("blocks the database layer as a prerequisite when discovery found nothing", async () => {
+    const databaseFactory = vi.fn();
+    const runtime = new TestExecutionLayerRuntime({
+      boundary,
+      env: { ...baseEnv, database: databaseConfig },
+      browser: null,
+      connectionSecrets: new Map([["db.password", "pw"]]),
+      signal,
+      // No databaseAccess: discovery failed or was not run for this run.
+      databaseFactory: databaseFactory as never,
+    });
+
+    const actions: MultiLayerAction[] = [
+      { layer: "db", type: "db_schema", arguments: {} },
+      { layer: "db", type: "db_select", arguments: { sql: "SELECT 1", parameters: {}, captures: [] } },
+    ];
+    for (const action of actions) {
+      await expect(runtime.execute(action)).resolves.toMatchObject({
+        status: "blocked",
+        category: "prerequisite",
+        code: "database-discovery-unavailable",
+        summary: expect.stringContaining("No accessible database objects were discovered"),
+      });
+    }
+    expect(databaseFactory).not.toHaveBeenCalled();
+  });
+
   it("fails closed for missing targets, credentials, and typed database failures", async () => {
     const noTargets = new TestExecutionLayerRuntime({
-      workspaceId: "ws-test",
+      boundary,
       env: baseEnv,
       browser: null,
       connectionSecrets: new Map(),
@@ -228,7 +297,7 @@ describe("TestExecutionLayerRuntime", () => {
       .resolves.toMatchObject({ status: "blocked", category: "prerequisite" });
 
     const noPassword = new TestExecutionLayerRuntime({
-      workspaceId: "ws-test",
+      boundary,
       env: { ...baseEnv, database: databaseConfig },
       browser: null,
       connectionSecrets: new Map(),
@@ -239,15 +308,16 @@ describe("TestExecutionLayerRuntime", () => {
       .resolves.toMatchObject({ status: "blocked", category: "prerequisite" });
 
     const failedDatabase = new TestExecutionLayerRuntime({
-      workspaceId: "ws-test",
+      boundary,
       env: { ...baseEnv, database: databaseConfig },
       browser: null,
       connectionSecrets: new Map([["db.password", "pw"]]),
       signal,
       assertDatabaseTarget: vi.fn(async () => undefined),
+      databaseAccess: testDatabaseAccess,
       databaseFactory: () => ({
         driver: "postgres",
-        execute: vi.fn(async () => { throw new DatabaseExecutorError("timed out", "timeout"); }),
+        discoverObjects: vi.fn(async () => ({ objects: [], truncated: false })), setDatabaseAccess: vi.fn(), execute: vi.fn(async () => { throw new DatabaseExecutorError("timed out", "timeout"); }),
         dispose: vi.fn(async () => undefined),
       }),
     });
@@ -259,7 +329,7 @@ describe("TestExecutionLayerRuntime", () => {
     const apiDispose = vi.fn(async () => undefined);
     const dbDispose = vi.fn(async () => undefined);
     const runtime = new TestExecutionLayerRuntime({
-      workspaceId: "ws-test",
+      boundary,
       env: { ...baseEnv, api: apiConfig, database: databaseConfig },
       browser: null,
       connectionSecrets: new Map([["db.password", "pw"]]),
@@ -269,9 +339,10 @@ describe("TestExecutionLayerRuntime", () => {
         execute: vi.fn(async () => ({ statusCode: 200, statusText: "OK", headers: {}, safeHeaders: {}, body: {}, safeBody: {}, contentType: null, truncated: false, durationMs: 1, url: "https://api.test/" })),
         dispose: apiDispose,
       }),
+      databaseAccess: testDatabaseAccess,
       databaseFactory: () => ({
         driver: "postgres",
-        execute: vi.fn(async () => ({ status: "ok" as const, command: "SCHEMA", rowCount: 0, columns: [], rows: [], safeRows: [], truncated: false, durationMs: 1 })),
+        discoverObjects: vi.fn(async () => ({ objects: [], truncated: false })), setDatabaseAccess: vi.fn(), execute: vi.fn(async () => ({ status: "ok" as const, command: "SCHEMA", rowCount: 0, columns: [], rows: [], safeRows: [], truncated: false, durationMs: 1 })),
         dispose: dbDispose,
       }),
     });

@@ -3,7 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 import { MysqlDatabaseExecutor } from "./mysql-database-executor";
 import { PostgresDatabaseExecutor } from "./postgres-database-executor";
 import { SqlServerDatabaseExecutor } from "./sqlserver-database-executor";
-import type { DatabaseExecutorConfig } from "./database-executor.port";
+import type { DatabaseExecutor, DatabaseExecutorConfig } from "./database-executor.port";
+
+/**
+ * Executors bound their statements to the objects discovery reported, so these
+ * fixtures declare the one table they exercise instead of relying on the
+ * (no longer read) `config.schemas` allowlist.
+ */
+function withAccess<T extends DatabaseExecutor>(executor: T): T {
+  const schema = executor.driver === "postgres" ? "public" : executor.driver === "mysql" ? "qa" : "dbo";
+  executor.setDatabaseAccess({ schemas: [schema], tables: new Set([`${schema}.orders`]) });
+  return executor;
+}
 
 function config(
   driver: "postgres" | "mysql" | "sqlserver",
@@ -18,7 +29,6 @@ function config(
     password: "secret",
     tlsMode: "require",
     schemas: [driver === "postgres" ? "public" : driver === "mysql" ? "qa" : "dbo"],
-    accessMode: "cataloged_dml",
     connectTimeoutMs: 1_000,
     statementTimeoutMs: 1_000,
     signal,
@@ -63,7 +73,7 @@ describe("database mutation error classification", () => {
         .mockRejectedValueOnce(pgNetworkError())
         .mockResolvedValueOnce(pgResult("ROLLBACK")),
     };
-    const executor = new PostgresDatabaseExecutor(config("postgres"), (() => client) as never);
+    const executor = withAccess(new PostgresDatabaseExecutor(config("postgres"), (() => client) as never));
 
     await expect(executor.execute({
       kind: "mutation",
@@ -85,7 +95,7 @@ describe("database mutation error classification", () => {
         }))
         .mockResolvedValueOnce(pgResult("ROLLBACK")),
     };
-    const executor = new PostgresDatabaseExecutor(config("postgres"), (() => client) as never);
+    const executor = withAccess(new PostgresDatabaseExecutor(config("postgres"), (() => client) as never));
 
     await expect(executor.execute({
       kind: "mutation",
@@ -103,7 +113,7 @@ describe("database mutation error classification", () => {
         .mockRejectedValueOnce(pgServerError())
         .mockResolvedValueOnce(pgResult("ROLLBACK")),
     };
-    const executor = new PostgresDatabaseExecutor(config("postgres"), (() => client) as never);
+    const executor = withAccess(new PostgresDatabaseExecutor(config("postgres"), (() => client) as never));
 
     await expect(executor.execute({
       kind: "mutation",
@@ -116,7 +126,7 @@ describe("database mutation error classification", () => {
     const connection = mysqlConnection({
       query: vi.fn().mockRejectedValueOnce(mysqlNetworkError()),
     });
-    const executor = new MysqlDatabaseExecutor(config("mysql"), (async () => connection) as never);
+    const executor = withAccess(new MysqlDatabaseExecutor(config("mysql"), (async () => connection) as never));
 
     await expect(executor.execute({
       kind: "mutation",
@@ -130,7 +140,7 @@ describe("database mutation error classification", () => {
       query: vi.fn().mockResolvedValueOnce([{ affectedRows: 1 }, undefined]),
       commit: vi.fn().mockRejectedValueOnce(mysqlServerError()),
     });
-    const executor = new MysqlDatabaseExecutor(config("mysql"), (async () => connection) as never);
+    const executor = withAccess(new MysqlDatabaseExecutor(config("mysql"), (async () => connection) as never));
 
     await expect(executor.execute({
       kind: "mutation",
@@ -143,7 +153,7 @@ describe("database mutation error classification", () => {
     const connection = mysqlConnection({
       query: vi.fn().mockRejectedValueOnce(mysqlServerError()),
     });
-    const executor = new MysqlDatabaseExecutor(config("mysql"), (async () => connection) as never);
+    const executor = withAccess(new MysqlDatabaseExecutor(config("mysql"), (async () => connection) as never));
 
     await expect(executor.execute({
       kind: "mutation",
@@ -197,10 +207,10 @@ describe("database cancellation transaction boundary", () => {
         end: vi.fn(async () => undefined),
         query,
       };
-      const executor = new PostgresDatabaseExecutor(
+      const executor = withAccess(new PostgresDatabaseExecutor(
         config("postgres", controller.signal),
         (() => client) as never,
-      );
+      ));
 
       await expect(executor.execute({
         kind: "mutation",
@@ -234,10 +244,10 @@ describe("database cancellation transaction boundary", () => {
         commit,
         rollback,
       });
-      const executor = new MysqlDatabaseExecutor(
+      const executor = withAccess(new MysqlDatabaseExecutor(
         config("mysql", controller.signal),
         (async () => connection) as never,
-      );
+      ));
 
       await expect(executor.execute({
         kind: "mutation",
@@ -284,10 +294,10 @@ describe("database cancellation transaction boundary", () => {
         request: vi.fn(() => activeRequest),
         transaction: vi.fn(() => transaction),
       };
-      const executor = new SqlServerDatabaseExecutor(
+      const executor = withAccess(new SqlServerDatabaseExecutor(
         config("sqlserver", controller.signal),
         (() => pool) as never,
-      );
+      ));
 
       await expect(executor.execute({
         kind: "mutation",

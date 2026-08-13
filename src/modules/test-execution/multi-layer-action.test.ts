@@ -4,6 +4,7 @@ import {
   describeMultiLayerAction,
   validateCapabilityParameterSchema,
   validateCapabilityParameters,
+  validateCapabilityRequestBody,
   validateMultiLayerDecision,
   type IntegrationCapability,
   type MultiLayerAction,
@@ -35,12 +36,10 @@ function context(overrides: Record<string, unknown> = {}) {
     configuredLayers: new Set(["ui", "api", "db"] as const),
     snapshotRefs: new Set(["e1"]),
     allowedOrigin: "https://app.example.test",
-    allowedApiReadPaths: new Set(["/orders/42?full=true"]),
+    allowedApiRequests: new Set(["GET /orders/42?full=true"]),
     secretNames: ["USER_PASSWORD"],
     captureNames: ["orderId"],
     capabilities: new Map([[apiMutation.id, apiMutation], [dbMutation.id, dbMutation]]),
-    apiMutationsEnabled: false,
-    databaseDmlEnabled: false,
     databaseDriver: "postgres" as const,
     ...overrides,
   };
@@ -60,7 +59,7 @@ describe("validateMultiLayerDecision", () => {
     }, context()).kind).toBe("invalid");
   });
 
-  it("allows only exact frozen GET/HEAD paths for dynamic API reads", () => {
+  it("allows only exact frozen method+path requests for ad-hoc API calls", () => {
     expect(validateMultiLayerDecision({
       decision: "act",
       actionType: "api_request",
@@ -80,7 +79,10 @@ describe("validateMultiLayerDecision", () => {
       decision: "act",
       actionType: "api_request",
       argumentsJson: JSON.stringify({ method: "GET", path: "/admin" }),
-    }, context()).kind).toBe("invalid");
+    }, context())).toEqual({
+      kind: "invalid",
+      feedback: "The API operation could not be identified. Add a Swagger/OpenAPI URL or mention the HTTP method and path in the test step.",
+    });
     expect(validateMultiLayerDecision({
       decision: "act",
       actionType: "api_request",
@@ -93,22 +95,65 @@ describe("validateMultiLayerDecision", () => {
     }, context()).kind).toBe("invalid");
   });
 
-  it("double-gates approved mutations with the environment access mode", () => {
+  it("matches explicit mutation requests by method and rejects bodies on GET/HEAD", () => {
+    const postAllowed = context({ allowedApiRequests: new Set(["POST /orders"]) });
+    expect(validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({ method: "POST", path: "/orders" }),
+    }, postAllowed).kind).toBe("action");
+    expect(validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({ method: "POST", path: "/orders", body: { sku: "A-1", quantity: 2 } }),
+    }, postAllowed).kind).toBe("action");
+    // The method is part of the allowed-request identity: a GET grant never
+    // authorizes a POST to the same path.
+    expect(validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({ method: "POST", path: "/orders" }),
+    }, context({ allowedApiRequests: new Set(["GET /orders"]) }))).toEqual({
+      kind: "invalid",
+      feedback: "The API operation could not be identified. Add a Swagger/OpenAPI URL or mention the HTTP method and path in the test step.",
+    });
+    expect(validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({ method: "GET", path: "/orders/42", query: { full: true }, body: { nope: true } }),
+    }, context())).toEqual({ kind: "invalid", feedback: "GET and HEAD requests do not take a body." });
+  });
+
+  it("gates approved mutations only for legacy frozen runs", () => {
     const apiAction = {
       decision: "act",
       actionType: "api_execute_operation",
       argumentsJson: JSON.stringify({ operationId: apiMutation.id, parameters: { id: "{{capture:orderId}}" } }),
     };
-    expect(validateMultiLayerDecision(apiAction, context()).kind).toBe("invalid");
-    expect(validateMultiLayerDecision(apiAction, context({ apiMutationsEnabled: true })).kind).toBe("action");
-
     const dbAction = {
       decision: "act",
       actionType: "db_execute_operation",
       argumentsJson: JSON.stringify({ operationId: dbMutation.id, parameters: { id: 42, status: "ready" } }),
     };
-    expect(validateMultiLayerDecision(dbAction, context()).kind).toBe("invalid");
-    expect(validateMultiLayerDecision(dbAction, context({ databaseDmlEnabled: true })).kind).toBe("action");
+
+    // intent-v1 runs (no legacyPolicy) authorize mutations by configuring the layer.
+    expect(validateMultiLayerDecision(apiAction, context()).kind).toBe("action");
+    expect(validateMultiLayerDecision(dbAction, context()).kind).toBe("action");
+
+    // Legacy frozen runs keep their original gates.
+    const legacyDisabled = { legacyPolicy: { apiMutationsEnabled: false, databaseDmlEnabled: false } };
+    expect(validateMultiLayerDecision(apiAction, context(legacyDisabled))).toEqual({
+      kind: "invalid",
+      feedback: "API mutations are disabled for this environment.",
+    });
+    expect(validateMultiLayerDecision(dbAction, context(legacyDisabled))).toEqual({
+      kind: "invalid",
+      feedback: "Database DML is disabled for this environment.",
+    });
+
+    const legacyEnabled = { legacyPolicy: { apiMutationsEnabled: true, databaseDmlEnabled: true } };
+    expect(validateMultiLayerDecision(apiAction, context(legacyEnabled)).kind).toBe("action");
+    expect(validateMultiLayerDecision(dbAction, context(legacyEnabled)).kind).toBe("action");
   });
 
   it("enforces hard single-layer hints and known placeholder names", () => {
@@ -138,6 +183,71 @@ describe("validateMultiLayerDecision", () => {
     }, context()).kind).toBe("action");
   });
 
+  it("accepts ad-hoc database mutations for intent-v1 runs only", () => {
+    const mutate = {
+      decision: "act",
+      actionType: "db_mutate",
+      argumentsJson: JSON.stringify({
+        sql: "UPDATE orders SET status = :status WHERE id = :id",
+        parameters: { id: 42, status: "ready" },
+      }),
+    };
+
+    // intent-v1 runs (no legacyPolicy) authorize ad-hoc DML by configuring the db layer.
+    expect(validateMultiLayerDecision(mutate, context())).toEqual({
+      kind: "action",
+      action: {
+        layer: "db",
+        type: "db_mutate",
+        arguments: {
+          sql: "UPDATE orders SET status = :status WHERE id = :id",
+          parameters: { id: 42, status: "ready" },
+          captures: [],
+        },
+      },
+    });
+
+    // Legacy-intent frozen runs never had an ad-hoc DML path at all.
+    for (const databaseDmlEnabled of [false, true]) {
+      expect(validateMultiLayerDecision(mutate, context({
+        legacyPolicy: { apiMutationsEnabled: true, databaseDmlEnabled },
+      }))).toEqual({
+        kind: "invalid",
+        feedback: expect.stringContaining("not enabled for this run"),
+      });
+    }
+  });
+
+  it("holds ad-hoc database mutations to the db layer policy and known placeholders", () => {
+    const mutate = (sql: string, parameters: Record<string, unknown> = {}) => ({
+      decision: "act",
+      actionType: "db_mutate",
+      argumentsJson: JSON.stringify({ sql, parameters }),
+    });
+    const statement = "UPDATE orders SET status = :status WHERE id = :id";
+
+    expect(validateMultiLayerDecision(mutate(statement), context({
+      configuredLayers: new Set(["ui", "api"]),
+    })).kind).toBe("invalid");
+    expect(validateMultiLayerDecision(mutate(statement), context({ layerHint: "ui" })).kind).toBe("invalid");
+    expect(validateMultiLayerDecision(mutate(statement), context({ layerHint: "api" })).kind).toBe("invalid");
+
+    // Same placeholder rule as db_select: only frozen secrets and captures
+    // already taken in this case may appear anywhere in the statement.
+    expect(validateMultiLayerDecision(
+      mutate("UPDATE users SET token = '{{secret:UNKNOWN}}' WHERE id = :id", { id: 1 }),
+      context(),
+    ).kind).toBe("invalid");
+    expect(validateMultiLayerDecision(
+      mutate("DELETE FROM orders WHERE id = '{{capture:missing}}'"),
+      context(),
+    ).kind).toBe("invalid");
+    expect(validateMultiLayerDecision(
+      mutate("DELETE FROM orders WHERE id = '{{capture:orderId}}'"),
+      context(),
+    ).kind).toBe("action");
+  });
+
   it("validates verdicts, blockers, snapshots, and malformed envelopes", () => {
     expect(validateMultiLayerDecision({ decision: "step_passed", actualResult: "Observed HTTP 200" }, context()))
       .toEqual({ kind: "step_passed", actualResult: "Observed HTTP 200" });
@@ -163,7 +273,7 @@ describe("validateMultiLayerDecision", () => {
       decision: "act",
       actionType: "api_request",
       argumentsJson: JSON.stringify({ method: "GET", path: "/orders/42?full=true", query: { ignored: null } }),
-    }, context({ allowedApiReadPaths: new Set(["http://["]) })).kind).toBe("invalid");
+    }, context({ allowedApiRequests: new Set(["GET http://["]) })).kind).toBe("invalid");
     expect(validateMultiLayerDecision({
       decision: "act",
       actionType: "api_execute_operation",
@@ -173,7 +283,7 @@ describe("validateMultiLayerDecision", () => {
       decision: "act",
       actionType: "db_execute_operation",
       argumentsJson: JSON.stringify({ operationId: dbMutation.id }),
-    }, context({ databaseDmlEnabled: true, databaseDriver: "mysql" })).kind).toBe("invalid");
+    }, context({ databaseDriver: "mysql" })).kind).toBe("invalid");
     expect(validateMultiLayerDecision({
       decision: "act",
       actionType: "db_schema",
@@ -199,6 +309,91 @@ describe("validateMultiLayerDecision", () => {
     const malformed = { ...capability, parameterSchema: { type: 42 } };
     expect(validateCapabilityParameterSchema(malformed.parameterSchema)).toContain("not a valid JSON Schema");
     expect(validateCapabilityParameters(malformed, {})).toContain("invalid pinned parameter schema");
+  });
+
+  it("enforces contract request-body rules for operations", () => {
+    const bodyRequired: IntegrationCapability = {
+      ...apiMutation,
+      id: "api-create-order-v2",
+      name: "createOrderV2",
+      requestBodySchema: { type: "object" },
+      requestBodyRequired: true,
+    };
+    const bodyOptional: IntegrationCapability = {
+      ...apiMutation,
+      id: "api-patch-order-v2",
+      name: "patchOrderV2",
+      requestBodySchema: { type: "object" },
+      requestBodyRequired: false,
+    };
+    const bodyContext = context({
+      capabilities: new Map([
+        [apiMutation.id, apiMutation],
+        [dbMutation.id, dbMutation],
+        [bodyRequired.id, bodyRequired],
+        [bodyOptional.id, bodyOptional],
+      ]),
+    });
+
+    // A body for an API operation whose contract declares none.
+    expect(validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_execute_operation",
+      argumentsJson: JSON.stringify({ operationId: apiMutation.id, body: { any: 1 } }),
+    }, bodyContext)).toEqual({
+      kind: "invalid",
+      feedback: 'Operation "createOrder" does not take a request body.',
+    });
+    // Database operations never take request bodies.
+    expect(validateMultiLayerDecision({
+      decision: "act",
+      actionType: "db_execute_operation",
+      argumentsJson: JSON.stringify({ operationId: dbMutation.id, parameters: { id: 42, status: "ready" }, body: { any: 1 } }),
+    }, bodyContext)).toEqual({
+      kind: "invalid",
+      feedback: 'Operation "markOrder" does not take a request body.',
+    });
+    // A required contract body must be supplied.
+    expect(validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_execute_operation",
+      argumentsJson: JSON.stringify({ operationId: bodyRequired.id }),
+    }, bodyContext)).toEqual({
+      kind: "invalid",
+      feedback: 'Operation "createOrderV2" requires a JSON request body.',
+    });
+    expect(validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_execute_operation",
+      argumentsJson: JSON.stringify({ operationId: bodyRequired.id, body: { sku: "A-1" } }),
+    }, bodyContext).kind).toBe("action");
+    // An optional contract body may be omitted or supplied.
+    expect(validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_execute_operation",
+      argumentsJson: JSON.stringify({ operationId: bodyOptional.id }),
+    }, bodyContext).kind).toBe("action");
+    expect(validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_execute_operation",
+      argumentsJson: JSON.stringify({ operationId: bodyOptional.id, body: { status: "ready" } }),
+    }, bodyContext).kind).toBe("action");
+  });
+
+  it("validates operation request bodies against the pinned contract schema", () => {
+    const capability: IntegrationCapability = {
+      ...apiMutation,
+      requestBodySchema: {
+        type: "object",
+        properties: { quantity: { type: "integer" } },
+        required: ["quantity"],
+        additionalProperties: false,
+      },
+      requestBodyRequired: true,
+    };
+    expect(validateCapabilityRequestBody(capability, { quantity: 3 })).toBeNull();
+    expect(validateCapabilityRequestBody(capability, { quantity: "three" }))
+      .toContain("request body does not match");
   });
 
   it("describes every durable action without including argument values", () => {
@@ -229,6 +424,11 @@ describe("validateMultiLayerDecision", () => {
       },
       {
         layer: "db",
+        type: "db_mutate",
+        arguments: { sql: "DELETE FROM orders WHERE id = :id", parameters: { id: 1 }, captures: [] },
+      },
+      {
+        layer: "db",
         type: "db_execute_operation",
         capability: dbMutation,
         arguments: { operationId: dbMutation.id, parameters: {}, captures: [] },
@@ -243,6 +443,7 @@ describe("validateMultiLayerDecision", () => {
       "Inspect database schema",
       "Inspect database schema for orders",
       "Execute parameterized database SELECT",
+      "Execute parameterized database mutation",
       "Database operation markOrder",
     ]);
   });

@@ -98,9 +98,16 @@ describe("assembleRunDetail", () => {
       hasApi: true,
       api: { authType: "bearer" },
       hasDatabase: true,
-      database: { driver: "postgres", schemaCount: 1 },
+      database: { driver: "postgres" },
       testUserCount: 1,
     });
+    // Legacy authorization fields never reach report readers, even when the
+    // frozen config carries them.
+    const envConfig = detail?.run.envConfig as { api: Record<string, unknown>; database: Record<string, unknown> };
+    expect(envConfig.api).not.toHaveProperty("mutationMode");
+    expect(envConfig.database).not.toHaveProperty("accessMode");
+    expect(envConfig.database).not.toHaveProperty("tlsMode");
+    expect(envConfig.database).not.toHaveProperty("schemaCount");
     const serialized = JSON.stringify(detail);
     expect(serialized).not.toContain("private-api.example.com");
     expect(serialized).not.toContain("db.private.internal");

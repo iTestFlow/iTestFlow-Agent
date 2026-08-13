@@ -13,15 +13,19 @@ import type { LLMProvider } from "@/modules/llm/llm-types";
 import { TEST_EXECUTION_AGENT_PROMPT } from "@/modules/llm/prompts";
 import { canonicalJson } from "@/modules/shared/canonical-json";
 import { redactExactValuesDeep } from "@/modules/shared/sensitive-data";
+import type { DiscoveredDatabaseObject } from "@/modules/integrations/database-automation/database-executor.port";
 
 import { AgentDecisionSchema, type AgentAction, type AgentActionType, type LayerHint } from "./action-schema";
 import { CaseCaptureStore } from "./case-capture-store";
+import { boundedDatabaseObjectManifest } from "./database-object-manifest";
 import {
   describeMultiLayerAction,
   validateCapabilityParameters,
+  validateCapabilityRequestBody,
   validateMultiLayerDecision,
   type ExecutionLayer,
   type IntegrationCapability,
+  type LegacyExecutionPolicy,
   type MultiLayerAction,
 } from "./multi-layer-action";
 import type { LayerRuntimeObservation, MultiLayerRuntime } from "./multi-layer-runtime.port";
@@ -100,15 +104,20 @@ export type MultiLayerStepInput = {
   layerHint: LayerHint;
   priorStepsSummary: readonly string[];
   executionNotes?: string;
+  /** Per-run guidance entered at review; wins over environment notes on conflict. */
+  runNotes?: string;
   secretNames: readonly string[];
   secretTitles?: ReadonlyMap<string, string>;
   testUsers?: readonly { handle: string; username: string; passwordPlaceholder: string | null; notes?: string }[];
   secrets: ReadonlyMap<string, string>;
   allowedOrigin?: string;
-  allowedApiReadPaths: ReadonlySet<string>;
+  /** Explicit "METHOD /path" requests extracted from the frozen step text and notes. */
+  allowedApiRequests: ReadonlySet<string>;
   capabilities: readonly IntegrationCapability[];
-  apiMutationsEnabled: boolean;
-  databaseDmlEnabled: boolean;
+  /** Discovered database objects; ranked into the prompt once per step. */
+  databaseObjects?: readonly DiscoveredDatabaseObject[];
+  /** Present only for runs frozen before intent-v1; restores their original gates. */
+  legacyPolicy?: LegacyExecutionPolicy;
   databaseDriver?: "postgres" | "sqlserver" | "mysql";
   captures: CaseCaptureStore;
   persist?: ActionPersistenceHooks;
@@ -188,6 +197,10 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
     input.capabilities,
     `${input.caseTitle} ${input.instruction} ${input.expectedResult}`,
   );
+  const databaseObjectLines = boundedDatabaseObjectManifest(
+    input.databaseObjects ?? [],
+    `${input.caseTitle} ${input.instruction} ${input.expectedResult}`,
+  );
 
   if (shouldInspectUiInitially(input.layerHint, configuredLayers)) {
     uiSnapshot = await input.runtime.inspectUi();
@@ -200,7 +213,7 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
     if (input.llmCallBudget.remaining <= 0) return finish("needs_review", iteration - 1, { reason: "The run's AI call budget was exhausted." });
 
     const refs = collectSnapshotRefs(uiSnapshot?.text ?? "");
-    const user = scrub(buildMultiLayerPrompt(input, configuredLayers, capabilityManifestLines, uiSnapshot, transcript, recentObservations, feedback));
+    const user = scrub(buildMultiLayerPrompt(input, configuredLayers, capabilityManifestLines, databaseObjectLines, uiSnapshot, transcript, recentObservations, feedback));
     input.llmCallBudget.remaining -= 1;
 
     let raw: unknown;
@@ -239,12 +252,11 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
       configuredLayers,
       snapshotRefs: refs,
       allowedOrigin: input.allowedOrigin,
-      allowedApiReadPaths: input.allowedApiReadPaths,
+      allowedApiRequests: input.allowedApiRequests,
       secretNames: input.secretNames,
       captureNames: input.captures.names(),
       capabilities: capabilityMap,
-      apiMutationsEnabled: input.apiMutationsEnabled,
-      databaseDmlEnabled: input.databaseDmlEnabled,
+      legacyPolicy: input.legacyPolicy,
       databaseDriver: input.databaseDriver,
     });
 
@@ -295,7 +307,9 @@ export async function runMultiLayerStep(input: MultiLayerStepInput): Promise<Mul
       const parameterIssue = validateCapabilityParameters(
         resolvedAction.capability,
         resolvedAction.arguments.parameters,
-      );
+      ) ?? (resolvedAction.type === "api_execute_operation"
+        ? validateCapabilityRequestBody(resolvedAction.capability, resolvedAction.arguments.body)
+        : null);
       if (parameterIssue) {
         transcript.push({
           layer: resolvedAction.layer,
@@ -508,6 +522,7 @@ function buildMultiLayerPrompt(
   input: MultiLayerStepInput,
   configuredLayers: ReadonlySet<ExecutionLayer>,
   capabilityLines: readonly string[],
+  databaseObjectLines: readonly string[],
   snapshot: { text: string; url: string | null } | null,
   transcript: readonly MultiLayerActionRecord[],
   observations: readonly { layer: ExecutionLayer; summary: string; data?: unknown }[],
@@ -527,11 +542,12 @@ function buildMultiLayerPrompt(
     `Layer hint: ${input.layerHint}`,
     `Configured layers: ${[...configuredLayers].join(", ")}`,
     input.allowedOrigin ? `UI allowed origin: ${input.allowedOrigin}` : "",
-    `Exact dynamic API read paths: ${[...input.allowedApiReadPaths].join(", ") || "(none)"}`,
+    `Explicit API requests from the frozen step or notes: ${[...input.allowedApiRequests].join(", ") || "(none)"}`,
     "## Approved operation capabilities",
     capabilityLines.length ? capabilityLines.join("\n") : "(none)",
     `Available agent-value secrets: ${input.secretNames.map((name) => input.secretTitles?.get(name) ? `${name} (${input.secretTitles.get(name)})` : name).join(", ") || "(none)"}`,
-    input.executionNotes?.trim() ? `## Execution notes (context only)\n${input.executionNotes.trim()}` : "",
+    input.executionNotes?.trim() ? `## Environment notes (from the profile - context only)\n${input.executionNotes.trim()}` : "",
+    input.runNotes?.trim() ? `## Run notes (for this run - context only; these take precedence over the environment notes when they conflict)\n${input.runNotes.trim()}` : "",
     users.length ? `## Test users\n${users.map((user) => `- ${user.handle}: ${user.username}, password ${user.passwordPlaceholder ?? "(none)"}${user.notes?.trim() ? `, notes: ${user.notes.trim()}` : ""}`).join("\n")}` : "",
     input.priorStepsSummary.length ? `## Earlier steps\n${input.priorStepsSummary.join("\n")}` : "",
     input.captures.names().length ? `## Case captures\n${input.captures.summaries().map((item) => `- ${item}`).join("\n")}` : "",
@@ -556,7 +572,7 @@ function boundedCapabilityManifest(
     const definition = capability.layer === "api"
       ? `${promptSafeText(String(capability.definition.method ?? "")).toUpperCase()} ${promptSafeText(String(capability.definition.path ?? ""))}`.trim()
       : capability.driver ? ` (${capability.driver})` : "";
-    const line = `- ${promptSafeText(capability.id)}: ${capability.layer.toUpperCase()} ${capability.safetyClass} "${promptSafeText(capability.name)}"${definition ? `; ${definition}` : ""}; ${parameterManifest(capability.parameterSchema)}`;
+    const line = `- ${promptSafeText(capability.id)}: ${capability.layer.toUpperCase()} ${capability.safetyClass} "${promptSafeText(capability.name)}"${definition ? `; ${definition}` : ""}; ${parameterManifest(capability.parameterSchema)}${capability.requestBodySchema ? `; body${capability.requestBodyRequired ? "!" : "?"}: json` : ""}`;
     if (used + line.length > MAX_CAPABILITY_MANIFEST_CHARS) break;
     lines.push(line);
     used += line.length;
@@ -632,12 +648,21 @@ function resolveAction(
       path: resolvedText(captures, secrets, action.arguments.path, "path"),
       query: captures.resolve(action.arguments.query, secrets),
       headers: captures.resolve(action.arguments.headers, secrets),
+      ...(action.arguments.body === undefined
+        ? {}
+        : { body: captures.resolve(action.arguments.body, secrets) }),
     } };
   }
   if (action.type === "api_execute_operation" || action.type === "db_execute_operation") {
-    return { ...action, arguments: { ...action.arguments, parameters: captures.resolve(action.arguments.parameters, secrets) } };
+    return { ...action, arguments: {
+      ...action.arguments,
+      parameters: captures.resolve(action.arguments.parameters, secrets),
+      ...(action.arguments.body === undefined
+        ? {}
+        : { body: captures.resolve(action.arguments.body, secrets) }),
+    } };
   }
-  if (action.type === "db_select") {
+  if (action.type === "db_select" || action.type === "db_mutate") {
     // Placeholders inside SQL text are rewritten to named bind parameters —
     // never spliced into the SQL string — so capture/secret values stay
     // parameterized and cannot alter the statement.
@@ -725,10 +750,23 @@ function actionSafetyClass(action: MultiLayerAction): "ui" | "read" | "mutation"
   // legitimate repeats and produced false uncertain_side_effect outcomes.
   if (action.type === "ui_action") return "ui";
   if (action.type === "api_execute_operation" || action.type === "db_execute_operation") return action.capability.safetyClass;
+  if (action.type === "db_mutate") return "mutation";
+  if (action.type === "api_request") {
+    return action.arguments.method === "GET" || action.arguments.method === "HEAD" ? "read" : "mutation";
+  }
   return "read";
 }
 
 function mutationFingerprint(action: MultiLayerAction) {
+  if (action.type === "api_request") {
+    return `api:request:${action.arguments.method} ${action.arguments.path}:${stableJson({
+      query: action.arguments.query,
+      body: action.arguments.body ?? null,
+    })}`;
+  }
+  if (action.type === "db_mutate") {
+    return `db:adhoc:${createHash("sha1").update(action.arguments.sql).digest("hex")}:${stableJson(action.arguments.parameters)}`;
+  }
   if (action.type !== "api_execute_operation" && action.type !== "db_execute_operation") return "";
   return `${action.layer}:${action.capability.id}:${stableJson(action.arguments.parameters)}`;
 }

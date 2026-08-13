@@ -190,6 +190,14 @@ export function environmentTargets(selection: EnvironmentSelection | null): Arra
   });
 }
 
+/** The environment's own reusable notes, shown read-only on the review step. */
+export function environmentExecutionNotes(selection: EnvironmentSelection | null): string {
+  if (!selection) return "";
+  return selection.mode === "profile"
+    ? selection.profile.executionNotes ?? ""
+    : selection.config.executionNotes;
+}
+
 /** Everything the PATCH route needs to persist a profile edit. */
 export type ProfileUpdatePayload = {
   config: {
@@ -263,7 +271,6 @@ export function EnvironmentStep({
   onUpdateProfile,
   updatingProfile,
   onContinue,
-  capabilitiesPanel,
   onInvalidateSession,
   invalidatingSession,
 }: {
@@ -276,7 +283,6 @@ export function EnvironmentStep({
   onUpdateProfile: (profileId: string, payload: ProfileUpdatePayload) => Promise<boolean>;
   updatingProfile: boolean;
   onContinue: () => void;
-  capabilitiesPanel?: ReactNode;
   onInvalidateSession: (profileId: string) => Promise<void>;
   invalidatingSession: boolean;
 }) {
@@ -735,8 +741,6 @@ export function EnvironmentStep({
         </Card>
       )}
 
-      {capabilitiesPanel}
-
       <div className="flex justify-end">
         <Button disabled={!readyToContinue} onClick={onContinue}>
           Continue to Test Scope
@@ -1124,6 +1128,81 @@ function EnvironmentConfigFields({
                 </div>
               </>
             ) : null}
+            {config.api ? (
+              <div className="space-y-1.5">
+                <Label htmlFor={`${idPrefix}-api-timeout`}>API request timeout (ms)</Label>
+                <Input
+                  id={`${idPrefix}-api-timeout`}
+                  inputMode="numeric"
+                  value={config.api.requestTimeoutMs}
+                  onChange={(event) => onPatch({
+                    api: { ...config.api!, requestTimeoutMs: Number(event.target.value) || 30_000 },
+                  })}
+                />
+              </div>
+            ) : null}
+            {config.database ? (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`${idPrefix}-db-connect-timeout`}>Database connect timeout (ms)</Label>
+                  <Input
+                    id={`${idPrefix}-db-connect-timeout`}
+                    inputMode="numeric"
+                    value={config.database.connectTimeoutMs}
+                    onChange={(event) => onPatch({
+                      database: { ...config.database!, connectTimeoutMs: Number(event.target.value) || 10_000 },
+                    })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`${idPrefix}-db-statement-timeout`}>Database statement timeout (ms)</Label>
+                  <Input
+                    id={`${idPrefix}-db-statement-timeout`}
+                    inputMode="numeric"
+                    value={config.database.statementTimeoutMs}
+                    onChange={(event) => onPatch({
+                      database: { ...config.database!, statementTimeoutMs: Number(event.target.value) || 30_000 },
+                    })}
+                  />
+                </div>
+                <div className="space-y-1.5 sm:col-span-3">
+                  {config.database.tlsMode === "disable" ? (
+                    // A legacy profile with TLS off keeps its value until the
+                    // tester deliberately upgrades it — nothing changes silently.
+                    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+                      <p className="font-medium">TLS is disabled for this connection — traffic is unencrypted (legacy setting).</p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-2"
+                        onClick={() => onPatch({ database: { ...config.database!, tlsMode: "verify-full" } })}
+                      >
+                        Enable TLS encryption
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-2">
+                      <Checkbox
+                        id={`${idPrefix}-db-tls-relaxed`}
+                        checked={config.database.tlsMode === "require"}
+                        onCheckedChange={(checked) => onPatch({
+                          database: { ...config.database!, tlsMode: checked === true ? "require" : "verify-full" },
+                        })}
+                      />
+                      <div>
+                        <Label htmlFor={`${idPrefix}-db-tls-relaxed`} className="font-normal">
+                          Allow encrypted connection without certificate verification
+                        </Label>
+                        <p className="text-xs text-muted-foreground">
+                          Only for test environments using a self-signed certificate. The connection stays encrypted; its identity is not checked.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -1383,30 +1462,6 @@ function ApiTargetFields({
             <Input value={value.contract.revisionId} disabled aria-label="Approved API contract revision" />
           </div>
         ) : null}
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-api-timeout`}>Request timeout (ms)</Label>
-          <Input
-            id={`${idPrefix}-api-timeout`}
-            inputMode="numeric"
-            value={value.requestTimeoutMs}
-            onChange={(event) => onChange({ ...value, requestTimeoutMs: Number(event.target.value) || 30_000 })}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-api-mutations`}>Mutation access</Label>
-          <Select
-            value={value.mutationMode}
-            onValueChange={(mutationMode) =>
-              onChange({ ...value, mutationMode: mutationMode as ApiEnvironmentConfig["mutationMode"] })
-            }
-          >
-            <SelectTrigger id={`${idPrefix}-api-mutations`}><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="disabled">Read operations only</SelectItem>
-              <SelectItem value="approved_catalog">Approved catalog mutations</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
       </div>
     </section>
   );
@@ -1431,8 +1486,7 @@ function DatabaseTargetFields({
 }) {
   const [showPassword, setShowPassword] = useState(false);
   const setDriver = (driver: DatabaseEnvironmentConfig["driver"]) => {
-    const defaults = defaultDatabaseEnvironment(driver);
-    onChange({ ...value, driver, port: databaseDefaultPort(driver), schemas: defaults.schemas });
+    onChange({ ...value, driver, port: databaseDefaultPort(driver) });
   };
   return (
     <section className="space-y-3 rounded-lg border p-3" aria-labelledby={`${idPrefix}-db-heading`}>
@@ -1480,12 +1534,7 @@ function DatabaseTargetFields({
             id={`${idPrefix}-db-name`}
             value={value.databaseName}
             placeholder="itestflow_qa"
-            onChange={(event) => {
-              const databaseName = event.target.value;
-              const tracksMysqlDatabase = value.driver === "mysql" &&
-                (value.schemas.length === 0 || (value.schemas.length === 1 && value.schemas[0] === value.databaseName));
-              onChange({ ...value, databaseName, schemas: tracksMysqlDatabase && databaseName ? [databaseName] : value.schemas });
-            }}
+            onChange={(event) => onChange({ ...value, databaseName: event.target.value })}
             onBlur={onBlur}
           />
         </div>
@@ -1516,44 +1565,6 @@ function DatabaseTargetFields({
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">Encrypted and passed directly to the database driver; never shown to the AI.</p>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-db-tls`}>TLS</Label>
-          <Select value={value.tlsMode} onValueChange={(tlsMode) => onChange({ ...value, tlsMode: tlsMode as DatabaseEnvironmentConfig["tlsMode"] })}>
-            <SelectTrigger id={`${idPrefix}-db-tls`}><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="verify-full">Verify certificate and host</SelectItem>
-              <SelectItem value="require">Require encryption</SelectItem>
-              <SelectItem value="disable">Disabled</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-db-access`}>Query access</Label>
-          <Select value={value.accessMode} onValueChange={(accessMode) => onChange({ ...value, accessMode: accessMode as DatabaseEnvironmentConfig["accessMode"] })}>
-            <SelectTrigger id={`${idPrefix}-db-access`}><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="read_only">Read-only</SelectItem>
-              <SelectItem value="cataloged_dml">Approved catalog DML</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-db-schemas`}>Allowed schemas</Label>
-          <Input
-            id={`${idPrefix}-db-schemas`}
-            value={value.schemas.join(", ")}
-            placeholder={value.driver === "sqlserver" ? "dbo" : value.driver === "postgres" ? "public" : "Defaults to database name"}
-            onChange={(event) => onChange({ ...value, schemas: splitList(event.target.value) })}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-db-connect-timeout`}>Connect timeout (ms)</Label>
-          <Input id={`${idPrefix}-db-connect-timeout`} inputMode="numeric" value={value.connectTimeoutMs} onChange={(event) => onChange({ ...value, connectTimeoutMs: Number(event.target.value) || 10_000 })} />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-db-statement-timeout`}>Statement timeout (ms)</Label>
-          <Input id={`${idPrefix}-db-statement-timeout`} inputMode="numeric" value={value.statementTimeoutMs} onChange={(event) => onChange({ ...value, statementTimeoutMs: Number(event.target.value) || 30_000 })} />
         </div>
       </div>
     </section>

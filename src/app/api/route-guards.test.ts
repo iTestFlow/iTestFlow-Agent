@@ -22,9 +22,6 @@ const AUTH_MARKERS = [
   // document-route-helpers so every upload/download variant cannot drift.
   "resolveDocumentReadScope",
   "resolveDocumentMutationScope",
-  // Egress-rule routes centralize the owner/admin check in egress-admin so
-  // the list/create and update/delete variants cannot drift.
-  "requireEgressAdmin",
 ];
 
 function resolvesTrustedProjectScope(text: string) {
@@ -126,14 +123,6 @@ describe("API route guards", () => {
     expect(text).toContain("await requireWorkflowContext(scopeInput.workspaceId)");
     expect(text).toContain("await resolveProjectScope(ctx, scopeInput)");
     expect(text).toContain('await requireWorkflowRole(context.ctx, ["owner", "admin"], message)');
-  });
-
-  it("keeps the egress-admin helper chained to workflow auth and the owner/admin role", () => {
-    const text = readFileSync(join(API_ROOT, "test-execution/egress-rules/egress-admin.ts"), "utf8");
-
-    expect(text).toContain("await requireWorkflowContext(workspaceId)");
-    expect(text).toContain(`["owner", "admin"]`);
-    expect(text).toContain("requireWorkflowRole");
   });
 
   it("keeps knowledge build routes limited to owner/admin roles", () => {

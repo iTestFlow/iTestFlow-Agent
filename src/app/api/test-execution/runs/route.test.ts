@@ -115,6 +115,36 @@ describe("POST /api/test-execution/runs", () => {
     );
   });
 
+  it("stamps the intent-v1 execution policy into the frozen config", async () => {
+    await POST(jsonRequest("/api/test-execution/runs", validBody));
+    expect(mocks.createRunWithSnapshots).toHaveBeenCalledWith(expect.objectContaining({
+      environment: expect.objectContaining({
+        config: expect.objectContaining({ executionPolicyVersion: "intent-v1" }),
+      }),
+    }));
+  });
+
+  it("accepts and ignores deprecated authorization fields from old clients", async () => {
+    const body = structuredClone(validBody) as Record<string, unknown>;
+    // Pre-simplification clients sent operation pins and access modes; both
+    // are stripped, never rejected, so old clients still get a 202.
+    body.capabilityRevisionIds = ["tior_old_1"];
+    Object.assign((body.environment as { config: Record<string, unknown> }).config, {
+      api: {
+        baseUrl: "https://api.example.test/v1",
+        auth: { type: "none" },
+        mutationMode: "approved_catalog",
+      },
+    });
+
+    const response = await POST(jsonRequest("/api/test-execution/runs", body));
+
+    expect(response.status).toBe(202);
+    const input = mocks.createRunWithSnapshots.mock.calls[0][0];
+    expect(input).not.toHaveProperty("capabilityRevisionIds");
+    expect(input.environment.config.api).not.toHaveProperty("mutationMode");
+  });
+
   it("freezes a same-origin OpenAPI URL before snapshotting the run", async () => {
     const body = structuredClone(validBody);
     Object.assign(body.environment.config, {

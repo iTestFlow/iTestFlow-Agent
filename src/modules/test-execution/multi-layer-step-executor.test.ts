@@ -60,10 +60,8 @@ function input(runtime: MultiLayerRuntime, decisions: Record<string, unknown>[],
     secretNames: [],
     secrets: new Map(),
     allowedOrigin: "https://app.example.test",
-    allowedApiReadPaths: new Set(["/orders/42"]),
+    allowedApiRequests: new Set(["GET /orders/42"]),
     capabilities: [],
-    apiMutationsEnabled: false,
-    databaseDmlEnabled: false,
     captures: new CaseCaptureStore(),
     scrub: createScrubber([]),
     signal: new AbortController().signal,
@@ -393,7 +391,6 @@ describe("runMultiLayerStep", () => {
       { decision: "act", actionType: "api_execute_operation", argumentsJson: JSON.stringify({ operationId: "create" }) },
     ], {
       capabilities: [capability],
-      apiMutationsEnabled: true,
       persist: { start: vi.fn(async () => "action-1"), finish },
     }));
     expect(result.outcome).toBe("needs_review");
@@ -748,7 +745,6 @@ describe("runMultiLayerStep", () => {
     ], {
       captures,
       capabilities: [capability],
-      apiMutationsEnabled: true,
     }));
     expect(result.outcome).toBe("needs_review");
     expect(result.reason).toContain("replay");
@@ -758,6 +754,108 @@ describe("runMultiLayerStep", () => {
       expect.objectContaining({ result: "rejected" }),
       expect.objectContaining({ result: "rejected" }),
     ]);
+  });
+
+  it("persists an ad-hoc database mutation as a mutation before dispatching it", async () => {
+    const events: string[] = [];
+    const runtime = new FakeRuntime(new Set(["db"]), [
+      { status: "ok", summary: "UPDATE completed with 1 row(s).", durationMs: 1 },
+    ]);
+    const dispatch = runtime.execute.bind(runtime);
+    runtime.execute = async (action) => {
+      events.push("execute");
+      return dispatch(action);
+    };
+    const start = vi.fn(async () => { events.push("start"); return "action-1"; });
+
+    const result = await runMultiLayerStep(input(runtime, [
+      {
+        decision: "act",
+        actionType: "db_mutate",
+        argumentsJson: JSON.stringify({
+          sql: "UPDATE orders SET status = :status WHERE id = :id",
+          parameters: { id: 42, status: "ready" },
+        }),
+      },
+      { decision: "step_passed", actualResult: "One order row was updated" },
+    ], {
+      layerHint: "db",
+      persist: {
+        start,
+        finish: vi.fn(async () => { events.push("finish"); return true; }),
+      },
+    }));
+
+    expect(result.outcome).toBe("passed");
+    // Intent is durable before the statement can reach the database.
+    expect(events).toEqual(["start", "execute", "finish"]);
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      layer: "db",
+      actionType: "db_mutate",
+      safetyClass: "mutation",
+      request: expect.objectContaining({
+        sql: "UPDATE orders SET status = :status WHERE id = :id",
+      }),
+    }));
+  });
+
+  it("fingerprints an ad-hoc mutation: the replay gets feedback, then ends the step", async () => {
+    const runtime = new FakeRuntime(new Set(["db"]), [
+      { status: "ok", summary: "UPDATE completed with 1 row(s).", durationMs: 1 },
+    ]);
+    const mutate = {
+      decision: "act",
+      actionType: "db_mutate",
+      argumentsJson: JSON.stringify({
+        sql: "UPDATE orders SET status = :status WHERE id = :id",
+        parameters: { id: 42, status: "ready" },
+      }),
+    };
+
+    const result = await runMultiLayerStep(input(runtime, [mutate, mutate, mutate], { layerHint: "db" }));
+
+    expect(result.outcome).toBe("needs_review");
+    expect(result.reason).toContain("replay");
+    // The replay itself is never executed.
+    expect(runtime.actions).toHaveLength(1);
+    expect(result.actionsTaken).toEqual([
+      expect.objectContaining({ actionType: "db_mutate", result: "ok" }),
+      expect.objectContaining({ actionType: "db_mutate", result: "rejected" }),
+      expect.objectContaining({ actionType: "db_mutate", result: "rejected" }),
+    ]);
+  });
+
+  it("binds a capture used inside mutation SQL instead of splicing its value", async () => {
+    const captures = new CaseCaptureStore();
+    captures.captureJson({ name: "orderId", pointer: "/id", document: { id: 42 } });
+    const runtime = new FakeRuntime(new Set(["db"]), [
+      { status: "ok", summary: "UPDATE completed with 1 row(s).", durationMs: 1 },
+    ]);
+
+    const result = await runMultiLayerStep(input(runtime, [
+      {
+        decision: "act",
+        actionType: "db_mutate",
+        argumentsJson: JSON.stringify({
+          sql: "UPDATE orders SET status = :status WHERE id = {{capture:orderId}}",
+          parameters: { status: "ready" },
+        }),
+      },
+      { decision: "step_passed", actualResult: "The order row is ready" },
+    ], { layerHint: "db", captures }));
+
+    expect(result.outcome).toBe("passed");
+    expect(runtime.actions[0]).toMatchObject({
+      layer: "db",
+      type: "db_mutate",
+      arguments: {
+        sql: "UPDATE orders SET status = :status WHERE id = :capture_orderId",
+        parameters: { status: "ready", capture_orderId: 42 },
+      },
+    });
+    // The captured value never becomes SQL text.
+    expect(JSON.stringify(runtime.actions[0])).not.toContain("{{capture:orderId}}");
+    expect((runtime.actions[0] as { arguments: { sql: string } }).arguments.sql).not.toContain("42");
   });
 
   it("ranks a relevant operation into a bounded large-contract prompt", async () => {

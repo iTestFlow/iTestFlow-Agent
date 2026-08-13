@@ -4,50 +4,37 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { domainToASCII } from "node:url";
 
-import { writeAuditLog } from "@/modules/audit/audit.service";
-import {
-  createId,
-  isPgUniqueViolation,
-  nowIso,
-  sqlAll,
-  sqlGet,
-} from "@/modules/shared/infrastructure/database/db";
-import {
-  WorkspaceEgressRuleInputSchema,
-  type WorkspaceEgressRuleInput,
-} from "./schemas/test-execution.schemas";
+/**
+ * Network authorization for test-execution egress. Every outbound hop (API
+ * request, redirect, OAuth token fetch, OpenAPI discovery, database connect)
+ * is authorized against the run's derived execution boundary — the exact
+ * endpoints named by the frozen environment config. DNS is resolved on every
+ * call and the resolved addresses are pinned by the transports.
+ *
+ * Private-network destinations are denied by default. A deployment opts in
+ * selectively via TEST_EXECUTION_PRIVATE_NETWORK_CIDRS (comma-separated CIDRs
+ * or bare IPs); link-local/metadata, multicast, unspecified, and reserved
+ * addresses are never allowed regardless of the allowlist.
+ */
 
 export type TestEgressTargetKind = "api" | "database" | "oauth" | "openapi";
 export type TestEgressProtocol = "http" | "https" | "tcp";
 
+/** One endpoint of a run's execution boundary (structural to avoid an import cycle). */
+export type EgressBoundaryTarget = {
+  kind: TestEgressTargetKind;
+  protocol: TestEgressProtocol;
+  host: string;
+  port: number;
+};
+
 export type TestExecutionEgressAuthorization = {
-  ruleId: string;
   /**
-   * Concrete IP addresses authorized by the selected rule. Network adapters
-   * must connect to one of these addresses instead of resolving the hostname
-   * a second time.
+   * Concrete IP addresses authorized for this hop. Network adapters must
+   * connect to one of these addresses instead of resolving the hostname a
+   * second time.
    */
   resolvedAddresses: string[];
-};
-
-export type WorkspaceEgressRuleView = WorkspaceEgressRuleInput & {
-  id: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-type EgressRuleRow = {
-  id: string;
-  name: string;
-  target_kind: TestEgressTargetKind;
-  protocol: TestEgressProtocol;
-  host_pattern: string;
-  port_from: number;
-  port_to: number;
-  allow_private_network: boolean;
-  enabled: boolean;
-  created_at: string;
-  updated_at: string;
 };
 
 export class TestExecutionEgressError extends Error {
@@ -58,210 +45,77 @@ export class TestExecutionEgressError extends Error {
 }
 
 export class TestExecutionEgressDeniedError extends TestExecutionEgressError {
-  constructor(message = "The target is not allowed by the workspace test-execution egress policy.") {
+  constructor(message = "The target is not allowed by the test-execution network policy.") {
     super(message, 403);
     this.name = "TestExecutionEgressDeniedError";
   }
 }
 
-const EGRESS_COLUMNS = `id, name, target_kind, protocol, host_pattern, port_from, port_to,
-  allow_private_network, enabled, created_at, updated_at`;
-
-function toView(row: EgressRuleRow): WorkspaceEgressRuleView {
-  return {
-    id: row.id,
-    name: row.name,
-    targetKind: row.target_kind,
-    protocol: row.protocol,
-    hostPattern: row.host_pattern,
-    portFrom: row.port_from,
-    portTo: row.port_to,
-    allowPrivateNetwork: row.allow_private_network,
-    enabled: row.enabled,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-export async function listWorkspaceEgressRules(workspaceId: string): Promise<WorkspaceEgressRuleView[]> {
-  const rows = await sqlAll<EgressRuleRow>(
-    `SELECT ${EGRESS_COLUMNS} FROM workspace_test_egress_rules
-     WHERE workspace_id = @workspaceId ORDER BY enabled DESC, name`,
-    { workspaceId },
-  );
-  return rows.map(toView);
-}
-
-/**
- * Redirect chains and multi-hop adapters authorize every hop; a very short
- * TTL avoids one identical rule SELECT per hop without meaningfully delaying
- * policy changes (writes below invalidate immediately in this process).
- */
-const RULE_CACHE_TTL_MS = 2_000;
-const ruleCache = new Map<string, { at: number; rules: WorkspaceEgressRuleView[] }>();
-
-async function listEnabledRulesCached(workspaceId: string): Promise<WorkspaceEgressRuleView[]> {
-  const cached = ruleCache.get(workspaceId);
-  if (cached && Date.now() - cached.at < RULE_CACHE_TTL_MS) return cached.rules;
-  const rules = (await listWorkspaceEgressRules(workspaceId)).filter((rule) => rule.enabled);
-  ruleCache.set(workspaceId, { at: Date.now(), rules });
-  return rules;
-}
-
-function invalidateRuleCache(workspaceId: string): void {
-  ruleCache.delete(workspaceId);
-}
-
-export async function createWorkspaceEgressRule(input: {
-  workspaceId: string;
-  actor: string;
-  rule: WorkspaceEgressRuleInput;
-}): Promise<WorkspaceEgressRuleView> {
-  const rule = validateAndNormalizeRule(input.rule);
-  const id = createId("tegr");
-  const now = nowIso();
-  try {
-    const row = await sqlGet<EgressRuleRow>(
-      `INSERT INTO workspace_test_egress_rules (
-         id, workspace_id, name, target_kind, protocol, host_pattern,
-         port_from, port_to, allow_private_network, enabled,
-         created_by, updated_by, created_at, updated_at
-       ) VALUES (
-         @id, @workspaceId, @name, @targetKind, @protocol, @hostPattern,
-         @portFrom, @portTo, @allowPrivateNetwork, @enabled,
-         @actor, @actor, @now, @now
-       ) RETURNING ${EGRESS_COLUMNS}`,
-      { id, workspaceId: input.workspaceId, actor: input.actor, now, ...rule },
-    );
-    if (!row) throw new TestExecutionEgressError("The egress rule could not be saved.", 500);
-    invalidateRuleCache(input.workspaceId);
-    const view = toView(row);
-    auditRule(input, view, "test_execution.egress_rule_created");
-    return view;
-  } catch (error) {
-    if (isUniqueViolation(error)) {
-      throw new TestExecutionEgressError("An egress rule with this name already exists.", 409);
-    }
-    throw error;
-  }
-}
-
-export async function updateWorkspaceEgressRule(input: {
-  workspaceId: string;
-  actor: string;
-  ruleId: string;
-  changes: Partial<WorkspaceEgressRuleInput>;
-}): Promise<WorkspaceEgressRuleView | null> {
-  const existing = await sqlGet<EgressRuleRow>(
-    `SELECT ${EGRESS_COLUMNS} FROM workspace_test_egress_rules
-     WHERE id = @id AND workspace_id = @workspaceId`,
-    { id: input.ruleId, workspaceId: input.workspaceId },
-  );
-  if (!existing) return null;
-  const rule = validateAndNormalizeRule({ ...toView(existing), ...input.changes });
-  try {
-    const row = await sqlGet<EgressRuleRow>(
-      `UPDATE workspace_test_egress_rules SET
-         name = @name, target_kind = @targetKind, protocol = @protocol,
-         host_pattern = @hostPattern, port_from = @portFrom, port_to = @portTo,
-         allow_private_network = @allowPrivateNetwork, enabled = @enabled,
-         updated_by = @actor, updated_at = @now
-       WHERE id = @id AND workspace_id = @workspaceId
-       RETURNING ${EGRESS_COLUMNS}`,
-      {
-        id: input.ruleId,
-        workspaceId: input.workspaceId,
-        actor: input.actor,
-        now: nowIso(),
-        ...rule,
-      },
-    );
-    if (!row) return null;
-    invalidateRuleCache(input.workspaceId);
-    const view = toView(row);
-    auditRule(input, view, "test_execution.egress_rule_updated");
-    return view;
-  } catch (error) {
-    if (isUniqueViolation(error)) {
-      throw new TestExecutionEgressError("An egress rule with this name already exists.", 409);
-    }
-    throw error;
-  }
-}
-
-export async function deleteWorkspaceEgressRule(input: {
-  workspaceId: string;
-  actor: string;
-  ruleId: string;
-}): Promise<boolean> {
-  const deleted = await sqlGet<{ id: string; name: string }>(
-    `DELETE FROM workspace_test_egress_rules
-     WHERE id = @id AND workspace_id = @workspaceId
-     RETURNING id, name`,
-    { id: input.ruleId, workspaceId: input.workspaceId },
-  );
-  if (!deleted) return false;
-  invalidateRuleCache(input.workspaceId);
-  writeAuditLog({
-    workspaceId: input.workspaceId,
-    entityType: "workspace_test_egress_rule",
-    entityId: deleted.id,
-    action: "test_execution.egress_rule_deleted",
-    status: "Success",
-    actor: input.actor,
-    message: `Test-execution egress rule "${deleted.name}" deleted.`,
-  });
-  return true;
-}
+export const PRIVATE_NETWORK_CIDRS_ENV = "TEST_EXECUTION_PRIVATE_NETWORK_CIDRS";
 
 /**
  * Runtime authorization boundary for adapters and redirect/token/contract
- * fetches. It resolves DNS on every call, requires a matching enabled rule,
- * and rejects any private/link-local/loopback resolution unless that exact
- * rule opts into private networking.
+ * fetches. The boundary target is matched exactly (kind, protocol, host,
+ * port); only then is the host resolved, so arbitrary names are never looked
+ * up. Restricted resolutions follow the two-tier private-network policy.
  */
-export async function assertTestExecutionEgressAllowed(input: {
-  workspaceId: string;
-  targetKind: TestEgressTargetKind;
-  protocol: TestEgressProtocol;
-  host: string;
-  port: number;
-}): Promise<TestExecutionEgressAuthorization> {
-  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535) {
+export async function assertBoundaryEgressAllowed(
+  boundary: { targets: readonly EgressBoundaryTarget[] },
+  request: {
+    targetKind: TestEgressTargetKind;
+    protocol: TestEgressProtocol;
+    host: string;
+    port: number;
+  },
+): Promise<TestExecutionEgressAuthorization> {
+  if (!Number.isInteger(request.port) || request.port < 1 || request.port > 65_535) {
     throw new TestExecutionEgressDeniedError();
   }
   if (
-    (input.targetKind === "database" && input.protocol !== "tcp") ||
-    (input.targetKind !== "database" && input.protocol === "tcp")
+    (request.targetKind === "database" && request.protocol !== "tcp") ||
+    (request.targetKind !== "database" && request.protocol === "tcp")
   ) {
     throw new TestExecutionEgressDeniedError();
   }
-  const host = normalizeRequestedHost(input.host);
-  const addresses = await resolveAddresses(host);
-  const rules = await listEnabledRulesCached(input.workspaceId);
-  const matchingRules = rules.filter((candidate) =>
-    candidate.targetKind === input.targetKind &&
-    candidate.protocol === input.protocol &&
-    input.port >= candidate.portFrom &&
-    input.port <= candidate.portTo &&
-    hostPatternMatches(candidate.hostPattern, host, addresses),
+  const host = normalizeRequestedHost(request.host);
+  const matched = boundary.targets.some(
+    (target) =>
+      target.kind === request.targetKind &&
+      target.protocol === request.protocol &&
+      target.port === request.port &&
+      normalizedTargetHost(target.host) === host,
   );
-  if (matchingRules.length === 0) throw new TestExecutionEgressDeniedError();
-
-  const restricted = hostIsLocallyRestricted(host) || addresses.some((address) => addressIsRestricted(address));
-  const rule = restricted
-    ? matchingRules.find((candidate) => candidate.allowPrivateNetwork)
-    : matchingRules[0];
-  if (!rule) {
+  if (!matched) {
     throw new TestExecutionEgressDeniedError(
-      "The target resolves to a private, loopback, or link-local network not enabled by the matching rule.",
+      "The target is outside this run's configured execution boundary.",
     );
   }
-  const authorizedAddresses = addresses.filter((address) =>
-    addressAllowedByRule(rule, host, address),
-  );
-  if (authorizedAddresses.length === 0) throw new TestExecutionEgressDeniedError();
-  return { ruleId: rule.id, resolvedAddresses: authorizedAddresses };
+
+  const addresses = await resolveAddresses(host);
+  if (addresses.some((address) => addressIsHardDenied(address))) {
+    throw new TestExecutionEgressDeniedError(
+      "The target resolves to a link-local, multicast, or reserved network that is never allowed.",
+    );
+  }
+  const allowlist = privateNetworkAllowlist();
+  const hostRestricted = hostIsLocallyRestricted(host);
+  for (const address of addresses) {
+    if ((hostRestricted || addressIsSoftRestricted(address)) && !addressWithinAllowlist(address, allowlist)) {
+      throw new TestExecutionEgressDeniedError(
+        `The target resolves to a private, loopback, or local network. Add its range to ${PRIVATE_NETWORK_CIDRS_ENV} on this deployment to allow it.`,
+      );
+    }
+  }
+  return { resolvedAddresses: addresses };
+}
+
+/** Boundary hosts are normalized at derivation; re-normalize defensively. */
+function normalizedTargetHost(value: string): string | null {
+  try {
+    return normalizeEgressHostname(value);
+  } catch {
+    return null;
+  }
 }
 
 type HostResolver = (host: string) => Promise<string[]>;
@@ -292,44 +146,64 @@ async function resolveAddresses(host: string): Promise<string[]> {
   }
 }
 
-function validateAndNormalizeRule(input: WorkspaceEgressRuleInput): WorkspaceEgressRuleInput {
-  const parsed = WorkspaceEgressRuleInputSchema.safeParse(input);
-  if (!parsed.success) {
-    throw new TestExecutionEgressError(parsed.error.issues[0]?.message ?? "Invalid egress rule.");
+/**
+ * Deployment-level opt-in for private-network targets. Parsed lazily and
+ * memoized on the raw value so tests using stubbed env vars see changes
+ * immediately. Malformed entries are ignored (fail-closed) with one warning
+ * per distinct raw value.
+ */
+let allowlistCache: { raw: string; cidrs: string[] } | null = null;
+
+function privateNetworkAllowlist(): string[] {
+  const raw = process.env[PRIVATE_NETWORK_CIDRS_ENV] ?? "";
+  if (allowlistCache && allowlistCache.raw === raw) return allowlistCache.cidrs;
+  const cidrs: string[] = [];
+  for (const entry of raw.split(",").map((value) => value.trim()).filter(Boolean)) {
+    const cidr = normalizeCidrEntry(entry);
+    if (cidr) {
+      cidrs.push(cidr);
+    } else {
+      console.warn(
+        `[test-execution] Ignoring malformed ${PRIVATE_NETWORK_CIDRS_ENV} entry "${entry}" — use IPv4/IPv6 CIDRs or bare IPs.`,
+      );
+    }
   }
-  const hostPattern = normalizeHostPattern(parsed.data.hostPattern);
-  if (
-    (parsed.data.targetKind === "database" && parsed.data.protocol !== "tcp") ||
-    (parsed.data.targetKind !== "database" && parsed.data.protocol === "tcp")
-  ) {
-    throw new TestExecutionEgressError("Database rules use TCP; API, OAuth, and OpenAPI rules use HTTP or HTTPS.");
-  }
-  return { ...parsed.data, hostPattern };
+  allowlistCache = { raw, cidrs };
+  return cidrs;
 }
 
-function normalizeHostPattern(value: string): string {
-  const pattern = value.trim().toLowerCase();
-  if (pattern.includes("/")) {
-    const [address, prefixText, extra] = pattern.split("/");
+/** Accepts "10.0.0.0/8", "127.0.0.1" (→ /32), or "::1" (→ /128). */
+function normalizeCidrEntry(value: string): string | null {
+  const entry = value.toLowerCase();
+  if (entry.includes("/")) {
+    const [address, prefixText, extra] = entry.split("/");
     const version = isIP(address ?? "");
     const prefix = Number(prefixText);
     const max = version === 4 ? 32 : version === 6 ? 128 : -1;
-    if (extra !== undefined || !Number.isInteger(prefix) || prefix < 0 || prefix > max) {
-      throw new TestExecutionEgressError("Use a valid IPv4 or IPv6 CIDR host pattern.");
-    }
+    if (extra !== undefined || !Number.isInteger(prefix) || prefix < 0 || prefix > max) return null;
     return `${normalizeIp(address as string)}/${prefix}`;
   }
-  if (pattern.startsWith("*.")) {
-    const suffix = normalizeDnsName(pattern.slice(2));
-    if (!suffix.includes(".")) throw new TestExecutionEgressError("Wildcard rules require a qualified domain suffix.");
-    return `*.${suffix}`;
-  }
-  if (pattern.includes("*")) {
-    throw new TestExecutionEgressError("A wildcard is permitted only as the leading '*.' label.");
-  }
-  return isIP(stripIpv6Brackets(pattern))
-    ? normalizeIp(stripIpv6Brackets(pattern))
-    : normalizeDnsName(pattern);
+  const bare = stripIpv6Brackets(entry);
+  const version = isIP(bare);
+  if (version === 0) return null;
+  return `${normalizeIp(bare)}/${version === 4 ? 32 : 128}`;
+}
+
+function addressWithinAllowlist(address: string, cidrs: readonly string[]): boolean {
+  if (cidrs.some((cidr) => ipMatchesCidr(address, cidr))) return true;
+  // An IPv4-mapped IPv6 address is a literal alias of its embedded IPv4, so
+  // an IPv4 allowlist entry covers it. Other transitional forms (NAT64, 6to4,
+  // Teredo) route through translators and require an explicit IPv6 listing.
+  const mapped = ipv4MappedAddress(address);
+  return mapped !== null && cidrs.some((cidr) => ipMatchesCidr(mapped, cidr));
+}
+
+function ipv4MappedAddress(address: string): string | null {
+  if (isIP(address) !== 6) return null;
+  const value = ipv6ToBigInt(address);
+  if (value === null) return null;
+  if ((value >> BigInt(32)) !== BigInt(0xffff)) return null;
+  return dottedIpv4(value & BigInt(0xffff_ffff));
 }
 
 function normalizeRequestedHost(value: string): string {
@@ -347,11 +221,11 @@ function normalizeRequestedHost(value: string): string {
 function normalizeDnsName(value: string): string {
   const ascii = domainToASCII(value.replace(/\.$/, "").toLowerCase());
   if (!ascii || ascii.length > 253 || !/^[a-z0-9.-]+$/.test(ascii)) {
-    throw new TestExecutionEgressError("Use a valid hostname or CIDR host pattern.");
+    throw new TestExecutionEgressError("Use a valid hostname.");
   }
   const labels = ascii.split(".");
   if (labels.some((label) => !label || label.length > 63 || label.startsWith("-") || label.endsWith("-"))) {
-    throw new TestExecutionEgressError("Use a valid hostname or CIDR host pattern.");
+    throw new TestExecutionEgressError("Use a valid hostname.");
   }
   return ascii;
 }
@@ -363,7 +237,8 @@ function stripIpv6Brackets(value: string): string {
 /**
  * Normalize a connection hostname the same way the policy boundary does:
  * brackets stripped, IPs canonicalized, DNS names lowercased/ASCII. Shared
- * with the database egress adapter so the two can never disagree.
+ * with the boundary derivation and the database egress adapter so they can
+ * never disagree.
  */
 export function normalizeEgressHostname(value: string): string {
   const trimmed = stripIpv6Brackets(value.trim().toLowerCase()).replace(/\.$/, "");
@@ -378,40 +253,57 @@ function normalizeIp(value: string): string {
   throw new TestExecutionEgressError("Use a valid IP address.");
 }
 
-function hostPatternMatches(pattern: string, host: string, addresses: string[]): boolean {
-  if (pattern.includes("/")) return addresses.some((address) => ipMatchesCidr(address, pattern));
-  const patternIpVersion = isIP(pattern);
-  if (patternIpVersion) {
-    const exactCidr = `${pattern}/${patternIpVersion === 4 ? 32 : 128}`;
-    return ipMatchesCidr(host, exactCidr) || addresses.some((address) => ipMatchesCidr(address, exactCidr));
-  }
-  if (pattern.startsWith("*.")) {
-    const suffix = pattern.slice(1);
-    return host.endsWith(suffix) && host.length > suffix.length;
-  }
-  return host === pattern || addresses.includes(pattern);
-}
-
-function addressAllowedByRule(
-  rule: WorkspaceEgressRuleView,
-  host: string,
-  address: string,
-): boolean {
-  const pattern = rule.hostPattern;
-  if (pattern.includes("/")) return ipMatchesCidr(address, pattern);
-  const patternIpVersion = isIP(pattern);
-  if (patternIpVersion) {
-    const exactCidr = `${pattern}/${patternIpVersion === 4 ? 32 : 128}`;
-    return ipMatchesCidr(address, exactCidr);
-  }
-  // An exact or wildcard hostname rule authorizes all of that hostname's
-  // current resolutions. Private resolutions were already rejected above
-  // unless this selected rule explicitly allows private networking.
-  return hostPatternMatches(pattern, host, [address]);
-}
-
 function hostIsLocallyRestricted(host: string): boolean {
   return host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local");
+}
+
+/**
+ * Hard tier: never reachable, regardless of the deployment allowlist —
+ * link-local (incl. cloud metadata), multicast, unspecified/"this network",
+ * and reserved space. Transitional IPv6 forms embedding such an IPv4 are
+ * equally hard-denied.
+ */
+const HARD_DENIED_IPV4_CIDRS = [
+  "0.0.0.0/8",
+  "169.254.0.0/16",
+  "224.0.0.0/4",
+  "240.0.0.0/4",
+] as const;
+const HARD_DENIED_IPV6_CIDRS = ["::/128", "fe80::/10", "ff00::/8"] as const;
+
+/**
+ * Soft tier: denied by default but allowable through the deployment CIDR
+ * allowlist — RFC1918, CGNAT, ULA, and loopback.
+ */
+const SOFT_DENIED_IPV4_CIDRS = [
+  "10.0.0.0/8",
+  "100.64.0.0/10",
+  "127.0.0.0/8",
+  "172.16.0.0/12",
+  "192.168.0.0/16",
+] as const;
+const SOFT_DENIED_IPV6_CIDRS = ["::1/128", "fc00::/7"] as const;
+
+export function addressIsHardDenied(address: string): boolean {
+  if (isIP(address) === 4) {
+    return HARD_DENIED_IPV4_CIDRS.some((cidr) => ipMatchesCidr(address, cidr));
+  }
+  if (isIP(address) === 6) {
+    if (embeddedIpv4Addresses(address).some((embedded) => addressIsHardDenied(embedded))) return true;
+    return HARD_DENIED_IPV6_CIDRS.some((cidr) => ipMatchesCidr(address, cidr));
+  }
+  return true;
+}
+
+export function addressIsSoftRestricted(address: string): boolean {
+  if (isIP(address) === 4) {
+    return SOFT_DENIED_IPV4_CIDRS.some((cidr) => ipMatchesCidr(address, cidr));
+  }
+  if (isIP(address) === 6) {
+    if (embeddedIpv4Addresses(address).some((embedded) => addressIsSoftRestricted(embedded))) return true;
+    return SOFT_DENIED_IPV6_CIDRS.some((cidr) => ipMatchesCidr(address, cidr));
+  }
+  return true;
 }
 
 /**
@@ -420,32 +312,7 @@ function hostIsLocallyRestricted(host: string): boolean {
  * transitional-embedding unit tests.
  */
 export function addressIsRestricted(address: string): boolean {
-  if (isIP(address) === 4) {
-    return [
-      "0.0.0.0/8",
-      "10.0.0.0/8",
-      "100.64.0.0/10",
-      "127.0.0.0/8",
-      "169.254.0.0/16",
-      "172.16.0.0/12",
-      "192.168.0.0/16",
-      "224.0.0.0/4",
-      "240.0.0.0/4",
-    ].some((cidr) => ipMatchesCidr(address, cidr));
-  }
-  if (isIP(address) === 6) {
-    // Transitional embeddings (IPv4-mapped, NAT64, 6to4, IPv4-compatible,
-    // Teredo) are judged by their embedded IPv4: a private embedded address
-    // is restricted, a public one follows normal policy. The prefixes
-    // themselves are deliberately NOT blanket-restricted — NAT64/6to4 can
-    // legitimately embed public destinations.
-    if (embeddedIpv4Addresses(address).some((embedded) => addressIsRestricted(embedded))) {
-      return true;
-    }
-    return ["::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8"]
-      .some((cidr) => ipMatchesCidr(address, cidr));
-  }
-  return true;
+  return addressIsHardDenied(address) || addressIsSoftRestricted(address);
 }
 
 function ipMatchesCidr(address: string, cidr: string): boolean {
@@ -535,33 +402,4 @@ function embeddedIpv4Addresses(address: string): string[] {
 function dottedIpv4(value: bigint): string {
   const ipv4 = Number(value & BigInt(0xffff_ffff));
   return [24, 16, 8, 0].map((shift) => String((ipv4 >>> shift) & 255)).join(".");
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return isPgUniqueViolation(error);
-}
-
-function auditRule(
-  input: { workspaceId: string; actor: string },
-  rule: WorkspaceEgressRuleView,
-  action: string,
-): void {
-  writeAuditLog({
-    workspaceId: input.workspaceId,
-    entityType: "workspace_test_egress_rule",
-    entityId: rule.id,
-    action,
-    status: "Success",
-    actor: input.actor,
-    message: `Test-execution egress rule "${rule.name}" saved.`,
-    details: {
-      targetKind: rule.targetKind,
-      protocol: rule.protocol,
-      hostPattern: rule.hostPattern,
-      portFrom: rule.portFrom,
-      portTo: rule.portTo,
-      allowPrivateNetwork: rule.allowPrivateNetwork,
-      enabled: rule.enabled,
-    },
-  });
 }

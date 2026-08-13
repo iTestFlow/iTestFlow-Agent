@@ -129,30 +129,40 @@ export const ApiContractSelectionSchema = z.discriminatedUnion("kind", [
 ]);
 export type ApiContractSelection = z.infer<typeof ApiContractSelectionSchema>;
 
-export const ApiEnvironmentConfigSchema = z
-  .object({
-    baseUrl: HttpUrlSchema,
-    contract: ApiContractSelectionSchema.nullable().default(null),
-    auth: ApiAuthConfigSchema.default({ type: "none" }),
-    requestTimeoutMs: z.number().int().min(500).max(60_000).default(30_000),
-    mutationMode: z.enum(["disabled", "approved_catalog"]).default("disabled"),
-  })
-  .superRefine((config, ctx) => {
-    if (config.contract?.kind !== "same_origin_url") return;
-    let sameOrigin = false;
-    try {
-      sameOrigin = new URL(config.contract.url).origin === new URL(config.baseUrl).origin;
-    } catch {
-      // The field-level URL issue is more specific; keep this refinement fail-closed.
-    }
-    if (!sameOrigin) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["contract", "url"],
-        message: "The OpenAPI URL must use the API base URL origin.",
-      });
-    }
-  });
+/**
+ * Base object split from the refined input schema so the frozen-run reader
+ * (run-persistence) can extend it with legacy pre-intent-v1 policy fields.
+ */
+export const ApiEnvironmentConfigObjectSchema = z.object({
+  baseUrl: HttpUrlSchema,
+  contract: ApiContractSelectionSchema.nullable().default(null),
+  auth: ApiAuthConfigSchema.default({ type: "none" }),
+  requestTimeoutMs: z.number().int().min(500).max(60_000).default(30_000),
+});
+
+export function validateApiContractOrigin(
+  config: { baseUrl: string; contract: ApiContractSelection | null },
+  ctx: z.RefinementCtx,
+): void {
+  if (config.contract?.kind !== "same_origin_url") return;
+  let sameOrigin = false;
+  try {
+    sameOrigin = new URL(config.contract.url).origin === new URL(config.baseUrl).origin;
+  } catch {
+    // The field-level URL issue is more specific; keep this refinement fail-closed.
+  }
+  if (!sameOrigin) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["contract", "url"],
+      message: "The OpenAPI URL must use the API base URL origin.",
+    });
+  }
+}
+
+export const ApiEnvironmentConfigSchema = ApiEnvironmentConfigObjectSchema.superRefine(
+  validateApiContractOrigin,
+);
 export type ApiEnvironmentConfig = z.infer<typeof ApiEnvironmentConfigSchema>;
 
 const DatabaseSchemaNameSchema = z
@@ -166,9 +176,13 @@ export const DatabaseEnvironmentConfigSchema = z.object({
   port: z.number().int().min(1).max(65_535),
   databaseName: z.string().trim().min(1).max(255),
   username: z.string().trim().min(1).max(255),
-  tlsMode: z.enum(["disable", "require", "verify-full"]).default("require"),
-  schemas: z.array(DatabaseSchemaNameSchema).min(1).max(30),
-  accessMode: z.enum(["read_only", "cataloged_dml"]).default("read_only"),
+  /**
+   * New environments verify the server certificate. "require" (encrypted, not
+   * verified) is the deliberate compatibility choice for self-signed test
+   * certificates; "disable" remains readable for legacy profiles only.
+   */
+  tlsMode: z.enum(["disable", "require", "verify-full"]).default("verify-full"),
+  schemas: z.array(DatabaseSchemaNameSchema).min(1).max(30).optional(),
   connectTimeoutMs: z.number().int().min(500).max(60_000).default(10_000),
   statementTimeoutMs: z.number().int().min(500).max(60_000).default(30_000),
 });
@@ -272,6 +286,15 @@ export const RunEnvironmentSelectionSchema = z.discriminatedUnion("mode", [
   }),
 ]);
 
+/**
+ * Every run created by a current client executes under this policy version,
+ * stamped into the frozen env config at run creation. Frozen runs WITHOUT the
+ * stamp are legacy-intent runs: the worker enforces their original
+ * mutation/query/schema restrictions so a queued pre-deploy run can never
+ * resume with broader authority than it was approved with.
+ */
+export const EXECUTION_POLICY_VERSION = "intent-v1" as const;
+
 export const RunCreateSchema = z.object({
   environment: RunEnvironmentSelectionSchema,
   story: z
@@ -282,60 +305,15 @@ export const RunCreateSchema = z.object({
     .nullable()
     .default(null),
   cases: z.array(RunCaseInputSchema).min(1).max(50),
-  /** Approved, immutable operation revisions to pin into the run snapshot. */
+  /**
+   * Guidance for this run only, entered at review. Frozen alongside the
+   * environment's own notes; run notes win when the two conflict.
+   */
+  notes: z.string().trim().max(2_000).default(""),
+  /**
+   * @deprecated Accepted and ignored. Operation approval was removed — the
+   * agent's surface is derived automatically from the frozen environment.
+   * Kept so pre-simplification clients still get a 202.
+   */
   capabilityRevisionIds: z.array(z.string().trim().min(1).max(200)).max(200).default([]),
 });
-
-export const WorkspaceEgressRuleInputSchema = z
-  .object({
-    name: z.string().trim().min(1).max(120),
-    targetKind: z.enum(["api", "database", "oauth", "openapi"]),
-    protocol: z.enum(["http", "https", "tcp"]),
-    hostPattern: z.string().trim().min(1).max(255),
-    portFrom: z.number().int().min(1).max(65_535),
-    portTo: z.number().int().min(1).max(65_535),
-    allowPrivateNetwork: z.boolean().default(false),
-    enabled: z.boolean().default(true),
-  })
-  .refine((rule) => rule.portTo >= rule.portFrom, {
-    path: ["portTo"],
-    message: "The ending port must be greater than or equal to the starting port.",
-  });
-export type WorkspaceEgressRuleInput = z.infer<typeof WorkspaceEgressRuleInputSchema>;
-
-export const IntegrationOperationRevisionInputSchema = z
-  .object({
-    stableKey: z.string().trim().regex(/^[a-z][a-z0-9_.-]{0,119}$/),
-    displayName: z.string().trim().min(1).max(200),
-    revision: z.number().int().positive(),
-    layer: z.enum(["api", "db"]),
-    sourceKind: z.enum(["manual", "openapi"]),
-    safetyClass: z.enum(["read", "mutation"]),
-    databaseDriver: z.enum(["postgres", "sqlserver", "mysql"]).nullable().default(null),
-    apiContractRevisionId: z.string().trim().min(1).nullable().default(null),
-    parameterSchema: z.record(z.unknown()).default({}),
-    definition: z.record(z.unknown()),
-    approvalStatus: z.enum(["draft", "approved", "archived"]).default("draft"),
-  })
-  .superRefine((operation, ctx) => {
-    if ((operation.layer === "db") !== Boolean(operation.databaseDriver)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["databaseDriver"],
-        message: "Database operations require a driver; API operations must not set one.",
-      });
-    }
-    const contractSourceIsValid = operation.sourceKind === "openapi"
-      ? operation.layer === "api" && Boolean(operation.apiContractRevisionId)
-      : operation.apiContractRevisionId === null;
-    if (!contractSourceIsValid) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["apiContractRevisionId"],
-        message: "OpenAPI operations require a contract revision; manual operations must not set one.",
-      });
-    }
-  });
-export type IntegrationOperationRevisionInput = z.infer<
-  typeof IntegrationOperationRevisionInputSchema
->;

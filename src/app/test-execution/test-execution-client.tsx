@@ -12,12 +12,12 @@ import { postJson, patchJson, deleteJson } from "@/components/workflow/post-json
 import { ApiError } from "@/components/workflow/api-error";
 import { projectWarning, useActiveProject } from "@/components/workflow/test-intelligence-shared";
 import type { RunDetailDeltaDto, RunDetailDto } from "@/modules/test-execution/report-assembler";
-import type { WorkspaceRole } from "@/modules/workspace/workspace-access.service";
 
 import {
   EnvironmentStep,
   environmentAllowedOrigin,
   environmentCredentialTitles,
+  environmentExecutionNotes,
   environmentSecretNames,
   environmentTargets,
   type EnvironmentProfileSummary,
@@ -33,8 +33,6 @@ import {
 } from "./components/scope-step";
 import { ReviewExecuteStep } from "./components/review-execute-step";
 import { ResultsStep, type CandidatePublishState } from "./components/results-step";
-import { IntegrationCapabilitiesPanel } from "./components/integration-capabilities-panel";
-import { WorkspaceEgressRulesPanel } from "./components/workspace-egress-rules-panel";
 import { OutcomeBadge } from "./components/outcome-badge";
 import { azureStepsToNaturalPlan, buildNaturalPlan } from "./lib/manual-step-form";
 import {
@@ -121,7 +119,7 @@ function buildOneTimeEnvironmentSubmission(rawConfig: OneTimeEnvironmentState):
   };
 }
 
-export function TestExecutionClient({ workspaceRole }: { workspaceRole: WorkspaceRole | null }) {
+export function TestExecutionClient() {
   const scope = useActiveProject();
   const projectId = scope?.projectId ?? "";
 
@@ -132,7 +130,6 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
   const [updatingProfile, setUpdatingProfile] = useState(false);
   const [invalidatingSession, setInvalidatingSession] = useState(false);
   const [selection, setSelection] = useState<EnvironmentSelection | null>(null);
-  const [selectedCapabilityIds, setSelectedCapabilityIds] = useState<string[]>([]);
 
   const [story, setStory] = useState({ workItemId: "", title: "" });
   const [linkedCases, setLinkedCases] = useState<ImportableTestCase[] | null>(null);
@@ -152,6 +149,7 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
   /** One plans fetch per project visit; a failure is a passive banner — switching projects or revisiting refetches. */
   const plansRequestedRef = useRef(false);
 
+  const [runNotes, setRunNotes] = useState("");
   const [creating, setCreating] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<RunDetailDto | null>(null);
@@ -170,15 +168,6 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
   }, [scope]);
 
   const runTerminal = isTerminalRunStatusValue(runDetail?.run.status ?? null);
-  const capabilityEnvironment = useMemo(() => {
-    const target = selection?.mode === "profile" ? selection.profile : selection?.mode === "one_time" ? selection.config : null;
-    return {
-      targets: environmentTargets(selection),
-      databaseDriver: target?.database?.driver ?? null,
-      apiMutationsEnabled: target?.api?.mutationMode === "approved_catalog",
-      databaseDmlEnabled: target?.database?.accessMode === "cataloged_dml",
-    };
-  }, [selection]);
   // Hand-typed one-time environment content (notes, users, login steps) is as
   // costly to lose as authored cases — both arm the unsaved-changes guard.
   const oneTimeDirty =
@@ -624,7 +613,7 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
       const body = await postJson<{ runId: string }>("/api/test-execution/runs", {
         scope,
         environment,
-        capabilityRevisionIds: selectedCapabilityIds,
+        notes: runNotes.trim(),
         story: story.workItemId ? { workItemId: story.workItemId, title: story.title } : null,
         cases: cases.map((entry) => ({
           title: entry.title,
@@ -767,18 +756,6 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
           onUpdateProfile={updateProfile}
           updatingProfile={updatingProfile}
           onContinue={() => setActiveStep("scope")}
-          capabilitiesPanel={
-            <div className="space-y-4">
-              <WorkspaceEgressRulesPanel scope={scope} workspaceRole={workspaceRole} />
-              <IntegrationCapabilitiesPanel
-                scope={scope}
-                workspaceRole={workspaceRole}
-                environment={capabilityEnvironment}
-                selectedIds={selectedCapabilityIds}
-                onSelectedIdsChange={setSelectedCapabilityIds}
-              />
-            </div>
-          }
           onInvalidateSession={invalidateSession}
           invalidatingSession={invalidatingSession}
         />
@@ -823,7 +800,9 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
           environmentLabel={selection?.mode === "profile" ? selection.profile.name : "One-time environment"}
           allowedOrigin={environmentAllowedOrigin(selection)}
           environmentTargets={environmentTargets(selection)}
-          capabilityCount={selectedCapabilityIds.length}
+          environmentNotes={environmentExecutionNotes(selection)}
+          runNotes={runNotes}
+          onRunNotesChange={setRunNotes}
           availableSecretNames={environmentSecretNames(selection)}
           storyWorkItemId={story.workItemId || null}
           run={runId ? runDetail : null}

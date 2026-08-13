@@ -10,8 +10,10 @@ const egress = vi.hoisted(() => ({
 vi.mock("@/modules/test-execution/egress-policy.service", async (importOriginal) => ({
   // Keep the real pure hostname normalization; only the policy check is mocked.
   ...(await importOriginal<typeof import("@/modules/test-execution/egress-policy.service")>()),
-  assertTestExecutionEgressAllowed: egress.assertAllowed,
+  assertBoundaryEgressAllowed: egress.assertAllowed,
 }));
+
+import type { ExecutionBoundary } from "@/modules/test-execution/execution-boundary";
 
 import { MysqlDatabaseExecutor } from "./mysql-database-executor";
 import { PostgresDatabaseExecutor } from "./postgres-database-executor";
@@ -23,18 +25,25 @@ import {
   createPinnedDatabaseSocket,
 } from "./database-egress";
 
-function config(driver: DatabaseExecutorConfig["driver"]): DatabaseExecutorConfig {
+function boundaryFor(port: number): ExecutionBoundary {
   return {
-    workspaceId: "workspace-1",
+    version: "itestflow.boundary.v1",
+    targets: [{ kind: "database", protocol: "tcp", host: "db.example.test", port }],
+  };
+}
+
+function config(driver: DatabaseExecutorConfig["driver"]): DatabaseExecutorConfig {
+  const port = driver === "postgres" ? 5432 : driver === "sqlserver" ? 1433 : 3306;
+  return {
+    boundary: boundaryFor(port),
     driver,
     host: "db.example.test",
-    port: driver === "postgres" ? 5432 : driver === "sqlserver" ? 1433 : 3306,
+    port,
     databaseName: "qa",
     username: "tester",
     password: "secret",
     tlsMode: "require",
     schemas: [driver === "sqlserver" ? "dbo" : driver === "mysql" ? "qa" : "public"],
-    accessMode: "read_only",
     connectTimeoutMs: 1_000,
     statementTimeoutMs: 1_000,
     signal: new AbortController().signal,
@@ -44,14 +53,14 @@ function config(driver: DatabaseExecutorConfig["driver"]): DatabaseExecutorConfi
 describe("database executor egress enforcement", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    egress.assertAllowed.mockResolvedValue({ ruleId: "rule-1", resolvedAddresses: ["203.0.113.10"] });
+    egress.assertAllowed.mockResolvedValue({ resolvedAddresses: ["203.0.113.10"] });
   });
 
-  it("passes the workspace and environment-derived endpoint before opening PostgreSQL", async () => {
+  it("passes the boundary and environment-derived endpoint before opening PostgreSQL", async () => {
     const events: string[] = [];
     egress.assertAllowed.mockImplementation(async () => {
       events.push("guard");
-      return { ruleId: "rule-1", resolvedAddresses: ["203.0.113.10"] };
+      return { resolvedAddresses: ["203.0.113.10"] };
     });
     const client = {
       connect: vi.fn(async () => { events.push("connect"); }),
@@ -68,8 +77,7 @@ describe("database executor egress enforcement", () => {
     await executor.execute({ kind: "schema" });
 
     expect(egress.assertAllowed).toHaveBeenCalledOnce();
-    expect(egress.assertAllowed).toHaveBeenCalledWith({
-      workspaceId: "workspace-1",
+    expect(egress.assertAllowed).toHaveBeenCalledWith(boundaryFor(5432), {
       targetKind: "database",
       protocol: "tcp",
       host: "db.example.test",
@@ -140,7 +148,6 @@ describe("database executor egress enforcement", () => {
     try {
       const port = (server.address() as AddressInfo).port;
       egress.assertAllowed.mockResolvedValue({
-        ruleId: "rule-1",
         resolvedAddresses: ["127.0.0.1"],
       });
       const request = {
@@ -187,7 +194,7 @@ describe("database executor egress enforcement", () => {
     async (driver) => {
       const denied = vi.fn(async () => { throw new Error("denied"); });
       const createClient = vi.fn();
-      const guardedConfig = { ...config(driver), workspaceId: undefined, assertTarget: denied };
+      const guardedConfig = { ...config(driver), boundary: undefined, assertTarget: denied };
       const executor = driver === "postgres"
         ? new PostgresDatabaseExecutor(guardedConfig, createClient as never)
         : driver === "sqlserver"
@@ -206,10 +213,10 @@ describe("database executor egress enforcement", () => {
     },
   );
 
-  it("fails closed when no workspace or injected authorization context is present", async () => {
+  it("fails closed when no boundary or injected authorization context is present", async () => {
     const createClient = vi.fn();
     const withoutContext = config("postgres");
-    delete withoutContext.workspaceId;
+    delete withoutContext.boundary;
     const executor = new PostgresDatabaseExecutor(withoutContext, createClient as never);
 
     await expect(executor.execute({ kind: "schema" })).rejects.toMatchObject({ category: "policy" });
@@ -219,9 +226,8 @@ describe("database executor egress enforcement", () => {
   it("rejects missing concrete addresses and invalid or canceled socket bindings", async () => {
     const missingAddress = {
       ...config("postgres"),
-      workspaceId: undefined,
+      boundary: undefined,
       assertTarget: vi.fn(async () => ({
-        ruleId: "rule-without-addresses",
         resolvedAddresses: [],
       })),
     };
@@ -264,9 +270,9 @@ describe("database executor egress enforcement", () => {
   ])("normalizes the authorized hostname for TLS identity: $host", async ({ host, address, expected }) => {
     const configured = {
       ...config("postgres"),
-      workspaceId: undefined,
+      boundary: undefined,
       host,
-      assertTarget: vi.fn(async () => ({ ruleId: "rule-1", resolvedAddresses: [address] })),
+      assertTarget: vi.fn(async () => ({ resolvedAddresses: [address] })),
     };
 
     await expect(assertDatabaseEgressAllowed(configured)).resolves.toEqual({
@@ -300,10 +306,9 @@ describe("database executor egress enforcement", () => {
   it("fails closed when the authorized TLS hostname cannot be normalized", async () => {
     const configured = {
       ...config("postgres"),
-      workspaceId: undefined,
+      boundary: undefined,
       host: "\uD800",
       assertTarget: vi.fn(async () => ({
-        ruleId: "rule-1",
         resolvedAddresses: ["203.0.113.15"],
       })),
     };

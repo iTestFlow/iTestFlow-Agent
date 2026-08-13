@@ -10,10 +10,8 @@ import {
   uniqueTestId,
 } from "@/test/db";
 
-import {
-  createWorkspaceEgressRule,
-  setTestExecutionEgressResolverForTests,
-} from "./egress-policy.service";
+import { setTestExecutionEgressResolverForTests } from "./egress-policy.service";
+import { deriveExecutionBoundary } from "./execution-boundary";
 import {
   freezeSameOriginOpenApiContract,
   setOpenApiContractFetchForTests,
@@ -24,6 +22,7 @@ const projectId = uniqueTestId("proj_oapi");
 const userId = uniqueTestId("usr_oapi");
 const orgUrl = `https://dev.azure.com/${workspaceId}`;
 const sourceUrl = "https://api.example.test/openapi.json";
+const boundary = deriveExecutionBoundary({ api: { baseUrl: "https://api.example.test/v1" } });
 const scope = {
   projectId,
   azureProjectId: projectId,
@@ -38,20 +37,6 @@ describeDb("same-origin OpenAPI contract freezing", () => {
     await seedWorkspace({ id: workspaceId, orgUrl });
     await seedUser({ id: userId, email: `${userId}@example.test` });
     await seedProject({ workspaceId, orgUrl, azureProjectId: projectId });
-    await createWorkspaceEgressRule({
-      workspaceId,
-      actor: userId,
-      rule: {
-        name: "OpenAPI fixture",
-        targetKind: "openapi",
-        protocol: "https",
-        hostPattern: "api.example.test",
-        portFrom: 443,
-        portTo: 443,
-        allowPrivateNetwork: false,
-        enabled: true,
-      },
-    });
     setTestExecutionEgressResolverForTests(async () => ["203.0.113.42"]);
     currentDocument = {
       openapi: "3.0.3",
@@ -74,6 +59,7 @@ describeDb("same-origin OpenAPI contract freezing", () => {
       workspaceId,
       scope,
       actor: userId,
+      boundary,
       baseUrl: "https://api.example.test/v1",
       sourceUrl,
     });
@@ -87,6 +73,7 @@ describeDb("same-origin OpenAPI contract freezing", () => {
       workspaceId,
       scope,
       actor: userId,
+      boundary,
       baseUrl: "https://api.example.test/v1",
       sourceUrl,
     });
@@ -105,6 +92,7 @@ describeDb("same-origin OpenAPI contract freezing", () => {
       workspaceId,
       scope,
       actor: userId,
+      boundary,
       baseUrl: "https://api.example.test/v1",
       sourceUrl,
     });

@@ -1,7 +1,7 @@
 import "server-only";
 
 import type { ApiAuthConfig } from "@/modules/test-execution/schemas/test-execution.schemas";
-import { assertTestExecutionEgressAllowed } from "@/modules/test-execution/egress-policy.service";
+import { assertBoundaryEgressAllowed } from "@/modules/test-execution/egress-policy.service";
 import { isForbiddenRequestHeader, isSensitiveKey } from "@/modules/shared/sensitive-data";
 
 import {
@@ -313,9 +313,8 @@ export class GuardedApiExecutor implements ApiExecutor {
       if (url.protocol !== "http:" && url.protocol !== "https:") {
         throw new Error("Only HTTP and HTTPS egress is supported.");
       }
-      if (this.config.workspaceId) {
-        return await assertTestExecutionEgressAllowed({
-          workspaceId: this.config.workspaceId,
+      if (this.config.boundary) {
+        return await assertBoundaryEgressAllowed(this.config.boundary, {
           targetKind: kind,
           protocol: url.protocol === "https:" ? "https" : "http",
           host: url.hostname,
@@ -325,10 +324,10 @@ export class GuardedApiExecutor implements ApiExecutor {
       if (this.config.assertTarget) {
         return await this.config.assertTarget(url, kind);
       }
-      throw new Error("Workspace egress context is not configured.");
+      throw new Error("Execution boundary is not configured.");
     } catch (error) {
       throw new ApiExecutorError(
-        `${kind === "oauth" ? "OAuth" : "API"} target is denied by the workspace egress policy.`,
+        `${kind === "oauth" ? "OAuth" : "API"} target is denied by the test-execution network policy.`,
         "policy",
         false,
         error,
@@ -338,7 +337,7 @@ export class GuardedApiExecutor implements ApiExecutor {
 }
 
 function requiredAuthorizedAddress(
-  authorization: Awaited<ReturnType<typeof assertTestExecutionEgressAllowed>> | void,
+  authorization: Awaited<ReturnType<typeof assertBoundaryEgressAllowed>> | void,
 ): string {
   const address = authorization?.resolvedAddresses[0];
   if (!address) {

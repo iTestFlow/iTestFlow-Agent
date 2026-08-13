@@ -3,10 +3,12 @@ import "server-only";
 import { z } from "zod";
 
 import { NaturalPlanSchema } from "./action-schema";
+import type { DiscoveredDatabaseObject } from "@/modules/integrations/database-automation/database-executor.port";
 import type { ExecutionOutcome, RunOutcome } from "./run-state";
 import {
-  ApiEnvironmentConfigSchema,
+  ApiEnvironmentConfigObjectSchema,
   DatabaseEnvironmentConfigSchema,
+  EXECUTION_POLICY_VERSION,
   type SecretPurpose,
 } from "./schemas/test-execution.schemas";
 import { decryptSecret } from "@/modules/security/encryption.service";
@@ -25,7 +27,22 @@ import {
  * locked_by, extended to the run chain.
  */
 
+/**
+ * Frozen-run readers keep the legacy pre-intent-v1 policy fields readable:
+ * a run frozen before the simplification carries its original authorization
+ * inputs, and the worker re-enforces them (legacy gate) instead of silently
+ * broadening a queued run's authority after a deploy.
+ */
+const FrozenApiConfigSchema = ApiEnvironmentConfigObjectSchema.extend({
+  mutationMode: z.enum(["disabled", "approved_catalog"]).optional(),
+});
+const FrozenDatabaseConfigSchema = DatabaseEnvironmentConfigSchema.extend({
+  accessMode: z.enum(["read_only", "cataloged_dml"]).optional(),
+});
+
 export const EnvConfigSchema = z.object({
+  /** Absent on legacy frozen runs — see the legacy gate in the run handler. */
+  executionPolicyVersion: z.literal(EXECUTION_POLICY_VERSION).optional(),
   /** Empty when the frozen environment has no browser target. */
   initialUrl: z.string().default(""),
   /** Empty when the frozen environment has no browser target. */
@@ -40,6 +57,8 @@ export const EnvConfigSchema = z.object({
   loginMode: z.enum(["session", "fresh"]).default("session"),
   loggedInText: z.string().default(""),
   executionNotes: z.string().default(""),
+  /** Per-run guidance; empty on runs frozen before run notes existed. */
+  runNotes: z.string().default(""),
   users: z
     .array(
       z.object({
@@ -50,8 +69,8 @@ export const EnvConfigSchema = z.object({
       }),
     )
     .default([]),
-  api: ApiEnvironmentConfigSchema.nullable().default(null),
-  database: DatabaseEnvironmentConfigSchema.nullable().default(null),
+  api: FrozenApiConfigSchema.nullable().default(null),
+  database: FrozenDatabaseConfigSchema.nullable().default(null),
 }).superRefine((config, ctx) => {
   const hasInitialUrl = config.initialUrl.length > 0;
   if (hasInitialUrl !== (config.allowedOrigin.length > 0)) {
@@ -440,6 +459,93 @@ export async function markInterruptedActionsUncertain(
     { runId, jobId, now: nowIso() },
   );
 }
+
+export type RunDatabaseDiscoveryRecord = {
+  status: "succeeded" | "failed";
+  driver: "postgres" | "sqlserver" | "mysql";
+  truncated: boolean;
+  errorCode: string | null;
+  errorMessage: string | null;
+  objects: DiscoveredDatabaseObject[];
+};
+
+/**
+ * The recorded discovery IS the per-run cache: a reclaimed worker reuses it
+ * instead of re-discovering, so a run's database surface can never widen
+ * mid-flight.
+ */
+export async function loadRunDatabaseDiscovery(runId: string): Promise<RunDatabaseDiscoveryRecord | null> {
+  const row = await sqlGet<{
+    driver: "postgres" | "sqlserver" | "mysql";
+    status: "succeeded" | "failed";
+    truncated: boolean;
+    error_code: string | null;
+    error_message: string | null;
+    objects_json: unknown;
+  }>(
+    `SELECT driver, status, truncated, error_code, error_message, objects_json
+     FROM test_execution_run_database_discovery WHERE run_id = @runId`,
+    { runId },
+  );
+  if (!row) return null;
+  const parsed = DiscoveredObjectsSchema.safeParse(row.objects_json);
+  return {
+    status: row.status,
+    driver: row.driver,
+    truncated: row.truncated,
+    errorCode: row.error_code,
+    errorMessage: row.error_message,
+    objects: parsed.success ? parsed.data : [],
+  };
+}
+
+export async function recordRunDatabaseDiscovery(input: {
+  runId: string;
+  jobId: string;
+  workspaceId: string;
+  projectId: string;
+  azureProjectId: string;
+  driver: "postgres" | "sqlserver" | "mysql";
+  status: "succeeded" | "failed";
+  truncated: boolean;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  objects: readonly DiscoveredDatabaseObject[];
+}): Promise<boolean> {
+  const inserted = await sqlRun(
+    `INSERT INTO test_execution_run_database_discovery (
+       id, run_id, workspace_id, project_id, azure_project_id, driver, status,
+       error_code, error_message, truncated, object_count, objects_json, created_at
+     )
+     SELECT @id, @runId, @workspaceId, @projectId, @azureProjectId, @driver, @status,
+            @errorCode, @errorMessage, @truncated, @objectCount, @objectsJson::jsonb, @now
+     WHERE ${RUN_FENCE}
+     ON CONFLICT (run_id) DO NOTHING`,
+    {
+      id: createId("trdd"),
+      runId: input.runId,
+      jobId: input.jobId,
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      azureProjectId: input.azureProjectId,
+      driver: input.driver,
+      status: input.status,
+      errorCode: input.errorCode ?? null,
+      errorMessage: input.errorMessage ?? null,
+      truncated: input.truncated,
+      objectCount: input.objects.length,
+      objectsJson: JSON.stringify(input.objects),
+      now: nowIso(),
+    },
+  );
+  return inserted > 0;
+}
+
+const DiscoveredObjectsSchema = z.array(z.object({
+  schema: z.string(),
+  table: z.string(),
+  columns: z.array(z.object({ name: z.string(), dataType: z.string() })).default([]),
+})).catch([]);
 
 export async function markCaseRunning(runId: string, jobId: string, caseRunId: string): Promise<boolean> {
   const updated = await sqlRun(

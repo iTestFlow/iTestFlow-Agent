@@ -12,18 +12,32 @@ import {
 import {
   assertNotCanceled,
   cancellationError,
+  certificateFailureMessage,
   escapeLikePattern,
+  foldDiscoveredColumns,
+  MAX_DISCOVERED_COLUMNS,
   queryError,
   rollbackOutcome,
 } from "./database-executor.shared";
 import {
   DatabaseExecutorError,
+  type DatabaseAccess,
   type DatabaseExecutionRequest,
   type DatabaseExecutionResult,
   type DatabaseExecutor,
   type DatabaseExecutorConfig,
+  type DiscoveredDatabaseObjects,
 } from "./database-executor.port";
 import { compileNamedParameters, validateSql } from "./sql-policy";
+
+/**
+ * System schemas the discovery sweep never reports. Unlike PostgreSQL and
+ * MySQL, SQL Server's INFORMATION_SCHEMA is not privilege-filtered — it lists
+ * every object in the database — so visibility is established explicitly with
+ * HAS_PERMS_BY_NAME at the call site.
+ */
+const SQLSERVER_SYSTEM_SCHEMA_FILTER = `TABLE_SCHEMA NOT IN ('sys', 'INFORMATION_SCHEMA', 'guest')
+          AND TABLE_SCHEMA NOT LIKE 'db[_]%'`;
 
 type SqlRequestLike = {
   input(name: string, value: unknown): SqlRequestLike;
@@ -46,11 +60,43 @@ type SqlPoolLike = {
 export class SqlServerDatabaseExecutor implements DatabaseExecutor {
   readonly driver = "sqlserver" as const;
   private pool: SqlPoolLike | null = null;
+  /** Empty until discovery runs; every statement is bound to it. */
+  private access: DatabaseAccess = { schemas: [], tables: new Set() };
 
   constructor(
     private readonly config: DatabaseExecutorConfig,
     private readonly createPool: (config: SqlServerConfig) => SqlPoolLike = (config) => new sql.ConnectionPool(config) as unknown as SqlPoolLike,
   ) {}
+
+  setDatabaseAccess(access: DatabaseAccess): void {
+    this.access = access;
+  }
+
+  async discoverObjects(): Promise<DiscoveredDatabaseObjects> {
+    assertNotCanceled(this.config.signal, "SQL Server");
+    const pool = await this.ensureConnected();
+    try {
+      const request = pool.request();
+      request.input("maxColumns", MAX_DISCOVERED_COLUMNS + 1);
+      const result = await request.query<Record<string, unknown>>(`
+        SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE ${SQLSERVER_SYSTEM_SCHEMA_FILTER}
+          AND HAS_PERMS_BY_NAME(QUOTENAME(TABLE_SCHEMA) + '.' + QUOTENAME(TABLE_NAME), 'OBJECT', 'SELECT') = 1
+        ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
+        OFFSET 0 ROWS FETCH NEXT @maxColumns ROWS ONLY`);
+      return foldDiscoveredColumns(Array.from(result.recordset ?? []).map((row) => ({
+        schema: row.TABLE_SCHEMA,
+        table: row.TABLE_NAME,
+        column: row.COLUMN_NAME,
+        dataType: row.DATA_TYPE,
+      })));
+    } catch (error) {
+      if (error instanceof DatabaseExecutorError) throw error;
+      this.resetConnection();
+      throw new DatabaseExecutorError("SQL Server object discovery failed.", "transport", false, error);
+    }
+  }
 
   async execute(request: DatabaseExecutionRequest): Promise<DatabaseExecutionResult> {
     assertNotCanceled(this.config.signal, "SQL Server");
@@ -58,7 +104,7 @@ export class SqlServerDatabaseExecutor implements DatabaseExecutor {
     assertNotCanceled(this.config.signal, "SQL Server");
     if (request.kind === "schema") return this.inspectSchema(pool, request.tablePattern);
     const parameters = request.parameters ?? {};
-    const validated = validateSql({ sql: request.sql, intent: request.kind === "select" ? "select" : "mutation", driver: this.driver, allowedSchemas: this.config.schemas, parameters });
+    const validated = validateSql({ sql: request.sql, intent: request.kind === "select" ? "select" : "mutation", driver: this.driver, allowedSchemas: this.access.schemas, allowedTables: this.access.tables, parameters });
     const compiled = compileNamedParameters(validated, parameters, this.driver);
     const transaction = pool.transaction();
     const started = Date.now();
@@ -191,7 +237,12 @@ export class SqlServerDatabaseExecutor implements DatabaseExecutor {
       return pool;
     } catch (error) {
       await pool.close().catch(() => undefined);
-      throw new DatabaseExecutorError("SQL Server connection failed.", "transport", false, error);
+      throw new DatabaseExecutorError(
+        certificateFailureMessage(error) ?? "SQL Server connection failed.",
+        "transport",
+        false,
+        error,
+      );
     }
   }
 
@@ -202,7 +253,7 @@ export class SqlServerDatabaseExecutor implements DatabaseExecutor {
     try {
       const request = pool.request();
       const escaped = tablePattern ? escapeLikePattern(tablePattern) : null;
-      request.input("schemas", this.config.schemas.join(","));
+      request.input("schemas", this.access.schemas.join(","));
       request.input("pattern", escaped ? `%${escaped}%` : null);
       const result = await request.query<Record<string, unknown>>(`
         SELECT TOP (500) TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name,

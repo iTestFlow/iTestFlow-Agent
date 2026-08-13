@@ -8,18 +8,32 @@ import { assertDatabaseEgressAllowed } from "./database-egress";
 import {
   assertNotCanceled,
   cancellationError,
+  certificateFailureMessage,
   escapeLikePattern,
+  foldDiscoveredColumns,
+  MAX_DISCOVERED_COLUMNS,
   queryError,
   rollbackOutcome,
 } from "./database-executor.shared";
 import {
   DatabaseExecutorError,
+  type DatabaseAccess,
   type DatabaseExecutionRequest,
   type DatabaseExecutionResult,
   type DatabaseExecutor,
   type DatabaseExecutorConfig,
+  type DiscoveredDatabaseObjects,
 } from "./database-executor.port";
 import { compileNamedParameters, validateSql } from "./sql-policy";
+
+/**
+ * System schemas the discovery sweep never reports. information_schema itself
+ * is privilege-filtered by PostgreSQL, so what remains is exactly what this
+ * account can see.
+ */
+const POSTGRES_SYSTEM_SCHEMA_FILTER = `table_schema NOT IN ('pg_catalog', 'information_schema')
+  AND table_schema NOT LIKE 'pg\\_toast%'
+  AND table_schema NOT LIKE 'pg\\_temp%'`;
 
 type PgClientLike = {
   connect(): Promise<void>;
@@ -31,11 +45,42 @@ export class PostgresDatabaseExecutor implements DatabaseExecutor {
   readonly driver = "postgres" as const;
   private client: PgClientLike | null = null;
   private connected = false;
+  /** Empty until discovery runs; every statement is bound to it. */
+  private access: DatabaseAccess = { schemas: [], tables: new Set() };
 
   constructor(
     private readonly config: DatabaseExecutorConfig,
     private readonly createClient: (config: ClientConfig) => PgClientLike = (config) => new Client(config) as unknown as PgClientLike,
   ) {}
+
+  setDatabaseAccess(access: DatabaseAccess): void {
+    this.access = access;
+  }
+
+  async discoverObjects(): Promise<DiscoveredDatabaseObjects> {
+    assertNotCanceled(this.config.signal, "PostgreSQL");
+    const client = await this.ensureConnected();
+    try {
+      const result = await client.query({
+        text: `SELECT table_schema, table_name, column_name, data_type
+               FROM information_schema.columns
+               WHERE ${POSTGRES_SYSTEM_SCHEMA_FILTER}
+               ORDER BY table_schema, table_name, ordinal_position
+               LIMIT $1`,
+        values: [MAX_DISCOVERED_COLUMNS + 1],
+      });
+      return foldDiscoveredColumns((result.rows ?? []).map((row) => ({
+        schema: row.table_schema,
+        table: row.table_name,
+        column: row.column_name,
+        dataType: row.data_type,
+      })));
+    } catch (error) {
+      if (error instanceof DatabaseExecutorError) throw error;
+      this.resetConnection();
+      throw new DatabaseExecutorError("PostgreSQL object discovery failed.", "transport", false, error);
+    }
+  }
 
   async execute(request: DatabaseExecutionRequest): Promise<DatabaseExecutionResult> {
     assertNotCanceled(this.config.signal, "PostgreSQL");
@@ -47,7 +92,8 @@ export class PostgresDatabaseExecutor implements DatabaseExecutor {
       sql: request.sql,
       intent: request.kind === "select" ? "select" : "mutation",
       driver: this.driver,
-      allowedSchemas: this.config.schemas,
+      allowedSchemas: this.access.schemas,
+      allowedTables: this.access.tables,
       parameters,
     });
     const compiled = compileNamedParameters(validated, parameters, this.driver);
@@ -163,7 +209,12 @@ export class PostgresDatabaseExecutor implements DatabaseExecutor {
       return client;
     } catch (error) {
       await client.end().catch(() => undefined);
-      throw new DatabaseExecutorError("PostgreSQL connection failed.", "transport", false, error);
+      throw new DatabaseExecutorError(
+        certificateFailureMessage(error) ?? "PostgreSQL connection failed.",
+        "transport",
+        false,
+        error,
+      );
     }
   }
 
@@ -180,7 +231,7 @@ export class PostgresDatabaseExecutor implements DatabaseExecutor {
                  AND ($2::text IS NULL OR table_name ILIKE $2)
                ORDER BY table_schema, table_name, ordinal_position
                LIMIT 500`,
-        values: [this.config.schemas, escaped ? `%${escaped}%` : null],
+        values: [this.access.schemas, escaped ? `%${escaped}%` : null],
       });
       return normalizeResult(result, "SELECT", Date.now() - started, this.config);
     } catch (error) {

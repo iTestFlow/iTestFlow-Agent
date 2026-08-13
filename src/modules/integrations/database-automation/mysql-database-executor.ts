@@ -11,18 +11,30 @@ import {
 import {
   assertNotCanceled,
   cancellationError,
+  certificateFailureMessage,
   escapeLikePattern,
+  foldDiscoveredColumns,
+  MAX_DISCOVERED_COLUMNS,
   queryError,
   rollbackOutcome,
 } from "./database-executor.shared";
 import {
   DatabaseExecutorError,
+  type DatabaseAccess,
   type DatabaseExecutionRequest,
   type DatabaseExecutionResult,
   type DatabaseExecutor,
   type DatabaseExecutorConfig,
+  type DiscoveredDatabaseObjects,
 } from "./database-executor.port";
 import { compileNamedParameters, validateSql } from "./sql-policy";
+
+/**
+ * System schemas the discovery sweep never reports. MySQL's information_schema
+ * is itself privilege-filtered, so what remains is exactly what this account
+ * can see.
+ */
+const MYSQL_SYSTEM_SCHEMA_FILTER = `table_schema NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys')`;
 
 type MysqlConnectionLike = Pick<Connection, "query" | "beginTransaction" | "commit" | "rollback" | "end" | "destroy"> & {
   threadId?: number;
@@ -36,11 +48,44 @@ export class MysqlDatabaseExecutor implements DatabaseExecutor {
   readonly driver = "mysql" as const;
   private connection: MysqlConnectionLike | null = null;
   private binding: DatabaseEgressBinding | null = null;
+  /** Empty until discovery runs; every statement is bound to it. */
+  private access: DatabaseAccess = { schemas: [], tables: new Set() };
 
   constructor(
     private readonly config: DatabaseExecutorConfig,
     private readonly createConnection: (config: ConnectionOptions) => Promise<MysqlConnectionLike> = (config) => mysql.createConnection(config),
   ) {}
+
+  setDatabaseAccess(access: DatabaseAccess): void {
+    this.access = access;
+  }
+
+  async discoverObjects(): Promise<DiscoveredDatabaseObjects> {
+    assertNotCanceled(this.config.signal, "MySQL");
+    const connection = await this.ensureConnected();
+    try {
+      const [rows] = await connection.query({
+        sql: `SELECT table_schema, table_name, column_name, data_type
+              FROM information_schema.columns
+              WHERE ${MYSQL_SYSTEM_SCHEMA_FILTER}
+              ORDER BY table_schema, table_name, ordinal_position
+              LIMIT ?`,
+        values: [MAX_DISCOVERED_COLUMNS + 1],
+        timeout: this.config.statementTimeoutMs,
+      });
+      const records = Array.isArray(rows) ? rows as Record<string, unknown>[] : [];
+      return foldDiscoveredColumns(records.map((row) => ({
+        schema: row.table_schema,
+        table: row.table_name,
+        column: row.column_name,
+        dataType: row.data_type,
+      })));
+    } catch (error) {
+      if (error instanceof DatabaseExecutorError) throw error;
+      this.resetConnection();
+      throw new DatabaseExecutorError("MySQL object discovery failed.", "transport", false, error);
+    }
+  }
 
   async execute(request: DatabaseExecutionRequest): Promise<DatabaseExecutionResult> {
     assertNotCanceled(this.config.signal, "MySQL");
@@ -48,7 +93,7 @@ export class MysqlDatabaseExecutor implements DatabaseExecutor {
     assertNotCanceled(this.config.signal, "MySQL");
     if (request.kind === "schema") return this.inspectSchema(connection, request.tablePattern);
     const parameters = request.parameters ?? {};
-    const validated = validateSql({ sql: request.sql, intent: request.kind === "select" ? "select" : "mutation", driver: this.driver, allowedSchemas: this.config.schemas, parameters });
+    const validated = validateSql({ sql: request.sql, intent: request.kind === "select" ? "select" : "mutation", driver: this.driver, allowedSchemas: this.access.schemas, allowedTables: this.access.tables, parameters });
     const compiled = compileNamedParameters(validated, parameters, this.driver);
     const started = Date.now();
     let transactionStarted = false;
@@ -228,7 +273,12 @@ export class MysqlDatabaseExecutor implements DatabaseExecutor {
       this.binding = binding;
       return connection;
     } catch (error) {
-      throw new DatabaseExecutorError("MySQL connection failed.", "transport", false, error);
+      throw new DatabaseExecutorError(
+        certificateFailureMessage(error) ?? "MySQL connection failed.",
+        "transport",
+        false,
+        error,
+      );
     }
   }
 
@@ -244,7 +294,7 @@ export class MysqlDatabaseExecutor implements DatabaseExecutor {
               WHERE table_schema IN (?) AND (? IS NULL OR table_name LIKE ?)
               ORDER BY table_schema, table_name, ordinal_position
               LIMIT 500`,
-        values: [this.config.schemas, escaped, escaped ? `%${escaped}%` : null],
+        values: [this.access.schemas, escaped, escaped ? `%${escaped}%` : null],
         timeout: this.config.statementTimeoutMs,
       });
       return normalizeMysql(rows, fields as FieldPacket[] | undefined, "SELECT", Date.now() - started, this.config);

@@ -79,12 +79,69 @@ describe("database SQL policy", () => {
       parameters: { status: "ready", id: 1 },
     }).command).toBe("UPDATE");
     expect(() => validateSql({
-      sql: "UPDATE public.orders SET status=:status",
+      sql: "UPDATE public.orders SET status=:status WHERE id=:id",
       intent: "mutation",
       driver: "postgres",
       allowedSchemas: ["public"],
       parameters: {},
     })).toThrow("no bound value");
+  });
+
+  it("blocks WHERE-less UPDATE and DELETE statements", () => {
+    // A WHERE-less statement rewrites or removes a whole table. This is a hard
+    // block; a WHERE clause that matches many rows stays the tester's call.
+    for (const sql of [
+      "UPDATE public.orders SET status='closed'",
+      "DELETE FROM public.orders",
+    ]) {
+      expect(() => validateSql({
+        sql,
+        intent: "mutation",
+        driver: "postgres",
+        allowedSchemas: ["public"],
+        parameters: {},
+      })).toThrow("must include a WHERE clause");
+    }
+    // INSERT is unaffected, and a broad WHERE is authorized by the tester.
+    expect(validateSql({
+      sql: "INSERT INTO public.orders (id) VALUES (:id)",
+      intent: "mutation",
+      driver: "postgres",
+      allowedSchemas: ["public"],
+      parameters: { id: 1 },
+    }).command).toBe("INSERT");
+    expect(validateSql({
+      sql: "DELETE FROM public.orders WHERE 1=1",
+      intent: "mutation",
+      driver: "postgres",
+      allowedSchemas: ["public"],
+      parameters: {},
+    }).command).toBe("DELETE");
+  });
+
+  it("bounds reads and mutations to the discovered objects when one is supplied", () => {
+    const allowedTables = new Set(["public.orders"]);
+    expect(validateSql({
+      sql: "SELECT id FROM public.orders LIMIT 10",
+      intent: "select",
+      driver: "postgres",
+      allowedSchemas: ["public"],
+      allowedTables,
+      parameters: {},
+    }).command).toBe("SELECT");
+    for (const [sql, intent] of [
+      ["SELECT id FROM public.customers LIMIT 10", "select"],
+      ["DELETE FROM public.customers WHERE id=:id", "mutation"],
+    ] as const) {
+      expect(() => validateSql({
+        sql,
+        intent,
+        driver: "postgres",
+        allowedSchemas: ["public"],
+        allowedTables,
+        parameters: intent === "mutation" ? { id: 1 } : {},
+      })).toThrow("not among the discovered database objects");
+    }
   });
 
   it("caps rows and redacts sensitive columns", () => {

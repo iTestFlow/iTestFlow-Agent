@@ -6,8 +6,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("./egress-policy.service", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./egress-policy.service")>();
-  return { ...actual, assertTestExecutionEgressAllowed: mocks.assertEgress };
+  return { ...actual, assertBoundaryEgressAllowed: mocks.assertEgress };
 });
+
+import type { ExecutionBoundary } from "./execution-boundary";
 
 import {
   fetchAndNormalizeSameOriginOpenApi,
@@ -17,15 +19,22 @@ import {
 } from "./openapi-contract.service";
 
 const sourceUrl = "https://api.example.test/openapi.json";
+const boundary: ExecutionBoundary = {
+  version: "itestflow.boundary.v1",
+  targets: [
+    { kind: "api", protocol: "https", host: "api.example.test", port: 443 },
+    { kind: "openapi", protocol: "https", host: "api.example.test", port: 443 },
+  ],
+};
 const baseInput = {
-  workspaceId: "ws-1",
+  boundary,
   baseUrl: "https://api.example.test/v1",
   sourceUrl,
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.assertEgress.mockResolvedValue({ ruleId: "rule-1", resolvedAddresses: ["203.0.113.10"] });
+  mocks.assertEgress.mockResolvedValue({ resolvedAddresses: ["203.0.113.10"] });
 });
 
 afterEach(() => {
@@ -43,8 +52,7 @@ describe("fetchAndNormalizeSameOriginOpenApi", () => {
     const normalized = await fetchAndNormalizeSameOriginOpenApi(baseInput);
 
     expect(normalized.operations).toHaveLength(1);
-    expect(mocks.assertEgress).toHaveBeenCalledWith({
-      workspaceId: "ws-1",
+    expect(mocks.assertEgress).toHaveBeenCalledWith(boundary, {
       targetKind: "openapi",
       protocol: "https",
       host: "api.example.test",

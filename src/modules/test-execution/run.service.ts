@@ -76,8 +76,6 @@ export type CreateRunInput = {
   };
   story: { workItemId: string; title: string } | null;
   cases: RunCaseInput[];
-  /** Approved operation revisions selected at review and frozen into the run. */
-  capabilityRevisionIds?: string[];
 };
 
 export async function createRunWithSnapshots(input: CreateRunInput): Promise<{ runId: string; jobId: string | null }> {
@@ -157,110 +155,10 @@ export async function createRunWithSnapshots(input: CreateRunInput): Promise<{ r
         client,
       );
 
-      const capabilityRevisionIds = input.capabilityRevisionIds ?? [];
-      if (new Set(capabilityRevisionIds).size !== capabilityRevisionIds.length) {
-        throw new RunCapabilityValidationError("duplicate_stable_key");
-      }
-      if (capabilityRevisionIds.length > 0) {
-        const selectedCapabilities = await sqlAll<{ id: string; stable_key: string }>(
-          `SELECT id, stable_key
-           FROM test_integration_operation_revisions
-           WHERE id = ANY(@capabilityRevisionIds)
-             AND workspace_id = @workspaceId
-             AND project_id = @projectId
-             AND azure_project_id = @azureProjectId`,
-          {
-            capabilityRevisionIds,
-            workspaceId: input.workspaceId,
-            projectId: input.scope.projectId,
-            azureProjectId: input.scope.azureProjectId,
-          },
-          client,
-        );
-        if (selectedCapabilities.length !== capabilityRevisionIds.length) {
-          throw new RunCapabilityValidationError();
-        }
-        const stableKeys = selectedCapabilities.map((capability) => capability.stable_key);
-        if (new Set(stableKeys).size !== stableKeys.length) {
-          throw new RunCapabilityValidationError("duplicate_stable_key");
-        }
-        // Serialize run approval with revise/approve/archive transitions for
-        // each selected logical operation. The transition service uses this
-        // exact advisory-lock identity.
-        for (const stableKey of [...stableKeys].sort()) {
-          await sqlGet(
-            `SELECT pg_advisory_xact_lock(hashtext(@lockKey))`,
-            {
-              lockKey: `${input.workspaceId}:${input.scope.projectId}:${input.scope.azureProjectId}:${stableKey}`,
-            },
-            client,
-          );
-        }
-
-        const inserted = await sqlRun(
-          `INSERT INTO test_execution_run_capabilities (
-             id, run_id, workspace_id, project_id, azure_project_id,
-             capability_kind, operation_revision_id, created_at
-           )
-           SELECT 'trcap_' || md5(random()::text || o.id), @runId,
-                  o.workspace_id, o.project_id, o.azure_project_id,
-                  'operation', o.id, @now
-           FROM test_integration_operation_revisions o
-           WHERE o.id = ANY(@capabilityRevisionIds)
-             AND o.workspace_id = @workspaceId
-             AND o.project_id = @projectId
-             AND o.azure_project_id = @azureProjectId
-             AND o.approval_status = 'approved'
-             AND NOT EXISTS (
-               SELECT 1
-               FROM test_integration_operation_revisions newer_approved
-               WHERE newer_approved.workspace_id = o.workspace_id
-                 AND newer_approved.project_id = o.project_id
-                 AND newer_approved.azure_project_id = o.azure_project_id
-                 AND newer_approved.stable_key = o.stable_key
-                 AND newer_approved.approval_status = 'approved'
-                 AND newer_approved.revision > o.revision
-             )
-             AND NOT EXISTS (
-               SELECT 1
-               FROM test_integration_operation_revisions archived
-               WHERE archived.workspace_id = o.workspace_id
-                 AND archived.project_id = o.project_id
-                 AND archived.azure_project_id = o.azure_project_id
-                 AND archived.stable_key = o.stable_key
-                 AND archived.approval_status = 'archived'
-                 AND archived.revision > o.revision
-             )
-             AND (
-               (o.layer = 'api' AND @hasApi = true)
-               OR (o.layer = 'db' AND o.database_driver = @databaseDriver)
-             )
-             AND (
-               o.safety_class = 'read'
-               OR (o.layer = 'api' AND @apiMutationEnabled = true)
-               OR (o.layer = 'db' AND @databaseMutationEnabled = true)
-             )`,
-          {
-            runId,
-            capabilityRevisionIds,
-            workspaceId: input.workspaceId,
-            projectId: input.scope.projectId,
-            azureProjectId: input.scope.azureProjectId,
-            hasApi: input.environment.config.api !== null,
-            databaseDriver: input.environment.config.database?.driver ?? null,
-            apiMutationEnabled:
-              input.environment.config.api?.mutationMode === "approved_catalog",
-            databaseMutationEnabled:
-              input.environment.config.database?.accessMode === "cataloged_dml",
-            now,
-          },
-          client,
-        );
-        if (inserted !== capabilityRevisionIds.length) {
-          throw new RunCapabilityValidationError();
-        }
-      }
-
+      // Operation pinning was removed with the manual capability catalog: a
+      // new run's API/DB surface derives entirely from its frozen environment
+      // (contract revision + explicit step text). Historical runs keep their
+      // pinned operation rows readable through run-persistence.
       const apiContractRevisionId =
         input.environment.config.api?.contract?.kind === "revision"
           ? input.environment.config.api.contract.revisionId
@@ -851,6 +749,8 @@ export function profileToEnvConfig(profile: {
     loginMode: profile.loginMode,
     loggedInText: profile.loggedInText,
     executionNotes: profile.executionNotes,
+    // Per-run notes are supplied by the run route, not the profile.
+    runNotes: "",
     users: profile.users.map((user) => ({
       handle: user.handle,
       username: user.username,

@@ -15,6 +15,7 @@ import {
   TEST_EXECUTION_UNAVAILABLE_MESSAGE,
 } from "@/modules/jobs/test-execution-jobs.service";
 import { getEnvironmentProfile } from "@/modules/test-execution/environment-profile.service";
+import { deriveExecutionBoundary } from "@/modules/test-execution/execution-boundary";
 import {
   freezeSameOriginOpenApiContract,
   OpenApiContractImportError,
@@ -29,7 +30,7 @@ import {
   RunEnvironmentSnapshotConflictError,
   RunPlanValidationError,
 } from "@/modules/test-execution/run.service";
-import { RunCreateSchema } from "@/modules/test-execution/schemas/test-execution.schemas";
+import { RunCreateSchema, EXECUTION_POLICY_VERSION } from "@/modules/test-execution/schemas/test-execution.schemas";
 import { startWorkflowRun } from "@/modules/analytics/workflow-analytics.service";
 
 export const runtime = "nodejs";
@@ -96,7 +97,11 @@ export async function POST(request: Request) {
         // so the lock check inside run creation actually detects a profile
         // that changed after the approver reviewed it (V7-1).
         profileUpdatedAt: parsed.data.environment.reviewedProfileUpdatedAt,
-        config: profileToEnvConfig(profile),
+        config: {
+          ...profileToEnvConfig(profile),
+          executionPolicyVersion: EXECUTION_POLICY_VERSION,
+          runNotes: parsed.data.notes,
+        },
         oneTimeSecrets: [],
       };
     } else {
@@ -106,6 +111,9 @@ export async function POST(request: Request) {
         config: {
           ...parsed.data.environment.config,
           loginPlan: parsed.data.environment.config.loginPlan ?? null,
+          // Freeze the authorization semantics this run was approved under.
+          executionPolicyVersion: EXECUTION_POLICY_VERSION,
+          runNotes: parsed.data.notes,
         },
         oneTimeSecrets: parsed.data.environment.secrets,
       };
@@ -117,6 +125,8 @@ export async function POST(request: Request) {
         workspaceId: ctx.workspace.id,
         scope,
         actor: ctx.userId,
+        // Derived from the pending config — exactly what gets frozen below.
+        boundary: deriveExecutionBoundary(environment.config),
         baseUrl: environment.config.api.baseUrl,
         sourceUrl: pendingContract.url,
         // Contract discovery downloads a full OpenAPI document — much larger
@@ -151,7 +161,6 @@ export async function POST(request: Request) {
       environment,
       story: parsed.data.story,
       cases: parsed.data.cases,
-      capabilityRevisionIds: parsed.data.capabilityRevisionIds,
     });
     return NextResponse.json({ ...created, analyticsRunId }, { status: 202 });
   } catch (error) {

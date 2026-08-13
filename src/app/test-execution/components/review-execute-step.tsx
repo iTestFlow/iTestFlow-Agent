@@ -7,6 +7,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -34,7 +36,9 @@ export function ReviewExecuteStep({
   environmentLabel,
   allowedOrigin,
   environmentTargets,
-  capabilityCount,
+  environmentNotes,
+  runNotes,
+  onRunNotesChange,
   availableSecretNames,
   storyWorkItemId,
   run,
@@ -49,7 +53,9 @@ export function ReviewExecuteStep({
   environmentLabel: string;
   allowedOrigin: string;
   environmentTargets: Array<"UI" | "API" | "DB">;
-  capabilityCount: number;
+  environmentNotes: string;
+  runNotes: string;
+  onRunNotesChange: (value: string) => void;
   availableSecretNames: string[];
   storyWorkItemId: string | null;
   run: RunDetailDto | null;
@@ -93,6 +99,8 @@ export function ReviewExecuteStep({
   }, {});
   const running = run !== null && (run.run.status === "queued" || run.run.status === "running");
   const terminal = run !== null && !running;
+  // API and database steps can change data; a UI-only run can only interact.
+  const mayChangeData = environmentTargets.includes("API") || environmentTargets.includes("DB");
 
   if (run === null) {
     return (
@@ -138,10 +146,6 @@ export function ReviewExecuteStep({
                   ))}
                 </dd>
               </div>
-              <div className="flex justify-between gap-2 sm:justify-start">
-                <dt className="text-muted-foreground">Approved capabilities</dt>
-                <dd className="font-medium tabular-nums">{capabilityCount}</dd>
-              </div>
               {storyWorkItemId ? (
                 <div className="flex justify-between gap-2 sm:justify-start">
                   <dt className="text-muted-foreground">Source story</dt>
@@ -149,10 +153,53 @@ export function ReviewExecuteStep({
                 </div>
               ) : null}
               <div className="flex justify-between gap-2 sm:justify-start">
+                <dt className="text-muted-foreground">Data access</dt>
+                <dd className="font-medium">
+                  {mayChangeData
+                    ? "Read and test-data changes when required by the approved steps"
+                    : "Read and UI interaction only"}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-2 sm:justify-start">
                 <dt className="text-muted-foreground">Execution order</dt>
                 <dd>Sequential, shared run context</dd>
               </div>
             </dl>
+
+            {environmentNotes.trim() ? (
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Environment notes</p>
+                <p className="whitespace-pre-wrap rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                  {environmentNotes.trim()}
+                </p>
+              </div>
+            ) : null}
+
+            <div className="space-y-1">
+              <Label htmlFor="te-run-notes">Execution notes for this run (optional)</Label>
+              <Textarea
+                id="te-run-notes"
+                rows={3}
+                maxLength={2000}
+                value={runNotes}
+                onChange={(event) => onRunNotesChange(event.target.value)}
+                placeholder="Anything the AI should know for this run only — test data to use, cleanup expectations, or an exact API method and path such as POST /orders."
+              />
+              <p className="text-xs text-muted-foreground">
+                Guidance for this run only; it takes precedence over the environment notes. Notes are frozen when you approve.
+              </p>
+            </div>
+
+            {mayChangeData ? (
+              <Alert>
+                <ShieldAlert className="h-4 w-4" aria-hidden />
+                <AlertTitle>This run may change test data</AlertTitle>
+                <AlertDescription>
+                  iTestFlow may create, update, or delete test data when required by the approved test steps or execution
+                  notes. Actions remain limited to the configured targets and supplied credentials.
+                </AlertDescription>
+              </Alert>
+            ) : null}
 
             {blocking.length > 0 ? (
               <Alert variant="destructive">

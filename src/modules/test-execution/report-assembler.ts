@@ -380,16 +380,12 @@ function sanitizeEnvConfig(envConfig: unknown): unknown {
           authType: str(auth?.type),
           hasContract: Boolean(api.contract),
           requestTimeoutMs: num(api.requestTimeoutMs),
-          mutationMode: str(api.mutationMode),
         }
       : null,
     hasDatabase: Boolean(database),
     database: database
       ? {
           driver: str(database.driver),
-          tlsMode: str(database.tlsMode),
-          accessMode: str(database.accessMode),
-          schemaCount: Array.isArray(database.schemas) ? database.schemas.length : 0,
           connectTimeoutMs: num(database.connectTimeoutMs),
           statementTimeoutMs: num(database.statementTimeoutMs),
         }
