@@ -1,0 +1,21 @@
+{
+  "confidence": "high",
+  "content_hash": "sha256:a220a2605448d265c8d756cb7cd60ba52098932f1eb86b79468d96b5c23804fc",
+  "created_at": "2026-08-12T23:13:53+03:00",
+  "evidence": [
+    {
+      "id": "workflow.post-task-verification",
+      "kind": "memory"
+    },
+    {
+      "id": "project.itestflow-agent",
+      "kind": "memory"
+    }
+  ],
+  "from": "workflow.post-task-verification",
+  "id": "rel.workflow-post-task-verification-supports-project-itestflow-agent",
+  "predicate": "supports",
+  "status": "active",
+  "to": "project.itestflow-agent",
+  "updated_at": "2026-08-12T23:13:53+03:00"
+}

@@ -309,6 +309,26 @@ Docker is required only if you use the provided local PostgreSQL service.
 
 ## Project Documentation
 
+### Agent knowledge tooling
+
+Native Memory is source-controlled under `.memory/`. Project-scoped MemPalace
+requires `uvx`, which is installed with [uv](https://docs.astral.sh/uv/getting-started/installation/).
+On Windows, install it with `winget install --id=astral-sh.uv -e`; on macOS or
+Linux, use the official installer: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+Start a new shell and verify `uvx --version` before running the repository check.
+
+MemPalace itself does not need a global install. The repository launches the
+exact version in an isolated environment with
+`uvx --from mempalace==3.7.0 mempalace`. If the launcher later fails, update a
+standalone uv installation with `uv self update`, or upgrade uv through the
+package manager that installed it, then open a new shell and run
+`npm run check:agent-memory` again. Exact-version `--from` usage follows the
+[official uv tool guide](https://docs.astral.sh/uv/guides/tools/#requesting-specific-versions).
+
+Root-level files are searched wing-wide because MemPalace 3.7.0 taxonomy does
+not support exact path/glob room rules. Source directories still route through
+the path-based rooms in `mempalace.yaml`.
+
 - [Project Architecture](PROJECT_ARCHITECTURE.md) - routes, modules, integrations, storage, and architecture decisions
 - [Integration Providers](docs/integration-providers.md) - work/test management contracts, Azure DevOps provider boundary, capabilities, and extension rules
 - [Deployment Guide](docs/deployment.md) - private hosted runtime, environment, workers, backups, and migrations

@@ -1,0 +1,1 @@
+Source-backed project facts: iTestFlow is a local-first test intelligence application; the README documents setup, verification, architecture references, and the uv/uvx prerequisite for pinned MemPalace 3.7.0.

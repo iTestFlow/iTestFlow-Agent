@@ -1,0 +1,42 @@
+{
+  "body_path": "memory/gotchas/image-metadata-does-not-prove-decodability.md",
+  "content_hash": "sha256:496452c2047aa9cb5a13bcc156b61d4e12bea759a2e3cf27e69cd5cca2d3f0d9",
+  "created_at": "2026-08-13T02:00:30+03:00",
+  "evidence": [
+    {
+      "id": "https://github.com/MohabMohie/iTestFlow-Agent/blob/9e63379b14a9bd66bf15ac6ccb393c25fbbdf5db/src/modules/documents/document-upload-validation.ts",
+      "kind": "source"
+    },
+    {
+      "id": "https://github.com/MohabMohie/iTestFlow-Agent/blob/9e63379b14a9bd66bf15ac6ccb393c25fbbdf5db/src/modules/documents/document-upload-validation.test.ts",
+      "kind": "source"
+    },
+    {
+      "id": "9e63379b14a9bd66bf15ac6ccb393c25fbbdf5db",
+      "kind": "commit"
+    }
+  ],
+  "facets": {
+    "category": "gotcha"
+  },
+  "id": "gotcha.image-metadata-does-not-prove-decodability",
+  "scope": {
+    "branch": null,
+    "kind": "project",
+    "project": "project.itestflow-agent",
+    "task": null
+  },
+  "source": {
+    "kind": "agent",
+    "task": "Record three independently reviewed OCR upload audit gotchas from PR head 9e63379"
+  },
+  "status": "active",
+  "tags": [
+    "image-upload",
+    "validation",
+    "decode"
+  ],
+  "title": "Image metadata does not prove decodability",
+  "type": "gotcha",
+  "updated_at": "2026-08-13T02:07:54+03:00"
+}

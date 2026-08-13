@@ -1,0 +1,17 @@
+{
+  "confidence": "high",
+  "content_hash": "sha256:966ab2ec61ee8f950eb0f721b7613e77598817dbbfc33f893f52948652c4723a",
+  "created_at": "2026-08-12T23:13:53+03:00",
+  "evidence": [
+    {
+      "id": "source.readme",
+      "kind": "source"
+    }
+  ],
+  "from": "synthesis.product-intent",
+  "id": "rel.synthesis-product-intent-derived-from-source-readme",
+  "predicate": "derived_from",
+  "status": "active",
+  "to": "source.readme",
+  "updated_at": "2026-08-12T23:13:53+03:00"
+}

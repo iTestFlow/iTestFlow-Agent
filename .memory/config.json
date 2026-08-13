@@ -1,0 +1,15 @@
+{
+  "git": {
+    "trackContextPacks": false
+  },
+  "memory": {
+    "autoIndex": true,
+    "defaultTokenBudget": 6000,
+    "saveContextPacks": false
+  },
+  "project": {
+    "id": "project.itestflow-agent",
+    "name": "iTestFlow Agent"
+  },
+  "version": 4
+}

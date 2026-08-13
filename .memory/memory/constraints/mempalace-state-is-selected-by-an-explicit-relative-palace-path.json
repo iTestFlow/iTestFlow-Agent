@@ -1,0 +1,52 @@
+{
+  "body_path": "memory/constraints/mempalace-state-is-selected-by-an-explicit-relative-palace-path.md",
+  "content_hash": "sha256:244b41e6ade1c2ff2672ae91a3681c63771e3a61d28f235cb585ac224691133b",
+  "created_at": "2026-08-12T23:16:17+03:00",
+  "evidence": [
+    {
+      "id": "AGENTS.md",
+      "kind": "file"
+    },
+    {
+      "id": ".mcp.json",
+      "kind": "file"
+    },
+    {
+      "id": "mempalace.yaml",
+      "kind": "file"
+    },
+    {
+      "id": ".gitignore",
+      "kind": "file"
+    }
+  ],
+  "facets": {
+    "applies_to": [
+      "AGENTS.md",
+      ".mcp.json",
+      "mempalace.yaml",
+      ".gitignore"
+    ],
+    "category": "agent-guidance"
+  },
+  "id": "constraint.mempalace-state-is-selected-by-an-explicit-relative-palace-path",
+  "scope": {
+    "branch": null,
+    "kind": "project",
+    "project": "project.itestflow-agent",
+    "task": null
+  },
+  "source": {
+    "kind": "agent",
+    "task": "Repair bootstrap quality and record the repo-local agent knowledge contract"
+  },
+  "status": "active",
+  "tags": [
+    "agent-guidance",
+    "memory",
+    "mempalace"
+  ],
+  "title": "Repository agent knowledge is pinned and checkout-local",
+  "type": "constraint",
+  "updated_at": "2026-08-12T23:39:41+03:00"
+}

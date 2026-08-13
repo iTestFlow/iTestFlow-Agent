@@ -1,0 +1,1 @@
+Source-backed manifest facts: package name `itestflow-agent`; npm is the repository workflow surface; `npm run check:agent-memory` validates the tracked Memory and MemPalace setup.

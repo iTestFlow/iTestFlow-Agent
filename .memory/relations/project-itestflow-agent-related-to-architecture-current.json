@@ -1,0 +1,21 @@
+{
+  "confidence": "high",
+  "content_hash": "sha256:887026adc84cab088ef4b9bf2d4d600780bdbe05508b5287c39b97bae97db82b",
+  "created_at": "2026-08-12T23:12:30+03:00",
+  "evidence": [
+    {
+      "id": "project.itestflow-agent",
+      "kind": "memory"
+    },
+    {
+      "id": "architecture.current",
+      "kind": "memory"
+    }
+  ],
+  "from": "project.itestflow-agent",
+  "id": "rel.project-itestflow-agent-related-to-architecture-current",
+  "predicate": "related_to",
+  "status": "active",
+  "to": "architecture.current",
+  "updated_at": "2026-08-12T23:12:30+03:00"
+}
