@@ -16,6 +16,7 @@ import {
   seedWorkspace,
   uniqueTestId,
 } from "@/test/db";
+import { fakeAzureAdapter, requirement, testCase } from "@/test/factories";
 
 import {
   createEnvironmentProfile,
@@ -28,6 +29,8 @@ import {
 import { loadRunForExecution, EnvConfigSchema } from "./run-persistence.service";
 import {
   createRunWithSnapshots,
+  loadRunDetailChangeRows,
+  loadRunDetailRows,
   profileToEnvConfig,
   RunCapabilityValidationError,
   RunEnvironmentSnapshotConflictError,
@@ -279,6 +282,79 @@ describeDb("run snapshot selection", () => {
     );
     await sqlRun(`DELETE FROM test_execution_runs WHERE id = @runId`, {
       runId: freshRun.runId,
+    });
+  });
+
+  it("exposes Azure case IDs in full and incremental run-detail rows", async () => {
+    const storyWorkItemId = uniqueTestId("story_snapshot");
+    const azureTestCaseId = uniqueTestId("case_snapshot");
+    const run = await createRunWithSnapshots({
+      workspaceId,
+      scope,
+      actor: userId,
+      adapter: fakeAzureAdapter({
+        fetchWorkItemById: vi.fn(async () => requirement({
+          id: storyWorkItemId,
+          azureProjectId: projectId,
+          title: "Rerun source story",
+        })),
+        fetchLinkedTestCases: vi.fn(async () => [testCase({
+          id: azureTestCaseId,
+          azureTestCaseId,
+          title: "Azure-backed rerun case",
+        })]),
+      }),
+      environment: {
+        profileId: null,
+        profileUpdatedAt: null,
+        config: apiEnvironment,
+        oneTimeSecrets: [],
+      },
+      story: { workItemId: storyWorkItemId, title: "Rerun source story" },
+      cases: [
+        ...cases,
+        {
+          title: "Azure-backed rerun case",
+          sourceKind: "azure_test_case",
+          azureTestCaseId,
+          plan: {
+            schemaVersion: "v2-natural",
+            steps: [{
+              instruction: "Check the Azure-backed case.",
+              expectedResult: "The case succeeds.",
+              layerHint: "api",
+            }],
+          },
+        },
+      ],
+    });
+
+    const full = await loadRunDetailRows({ workspaceId, scope, runId: run.runId });
+    expect(full?.cases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source_kind: "manual", azure_work_item_id: null }),
+      expect.objectContaining({
+        source_kind: "azure_test_case",
+        azure_work_item_id: azureTestCaseId,
+      }),
+    ]));
+
+    const delta = await loadRunDetailChangeRows({
+      workspaceId,
+      scope,
+      runId: run.runId,
+      afterCursor: "0",
+    });
+    expect(delta?.cases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source_kind: "manual", azure_work_item_id: null }),
+      expect.objectContaining({
+        source_kind: "azure_test_case",
+        azure_work_item_id: azureTestCaseId,
+      }),
+    ]));
+    expect(delta?.nextCursor).not.toBe("0");
+
+    await sqlRun(`DELETE FROM test_execution_runs WHERE id = @runId`, {
+      runId: run.runId,
     });
   });
 });

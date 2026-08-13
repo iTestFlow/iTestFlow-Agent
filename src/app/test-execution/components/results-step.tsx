@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Bug, Loader2, RotateCcw, Send } from "lucide-react";
+import { Bug, Loader2, Pencil, RotateCcw, Send } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import type { RunDetailDto } from "@/modules/test-execution/report-assembler";
 import type { LayerHint } from "@/modules/test-execution/action-schema";
 
 import type { DraftCase } from "../lib/draft-storage";
+import { runCaseToDraftCase, runCasesToDraftCases } from "../lib/rerun-staging";
 import { OutcomeBadge } from "./outcome-badge";
 
 /**
@@ -38,6 +39,7 @@ export function ResultsStep({
   detail,
   artifactUrl,
   onRerunCases,
+  onEditCases,
   onUpdateCandidate,
   onPublishCandidate,
   publishState,
@@ -45,6 +47,7 @@ export function ResultsStep({
   detail: RunDetailDto;
   artifactUrl: (artifactId: string) => string;
   onRerunCases: ((cases: DraftCase[]) => void) | null;
+  onEditCases?: ((cases: DraftCase[]) => void) | null;
   onUpdateCandidate: (candidateId: string, patch: { status?: string; draft?: Record<string, unknown> }) => Promise<void>;
   onPublishCandidate: (candidateId: string) => Promise<void>;
   publishState: CandidatePublishState;
@@ -63,26 +66,12 @@ export function ResultsStep({
   const failedCases = detail.cases.filter(
     (caseRun) => caseRun.outcome && caseRun.outcome !== "passed" && caseRun.outcome !== "skipped" && caseRun.outcome !== "not_run",
   );
+  const rerunnableFailedCases = runCasesToDraftCases(failedCases);
 
   const rerunFailed = () => {
     if (!onRerunCases) return;
-    const drafts: DraftCase[] = failedCases.map((caseRun) => ({
-      title: caseRun.title,
-      sourceKind: caseRun.sourceKind === "azure_test_case" ? "azure_test_case" : "manual",
-      azureTestCaseId: null,
-      plan: {
-        schemaVersion: "v2-natural",
-        steps: caseRun.steps.map((step) => {
-          const action = (step.action ?? {}) as StepActionJson;
-          return {
-            instruction: action.instruction ?? "",
-            expectedResult: action.expectedResult ?? "",
-            layerHint: action.layerHint ?? "auto",
-          };
-        }),
-      },
-    }));
-    onRerunCases(drafts);
+    if (rerunnableFailedCases.length === 0) return;
+    onRerunCases(rerunnableFailedCases);
   };
 
   const tokenUsage = (detail.run.summary as { tokenUsage?: { totalTokens?: number } } | null)?.tokenUsage;
@@ -105,7 +94,7 @@ export function ResultsStep({
                 {tokenUsage?.totalTokens ? <> · {tokenUsage.totalTokens.toLocaleString()} AI tokens</> : null}
               </CardDescription>
             </div>
-            {onRerunCases && failedCases.length > 0 ? (
+            {onRerunCases && rerunnableFailedCases.length > 0 ? (
               <Button variant="outline" size="sm" onClick={rerunFailed}>
                 <RotateCcw className="mr-1 h-4 w-4" aria-hidden /> Re-run failed cases ({failedCases.length})
               </Button>
@@ -135,17 +124,36 @@ export function ResultsStep({
           <CardTitle>Case results</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {detail.cases.map((caseRun) => (
-            <details key={caseRun.id} className="rounded-md border">
-              <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm">
-                <span className="min-w-0 flex-1 truncate font-medium">
-                  {caseRun.orderIndex + 1}. {caseRun.title}
-                </span>
-                {caseRun.sourceKind === "azure_test_case" ? (
-                  <span className="text-xs text-muted-foreground">Azure test case</span>
-                ) : null}
-                <OutcomeBadge outcome={caseRun.outcome ?? caseRun.status} />
-              </summary>
+          {detail.cases.map((caseRun) => {
+            const editDraft = onEditCases ? runCaseToDraftCase(caseRun) : null;
+
+            return (
+              <details key={caseRun.id} className="rounded-md border">
+                <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm">
+                  <span className="min-w-0 flex-1 truncate font-medium">
+                    {caseRun.orderIndex + 1}. {caseRun.title}
+                  </span>
+                  {caseRun.sourceKind === "azure_test_case" ? (
+                    <span className="text-xs text-muted-foreground">Azure test case</span>
+                  ) : null}
+                  {editDraft ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      aria-label={`Edit & re-run ${caseRun.title}`}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onEditCases?.([editDraft]);
+                      }}
+                    >
+                      <Pencil className="mr-1 h-3.5 w-3.5" aria-hidden /> Edit & re-run
+                    </Button>
+                  ) : null}
+                  <OutcomeBadge outcome={caseRun.outcome ?? caseRun.status} />
+                </summary>
               <div className="space-y-2 border-t px-3 py-2">
                 {caseRun.errorMessage ? (
                   <p className="text-sm text-destructive">{caseRun.errorMessage}</p>
@@ -308,8 +316,9 @@ export function ResultsStep({
                   </div>
                 ) : null}
               </div>
-            </details>
-          ))}
+              </details>
+            );
+          })}
         </CardContent>
       </Card>
 

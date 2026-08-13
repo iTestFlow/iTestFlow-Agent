@@ -136,6 +136,7 @@ export const GATED_INCLUDE: string[] = [
   "src/app/test-execution/lib/environment-payload.ts",
   "src/app/test-execution/lib/integration-capabilities.ts",
   "src/app/test-execution/lib/manual-step-form.ts",
+  "src/app/test-execution/lib/rerun-staging.ts",
   "src/app/test-execution/lib/run-polling.ts",
   "src/app/test-execution/lib/stepper-gating.ts",
   "src/modules/test-suite-migration/test-suite-migration.logic.ts",

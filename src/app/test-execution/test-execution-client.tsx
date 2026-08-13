@@ -250,6 +250,26 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
+  // The report page stages cases in local storage and points here with a
+  // one-use landing step. Keep this after bootstrap: its synchronous draft
+  // restore runs first, while an actually active server run still takes the
+  // user to review when the runs request resolves.
+  useEffect(() => {
+    const search = new URLSearchParams(window.location.search);
+    const requestedStep = search.get("step");
+    if (requestedStep === "scope" || requestedStep === "review") {
+      setActiveStep(requestedStep);
+    }
+    if (!search.has("step")) return;
+    search.delete("step");
+    const remainingSearch = search.toString();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${remainingSearch ? `?${remainingSearch}` : ""}${window.location.hash}`,
+    );
+  }, []);
+
   // ---- draft persistence ----
   useEffect(() => {
     if (!projectId || runId) return;
@@ -676,12 +696,31 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
   };
 
   const rerunCases = (draftCases: DraftCase[]) => {
+    if (!runDetail) return;
     setCases(draftCases);
+    setStory({
+      workItemId: runDetail.run.storyWorkItemId ?? "",
+      title: runDetail.run.storyTitle ?? "",
+    });
     setRunId(null);
     setRunDetail(null);
     saveActiveRunId(projectId, null);
     setActiveStep("review");
     toast.info(`${draftCases.length} case(s) staged for a new run — approve to execute.`);
+  };
+
+  const editRerunCases = (draftCases: DraftCase[]) => {
+    if (!runDetail) return;
+    setCases(draftCases);
+    setStory({
+      workItemId: runDetail.run.storyWorkItemId ?? "",
+      title: runDetail.run.storyTitle ?? "",
+    });
+    setRunId(null);
+    setRunDetail(null);
+    saveActiveRunId(projectId, null);
+    setActiveStep("scope");
+    toast.info(`${draftCases.length} case(s) staged for editing.`);
   };
 
   const startFresh = () => {
@@ -804,6 +843,7 @@ export function TestExecutionClient({ workspaceRole }: { workspaceRole: Workspac
               detail={runDetail}
               artifactUrl={(artifactId) => `/api/test-execution/runs/${runDetail.run.id}/artifacts/${artifactId}?${scopeQuery}`}
               onRerunCases={rerunCases}
+              onEditCases={editRerunCases}
               onUpdateCandidate={updateCandidate}
               onPublishCandidate={publishCandidate}
               publishState={publishState}

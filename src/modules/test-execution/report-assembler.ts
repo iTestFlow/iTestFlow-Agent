@@ -4,6 +4,7 @@ import {
   redactSensitiveKeysDeep,
 } from "@/modules/shared/sensitive-data";
 
+import { NaturalPlanSchema, type NaturalPlan } from "./action-schema";
 import type { RunDetailChangeRows, RunDetailRows } from "./run.service";
 
 /**
@@ -52,6 +53,8 @@ export type RunDetailDto = {
     title: string;
     sourceKind: string;
     sourceSnapshotId: string | null;
+    azureTestCaseId: string | null;
+    plan: NaturalPlan | null;
     compileSource: string;
     compilePromptVersion: string | null;
     compileModel: string | null;
@@ -209,12 +212,15 @@ function mapStepRow(
 }
 
 function mapCaseRow(row: Record<string, unknown>): Omit<RunCaseDto, "steps" | "artifacts"> {
+  const plan = NaturalPlanSchema.safeParse(row.compiled_plan_json);
   return {
     id: str(row.id),
     orderIndex: num(row.order_index),
     title: str(row.title),
     sourceKind: str(row.source_kind),
     sourceSnapshotId: strOrNull(row.source_snapshot_id),
+    azureTestCaseId: strOrNull(row.azure_work_item_id),
+    plan: plan.success ? plan.data : null,
     compileSource: str(row.compile_source),
     compilePromptVersion: strOrNull(row.compile_prompt_version),
     compileModel: strOrNull(row.compile_model),

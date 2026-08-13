@@ -54,7 +54,13 @@ describe("assembleRunDetail", () => {
           id: "case-1",
           order_index: 0,
           title: "Mixed case",
-          source_kind: "manual",
+          source_kind: "azure_test_case",
+          source_snapshot_id: "snapshot-1",
+          azure_work_item_id: "azure-case-1",
+          compiled_plan_json: {
+            schemaVersion: "v2-natural",
+            steps: [{ instruction: "Verify customer" }],
+          },
           status: "completed",
         },
       ],
@@ -105,6 +111,47 @@ describe("assembleRunDetail", () => {
     expect(detail?.cases[0]?.steps[0]?.actions[0]?.observation).toEqual({
       status: 200,
       body: { password: "<redacted>", id: 42 },
+    });
+    expect(detail?.cases[0]).toMatchObject({
+      azureTestCaseId: "azure-case-1",
+      plan: {
+        schemaVersion: "v2-natural",
+        steps: [{
+          instruction: "Verify customer",
+          expectedResult: "",
+          layerHint: "auto",
+        }],
+      },
+    });
+  });
+
+  it("degrades invalid legacy compiled plans to null", () => {
+    const detail = assembleRunDetail({
+      run: {
+        id: "run-legacy",
+        status: "completed",
+        summary_json: {},
+        env_config_json: {},
+      },
+      approvedByName: null,
+      cases: [{
+        id: "case-legacy",
+        order_index: 0,
+        title: "Legacy case",
+        source_kind: "manual",
+        compiled_plan_json: { actions: [{ instruction: "Legacy action" }] },
+      }],
+      steps: [],
+      actions: [],
+      artifacts: [],
+      candidates: [],
+      job: null,
+      cursor: "0",
+    });
+
+    expect(detail?.cases[0]).toMatchObject({
+      azureTestCaseId: null,
+      plan: null,
     });
   });
 });

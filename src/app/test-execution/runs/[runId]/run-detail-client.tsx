@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -11,11 +12,13 @@ import { projectWarning, useActiveProject } from "@/components/workflow/test-int
 import type { RunDetailDto } from "@/modules/test-execution/report-assembler";
 
 import { ResultsStep, type CandidatePublishState } from "../../components/results-step";
+import { saveActiveRunId, saveDraft, type DraftCase } from "../../lib/draft-storage";
 import { runPollDelay } from "../../lib/run-polling";
 import { isTerminalRunStatusValue } from "../../lib/stepper-gating";
 
 export function RunDetailClient({ runId }: { runId: string }) {
   const scope = useActiveProject();
+  const router = useRouter();
   const [detail, setDetail] = useState<RunDetailDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [publishState, setPublishState] = useState<CandidatePublishState>({});
@@ -100,6 +103,22 @@ export function RunDetailClient({ runId }: { runId: string }) {
     }
   };
 
+  const stageRerun = (cases: DraftCase[], step: "scope" | "review") => {
+    if (!scope || !detail) return;
+    saveDraft(scope.projectId, {
+      storyWorkItemId: detail.run.storyWorkItemId ?? "",
+      storyTitle: detail.run.storyTitle ?? "",
+      environmentProfileId: detail.run.environmentProfileId,
+      cases,
+    });
+    // An old local active-run marker must not override the staged landing.
+    saveActiveRunId(scope.projectId, null);
+    if (detail.run.environmentProfileId === null) {
+      toast.warning("This run used a one-time environment â€” reconfigure it before executing.");
+    }
+    router.push(`/test-execution?step=${step}`);
+  };
+
   if (!scope) return <div className="content-stack">{projectWarning(scope)}</div>;
 
   return (
@@ -120,7 +139,8 @@ export function RunDetailClient({ runId }: { runId: string }) {
         <ResultsStep
           detail={detail}
           artifactUrl={(artifactId) => `/api/test-execution/runs/${runId}/artifacts/${artifactId}?${scopeQuery}`}
-          onRerunCases={null}
+          onRerunCases={isTerminalRunStatusValue(detail.run.status) ? (cases) => stageRerun(cases, "review") : null}
+          onEditCases={isTerminalRunStatusValue(detail.run.status) ? (cases) => stageRerun(cases, "scope") : null}
           onUpdateCandidate={updateCandidate}
           onPublishCandidate={publishCandidate}
           publishState={publishState}

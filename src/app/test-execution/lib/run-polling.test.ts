@@ -41,6 +41,8 @@ function baseDetail(): RunDetailDto {
         title: "Case",
         sourceKind: "manual",
         sourceSnapshotId: null,
+        azureTestCaseId: null,
+        plan: null,
         compileSource: "manual",
         compilePromptVersion: null,
         compileModel: null,
@@ -189,5 +191,27 @@ describe("mergeRunDetailDelta", () => {
     const previous = baseDetail();
     const merged = mergeRunDetailDelta(previous, delta());
     expect(merged?.run.approvedByName).toBe("Approver");
+  });
+
+  it("keeps lossless rerun data from changed cases", () => {
+    const previous = baseDetail();
+    const changedCase: RunDetailDeltaDto["changedCases"][number] = { ...previous.cases[0] };
+    const plan = {
+      schemaVersion: "v2-natural" as const,
+      steps: [{ instruction: "Open the test page", expectedResult: "The page opens", layerHint: "ui" as const }],
+    };
+    const merged = mergeRunDetailDelta(previous, delta({
+      changedCases: [{
+        ...changedCase,
+        sourceKind: "azure_test_case",
+        azureTestCaseId: "456",
+        plan,
+      }],
+    }));
+
+    expect(merged?.cases[0]).toMatchObject({
+      azureTestCaseId: "456",
+      plan,
+    });
   });
 });

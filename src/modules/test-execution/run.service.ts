@@ -660,7 +660,12 @@ export async function loadRunDetailRows(input: {
   if (!run) return null;
   const [cases, steps, actions, artifacts, candidates, job] = await Promise.all([
     sqlAll<Record<string, unknown>>(
-      `SELECT * FROM test_execution_case_runs WHERE run_id = @runId AND ${scopeWhere} ORDER BY order_index`,
+      `SELECT c.*, s.azure_work_item_id
+       FROM test_execution_case_runs c
+       LEFT JOIN test_execution_source_snapshots s ON s.id = c.source_snapshot_id
+       WHERE c.run_id = @runId AND c.workspace_id = @workspaceId
+         AND c.project_id = @projectId AND c.azure_project_id = @azureProjectId
+       ORDER BY c.order_index`,
       params,
     ),
     sqlAll<Record<string, unknown>>(
@@ -751,9 +756,13 @@ export async function loadRunDetailChangeRows(input: {
   if (!run) return null;
   const [cases, steps, actions, artifacts, candidates, job] = await Promise.all([
     sqlAll<Record<string, unknown>>(
-      `SELECT * FROM test_execution_case_runs
-       WHERE run_id = @runId AND ${scopeWhere} AND change_seq > @afterCursor::bigint
-       ORDER BY change_seq LIMIT @limit`,
+      `SELECT c.*, s.azure_work_item_id
+       FROM test_execution_case_runs c
+       LEFT JOIN test_execution_source_snapshots s ON s.id = c.source_snapshot_id
+       WHERE c.run_id = @runId AND c.workspace_id = @workspaceId
+         AND c.project_id = @projectId AND c.azure_project_id = @azureProjectId
+         AND c.change_seq > @afterCursor::bigint
+       ORDER BY c.change_seq LIMIT @limit`,
       params,
     ),
     sqlAll<Record<string, unknown>>(
