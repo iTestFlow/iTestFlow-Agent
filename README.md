@@ -214,6 +214,39 @@ npm run test:integration
 npm run build
 ```
 
+### Pull request CI parity
+
+Pull request CI uses Node.js 24.x, npm, and PostgreSQL 16. With Node.js 24.x
+installed, run the same gated commands locally from a clean checkout:
+
+```bash
+docker compose --profile test up -d --wait postgres-test
+export TEST_DATABASE_URL=postgresql://itestflow:itestflow@localhost:5433/itestflow_test
+export APP_ENCRYPTION_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+export SESSION_SECRET=local-ci-session-secret
+npm ci
+npm run db:migrate:test
+npm run typecheck
+npm run lint
+npm run test:coverage
+npm run test:coverage:integration
+npm run build
+```
+
+The protected `main` branch requires the stable checks `verify`,
+`Unit & coverage`, and `PostgreSQL integration`. These are native job checks,
+so they are reported for repository branches and forks alike. The jobs fail on
+a failed test lane or missing or invalid test report; a missing or failing test
+result cannot be treated as a passing build.
+
+Pull requests from public forks use the same `pull_request` workflow, but
+GitHub may hold a run in `action_required` until a maintainer approves it. A
+maintainer should review the pull request's **Files changed** tab—especially
+changes under `.github/workflows/`—then open **Awaiting approval** in the merge
+status panel and select **Approve workflows to run**. Fork runs receive a
+read-only `GITHUB_TOKEN` and no repository secrets. Do not bypass this review
+by running fork code from a privileged `pull_request_target` workflow.
+
 `test:unit` and `test:coverage` need no database, browser, internet, Azure DevOps
 connection, or LLM credentials. `test:integration` requires `TEST_DATABASE_URL` and a
 migrated disposable PostgreSQL database. Start the bundled test database with
