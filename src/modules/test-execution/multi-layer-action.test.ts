@@ -621,7 +621,7 @@ describe("validateMultiLayerDecision", () => {
     const result = validateMultiLayerDecision({
       decision: "act",
       actionType: "api_request",
-      argumentsJson: JSON.stringify({ method: "POST", url: "/booking" }),
+      argumentsJson: JSON.stringify({ method: "POST", endpoint: "/booking" }),
     }, context());
 
     expect(result).toMatchObject({
@@ -666,5 +666,32 @@ describe("validateMultiLayerDecision", () => {
     }, context());
 
     expect(result).toMatchObject({ kind: "action", action: { type: "db_select" } });
+  });
+
+  it("accepts url as the path, the name the UI layer uses", () => {
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({ method: "POST", url: "/booking", body: { firstname: "Jane" } }),
+    }, context());
+
+    expect(result).toMatchObject({
+      kind: "action",
+      action: { type: "api_request", arguments: { path: "/booking", method: "POST" } },
+    });
+  });
+
+  it("names the arguments it received when they do not match", () => {
+    // Without this the model sees only "path: Required" and cannot tell that
+    // what it sent was called something else.
+    const result = validateMultiLayerDecision({
+      decision: "act",
+      actionType: "api_request",
+      argumentsJson: JSON.stringify({ method: "POST", endpoint: "/booking", payload: {} }),
+    }, context());
+
+    expect(result).toMatchObject({ kind: "invalid" });
+    const feedback = (result as { feedback: string }).feedback;
+    expect(feedback).toContain("Received: method, endpoint, payload");
   });
 });

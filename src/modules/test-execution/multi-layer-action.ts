@@ -34,23 +34,35 @@ const ParameterValueSchema: z.ZodType<unknown> = z.lazy(() =>
 );
 const ParametersSchema = z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/), ParameterValueSchema).default({});
 
-export const ApiRequestArgumentsSchema = z.object({
-  method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]),
-  path: z.string().trim().min(1).max(2_000).refine(isRelativeApiPath, "API path must be relative to the configured base URL."),
-  query: z.record(z.string().max(200), JsonScalarSchema).default({}),
-  headers: z.record(z.string().max(100), z.string().max(4_000)).default({}),
-  /** JSON body for mutation methods; size is bounded by the executor's request cap. */
-  body: ParameterValueSchema.optional(),
-  /**
-   * How the body is encoded. Many APIs document "Request Parameters" and read
-   * form fields, not JSON — sending the wrong encoding makes the server report
-   * the parameters as missing, so the agent has to be able to choose.
-   */
-  contentType: z
-    .enum(["application/json", "application/x-www-form-urlencoded", "text/plain"])
-    .optional(),
-  captures: z.array(CaptureSchema).max(20).default([]),
-});
+export const ApiRequestArgumentsSchema = z.preprocess(
+  // "url" is what the UI navigate action calls its target, so a model reaching
+  // for the API layer often reuses that name. Accept it as the path rather
+  // than reporting the path missing when it was supplied under another name.
+  (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const raw = value as Record<string, unknown>;
+    if (raw.path !== undefined || typeof raw.url !== "string") return value;
+    const { url, ...rest } = raw;
+    return { ...rest, path: url };
+  },
+  z.object({
+    method: z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]),
+    path: z.string().trim().min(1).max(2_000).refine(isRelativeApiPath, "API path must be relative to the configured base URL."),
+    query: z.record(z.string().max(200), JsonScalarSchema).default({}),
+    headers: z.record(z.string().max(100), z.string().max(4_000)).default({}),
+    /** JSON body for mutation methods; size is bounded by the executor's request cap. */
+    body: ParameterValueSchema.optional(),
+    /**
+     * How the body is encoded. Many APIs document "Request Parameters" and read
+     * form fields, not JSON — sending the wrong encoding makes the server report
+     * the parameters as missing, so the agent has to be able to choose.
+     */
+    contentType: z
+      .enum(["application/json", "application/x-www-form-urlencoded", "text/plain"])
+      .optional(),
+    captures: z.array(CaptureSchema).max(20).default([]),
+  }),
+);
 
 export const OperationArgumentsSchema = z.object({
   operationId: z.string().trim().min(1).max(200),
@@ -247,9 +259,10 @@ export function validateMultiLayerDecision(
     if (issue) return invalid(issue);
     const args = ApiRequestArgumentsSchema.safeParse(decoded.value);
     if (!args.success) {
-      // "path: Required" alone leaves the model guessing at the shape; show it.
+      // Naming the keys that arrived turns a dead end into a correction: the
+      // model can see that what it sent is not what the field is called.
       return invalid(
-        `${firstZodIssue(args.error)} api_request takes {method, path, query?, headers?, body?, contentType?}, where path is relative to the base URL, for example "/booking".`,
+        `${firstZodIssue(args.error)} ${receivedKeys(decoded.value)} api_request takes {method, path, query?, headers?, body?, contentType?}, where path is relative to the base URL, for example "/booking".`,
       );
     }
     if ((args.data.method === "GET" || args.data.method === "HEAD") && args.data.body !== undefined) {
@@ -278,7 +291,7 @@ export function validateMultiLayerDecision(
     const issue = layerPolicyIssue(layer, context);
     if (issue) return invalid(issue);
     const args = OperationArgumentsSchema.safeParse(decoded.value);
-    if (!args.success) return invalid(firstZodIssue(args.error));
+    if (!args.success) return invalid(`${firstZodIssue(args.error)} ${receivedKeys(decoded.value)} Takes {operationId, parameters?, body?, captures?}.`);
     const capability = context.capabilities.get(args.data.operationId);
     if (!capability || capability.layer !== layer || !capability.approved) {
       return invalid(`Operation "${args.data.operationId}" is not an approved ${layer.toUpperCase()} capability.`);
@@ -318,7 +331,7 @@ export function validateMultiLayerDecision(
     const issue = layerPolicyIssue("db", context);
     if (issue) return invalid(issue);
     const args = DatabaseSelectArgumentsSchema.safeParse(decoded.value);
-    if (!args.success) return invalid(firstZodIssue(args.error));
+    if (!args.success) return invalid(`${firstZodIssue(args.error)} ${receivedKeys(decoded.value)} Takes {sql, parameters?, captures?}.`);
     const referenceIssue = placeholderIssue(args.data, context);
     if (referenceIssue) return invalid(referenceIssue);
     return { kind: "action", action: { layer: "db", type: "db_select", arguments: args.data } };
@@ -333,7 +346,7 @@ export function validateMultiLayerDecision(
       return invalid("Composing database changes is not enabled for this run; use an approved database operation.");
     }
     const args = DatabaseMutateArgumentsSchema.safeParse(decoded.value);
-    if (!args.success) return invalid(firstZodIssue(args.error));
+    if (!args.success) return invalid(`${firstZodIssue(args.error)} ${receivedKeys(decoded.value)} Takes {sql, parameters?, captures?}.`);
     const referenceIssue = placeholderIssue(args.data, context);
     if (referenceIssue) return invalid(referenceIssue);
     return { kind: "action", action: { layer: "db", type: "db_mutate", arguments: args.data } };
@@ -524,6 +537,15 @@ function normalizeRequestHeaders(args: {
 function firstZodIssue(error: z.ZodError) {
   const issue = error.issues[0];
   return issue ? `${issue.path.join(".") || "arguments"}: ${issue.message}` : "Invalid action arguments.";
+}
+
+/** Echo the argument names that arrived, so a naming mismatch is visible. */
+function receivedKeys(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "Received no arguments.";
+  const keys = Object.keys(value as Record<string, unknown>);
+  return keys.length > 0
+    ? `Received: ${keys.slice(0, 12).join(", ")}.`
+    : "Received no arguments.";
 }
 
 function invalid(feedback: string): ValidatedMultiLayerDecision {
