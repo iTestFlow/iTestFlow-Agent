@@ -12,7 +12,7 @@ describe("JiraCloudAdapter", () => {
     vi.stubGlobal("fetch", fetchMock);
     const adapter = jiraAdapter();
     await expect(adapter.fetchProjects()).resolves.toEqual([
-      { id: "10000", name: "Quality", url: "https://quality.atlassian.net/jira/software/projects/QA", state: "software" },
+      { id: "10000", key: "QA", name: "Quality", url: "https://quality.atlassian.net/jira/software/projects/QA", state: "software" },
     ]);
     await expect(adapter.fetchAuthenticatedUser()).resolves.toMatchObject({ id: "acct-1", displayName: "Jamie", emailAddress: "j@example.com" });
     expect(fetchMock.mock.calls[0][0]).toBe("https://api.atlassian.com/ex/jira/cloud-a/rest/api/3/project/search?startAt=0");

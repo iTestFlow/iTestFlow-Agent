@@ -2,10 +2,12 @@ import "server-only";
 
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
-  getUserAzureAdapterOrgLevel,
+  getUserWorkManagementProviderOrgLevel,
   type WorkflowContext,
   WorkflowAuthError,
 } from "@/modules/credentials/scoped-resolution.service";
+import { resolveWorkspaceProviderId } from "@/modules/integrations/provider-registry";
+import { upsertJiraProjectMapping } from "./jira-project-mapping.service";
 import { nowIso, sqlGet } from "@/modules/shared/infrastructure/database/db";
 
 type ProjectRow = {
@@ -14,6 +16,10 @@ type ProjectRow = {
   azure_project_name: string;
   azure_organization_url: string;
   workspace_id: string | null;
+  provider_id: string;
+  provider_project_id: string | null;
+  provider_project_key: string | null;
+  provider_project_name: string | null;
 };
 
 export type WorkspaceProjectInput = {
@@ -26,8 +32,11 @@ function trustedScope(ctx: WorkflowContext, row: ProjectRow): ProjectScope {
     projectId: row.id,
     azureProjectId: row.azure_project_id,
     azureProjectName: row.azure_project_name,
-    azureOrganizationUrl: ctx.workspace.azureOrgUrl,
+    azureOrganizationUrl: ctx.workspace.providerSiteUrl ?? ctx.workspace.azureOrgUrl,
     workspaceId: ctx.workspace.id,
+    providerProjectId: row.provider_project_id ?? undefined,
+    providerProjectKey: row.provider_project_key ?? undefined,
+    providerProjectName: row.provider_project_name ?? undefined,
   };
 }
 
@@ -56,7 +65,8 @@ export async function upsertWorkspaceProject(
        status = 'active',
        workspace_id = EXCLUDED.workspace_id,
        updated_at = EXCLUDED.updated_at
-     RETURNING id, azure_project_id, azure_project_name, azure_organization_url, workspace_id`,
+     RETURNING id, azure_project_id, azure_project_name, azure_organization_url, workspace_id,
+               provider_id, provider_project_id, provider_project_key, provider_project_name`,
     {
       azureProjectId,
       azureProjectName,
@@ -71,23 +81,26 @@ export async function upsertWorkspaceProject(
 
 async function findWorkspaceProject(ctx: WorkflowContext, scope: ProjectScope): Promise<ProjectRow | undefined> {
   return sqlGet<ProjectRow>(
-    `SELECT id, azure_project_id, azure_project_name, azure_organization_url, workspace_id
+    `SELECT id, azure_project_id, azure_project_name, azure_organization_url, workspace_id,
+            provider_id, provider_project_id, provider_project_key, provider_project_name
      FROM projects
      WHERE workspace_id = @workspaceId
-       AND (id = @projectId OR azure_project_id = @azureProjectId)
+       AND (id = @projectId OR azure_project_id = @azureProjectId OR provider_project_id = @providerProjectId)
      LIMIT 1`,
     {
       workspaceId: ctx.workspace.id,
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
+      providerProjectId: scope.providerProjectId ?? scope.azureProjectId,
     },
   );
 }
 
 async function projectExistsOutsideWorkspace(ctx: WorkflowContext, scope: ProjectScope): Promise<boolean> {
+  const providerId = resolveWorkspaceProviderId(ctx.workspace);
   const row = await sqlGet<{ id: string }>(
     `SELECT id FROM projects
-     WHERE (id = @projectId OR azure_project_id = @azureProjectId)
+     WHERE (id = @projectId OR (@providerId = 'azure-devops' AND azure_project_id = @azureProjectId))
        AND workspace_id IS NOT NULL
        AND workspace_id <> @workspaceId
      LIMIT 1`,
@@ -95,6 +108,7 @@ async function projectExistsOutsideWorkspace(ctx: WorkflowContext, scope: Projec
       workspaceId: ctx.workspace.id,
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
+      providerId,
     },
   );
   return Boolean(row);
@@ -102,16 +116,31 @@ async function projectExistsOutsideWorkspace(ctx: WorkflowContext, scope: Projec
 
 export async function verifyAndUpsertWorkspaceProject(
   ctx: WorkflowContext,
-  azureProjectId: string,
+  providerProjectId: string,
 ): Promise<ProjectScope> {
-  const adapter = await getUserAzureAdapterOrgLevel(ctx);
+  const providerId = resolveWorkspaceProviderId(ctx.workspace);
+  const adapter = await getUserWorkManagementProviderOrgLevel(ctx);
   const projects = await adapter.fetchProjects();
-  const project = projects.find((item) => item.id === azureProjectId);
+  const project = projects.find((item) => item.id === providerProjectId);
   if (!project) {
     throw new WorkflowAuthError(
-      "The selected Azure DevOps project was not found in this workspace, or you do not have permission to access it.",
+      "The selected project was not found in this workspace, or you do not have permission to access it.",
       404,
     );
+  }
+  if (providerId === "jira-cloud") {
+    if (!project.key || !ctx.workspace.providerSiteUrl) {
+      throw new WorkflowAuthError("Jira Cloud returned an incomplete project mapping.", 502);
+    }
+    const projectId = await upsertJiraProjectMapping({
+      workspaceId: ctx.workspace.id, providerId, jiraProjectId: project.id,
+      jiraProjectKey: project.key, jiraProjectName: project.name,
+    });
+    return {
+      projectId, azureProjectId: project.id, azureProjectName: project.name,
+      azureOrganizationUrl: ctx.workspace.providerSiteUrl, workspaceId: ctx.workspace.id,
+      providerProjectId: project.id, providerProjectKey: project.key, providerProjectName: project.name,
+    };
   }
   return upsertWorkspaceProject(ctx, {
     azureProjectId: project.id,
@@ -124,9 +153,9 @@ export async function resolveProjectScope(ctx: WorkflowContext, clientScope: Pro
   if (existing) return trustedScope(ctx, existing);
 
   if (await projectExistsOutsideWorkspace(ctx, clientScope)) {
-    throw new WorkflowAuthError("The selected Azure DevOps project does not belong to this workspace.", 403);
+    throw new WorkflowAuthError("The selected project does not belong to this workspace.", 403);
   }
 
-  const candidateId = clientScope.azureProjectId || clientScope.projectId;
+  const candidateId = clientScope.providerProjectId || clientScope.azureProjectId || clientScope.projectId;
   return verifyAndUpsertWorkspaceProject(ctx, candidateId);
 }

@@ -7,6 +7,9 @@ export const ProjectScopeSchema = z.object({
   azureProjectId: z.string().min(1),
   azureProjectName: z.string().min(1),
   azureOrganizationUrl: z.string().url(),
+  providerProjectId: z.string().min(1).optional(),
+  providerProjectKey: z.string().min(1).optional(),
+  providerProjectName: z.string().min(1).optional(),
   // Optional client hint for the active workspace. Routes validate membership
   // and resolve this into a trusted workspace/project scope server-side.
   workspaceId: z.string().optional(),

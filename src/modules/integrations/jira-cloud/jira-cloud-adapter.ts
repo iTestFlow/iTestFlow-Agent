@@ -81,6 +81,7 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
     }
     return projects.map((project) => ({
       id: requiredText(project.id),
+      key: text(project.key),
       name: requiredText(project.name),
       url: text(project.key) ? `${this.siteUrl}/jira/software/projects/${encodeURIComponent(requiredText(project.key))}` : undefined,
       state: text(project.projectTypeKey),
