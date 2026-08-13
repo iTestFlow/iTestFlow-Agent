@@ -415,6 +415,14 @@ export default function LoginPage() {
                 </Button>
               </div>
             </form>
+            <div className="my-5 flex items-center gap-3" aria-hidden="true">
+              <span className="h-px flex-1 bg-border" />
+              <span className="text-xs uppercase tracking-wide text-muted-foreground">or</span>
+              <span className="h-px flex-1 bg-border" />
+            </div>
+            <Button asChild type="button" variant="outline" size="lg" className="h-10 w-full font-semibold">
+              <a href="/api/auth/jira/start?returnTo=%2Fdashboards">Continue with Jira Cloud</a>
+            </Button>
           </CardContent>
         </Card>
       </div>

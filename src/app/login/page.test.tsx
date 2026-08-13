@@ -70,6 +70,14 @@ describe("LoginPage", () => {
     vi.unstubAllGlobals()
   })
 
+  it("offers the browser-bound Jira Cloud OAuth flow", () => {
+    renderLoginPage()
+    expect(screen.getByRole("link", { name: "Continue with Jira Cloud" })).toHaveAttribute(
+      "href",
+      "/api/auth/jira/start?returnTo=%2Fdashboards",
+    )
+  })
+
   it("shows a non-interactive loading state without a dropdown", async () => {
     const pending = deferred<Response>()
     fetchMock.mockReset()
