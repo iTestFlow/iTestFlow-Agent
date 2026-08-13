@@ -13,11 +13,16 @@ concurrency:
 
 permissions:
   contents: read
-  checks: write
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    outputs:
+      unit_tests: ${{ steps.unit_tests.outcome }}
+      integration_tests: ${{ steps.integration_tests.outcome }}
+      report_validation: ${{ steps.validate_test_reports.outcome }}
+      report_publishing: ${{ steps.publish_test_report.outcome }}
+      detail_publishing: ${{ steps.publish_test_details.outcome }}
     services:
       postgres:
         image: postgres:16
@@ -98,7 +103,9 @@ jobs:
           fail_on_failure: true
           fail_on_parse_error: true
           require_tests: true
-          annotate_only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          # Keep the required contexts as native job checks. This mode emits
+          # annotations without requiring fork code to create check runs.
+          annotate_only: true
 
       - name: Publish test file and failure details
         id: publish_test_details
@@ -137,3 +144,41 @@ jobs:
           exit "$failed"
 
       - run: npm run build
+
+  unit-coverage:
+    name: Unit & coverage
+    needs: verify
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce unit and reporting results
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ needs.verify.outputs.unit_tests }}
+          REPORT_VALIDATION_OUTCOME: ${{ needs.verify.outputs.report_validation }}
+          REPORT_PUBLISH_OUTCOME: ${{ needs.verify.outputs.report_publishing }}
+          DETAILS_PUBLISH_OUTCOME: ${{ needs.verify.outputs.detail_publishing }}
+        run: |
+          test "$TEST_OUTCOME" = success
+          test "$REPORT_VALIDATION_OUTCOME" = success
+          test "$REPORT_PUBLISH_OUTCOME" = success
+          test "$DETAILS_PUBLISH_OUTCOME" = success
+
+  postgres-integration:
+    name: PostgreSQL integration
+    needs: verify
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce integration and reporting results
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ needs.verify.outputs.integration_tests }}
+          REPORT_VALIDATION_OUTCOME: ${{ needs.verify.outputs.report_validation }}
+          REPORT_PUBLISH_OUTCOME: ${{ needs.verify.outputs.report_publishing }}
+          DETAILS_PUBLISH_OUTCOME: ${{ needs.verify.outputs.detail_publishing }}
+        run: |
+          test "$TEST_OUTCOME" = success
+          test "$REPORT_VALIDATION_OUTCOME" = success
+          test "$REPORT_PUBLISH_OUTCOME" = success
+          test "$DETAILS_PUBLISH_OUTCOME" = success
