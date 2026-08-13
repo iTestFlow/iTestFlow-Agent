@@ -19,6 +19,9 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // Node 26 exposes process-global Web Storage that shadows jsdom's isolated
+    // implementation unless it is disabled in each Vitest worker.
+    execArgv: ["--no-experimental-webstorage"],
     // Test-file SELECTION lives in the lane configs, NOT here: vitest.unit.config.ts
     // includes all non-DB tests; vitest.integration.config.ts includes only *.db.test.*.
     // Keeping `include` out of the base is deliberate — mergeConfig CONCATENATES arrays,
