@@ -35,3 +35,70 @@ describe("PlaywrightMcpExecutor initial navigation recovery", () => {
     expect(executor.takeSnapshot).not.toHaveBeenCalled();
   });
 });
+
+type NavigationHarness = {
+  allowedOrigin: string;
+  lastKnownUrl: string | null;
+  callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+  performAgentAction: PlaywrightMcpExecutor["performAgentAction"];
+};
+
+function navigationHarness(currentUrl: string | null): NavigationHarness {
+  const executor = new PlaywrightMcpExecutor() as unknown as NavigationHarness;
+  executor.allowedOrigin = "https://app.example.com";
+  executor.lastKnownUrl = currentUrl;
+  executor.callTool = vi.fn(async () => ({ text: "", isError: false, images: [] }));
+  return executor;
+}
+
+describe("PlaywrightMcpExecutor redundant navigation", () => {
+  it("answers from state instead of re-navigating to the open page", async () => {
+    // A second browser_navigate wedges the MCP backend on some sites, taking
+    // every later tool call — including the snapshot — down with it.
+    const executor = navigationHarness("https://app.example.com/");
+
+    const result = await executor.performAgentAction({ type: "navigate", url: "https://app.example.com/" });
+
+    expect(result.status).toBe("ok");
+    expect(result.observation.detail).toBe("already on the requested page");
+    expect(executor.callTool).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a trailing slash", "https://app.example.com/products", "/products/"],
+    ["a relative target", "https://app.example.com/login", "/login"],
+    ["a query string the site rewrote", "https://app.example.com/search?ref=nav", "/search"],
+  ])("treats %s as the same page", async (_label, currentUrl, requested) => {
+    const executor = navigationHarness(currentUrl);
+
+    const result = await executor.performAgentAction({ type: "navigate", url: requested });
+
+    expect(result.status).toBe("ok");
+    expect(executor.callTool).not.toHaveBeenCalled();
+  });
+
+  it("still navigates when the target is a different page", async () => {
+    const executor = navigationHarness("https://app.example.com/");
+
+    await executor.performAgentAction({ type: "navigate", url: "/checkout" });
+
+    expect(executor.callTool).toHaveBeenCalledWith("browser_navigate", { url: "/checkout" });
+  });
+
+  it("still navigates when no page is known yet", async () => {
+    const executor = navigationHarness(null);
+
+    await executor.performAgentAction({ type: "navigate", url: "https://app.example.com/" });
+
+    expect(executor.callTool).toHaveBeenCalled();
+  });
+
+  it("rejects an off-origin target before considering the current page", async () => {
+    const executor = navigationHarness("https://untrusted.example/");
+
+    const result = await executor.performAgentAction({ type: "navigate", url: "https://untrusted.example/" });
+
+    expect(result).toMatchObject({ status: "failed", reason: "policy_violation" });
+    expect(executor.callTool).not.toHaveBeenCalled();
+  });
+});

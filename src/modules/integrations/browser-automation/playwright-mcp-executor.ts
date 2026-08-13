@@ -155,6 +155,17 @@ export class PlaywrightMcpExecutor implements BrowserExecutor {
           if (origin !== this.allowedOrigin) {
             return this.failed("policy_violation", `Navigation outside ${this.allowedOrigin} is not allowed.`);
           }
+          // Re-navigating to the page already open is a no-op the agent asks
+          // for routinely (the session opens the environment's initial URL, and
+          // the first step often restates it). It is not harmless: on some
+          // sites a second browser_navigate wedges the Playwright MCP backend
+          // until its internal timeout, and every later tool call — including
+          // the snapshot — hangs with it. Answer from state instead, the same
+          // way a toggle already short-circuits when it is in the desired
+          // state. A genuine reload has its own action type.
+          if (this.isCurrentPage(action.url)) {
+            return this.ok("already on the requested page");
+          }
         }
         const outcome = await this.callTool(plan.tool, plan.args);
         if (!outcome.isError) return this.ok();
@@ -348,6 +359,23 @@ export class PlaywrightMcpExecutor implements BrowserExecutor {
     }
   }
 
+  /**
+   * Whether the browser is already showing the requested page. Compares the
+   * path only: a query string or fragment the site rewrote on arrival does
+   * not make it a different page, and the agent's next snapshot shows it the
+   * real state regardless.
+   */
+  private isCurrentPage(requestedUrl: string): boolean {
+    if (!this.lastKnownUrl) return false;
+    try {
+      const target = new URL(requestedUrl, this.allowedOrigin);
+      const current = new URL(this.lastKnownUrl);
+      return current.origin === target.origin && samePath(current.pathname, target.pathname);
+    } catch {
+      return false;
+    }
+  }
+
   private ok(detail?: string): ActionExecutionResult {
     return { status: "ok", observation: { durationMs: 0, detail } };
   }
@@ -358,4 +386,13 @@ export class PlaywrightMcpExecutor implements BrowserExecutor {
   ): ActionExecutionResult {
     return { status: "failed", reason, observation: { durationMs: 0, detail } };
   }
+}
+
+/** A trailing slash is not a page difference. */
+function samePath(current: string, target: string): boolean {
+  return stripTrailingSlash(current) === stripTrailingSlash(target);
+}
+
+function stripTrailingSlash(pathname: string): string {
+  return pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
 }
