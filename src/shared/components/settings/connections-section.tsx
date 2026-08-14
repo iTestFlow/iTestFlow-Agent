@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { apiErrorMessage } from "@/shared/lib/api-error-message"
 import { Field, SecretField, SectionCard, StatusBadge, type StatusTone } from "./section-card"
 import { JiraIntegrationSection } from "./jira-integration-section"
+import { PlaywrightMcpSection } from "./playwright-mcp-section"
 
 type CredentialSummary = {
   status: "not_configured" | "configured" | "invalid" | "expired"
@@ -105,7 +106,7 @@ function AzureConnectionsSection() {
   const badge = credentialBadge(status?.azurePat)
   const hasSavedPat = (status?.azurePat.status ?? "not_configured") !== "not_configured"
 
-  return (
+  return (<>
     <SectionCard
       title="Azure DevOps Connection"
       description="Your personal access token authenticates your own Azure DevOps actions. It is encrypted server-side — only a masked preview is shown here, never the raw value."
@@ -146,5 +147,6 @@ function AzureConnectionsSection() {
         )}
       </Button>
     </SectionCard>
-  )
+    <PlaywrightMcpSection />
+  </>)
 }

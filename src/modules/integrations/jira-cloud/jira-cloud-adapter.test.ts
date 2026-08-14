@@ -308,7 +308,7 @@ describe("JiraCloudAdapter", () => {
       .rejects.toMatchObject({ code: "integration_unsupported_capability" });
 
     const methods = [
-      "fetchLinkedTestCases", "fetchTestPlans", "fetchTestSuites", "fetchTestSuiteTree", "createTestSuite", "deleteTestSuite",
+      "fetchLinkedTestCases", "fetchTestCasesByIds", "fetchTestPlans", "fetchTestSuites", "fetchTestSuiteTree", "createTestSuite", "deleteTestSuite",
       "fetchTestPoints", "fetchTestRuns", "fetchTestResults", "addTestCasesToSuite", "addTestCaseToSuite", "updateTestPoints",
       "createTestCase", "createRequirementBasedSuite", "linkTestCaseToUserStory", "linkTestCaseToWorkItem",
     ] as const;

@@ -278,6 +278,7 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
   }
 
   fetchLinkedTestCases(): Promise<never> { return this.unsupportedTestManagement(); }
+  fetchTestCasesByIds(): Promise<never> { return this.unsupportedTestManagement(); }
   fetchTestPlans(): Promise<never> { return this.unsupportedTestManagement(); }
   fetchTestSuites(): Promise<never> { return this.unsupportedTestManagement(); }
   fetchTestSuiteTree(): Promise<never> { return this.unsupportedTestManagement(); }

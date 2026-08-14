@@ -117,6 +117,7 @@ Durable page routes:
 - `/requirements-analysis`
 - `/test-case-design`
 - `/test-gap-analysis`
+- `/test-execution`
 - `/report-bug`
 - `/suite-migration`
 - `/bulk-task-creation`
@@ -322,3 +323,8 @@ Update this document when you:
 - Make an architecture decision that future development should follow.
 
 Keep updates short and factual. Prefer changing the relevant section instead of appending a chronological changelog.
+## Playwright MCP automated execution
+
+`src/modules/test-execution/` owns workspace transport configuration, the bounded LLM-to-MCP agent, exact tool allowlisting, all-tab origin verification around every agent action, execution persistence, protected artifact import, and the background job handler. MCP browser state is untrusted: ambiguous or disallowed tab reports are rejected before tool results or completion events can be reused or persisted. Protected artifact downloads may use transient signed queries, but durable provenance stores origin and path only. API routes under `src/app/api/test-execution/playwright/` always resolve membership and trusted project scope before reading a run, cancelling it, serving an artifact, or publishing Azure outcomes. The start route expands the selected suite and descendants, snapshots non-secret transport metadata, creates the durable run/case/step rows, and enqueues a single-attempt `playwright_mcp_execution` job.
+
+The worker executes cases serially with one isolated MCP connection per case. LLM decisions can invoke only advertised tools in the fixed allowlist; `browser_run_code_unsafe` and unrelated MCP tools are rejected. iTestFlow is the system of record during execution and review. Azure Test Points are updated only by the explicit publish route, with local outcomes mapped to Azure outcomes.

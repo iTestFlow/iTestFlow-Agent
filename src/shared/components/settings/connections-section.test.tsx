@@ -134,6 +134,7 @@ describe("ConnectionsSection provider flow", () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url === "/api/auth/session") return json({ authenticated: true, workspace: { id: "azure-ws", providerId: "azure-devops" } });
       if (url === "/api/settings/credentials") return json({ workspaceId: "azure-ws", azureOrgUrl: "https://dev.azure.com/contoso", azurePat: { status: "configured", maskedPreview: "***" }, llm: { status: "not_configured", maskedPreview: null } });
+      if (url === "/api/workspace/playwright-mcp") return json({ error: "Forbidden" }, 403);
       throw new Error(`Unexpected request: ${url}`);
     });
     render(<ConnectionsSection />);

@@ -9,6 +9,7 @@ import { JIRA_WEBHOOK_RECONCILE } from "@/modules/integrations/jira-cloud/jira-w
 import { runJiraWebhookReconcile } from "./jira-webhook-reconcile.handler";
 import { JIRA_SYNC_OPERATIONS } from "@/modules/integrations/jira-cloud/jira-sync-runtime.service";
 import { runJiraSyncOperations } from "./jira-sync-operations.handler";
+import { runPlaywrightExecutionJob } from "@/modules/test-execution/playwright-execution-job";
 
 let registered = false;
 
@@ -20,5 +21,6 @@ export function registerAllJobHandlers(): void {
   registerJobHandler(UPLOADED_DOCUMENT_INGEST, runUploadedDocumentIngestJob);
   registerJobHandler(JIRA_WEBHOOK_RECONCILE, runJiraWebhookReconcile);
   registerJobHandler(JIRA_SYNC_OPERATIONS, runJiraSyncOperations);
+  registerJobHandler("playwright_mcp_execution", runPlaywrightExecutionJob);
   registered = true;
 }

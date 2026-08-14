@@ -15,6 +15,7 @@ data/model-cache/*
 data/document-store/*
 *.log
 tsconfig.tsbuildinfo
+graphify-out/
 .claude
 .codex
 
