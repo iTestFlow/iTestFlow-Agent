@@ -37,7 +37,7 @@ All controls use native labelled inputs, selects, links, and buttons. The flow i
 
 ## Artifact Backends
 
-One active backend is stored per workspace project. Switching backend replaces the prior configuration; secret columns are cleared when the new backend does not need them.
+One active backend is stored per workspace project. Switching backend replaces the prior configuration; secret columns are cleared when the new backend does not need them. The next publish of an existing local artifact atomically rebinds its current trace link to the newly selected backend and republishes it there; the prior remote artifact is not deleted.
 
 ### Plain Jira
 

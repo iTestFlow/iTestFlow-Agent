@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ sqlGet: vi.fn(), resolveAccess: vi.fn(), plainCreate: vi.fn(), xrayCreate: vi.fn(), zephyrCreate: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  sqlGet: vi.fn(), resolveAccess: vi.fn(), plainCreate: vi.fn(), xrayCreate: vi.fn(), zephyrCreate: vi.fn(),
+  resolveXray: vi.fn(), resolveZephyr: vi.fn(),
+}));
 vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   createId: () => "link-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet,
   withTransaction: (work: (client: object) => unknown) => work({ tx: true }),
@@ -9,8 +12,8 @@ vi.mock("@/modules/auth/jira-connection.service", () => ({ resolveJiraAccessToke
 vi.mock("./plain-jira-artifact-backend", () => ({ PlainJiraArtifactBackend: class { createTestCase = mocks.plainCreate; } }));
 vi.mock("./xray-cloud-backend", () => ({ XrayCloudBackend: class { createTestCase = mocks.xrayCreate; } }));
 vi.mock("./zephyr-scale-backend", () => ({ ZephyrScaleBackend: class { createTestCase = mocks.zephyrCreate; } }));
-vi.mock("./xray-cloud-config.service", () => ({ resolveXrayCloudConfig: vi.fn() }));
-vi.mock("./zephyr-scale-config.service", () => ({ resolveZephyrScaleConfig: vi.fn() }));
+vi.mock("./xray-cloud-config.service", () => ({ resolveXrayCloudConfig: mocks.resolveXray }));
+vi.mock("./zephyr-scale-config.service", () => ({ resolveZephyrScaleConfig: mocks.resolveZephyr }));
 import * as plainJiraPublishing from "./jira-artifact-publishing.service";
 
 const { publishPlainJiraTestCase } = plainJiraPublishing;
@@ -76,5 +79,42 @@ describe("publishPlainJiraTestCase", () => {
       .resolves.toMatchObject({ results: [{ localId: "case-1", azureTestCaseId: "QA-9", success: true }] });
 
     expect(mocks.plainCreate).toHaveBeenCalledWith({ projectId: "10000", testCase: input.testCase });
+  });
+
+  it("passes the Jira project key to the configured Zephyr backend", async () => {
+    mocks.resolveZephyr.mockResolvedValue({ apiToken: "token", region: "us", jiraProjectKey: "QA", localIdFieldName: "iTestFlow ID" });
+    mocks.sqlGet
+      .mockResolvedValueOnce({
+        backend_type: "zephyr_scale", config_json: "{}", provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
+        provider_site_id: "cloud-a", provider_site_url: "https://quality.atlassian.net",
+      })
+      .mockResolvedValueOnce({ provider_project_id: "10000", provider_project_key: "QA" })
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ id: "link-1" })
+      .mockResolvedValueOnce({ remote_artifact_id: "QA-T1", remote_url: "https://quality.atlassian.net" });
+    mocks.zephyrCreate.mockResolvedValue({ success: true, azureTestCaseId: "QA-T1" });
+
+    await plainJiraPublishing.publishConfiguredJiraTestCases({ ...input, testCases: [input.testCase] });
+
+    expect(mocks.zephyrCreate).toHaveBeenCalledWith({ projectId: "QA", testCase: input.testCase });
+  });
+
+  it("rebinds an existing trace when the project switches artifact backend", async () => {
+    mocks.resolveXray.mockResolvedValue({ clientId: "client", clientSecret: "secret", jiraProjectId: "10000", jiraProjectKey: "QA", localIdFieldId: "customfield_1" });
+    mocks.sqlGet
+      .mockResolvedValueOnce({
+        backend_type: "xray_cloud", config_json: "{}", provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
+        provider_site_id: "cloud-a", provider_site_url: "https://quality.atlassian.net",
+      })
+      .mockResolvedValueOnce({ provider_project_id: "10000", provider_project_key: "QA" })
+      .mockResolvedValueOnce({ backend_type: "plain_jira", remote_artifact_id: "QA-9", remote_url: "https://quality.atlassian.net/browse/QA-9" })
+      .mockResolvedValueOnce({ id: "link-1" })
+      .mockResolvedValueOnce({ remote_artifact_id: "10009", remote_url: "https://quality.atlassian.net/browse/10009" });
+    mocks.xrayCreate.mockResolvedValue({ success: true, azureTestCaseId: "10009" });
+
+    await plainJiraPublishing.publishConfiguredJiraTestCases({ ...input, testCases: [input.testCase] });
+
+    expect(mocks.xrayCreate).toHaveBeenCalledWith({ projectId: "10000", testCase: input.testCase });
+    expect(mocks.sqlGet.mock.calls[3][0]).toContain("backend_type = excluded.backend_type");
   });
 });

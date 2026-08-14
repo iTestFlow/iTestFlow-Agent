@@ -11,7 +11,7 @@ import { ZephyrScaleBackend } from "./zephyr-scale-backend";
 import { resolveZephyrScaleConfig } from "./zephyr-scale-config.service";
 
 type PlainPublisher = { createTestCase(input: { projectId: string; testCase: FinalApprovedTestCase }): Promise<{ success: boolean; azureTestCaseId?: string; error?: string }> };
-type LinkRow = { remote_artifact_id: string; remote_url: string };
+type LinkRow = { backend_type?: BackendType; remote_artifact_id: string; remote_url: string };
 type BackendType = "plain_jira" | "xray_cloud" | "zephyr_scale";
 type BackendAnchor = {
   backend_type: BackendType; config_json: string; provider_project_id: string; provider_project_key: string;
@@ -87,8 +87,8 @@ async function publishJiraTestCase(input: {
   backend: PlainPublisher; backendType: BackendType; siteUrl?: string;
 }): Promise<{ remoteId: string; remoteUrl: string; created: boolean }> {
   const params = { workspaceId: input.workspaceId, projectId: input.projectId, localType: "test_case", localId: input.testCase.localId };
-  const authorized = await sqlGet<{ provider_project_id: string }>(
-    `SELECT p.provider_project_id
+  const authorized = await sqlGet<{ provider_project_id: string; provider_project_key: string }>(
+    `SELECT p.provider_project_id, p.provider_project_key
      FROM projects p
      JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @userId AND wm.status = 'active'
      JOIN jira_artifact_backend_configs c ON c.workspace_id = p.workspace_id AND c.project_id = p.id
@@ -99,11 +99,13 @@ async function publishJiraTestCase(input: {
   );
   if (!authorized?.provider_project_id) throw new Error("Plain Jira publishing is not authorized for this workspace project.");
   const existing = await sqlGet<LinkRow>(
-    `SELECT remote_artifact_id, remote_url FROM jira_artifact_links
+    `SELECT backend_type, remote_artifact_id, remote_url FROM jira_artifact_links
      WHERE workspace_id = @workspaceId AND project_id = @projectId
        AND local_artifact_type = @localType AND local_artifact_id = @localId AND status = 'active'`, params,
   );
-  if (existing) return { remoteId: existing.remote_artifact_id, remoteUrl: existing.remote_url, created: false };
+  if (existing?.backend_type === input.backendType || (existing && input.backendType === "plain_jira" && !existing.backend_type)) {
+    return { remoteId: existing.remote_artifact_id, remoteUrl: existing.remote_url, created: false };
+  }
   const now = nowIso();
   const staleCutoff = new Date(Date.parse(now) - 10 * 60 * 1000).toISOString();
   const claim = await sqlGet<{ id: string }>(
@@ -117,13 +119,16 @@ async function publishJiraTestCase(input: {
      JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @userId AND wm.status = 'active'
      WHERE p.id = @projectId AND p.workspace_id = @workspaceId AND p.provider_id = 'jira-cloud' AND p.status = 'active'
      ON CONFLICT (workspace_id, project_id, local_artifact_type, local_artifact_id)
-     DO UPDATE SET updated_at = excluded.updated_at
-       WHERE jira_artifact_links.status = 'publishing' AND jira_artifact_links.updated_at < @staleCutoff
+     DO UPDATE SET backend_type = excluded.backend_type, remote_artifact_id = NULL, remote_url = NULL,
+       status = 'publishing', updated_at = excluded.updated_at
+       WHERE (jira_artifact_links.status = 'publishing' AND jira_artifact_links.updated_at < @staleCutoff)
+          OR (jira_artifact_links.status = 'active' AND jira_artifact_links.backend_type <> @backendType)
      RETURNING id`,
     { ...params, id: createId("jiraartifact"), userId: input.actorUserId, backendType: input.backendType, now, staleCutoff },
   );
   if (!claim) throw new Error("This iTestFlow artifact is already being published.");
-  const published = await input.backend.createTestCase({ projectId: authorized.provider_project_id, testCase: input.testCase });
+  const backendProjectId = input.backendType === "zephyr_scale" ? authorized.provider_project_key : authorized.provider_project_id;
+  const published = await input.backend.createTestCase({ projectId: backendProjectId, testCase: input.testCase });
   if (!published.success || !published.azureTestCaseId) throw new Error("Plain Jira test-case publishing failed.");
   const remoteId = published.azureTestCaseId;
   const remoteUrl = `${(input.siteUrl ?? "").replace(/\/+$/, "")}/browse/${encodeURIComponent(remoteId)}`;
