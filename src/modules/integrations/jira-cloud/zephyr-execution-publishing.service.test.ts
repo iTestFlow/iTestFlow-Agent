@@ -1,16 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ sqlGet: vi.fn(), sqlRun: vi.fn() }));
+const mocks = vi.hoisted(() => ({ resolveZephyrScaleConfigRow: vi.fn(), sqlGet: vi.fn(), sqlRun: vi.fn() }));
 vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   createId: () => "link-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet, sqlRun: mocks.sqlRun,
   withTransaction: (work: (client: object) => unknown) => work({ tx: true }),
 }));
 vi.mock("./zephyr-scale-config.service", () => ({
-  resolveZephyrScaleConfigRow: vi.fn(() => ({ apiToken: "token", region: "us", jiraProjectKey: "QA", localIdFieldName: "iTestFlow ID" })),
+  resolveZephyrScaleConfigRow: mocks.resolveZephyrScaleConfigRow,
 }));
 import { publishZephyrExecution } from "./zephyr-execution-publishing.service";
 
 describe("publishZephyrExecution", () => {
-  beforeEach(() => { vi.clearAllMocks(); mocks.sqlRun.mockResolvedValue(0); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.sqlRun.mockResolvedValue(0);
+    mocks.resolveZephyrScaleConfigRow.mockReturnValue({ apiToken: "token", region: "us", jiraProjectKey: "QA", localIdFieldName: "iTestFlow ID" });
+  });
   const input = { workspaceId: "ws-1", projectId: "project-1", actorUserId: "user-1", localExecutionId: "execution-local-1", testCaseKey: "QA-T1", testCycleKey: "QA-R1", statusName: "Pass" };
 
   it("returns an authorized stable link without touching Zephyr", async () => {
@@ -65,6 +69,19 @@ describe("publishZephyrExecution", () => {
       createBackend: vi.fn(() => { throw new Error("backend construction failed"); }),
     })).rejects.toThrow("backend construction failed");
 
+    const failureWrite = mocks.sqlRun.mock.calls.find(([sql]) => String(sql).includes("WHERE id = @id"));
+    expect(failureWrite?.[0]).toContain("status = 'error'");
+    expect(failureWrite?.[1]).toMatchObject({ id: "link-1" });
+  });
+
+  it("retires its owned claim when post-claim configuration decoding fails", async () => {
+    mocks.sqlGet.mockResolvedValueOnce({ provider_project_key: "QA" }).mockResolvedValueOnce(undefined).mockResolvedValueOnce({ id: "link-1" });
+    mocks.resolveZephyrScaleConfigRow.mockImplementationOnce(() => { throw new Error("configuration decryption failed"); });
+    const createBackend = vi.fn();
+
+    await expect(publishZephyrExecution({ ...input, createBackend })).rejects.toThrow("configuration decryption failed");
+
+    expect(createBackend).not.toHaveBeenCalled();
     const failureWrite = mocks.sqlRun.mock.calls.find(([sql]) => String(sql).includes("WHERE id = @id"));
     expect(failureWrite?.[0]).toContain("status = 'error'");
     expect(failureWrite?.[1]).toMatchObject({ id: "link-1" });
