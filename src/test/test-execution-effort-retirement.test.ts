@@ -50,6 +50,13 @@ const RETIRED_IDENTITIES = [
 const TEXT_ROOTS = ["src", "scripts"] as const;
 const TEXT_FILES = ["README.md", "PROJECT_ARCHITECTURE.md", "vitest.coverage-manifest.ts"] as const;
 
+const AUTOMATED_EXECUTION_ENTRY_POINTS = [
+  ["src/app/test-execution/page.tsx", "Automated Test Execution"],
+  ["src/components/layout/sidebar.tsx", 'href: "/test-execution"'],
+  ["README.md", "[Automated Test Execution](http://127.0.0.1:3000/test-execution)"],
+  ["PROJECT_ARCHITECTURE.md", "- `/test-execution`"],
+] as const;
+
 function collectTextFiles(relativeRoot: string): string[] {
   const absoluteRoot = path.join(ROOT, relativeRoot);
   if (!existsSync(absoluteRoot)) return [];
@@ -61,6 +68,16 @@ function collectTextFiles(relativeRoot: string): string[] {
 }
 
 describe("Test Execution Effort retirement", () => {
+  it("keeps the replacement Automated Test Execution entry points discoverable", () => {
+    const missing = AUTOMATED_EXECUTION_ENTRY_POINTS.flatMap(([relativePath, expected]) => {
+      const absolutePath = path.join(ROOT, relativePath);
+      return existsSync(absolutePath) && readFileSync(absolutePath, "utf8").includes(expected)
+        ? []
+        : [`${relativePath}: ${expected}`];
+    });
+    expect(missing).toEqual([]);
+  });
+
   it("removes the page, API handlers, domain module, prompt, tests, and exact feature identities", () => {
     const existingRetiredPaths = RETIRED_PATHS.filter((relativePath) => existsSync(path.join(ROOT, relativePath)));
     expect(existingRetiredPaths).toEqual([]);

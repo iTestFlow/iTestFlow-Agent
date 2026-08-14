@@ -12,6 +12,7 @@ const storeUserAzurePat = vi.fn();
 const storeUserLlmApiKey = vi.fn();
 const updateUserLlmModel = vi.fn();
 const checkRateLimit = vi.fn();
+const getPlaywrightMcpConfigSummary = vi.fn();
 
 vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   nowIso: () => "2026-07-06T12:00:00.000Z",
@@ -53,6 +54,10 @@ vi.mock("@/modules/security/rate-limit", () => ({
   clientIp: () => "1.2.3.4",
 }));
 
+vi.mock("@/modules/test-execution/playwright-mcp-config.service", () => ({
+  getPlaywrightMcpConfigSummary: (...args: unknown[]) => getPlaywrightMcpConfigSummary(...args),
+}));
+
 import { GET, PATCH, PUT } from "./route";
 
 // Status as the service reports it: masked previews + metadata, never raw secrets.
@@ -90,6 +95,7 @@ beforeEach(() => {
     storeUserLlmApiKey,
     updateUserLlmModel,
     checkRateLimit,
+    getPlaywrightMcpConfigSummary,
   ]) {
     mock.mockReset();
   }
@@ -97,6 +103,12 @@ beforeEach(() => {
   requireSession.mockResolvedValue({ userId: "user_1", activeWorkspaceId: null });
   resolveActiveWorkspaceForUser.mockResolvedValue({ id: "ws_1", azureOrgUrl: "https://dev.azure.com/org-a" });
   getUserCredentialStatus.mockResolvedValue(maskedStatus);
+  getPlaywrightMcpConfigSummary.mockResolvedValue({
+    status: "not_configured",
+    transport: null,
+    endpoint: null,
+    artifactBaseUrl: null,
+  });
   authenticate.mockResolvedValue({ azureIdentityId: "azure-id-1", emailOrUniqueName: "me@example.com" });
   getStoredUserIdentity.mockResolvedValue({ id: "user_1", azureIdentityId: "azure-id-1", emailOrUniqueName: "me@example.com" });
   authenticatedIdentityMatchesStoredUser.mockReturnValue(true);
@@ -269,6 +281,12 @@ describe("GET /api/settings/credentials", () => {
       workspaceId: "ws_1",
       azureOrgUrl: "https://dev.azure.com/org-a",
       ...maskedStatus,
+      playwrightMcp: {
+        status: "not_configured",
+        transport: null,
+        endpoint: null,
+        artifactBaseUrl: null,
+      },
     });
     // Masked previews only — nothing secret-shaped may pass through.
     expect(JSON.stringify(body)).not.toMatch(/apiKey|personalAccessToken|encrypted|cipher|"pat"/i);

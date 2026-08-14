@@ -19,6 +19,7 @@ import {
 } from "@/modules/credentials/credential.service";
 import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
+import { getPlaywrightMcpConfigSummary } from "@/modules/test-execution/playwright-mcp-config.service";
 
 export const runtime = "nodejs";
 
@@ -55,9 +56,12 @@ export async function GET() {
     return errorResponse(error);
   }
 
-  const status = await getUserCredentialStatus(context.workspace.id, context.userId);
+  const [status, playwrightMcp] = await Promise.all([
+    getUserCredentialStatus(context.workspace.id, context.userId),
+    getPlaywrightMcpConfigSummary(context.workspace.id),
+  ]);
   return NextResponse.json(
-    { workspaceId: context.workspace.id, azureOrgUrl: context.workspace.azureOrgUrl, ...status },
+    { workspaceId: context.workspace.id, azureOrgUrl: context.workspace.azureOrgUrl, ...status, playwrightMcp },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

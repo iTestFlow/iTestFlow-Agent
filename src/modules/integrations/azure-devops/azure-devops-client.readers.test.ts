@@ -69,6 +69,18 @@ describe("AzureDevOpsRestAdapter paginated test readers", () => {
     expect(fetchUrl(fetchMock, 1).searchParams.get("$skip")).toBe("200");
   });
 
+  it("fetches Test Case work items in Azure's 200-ID batches", async () => {
+    const fetchMock = vi.fn(async (..._args: [RequestInfo | URL, RequestInit?]) => {
+      void _args;
+      return jsonResponse({ value: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await adapter().fetchTestCasesByIds({ projectId: "proj-1", testCaseIds: Array.from({ length: 201 }, (_, index) => String(index + 1)) });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).ids).toHaveLength(200);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).ids).toEqual([201]);
+  });
+
   it("paginates test runs only to the requested limit and preserves the plan filter", async () => {
     const firstPage = Array.from({ length: 100 }, (_, index) => ({
       id: index + 1,

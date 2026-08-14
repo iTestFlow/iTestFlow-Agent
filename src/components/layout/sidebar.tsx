@@ -16,6 +16,7 @@ import {
   Radar,
   Settings,
   ShieldCheck,
+  PlayCircle,
   type LucideIcon,
 } from "lucide-react"
 
@@ -46,6 +47,7 @@ const navigation: NavNode[] = [
       { label: "Test Case Design", href: "/test-case-design", icon: ClipboardList },
       { label: "Test Gap Analysis", href: "/test-gap-analysis", icon: Radar },
       { label: "Report Bug", href: "/report-bug", icon: Bug },
+      { label: "Automated Test Execution", href: "/test-execution", icon: PlayCircle },
     ],
   },
   {

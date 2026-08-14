@@ -1,0 +1,1 @@
+Pure logic uses colocated unit tests, persistence behavior uses .db.test.ts, API routes use mock-boundary contract tests, and client logic is extracted for unit tests. Typecheck, unit, integration, coverage, and build are the completion checks for cross-cutting behavior.
