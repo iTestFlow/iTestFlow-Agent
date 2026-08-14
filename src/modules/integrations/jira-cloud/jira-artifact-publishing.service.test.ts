@@ -87,7 +87,29 @@ describe("publishPlainJiraTestCase", () => {
     await expect(plainJiraPublishing.publishConfiguredJiraTestCases({ ...input, testCases: [input.testCase] }))
       .resolves.toMatchObject({ results: [{ localId: "case-1", azureTestCaseId: "QA-9", success: true }] });
 
+    expect(mocks.sqlGet.mock.calls[0][2]).toEqual({ tx: true });
     expect(mocks.plainCreate).toHaveBeenCalledWith({ projectId: "10000", testCase: input.testCase });
+  });
+
+  it("re-resolves configured backend state for every batch item while holding the project lock", async () => {
+    const secondCase = { ...input.testCase, localId: "case-2" };
+    const anchor = {
+      backend_type: "plain_jira", config_json: '{"testCaseIssueTypeId":"10001","localIdFieldId":"customfield_10002"}',
+      provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
+      provider_site_id: "cloud-a", provider_site_url: "https://quality.atlassian.net",
+    };
+    mocks.sqlGet
+      .mockResolvedValueOnce(anchor).mockResolvedValueOnce({ provider_project_id: "10000" })
+      .mockResolvedValueOnce({ backend_type: "plain_jira", remote_artifact_id: "QA-9", remote_url: "https://quality.atlassian.net/browse/QA-9" })
+      .mockResolvedValueOnce(anchor).mockResolvedValueOnce({ provider_project_id: "10000" })
+      .mockResolvedValueOnce({ backend_type: "plain_jira", remote_artifact_id: "QA-10", remote_url: "https://quality.atlassian.net/browse/QA-10" });
+
+    await expect(plainJiraPublishing.publishConfiguredJiraTestCases({ ...input, testCases: [input.testCase, secondCase] }))
+      .resolves.toMatchObject({ results: [{ localId: "case-1", success: true }, { localId: "case-2", success: true }] });
+
+    expect(mocks.resolveAccess).toHaveBeenCalledTimes(2);
+    expect(mocks.sqlGet.mock.calls[0][2]).toEqual({ tx: true });
+    expect(mocks.sqlGet.mock.calls[3][2]).toEqual({ tx: true });
   });
 
   it("passes the Jira project key to the configured Zephyr backend", async () => {

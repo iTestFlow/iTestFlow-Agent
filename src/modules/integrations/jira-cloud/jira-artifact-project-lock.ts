@@ -21,14 +21,14 @@ export async function withJiraArtifactProjectLock<T>(
   work: (lock: JiraArtifactProjectLock) => Promise<T>,
 ): Promise<T> {
   return withTransaction(async (client) => {
-    const now = nowIso();
-    const staleCutoff = new Date(Date.parse(now) - CLAIM_LEASE_MS).toISOString();
     const lockKey = `${input.workspaceId.length}:${input.workspaceId}:${input.projectId}`;
     await sqlRun(
       `SELECT pg_advisory_xact_lock(hashtextextended(@lockKey, 0))`,
       { lockKey },
       client,
     );
+    const now = nowIso();
+    const staleCutoff = new Date(Date.parse(now) - CLAIM_LEASE_MS).toISOString();
     return work({ client, now, staleCutoff });
   });
 }

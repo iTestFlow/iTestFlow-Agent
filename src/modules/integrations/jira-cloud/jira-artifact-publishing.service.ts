@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { PoolClient } from "pg";
 import type { FinalApprovedTestCase } from "../core/integration-types";
 import { createId, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { resolveJiraAccessToken } from "@/modules/auth/jira-connection.service";
@@ -18,15 +19,19 @@ type BackendAnchor = {
   backend_type: BackendType; config_json: string; provider_project_id: string; provider_project_key: string;
   provider_project_name: string; provider_site_id: string; provider_site_url: string;
 };
+type ResolvedBackend = { backend: PlainPublisher; backendType: BackendType; siteUrl: string };
 
 export async function publishConfiguredJiraTestCases(input: {
   workspaceId: string; projectId: string; actorUserId: string; testCases: FinalApprovedTestCase[];
 }) {
-  const resolved = await resolveConfiguredBackend(input);
   const results = [];
   for (const testCase of input.testCases) {
     try {
-      const published = await publishJiraTestCase({ ...input, testCase, backend: resolved.backend, backendType: resolved.backendType, siteUrl: resolved.siteUrl });
+      const published = await publishJiraTestCase({
+        ...input,
+        testCase,
+        resolveBackend: (client) => resolveConfiguredBackend(input, client),
+      });
       results.push({
         localId: testCase.localId, azureTestCaseId: published.remoteId, success: true,
         create: { success: true, azureTestCaseId: published.remoteId }, link: { success: true }, suite: undefined,
@@ -84,11 +89,18 @@ export async function publishPlainJiraTestCase(input: {
 
 async function publishJiraTestCase(input: {
   workspaceId: string; projectId: string; actorUserId: string; testCase: FinalApprovedTestCase;
-  backend: PlainPublisher; backendType: BackendType; siteUrl?: string;
+  backend?: PlainPublisher; backendType?: BackendType; siteUrl?: string;
+  resolveBackend?: (client: PoolClient) => Promise<ResolvedBackend>;
 }): Promise<{ remoteId: string; remoteUrl: string; created: boolean }> {
   const params = { workspaceId: input.workspaceId, projectId: input.projectId, localType: "test_case", localId: input.testCase.localId };
   const claimed = await withJiraArtifactProjectLock(params, async (lock) => {
     const { client, now } = lock;
+    const resolved = input.resolveBackend
+      ? await input.resolveBackend(client)
+      : input.backend && input.backendType
+        ? { backend: input.backend, backendType: input.backendType, siteUrl: input.siteUrl ?? "" }
+        : undefined;
+    if (!resolved) throw new Error("A Jira artifact backend is not configured for this project.");
     const authorized = await sqlGet<{ provider_project_id: string; provider_project_key: string }>(
       `SELECT p.provider_project_id, p.provider_project_key
        FROM projects p
@@ -97,7 +109,7 @@ async function publishJiraTestCase(input: {
          AND c.backend_type = @backendType AND c.status = 'active'
        WHERE p.id = @projectId AND p.workspace_id = @workspaceId
          AND p.provider_id = 'jira-cloud' AND p.status = 'active'`,
-      { ...params, userId: input.actorUserId, backendType: input.backendType },
+      { ...params, userId: input.actorUserId, backendType: resolved.backendType },
       client,
     );
     if (!authorized?.provider_project_id) throw new Error("Jira publishing is not authorized for this workspace project.");
@@ -109,7 +121,7 @@ async function publishJiraTestCase(input: {
       params,
       client,
     );
-    if (existing?.backend_type === input.backendType || (existing && input.backendType === "plain_jira" && !existing.backend_type)) {
+    if (existing?.backend_type === resolved.backendType || (existing && resolved.backendType === "plain_jira" && !existing.backend_type)) {
       return { kind: "existing", existing } as const;
     }
     const claim = await sqlGet<{ id: string }>(
@@ -126,27 +138,27 @@ async function publishJiraTestCase(input: {
        WHERE jira_artifact_links.status IN ('error', 'missing_remote')
           OR (jira_artifact_links.status = 'active' AND jira_artifact_links.backend_type <> @backendType)
        RETURNING id`,
-      { ...params, id: createId("jiraartifact"), backendType: input.backendType, now },
+      { ...params, id: createId("jiraartifact"), backendType: resolved.backendType, now },
       client,
     );
     if (!claim) throw new Error("This iTestFlow artifact is already being published.");
-    return { kind: "claimed", claim, authorized } as const;
+    return { kind: "claimed", claim, authorized, resolved } as const;
   });
   if (claimed.kind === "existing") {
     return { remoteId: claimed.existing.remote_artifact_id, remoteUrl: claimed.existing.remote_url, created: false };
   }
-  const backendProjectId = input.backendType === "zephyr_scale" ? claimed.authorized.provider_project_key : claimed.authorized.provider_project_id;
+  const backendProjectId = claimed.resolved.backendType === "zephyr_scale" ? claimed.authorized.provider_project_key : claimed.authorized.provider_project_id;
   let published: Awaited<ReturnType<PlainPublisher["createTestCase"]>>;
   try {
-    published = await input.backend.createTestCase({ projectId: backendProjectId, testCase: input.testCase });
+    published = await claimed.resolved.backend.createTestCase({ projectId: backendProjectId, testCase: input.testCase });
     if (!published.success || !published.azureTestCaseId) throw new Error("Jira test-case publishing failed.");
   } catch (error) {
     await failOwnedClaim(params, claimed.claim.id);
     throw error;
   }
   const remoteId = published.azureTestCaseId;
-  const remoteBaseUrl = (input.siteUrl ?? "").replace(/\/+$/, "");
-  const remoteUrl = input.backendType === "zephyr_scale"
+  const remoteBaseUrl = claimed.resolved.siteUrl.replace(/\/+$/, "");
+  const remoteUrl = claimed.resolved.backendType === "zephyr_scale"
     ? `${remoteBaseUrl}/secure/Tests.jspa#/testCase/${encodeURIComponent(remoteId)}`
     : `${remoteBaseUrl}/browse/${encodeURIComponent(remoteId)}`;
   const linked = await withJiraArtifactProjectLock(params, async (lock) => {
@@ -161,7 +173,7 @@ async function publishJiraTestCase(input: {
              AND c.backend_type = @backendType AND c.status = 'active'
          )
        RETURNING l.remote_artifact_id, l.remote_url`,
-      { ...params, id: claimed.claim.id, backendType: input.backendType, remoteId, remoteUrl, now: lock.now },
+      { ...params, id: claimed.claim.id, backendType: claimed.resolved.backendType, remoteId, remoteUrl, now: lock.now },
       lock.client,
     );
   });
@@ -184,9 +196,10 @@ async function failOwnedClaim(
   });
 }
 
-async function resolveConfiguredBackend(input: { workspaceId: string; projectId: string; actorUserId: string }): Promise<{
-  backend: PlainPublisher; backendType: BackendType; siteUrl: string;
-}> {
+async function resolveConfiguredBackend(
+  input: { workspaceId: string; projectId: string; actorUserId: string },
+  client: PoolClient,
+): Promise<ResolvedBackend> {
   const anchor = await sqlGet<BackendAnchor>(
     `SELECT c.backend_type, c.config_json, p.provider_project_id, p.provider_project_key, p.provider_project_name,
             w.provider_site_id, w.provider_site_url
@@ -196,6 +209,7 @@ async function resolveConfiguredBackend(input: { workspaceId: string; projectId:
      JOIN workspace_members wm ON wm.workspace_id = c.workspace_id AND wm.user_id = @actorUserId AND wm.status = 'active'
      WHERE c.workspace_id = @workspaceId AND c.project_id = @projectId AND c.status = 'active'`,
     input,
+    client,
   );
   if (!anchor) throw new Error("A Jira artifact backend is not configured for this project.");
   if (anchor.backend_type === "xray_cloud") {

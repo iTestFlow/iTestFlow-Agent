@@ -1,19 +1,26 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
+const authMocks = vi.hoisted(() => ({ resolveJiraAccessToken: vi.fn() }));
+vi.mock("@/modules/auth/jira-connection.service", () => ({ resolveJiraAccessToken: authMocks.resolveJiraAccessToken }));
+
 import { resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { cleanupFixtures, describeDb, seedMembership, seedProject, seedUser, seedWorkspace, uniqueTestId } from "@/test/db";
 import { JiraArtifactPublishInProgressError, withAuthorizedJiraArtifactConfigurationLock } from "./jira-artifact-project-lock";
-import { publishPlainJiraTestCase, storePlainJiraArtifactConfig } from "./jira-artifact-publishing.service";
+import { publishConfiguredJiraTestCases, publishPlainJiraTestCase, storePlainJiraArtifactConfig } from "./jira-artifact-publishing.service";
 
 let workspaceId: string;
 let projectId: string;
 let ownerId: string;
+let providerProjectId: string;
 
 describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
   beforeEach(async () => {
     workspaceId = uniqueTestId("ws_jira_publish");
     projectId = uniqueTestId("project_jira_publish");
     ownerId = uniqueTestId("owner_jira_publish");
+    providerProjectId = uniqueTestId("jira_numeric");
+    authMocks.resolveJiraAccessToken.mockResolvedValue("access-token");
+    vi.stubEnv("ITESTFLOW_PUBLIC_URL", "https://itestflow.example");
     const siteUrl = `https://${workspaceId}.atlassian.net`;
     await seedWorkspace({ id: workspaceId, orgUrl: siteUrl });
     await seedUser({ id: ownerId, email: `${ownerId}@itestflow.test` });
@@ -29,7 +36,7 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
       `UPDATE projects SET provider_id = 'jira-cloud', provider_project_id = @providerProjectId,
          provider_project_key = 'QA', provider_project_name = 'Quality'
        WHERE workspace_id = @workspaceId AND id = @projectId`,
-      { workspaceId, projectId, providerProjectId: uniqueTestId("jira_numeric") },
+      { workspaceId, projectId, providerProjectId },
     );
     await storePlainJiraArtifactConfig({
       workspaceId, projectId, actorUserId: ownerId,
@@ -40,6 +47,8 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
   afterEach(async () => {
     await cleanupFixtures({ workspaceIds: [workspaceId], userIds: [ownerId] });
     await resetDatabaseForTests();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("lets a publication claim win and rejects configuration while the live claim exists", async () => {
@@ -99,6 +108,64 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
 
     await expect(publishing).rejects.toThrow("not authorized");
     expect(backend.createTestCase).not.toHaveBeenCalled();
+  });
+
+  it("constructs the backend from the same-backend configuration that won the project lock", async () => {
+    const replacementStarted = deferred<void>();
+    const releaseReplacement = deferred<void>();
+    const replacement = withAuthorizedJiraArtifactConfigurationLock(
+      { workspaceId, projectId, actorUserId: ownerId },
+      async ({ client, now }) => {
+        await sqlRun(
+          `UPDATE jira_artifact_backend_configs
+           SET config_json = @configJson, updated_at = @now
+           WHERE workspace_id = @workspaceId AND project_id = @projectId`,
+          {
+            workspaceId, projectId, now,
+            configJson: JSON.stringify({ testCaseIssueTypeId: "10002", localIdFieldId: "customfield_10003" }),
+          },
+          client,
+        );
+        replacementStarted.resolve();
+        await releaseReplacement.promise;
+      },
+    );
+    await replacementStarted.promise;
+
+    let createdFields: Record<string, unknown> | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/issue/QA-7?")) return json({ fields: { project: { id: providerProjectId, key: "QA" } } });
+      if (url.endsWith("/search/jql")) return json({ issues: [] });
+      if (url.endsWith("/issue") && init?.method === "POST") {
+        createdFields = (JSON.parse(String(init.body)) as { fields: Record<string, unknown> }).fields;
+        return json({ key: "QA-12" });
+      }
+      if (url.endsWith("/remotelink")) return json({});
+      if (url.includes("/comment?")) return json({ comments: [], isLast: true });
+      if (url.endsWith("/comment") && init?.method === "POST") return json({});
+      throw new Error(`Unexpected Jira request: ${url}`);
+    }));
+
+    const publishing = publishConfiguredJiraTestCases({
+      workspaceId, projectId, actorUserId: ownerId,
+      testCases: [{ localId: "case-same-backend", targetUserStoryId: "QA-7", title: "Checkout", steps: [] }],
+    });
+    try {
+      await expect(Promise.race([
+        publishing.then(() => "settled", () => "settled"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 50)),
+      ])).resolves.toBe("blocked");
+    } finally {
+      releaseReplacement.resolve();
+      await replacement;
+    }
+
+    await expect(publishing).resolves.toMatchObject({ results: [{ success: true, azureTestCaseId: "QA-12" }] });
+    expect(createdFields).toMatchObject({
+      issuetype: { id: "10002" },
+      customfield_10003: "case-same-backend",
+    });
+    expect(createdFields).not.toHaveProperty("customfield_10002");
   });
 
   it("retires a failed claim immediately so configuration repair and retry can proceed", async () => {
@@ -172,4 +239,8 @@ function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
+}
+
+function json(value: unknown) {
+  return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
 }

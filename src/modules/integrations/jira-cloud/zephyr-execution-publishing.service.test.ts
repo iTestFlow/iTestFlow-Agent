@@ -13,14 +13,16 @@ describe("publishZephyrExecution", () => {
   it("returns an authorized stable link without touching Zephyr", async () => {
     mocks.sqlGet.mockResolvedValueOnce({ provider_project_key: "QA" }).mockResolvedValueOnce({ remote_artifact_id: "QA-E1" });
     const backend = { reconcileExecution: vi.fn() };
-    await expect(publishZephyrExecution({ ...input, backend })).resolves.toEqual({ remoteId: "QA-E1", created: false });
+    const resolveBackend = vi.fn().mockResolvedValue(backend);
+    await expect(publishZephyrExecution({ ...input, resolveBackend })).resolves.toEqual({ remoteId: "QA-E1", created: false });
+    expect(resolveBackend).not.toHaveBeenCalled();
     expect(backend.reconcileExecution).not.toHaveBeenCalled();
   });
 
   it("claims the immutable identity before Zephyr and activates only its own claim", async () => {
     mocks.sqlGet.mockResolvedValueOnce({ provider_project_key: "QA" }).mockResolvedValueOnce(undefined).mockResolvedValueOnce({ id: "link-1" }).mockResolvedValueOnce({ remote_artifact_id: "QA-E1" });
     const backend = { reconcileExecution: vi.fn().mockResolvedValue("QA-E1") };
-    await expect(publishZephyrExecution({ ...input, backend, stepResults: [] })).resolves.toEqual({ remoteId: "QA-E1", created: true });
+    await expect(publishZephyrExecution({ ...input, resolveBackend: vi.fn().mockResolvedValue(backend), stepResults: [] })).resolves.toEqual({ remoteId: "QA-E1", created: true });
     expect(mocks.sqlGet.mock.calls[2][0]).toContain("ON CONFLICT (workspace_id, project_id, local_artifact_type, local_artifact_id)");
     expect(mocks.sqlGet.mock.calls[2][0]).toContain("id = excluded.id");
     expect(mocks.sqlGet.mock.calls[2][0]).toContain("status IN ('error', 'missing_remote')");
@@ -35,7 +37,7 @@ describe("publishZephyrExecution", () => {
   it("rejects a concurrent publisher when the durable claim is held", async () => {
     mocks.sqlGet.mockResolvedValueOnce({ provider_project_key: "QA" }).mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined);
     const backend = { reconcileExecution: vi.fn() };
-    await expect(publishZephyrExecution({ ...input, backend })).rejects.toThrow("already being published");
+    await expect(publishZephyrExecution({ ...input, resolveBackend: vi.fn().mockResolvedValue(backend) })).rejects.toThrow("already being published");
     expect(backend.reconcileExecution).not.toHaveBeenCalled();
   });
 
@@ -43,7 +45,7 @@ describe("publishZephyrExecution", () => {
     mocks.sqlGet.mockResolvedValueOnce({ provider_project_key: "QA" }).mockResolvedValueOnce(undefined).mockResolvedValueOnce({ id: "link-1" });
     const backend = { reconcileExecution: vi.fn().mockRejectedValue(new Error("remote failed")) };
 
-    await expect(publishZephyrExecution({ ...input, backend })).rejects.toThrow("remote failed");
+    await expect(publishZephyrExecution({ ...input, resolveBackend: vi.fn().mockResolvedValue(backend) })).rejects.toThrow("remote failed");
 
     const failureWrite = mocks.sqlRun.mock.calls.find(([sql]) => String(sql).includes("WHERE id = @id"));
     expect(failureWrite?.[0]).toContain("status = 'error'");

@@ -4,7 +4,7 @@ import { retireStaleJiraArtifactClaims, withJiraArtifactProjectLock } from "./ji
 
 type Backend = { reconcileExecution(input: { projectId: string; testCaseKey: string; testCycleKey: string; statusName: string; stepResults?: Array<{ statusName: string; actualResult?: string }> }): Promise<string> };
 export async function publishZephyrExecution(input: {
-  workspaceId: string; projectId: string; actorUserId: string; localExecutionId: string; backend: Backend;
+  workspaceId: string; projectId: string; actorUserId: string; localExecutionId: string; resolveBackend: () => Promise<Backend>;
   testCaseKey: string; testCycleKey: string; statusName: string; stepResults?: Array<{ statusName: string; actualResult?: string }>;
 }): Promise<{ remoteId: string; created: boolean }> {
   const params = { workspaceId: input.workspaceId, projectId: input.projectId, localType: "test_execution", localId: required(input.localExecutionId) };
@@ -27,6 +27,7 @@ export async function publishZephyrExecution(input: {
       client,
     );
     if (existing) return { kind: "existing", existing } as const;
+    const backend = await input.resolveBackend();
     const claim = await sqlGet<{ id: string }>(
       `INSERT INTO jira_artifact_links (id, workspace_id, project_id, backend_type, local_artifact_type, local_artifact_id, remote_artifact_id, remote_url, status, created_at, updated_at)
        VALUES (@id, @workspaceId, @projectId, 'zephyr_scale', @localType, @localId, NULL, NULL, 'publishing', @now, @now)
@@ -39,12 +40,12 @@ export async function publishZephyrExecution(input: {
       client,
     );
     if (!claim) throw new Error("This Zephyr execution is already being published.");
-    return { kind: "claimed", claim, authorized } as const;
+    return { kind: "claimed", claim, authorized, backend } as const;
   });
   if (claimed.kind === "existing") return { remoteId: claimed.existing.remote_artifact_id, created: false };
   let remoteId: string;
   try {
-    remoteId = await input.backend.reconcileExecution({ projectId: claimed.authorized.provider_project_key, testCaseKey: input.testCaseKey, testCycleKey: input.testCycleKey, statusName: input.statusName, stepResults: input.stepResults });
+    remoteId = await claimed.backend.reconcileExecution({ projectId: claimed.authorized.provider_project_key, testCaseKey: input.testCaseKey, testCycleKey: input.testCycleKey, statusName: input.statusName, stepResults: input.stepResults });
   } catch (error) {
     await failOwnedExecutionClaim(params, claimed.claim.id);
     throw error;

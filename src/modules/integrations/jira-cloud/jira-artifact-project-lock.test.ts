@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ sqlGet: vi.fn(), sqlRun: vi.fn(), withTransaction: vi.fn() }));
+const mocks = vi.hoisted(() => ({ nowIso: vi.fn(), sqlGet: vi.fn(), sqlRun: vi.fn(), withTransaction: vi.fn() }));
 vi.mock("@/modules/shared/infrastructure/database/db", () => ({
-  nowIso: () => "2026-08-13T00:00:00.000Z",
+  nowIso: mocks.nowIso,
   sqlGet: mocks.sqlGet,
   sqlRun: mocks.sqlRun,
   withTransaction: mocks.withTransaction,
@@ -18,8 +18,23 @@ import {
 describe("Jira artifact project lock", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.nowIso.mockReturnValue("2026-08-13T00:00:00.000Z");
     mocks.withTransaction.mockImplementation((work: (client: object) => unknown) => work({ tx: true }));
     mocks.sqlRun.mockResolvedValue(0);
+  });
+
+  it("starts the full claim lease only after the blocking project lock is acquired", async () => {
+    const lockAcquired = deferred<void>();
+    mocks.sqlRun.mockImplementationOnce(async () => lockAcquired.promise);
+    const work = vi.fn().mockResolvedValue("done");
+
+    const pending = withJiraArtifactProjectLock({ workspaceId: "ws-1", projectId: "project-1" }, work);
+    await Promise.resolve();
+    expect(mocks.nowIso).not.toHaveBeenCalled();
+
+    lockAcquired.resolve();
+    await expect(pending).resolves.toBe("done");
+    expect(mocks.nowIso).toHaveBeenCalledOnce();
   });
 
   it("serializes a project and retires expired publishing claims before work", async () => {
@@ -65,3 +80,9 @@ describe("Jira artifact project lock", () => {
     expect(mocks.sqlRun.mock.calls[0][0]).toContain("pg_advisory_xact_lock");
   });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
