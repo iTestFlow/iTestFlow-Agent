@@ -17,6 +17,8 @@ function deploymentStdioCommand(): { command: string; args: string[] } {
   return { command, args };
 }
 
+const noRedirectFetch: typeof fetch = (url, init) => fetch(url, { ...init, redirect: "error" });
+
 export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig): Promise<{
   tools: PlaywrightToolClient;
   close: () => Promise<void>;
@@ -24,7 +26,11 @@ export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig):
   if (config.status !== "configured" || !config.transport) throw new Error("Playwright MCP is not enabled.");
   const transport = config.transport === "http"
     ? new StreamableHTTPClientTransport(new URL(config.endpoint!), {
-        requestInit: config.bearerToken ? { headers: { Authorization: `Bearer ${config.bearerToken}` } } : undefined,
+        fetch: noRedirectFetch,
+        requestInit: {
+          redirect: "error",
+          ...(config.bearerToken ? { headers: { Authorization: `Bearer ${config.bearerToken}` } } : {}),
+        },
       })
     : new StdioClientTransport(deploymentStdioCommand());
   const client = new Client({ name: "itestflow-agent", version: "0.1.0" });

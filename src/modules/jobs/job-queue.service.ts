@@ -148,6 +148,21 @@ async function reapStaleJobsWithClient(
     params,
     client,
   );
+  await sqlRun(
+    `UPDATE playwright_execution_runs AS execution_run
+     SET status = 'error',
+         error_message = 'The Playwright execution worker stopped before completing the run.',
+         finished_at = @now,
+         updated_at = @now
+     FROM jobs AS failed_job
+     WHERE execution_run.job_id = failed_job.id
+       AND failed_job.job_type = 'playwright_mcp_execution'
+       AND failed_job.status = 'failed'
+       AND failed_job.updated_at = @now
+       AND execution_run.status IN ('queued', 'running')`,
+    { now },
+    client,
+  );
   return requeued + failed;
 }
 
@@ -479,22 +494,23 @@ export async function cancelRunningJob(id: string, workerId: string) {
 }
 
 /**
- * Graceful-shutdown requeue: returns the worker's own running jobs to 'pending'
- * WITHOUT consuming a retry (claim incremented attempts; this refunds it).
- * run_after is immediate so a surviving worker picks the job up right away.
- * error_message is left untouched (shutdown is not an error path) and
- * progress_json is preserved, so the resumed run reuses its draft and cached
- * batches. `running -> pending` keeps the uq_jobs_active_dedupe slot.
+ * Graceful shutdown releases retryable work but fails single-attempt jobs.
+ * Retrying a non-idempotent single-attempt handler after it may have produced
+ * external side effects would violate its delivery contract.
  */
 export async function requeueOwnedJobs(ids: readonly string[], workerId: string): Promise<number> {
   if (ids.length === 0) return 0;
   const now = nowIso();
   return sqlRun(
     `UPDATE jobs
-     SET status = 'pending',
+     SET status = CASE WHEN max_attempts <= 1 THEN 'failed' ELSE 'pending' END,
          locked_by = NULL, locked_at = NULL,
-         attempts = GREATEST(attempts - 1, 0),
+         attempts = CASE WHEN max_attempts <= 1 THEN attempts ELSE GREATEST(attempts - 1, 0) END,
          run_after = @now,
+         finished_at = CASE WHEN max_attempts <= 1 THEN @now ELSE NULL END,
+         error_message = CASE WHEN max_attempts <= 1
+           THEN COALESCE(NULLIF(error_message, ''), 'Worker stopped during a non-retryable job.')
+           ELSE error_message END,
          updated_at = @now
      WHERE id = ANY(@ids) AND locked_by = @workerId AND status = 'running'`,
     { ids: [...ids], workerId, now },

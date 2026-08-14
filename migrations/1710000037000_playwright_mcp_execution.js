@@ -106,17 +106,58 @@ exports.up = (pgm) => {
       run_id text NOT NULL REFERENCES playwright_execution_runs(id) ON DELETE CASCADE,
       published_by_user_id text NOT NULL REFERENCES users(id),
       status text NOT NULL CHECK (status IN ('running', 'completed', 'partial', 'failed')),
-      result_json jsonb NOT NULL DEFAULT '{}',
+      result_json jsonb NOT NULL DEFAULT '[]',
+      lease_token text NOT NULL,
       created_at text NOT NULL,
+      updated_at text NOT NULL,
       finished_at text
     );
     CREATE UNIQUE INDEX uq_playwright_publication_run ON playwright_execution_publications (run_id);
     CREATE INDEX idx_playwright_publications_run ON playwright_execution_publications (run_id, created_at DESC);
+
+    CREATE OR REPLACE FUNCTION playwright_execution_job_terminalize()
+    RETURNS trigger AS $$
+    DECLARE
+      terminal_status text := CASE WHEN NEW.status = 'cancelled' THEN 'cancelled' ELSE 'error' END;
+      terminal_error text := CASE WHEN NEW.status = 'cancelled'
+        THEN 'Execution was cancelled.'
+        ELSE COALESCE(NULLIF(NEW.error_message, ''), 'The Playwright execution worker stopped before completing the run.')
+      END;
+    BEGIN
+      IF NEW.job_type = 'playwright_mcp_execution'
+        AND NEW.status IN ('failed', 'cancelled')
+        AND OLD.status IS DISTINCT FROM NEW.status THEN
+        UPDATE playwright_execution_steps
+           SET status = terminal_status, error_message = terminal_error, updated_at = NEW.updated_at
+         WHERE status IN ('queued', 'running')
+           AND case_id IN (
+             SELECT execution_case.id FROM playwright_execution_cases AS execution_case
+             JOIN playwright_execution_runs AS execution_run ON execution_run.id = execution_case.run_id
+             WHERE execution_run.job_id = NEW.id
+           );
+        UPDATE playwright_execution_cases
+           SET status = terminal_status, error_message = terminal_error,
+               finished_at = NEW.updated_at, updated_at = NEW.updated_at
+         WHERE status IN ('queued', 'running')
+           AND run_id IN (SELECT id FROM playwright_execution_runs WHERE job_id = NEW.id);
+        UPDATE playwright_execution_runs
+           SET status = terminal_status, error_message = terminal_error,
+               finished_at = NEW.updated_at, updated_at = NEW.updated_at
+         WHERE job_id = NEW.id AND status IN ('queued', 'running');
+      END IF;
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    CREATE TRIGGER trg_playwright_execution_job_terminalize
+      AFTER UPDATE OF status ON jobs
+      FOR EACH ROW EXECUTE FUNCTION playwright_execution_job_terminalize();
   `);
 };
 
 exports.down = (pgm) => {
   pgm.sql(`
+    DROP TRIGGER IF EXISTS trg_playwright_execution_job_terminalize ON jobs;
+    DROP FUNCTION IF EXISTS playwright_execution_job_terminalize();
     DROP TABLE IF EXISTS playwright_execution_publications CASCADE;
     DROP TABLE IF EXISTS playwright_execution_artifacts CASCADE;
     DROP TABLE IF EXISTS playwright_execution_steps CASCADE;

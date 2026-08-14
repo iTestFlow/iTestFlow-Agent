@@ -1,4 +1,4 @@
-const SENSITIVE_KEY = /(?:authorization|cookie|password|passwd|secret|token|api.?key|value)/i;
+const SENSITIVE_KEY = /(?:authorization|cookie|password|passwd|secret|token|api.?key|value|text)/i;
 
 function sanitizeString(value: string): string {
   let sanitized = value

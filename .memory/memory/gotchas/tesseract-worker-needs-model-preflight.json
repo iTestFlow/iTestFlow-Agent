@@ -1,0 +1,42 @@
+{
+  "body_path": "memory/gotchas/tesseract-worker-needs-model-preflight.md",
+  "content_hash": "sha256:5840fee9d13e239ab19c929482a1383c616619d61261c42b7b9d960faf88152c",
+  "created_at": "2026-08-13T02:00:30+03:00",
+  "evidence": [
+    {
+      "id": "https://github.com/MohabMohie/iTestFlow-Agent/blob/9e63379b14a9bd66bf15ac6ccb393c25fbbdf5db/src/modules/documents/parsers/image-document.parser.ts",
+      "kind": "source"
+    },
+    {
+      "id": "https://github.com/MohabMohie/iTestFlow-Agent/blob/9e63379b14a9bd66bf15ac6ccb393c25fbbdf5db/src/modules/documents/parsers/image-document.parser.test.ts",
+      "kind": "source"
+    },
+    {
+      "id": "9e63379b14a9bd66bf15ac6ccb393c25fbbdf5db",
+      "kind": "commit"
+    }
+  ],
+  "facets": {
+    "category": "gotcha"
+  },
+  "id": "gotcha.tesseract-worker-needs-model-preflight",
+  "scope": {
+    "branch": null,
+    "kind": "project",
+    "project": "project.itestflow-agent",
+    "task": null
+  },
+  "source": {
+    "kind": "agent",
+    "task": "Record three independently reviewed OCR upload audit gotchas from PR head 9e63379"
+  },
+  "status": "active",
+  "tags": [
+    "ocr",
+    "tesseract",
+    "model-preflight"
+  ],
+  "title": "Tesseract worker needs model preflight",
+  "type": "gotcha",
+  "updated_at": "2026-08-13T02:07:54+03:00"
+}

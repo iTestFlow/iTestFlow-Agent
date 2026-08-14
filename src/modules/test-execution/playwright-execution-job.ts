@@ -12,7 +12,7 @@ import {
   casesForRun, executionConfigSnapshot, finishCase, finishRun, finishStep, incrementCompletedCases, isRunCancellationRequested,
   markCaseStarted, markRunStarted, recordStepToolCall, stepsForCase,
 } from "./execution-store.service";
-import { executeTestStepWithAgent, type ExecutionOutcome } from "./playwright-agent";
+import { createPlaywrightToolPolicy, executeTestStepWithAgent, type ExecutionOutcome } from "./playwright-agent";
 import { connectPlaywrightMcp } from "./playwright-mcp-client";
 import { resolvePlaywrightMcpConfig } from "./playwright-mcp-config.service";
 import { artifactUrls, importHttpArtifact, importInlineMcpArtifacts } from "./execution-artifact.service";
@@ -36,8 +36,8 @@ function combineOutcomes(outcomes: ExecutionOutcome[]): ExecutionOutcome {
 
 export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
   const payload = parsePayload(job.payload);
-  await markRunStarted(payload.runId);
   try {
+  await markRunStarted(payload.runId);
   const workspace = await getWorkspaceById(job.workspaceId ?? "");
   if (!workspace) throw new Error("Execution workspace no longer exists.");
   const [pat, llmConfig, workspaceSettings, mcpConfig] = await Promise.all([
@@ -49,6 +49,7 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
   if (!pat) throw new Error("The requesting user's Azure DevOps PAT is no longer configured.");
   if (!llmConfig) throw new Error("The requesting user's LLM credentials are no longer configured.");
   if (!mcpConfig || mcpConfig.status !== "configured") throw new Error("Playwright MCP is no longer configured and enabled.");
+  const toolPolicy = createPlaywrightToolPolicy(mcpConfig.transport!);
   const snapshot = await executionConfigSnapshot(payload.runId);
   const currentNonSecretConfig = { transport: mcpConfig.transport, endpoint: mcpConfig.endpoint, artifactBaseUrl: mcpConfig.artifactBaseUrl };
   if (!snapshot || JSON.stringify(snapshot) !== JSON.stringify(currentNonSecretConfig)) {
@@ -100,7 +101,7 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
           try {
             const result = await executeTestStepWithAgent({
               action: step.action, expectedResult: step.expectedResult, llm, tools: connection.tools,
-              signal: context.signal,
+              signal: context.signal, toolPolicy,
               onEvent: async (event) => {
                 if (event.kind === "tool_call") {
                   await recordStepToolCall(step.id, event.toolName, event.arguments, event.result);

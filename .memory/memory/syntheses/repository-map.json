@@ -1,0 +1,57 @@
+{
+  "body_path": "memory/syntheses/repository-map.md",
+  "content_hash": "sha256:e34e7eb97bd750e80509f38620f9765cb07254d7d49a1a69b36e62d7d6e16f70",
+  "created_at": "2026-08-12T23:13:53+03:00",
+  "evidence": [
+    {
+      "id": "source.readme",
+      "kind": "source"
+    },
+    {
+      "id": "PROJECT_ARCHITECTURE.md",
+      "kind": "file"
+    },
+    {
+      "id": "package.json",
+      "kind": "file"
+    }
+  ],
+  "facets": {
+    "applies_to": [
+      "src/app",
+      "src/modules",
+      "src/components",
+      "src/lib",
+      "src/shared",
+      "src/worker",
+      "migrations",
+      "scripts",
+      "docs"
+    ],
+    "category": "file-layout",
+    "load_modes": [
+      "coding",
+      "architecture",
+      "onboarding"
+    ]
+  },
+  "id": "synthesis.repository-map",
+  "scope": {
+    "branch": null,
+    "kind": "project",
+    "project": "project.itestflow-agent",
+    "task": null
+  },
+  "source": {
+    "kind": "cli",
+    "task": "Proposed bootstrap memory patch from deterministic repository analysis"
+  },
+  "status": "active",
+  "tags": [
+    "synthesis",
+    "repository-map"
+  ],
+  "title": "Repository map",
+  "type": "synthesis",
+  "updated_at": "2026-08-12T23:16:17+03:00"
+}

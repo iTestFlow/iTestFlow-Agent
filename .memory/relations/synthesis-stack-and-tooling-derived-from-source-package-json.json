@@ -1,0 +1,17 @@
+{
+  "confidence": "high",
+  "content_hash": "sha256:2dd0f1181338b79cc30a15ff1cf7ca51d13d876272f29a9ac669deb55affe97d",
+  "created_at": "2026-08-12T23:13:53+03:00",
+  "evidence": [
+    {
+      "id": "source.package-json",
+      "kind": "source"
+    }
+  ],
+  "from": "synthesis.stack-and-tooling",
+  "id": "rel.synthesis-stack-and-tooling-derived-from-source-package-json",
+  "predicate": "derived_from",
+  "status": "active",
+  "to": "source.package-json",
+  "updated_at": "2026-08-12T23:13:53+03:00"
+}

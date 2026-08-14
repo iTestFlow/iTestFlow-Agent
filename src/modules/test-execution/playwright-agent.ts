@@ -1,5 +1,7 @@
 import "server-only";
 
+import { realpath, stat } from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 
@@ -8,7 +10,6 @@ export const PLAYWRIGHT_TOOL_ALLOWLIST = new Set([
   "browser_resize",
   "browser_console_messages",
   "browser_handle_dialog",
-  "browser_evaluate",
   "browser_file_upload",
   "browser_fill_form",
   "browser_press_key",
@@ -52,6 +53,107 @@ export function normalizeToolArguments(value: unknown): Record<string, unknown> 
   return value as Record<string, unknown>;
 }
 
+export type PlaywrightToolPolicy = {
+  transport: "http" | "stdio";
+  allowedNavigationOrigins: ReadonlySet<string>;
+  uploadRoots: readonly string[];
+};
+
+const NavigateArgumentsSchema = z.object({ url: z.string().trim().min(1).max(2048) }).strict();
+const UploadArgumentsSchema = z.object({ paths: z.array(z.string().trim().min(1)).max(10).optional() }).strict();
+
+export function createPlaywrightToolPolicy(transport: "http" | "stdio"): PlaywrightToolPolicy {
+  const allowedNavigationOrigins = new Set<string>();
+  for (const entry of (process.env.PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS ?? "").split(",").map((value) => value.trim()).filter(Boolean)) {
+    const url = new URL(entry);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password
+      || url.pathname !== "/" || url.search || url.hash) {
+      throw new Error("PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS must contain exact HTTP(S) origins without credentials, paths, queries, or fragments.");
+    }
+    allowedNavigationOrigins.add(url.origin);
+  }
+  if (!allowedNavigationOrigins.size) {
+    throw new Error("PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS must configure at least one browser target origin.");
+  }
+  let uploadRoots: unknown;
+  try {
+    uploadRoots = JSON.parse(process.env.PLAYWRIGHT_EXECUTION_UPLOAD_ROOTS ?? "[]");
+  } catch {
+    throw new Error("PLAYWRIGHT_EXECUTION_UPLOAD_ROOTS must be a JSON array of absolute directory paths.");
+  }
+  if (!Array.isArray(uploadRoots) || uploadRoots.some((value) => typeof value !== "string" || !path.isAbsolute(value))) {
+    throw new Error("PLAYWRIGHT_EXECUTION_UPLOAD_ROOTS must be a JSON array of absolute directory paths.");
+  }
+  return { transport, allowedNavigationOrigins, uploadRoots };
+}
+
+function isWithinRoot(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+export async function validatePlaywrightToolArguments(
+  name: string,
+  value: unknown,
+  policy: PlaywrightToolPolicy,
+): Promise<Record<string, unknown>> {
+  const args = normalizeToolArguments(value);
+  if (name === "browser_navigate") {
+    const parsed = NavigateArgumentsSchema.parse(args);
+    const url = new URL(parsed.url);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password
+      || !policy.allowedNavigationOrigins.has(url.origin)) {
+      throw new Error("Playwright navigation URL is not on an allowed origin.");
+    }
+    return { url: url.toString() };
+  }
+  if (name === "browser_file_upload") {
+    const parsed = UploadArgumentsSchema.parse(args);
+    if (!parsed.paths?.length) return {};
+    if (policy.transport !== "stdio") {
+      throw new Error("Playwright file upload is allowed only for deployment-managed stdio fixtures.");
+    }
+    const rejected = () => new Error("Playwright upload was rejected by the allowed fixture policy.");
+    let canonicalRoots: string[];
+    try {
+      canonicalRoots = await Promise.all(policy.uploadRoots.map((root) => realpath(root)));
+    } catch {
+      throw rejected();
+    }
+    const canonicalPaths: string[] = [];
+    for (const candidate of parsed.paths) {
+      if (!path.isAbsolute(candidate)) throw new Error("Playwright upload paths must be absolute allowed fixture paths.");
+      let canonical: string;
+      try {
+        canonical = await realpath(candidate);
+      } catch {
+        throw rejected();
+      }
+      if (!canonicalRoots.some((root) => isWithinRoot(canonical, root))) {
+        throw rejected();
+      }
+      try {
+        if (!(await stat(canonical)).isFile()) throw rejected();
+      } catch {
+        throw rejected();
+      }
+      if (canonicalPaths.includes(canonical)) throw new Error("Playwright upload fixture paths must be unique.");
+      canonicalPaths.push(canonical);
+    }
+    return { paths: canonicalPaths };
+  }
+  return args;
+}
+
+function auditableToolArguments(name: string, args: Record<string, unknown>): Record<string, unknown> {
+  if (name !== "browser_file_upload" || !Array.isArray(args.paths)) return args;
+  return { paths: args.paths.map(() => "[fixture]") };
+}
+
+function auditableToolResult(name: string, result: unknown): unknown {
+  return name === "browser_file_upload" ? { status: "upload_result_redacted" } : result;
+}
+
 const AgentDecisionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("tool_call"),
@@ -80,6 +182,7 @@ export async function executeTestStepWithAgent(input: {
   llm: LLMProvider;
   tools: PlaywrightToolClient;
   signal: AbortSignal;
+  toolPolicy: PlaywrightToolPolicy;
   maxTurns?: number;
   onEvent?: (event: AgentEvent) => Promise<void> | void;
 }): Promise<{ outcome: ExecutionOutcome; summary: string; turns: number }> {
@@ -112,10 +215,20 @@ export async function executeTestStepWithAgent(input: {
       return { outcome: value.outcome, summary: value.summary, turns: turn };
     }
     assertAllowedPlaywrightTool(value.toolName);
-    const args = normalizeToolArguments(value.arguments);
-    const result = await input.tools.callTool(value.toolName, args, input.signal);
-    transcript.push({ toolName: value.toolName, arguments: args, result });
-    await input.onEvent?.({ kind: "tool_call", toolName: value.toolName, arguments: args, result });
+    const args = await validatePlaywrightToolArguments(value.toolName, value.arguments, input.toolPolicy);
+    let result: unknown;
+    try {
+      result = await input.tools.callTool(value.toolName, args, input.signal);
+    } catch (error) {
+      if (value.toolName === "browser_file_upload") {
+        throw new Error("Playwright fixture upload failed.");
+      }
+      throw error;
+    }
+    const auditableArguments = auditableToolArguments(value.toolName, args);
+    const auditableResult = auditableToolResult(value.toolName, result);
+    transcript.push({ toolName: value.toolName, arguments: auditableArguments, result: auditableResult });
+    await input.onEvent?.({ kind: "tool_call", toolName: value.toolName, arguments: auditableArguments, result: auditableResult });
   }
   return { outcome: "timeout", summary: `Step exceeded the ${maxTurns}-turn agent limit.`, turns: maxTurns };
 }

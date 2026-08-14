@@ -6,8 +6,9 @@ import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import { createExecutionRun } from "@/modules/test-execution/execution-store.service";
-import { getPlaywrightMcpConfigSummary } from "@/modules/test-execution/playwright-mcp-config.service";
+import { resolvePlaywrightMcpConfig } from "@/modules/test-execution/playwright-mcp-config.service";
 import { selectedSuiteIds } from "@/modules/test-execution/suite-selection";
+import { hasHealthyWorkerCapability } from "@/modules/jobs/worker-registry.service";
 
 export const runtime = "nodejs";
 
@@ -23,9 +24,12 @@ export async function POST(request: Request) {
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const scope = await resolveProjectScope(ctx, parsed.data.scope);
-    const config = await getPlaywrightMcpConfigSummary(ctx.workspace.id);
-    if (config.status !== "configured") {
+    const config = await resolvePlaywrightMcpConfig(ctx.workspace.id);
+    if (!config || config.status !== "configured") {
       return NextResponse.json({ error: "A workspace owner or admin must configure and enable Playwright MCP first." }, { status: 409 });
+    }
+    if (!await hasHealthyWorkerCapability("playwright_mcp_execution")) {
+      return NextResponse.json({ error: "No healthy worker is available for Playwright MCP execution." }, { status: 503 });
     }
     const adapter = await getUserAzureAdapter(ctx, scope);
     const tree = await adapter.fetchTestSuiteTree({ projectId: scope.azureProjectId, testPlanId: String(parsed.data.testPlanId) });

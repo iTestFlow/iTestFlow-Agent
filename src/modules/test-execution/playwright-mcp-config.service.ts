@@ -27,6 +27,19 @@ type ConfigRow = {
   enabled: boolean;
 };
 
+export function isAllowedPlaywrightMcpHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.username || url.password) return false;
+    if (url.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(url.hostname)) return true;
+    if (url.protocol !== "https:") return false;
+    const allowed = new Set((process.env.PLAYWRIGHT_MCP_HTTP_ALLOWED_ORIGINS ?? "").split(",").map((entry) => entry.trim()).filter(Boolean));
+    return allowed.has(url.origin);
+  } catch {
+    return false;
+  }
+}
+
 async function getRow(workspaceId: string): Promise<ConfigRow | undefined> {
   return sqlGet<ConfigRow>(
     `SELECT transport, endpoint, artifact_base_url, encrypted_bearer_token,
@@ -50,7 +63,7 @@ export async function getPlaywrightMcpConfigSummary(workspaceId: string): Promis
   return summary(await getRow(workspaceId));
 }
 
-export async function resolvePlaywrightMcpConfig(workspaceId: string): Promise<ResolvedPlaywrightMcpConfig | null> {
+export async function resolvePlaywrightMcpConfigForUpdate(workspaceId: string): Promise<ResolvedPlaywrightMcpConfig | null> {
   const row = await getRow(workspaceId);
   if (!row) return null;
   const encrypted = row.encrypted_bearer_token;
@@ -65,6 +78,18 @@ export async function resolvePlaywrightMcpConfig(workspaceId: string): Promise<R
         })
       : null,
   };
+}
+
+export async function resolvePlaywrightMcpConfig(workspaceId: string): Promise<ResolvedPlaywrightMcpConfig | null> {
+  const resolved = await resolvePlaywrightMcpConfigForUpdate(workspaceId);
+  if (!resolved) return null;
+  if (resolved.status === "configured" && resolved.transport === "http" && (
+    !resolved.endpoint || !isAllowedPlaywrightMcpHttpUrl(resolved.endpoint)
+    || Boolean(resolved.artifactBaseUrl && !isAllowedPlaywrightMcpHttpUrl(resolved.artifactBaseUrl))
+  )) {
+    throw new Error("Stored Playwright MCP HTTP origin is no longer allowed by deployment policy.");
+  }
+  return resolved;
 }
 
 export async function savePlaywrightMcpConfig(input: {

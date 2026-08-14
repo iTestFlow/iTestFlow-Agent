@@ -46,7 +46,7 @@ export async function postForm<T>(url: string, formData: FormData, signal?: Abor
   return readJsonResponse<T>(response);
 }
 
-async function readJsonResponse<T>(response: Response): Promise<T> {
+export async function readJsonResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
   const json = parseJsonResponse(text, response);
   if (!response.ok) {

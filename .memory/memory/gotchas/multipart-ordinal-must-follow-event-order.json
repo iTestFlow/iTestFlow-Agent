@@ -1,0 +1,42 @@
+{
+  "body_path": "memory/gotchas/multipart-ordinal-must-follow-event-order.md",
+  "content_hash": "sha256:e10a4669e46c8c78e685204602eb335fc38dccbf194dea165717294aa378f746",
+  "created_at": "2026-08-13T02:00:30+03:00",
+  "evidence": [
+    {
+      "id": "https://github.com/MohabMohie/iTestFlow-Agent/blob/9e63379b14a9bd66bf15ac6ccb393c25fbbdf5db/src/modules/documents/streaming-multipart-upload.ts",
+      "kind": "source"
+    },
+    {
+      "id": "https://github.com/MohabMohie/iTestFlow-Agent/blob/9e63379b14a9bd66bf15ac6ccb393c25fbbdf5db/src/modules/documents/streaming-multipart-upload.test.ts",
+      "kind": "source"
+    },
+    {
+      "id": "9e63379b14a9bd66bf15ac6ccb393c25fbbdf5db",
+      "kind": "commit"
+    }
+  ],
+  "facets": {
+    "category": "gotcha"
+  },
+  "id": "gotcha.multipart-ordinal-must-follow-event-order",
+  "scope": {
+    "branch": null,
+    "kind": "project",
+    "project": "project.itestflow-agent",
+    "task": null
+  },
+  "source": {
+    "kind": "agent",
+    "task": "Record three independently reviewed OCR upload audit gotchas from PR head 9e63379"
+  },
+  "status": "active",
+  "tags": [
+    "multipart",
+    "streaming-upload",
+    "ordering"
+  ],
+  "title": "Multipart ordinal must follow event order",
+  "type": "gotcha",
+  "updated_at": "2026-08-13T02:07:54+03:00"
+}

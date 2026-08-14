@@ -3,7 +3,7 @@ import { z } from "zod";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
-import { beginExecutionPublication, beginFailedExecutionPublicationRetry, finishExecutionPublication, getExecutionRun, publishableCases } from "@/modules/test-execution/execution-store.service";
+import { beginExecutionPublication, beginFailedExecutionPublicationRetry, finishExecutionPublication, getExecutionRun, publishableCases, recordExecutionPublicationResult } from "@/modules/test-execution/execution-store.service";
 import { mapExecutionOutcomeToAzure } from "@/modules/test-execution/playwright-agent";
 
 const Schema = z.object({ scope: ProjectScopeSchema, confirmedReviewed: z.literal(true), retryFailed: z.boolean().optional() });
@@ -27,32 +27,36 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
       const successfulPointIds = new Set(priorResults.filter((result) => result.success).map((result) => result.testPointId));
       cases = cases.filter((testCase) => !successfulPointIds.has(testCase.azureTestPointId));
       if (!cases.length) {
-        if (retry) await finishExecutionPublication({ id: retry.id, status: "completed", result: priorResults });
+        if (retry) await finishExecutionPublication({ id: retry.id, leaseToken: retry.leaseToken, status: "completed", result: priorResults });
         return NextResponse.json({ error: "There are no failed Test Point publications to retry." }, { status: 409 });
       }
     }
-    const publicationId = retry?.id ?? await beginExecutionPublication(runId, ctx.userId);
-    if (!publicationId) return NextResponse.json({ error: "These execution results were already published or publication is in progress." }, { status: 409 });
+    const publication = retry ?? await beginExecutionPublication(runId, ctx.userId);
+    if (!publication) return NextResponse.json({ error: "These execution results were already published or publication is in progress." }, { status: 409 });
     const results = priorResults.filter((result) => result.success);
     try {
       for (const testCase of cases) {
         if (!testCase.azureTestPointId) {
-          results.push({ testCaseId: testCase.azureTestCaseId, testPointId: null, success: false, error: "No Azure Test Point ID was captured." });
+          const receipt = { testCaseId: testCase.azureTestCaseId, testPointId: null, success: false, error: "No Azure Test Point ID was captured." };
+          results.push(receipt);
+          if (!await recordExecutionPublicationResult(publication.id, publication.leaseToken, receipt)) throw new Error("Publication lease was lost.");
           continue;
         }
         const result = await azure.updateTestPoints({
           projectId: scope.azureProjectId, testPlanId: String(run.azurePlanId), testSuiteId: String(testCase.azureSuiteId),
           pointIds: [String(testCase.azureTestPointId)], outcome: mapExecutionOutcomeToAzure(testCase.outcome),
         });
-        results.push({ testCaseId: testCase.azureTestCaseId, testPointId: testCase.azureTestPointId, success: result.success, error: result.error });
+        const receipt = { testCaseId: testCase.azureTestCaseId, testPointId: testCase.azureTestPointId, success: result.success, error: result.error };
+        results.push(receipt);
+        if (!await recordExecutionPublicationResult(publication.id, publication.leaseToken, receipt)) throw new Error("Publication lease was lost.");
       }
     } catch (error) {
-      await finishExecutionPublication({ id: publicationId, status: "failed", result: results });
+      await finishExecutionPublication({ id: publication.id, leaseToken: publication.leaseToken, status: "failed", result: results });
       throw error;
     }
     const succeeded = results.filter((result) => result.success).length;
     const status = succeeded === results.length ? "completed" : succeeded ? "partial" : "failed";
-    await finishExecutionPublication({ id: publicationId, status, result: results });
+    await finishExecutionPublication({ id: publication.id, leaseToken: publication.leaseToken, status, result: results });
     return NextResponse.json({ runId, status, published: succeeded, total: results.length, results });
   } catch (error) {
     return authErrorResponse(error) ?? NextResponse.json({ error: "Execution results could not be published." }, { status: 503 });

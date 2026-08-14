@@ -5,6 +5,7 @@ import { createId, enqueueBackgroundWrite, nowIso, sqlGet, sqlRun } from "@/modu
 import { resolveReviewBaseline, resolveWorkflowBaseline } from "@/modules/workspace/workspace-settings.service";
 import type { WorkflowRunStatus } from "@/types/system-dashboard";
 import {
+  type ActiveWorkflowType,
   type WorkflowType,
 } from "./analytics-config";
 import {
@@ -51,7 +52,7 @@ export type WorkflowRunPatch = Partial<{
 
 export function startWorkflowRun(input: {
   scope: ProjectScope;
-  workflowType: WorkflowType;
+  workflowType: ActiveWorkflowType;
   workItemId?: string;
   sourceRunId?: string;
   userId: string;

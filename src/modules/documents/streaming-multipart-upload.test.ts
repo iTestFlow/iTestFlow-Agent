@@ -34,6 +34,20 @@ async function leakedUploadTempDirs(before: string[]) {
 }
 
 describe("streamDocumentUploadMultipart", () => {
+  it("preserves multipart file order when later writes finish first", async () => {
+    process.env.DOCUMENT_MAX_UPLOAD_BYTES = "1048576";
+    const form = new FormData();
+    form.append("scope", JSON.stringify({ projectId: "p" }));
+    form.append("files", new Blob([new Uint8Array(500_000)]), "first.bin");
+    form.append("files", new Blob([new Uint8Array(1)]), "second.bin");
+    const upload = await streamDocumentUploadMultipart(new Request("http://localhost/upload", { method: "POST", body: form }));
+    try {
+      expect(upload.files.map((file) => file.originalFileName)).toEqual(["first.bin", "second.bin"]);
+    } finally {
+      await removeStreamedDocumentMultipart(upload);
+    }
+  });
+
   it("enforces the actual multipart byte cap when Content-Length is absent", async () => {
     process.env.DOCUMENT_MAX_UPLOAD_BYTES = "128";
     const request = multipartRequest(new Uint8Array(512));
@@ -42,6 +56,16 @@ describe("streamDocumentUploadMultipart", () => {
     await expect(streamDocumentUploadMultipart(request)).rejects.toMatchObject({
       message: "The multipart upload exceeds the configured size limit.",
     });
+  });
+
+  it("accepts raw file bytes at the configured cap despite bounded multipart framing", async () => {
+    process.env.DOCUMENT_MAX_UPLOAD_BYTES = "1024";
+    const upload = await streamDocumentUploadMultipart(multipartRequest(new Uint8Array(1024)));
+    try {
+      expect(upload.files[0]).toMatchObject({ byteSize: 1024 });
+    } finally {
+      await removeStreamedDocumentMultipart(upload);
+    }
   });
 
   it("leaves no orphaned temp directory or locked temp file when an oversized upload aborts mid-stream", async () => {
@@ -55,6 +79,46 @@ describe("streamDocumentUploadMultipart", () => {
     // not a masked filesystem error from a failed cleanup attempt.
     await expect(streamDocumentUploadMultipart(request)).rejects.toThrow();
 
+    expect(await leakedUploadTempDirs(before)).toEqual([]);
+  });
+
+  it("settles active file writes before cleaning up a request-wide multipart overflow", async () => {
+    process.env.DOCUMENT_MAX_UPLOAD_BYTES = "1100000";
+    const form = new FormData();
+    form.append("scope", JSON.stringify({ projectId: "p" }));
+    form.append("files", new Blob([new Uint8Array(1_100_000)]), "first.bin");
+    form.append("files", new Blob([new Uint8Array(1_100_000)]), "second.bin");
+    const encoded = new Request("http://localhost/upload", { method: "POST", body: form });
+    const body = new Uint8Array(await encoded.arrayBuffer());
+    let offset = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        if (offset >= body.byteLength) {
+          controller.close();
+          return;
+        }
+        const next = body.subarray(offset, Math.min(offset + 64 * 1024, body.byteLength));
+        offset += next.byteLength;
+        controller.enqueue(next);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const request = new Request("http://localhost/upload", {
+      method: "POST",
+      headers: { "content-type": encoded.headers.get("content-type")! },
+      body: stream,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const before = await readdir(tmpdir());
+
+    await expect(streamDocumentUploadMultipart(request)).rejects.toMatchObject({
+      message: "The multipart upload exceeds the configured size limit.",
+    });
+    expect(cancelled).toBe(true);
     expect(await leakedUploadTempDirs(before)).toEqual([]);
   });
 

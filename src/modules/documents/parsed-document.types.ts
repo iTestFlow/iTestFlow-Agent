@@ -5,7 +5,7 @@
  * into RAG chunks without needing to understand any file-format details.
  */
 
-export const DOCUMENT_FORMATS = ["pdf", "docx", "xlsx", "csv", "txt", "md"] as const;
+export const DOCUMENT_FORMATS = ["pdf", "docx", "xlsx", "csv", "txt", "md", "png", "jpeg", "webp"] as const;
 
 export type DocumentFormat = (typeof DOCUMENT_FORMATS)[number];
 
@@ -42,6 +42,7 @@ export type DocumentParseErrorCode = (typeof DOCUMENT_PARSE_ERROR_CODES)[number]
 
 export type ParsedDocumentWarningCode =
   | "no_extractable_text"
+  | "low_confidence"
   | "page_parse_failed"
   | "sheet_limit_reached"
   | "cell_limit_reached"
@@ -69,6 +70,17 @@ export type ParsedDocumentSection = {
   metadata?: Record<string, unknown>;
 };
 
+export type OcrDocumentMetadata = {
+  engine: "tesseract.js";
+  engineVersion: string;
+  language: "eng" | "ara";
+  confidence: number;
+  status: "parsed" | "partially_parsed" | "no_text" | "low_confidence";
+  minConfidence: number;
+  acceptedRegionCount: number;
+  rejectedRegionCount: number;
+};
+
 export type ParsedDocumentMetadata = {
   format: DocumentFormat;
   extractedTextChars: number;
@@ -76,6 +88,7 @@ export type ParsedDocumentMetadata = {
   parsedPageCount?: number;
   sheetCount?: number;
   parsedSheetCount?: number;
+  ocr?: OcrDocumentMetadata;
   [key: string]: unknown;
 };
 
@@ -91,6 +104,8 @@ export type DocumentParseInput = {
   data: Uint8Array;
   /** Display metadata only; never use this value for a filesystem path. */
   fileName?: string;
+  /** Optional OCR language name or alias. Image OCR supports English and Arabic. */
+  languageHint?: string | null;
   /** Lower this per call when a worker needs a tighter execution budget. */
   maxExtractedTextChars?: number;
   /** The worker's cancellation signal, checked at parser phase boundaries. */

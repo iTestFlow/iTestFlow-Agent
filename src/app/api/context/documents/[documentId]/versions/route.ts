@@ -8,7 +8,10 @@ import {
   createVersionForDocument,
   getProjectSourceDocument,
 } from "@/modules/documents/project-source-documents.service";
-import { validateDocumentUpload } from "@/modules/documents/document-upload-validation";
+import {
+  canonicalDocumentMimeType,
+  validateDocumentUpload,
+} from "@/modules/documents/document-upload-validation";
 import {
   removeStreamedDocumentMultipart,
   streamDocumentUploadMultipart,
@@ -110,7 +113,7 @@ export async function POST(request: Request, { params }: RouteParams) {
           storageBackend: storage.kind,
           storageKey: stored.storageKey,
           originalFileName: safeDocumentDownloadName(file.originalFileName, `upload.${validation.format}`),
-          mimeType: canonicalMimeType(validation.format),
+          mimeType: canonicalDocumentMimeType(validation.format),
           fileFormat: validation.format,
           byteSize: file.byteSize,
           contentHash: file.contentSha256,
@@ -118,6 +121,7 @@ export async function POST(request: Request, { params }: RouteParams) {
           metadata: {
             detectedMimeType: validation.detectedMimeType ?? null,
             uploadByteLength: validation.byteLength,
+            ...(validation.image ? { image: validation.image } : {}),
           },
         },
       });
@@ -189,16 +193,5 @@ export async function POST(request: Request, { params }: RouteParams) {
     return documentAuthOrErrorResponse(error, "The replacement document version could not be uploaded.");
   } finally {
     if (multipart) await removeStreamedDocumentMultipart(multipart).catch(() => undefined);
-  }
-}
-
-function canonicalMimeType(format: "pdf" | "docx" | "xlsx" | "csv" | "txt" | "md") {
-  switch (format) {
-    case "pdf": return "application/pdf";
-    case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    case "csv": return "text/csv";
-    case "txt": return "text/plain";
-    case "md": return "text/markdown";
   }
 }

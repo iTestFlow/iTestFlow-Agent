@@ -3,7 +3,8 @@ import { z } from "zod";
 
 import {
   getPlaywrightMcpConfigSummary,
-  resolvePlaywrightMcpConfig,
+  isAllowedPlaywrightMcpHttpUrl,
+  resolvePlaywrightMcpConfigForUpdate,
   savePlaywrightMcpConfig,
 } from "@/modules/test-execution/playwright-mcp-config.service";
 import { connectPlaywrightMcp } from "@/modules/test-execution/playwright-mcp-client";
@@ -11,18 +12,10 @@ import { resolveWorkspaceRequest, workspaceRequestError } from "@/modules/worksp
 
 export const runtime = "nodejs";
 
-function isAllowedHttpUrl(value: string): boolean {
-  const url = new URL(value);
-  if (url.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(url.hostname)) return true;
-  if (url.protocol !== "https:") return false;
-  const allowed = new Set((process.env.PLAYWRIGHT_MCP_HTTP_ALLOWED_ORIGINS ?? "").split(",").map((entry) => entry.trim()).filter(Boolean));
-  return allowed.has(url.origin);
-}
-
 const HttpConfigSchema = z.object({
   transport: z.literal("http"),
-  endpoint: z.string().url().refine(isAllowedHttpUrl, "Use HTTPS, or HTTP only for localhost."),
-  artifactBaseUrl: z.string().url().refine(isAllowedHttpUrl, "Use HTTPS, or HTTP only for localhost.").nullable().optional(),
+  endpoint: z.string().url().refine(isAllowedPlaywrightMcpHttpUrl, "Use HTTPS, or HTTP only for localhost."),
+  artifactBaseUrl: z.string().url().refine(isAllowedPlaywrightMcpHttpUrl, "Use HTTPS, or HTTP only for localhost.").nullable().optional(),
   bearerToken: z.string().trim().min(1).nullable().optional(),
   enabled: z.boolean().optional(),
 }).strict();
@@ -65,7 +58,7 @@ export async function PUT(request: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid Playwright MCP configuration." }, { status: 400 });
   }
-  const existing = await resolvePlaywrightMcpConfig(context.workspace.id);
+  const existing = await resolvePlaywrightMcpConfigForUpdate(context.workspace.id);
   const candidate = {
     status: parsed.data.enabled === false ? "disabled" as const : "configured" as const,
     transport: parsed.data.transport,

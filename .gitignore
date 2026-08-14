@@ -25,3 +25,8 @@ graphify-out/
 .memory/recovery/
 .memory/.backup/
 .memory/.lock
+
+# MemPalace canonical taxonomy is tracked in mempalace.yaml. Runtime state is local.
+/.mempalace/
+/entities.json
+/mempalace_embedder.json

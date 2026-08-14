@@ -627,13 +627,12 @@ $workflowItems = @(
   @{ Title = "Requirement`nAnalysis"; Icon = "search"; Bullets = @("Quality findings", "Reviewed ADO comments") },
   @{ Title = "Test Case`nDesign"; Icon = "list"; Bullets = @("Positive & negative cases", "Publish to Test Plans") },
   @{ Title = "Test Gap`nAnalysis"; Icon = "matrix"; Bullets = @("Coverage matrix", "Suggested additions") },
-  @{ Title = "Execution`nEffort"; Icon = "timer"; Bullets = @("Manual effort estimates", "Complexity insights") },
   @{ Title = "Bug`nReporting"; Icon = "bug"; Bullets = @("Evidence-based defects", "Ready-to-post reports") },
   @{ Title = "Suite`nMigration"; Icon = "folder"; Bullets = @("Preview copy or move", "Preserve outcomes") },
   @{ Title = "Bulk Task`nCreation"; Icon = "layers"; Bullets = @("Structured task batches", "Controlled publishing") }
 )
 
-$wfCardW = 116
+$wfCardW = 137
 $wfGap = 10
 for ($i = 0; $i -lt $workflowItems.Count; $i++) {
   DrawWorkflowCard $g $workflowItems[$i] ($workX + 10 + $i * ($wfCardW + $wfGap)) ($workY + 17) $wfCardW 186 "#0b4aae" $fontWorkflowTitle $fontWorkflowSmall
@@ -683,7 +682,6 @@ $outputs = @(
   @{ Title = "Analysis`nFindings"; Icon = "list" },
   @{ Title = "Test`nCases"; Icon = "doc" },
   @{ Title = "Coverage`nGuidance"; Icon = "target" },
-  @{ Title = "Effort`nEstimates"; Icon = "timer" },
   @{ Title = "Bug`nReports"; Icon = "bug" },
   @{ Title = "Migration`nPlans"; Icon = "folder" }
 )

@@ -14,4 +14,8 @@ describe("execution persistence redaction", () => {
   it("removes bearer and API-key shaped material from errors", () => {
     expect(sanitizeExecutionError("Authorization: Bearer abc.def.ghi sk-supersecret")).not.toMatch(/abc\.def|sk-supersecret/);
   });
+
+  it("redacts free-form browser typing text even when the value has no secret-shaped prefix", () => {
+    expect(sanitizeExecutionPayload({ text: "hunter2", selector: "#password" })).toEqual({ text: "[REDACTED]", selector: "#password" });
+  });
 });

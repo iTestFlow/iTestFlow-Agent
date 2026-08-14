@@ -1,0 +1,17 @@
+{
+  "confidence": "high",
+  "content_hash": "sha256:01aae41e957679235110b44bb431a40e46ea1f76e20aa4ad86ab4eac1a40db9c",
+  "created_at": "2026-08-13T02:00:30+03:00",
+  "evidence": [
+    {
+      "id": "9e63379b14a9bd66bf15ac6ccb393c25fbbdf5db",
+      "kind": "commit"
+    }
+  ],
+  "from": "gotcha.multipart-ordinal-must-follow-event-order",
+  "id": "rel.gotcha-multipart-ordinal-must-follow-event-order-affects-project-itestflow-agent",
+  "predicate": "affects",
+  "status": "active",
+  "to": "project.itestflow-agent",
+  "updated_at": "2026-08-13T02:00:30+03:00"
+}

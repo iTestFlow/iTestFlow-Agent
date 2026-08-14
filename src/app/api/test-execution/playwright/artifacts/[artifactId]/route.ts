@@ -5,6 +5,12 @@ import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { getExecutionArtifact } from "@/modules/test-execution/execution-artifact.service";
 
+const SAFE_ARTIFACT_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "application/zip", "text/plain", "application/json"]);
+
+function safeArtifactContentType(value: string): string {
+  return SAFE_ARTIFACT_TYPES.has(value.toLowerCase().split(";", 1)[0]!) ? value : "application/octet-stream";
+}
+
 export async function GET(request: Request, context: { params: Promise<{ artifactId: string }> }) {
   try {
     const url = new URL(request.url);
@@ -21,7 +27,14 @@ export async function GET(request: Request, context: { params: Promise<{ artifac
     if (!artifact) return NextResponse.json({ error: "Artifact not found." }, { status: 404 });
     const stream = await new LocalFilesystemStorageBackend().getStream({ storageKey: artifact.storage_key });
     return new Response(Readable.toWeb(stream) as ReadableStream, {
-      headers: { "Content-Type": artifact.mime_type, "Content-Length": String(artifact.byte_size), "Cache-Control": "private, no-store" },
+      headers: {
+        "Content-Type": safeArtifactContentType(artifact.mime_type),
+        "Content-Length": String(artifact.byte_size),
+        "Content-Disposition": `attachment; filename="execution-artifact-${artifactId}"`,
+        "Content-Security-Policy": "sandbox",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, no-store",
+      },
     });
   } catch (error) {
     return authErrorResponse(error) ?? NextResponse.json({ error: "Artifact could not be loaded." }, { status: 503 });

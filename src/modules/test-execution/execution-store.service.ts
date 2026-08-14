@@ -78,7 +78,7 @@ export async function createExecutionRun(input: {
   }
   const jobId = await enqueueJob({
     jobType: "playwright_mcp_execution", workspaceId: input.workspaceId, projectId: input.projectId,
-    createdByUserId: input.job.userId, dedupeKey: runId, maxAttempts: 3,
+    createdByUserId: input.job.userId, dedupeKey: runId, maxAttempts: 1,
     payload: { runId, userId: input.job.userId, scope: input.job.scope },
   }, client);
   if (!jobId) throw new Error("Could not atomically enqueue the Playwright MCP execution job.");
@@ -229,33 +229,52 @@ export async function publishableCases(runId: string): Promise<Array<StoredCase 
   return rows.map((row) => ({ id: row.id, azureTestCaseId: row.azure_test_case_id, azureTestPointId: row.azure_test_point_id, azureSuiteId: row.azure_suite_id, title: row.title, status: row.status, outcome: row.status }));
 }
 
-export async function beginExecutionPublication(runId: string, userId: string): Promise<string | null> {
+type PublicationLease = { id: string; leaseToken: string };
+
+export async function beginExecutionPublication(runId: string, userId: string): Promise<PublicationLease | null> {
   const id = createId("pwpub");
+  const leaseToken = createId("pwlease");
   const inserted = await sqlGet<{ id: string }>(`INSERT INTO playwright_execution_publications
-    (id, run_id, published_by_user_id, status, result_json, created_at)
-    VALUES (@id, @runId, @userId, 'running', '{}'::jsonb, @now)
-    ON CONFLICT (run_id) DO NOTHING RETURNING id`, { id, runId, userId, now: nowIso() });
-  return inserted?.id ?? null;
+    (id, run_id, published_by_user_id, status, result_json, lease_token, created_at, updated_at)
+    VALUES (@id, @runId, @userId, 'running', '[]'::jsonb, @leaseToken, @now, @now)
+    ON CONFLICT (run_id) DO NOTHING RETURNING id`, { id, runId, userId, leaseToken, now: nowIso() });
+  return inserted ? { id: inserted.id, leaseToken } : null;
 }
 
-export async function beginFailedExecutionPublicationRetry(runId: string): Promise<{ id: string; prior: Array<{ testCaseId: number; testPointId: number | null; success: boolean; error?: string }> } | null> {
+export async function beginFailedExecutionPublicationRetry(runId: string): Promise<(PublicationLease & { prior: Array<{ testCaseId: number; testPointId: number | null; success: boolean; error?: string }> }) | null> {
   return withTransaction(async (client) => {
-    const row = await sqlGet<{ id: string; status: string; result_json: unknown }>(
-      `SELECT id, status, result_json FROM playwright_execution_publications WHERE run_id = @runId FOR UPDATE`, { runId }, client,
+    const row = await sqlGet<{ id: string; status: string; result_json: unknown; updated_at: string }>(
+      `SELECT id, status, result_json, updated_at FROM playwright_execution_publications WHERE run_id = @runId FOR UPDATE`, { runId }, client,
     );
-    if (!row || !["partial", "failed"].includes(row.status)) return null;
+    const now = nowIso();
+    const staleRunning = row?.status === "running" && Date.parse(row.updated_at) <= Date.parse(now) - 30 * 60 * 1000;
+    if (!row || (!staleRunning && !["partial", "failed"].includes(row.status))) return null;
     const prior = Array.isArray(row.result_json) ? row.result_json as Array<{ testCaseId: number; testPointId: number | null; success: boolean; error?: string }> : [];
-    await sqlRun(`UPDATE playwright_execution_publications SET status = 'running', finished_at = NULL WHERE id = @id`, { id: row.id }, client);
-    return { id: row.id, prior };
+    const leaseToken = createId("pwlease");
+    await sqlRun(`UPDATE playwright_execution_publications
+      SET status = 'running', lease_token = @leaseToken, finished_at = NULL, updated_at = @now
+      WHERE id = @id`, { id: row.id, leaseToken, now }, client);
+    return { id: row.id, leaseToken, prior };
   });
 }
 
+export async function recordExecutionPublicationResult(
+  id: string,
+  leaseToken: string,
+  result: { testCaseId: number; testPointId: number | null; success: boolean; error?: string },
+): Promise<boolean> {
+  const now = nowIso();
+  return (await sqlRun(`UPDATE playwright_execution_publications
+    SET result_json = result_json || jsonb_build_array(@result::jsonb), updated_at = @now
+    WHERE id = @id AND status = 'running' AND lease_token = @leaseToken`, { id, leaseToken, result: JSON.stringify(result), now })) > 0;
+}
+
 export async function finishExecutionPublication(input: {
-  id: string; status: "completed" | "partial" | "failed"; result: unknown;
+  id: string; leaseToken: string; status: "completed" | "partial" | "failed"; result: unknown;
 }) {
   const now = nowIso();
-  await sqlRun(`UPDATE playwright_execution_publications SET status = @status, result_json = @result::jsonb, finished_at = @now
-    WHERE id = @id AND status = 'running'`, {
-    id: input.id, status: input.status, result: JSON.stringify(input.result), now,
+  await sqlRun(`UPDATE playwright_execution_publications SET status = @status, result_json = @result::jsonb, finished_at = @now, updated_at = @now
+    WHERE id = @id AND status = 'running' AND lease_token = @leaseToken`, {
+    id: input.id, leaseToken: input.leaseToken, status: input.status, result: JSON.stringify(input.result), now,
   });
 }

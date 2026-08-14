@@ -17,12 +17,14 @@ export class ApiError extends Error {
   readonly code?: AppErrorCode;
   readonly technicalDetails?: string;
   readonly technicalContext?: ErrorTechnicalContext;
+  readonly payload?: unknown;
 
   constructor(message: string, options: {
     status: number;
     code?: AppErrorCode;
     technicalDetails?: string;
     technicalContext?: ErrorTechnicalContext;
+    payload?: unknown;
   }) {
     super(message);
     this.name = "ApiError";
@@ -30,6 +32,7 @@ export class ApiError extends Error {
     this.code = options.code;
     this.technicalDetails = options.technicalDetails;
     this.technicalContext = options.technicalContext;
+    this.payload = options.payload;
   }
 
   static fromResponse(payload: ApiErrorPayload, status: number) {
@@ -39,6 +42,7 @@ export class ApiError extends Error {
       code: isAppErrorCode(payload.code) ? payload.code : undefined,
       technicalDetails: typeof payload.technicalDetails === "string" ? payload.technicalDetails : undefined,
       technicalContext: isTechnicalContext(payload.technicalContext) ? payload.technicalContext : undefined,
+      payload,
     });
   }
 }

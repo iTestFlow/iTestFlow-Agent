@@ -15,7 +15,7 @@ import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-cit
 
 /**
  * External-LLM prompt + response panel shared by every "External LLM" workflow
- * (test design, requirement analysis, bug, effort, knowledge). Renders the
+ * (test design, requirement analysis, bug, knowledge). Renders the
  * read-only prompt with a Copy button, optional prompt-version/schema badges,
  * and the response textarea + submit action. The container owns submission and
  * validation; this component is presentational.
