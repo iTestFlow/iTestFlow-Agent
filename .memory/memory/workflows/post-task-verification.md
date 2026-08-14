@@ -1,0 +1,1 @@
+After meaningful code changes, run the smallest relevant repository checks: npm run typecheck, npm run lint, and the focused unit or integration test script from package.json. Database-backed integration checks require their documented local PostgreSQL prerequisite.

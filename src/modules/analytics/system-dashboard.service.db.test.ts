@@ -75,6 +75,38 @@ describeDb("system dashboard analytics (DB-backed)", () => {
     expect(analytics.overview.cycleHoursSaved.value).toBe(0);
   });
 
+  it("includes retired workflow history without exposing it as an active filter", async () => {
+    const now = new Date().toISOString();
+    await sqlRun(
+      `INSERT INTO analytics_workflow_runs (
+         id, project_id, azure_project_id, user_id, workflow_type, started_at, completed_at,
+         status, manual_baseline_minutes, estimated_saved_minutes, review_minutes,
+         generation_minutes, cycle_saved_minutes, created_at, updated_at
+       ) VALUES (
+         @id, @projectId, @azureProjectId, @userId, 'test_execution_effort', @now, @now,
+         'completed', 30, 20, 5, 2, 23, @now, @now
+       )`,
+      {
+        id: "workflow_legacy_execution_estimate",
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        userId: "user_legacy_execution_estimate",
+        now,
+      },
+    );
+
+    const analytics = await getSystemDashboardAnalytics({ scope });
+
+    expect(analytics.overview.workflowsCompleted.value).toBe(1);
+    expect(analytics.adoption.workflowRuns).toBe(1);
+    expect(analytics.filterMetadata.workflows.map(({ value }) => value)).not.toContain("test_execution_effort");
+    expect(analytics.workflowSavings.rows).toContainEqual(expect.objectContaining({
+      workflowType: "test_execution_effort",
+      workflow: "Legacy execution estimate",
+      runs: 1,
+    }));
+  });
+
   it("keeps all visible user options when analytics are filtered to one user", async () => {
     await seedAnalyticsUser({
       id: dropdownUserA,

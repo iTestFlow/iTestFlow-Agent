@@ -55,7 +55,7 @@ iTestFlow helps QA, product, and delivery teams:
 - Index filtered Azure DevOps work items into project context.
 - Compile durable project knowledge with revisions, publish-time lint checks, citations, and Markdown export.
 - Ask grounded questions through the Business Owner Assistant.
-- Analyze requirements, design test cases, review gaps, estimate execution effort, report bugs, migrate suites, and bulk-create tasks.
+- Analyze requirements, design test cases, review gaps, report bugs, migrate suites, and bulk-create tasks.
 - Publish only reviewed artifacts back to Azure DevOps.
 - Review dashboards, activity history, audit logs, jobs, and workspace-level settings.
 
@@ -117,7 +117,6 @@ Durable page routes:
 - `/requirements-analysis`
 - `/test-case-design`
 - `/test-gap-analysis`
-- `/test-execution-effort`
 - `/report-bug`
 - `/suite-migration`
 - `/bulk-task-creation`
@@ -182,6 +181,8 @@ Dashboards:
 Knowledge Hub and RAG:
 
 - `/knowledge-hub` indexes filtered Azure DevOps work items, compiles project knowledge, and exports a Markdown wiki.
+- Workspace owners and admins can upload PDF, DOCX, XLSX, CSV, TXT, Markdown, PNG, JPEG, and WebP sources within the active project scope. Uploads are isolated per file, and the dedicated document-ingest lane isolates sibling job failures. PNG/JPEG/WebP parsing runs local Tesseract with bundled, preflight-verified English and Arabic model data; no model is downloaded and no source image leaves the worker. Decoded images are capped by `OCR_MAX_IMAGE_PIXELS` (default `40000000`), regions below `OCR_MIN_CONFIDENCE` (default `50`) are excluded, and recognition is bounded by `OCR_RECOGNIZE_TIMEOUT_MS` (default `120000`) while status, warnings, and rejected counts remain available. No accepted text produces a successful zero-chunk version.
+- OCR chunks retain engine/version, language, confidence, region identity, and `{x0,y0,x1,y1}` source-image provenance. They reuse the existing project-scoped document/version/chunk persistence, permission checks, archive/reprocess replacement, hybrid retrieval, and citation source identity.
 - `/api/context/index`, `/api/context/status`, and `/api/context/suggestions` manage project context indexing and retrieval.
 - `/api/context/knowledge/*` manages background build jobs, draft review (conflicts/decisions/preview/publish), log, candidates, promotion, manual drafting/finalization/validation, status, and export.
 - RAG storage, compiled knowledge, retrieval, linting, and citations live under `src/modules/rag`.
@@ -213,12 +214,6 @@ Test Gap Analysis:
 - `/api/existing-test-case-review/*` runs automatic/manual review.
 - `/api/test-coverage-matrix/suggested-additions/publish` creates selected Azure Test Case additions and links them to the user story.
 - Service, prompt, and schema code live under `src/modules/existing-test-case-review`.
-
-Test Execution Effort:
-
-- `/test-execution-effort` estimates realistic manual QA execution effort for linked test cases.
-- `/api/test-execution-effort/prepare`, `/generate`, `/external-prompt`, and `/manual/submit` fetch scoped data, build prompts, call or validate LLM output, and return structured estimates.
-- Service, prompt, schema, and data-loading code live under `src/modules/test-execution-effort`.
 
 Bug Reporting:
 

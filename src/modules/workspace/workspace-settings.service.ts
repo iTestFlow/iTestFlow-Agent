@@ -1,10 +1,12 @@
 import "server-only";
 
 import {
-  defaultReviewBaselines,
-  defaultWorkflowBaselines,
+  getDefaultReviewBaseline,
+  getDefaultWorkflowBaseline,
   isPerItemReview,
+  LEGACY_TEST_EXECUTION_EFFORT_WORKFLOW,
   workflowTypeValues,
+  type ActiveWorkflowType,
   type WorkflowType,
 } from "@/modules/analytics/analytics-config";
 import { nowIso, sqlGet } from "@/modules/shared/infrastructure/database/db";
@@ -17,7 +19,7 @@ import { nowIso, sqlGet } from "@/modules/shared/infrastructure/database/db";
  * fallback. One row per workspace, keyed directly by workspace_id. All persistence
  * is keyed by the server-resolved workspace id, never client input.
  */
-export type WorkflowBaselineMap = Partial<Record<WorkflowType, number>>;
+export type WorkflowBaselineMap = Partial<Record<ActiveWorkflowType, number>>;
 
 export type WorkspaceSettingsView = {
   retrievalTopK: number | null;
@@ -182,12 +184,12 @@ export async function resolveWorkflowBaseline(
   workspaceId: string | null | undefined,
   type: WorkflowType,
 ): Promise<number> {
-  if (workspaceId) {
+  if (workspaceId && type !== LEGACY_TEST_EXECUTION_EFFORT_WORKFLOW) {
     const settings = await getWorkspaceSettings(workspaceId);
     const override = settings?.manualBaselineMinutes?.[type];
     if (typeof override === "number" && Number.isFinite(override) && override >= 0) return override;
   }
-  return defaultWorkflowBaselines[type];
+  return getDefaultWorkflowBaseline(type);
 }
 
 /**
@@ -200,8 +202,8 @@ export async function resolveReviewBaseline(
   type: WorkflowType,
   itemCount: number,
 ): Promise<number> {
-  let perUnit = defaultReviewBaselines[type];
-  if (workspaceId) {
+  let perUnit = getDefaultReviewBaseline(type);
+  if (workspaceId && type !== LEGACY_TEST_EXECUTION_EFFORT_WORKFLOW) {
     const settings = await getWorkspaceSettings(workspaceId);
     const override = settings?.reviewBaselineMinutes?.[type];
     if (typeof override === "number" && Number.isFinite(override) && override >= 0) perUnit = override;

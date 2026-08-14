@@ -15,6 +15,9 @@ import { DocumentParseError } from "./parsed-document.types";
 const MAX_MULTIPART_FILES = 20;
 const MAX_MULTIPART_FIELDS = 20;
 const MAX_MULTIPART_FIELD_BYTES = 64 * 1024;
+// Allows boundaries, headers, and the bounded metadata fields without reducing
+// the advertised raw-file allowance. File bytes remain capped separately.
+export const MAX_MULTIPART_OVERHEAD_BYTES = 1024 * 1024;
 
 export type StreamedDocumentUpload = {
   fieldName: string;
@@ -39,11 +42,17 @@ export type StreamedDocumentMultipart = {
  */
 export async function streamDocumentUploadMultipart(request: Request): Promise<StreamedDocumentMultipart> {
   const maxUploadBytes = getDocumentMaxUploadBytes();
+  const maxMultipartBytes = maxUploadBytes + MAX_MULTIPART_OVERHEAD_BYTES;
   const contentLength = request.headers.get("content-length");
   if (contentLength) {
     const declared = Number(contentLength);
     if (!Number.isFinite(declared) || declared < 0) throw new Error("The upload Content-Length is invalid.");
-    assertDocumentUploadSize(declared, maxUploadBytes);
+    if (declared > maxMultipartBytes) {
+      throw new DocumentParseError({
+        code: "oversized",
+        message: "The multipart upload exceeds the configured size limit.",
+      });
+    }
   }
   if (!request.body) throw new Error("The upload body is required.");
 
@@ -54,7 +63,11 @@ export async function streamDocumentUploadMultipart(request: Request): Promise<S
 
   const tempDirectory = await mkdtemp(join(tmpdir(), "itestflow-document-upload-"));
   try {
-    const parsed = await parseMultipart({ request, tempDirectory, maxUploadBytes });
+    const parsed = await parseMultipart({ request, tempDirectory, maxUploadBytes, maxMultipartBytes });
+    assertDocumentUploadSize(
+      parsed.files.reduce((total, file) => total + file.byteSize, 0),
+      maxUploadBytes,
+    );
     if (!parsed.fields.scope?.trim()) throw new Error("The upload must include a project scope before file data.");
     if (!parsed.files.length) throw new Error("Select at least one document to upload.");
     return { ...parsed, tempDirectory };
@@ -72,9 +85,10 @@ async function parseMultipart(input: {
   request: Request;
   tempDirectory: string;
   maxUploadBytes: number;
+  maxMultipartBytes: number;
 }): Promise<Omit<StreamedDocumentMultipart, "tempDirectory">> {
   const fields: Record<string, string> = {};
-  const files: StreamedDocumentUpload[] = [];
+  const files: Array<StreamedDocumentUpload | undefined> = [];
   const fileTasks: Promise<void>[] = [];
   let filesStarted = false;
   let failure: Error | null = null;
@@ -82,14 +96,16 @@ async function parseMultipart(input: {
   // Content-Length is optional for streamed/chunked requests. Count the actual
   // multipart bytes as well so a client cannot turn the per-file Busboy limit
   // into a 20-file (1 GiB) request merely by omitting that header.
-  const byteLimitedSource = createMultipartByteLimitTransform(input.maxUploadBytes);
+  const byteLimitedSource = createMultipartByteLimitTransform(input.maxMultipartBytes);
   const parser = Busboy({
     headers: Object.fromEntries(input.request.headers.entries()),
     limits: {
       files: MAX_MULTIPART_FILES,
       fields: MAX_MULTIPART_FIELDS,
       fieldSize: MAX_MULTIPART_FIELD_BYTES,
-      fileSize: input.maxUploadBytes,
+      // Read one sentinel byte so an exact-cap file is distinguishable from a
+      // truncated over-cap file. The sentinel is discarded with the temp file.
+      fileSize: input.maxUploadBytes + 1,
     },
   });
 
@@ -122,6 +138,8 @@ async function parseMultipart(input: {
       fail(new Error("Unexpected multipart file field."));
       return;
     }
+    const fileIndex = files.length;
+    files.push(undefined);
     const task = streamOneFile({
       file,
       originalFileName: info.filename,
@@ -129,7 +147,7 @@ async function parseMultipart(input: {
       tempDirectory: input.tempDirectory,
       maxUploadBytes: input.maxUploadBytes,
     }).then((uploaded) => {
-      files.push({ fieldName, ...uploaded });
+      files[fileIndex] = { fieldName, ...uploaded };
     });
     fileTasks.push(task.catch((error) => {
       fail(error);
@@ -139,16 +157,28 @@ async function parseMultipart(input: {
   parser.on("fieldsLimit", () => fail(new Error("Too many multipart fields.")));
   parser.on("partsLimit", () => fail(new Error("The multipart upload contains too many parts.")));
 
-  await new Promise<void>((resolve, reject) => {
-    parser.once("error", reject);
-    source.once("error", reject);
-    byteLimitedSource.once("error", reject);
-    parser.once("close", resolve);
-    source.pipe(byteLimitedSource).pipe(parser);
-  });
-  await Promise.all(fileTasks);
+  let pipelineFailure: unknown;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      parser.once("error", reject);
+      source.once("error", reject);
+      byteLimitedSource.once("error", reject);
+      parser.once("close", resolve);
+      source.pipe(byteLimitedSource).pipe(parser);
+    });
+  } catch (error) {
+    pipelineFailure = error;
+    source.unpipe(byteLimitedSource);
+    byteLimitedSource.unpipe(parser);
+    parser.destroy();
+    byteLimitedSource.destroy();
+    source.destroy();
+  }
+  await Promise.allSettled(fileTasks);
+  if (pipelineFailure) throw pipelineFailure;
   if (failure) throw failure;
-  return { fields, files };
+  if (files.some((file) => !file)) throw new Error("A multipart file did not finish streaming.");
+  return { fields, files: files as StreamedDocumentUpload[] };
 }
 
 function createMultipartByteLimitTransform(maxBytes: number) {
@@ -185,18 +215,23 @@ async function streamOneFile(input: {
   const hash = createHash("sha256");
   let byteSize = 0;
   let exceeded = false;
-  input.file.on("data", (chunk: Buffer) => {
-    byteSize += chunk.byteLength;
-    if (byteSize > input.maxUploadBytes) {
-      exceeded = true;
-      input.file.destroy(new Error("The upload exceeds the configured size limit."));
-      return;
-    }
-    hash.update(chunk);
+  const boundedFile = new Transform({
+    transform(chunk: Buffer | Uint8Array | string, encoding, callback) {
+      const bytes = Buffer.isBuffer(chunk)
+        ? chunk
+        : typeof chunk === "string"
+          ? Buffer.from(chunk, encoding)
+          : Buffer.from(chunk);
+      const remaining = input.maxUploadBytes - byteSize;
+      const accepted = remaining > 0 ? bytes.subarray(0, remaining) : Buffer.alloc(0);
+      byteSize += accepted.byteLength;
+      if (accepted.byteLength) hash.update(accepted);
+      if (accepted.byteLength < bytes.byteLength) exceeded = true;
+      callback(null, accepted);
+    },
   });
   input.file.on("limit", () => {
     exceeded = true;
-    input.file.destroy(new Error("The upload exceeds the configured size limit."));
   });
   // pipe() does not propagate a source error/destroy to its destination, so
   // without this the write stream — and the fd + temp file behind it — would
@@ -204,11 +239,15 @@ async function streamOneFile(input: {
   // mid-stream, leaking a locked temp file (and, on Windows, breaking the
   // caller's later recursive rm of the whole request temp directory).
   input.file.on("error", () => {
+    if (!boundedFile.destroyed) boundedFile.destroy();
     if (!output.destroyed) output.destroy();
   });
-  input.file.pipe(output);
+  boundedFile.on("error", () => {
+    if (!output.destroyed) output.destroy();
+  });
+  input.file.pipe(boundedFile).pipe(output);
   try {
-    await Promise.all([finished(input.file), finished(output)]);
+    await Promise.all([finished(input.file), finished(boundedFile), finished(output)]);
   } catch (error) {
     await destroyWriteStream(output);
     await rm(tempPath, { force: true });
@@ -217,8 +256,10 @@ async function streamOneFile(input: {
   if (exceeded) {
     await destroyWriteStream(output);
     await rm(tempPath, { force: true });
-    assertDocumentUploadSize(byteSize, input.maxUploadBytes);
-    throw new Error("The upload exceeds the configured size limit.");
+    throw new DocumentParseError({
+      code: "oversized",
+      message: "The multipart upload exceeds the configured size limit.",
+    });
   }
   return {
     originalFileName: input.originalFileName || "upload",

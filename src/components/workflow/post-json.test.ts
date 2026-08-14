@@ -119,6 +119,14 @@ describe("postForm", () => {
     expect((error as ApiError).status).toBe(502);
     expect((error as ApiError).technicalDetails).toContain("HTTP 502 Bad Gateway");
   });
+
+  it("retains a structured multipart error payload for typed recovery", async () => {
+    const payload = { failures: [{ clientIndex: 0, error: "Invalid image." }] };
+    stubFetch(new Response(JSON.stringify(payload), { status: 400 }));
+    const error = await postForm("/api/documents", new FormData()).catch((caught) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).payload).toEqual(payload);
+  });
 });
 
 describe("nonJsonResponseDetails", () => {

@@ -1,0 +1,1 @@
+Use native Memory for durable source-controlled project facts. Launch MemPalace 3.7.0 through the pinned uvx adapter and always pass `--palace .mempalace/palace`; its generated index stays checkout-local and all `.memory/**` paths are excluded from mining.

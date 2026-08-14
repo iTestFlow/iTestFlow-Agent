@@ -2,6 +2,7 @@ import "server-only";
 
 import {
   workflowLabels,
+  reportableWorkflowTypeValues,
   workflowTypeValues,
   type WorkflowType,
 } from "@/modules/analytics/analytics-config";
@@ -66,9 +67,14 @@ export type SystemDashboardInput = {
 export async function getSystemDashboardAnalytics(input: SystemDashboardInput): Promise<SystemDashboardAnalyticsPayload> {
   const scope = assertProjectScope(input.scope);
   const dateRange = resolveDateRange(input.filters);
-  const selectedWorkflows = input.filters?.workflowTypes?.length
-    ? input.filters.workflowTypes
+  const requestedWorkflows = input.filters?.workflowTypes;
+  const hasWorkflowFilter = Boolean(requestedWorkflows?.length);
+  const selectedWorkflows: WorkflowType[] = requestedWorkflows?.length
+    ? requestedWorkflows
     : [...workflowTypeValues];
+  const queryWorkflows = hasWorkflowFilter
+    ? selectedWorkflows
+    : [...reportableWorkflowTypeValues];
   const userId = input.filters?.userId?.trim() || null;
   const userOptionsUserId = input.userOptionsUserId === undefined
     ? userId
@@ -77,7 +83,7 @@ export async function getSystemDashboardAnalytics(input: SystemDashboardInput): 
     scope,
     from: dateRange.from,
     toExclusive: addDays(dateRange.to, 1),
-    workflowTypes: selectedWorkflows,
+    workflowTypes: queryWorkflows,
   };
   const [rows, userOptionRows] = await Promise.all([
     loadAnalyticsRows({
@@ -205,8 +211,9 @@ function loadAnalyticsUserRows(input: AnalyticsQueryInput) {
 }
 
 function buildWorkflowSavings(rows: AnalyticsRow[]): WorkflowSavingsRow[] {
-  return workflowTypeValues.map((workflowType) => {
+  return reportableWorkflowTypeValues.flatMap((workflowType) => {
     const workflowRows = rows.filter((row) => row.workflow_type === workflowType);
+    if (!workflowRows.length && !workflowTypeValues.some((value) => value === workflowType)) return [];
     const durations = workflowRows
       .map(effectiveDurationMinutes)
       .filter((value): value is number => value !== null);
@@ -218,7 +225,7 @@ function buildWorkflowSavings(rows: AnalyticsRow[]): WorkflowSavingsRow[] {
       .filter((value): value is number => value !== null);
     const manualBaselineMinutes = round(average(workflowRows.map((row) => row.manual_baseline_minutes)) ?? 0, 1);
     const reviewMinutes = round(average(reviewValues) ?? 0, 1);
-    return {
+    return [{
       workflowType,
       workflow: workflowLabels[workflowType],
       runs: workflowRows.length,
@@ -229,7 +236,7 @@ function buildWorkflowSavings(rows: AnalyticsRow[]): WorkflowSavingsRow[] {
       laborSavedMinutes: round(sum(workflowRows, "estimated_saved_minutes"), 1),
       cycleSavedMinutes: round(sum(workflowRows, "cycle_saved_minutes"), 1),
       reviewExceedsManual: reviewValues.length > 0 && reviewMinutes > manualBaselineMinutes,
-    };
+    }];
   });
 }
 

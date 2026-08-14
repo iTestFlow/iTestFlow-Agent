@@ -1,0 +1,21 @@
+{
+  "confidence": "high",
+  "content_hash": "sha256:3ba25164d6d526defdb7cbc9fce11da82b26046d51b8cfea8358b151c36b7164",
+  "created_at": "2026-08-12T23:13:53+03:00",
+  "evidence": [
+    {
+      "id": "synthesis.product-intent",
+      "kind": "memory"
+    },
+    {
+      "id": "project.itestflow-agent",
+      "kind": "memory"
+    }
+  ],
+  "from": "synthesis.product-intent",
+  "id": "rel.synthesis-product-intent-summarizes-project-itestflow-agent",
+  "predicate": "summarizes",
+  "status": "active",
+  "to": "project.itestflow-agent",
+  "updated_at": "2026-08-12T23:13:53+03:00"
+}

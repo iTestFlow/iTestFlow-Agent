@@ -8,7 +8,7 @@
 Workspace-scoped test intelligence for Azure DevOps, grounded in project knowledge and controlled by human review.
 </p>
 
-iTestFlow brings requirement analysis, test design, coverage review, execution planning, defect reporting, and test-suite operations into authenticated QA workspaces. It connects to real Azure DevOps and LLM provider APIs while keeping credentials, indexed context, audit history, jobs, and workflow records in PostgreSQL.
+iTestFlow brings requirement analysis, test design, coverage review, defect reporting, and test-suite operations into authenticated QA workspaces. It connects to real Azure DevOps and LLM provider APIs while keeping credentials, indexed context, audit history, jobs, and workflow records in PostgreSQL.
 
 ## Contents
 
@@ -48,7 +48,6 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 - **Requirements Analysis** finds ambiguities, risks, omissions, and testability concerns, then publishes reviewed comments to Azure DevOps.
 - **Test Case Design** generates editable positive, negative, boundary, and edge-case scenarios and publishes approved cases to Azure Test Plans.
 - **Test Gap Analysis** maps requirement details and acceptance criteria to linked test cases, identifies missing coverage, and creates selected additions.
-- **Test Execution Effort** estimates manual execution time, assumptions, complexity, risks, and recommendations for linked test cases.
 - **Report Bug** converts QA notes into reviewed Azure DevOps Bug work items with fields, relationships, and attachments.
 
 ### Utilities and Governance
@@ -109,7 +108,6 @@ These links work while the local development or production server is running on 
 | Testing | [Requirements Analysis](http://127.0.0.1:3000/requirements-analysis) | Analyze a real Azure DevOps requirement |
 | Testing | [Test Case Design](http://127.0.0.1:3000/test-case-design) | Generate, review, and publish test cases |
 | Testing | [Test Gap Analysis](http://127.0.0.1:3000/test-gap-analysis) | Review traceability and missing coverage |
-| Testing | [Test Execution Effort](http://127.0.0.1:3000/test-execution-effort) | Estimate manual QA execution effort |
 | Testing | [Report Bug](http://127.0.0.1:3000/report-bug) | Generate and post Azure DevOps bugs |
 | Utilities | [Suite Migration](http://127.0.0.1:3000/suite-migration) | Preview and execute Test Suite copy or move |
 | Utilities | [Bulk Task Creation](http://127.0.0.1:3000/bulk-task-creation) | Create multiple tasks across selected User Stories |
@@ -157,6 +155,10 @@ Generate the encryption key with:
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
+Knowledge Hub accepts PDF, DOCX, XLSX, CSV, TXT, Markdown, PNG, JPEG, and WebP uploads. Image text extraction uses bundled English and Arabic Tesseract models entirely on the worker: it neither downloads models at runtime nor sends images to an external service. `OCR_MAX_IMAGE_PIXELS` defaults to `40000000`, `OCR_MIN_CONFIDENCE` to `50`, and `OCR_RECOGNIZE_TIMEOUT_MS` to `120000`; see [.env.example](.env.example).
+
+Each selected file is submitted and reported independently. OCR records its language, engine, confidence, region count, warning/status, and source-image bounding box. Low-confidence regions are omitted while diagnostics remain visible; an image with no accepted text completes with zero chunks. Uploaded-document chunks use the existing project-scoped storage, retrieval, permissions, citation, archive, and reprocessing paths.
+
 **Note**: Bootstrap is additive. To disable an org without losing data, use:
 ```bash
 npm run org:disable -- <orgUrlOrName>
@@ -173,7 +175,7 @@ npm run org:enable -- <orgUrlOrName>  # to re-enable later
 4. Select the active Azure DevOps project in the top bar.
 5. Open `/knowledge-hub`, choose work-item filters, and index project context.
 6. Build the compiled knowledge base if you want richer grounding and assistant answers.
-7. Enter a real Azure DevOps work-item ID in Requirements Analysis, Test Case Design, Test Gap Analysis, or Test Execution Effort.
+7. Enter a real Azure DevOps work-item ID in Requirements Analysis, Test Case Design, or Test Gap Analysis.
 8. Review and edit every AI-generated result.
 9. Publish only approved comments, test cases, suggested additions, bugs, or tasks.
 10. Use Dashboards and Activity Log to review outcomes and trace recent actions.
@@ -213,6 +215,39 @@ npm run test:coverage
 npm run test:integration
 npm run build
 ```
+
+### Pull request CI parity
+
+Pull request CI uses Node.js 24.x, npm, and PostgreSQL 16. With Node.js 24.x
+installed, run the same gated commands locally from a clean checkout:
+
+```bash
+docker compose --profile test up -d --wait postgres-test
+export TEST_DATABASE_URL=postgresql://itestflow:itestflow@localhost:5433/itestflow_test
+export APP_ENCRYPTION_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+export SESSION_SECRET=local-ci-session-secret
+npm ci
+npm run db:migrate:test
+npm run typecheck
+npm run lint
+npm run test:coverage
+npm run test:coverage:integration
+npm run build
+```
+
+The protected `main` branch requires the stable checks `verify`,
+`Unit & coverage`, and `PostgreSQL integration`. These are native job checks,
+so they are reported for repository branches and forks alike. The jobs fail on
+a failed test lane or missing or invalid test report; a missing or failing test
+result cannot be treated as a passing build.
+
+Pull requests from public forks use the same `pull_request` workflow, but
+GitHub may hold a run in `action_required` until a maintainer approves it. A
+maintainer should review the pull request's **Files changed** tab—especially
+changes under `.github/workflows/`—then open **Awaiting approval** in the merge
+status panel and select **Approve workflows to run**. Fork runs receive a
+read-only `GITHUB_TOKEN` and no repository secrets. Do not bypass this review
+by running fork code from a privileged `pull_request_target` workflow.
 
 `test:unit` and `test:coverage` need no database, browser, internet, Azure DevOps
 connection, or LLM credentials. `test:integration` requires `TEST_DATABASE_URL` and a
@@ -271,6 +306,26 @@ Open [http://127.0.0.1:3000](http://127.0.0.1:3000). The root route redirects to
 Docker is required only if you use the provided local PostgreSQL service.
 
 ## Project Documentation
+
+### Agent knowledge tooling
+
+Native Memory is source-controlled under `.memory/`. Project-scoped MemPalace
+requires `uvx`, which is installed with [uv](https://docs.astral.sh/uv/getting-started/installation/).
+On Windows, install it with `winget install --id=astral-sh.uv -e`; on macOS or
+Linux, use the official installer: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+Start a new shell and verify `uvx --version` before running the repository check.
+
+MemPalace itself does not need a global install. The repository launches the
+exact version in an isolated environment with
+`uvx --from mempalace==3.7.0 mempalace`. If the launcher later fails, update a
+standalone uv installation with `uv self update`, or upgrade uv through the
+package manager that installed it, then open a new shell and run
+`npm run check:agent-memory` again. Exact-version `--from` usage follows the
+[official uv tool guide](https://docs.astral.sh/uv/guides/tools/#requesting-specific-versions).
+
+Root-level files are searched wing-wide because MemPalace 3.7.0 taxonomy does
+not support exact path/glob room rules. Source directories still route through
+the path-based rooms in `mempalace.yaml`.
 
 - [Project Architecture](PROJECT_ARCHITECTURE.md) - routes, modules, integrations, storage, and architecture decisions
 - [Integration Providers](docs/integration-providers.md) - provider contracts, capabilities, and Azure DevOps/Jira Cloud composition

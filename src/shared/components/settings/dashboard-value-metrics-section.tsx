@@ -22,7 +22,6 @@ const WORKFLOW_DESCRIPTIONS: Record<string, string> = {
   test_case_design: "Manually design the test cases for one work item.",
   test_gap_analysis: "Manually find coverage gaps across requirements and tests.",
   report_bug: "Manually investigate and write up one defect.",
-  test_execution_effort: "Manually estimate execution effort for a test set.",
   suite_migration: "Manually migrate one legacy test suite.",
   bulk_task_creation: "Manually create a batch of work items.",
   knowledge_indexing: "Manually catalogue project documents for AI context.",

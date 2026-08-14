@@ -1,0 +1,17 @@
+{
+  "confidence": "high",
+  "content_hash": "sha256:31c21a5ea59e8d30d1d8771bd2357a7859e160e0b05a70af4a526577034628ea",
+  "created_at": "2026-08-12T23:13:53+03:00",
+  "evidence": [
+    {
+      "id": "source.package-json",
+      "kind": "source"
+    }
+  ],
+  "from": "workflow.post-task-verification",
+  "id": "rel.workflow-post-task-verification-derived-from-source-package-json",
+  "predicate": "derived_from",
+  "status": "active",
+  "to": "source.package-json",
+  "updated_at": "2026-08-12T23:13:53+03:00"
+}

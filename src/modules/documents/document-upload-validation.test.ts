@@ -5,12 +5,165 @@ import { describe, expect, it } from "vitest";
 import { oleCompoundEncryptedOffice, svgBuffer, zipBombXlsx } from "../../test/fixtures/documents/builders";
 import { DocumentParseError } from "./parsed-document.types";
 import {
+  canonicalDocumentMimeType,
   MAX_ZIP_ENTRY_COUNT,
   inspectZipArchive,
   validateDocumentUpload,
 } from "./document-upload-validation";
 
 describe("validateDocumentUpload", () => {
+  it("accepts a valid PNG after verifying its bytes and dimensions", async () => {
+    const bytes = new Uint8Array(
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+
+    const result = await validateDocumentUpload({
+      fileName: "screenshot.png",
+      data: bytes,
+      declaredMimeType: "image/png",
+    });
+
+    expect(result).toMatchObject({
+      format: "png",
+      extension: "png",
+      byteLength: bytes.byteLength,
+      detectedMimeType: "image/png",
+      image: { width: 1, height: 1 },
+    });
+  });
+
+  it("normalizes a valid .jpg upload to the JPEG document format", async () => {
+    const bytes = imageFixture(
+      "/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AKpAB//Z",
+    );
+
+    const result = await validateDocumentUpload({
+      fileName: "photo.jpg",
+      data: bytes,
+      declaredMimeType: "image/jpeg",
+    });
+
+    expect(result).toMatchObject({
+      format: "jpeg",
+      extension: "jpg",
+      detectedMimeType: "image/jpeg",
+      image: { width: 1, height: 1 },
+    });
+  });
+
+  it("accepts a valid WebP after verifying its bytes and dimensions", async () => {
+    const bytes = imageFixture("UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAUAmJaQAA3AA/vz0AAA=");
+
+    const result = await validateDocumentUpload({
+      fileName: "capture.webp",
+      data: bytes,
+      declaredMimeType: "image/webp",
+    });
+
+    expect(result).toMatchObject({
+      format: "webp",
+      extension: "webp",
+      detectedMimeType: "image/webp",
+      image: { width: 1, height: 1 },
+    });
+  });
+
+  it("rejects an image whose detected signature does not match its extension", async () => {
+    const pngBytes = imageFixture(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    );
+
+    await expect(
+      validateDocumentUpload({
+        fileName: "spoofed.jpg",
+        data: pngBytes,
+        declaredMimeType: "image/jpeg",
+      }),
+    ).rejects.toMatchObject({
+      code: "unsupported_format",
+      message: expect.stringMatching(/detected content type/i),
+    } satisfies Partial<DocumentParseError>);
+  });
+
+  it("rejects an image whose declared MIME type does not match its extension", async () => {
+    const pngBytes = imageFixture(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    );
+
+    await expect(
+      validateDocumentUpload({
+        fileName: "spoofed.png",
+        data: pngBytes,
+        declaredMimeType: "image/jpeg",
+      }),
+    ).rejects.toMatchObject({
+      code: "unsupported_format",
+      message: expect.stringMatching(/declared MIME type/i),
+    } satisfies Partial<DocumentParseError>);
+  });
+
+  it("rejects corrupt image bytes even when their extension and declared MIME agree", async () => {
+    const truncatedWebp = new TextEncoder().encode("RIFF\0\0\0\0WEBP");
+
+    await expect(
+      validateDocumentUpload({
+        fileName: "broken.webp",
+        data: truncatedWebp,
+        declaredMimeType: "image/webp",
+      }),
+    ).rejects.toMatchObject({
+      code: "corrupted",
+      message: expect.stringMatching(/dimensions|corrupt/i),
+    } satisfies Partial<DocumentParseError>);
+  });
+
+  it("rejects a truncated PNG that still contains a valid signature and IHDR dimensions", async () => {
+    const headerOnlyPng = imageFixture(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC",
+    );
+    expect(headerOnlyPng).toHaveLength(33);
+
+    await expect(
+      validateDocumentUpload({
+        fileName: "header-only.png",
+        data: headerOnlyPng,
+        declaredMimeType: "image/png",
+      }),
+    ).rejects.toMatchObject({
+      code: "corrupted",
+      message: expect.stringMatching(/corrupt|decode/i),
+    } satisfies Partial<DocumentParseError>);
+  });
+
+  it("rejects an image whose dimensions exceed the configured pixel cap", async () => {
+    const twoPixelPng = imageFixture(
+      "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAC0lEQVR4nGP4DwYAFPIF+6QNfF4AAAAASUVORK5CYII=",
+    );
+
+    await expect(
+      validateDocumentUpload({
+        fileName: "wide.png",
+        data: twoPixelPng,
+        declaredMimeType: "image/png",
+        maxImagePixels: 1,
+      }),
+    ).rejects.toMatchObject({
+      code: "oversized",
+      message: expect.stringMatching(/pixel/i),
+    } satisfies Partial<DocumentParseError>);
+  });
+
+  it("provides one canonical MIME mapping for both upload routes", () => {
+    expect([
+      canonicalDocumentMimeType("png"),
+      canonicalDocumentMimeType("jpeg"),
+      canonicalDocumentMimeType("webp"),
+    ]).toEqual(["image/png", "image/jpeg", "image/webp"]);
+  });
+
   it("accepts a real OOXML spreadsheet after inspecting its archive", async () => {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["Name"], ["Ada"]]), "Plan");
@@ -108,6 +261,16 @@ describe("validateDocumentUpload", () => {
     ).rejects.toMatchObject({ code: "unsupported_format" } satisfies Partial<DocumentParseError>);
   });
 
+  it("rejects SVG bytes disguised as a PNG before image decoding", async () => {
+    await expect(
+      validateDocumentUpload({
+        fileName: "spoofed.png",
+        data: svgBuffer(),
+        declaredMimeType: "image/png",
+      }),
+    ).rejects.toMatchObject({ code: "unsupported_format" } satisfies Partial<DocumentParseError>);
+  });
+
   it("rejects a ZIP entry via the per-entry uncompressed-size cap before any parser opens the archive", async () => {
     const zip = new JSZip();
     zip.file("xl/worksheets/sheet1.xml", new Uint8Array(1_024), { compression: "STORE" });
@@ -155,3 +318,7 @@ describe("validateDocumentUpload", () => {
     ).rejects.toMatchObject({ code: "password_protected" } satisfies Partial<DocumentParseError>);
   });
 });
+
+function imageFixture(base64: string) {
+  return new Uint8Array(Buffer.from(base64, "base64"));
+}

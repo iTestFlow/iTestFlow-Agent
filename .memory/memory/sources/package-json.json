@@ -1,0 +1,46 @@
+{
+  "body_path": "memory/sources/package-json.md",
+  "content_hash": "sha256:1c646cee621897d61da6092aefdb6a700c363bcbc6054006917ee84a6a7f109c",
+  "created_at": "2026-08-12T23:13:53+03:00",
+  "evidence": [
+    {
+      "id": "package.json",
+      "kind": "file"
+    }
+  ],
+  "facets": {
+    "applies_to": [
+      "package.json"
+    ],
+    "category": "source",
+    "load_modes": [
+      "onboarding",
+      "architecture"
+    ]
+  },
+  "id": "source.package-json",
+  "origin": {
+    "captured_at": "2026-08-12T23:56:59+03:00",
+    "digest": "sha256:ad03ff55c5ae71772f66eb8480bbcf310060b377501cfbd053e9671c2aebec4b",
+    "kind": "file",
+    "locator": "package.json",
+    "media_type": "application/json"
+  },
+  "scope": {
+    "branch": null,
+    "kind": "project",
+    "project": "project.itestflow-agent",
+    "task": null
+  },
+  "source": {
+    "kind": "cli",
+    "task": "Proposed bootstrap memory patch from deterministic repository analysis"
+  },
+  "status": "active",
+  "tags": [
+    "source"
+  ],
+  "title": "Source: package.json",
+  "type": "source",
+  "updated_at": "2026-08-12T23:57:01+03:00"
+}

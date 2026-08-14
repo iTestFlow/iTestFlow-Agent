@@ -1,6 +1,7 @@
 import "server-only";
 
 import { fileTypeFromBuffer } from "file-type";
+import sharp from "sharp";
 
 import {
   type DocumentFormat,
@@ -11,6 +12,7 @@ import { isDecodableText } from "./parsers/parser-utils";
 
 export const DEFAULT_DOCUMENT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 export const ABSOLUTE_DOCUMENT_MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
+export const DEFAULT_IMAGE_MAX_PIXELS = 40_000_000;
 
 /** ZIP limits apply before OOXML reaches Mammoth or SheetJS. */
 export const MAX_ZIP_ENTRY_COUNT = 4_096;
@@ -33,6 +35,9 @@ const MIME_TYPES_BY_FORMAT: Record<DocumentFormat, readonly string[]> = {
   csv: ["text/csv", "application/csv", "application/vnd.ms-excel"],
   txt: ["text/plain"],
   md: ["text/markdown", "text/x-markdown", "text/plain"],
+  png: ["image/png"],
+  jpeg: ["image/jpeg"],
+  webp: ["image/webp"],
 };
 
 const GENERIC_TEXT_MIME_TYPES = new Set(["text/plain", "text/csv", "text/markdown", "text/x-markdown"]);
@@ -65,8 +70,15 @@ export type DocumentUploadValidationInput = {
   declaredMimeType?: string | null;
   /** Useful for a Content-Length pre-check and streamed-byte counter. */
   maxUploadBytes?: number;
+  /** Test/deployment override for the decoded image pixel budget. */
+  maxImagePixels?: number;
   /** Test-only: lets tests trip the per-entry/total uncompressed-size caps without multi-MB fixtures. */
   zipSizeLimits?: ZipSizeLimitsOverride;
+};
+
+export type ImageDimensions = {
+  width: number;
+  height: number;
 };
 
 export type ValidatedDocumentUpload = {
@@ -74,6 +86,7 @@ export type ValidatedDocumentUpload = {
   extension: string;
   byteLength: number;
   detectedMimeType?: string;
+  image?: ImageDimensions;
   zipArchive?: ZipArchiveInspection;
 };
 
@@ -87,6 +100,16 @@ export function getDocumentMaxUploadBytes(environment = process.env) {
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed < 1) return DEFAULT_DOCUMENT_MAX_UPLOAD_BYTES;
   return Math.min(parsed, ABSOLUTE_DOCUMENT_MAX_UPLOAD_BYTES);
+}
+
+export function getImageMaxPixels(environment = process.env) {
+  const raw = environment.OCR_MAX_IMAGE_PIXELS;
+  if (!raw) return DEFAULT_IMAGE_MAX_PIXELS;
+  return normalizeImagePixelLimit(Number(raw));
+}
+
+export function canonicalDocumentMimeType(format: DocumentFormat) {
+  return MIME_TYPES_BY_FORMAT[format][0];
 }
 
 export function assertDocumentUploadSize(byteLength: number, maxUploadBytes = getDocumentMaxUploadBytes()) {
@@ -123,9 +146,16 @@ export async function validateDocumentUpload(input: DocumentUploadValidationInpu
   }
 
   const detected = await detectFileType(input.data);
+  if (["png", "jpeg", "webp"].includes(format) && !detected) {
+    throw new DocumentParseError({
+      code: "unsupported_format",
+      message: "The image bytes do not match a supported PNG, JPEG, or WebP signature.",
+    });
+  }
   assertDetectedTypeCompatible(format, detected?.mime, detected?.ext);
 
   let zipArchive: ZipArchiveInspection | undefined;
+  let image: ImageDimensions | undefined;
   switch (format) {
     case "pdf":
       if (!hasPdfMagicBytes(input.data)) {
@@ -150,6 +180,11 @@ export async function validateDocumentUpload(input: DocumentUploadValidationInpu
         });
       }
       break;
+    case "png":
+    case "jpeg":
+    case "webp":
+      image = await decodeImageDimensions(input.data, input.maxImagePixels ?? getImageMaxPixels());
+      break;
   }
 
   return {
@@ -157,19 +192,21 @@ export async function validateDocumentUpload(input: DocumentUploadValidationInpu
     extension: extensionFromFileName(input.fileName),
     byteLength: input.data.byteLength,
     detectedMimeType: detected?.mime,
+    image,
     zipArchive,
   };
 }
 
 export function documentFormatFromFileName(fileName: string): DocumentFormat {
   const extension = extensionFromFileName(fileName);
-  if (!isDocumentFormat(extension)) {
+  const format = extension === "jpg" ? "jpeg" : extension;
+  if (!isDocumentFormat(format)) {
     throw new DocumentParseError({
       code: "unsupported_format",
-      message: "Only PDF, DOCX, XLSX, CSV, TXT, and Markdown documents are supported.",
+      message: "Only PDF, DOCX, XLSX, CSV, TXT, Markdown, PNG, JPEG, and WebP documents are supported.",
     });
   }
-  return extension;
+  return format;
 }
 
 /**
@@ -322,11 +359,53 @@ function assertDetectedTypeCompatible(format: DocumentFormat, detectedMimeType?:
     if (detectedMimeType === "application/zip" || detectedExtension === "zip") return;
   }
   if (detectedMimeType && MIME_TYPES_BY_FORMAT[format].includes(detectedMimeType)) return;
+  if (format === "jpeg" && detectedExtension === "jpg") return;
   if (detectedExtension === format) return;
   throw new DocumentParseError({
     code: "unsupported_format",
     message: "The file extension does not match its detected content type.",
   });
+}
+
+async function decodeImageDimensions(data: Uint8Array, maxImagePixels: number): Promise<ImageDimensions> {
+  const limit = normalizeImagePixelLimit(maxImagePixels);
+  let dimensions: ImageDimensions;
+  try {
+    const metadata = await sharp(data, { failOn: "warning", limitInputPixels: false }).metadata();
+    dimensions = { width: metadata.width ?? 0, height: metadata.height ?? 0 };
+  } catch (cause) {
+    throw new DocumentParseError({
+      code: "corrupted",
+      message: "The image could not be decoded because it is corrupt or incomplete.",
+      cause,
+    });
+  }
+
+  const { width, height } = dimensions;
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) {
+    throw new DocumentParseError({
+      code: "corrupted",
+      message: "The image dimensions are invalid.",
+    });
+  }
+
+  if (width > Math.floor(limit / height)) {
+    throw new DocumentParseError({
+      code: "oversized",
+      message: `The image exceeds the ${limit.toLocaleString("en-US")}-pixel limit.`,
+    });
+  }
+
+  try {
+    await sharp(data, { failOn: "warning", limitInputPixels: limit }).raw().toBuffer();
+  } catch (cause) {
+    throw new DocumentParseError({
+      code: "corrupted",
+      message: "The image could not be decoded because it is corrupt or incomplete.",
+      cause,
+    });
+  }
+  return { width, height };
 }
 
 async function detectFileType(data: Uint8Array) {
@@ -449,6 +528,11 @@ function normalizeMimeType(value: string | null | undefined) {
 function normalizeUploadLimit(value: number) {
   if (!Number.isSafeInteger(value) || value < 1) return DEFAULT_DOCUMENT_MAX_UPLOAD_BYTES;
   return Math.min(value, ABSOLUTE_DOCUMENT_MAX_UPLOAD_BYTES);
+}
+
+function normalizeImagePixelLimit(value: number) {
+  if (!Number.isSafeInteger(value) || value < 1) return DEFAULT_IMAGE_MAX_PIXELS;
+  return value;
 }
 
 function formatBytes(value: number) {

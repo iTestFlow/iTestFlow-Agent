@@ -12,10 +12,16 @@ import { SESSION_COOKIE } from "@/modules/auth/session-cookie";
  * API routes are excluded here — they return 401 (JSON), not a redirect.
  */
 const PUBLIC_PATHS = ["/login"];
+const RETIRED_PATHS = ["/test-execution-effort"];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   if (request.cookies.has(SESSION_COOKIE)) return NextResponse.next();
+  // Let the App Router return its native 404 for retired pages instead of
+  // redirecting old signed-out bookmarks to login.
+  if (RETIRED_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))) {
+    return NextResponse.next();
+  }
   if (PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))) {
     return NextResponse.next();
   }

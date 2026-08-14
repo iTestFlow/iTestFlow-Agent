@@ -1,0 +1,46 @@
+{
+  "body_path": "memory/syntheses/feature-map.md",
+  "content_hash": "sha256:b7213b3a09d46b0ea7e07a3646e2bedf5b7c0270f6bb9e973505e63d75ad9fb1",
+  "created_at": "2026-08-12T23:13:53+03:00",
+  "evidence": [
+    {
+      "id": "source.readme",
+      "kind": "source"
+    },
+    {
+      "id": "README.md",
+      "kind": "file"
+    }
+  ],
+  "facets": {
+    "applies_to": [
+      "README.md",
+      "src/app",
+      "src/modules"
+    ],
+    "category": "feature-map",
+    "load_modes": [
+      "coding",
+      "onboarding"
+    ]
+  },
+  "id": "synthesis.feature-map",
+  "scope": {
+    "branch": null,
+    "kind": "project",
+    "project": "project.itestflow-agent",
+    "task": null
+  },
+  "source": {
+    "kind": "cli",
+    "task": "Proposed bootstrap memory patch from deterministic repository analysis"
+  },
+  "status": "active",
+  "tags": [
+    "synthesis",
+    "features"
+  ],
+  "title": "Feature map",
+  "type": "synthesis",
+  "updated_at": "2026-08-12T23:16:17+03:00"
+}
