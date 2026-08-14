@@ -77,3 +77,5 @@
 {"actor":"agent","event":"memory.created","id":"constraint.repository-verification-lanes","timestamp":"2026-08-13T11:27:47+03:00"}
 {"actor":"agent","event":"memory.created","id":"constraint.playwright-browser-and-artifact-boundary","timestamp":"2026-08-14T15:13:05+03:00"}
 {"actor":"agent","event":"memory.updated","id":"constraint.playwright-browser-and-artifact-boundary","timestamp":"2026-08-14T15:16:28+03:00"}
+{"actor":"agent","event":"memory.created","id":"constraint.project-source-document-kind-follows-the-current-file-format","timestamp":"2026-08-14T16:05:54+03:00"}
+{"actor":"agent","event":"memory.created","id":"gotcha.browser-multipart-filenames-require-utf-8-parameter-decoding","timestamp":"2026-08-14T18:18:38+03:00"}

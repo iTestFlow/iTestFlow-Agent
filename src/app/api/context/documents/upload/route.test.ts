@@ -51,6 +51,7 @@ vi.mock("@/modules/documents/document-storage.service", () => ({
 }));
 vi.mock("@/modules/documents/project-source-documents.service", () => ({
   createDocumentWithVersion: mocks.createDocumentWithVersion,
+  projectSourceDocumentKindForFileFormat: (format: string) => ["png", "jpeg", "webp"].includes(format) ? "image" : "document",
 }));
 vi.mock("@/modules/jobs/worker-registry.service", () => ({
   hasHealthyWorkerCapability: mocks.hasHealthyWorkerCapability,
@@ -126,6 +127,7 @@ describe("POST context document upload", () => {
 
     expect(response.status).toBe(202);
     expect(mocks.createDocumentWithVersion).toHaveBeenCalledWith(expect.objectContaining({
+      documentKind: "image",
       version: expect.objectContaining({
         mimeType,
         fileFormat: format,
@@ -185,8 +187,8 @@ describe("POST context document upload", () => {
     const response = await POST(new Request("http://localhost/api/context/documents/upload", { method: "POST" }));
 
     expect(response.status).toBe(202);
-    expect(mocks.createDocumentWithVersion).toHaveBeenNthCalledWith(1, expect.objectContaining({ languageHint: "eng" }));
-    expect(mocks.createDocumentWithVersion).toHaveBeenNthCalledWith(2, expect.objectContaining({ languageHint: undefined }));
+    expect(mocks.createDocumentWithVersion).toHaveBeenNthCalledWith(1, expect.objectContaining({ documentKind: "image", languageHint: "eng" }));
+    expect(mocks.createDocumentWithVersion).toHaveBeenNthCalledWith(2, expect.objectContaining({ documentKind: "document", languageHint: undefined }));
   });
 
   it("does not expose operational storage errors in per-file failures", async () => {
