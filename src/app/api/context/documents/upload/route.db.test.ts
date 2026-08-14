@@ -94,16 +94,30 @@ describeDb("image upload-to-context flow (DB-backed)", () => {
   });
 
   it.each([
-    { language: "eng", visibleText: "PAYMENT GATEWAY", expectedText: "PAYMENT GATEWAY", direction: "ltr" },
-    { language: "ara", visibleText: "مرحبا", expectedText: "مرحبا", direction: "rtl" },
-  ] as const)("uploads and retrieves real $language image text", async ({ language, visibleText, expectedText, direction }) => {
+    {
+      language: "eng",
+      visibleText: "PAYMENT GATEWAY",
+      expectedText: "PAYMENT GATEWAY",
+      direction: "ltr",
+      fileName: "payment-context.png",
+      expectedDocumentName: "payment-context",
+    },
+    {
+      language: "ara",
+      visibleText: "مرحبا",
+      expectedText: "مرحبا",
+      direction: "rtl",
+      fileName: "القائمة-images.png",
+      expectedDocumentName: "القائمة-images",
+    },
+  ] as const)("uploads and retrieves real $language image text", async ({ language, visibleText, expectedText, direction, fileName, expectedDocumentName }) => {
     const image = await sharp(Buffer.from(
       `<svg width="800" height="160" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><text x="400" y="105" text-anchor="middle" direction="${direction}" font-family="DejaVu Sans" font-size="64">${visibleText}</text></svg>`,
     )).png().toBuffer();
     const form = new FormData();
     form.append("scope", JSON.stringify(scope));
     form.append("languageHint", language);
-    form.append("files", new Blob([toArrayBuffer(image)], { type: "image/png" }), `${language}-context.png`);
+    form.append("files", new Blob([toArrayBuffer(image)], { type: "image/png" }), fileName);
 
     const response = await POST(new Request("http://localhost/api/context/documents/upload", {
       method: "POST",
@@ -113,8 +127,8 @@ describeDb("image upload-to-context flow (DB-backed)", () => {
     const payload = await response.json() as {
       failures: unknown[];
       uploads: Array<{
-        document: { id: string; documentKind: string };
-        version: { id: string };
+        document: { id: string; documentKind: string; documentName: string };
+        version: { id: string; originalFileName: string };
         jobId: string | null;
         queueError: string | null;
       }>;
@@ -122,6 +136,8 @@ describeDb("image upload-to-context flow (DB-backed)", () => {
     expect(payload.failures).toEqual([]);
     expect(payload.uploads).toHaveLength(1);
     expect(payload.uploads[0]?.document.documentKind).toBe("image");
+    expect(payload.uploads[0]?.document.documentName).toBe(expectedDocumentName);
+    expect(payload.uploads[0]?.version.originalFileName).toBe(fileName);
 
     const upload = payload.uploads[0]!;
     expect(upload.queueError).toBeNull();

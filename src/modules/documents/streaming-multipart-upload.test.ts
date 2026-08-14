@@ -34,6 +34,20 @@ async function leakedUploadTempDirs(before: string[]) {
 }
 
 describe("streamDocumentUploadMultipart", () => {
+  it("preserves an Arabic UTF-8 filename from a browser multipart upload", async () => {
+    process.env.DOCUMENT_MAX_UPLOAD_BYTES = "4096";
+    const form = new FormData();
+    form.append("scope", JSON.stringify({ projectId: "p" }));
+    form.append("files", new Blob([new Uint8Array([1])], { type: "image/jpeg" }), "القائمة-images.jpg");
+
+    const upload = await streamDocumentUploadMultipart(new Request("http://localhost/upload", { method: "POST", body: form }));
+    try {
+      expect(upload.files[0]?.originalFileName).toBe("القائمة-images.jpg");
+    } finally {
+      await removeStreamedDocumentMultipart(upload);
+    }
+  });
+
   it("preserves multipart file order when later writes finish first", async () => {
     process.env.DOCUMENT_MAX_UPLOAD_BYTES = "1048576";
     const form = new FormData();

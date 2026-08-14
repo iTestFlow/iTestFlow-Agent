@@ -73,3 +73,4 @@
 {"actor":"agent","event":"memory.updated","id":"gotcha.tesseract-worker-needs-model-preflight","timestamp":"2026-08-13T02:07:54+03:00"}
 {"actor":"agent","event":"memory.updated","id":"gotcha.multipart-ordinal-must-follow-event-order","timestamp":"2026-08-13T02:07:54+03:00"}
 {"actor":"agent","event":"memory.created","id":"constraint.project-source-document-kind-follows-the-current-file-format","timestamp":"2026-08-14T16:05:54+03:00"}
+{"actor":"agent","event":"memory.created","id":"gotcha.browser-multipart-filenames-require-utf-8-parameter-decoding","timestamp":"2026-08-14T18:18:38+03:00"}

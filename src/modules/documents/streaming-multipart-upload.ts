@@ -99,6 +99,10 @@ async function parseMultipart(input: {
   const byteLimitedSource = createMultipartByteLimitTransform(input.maxMultipartBytes);
   const parser = Busboy({
     headers: Object.fromEntries(input.request.headers.entries()),
+    // Browser FormData encodes non-ASCII filenames as UTF-8 bytes in the
+    // unextended filename parameter. Busboy otherwise defaults that parameter
+    // to Latin-1, turning Arabic names into mojibake such as "Ø§Ù...".
+    defParamCharset: "utf8",
     limits: {
       files: MAX_MULTIPART_FILES,
       fields: MAX_MULTIPART_FIELDS,
