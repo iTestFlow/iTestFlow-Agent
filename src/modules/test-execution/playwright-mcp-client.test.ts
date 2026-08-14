@@ -4,6 +4,7 @@ const transportConstructor = vi.fn();
 const connect = vi.fn();
 const listTools = vi.fn();
 const close = vi.fn();
+const callTool = vi.fn();
 
 vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
   StreamableHTTPClientTransport: class {
@@ -16,7 +17,7 @@ vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
     connect = connect;
     listTools = listTools;
     close = close;
-    callTool = vi.fn();
+    callTool = callTool;
   },
 }));
 
@@ -26,8 +27,9 @@ describe("Playwright MCP HTTP transport", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     connect.mockResolvedValue(undefined);
-    listTools.mockResolvedValue({ tools: [{ name: "browser_navigate" }, { name: "browser_snapshot" }] });
+    listTools.mockResolvedValue({ tools: [{ name: "browser_navigate" }, { name: "browser_snapshot" }, { name: "browser_tabs" }] });
     close.mockResolvedValue(undefined);
+    callTool.mockResolvedValue({ content: [{ type: "text", text: "### Result\n- 0: (current) [App](https://app.example/)" }] });
   });
 
   afterEach(() => {
@@ -51,5 +53,85 @@ describe("Playwright MCP HTTP transport", () => {
       expect.objectContaining({ method: "GET", redirect: "error" }),
     );
     await connection.close();
+  });
+
+  it("requires browser_tabs for browser-state verification", async () => {
+    listTools.mockResolvedValue({ tools: [{ name: "browser_navigate" }, { name: "browser_snapshot" }] });
+    await expect(connectPlaywrightMcp({
+      status: "configured", transport: "http", endpoint: "https://mcp.example/mcp",
+      artifactBaseUrl: null, bearerToken: null,
+    })).rejects.toThrow('missing required tool "browser_tabs"');
+  });
+
+  it("lists canonical open-tab URLs without exposing the inspection as an agent result", async () => {
+    const connection = await connectPlaywrightMcp({
+      status: "configured", transport: "http", endpoint: "https://mcp.example/mcp",
+      artifactBaseUrl: null, bearerToken: null,
+    });
+    expect(connection.tools).toHaveProperty("listOpenTabs");
+    await expect((connection.tools as { listOpenTabs(signal: AbortSignal): Promise<string[]> })
+      .listOpenTabs(new AbortController().signal))
+      .resolves.toEqual(["https://app.example/"]);
+    expect(callTool).toHaveBeenCalledWith(
+      { name: "browser_tabs", arguments: { action: "list" } }, undefined, expect.any(Object),
+    );
+  });
+
+  it("supports and cross-checks Playwright tab response sections", async () => {
+    callTool.mockResolvedValueOnce({ content: [{ type: "text", text: [
+      "### Result",
+      "- 0: (current) [App](https://app.example/)",
+      "- 1: [Docs](https://docs.example/guide)",
+      "### Open tabs",
+      "- 0: (current) [App](https://app.example/)",
+      "- 1: [Docs](https://docs.example/guide)",
+    ].join("\n") }] });
+    const connection = await connectPlaywrightMcp({
+      status: "configured", transport: "http", endpoint: "https://mcp.example/mcp",
+      artifactBaseUrl: null, bearerToken: null,
+    });
+    await expect(connection.tools.listOpenTabs(new AbortController().signal))
+      .resolves.toEqual(["https://app.example/", "https://docs.example/guide"]);
+
+    callTool.mockResolvedValueOnce({ content: [{ type: "text", text: [
+      "### Open tabs",
+      "- 0: (current) [App](https://app.example/)",
+    ].join("\n") }] });
+    await expect(connection.tools.listOpenTabs(new AbortController().signal))
+      .resolves.toEqual(["https://app.example/"]);
+
+    callTool.mockResolvedValueOnce({ content: [{ type: "text", text: [
+      "### Result",
+      "- 0: (current) [App](https://app.example/)",
+      "### Open tabs",
+      "- 0: (current) [Internal](http://127.0.0.1/admin)",
+    ].join("\n") }] });
+    await expect(connection.tools.listOpenTabs(new AbortController().signal)).rejects.toThrow(/could not be verified/i);
+  });
+
+  it("fails closed on errored or multi-block tab responses", async () => {
+    const connection = await connectPlaywrightMcp({
+      status: "configured", transport: "http", endpoint: "https://mcp.example/mcp",
+      artifactBaseUrl: null, bearerToken: null,
+    });
+    callTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: "text", text: "### Result\n- 0: (current) [App](https://app.example/)" }],
+    });
+    await expect(connection.tools.listOpenTabs(new AbortController().signal)).rejects.toThrow(/could not be verified/i);
+
+    callTool.mockResolvedValueOnce({ content: [
+      { type: "text", text: "### Result\n- 0: (current) [App](https://app.example/)" },
+      { type: "text", text: "### Open tabs\n- 0: (current) [Internal](http://127.0.0.1/admin)" },
+    ] });
+    await expect(connection.tools.listOpenTabs(new AbortController().signal)).rejects.toThrow(/could not be verified/i);
+
+    callTool.mockResolvedValueOnce({ content: [{ type: "text", text: [
+      "### Result",
+      "- 0: (current) [Internal](http://127.0.0.1/admin)",
+      "### Result",
+      "- 0: (current) [App](https://app.example/)",
+    ].join("\n") }] });
+    await expect(connection.tools.listOpenTabs(new AbortController().signal)).rejects.toThrow(/could not be verified/i);
   });
 });

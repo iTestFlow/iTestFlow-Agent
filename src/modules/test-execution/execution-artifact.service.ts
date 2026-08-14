@@ -22,10 +22,23 @@ export function artifactUrls(value: unknown): string[] {
 export function resolveProtectedArtifactUrl(baseUrl: string, candidate: string): URL {
   const base = new URL(baseUrl);
   const resolved = new URL(candidate, base);
-  if (resolved.origin !== base.origin || !resolved.pathname.startsWith(base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`)) {
+  if (base.username || base.password || resolved.username || resolved.password) {
+    throw new Error("Playwright MCP artifact URLs may not contain credentials.");
+  }
+  if (/%(?:2f|5c)/i.test(resolved.pathname)
+    || resolved.origin !== base.origin
+    || !resolved.pathname.startsWith(base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`)) {
     throw new Error("Playwright MCP artifact URL is outside the configured artifact base URL.");
   }
   return resolved;
+}
+
+function durableArtifactSourceUrl(value: string): string {
+  const url = new URL(value);
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+    throw new Error("Playwright MCP artifact source URL is invalid.");
+  }
+  return `${url.origin}${url.pathname}`;
 }
 
 export async function importHttpArtifact(input: {
@@ -78,7 +91,7 @@ export async function storeArtifactBytes(input: {
     id, workspaceId: input.workspaceId, runId: input.runId, caseId: input.caseId ?? null, stepId: input.stepId ?? null,
     kind: input.kind, sha256, storageKey: stored.storageKey,
     mimeType: input.mimeType, byteSize: bytes.byteLength,
-    sourceUrl: input.sourceUrl ?? null, now: nowIso(),
+    sourceUrl: input.sourceUrl ? durableArtifactSourceUrl(input.sourceUrl) : null, now: nowIso(),
   });
   return id;
 }

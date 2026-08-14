@@ -61,6 +61,12 @@ export type PlaywrightToolPolicy = {
 
 const NavigateArgumentsSchema = z.object({ url: z.string().trim().min(1).max(2048) }).strict();
 const UploadArgumentsSchema = z.object({ paths: z.array(z.string().trim().min(1)).max(10).optional() }).strict();
+const TabsArgumentsSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("list") }).strict(),
+  z.object({ action: z.literal("new"), url: z.string().trim().min(1).max(2048).optional() }).strict(),
+  z.object({ action: z.literal("close"), index: z.number().int().nonnegative().optional() }).strict(),
+  z.object({ action: z.literal("select"), index: z.number().int().nonnegative() }).strict(),
+]);
 
 export function createPlaywrightToolPolicy(transport: "http" | "stdio"): PlaywrightToolPolicy {
   const allowedNavigationOrigins = new Set<string>();
@@ -100,12 +106,13 @@ export async function validatePlaywrightToolArguments(
   const args = normalizeToolArguments(value);
   if (name === "browser_navigate") {
     const parsed = NavigateArgumentsSchema.parse(args);
-    const url = new URL(parsed.url);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password
-      || !policy.allowedNavigationOrigins.has(url.origin)) {
-      throw new Error("Playwright navigation URL is not on an allowed origin.");
-    }
+    const url = allowedNavigationUrl(parsed.url, policy);
     return { url: url.toString() };
+  }
+  if (name === "browser_tabs") {
+    const parsed = TabsArgumentsSchema.parse(args);
+    if (parsed.action !== "new" || !parsed.url) return parsed;
+    return { action: "new", url: allowedNavigationUrl(parsed.url, policy).toString() };
   }
   if (name === "browser_file_upload") {
     const parsed = UploadArgumentsSchema.parse(args);
@@ -145,6 +152,27 @@ export async function validatePlaywrightToolArguments(
   return args;
 }
 
+function allowedNavigationUrl(value: string, policy: PlaywrightToolPolicy): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("Playwright navigation URL is not on an allowed origin.");
+  }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password
+    || !policy.allowedNavigationOrigins.has(url.origin)) {
+    throw new Error("Playwright navigation URL is not on an allowed origin.");
+  }
+  return url;
+}
+
+function assertAllowedBrowserState(urls: readonly string[], policy: PlaywrightToolPolicy): void {
+  for (const value of urls) {
+    if (value === "about:blank") continue;
+    allowedNavigationUrl(value, policy);
+  }
+}
+
 function auditableToolArguments(name: string, args: Record<string, unknown>): Record<string, unknown> {
   if (name !== "browser_file_upload" || !Array.isArray(args.paths)) return args;
   return { paths: args.paths.map(() => "[fixture]") };
@@ -170,6 +198,7 @@ const AgentDecisionSchema = z.discriminatedUnion("kind", [
 
 export type PlaywrightToolClient = {
   callTool(name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
+  listOpenTabs(signal: AbortSignal): Promise<string[]>;
 };
 
 export type AgentEvent =
@@ -188,6 +217,8 @@ export async function executeTestStepWithAgent(input: {
 }): Promise<{ outcome: ExecutionOutcome; summary: string; turns: number }> {
   const maxTurns = input.maxTurns ?? 12;
   const transcript: Array<Record<string, unknown>> = [];
+  if (input.signal.aborted) return { outcome: "cancelled", summary: "Execution was cancelled.", turns: 0 };
+  assertAllowedBrowserState(await input.tools.listOpenTabs(input.signal), input.toolPolicy);
   for (let turn = 1; turn <= maxTurns; turn += 1) {
     if (input.signal.aborted) return { outcome: "cancelled", summary: "Execution was cancelled.", turns: turn - 1 };
     const decision = await input.llm.generateStructuredOutput({
@@ -210,21 +241,28 @@ export async function executeTestStepWithAgent(input: {
     });
     const value = decision.validatedOutput;
     if (value.kind === "complete") {
+      assertAllowedBrowserState(await input.tools.listOpenTabs(input.signal), input.toolPolicy);
       const event: AgentEvent = { kind: "complete", outcome: value.outcome, summary: value.summary };
       await input.onEvent?.(event);
       return { outcome: value.outcome, summary: value.summary, turns: turn };
     }
     assertAllowedPlaywrightTool(value.toolName);
     const args = await validatePlaywrightToolArguments(value.toolName, value.arguments, input.toolPolicy);
+    assertAllowedBrowserState(await input.tools.listOpenTabs(input.signal), input.toolPolicy);
     let result: unknown;
     try {
       result = await input.tools.callTool(value.toolName, args, input.signal);
     } catch (error) {
+      const outwardError = value.toolName === "browser_file_upload"
+        ? new Error("Playwright fixture upload failed.")
+        : error;
+      assertAllowedBrowserState(await input.tools.listOpenTabs(input.signal), input.toolPolicy);
       if (value.toolName === "browser_file_upload") {
-        throw new Error("Playwright fixture upload failed.");
+        throw outwardError;
       }
-      throw error;
+      throw outwardError;
     }
+    assertAllowedBrowserState(await input.tools.listOpenTabs(input.signal), input.toolPolicy);
     const auditableArguments = auditableToolArguments(value.toolName, args);
     const auditableResult = auditableToolResult(value.toolName, result);
     transcript.push({ toolName: value.toolName, arguments: auditableArguments, result: auditableResult });

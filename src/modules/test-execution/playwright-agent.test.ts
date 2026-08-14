@@ -61,6 +61,20 @@ describe("Playwright MCP agent guardrails", () => {
     )).resolves.toEqual({ url: "https://example.com/app" });
   });
 
+  it("rejects browser_tabs navigation outside the deployment target-origin allowlist", async () => {
+    await expect(validatePlaywrightToolArguments(
+      "browser_tabs", { action: "new", url: "http://127.0.0.1:8080/admin" }, httpPolicy,
+    )).rejects.toThrow(/allowed origin/i);
+  });
+
+  it("enforces action-specific browser_tabs argument shapes", async () => {
+    await expect(validatePlaywrightToolArguments("browser_tabs", { action: "list" }, httpPolicy))
+      .resolves.toEqual({ action: "list" });
+    await expect(validatePlaywrightToolArguments("browser_tabs", { action: "select" }, httpPolicy)).rejects.toThrow();
+    await expect(validatePlaywrightToolArguments("browser_tabs", { action: "close", url: "https://example.com" }, httpPolicy)).rejects.toThrow();
+    await expect(validatePlaywrightToolArguments("browser_tabs", { action: "new", url: "https://example.com/app", index: 1 }, httpPolicy)).rejects.toThrow();
+  });
+
   it("allows only canonical stdio fixture files and chooser cancellation", async () => {
     const uploadPolicy = {
       transport: "stdio" as const,
@@ -108,7 +122,10 @@ describe("Playwright MCP agent guardrails", () => {
     await executeTestStepWithAgent({
       action: "Upload fixture",
       llm: { generateStructuredOutput } as unknown as LLMProvider,
-      tools: { callTool: async () => ({ path: fixture, message: `Uploaded ${fixture}` }) },
+      tools: {
+        callTool: async () => ({ path: fixture, message: `Uploaded ${fixture}` }),
+        listOpenTabs: async () => ["about:blank"],
+      },
       signal: new AbortController().signal,
       toolPolicy: {
         transport: "stdio", allowedNavigationOrigins: httpPolicy.allowedNavigationOrigins,
@@ -132,7 +149,10 @@ describe("Playwright MCP agent guardrails", () => {
     } }) } as unknown as LLMProvider;
     const message = await executeTestStepWithAgent({
       action: "Upload fixture", llm,
-      tools: { callTool: async () => { throw new Error(`cannot open ${fixture}`); } },
+      tools: {
+        callTool: async () => { throw new Error(`cannot open ${fixture}`); },
+        listOpenTabs: async () => ["about:blank"],
+      },
       signal: new AbortController().signal,
       toolPolicy: {
         transport: "stdio", allowedNavigationOrigins: httpPolicy.allowedNavigationOrigins,
@@ -152,10 +172,140 @@ describe("Playwright MCP agent guardrails", () => {
     } }) } as unknown as LLMProvider;
     const callTool = vi.fn();
     await expect(executeTestStepWithAgent({
-      action: "Open the app", llm, tools: { callTool }, signal: new AbortController().signal,
+      action: "Open the app", llm, tools: { callTool, listOpenTabs: async () => ["about:blank"] }, signal: new AbortController().signal,
       toolPolicy: { ...httpPolicy, allowedNavigationOrigins: new Set(["https://app.example"]) },
     })).rejects.toThrow(/allowed origin/i);
     expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it("rejects a disallowed initial browser tab before model or tool execution", async () => {
+    const generateStructuredOutput = vi.fn(async () => ({ validatedOutput: {
+      kind: "complete", outcome: "passed", summary: "Unexpectedly continued.",
+    } }));
+    const callTool = vi.fn();
+    const tools = {
+      callTool,
+      listOpenTabs: vi.fn(async () => ["http://127.0.0.1:8080/admin"]),
+    };
+    await expect(executeTestStepWithAgent({
+      action: "Inspect the app",
+      llm: { generateStructuredOutput } as unknown as LLMProvider,
+      tools,
+      signal: new AbortController().signal,
+      toolPolicy: httpPolicy,
+    })).rejects.toThrow(/allowed origin/i);
+    expect(generateStructuredOutput).not.toHaveBeenCalled();
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it("rejects a disallowed sibling tab even when the current tab is allowed", async () => {
+    const generateStructuredOutput = vi.fn();
+    const tools = {
+      callTool: vi.fn(),
+      listOpenTabs: vi.fn(async () => ["https://example.com/app", "http://127.0.0.1:8080/admin"]),
+    };
+    await expect(executeTestStepWithAgent({
+      action: "Inspect the app",
+      llm: { generateStructuredOutput } as unknown as LLMProvider,
+      tools,
+      signal: new AbortController().signal,
+      toolPolicy: httpPolicy,
+    })).rejects.toThrow(/allowed origin/i);
+    expect(generateStructuredOutput).not.toHaveBeenCalled();
+  });
+
+  it("allows an empty fresh browser state", async () => {
+    const generateStructuredOutput = vi.fn(async () => ({ validatedOutput: {
+      kind: "complete", outcome: "passed", summary: "No browser action required.",
+    } }));
+    await expect(executeTestStepWithAgent({
+      action: "No-op",
+      llm: { generateStructuredOutput } as unknown as LLMProvider,
+      tools: { callTool: vi.fn(), listOpenTabs: async () => [] },
+      signal: new AbortController().signal,
+      toolPolicy: httpPolicy,
+    })).resolves.toMatchObject({ outcome: "passed" });
+  });
+
+  it("discards a tool result when browser navigation escapes through a redirect", async () => {
+    const decisions = [
+      { kind: "tool_call", toolName: "browser_navigate", arguments: { url: "https://example.com/login" }, reason: "Open login" },
+      { kind: "complete", outcome: "passed", summary: "Done." },
+    ];
+    const generateStructuredOutput = vi.fn(async () => ({ validatedOutput: decisions.shift() }));
+    const onEvent = vi.fn();
+    const tools = {
+      callTool: vi.fn(async () => ({ content: [{ type: "text", text: "redirected page contents" }] })),
+      listOpenTabs: vi.fn()
+        .mockResolvedValueOnce(["about:blank"])
+        .mockResolvedValueOnce(["https://example.com/login"])
+        .mockResolvedValueOnce(["http://127.0.0.1:8080/admin"]),
+    };
+    await expect(executeTestStepWithAgent({
+      action: "Open the app",
+      llm: { generateStructuredOutput } as unknown as LLMProvider,
+      tools,
+      signal: new AbortController().signal,
+      toolPolicy: httpPolicy,
+      onEvent,
+    })).rejects.toThrow(/allowed origin/i);
+    expect(tools.callTool).toHaveBeenCalledTimes(1);
+    expect(generateStructuredOutput).toHaveBeenCalledTimes(1);
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it("validates browser state when a navigation commits and then rejects", async () => {
+    const llm = { generateStructuredOutput: async () => ({ validatedOutput: {
+      kind: "tool_call", toolName: "browser_navigate",
+      arguments: { url: "https://example.com/login" }, reason: "Open login",
+    } }) } as unknown as LLMProvider;
+    const tools = {
+      callTool: vi.fn(async () => { throw new Error("navigation timed out after commit"); }),
+      listOpenTabs: vi.fn()
+        .mockResolvedValueOnce(["about:blank"])
+        .mockResolvedValueOnce(["https://example.com/login"])
+        .mockResolvedValueOnce(["http://127.0.0.1:8080/admin"]),
+    };
+    await expect(executeTestStepWithAgent({
+      action: "Open the app", llm, tools,
+      signal: new AbortController().signal, toolPolicy: httpPolicy,
+    })).rejects.toThrow(/allowed origin/i);
+    expect(tools.listOpenTabs).toHaveBeenCalledTimes(3);
+  });
+
+  it("revalidates browser state immediately before dispatching a tool", async () => {
+    const llm = { generateStructuredOutput: async () => ({ validatedOutput: {
+      kind: "tool_call", toolName: "browser_click",
+      arguments: { ref: "button" }, reason: "Continue",
+    } }) } as unknown as LLMProvider;
+    const tools = {
+      callTool: vi.fn(),
+      listOpenTabs: vi.fn()
+        .mockResolvedValueOnce(["https://example.com/login"])
+        .mockResolvedValueOnce(["http://127.0.0.1:8080/admin"]),
+    };
+    await expect(executeTestStepWithAgent({
+      action: "Continue", llm, tools,
+      signal: new AbortController().signal, toolPolicy: httpPolicy,
+    })).rejects.toThrow(/allowed origin/i);
+    expect(tools.callTool).not.toHaveBeenCalled();
+  });
+
+  it("revalidates browser state before accepting completion", async () => {
+    const llm = { generateStructuredOutput: async () => ({ validatedOutput: {
+      kind: "complete", outcome: "passed", summary: "Done.",
+    } }) } as unknown as LLMProvider;
+    const tools = {
+      callTool: vi.fn(),
+      listOpenTabs: vi.fn()
+        .mockResolvedValueOnce(["https://example.com/app"])
+        .mockResolvedValueOnce(["http://127.0.0.1:8080/admin"]),
+    };
+    await expect(executeTestStepWithAgent({
+      action: "Verify", llm, tools,
+      signal: new AbortController().signal, toolPolicy: httpPolicy,
+    })).rejects.toThrow(/allowed origin/i);
+    expect(tools.callTool).not.toHaveBeenCalled();
   });
 
   it("rejects file uploads outside the deployment fixture allowlist", async () => {
@@ -166,7 +316,7 @@ describe("Playwright MCP agent guardrails", () => {
     } }) } as unknown as LLMProvider;
     const callTool = vi.fn();
     await expect(executeTestStepWithAgent({
-      action: "Upload the fixture", llm, tools: { callTool }, signal: new AbortController().signal,
+      action: "Upload the fixture", llm, tools: { callTool, listOpenTabs: async () => ["about:blank"] }, signal: new AbortController().signal,
       toolPolicy: { transport: "stdio", allowedNavigationOrigins: httpPolicy.allowedNavigationOrigins, uploadRoots: [uploadRoot] },
     })).rejects.toThrow(/allowed fixture/i);
     expect(callTool).not.toHaveBeenCalled();
@@ -181,7 +331,10 @@ describe("Playwright MCP agent guardrails", () => {
     const calls: string[] = [];
     const result = await executeTestStepWithAgent({
       action: "Open the page", expectedResult: "Heading is visible", llm,
-      tools: { callTool: async (name) => { calls.push(name); return { heading: "Example" }; } },
+      tools: {
+        callTool: async (name) => { calls.push(name); return { heading: "Example" }; },
+        listOpenTabs: async () => ["https://example.com"],
+      },
       signal: new AbortController().signal, toolPolicy: httpPolicy,
     });
     expect(calls).toEqual(["browser_navigate"]);
@@ -190,7 +343,11 @@ describe("Playwright MCP agent guardrails", () => {
 
   it("stops with timeout after the configured turn bound", async () => {
     const llm = { generateStructuredOutput: async () => ({ validatedOutput: { kind: "tool_call", toolName: "browser_snapshot", arguments: {}, reason: "Inspect" } }) } as unknown as LLMProvider;
-    const result = await executeTestStepWithAgent({ action: "Inspect", llm, tools: { callTool: async () => ({}) }, signal: new AbortController().signal, toolPolicy: httpPolicy, maxTurns: 2 });
+    const result = await executeTestStepWithAgent({
+      action: "Inspect", llm,
+      tools: { callTool: async () => ({}), listOpenTabs: async () => ["https://example.com"] },
+      signal: new AbortController().signal, toolPolicy: httpPolicy, maxTurns: 2,
+    });
     expect(result).toEqual({ outcome: "timeout", summary: "Step exceeded the 2-turn agent limit.", turns: 2 });
   });
 });

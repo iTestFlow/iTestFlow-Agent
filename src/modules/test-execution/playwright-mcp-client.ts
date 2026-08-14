@@ -5,6 +5,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ResolvedPlaywrightMcpConfig } from "./playwright-mcp-config.service";
 import { assertAllowedPlaywrightTool, type PlaywrightToolClient } from "./playwright-agent";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 function deploymentStdioCommand(): { command: string; args: string[] } {
   const command = process.env.PLAYWRIGHT_MCP_STDIO_COMMAND?.trim();
@@ -18,6 +19,42 @@ function deploymentStdioCommand(): { command: string; args: string[] } {
 }
 
 const noRedirectFetch: typeof fetch = (url, init) => fetch(url, { ...init, redirect: "error" });
+
+function parseOpenTabUrls(result: CallToolResult): string[] {
+  if (result.isError || result.content.length !== 1 || result.content[0]?.type !== "text") {
+    throw new Error("Playwright browser tab state could not be verified.");
+  }
+  const text = result.content[0].text;
+  const sections = new Map<string, string>();
+  for (const chunk of text.split(/^### /m).slice(1)) {
+    const newline = chunk.indexOf("\n");
+    if (newline > 0) {
+      const name = chunk.slice(0, newline);
+      if (sections.has(name)) throw new Error("Playwright browser tab state could not be verified.");
+      sections.set(name, chunk.slice(newline + 1).trim());
+    }
+  }
+  const tabSections = [sections.get("Result"), sections.get("Open tabs")]
+    .filter((section): section is string => section !== undefined);
+  if (!tabSections.length) throw new Error("Playwright browser tab state could not be verified.");
+  const parsed = tabSections.map(parseTabSection);
+  if (parsed.some((urls) => JSON.stringify(urls) !== JSON.stringify(parsed[0]))) {
+    throw new Error("Playwright browser tab state could not be verified.");
+  }
+  return parsed[0];
+}
+
+function parseTabSection(section: string): string[] {
+  if (section === "No open tabs. Navigate to a URL to create one.") return [];
+  const urls: string[] = [];
+  for (const line of section.split("\n")) {
+    const match = line.match(/^- \d+:(?: \(current\))? \[.*\]\((.*)\)(?: \[crashed\])?$/);
+    if (!match?.[1]) throw new Error("Playwright browser tab state could not be verified.");
+    urls.push(match[1]);
+  }
+  if (!urls.length) throw new Error("Playwright browser tab state could not be verified.");
+  return urls;
+}
 
 export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig): Promise<{
   tools: PlaywrightToolClient;
@@ -44,7 +81,7 @@ export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig):
   const approved = new Set(available.tools.map((tool) => tool.name).filter((name) => {
     try { assertAllowedPlaywrightTool(name); return true; } catch { return false; }
   }));
-  for (const required of ["browser_navigate", "browser_snapshot"]) {
+  for (const required of ["browser_navigate", "browser_snapshot", "browser_tabs"]) {
     if (!approved.has(required)) {
       await client.close();
       throw new Error(`Playwright MCP server is missing required tool "${required}".`);
@@ -56,6 +93,12 @@ export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig):
         assertAllowedPlaywrightTool(name);
         if (!approved.has(name)) throw new Error(`Playwright MCP server does not advertise tool "${name}".`);
         return client.callTool({ name, arguments: args }, undefined, { signal });
+      },
+      async listOpenTabs(signal) {
+        const result = await client.callTool(
+          { name: "browser_tabs", arguments: { action: "list" } }, undefined, { signal },
+        ) as CallToolResult;
+        return parseOpenTabUrls(result);
       },
     },
     close: () => client.close(),
