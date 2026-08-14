@@ -56,4 +56,17 @@ describe("publishZephyrExecution", () => {
     expect(failureWrite?.[0]).toContain("status = 'error'");
     expect(failureWrite?.[1]).toMatchObject({ id: "link-1" });
   });
+
+  it("retires its owned claim when post-claim backend construction fails", async () => {
+    mocks.sqlGet.mockResolvedValueOnce({ provider_project_key: "QA" }).mockResolvedValueOnce(undefined).mockResolvedValueOnce({ id: "link-1" });
+
+    await expect(publishZephyrExecution({
+      ...input,
+      createBackend: vi.fn(() => { throw new Error("backend construction failed"); }),
+    })).rejects.toThrow("backend construction failed");
+
+    const failureWrite = mocks.sqlRun.mock.calls.find(([sql]) => String(sql).includes("WHERE id = @id"));
+    expect(failureWrite?.[0]).toContain("status = 'error'");
+    expect(failureWrite?.[1]).toMatchObject({ id: "link-1" });
+  });
 });

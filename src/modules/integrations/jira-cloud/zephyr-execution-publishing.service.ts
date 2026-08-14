@@ -45,9 +45,9 @@ export async function publishZephyrExecution(input: {
     return { kind: "claimed", claim, authorized } as const;
   });
   if (claimed.kind === "existing") return { remoteId: claimed.existing.remote_artifact_id, created: false };
-  const backend = input.createBackend(resolveZephyrScaleConfigRow(claimed.authorized));
   let remoteId: string;
   try {
+    const backend = input.createBackend(resolveZephyrScaleConfigRow(claimed.authorized));
     remoteId = await backend.reconcileExecution({ projectId: claimed.authorized.provider_project_key, testCaseKey: input.testCaseKey, testCycleKey: input.testCycleKey, statusName: input.statusName, stepResults: input.stepResults });
   } catch (error) {
     await failOwnedExecutionClaim(params, claimed.claim.id);
