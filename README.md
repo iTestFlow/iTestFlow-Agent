@@ -48,6 +48,7 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 - **Requirements Analysis** finds ambiguities, risks, omissions, and testability concerns, then publishes reviewed comments to Azure DevOps.
 - **Test Case Design** generates editable positive, negative, boundary, and edge-case scenarios and publishes approved cases to Azure Test Plans.
 - **Test Gap Analysis** maps requirement details and acceptance criteria to linked test cases, identifies missing coverage, and creates selected additions.
+- **Automated Test Execution** expands an Azure Test Suite tree and executes its Test Plan steps through a bounded Playwright MCP agent. Results and trace artifacts remain in iTestFlow for review until a user explicitly publishes outcomes to Azure DevOps.
 - **Report Bug** converts QA notes into reviewed Azure DevOps Bug work items with fields, relationships, and attachments.
 
 ### Utilities and Governance
@@ -108,6 +109,7 @@ These links work while the local development or production server is running on 
 | Testing | [Requirements Analysis](http://127.0.0.1:3000/requirements-analysis) | Analyze a real Azure DevOps requirement |
 | Testing | [Test Case Design](http://127.0.0.1:3000/test-case-design) | Generate, review, and publish test cases |
 | Testing | [Test Gap Analysis](http://127.0.0.1:3000/test-gap-analysis) | Review traceability and missing coverage |
+| Testing | [Automated Test Execution](http://127.0.0.1:3000/test-execution) | Run and review Azure Test Plan steps through Playwright MCP |
 | Testing | [Report Bug](http://127.0.0.1:3000/report-bug) | Generate and post Azure DevOps bugs |
 | Utilities | [Suite Migration](http://127.0.0.1:3000/suite-migration) | Preview and execute Test Suite copy or move |
 | Utilities | [Bulk Task Creation](http://127.0.0.1:3000/bulk-task-creation) | Create multiple tasks across selected User Stories |
@@ -125,6 +127,7 @@ The recommended setup path is [http://127.0.0.1:3000/login](http://127.0.0.1:300
 - Provider API key
 - Maximum output token cap and transient-failure retry count
 - Whether the manual External LLM copy/paste mode is available in the workspace
+- Playwright MCP transport (`https` Streamable HTTP, localhost HTTP, or deployment-managed stdio), optional bearer token, and protected artifact base URL
 - Project-context retrieval count
 - Optional automatic context-update schedule and filters owned by the workspace
 
@@ -198,12 +201,24 @@ npm run org:enable -- <orgUrlOrName>  # to re-enable later
 - Azure DevOps and LLM requests are made server-side; credentials are not sent directly from browser components to external providers.
 - Project selection is persisted server-side and project-scoped API routes resolve a trusted workspace/project scope before reading or writing.
 - Background workers heartbeat running jobs and stale worker locks are requeued automatically.
+- Playwright MCP bearer tokens are encrypted at rest. Browser tool calls use a fixed allowlist, exclude `browser_run_code_unsafe`, run each test case in an isolated MCP session, and never retry a whole browser run.
 
 Treat the database and environment secrets as sensitive application state.
 
 ## Development
 
 The UI uses Next.js App Router, React, TypeScript, Tailwind CSS, shadcn/Radix primitives, Lucide icons, and Recharts.
+
+### Exact-revision code graph
+
+Graphify output is an untracked, immutable cache keyed by the GitHub repository identity and exact `HEAD` commit. This prevents one linked worktree from reading or overwriting another revision's graph.
+
+```bash
+npm run graph:refresh # build or reuse the graph for the exact current commit
+npm run graph:resolve # print the verified graph.json path, or fail closed when absent/stale
+```
+
+Set `ITESTFLOW_GRAPHIFY_CACHE_ROOT` to move the cache outside its default user cache directory. Repository identity comes from `upstream`, falling back to `origin`. Each completed cache contains `itestflow-graphify-marker.json`; resolution verifies its repository, revision, graph shape, and SHA-256 digest before returning the graph. Builds use a detached exact-revision worktree, publication lock, and staging directory, then publish atomically. Concurrent builds share a verified immutable result; a lock holder quarantines and replaces invalid cache state.
 
 ### Verification
 

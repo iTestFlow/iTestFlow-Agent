@@ -1,0 +1,1 @@
+iTestFlow Agent is a workspace-scoped Next.js application for Azure DevOps testing workflows. Browser clients call server-side API routes; PostgreSQL holds durable workspace data; background jobs run in the worker process.

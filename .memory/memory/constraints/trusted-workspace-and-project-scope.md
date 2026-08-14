@@ -1,0 +1,1 @@
+All project-scoped operations must resolve the authenticated workspace and trusted project anchor server-side. Client-supplied Azure project fields are not authorization evidence.
