@@ -1,8 +1,9 @@
 import "server-only";
 
 import { decryptSecret, encryptSecret } from "@/modules/security/encryption.service";
-import { createId, nowIso, sqlGet } from "@/modules/shared/infrastructure/database/db";
+import { createId, sqlGet } from "@/modules/shared/infrastructure/database/db";
 import type { XrayCloudSettings } from "./xray-cloud-backend";
+import { withAuthorizedJiraArtifactConfigurationLock } from "./jira-artifact-project-lock";
 
 type ConfigRow = {
   config_json: string;
@@ -25,34 +26,28 @@ export async function storeXrayCloudConfig(input: {
     throw new Error("Xray Cloud configuration is invalid.");
   }
   const secret = encryptSecret(input.clientSecret);
-  const now = nowIso();
-  const written = await sqlGet<{ id: string }>(
-    `INSERT INTO jira_artifact_backend_configs (
-       id, workspace_id, project_id, backend_type, config_json,
-       encrypted_secret, secret_iv, secret_tag, key_version, region, status, created_at, updated_at
-     )
-     SELECT @id, p.workspace_id, p.id, 'xray_cloud', @configJson,
-            @encryptedSecret, @secretIv, @secretTag, @keyVersion, 'global', 'active', @now, @now
-     FROM projects p
-     JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @actorUserId
-       AND wm.status = 'active' AND wm.role IN ('owner', 'admin')
-     WHERE p.workspace_id = @workspaceId AND p.id = @projectId
-       AND p.provider_id = 'jira-cloud' AND p.status = 'active'
-       AND NOT EXISTS (
-         SELECT 1 FROM jira_artifact_links l
-         WHERE l.workspace_id = p.workspace_id AND l.project_id = p.id AND l.status = 'publishing'
+  const written = await withAuthorizedJiraArtifactConfigurationLock(
+    { workspaceId, projectId, actorUserId },
+    ({ client, now }) => sqlGet<{ id: string }>(
+      `INSERT INTO jira_artifact_backend_configs (
+         id, workspace_id, project_id, backend_type, config_json,
+         encrypted_secret, secret_iv, secret_tag, key_version, region, status, created_at, updated_at
        )
-     ON CONFLICT (workspace_id, project_id) DO UPDATE SET
-       backend_type = 'xray_cloud', config_json = excluded.config_json,
-       encrypted_secret = excluded.encrypted_secret, secret_iv = excluded.secret_iv,
-       secret_tag = excluded.secret_tag, key_version = excluded.key_version,
-       region = excluded.region, status = 'active', updated_at = excluded.updated_at
-     RETURNING id`,
-    {
-      id: createId("jirabackend"), workspaceId, projectId, actorUserId,
-      configJson: JSON.stringify({ clientId, localIdFieldId: input.localIdFieldId }),
-      encryptedSecret: secret.ciphertext, secretIv: secret.iv, secretTag: secret.tag, keyVersion: secret.keyVersion, now,
-    },
+       VALUES (@id, @workspaceId, @projectId, 'xray_cloud', @configJson,
+               @encryptedSecret, @secretIv, @secretTag, @keyVersion, 'global', 'active', @now, @now)
+       ON CONFLICT (workspace_id, project_id) DO UPDATE SET
+         backend_type = 'xray_cloud', config_json = excluded.config_json,
+         encrypted_secret = excluded.encrypted_secret, secret_iv = excluded.secret_iv,
+         secret_tag = excluded.secret_tag, key_version = excluded.key_version,
+         region = excluded.region, status = 'active', updated_at = excluded.updated_at
+       RETURNING id`,
+      {
+        id: createId("jirabackend"), workspaceId, projectId,
+        configJson: JSON.stringify({ clientId, localIdFieldId: input.localIdFieldId }),
+        encryptedSecret: secret.ciphertext, secretIv: secret.iv, secretTag: secret.tag, keyVersion: secret.keyVersion, now,
+      },
+      client,
+    ),
   );
   if (!written) throw new Error("Xray Cloud configuration is not authorized for this Jira project.");
 }

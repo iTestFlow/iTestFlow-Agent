@@ -37,7 +37,7 @@ All controls use native labelled inputs, selects, links, and buttons. The flow i
 
 ## Artifact Backends
 
-One active backend is stored per workspace project. Switching backend replaces the prior configuration; secret columns are cleared when the new backend does not need them. A backend change is rejected while any artifact publish for that project owns a live publishing claim. The next publish of an existing local artifact atomically rebinds its current trace link to the newly selected backend and republishes it there; the prior remote artifact is not deleted.
+One active backend is stored per workspace project. Switching backend replaces the prior configuration; secret columns are cleared when the new backend does not need them. Publication claims and backend changes acquire the same project-scoped PostgreSQL transaction lock, so whichever starts first commits its decision before the other revalidates. A backend change is rejected while any artifact publish for that project owns a live publishing claim. Failed claims are retired immediately; claims older than ten minutes are retired as errors so an owner can repair credentials or switch backend. A late publisher cannot activate a retired claim. The next publish of an existing local artifact atomically rebinds its current trace link to the newly selected backend and republishes it there; the prior remote artifact is not deleted.
 
 ### Plain Jira
 

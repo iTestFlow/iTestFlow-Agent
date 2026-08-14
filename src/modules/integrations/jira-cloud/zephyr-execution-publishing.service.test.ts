@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ sqlGet: vi.fn() }));
-vi.mock("@/modules/shared/infrastructure/database/db", () => ({ createId: () => "link-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet }));
+const mocks = vi.hoisted(() => ({ sqlGet: vi.fn(), sqlRun: vi.fn() }));
+vi.mock("@/modules/shared/infrastructure/database/db", () => ({
+  createId: () => "link-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet, sqlRun: mocks.sqlRun,
+  withTransaction: (work: (client: object) => unknown) => work({ tx: true }),
+}));
 import { publishZephyrExecution } from "./zephyr-execution-publishing.service";
 
 describe("publishZephyrExecution", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); mocks.sqlRun.mockResolvedValue(0); });
   const input = { workspaceId: "ws-1", projectId: "project-1", actorUserId: "user-1", localExecutionId: "execution-local-1", testCaseKey: "QA-T1", testCycleKey: "QA-R1", statusName: "Pass" };
 
   it("returns an authorized stable link without touching Zephyr", async () => {
@@ -20,10 +23,13 @@ describe("publishZephyrExecution", () => {
     await expect(publishZephyrExecution({ ...input, backend, stepResults: [] })).resolves.toEqual({ remoteId: "QA-E1", created: true });
     expect(mocks.sqlGet.mock.calls[2][0]).toContain("ON CONFLICT (workspace_id, project_id, local_artifact_type, local_artifact_id)");
     expect(mocks.sqlGet.mock.calls[2][0]).toContain("id = excluded.id");
-    expect(mocks.sqlGet.mock.calls[2][0]).toContain("JOIN workspace_members");
+    expect(mocks.sqlGet.mock.calls[2][0]).toContain("status IN ('error', 'missing_remote')");
+    expect(mocks.sqlGet.mock.calls[0][0]).toContain("JOIN workspace_members");
+    expect(mocks.sqlGet.mock.calls[0][2]).toEqual({ tx: true });
     expect(backend.reconcileExecution).toHaveBeenCalledWith({ projectId: "QA", testCaseKey: "QA-T1", testCycleKey: "QA-R1", statusName: "Pass", stepResults: [] });
     expect(mocks.sqlGet.mock.calls[3][1]).toMatchObject({ id: "link-1", remoteId: "QA-E1" });
-    expect(mocks.sqlGet.mock.calls[3][0]).toContain("WHERE id = @id");
+    expect(mocks.sqlGet.mock.calls[3][0]).toContain("WHERE l.id = @id");
+    expect(mocks.sqlGet.mock.calls[3][0]).toContain("c.backend_type = 'zephyr_scale'");
   });
 
   it("rejects a concurrent publisher when the durable claim is held", async () => {
@@ -31,5 +37,16 @@ describe("publishZephyrExecution", () => {
     const backend = { reconcileExecution: vi.fn() };
     await expect(publishZephyrExecution({ ...input, backend })).rejects.toThrow("already being published");
     expect(backend.reconcileExecution).not.toHaveBeenCalled();
+  });
+
+  it("retires its owned claim when Zephyr fails", async () => {
+    mocks.sqlGet.mockResolvedValueOnce({ provider_project_key: "QA" }).mockResolvedValueOnce(undefined).mockResolvedValueOnce({ id: "link-1" });
+    const backend = { reconcileExecution: vi.fn().mockRejectedValue(new Error("remote failed")) };
+
+    await expect(publishZephyrExecution({ ...input, backend })).rejects.toThrow("remote failed");
+
+    const failureWrite = mocks.sqlRun.mock.calls.find(([sql]) => String(sql).includes("WHERE id = @id"));
+    expect(failureWrite?.[0]).toContain("status = 'error'");
+    expect(failureWrite?.[1]).toMatchObject({ id: "link-1" });
   });
 });

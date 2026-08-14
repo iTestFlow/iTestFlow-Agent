@@ -115,6 +115,18 @@ describe("Jira integration settings API", () => {
     }
   });
 
+  it("reports an active artifact publication as a retryable conflict", async () => {
+    mocks.storePlain.mockRejectedValueOnce(new Error("A Jira artifact publish is active for this project."));
+
+    const response = await POST(request({
+      action: "configure_backend", projectId: "project-1", backendType: "plain_jira",
+      testCaseIssueTypeId: "10001", localIdFieldId: "customfield_10002",
+    }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "A Jira artifact publish is active. Retry after it completes." });
+  });
+
   it("preserves the centralized workspace request error response", async () => {
     mocks.resolveWorkspaceRequest.mockRejectedValueOnce(new Error("session"));
     mocks.workspaceRequestError.mockReturnValueOnce(new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }));

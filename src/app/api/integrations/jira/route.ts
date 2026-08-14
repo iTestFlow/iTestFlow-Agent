@@ -115,6 +115,9 @@ function jiraSettingsError(error: unknown): NextResponse {
   const access = workspaceRequestError(error);
   if (access) return access;
   const message = error instanceof Error ? error.message.toLocaleLowerCase() : "";
+  if (message.includes("artifact publish is active")) {
+    return NextResponse.json({ error: "A Jira artifact publish is active. Retry after it completes." }, { status: 409 });
+  }
   if (message.includes("invalid") || message.includes("duplicate")) return NextResponse.json({ error: "Jira integration settings are invalid." }, { status: 400 });
   if (message.includes("not authorized") || message.includes("not permitted")) return NextResponse.json({ error: "You are not permitted to change this Jira configuration." }, { status: 403 });
   if (message.includes("different integration provider") || message.includes("not available")) return NextResponse.json({ error: "Jira Cloud is not available for this workspace." }, { status: 404 });

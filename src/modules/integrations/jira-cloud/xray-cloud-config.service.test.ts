@@ -1,22 +1,28 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ sqlGet: vi.fn(), encryptSecret: vi.fn(), decryptSecret: vi.fn() }));
-vi.mock("@/modules/shared/infrastructure/database/db", () => ({ createId: () => "config-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet }));
+const mocks = vi.hoisted(() => ({ sqlGet: vi.fn(), sqlRun: vi.fn(), withTransaction: vi.fn(), encryptSecret: vi.fn(), decryptSecret: vi.fn() }));
+vi.mock("@/modules/shared/infrastructure/database/db", () => ({
+  createId: () => "config-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet, sqlRun: mocks.sqlRun,
+  withTransaction: mocks.withTransaction,
+}));
 vi.mock("@/modules/security/encryption.service", () => ({ encryptSecret: mocks.encryptSecret, decryptSecret: mocks.decryptSecret }));
 import { resolveXrayCloudConfig, storeXrayCloudConfig } from "./xray-cloud-config.service";
 
 describe("Xray Cloud configuration", () => {
-  beforeEach(() => { vi.clearAllMocks(); mocks.encryptSecret.mockReturnValue({ ciphertext: "encrypted", iv: "iv", tag: "tag", keyVersion: 1 }); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.withTransaction.mockImplementation((work: (client: object) => unknown) => work({ tx: true }));
+    mocks.sqlRun.mockResolvedValue(0);
+    mocks.encryptSecret.mockReturnValue({ ciphertext: "encrypted", iv: "iv", tag: "tag", keyVersion: 1 });
+  });
 
   it("stores the client secret encrypted behind an owner/admin project authorization predicate", async () => {
-    mocks.sqlGet.mockResolvedValue({ id: "config-1" });
+    mocks.sqlGet.mockResolvedValueOnce({ id: "project-1" }).mockResolvedValueOnce(undefined).mockResolvedValueOnce({ id: "config-1" });
     await storeXrayCloudConfig({ workspaceId: "ws-1", projectId: "project-1", actorUserId: "owner-1", clientId: "client-id", clientSecret: " opaque-secret ", localIdFieldId: "customfield_10100" });
     expect(mocks.encryptSecret).toHaveBeenCalledWith(" opaque-secret ");
-    const [sql, params] = mocks.sqlGet.mock.calls[0];
-    expect(sql).toContain("wm.role IN ('owner', 'admin')");
-    expect(sql).toContain("NOT EXISTS");
-    expect(sql).toContain("l.status = 'publishing'");
+    const [sql, params, client] = mocks.sqlGet.mock.calls[2];
     expect(sql).toContain("backend_type = 'xray_cloud'");
+    expect(client).toEqual({ tx: true });
     expect(JSON.stringify(params)).not.toContain("opaque-secret");
     expect(params).toMatchObject({ encryptedSecret: "encrypted", secretIv: "iv", secretTag: "tag", keyVersion: 1 });
   });

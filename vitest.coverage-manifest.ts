@@ -50,6 +50,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/integrations/jira-cloud/jira-cloud-adapter.ts",
   "src/modules/integrations/jira-cloud/jira-cloud-descriptor.ts",
   "src/modules/integrations/jira-cloud/jira-artifact-publishing.service.ts",
+  "src/modules/integrations/jira-cloud/jira-artifact-project-lock.ts",
   "src/modules/integrations/jira-cloud/jira-conflict-resolution.service.ts",
   "src/modules/integrations/jira-cloud/jira-reconciliation.service.ts",
   "src/modules/integrations/jira-cloud/jira-sync-conflict.ts",

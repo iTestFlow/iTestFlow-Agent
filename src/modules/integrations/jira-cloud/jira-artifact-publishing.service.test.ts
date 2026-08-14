@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  sqlGet: vi.fn(), resolveAccess: vi.fn(), plainCreate: vi.fn(), xrayCreate: vi.fn(), zephyrCreate: vi.fn(),
+  sqlGet: vi.fn(), sqlRun: vi.fn(), resolveAccess: vi.fn(), plainCreate: vi.fn(), xrayCreate: vi.fn(), zephyrCreate: vi.fn(),
   resolveXray: vi.fn(), resolveZephyr: vi.fn(),
 }));
 vi.mock("@/modules/shared/infrastructure/database/db", () => ({
-  createId: () => "link-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet,
+  createId: () => "link-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet, sqlRun: mocks.sqlRun,
   withTransaction: (work: (client: object) => unknown) => work({ tx: true }),
 }));
 vi.mock("@/modules/auth/jira-connection.service", () => ({ resolveJiraAccessToken: mocks.resolveAccess }));
@@ -19,7 +19,12 @@ import * as plainJiraPublishing from "./jira-artifact-publishing.service";
 const { publishPlainJiraTestCase } = plainJiraPublishing;
 
 describe("publishPlainJiraTestCase", () => {
-  beforeEach(() => { vi.clearAllMocks(); vi.stubEnv("ITESTFLOW_PUBLIC_URL", "https://itestflow.example"); mocks.resolveAccess.mockResolvedValue("access"); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("ITESTFLOW_PUBLIC_URL", "https://itestflow.example");
+    mocks.sqlRun.mockResolvedValue(0);
+    mocks.resolveAccess.mockResolvedValue("access");
+  });
   const input = {
     workspaceId: "ws-1", projectId: "project-1", actorUserId: "user-1",
     testCase: { localId: "case-1", targetUserStoryId: "QA-7", title: "Checkout", steps: [] },
@@ -44,24 +49,24 @@ describe("publishPlainJiraTestCase", () => {
     await expect(publishPlainJiraTestCase({ ...input, backend, siteUrl: "https://quality.atlassian.net" })).resolves.toMatchObject({ remoteId: "QA-9", created: true });
     expect(backend.createTestCase).toHaveBeenCalledWith({ projectId: "10000", testCase: input.testCase });
     const [insertSql, params] = mocks.sqlGet.mock.calls[2];
-    expect(insertSql).toContain("JOIN workspace_members");
-    expect(insertSql).toContain("JOIN jira_artifact_backend_configs c");
-    expect(insertSql).toContain("c.backend_type = @backendType");
+    expect(mocks.sqlGet.mock.calls[0][0]).toContain("JOIN jira_artifact_backend_configs c");
+    expect(mocks.sqlGet.mock.calls[0][2]).toEqual({ tx: true });
+    expect(insertSql).toContain("id = excluded.id");
+    expect(insertSql).toContain("status IN ('error', 'missing_remote')");
     expect(insertSql).toContain("ON CONFLICT (workspace_id, project_id, local_artifact_type, local_artifact_id)");
-    expect(params).toMatchObject({ workspaceId: "ws-1", projectId: "project-1", userId: "user-1", localId: "case-1" });
+    expect(params).toMatchObject({ workspaceId: "ws-1", projectId: "project-1", localId: "case-1" });
+    expect(mocks.sqlGet.mock.calls[0][1]).toMatchObject({ userId: "user-1" });
     expect(mocks.sqlGet.mock.calls[3][1]).toMatchObject({ id: "link-1", remoteId: "QA-9" });
   });
 
   it("stores a plain Jira backend configuration without secrets", async () => {
     expect(typeof (plainJiraPublishing as Record<string, unknown>).storePlainJiraArtifactConfig).toBe("function");
-    mocks.sqlGet.mockResolvedValue({ id: "config-1" });
+    mocks.sqlGet.mockResolvedValueOnce({ id: "project-1" }).mockResolvedValueOnce(undefined).mockResolvedValueOnce({ id: "config-1" });
     const store = (plainJiraPublishing as unknown as { storePlainJiraArtifactConfig(input: unknown): Promise<void> }).storePlainJiraArtifactConfig;
     await store({ workspaceId: "ws-1", projectId: "project-1", actorUserId: "owner-1", testCaseIssueTypeId: "10001", localIdFieldId: "customfield_10002" });
-    const [sql, params] = mocks.sqlGet.mock.calls[0];
+    const [sql, params, client] = mocks.sqlGet.mock.calls[2];
     expect(sql).toContain("'plain_jira'");
-    expect(sql).toContain("wm.role IN ('owner', 'admin')");
-    expect(sql).toContain("NOT EXISTS");
-    expect(sql).toContain("l.status = 'publishing'");
+    expect(client).toEqual({ tx: true });
     expect(params.configJson).toBe('{"testCaseIssueTypeId":"10001","localIdFieldId":"customfield_10002"}');
     expect(params).not.toHaveProperty("encryptedSecret");
   });
@@ -123,5 +128,20 @@ describe("publishPlainJiraTestCase", () => {
 
     expect(mocks.xrayCreate).toHaveBeenCalledWith({ projectId: "10000", testCase: input.testCase });
     expect(mocks.sqlGet.mock.calls[3][0]).toContain("backend_type = excluded.backend_type");
+  });
+
+  it("retires its owned claim when the remote backend fails", async () => {
+    mocks.sqlGet
+      .mockResolvedValueOnce({ provider_project_id: "10000", provider_project_key: "QA" })
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ id: "link-1" });
+    const backend = { createTestCase: vi.fn().mockRejectedValue(new Error("remote failed")) };
+
+    await expect(publishPlainJiraTestCase({ ...input, backend })).rejects.toThrow("remote failed");
+
+    const failureWrite = mocks.sqlRun.mock.calls.find(([sql]) => String(sql).includes("WHERE id = @id"));
+    expect(failureWrite?.[0]).toContain("status = 'error'");
+    expect(failureWrite?.[1]).toMatchObject({ id: "link-1", workspaceId: "ws-1", projectId: "project-1" });
+    expect(failureWrite?.[2]).toEqual({ tx: true });
   });
 });

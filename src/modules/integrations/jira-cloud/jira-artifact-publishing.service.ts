@@ -1,7 +1,7 @@
 import "server-only";
 
 import type { FinalApprovedTestCase } from "../core/integration-types";
-import { createId, nowIso, sqlGet } from "@/modules/shared/infrastructure/database/db";
+import { createId, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { resolveJiraAccessToken } from "@/modules/auth/jira-connection.service";
 import { JiraCloudAdapter } from "./jira-cloud-adapter";
 import { PlainJiraArtifactBackend } from "./plain-jira-artifact-backend";
@@ -9,6 +9,7 @@ import { XrayCloudBackend } from "./xray-cloud-backend";
 import { resolveXrayCloudConfig } from "./xray-cloud-config.service";
 import { ZephyrScaleBackend } from "./zephyr-scale-backend";
 import { resolveZephyrScaleConfig } from "./zephyr-scale-config.service";
+import { retireStaleJiraArtifactClaims, withAuthorizedJiraArtifactConfigurationLock, withJiraArtifactProjectLock } from "./jira-artifact-project-lock";
 
 type PlainPublisher = { createTestCase(input: { projectId: string; testCase: FinalApprovedTestCase }): Promise<{ success: boolean; azureTestCaseId?: string; error?: string }> };
 type LinkRow = { backend_type?: BackendType; remote_artifact_id: string; remote_url: string };
@@ -52,29 +53,24 @@ export async function storePlainJiraArtifactConfig(input: {
   if (!workspaceId || !projectId || !actorUserId || !/^[1-9][0-9]*$/.test(testCaseIssueTypeId) || !/^customfield_[0-9]+$/.test(localIdFieldId)) {
     throw new Error("Plain Jira artifact configuration is invalid.");
   }
-  const now = nowIso();
-  const row = await sqlGet<{ id: string }>(
-    `INSERT INTO jira_artifact_backend_configs (
-       id, workspace_id, project_id, backend_type, config_json, encrypted_secret, secret_iv, secret_tag, key_version, region, status, created_at, updated_at
-     )
-     SELECT @id, p.workspace_id, p.id, 'plain_jira', @configJson, NULL, NULL, NULL, NULL, NULL, 'active', @now, @now
-     FROM projects p
-     JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @actorUserId
-       AND wm.status = 'active' AND wm.role IN ('owner', 'admin')
-     WHERE p.workspace_id = @workspaceId AND p.id = @projectId AND p.provider_id = 'jira-cloud' AND p.status = 'active'
-       AND NOT EXISTS (
-         SELECT 1 FROM jira_artifact_links l
-         WHERE l.workspace_id = p.workspace_id AND l.project_id = p.id AND l.status = 'publishing'
+  const row = await withAuthorizedJiraArtifactConfigurationLock(
+    { workspaceId, projectId, actorUserId },
+    ({ client, now }) => sqlGet<{ id: string }>(
+      `INSERT INTO jira_artifact_backend_configs (
+         id, workspace_id, project_id, backend_type, config_json, encrypted_secret, secret_iv, secret_tag, key_version, region, status, created_at, updated_at
        )
-     ON CONFLICT (workspace_id, project_id) DO UPDATE SET
-       backend_type = 'plain_jira', config_json = excluded.config_json,
-       encrypted_secret = NULL, secret_iv = NULL, secret_tag = NULL, key_version = NULL, region = NULL,
-       status = 'active', updated_at = excluded.updated_at
-     RETURNING id`,
-    {
-      id: createId("jirabackend"), workspaceId, projectId, actorUserId,
-      configJson: JSON.stringify({ testCaseIssueTypeId, localIdFieldId }), now,
-    },
+       VALUES (@id, @workspaceId, @projectId, 'plain_jira', @configJson, NULL, NULL, NULL, NULL, NULL, 'active', @now, @now)
+       ON CONFLICT (workspace_id, project_id) DO UPDATE SET
+         backend_type = 'plain_jira', config_json = excluded.config_json,
+         encrypted_secret = NULL, secret_iv = NULL, secret_tag = NULL, key_version = NULL, region = NULL,
+         status = 'active', updated_at = excluded.updated_at
+       RETURNING id`,
+      {
+        id: createId("jirabackend"), workspaceId, projectId,
+        configJson: JSON.stringify({ testCaseIssueTypeId, localIdFieldId }), now,
+      },
+      client,
+    ),
   );
   if (!row) throw new Error("Plain Jira artifact configuration is not authorized for this project.");
 }
@@ -91,65 +87,101 @@ async function publishJiraTestCase(input: {
   backend: PlainPublisher; backendType: BackendType; siteUrl?: string;
 }): Promise<{ remoteId: string; remoteUrl: string; created: boolean }> {
   const params = { workspaceId: input.workspaceId, projectId: input.projectId, localType: "test_case", localId: input.testCase.localId };
-  const authorized = await sqlGet<{ provider_project_id: string; provider_project_key: string }>(
-    `SELECT p.provider_project_id, p.provider_project_key
-     FROM projects p
-     JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @userId AND wm.status = 'active'
-     JOIN jira_artifact_backend_configs c ON c.workspace_id = p.workspace_id AND c.project_id = p.id
-       AND c.backend_type = @backendType AND c.status = 'active'
-     WHERE p.id = @projectId AND p.workspace_id = @workspaceId
-       AND p.provider_id = 'jira-cloud' AND p.status = 'active'`,
-    { ...params, userId: input.actorUserId, backendType: input.backendType },
-  );
-  if (!authorized?.provider_project_id) throw new Error("Plain Jira publishing is not authorized for this workspace project.");
-  const existing = await sqlGet<LinkRow>(
-    `SELECT backend_type, remote_artifact_id, remote_url FROM jira_artifact_links
-     WHERE workspace_id = @workspaceId AND project_id = @projectId
-       AND local_artifact_type = @localType AND local_artifact_id = @localId AND status = 'active'`, params,
-  );
-  if (existing?.backend_type === input.backendType || (existing && input.backendType === "plain_jira" && !existing.backend_type)) {
-    return { remoteId: existing.remote_artifact_id, remoteUrl: existing.remote_url, created: false };
-  }
-  const now = nowIso();
-  const staleCutoff = new Date(Date.parse(now) - 10 * 60 * 1000).toISOString();
-  const claim = await sqlGet<{ id: string }>(
-    `INSERT INTO jira_artifact_links (
-       id, workspace_id, project_id, backend_type, local_artifact_type, local_artifact_id,
-       remote_artifact_id, remote_url, status, created_at, updated_at
-     )
-     SELECT @id, p.workspace_id, p.id, @backendType, @localType, @localId,
-            NULL, NULL, 'publishing', @now, @now
-     FROM projects p
-     JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @userId AND wm.status = 'active'
-     JOIN jira_artifact_backend_configs c ON c.workspace_id = p.workspace_id AND c.project_id = p.id
-       AND c.backend_type = @backendType AND c.status = 'active'
-     WHERE p.id = @projectId AND p.workspace_id = @workspaceId AND p.provider_id = 'jira-cloud' AND p.status = 'active'
-     ON CONFLICT (workspace_id, project_id, local_artifact_type, local_artifact_id)
-     DO UPDATE SET backend_type = excluded.backend_type, remote_artifact_id = NULL, remote_url = NULL,
-       status = 'publishing', updated_at = excluded.updated_at
-       WHERE (jira_artifact_links.status = 'publishing' AND jira_artifact_links.updated_at < @staleCutoff)
+  const claimed = await withJiraArtifactProjectLock(params, async (lock) => {
+    const { client, now } = lock;
+    const authorized = await sqlGet<{ provider_project_id: string; provider_project_key: string }>(
+      `SELECT p.provider_project_id, p.provider_project_key
+       FROM projects p
+       JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @userId AND wm.status = 'active'
+       JOIN jira_artifact_backend_configs c ON c.workspace_id = p.workspace_id AND c.project_id = p.id
+         AND c.backend_type = @backendType AND c.status = 'active'
+       WHERE p.id = @projectId AND p.workspace_id = @workspaceId
+         AND p.provider_id = 'jira-cloud' AND p.status = 'active'`,
+      { ...params, userId: input.actorUserId, backendType: input.backendType },
+      client,
+    );
+    if (!authorized?.provider_project_id) throw new Error("Jira publishing is not authorized for this workspace project.");
+    await retireStaleJiraArtifactClaims(params, lock);
+    const existing = await sqlGet<LinkRow>(
+      `SELECT backend_type, remote_artifact_id, remote_url FROM jira_artifact_links
+       WHERE workspace_id = @workspaceId AND project_id = @projectId
+         AND local_artifact_type = @localType AND local_artifact_id = @localId AND status = 'active'`,
+      params,
+      client,
+    );
+    if (existing?.backend_type === input.backendType || (existing && input.backendType === "plain_jira" && !existing.backend_type)) {
+      return { kind: "existing", existing } as const;
+    }
+    const claim = await sqlGet<{ id: string }>(
+      `INSERT INTO jira_artifact_links (
+         id, workspace_id, project_id, backend_type, local_artifact_type, local_artifact_id,
+         remote_artifact_id, remote_url, status, created_at, updated_at
+       )
+       VALUES (@id, @workspaceId, @projectId, @backendType, @localType, @localId,
+               NULL, NULL, 'publishing', @now, @now)
+       ON CONFLICT (workspace_id, project_id, local_artifact_type, local_artifact_id)
+       DO UPDATE SET id = excluded.id, backend_type = excluded.backend_type,
+         remote_artifact_id = NULL, remote_url = NULL, status = 'publishing',
+         created_at = excluded.created_at, updated_at = excluded.updated_at
+       WHERE jira_artifact_links.status IN ('error', 'missing_remote')
           OR (jira_artifact_links.status = 'active' AND jira_artifact_links.backend_type <> @backendType)
-     RETURNING id`,
-    { ...params, id: createId("jiraartifact"), userId: input.actorUserId, backendType: input.backendType, now, staleCutoff },
-  );
-  if (!claim) throw new Error("This iTestFlow artifact is already being published.");
-  const backendProjectId = input.backendType === "zephyr_scale" ? authorized.provider_project_key : authorized.provider_project_id;
-  const published = await input.backend.createTestCase({ projectId: backendProjectId, testCase: input.testCase });
-  if (!published.success || !published.azureTestCaseId) throw new Error("Plain Jira test-case publishing failed.");
+       RETURNING id`,
+      { ...params, id: createId("jiraartifact"), backendType: input.backendType, now },
+      client,
+    );
+    if (!claim) throw new Error("This iTestFlow artifact is already being published.");
+    return { kind: "claimed", claim, authorized } as const;
+  });
+  if (claimed.kind === "existing") {
+    return { remoteId: claimed.existing.remote_artifact_id, remoteUrl: claimed.existing.remote_url, created: false };
+  }
+  const backendProjectId = input.backendType === "zephyr_scale" ? claimed.authorized.provider_project_key : claimed.authorized.provider_project_id;
+  let published: Awaited<ReturnType<PlainPublisher["createTestCase"]>>;
+  try {
+    published = await input.backend.createTestCase({ projectId: backendProjectId, testCase: input.testCase });
+    if (!published.success || !published.azureTestCaseId) throw new Error("Jira test-case publishing failed.");
+  } catch (error) {
+    await failOwnedClaim(params, claimed.claim.id);
+    throw error;
+  }
   const remoteId = published.azureTestCaseId;
   const remoteBaseUrl = (input.siteUrl ?? "").replace(/\/+$/, "");
   const remoteUrl = input.backendType === "zephyr_scale"
     ? `${remoteBaseUrl}/secure/Tests.jspa#/testCase/${encodeURIComponent(remoteId)}`
     : `${remoteBaseUrl}/browse/${encodeURIComponent(remoteId)}`;
-  const linked = await sqlGet<LinkRow>(
-    `UPDATE jira_artifact_links SET remote_artifact_id = @remoteId, remote_url = @remoteUrl,
-       status = 'active', updated_at = @now
-     WHERE id = @id AND workspace_id = @workspaceId AND project_id = @projectId AND status = 'publishing'
-     RETURNING remote_artifact_id, remote_url`,
-    { ...params, id: claim.id, remoteId, remoteUrl, now },
-  );
+  const linked = await withJiraArtifactProjectLock(params, async (lock) => {
+    await retireStaleJiraArtifactClaims(params, lock);
+    return sqlGet<LinkRow>(
+      `UPDATE jira_artifact_links l SET remote_artifact_id = @remoteId, remote_url = @remoteUrl,
+         status = 'active', updated_at = @now
+       WHERE l.id = @id AND l.workspace_id = @workspaceId AND l.project_id = @projectId AND l.status = 'publishing'
+         AND EXISTS (
+           SELECT 1 FROM jira_artifact_backend_configs c
+           WHERE c.workspace_id = l.workspace_id AND c.project_id = l.project_id
+             AND c.backend_type = @backendType AND c.status = 'active'
+         )
+       RETURNING l.remote_artifact_id, l.remote_url`,
+      { ...params, id: claimed.claim.id, backendType: input.backendType, remoteId, remoteUrl, now: lock.now },
+      lock.client,
+    );
+  });
   if (!linked) throw new Error("The Jira artifact link is not authorized for this workspace project.");
   return { remoteId: linked.remote_artifact_id, remoteUrl: linked.remote_url, created: true };
+}
+
+async function failOwnedClaim(
+  params: { workspaceId: string; projectId: string; localType: string; localId: string },
+  claimId: string,
+): Promise<void> {
+  await withJiraArtifactProjectLock(params, async (lock) => {
+    await retireStaleJiraArtifactClaims(params, lock);
+    await sqlRun(
+      `UPDATE jira_artifact_links SET status = 'error', updated_at = @now
+       WHERE id = @id AND workspace_id = @workspaceId AND project_id = @projectId AND status = 'publishing'`,
+      { ...params, id: claimId, now: lock.now },
+      lock.client,
+    );
+  });
 }
 
 async function resolveConfiguredBackend(input: { workspaceId: string; projectId: string; actorUserId: string }): Promise<{

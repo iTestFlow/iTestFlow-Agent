@@ -1,7 +1,8 @@
 import "server-only";
 import { decryptSecret, encryptSecret } from "@/modules/security/encryption.service";
-import { createId, nowIso, sqlGet } from "@/modules/shared/infrastructure/database/db";
+import { createId, sqlGet } from "@/modules/shared/infrastructure/database/db";
 import type { ZephyrRegion, ZephyrScaleSettings } from "./zephyr-scale-backend";
+import { withAuthorizedJiraArtifactConfigurationLock } from "./jira-artifact-project-lock";
 
 const REGIONS = new Set<ZephyrRegion>(["us", "eu", "au", "de"]);
 type Row = { config_json: string; encrypted_secret: string; secret_iv: string; secret_tag: string; key_version: number; region: string; provider_project_key: string };
@@ -9,18 +10,16 @@ type Row = { config_json: string; encrypted_secret: string; secret_iv: string; s
 export async function storeZephyrScaleConfig(input: { workspaceId: string; projectId: string; actorUserId: string; apiToken: string; region: string; localIdFieldName: string }): Promise<void> {
   const workspaceId = input.workspaceId.trim(), projectId = input.projectId.trim(), actorUserId = input.actorUserId.trim();
   if (!workspaceId || !projectId || !actorUserId || !input.apiToken.trim() || !REGIONS.has(input.region as ZephyrRegion) || !input.localIdFieldName.trim() || input.localIdFieldName.length > 255) throw new Error("Zephyr Scale configuration is invalid.");
-  const secret = encryptSecret(input.apiToken); const now = nowIso();
-  const row = await sqlGet<{ id: string }>(
-    `INSERT INTO jira_artifact_backend_configs (id, workspace_id, project_id, backend_type, config_json, encrypted_secret, secret_iv, secret_tag, key_version, region, status, created_at, updated_at)
-     SELECT @id, p.workspace_id, p.id, 'zephyr_scale', @configJson, @encryptedSecret, @secretIv, @secretTag, @keyVersion, @region, 'active', @now, @now
-     FROM projects p JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @actorUserId AND wm.status = 'active' AND wm.role IN ('owner', 'admin')
-     WHERE p.workspace_id = @workspaceId AND p.id = @projectId AND p.provider_id = 'jira-cloud' AND p.status = 'active'
-       AND NOT EXISTS (
-         SELECT 1 FROM jira_artifact_links l
-         WHERE l.workspace_id = p.workspace_id AND l.project_id = p.id AND l.status = 'publishing'
-       )
-     ON CONFLICT (workspace_id, project_id) DO UPDATE SET backend_type = 'zephyr_scale', config_json = excluded.config_json, encrypted_secret = excluded.encrypted_secret, secret_iv = excluded.secret_iv, secret_tag = excluded.secret_tag, key_version = excluded.key_version, region = excluded.region, status = 'active', updated_at = excluded.updated_at RETURNING id`,
-    { id: createId("jirabackend"), workspaceId, projectId, actorUserId, configJson: JSON.stringify({ localIdFieldName: input.localIdFieldName }), encryptedSecret: secret.ciphertext, secretIv: secret.iv, secretTag: secret.tag, keyVersion: secret.keyVersion, region: input.region, now },
+  const secret = encryptSecret(input.apiToken);
+  const row = await withAuthorizedJiraArtifactConfigurationLock(
+    { workspaceId, projectId, actorUserId },
+    ({ client, now }) => sqlGet<{ id: string }>(
+      `INSERT INTO jira_artifact_backend_configs (id, workspace_id, project_id, backend_type, config_json, encrypted_secret, secret_iv, secret_tag, key_version, region, status, created_at, updated_at)
+       VALUES (@id, @workspaceId, @projectId, 'zephyr_scale', @configJson, @encryptedSecret, @secretIv, @secretTag, @keyVersion, @region, 'active', @now, @now)
+       ON CONFLICT (workspace_id, project_id) DO UPDATE SET backend_type = 'zephyr_scale', config_json = excluded.config_json, encrypted_secret = excluded.encrypted_secret, secret_iv = excluded.secret_iv, secret_tag = excluded.secret_tag, key_version = excluded.key_version, region = excluded.region, status = 'active', updated_at = excluded.updated_at RETURNING id`,
+      { id: createId("jirabackend"), workspaceId, projectId, configJson: JSON.stringify({ localIdFieldName: input.localIdFieldName }), encryptedSecret: secret.ciphertext, secretIv: secret.iv, secretTag: secret.tag, keyVersion: secret.keyVersion, region: input.region, now },
+      client,
+    ),
   );
   if (!row) throw new Error("Zephyr Scale configuration is not authorized for this Jira project.");
 }
