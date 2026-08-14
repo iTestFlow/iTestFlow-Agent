@@ -45,6 +45,14 @@ export const PROJECT_SOURCE_DOCUMENT_FILE_FORMATS = [
 ] as const;
 export type ProjectSourceDocumentFileFormat = (typeof PROJECT_SOURCE_DOCUMENT_FILE_FORMATS)[number];
 
+const IMAGE_SOURCE_DOCUMENT_FORMATS = new Set<ProjectSourceDocumentFileFormat>(["png", "jpeg", "webp"]);
+
+export function projectSourceDocumentKindForFileFormat(
+  fileFormat: ProjectSourceDocumentFileFormat,
+): ProjectSourceDocumentKind {
+  return IMAGE_SOURCE_DOCUMENT_FORMATS.has(fileFormat) ? "image" : "document";
+}
+
 export const PROJECT_SOURCE_DOCUMENT_PARSE_STATUSES = [
   "pending",
   "parsing",
@@ -357,7 +365,14 @@ export async function createDocumentWithVersion(input: CreateDocumentWithVersion
       now,
       client,
     });
-    const linkedDocument = await setCurrentVersion(scope, documentId, version.id, now, client);
+    const linkedDocument = await setCurrentVersion(
+      scope,
+      documentId,
+      version.id,
+      projectSourceDocumentKindForFileFormat(version.fileFormat),
+      now,
+      client,
+    );
     return {
       document: mapDocument(linkedDocument),
       version,
@@ -396,7 +411,14 @@ export async function createVersionForDocument(
       now,
       client,
     });
-    const linkedDocument = await setCurrentVersion(scope, documentId, version.id, now, client);
+    const linkedDocument = await setCurrentVersion(
+      scope,
+      documentId,
+      version.id,
+      projectSourceDocumentKindForFileFormat(version.fileFormat),
+      now,
+      client,
+    );
     return {
       document: mapDocument(linkedDocument),
       version,
@@ -917,12 +939,16 @@ function scopeParams(scope: WorkspaceProjectScope) {
 }
 
 function normalizeDocumentCreateInput(input: CreateDocumentWithVersionInput) {
+  const inferredDocumentKind = projectSourceDocumentKindForFileFormat(normalizeFileFormat(input.version.fileFormat));
+  if (input.documentKind !== undefined && input.documentKind !== inferredDocumentKind) {
+    throw new ProjectSourceDocumentValidationError("Document kind must match the uploaded file format.");
+  }
   return {
     documentName: requiredText(input.documentName, "Document name"),
     description: optionalText(input.description, "Description"),
     tags: normalizeTags(input.tags),
     languageHint: optionalText(input.languageHint, "Language hint"),
-    documentKind: normalizeDocumentKind(input.documentKind ?? "document"),
+    documentKind: inferredDocumentKind,
     sourceConnector: normalizeSourceConnector(input.sourceConnector ?? "upload"),
     externalReference: optionalText(input.externalReference, "External reference"),
     createdBy: requiredText(input.createdBy, "Created by"),
@@ -997,6 +1023,7 @@ async function setCurrentVersion(
   scope: WorkspaceProjectScope,
   documentId: string,
   versionId: string,
+  documentKind: ProjectSourceDocumentKind,
   now: string,
   client: PoolClient,
 ): Promise<ProjectSourceDocumentRow> {
@@ -1004,6 +1031,7 @@ async function setCurrentVersion(
     `
       UPDATE project_source_documents
       SET current_version_id = @versionId,
+          document_kind = @documentKind,
           updated_at = @now
       WHERE id = @documentId
         AND workspace_id = @workspaceId
@@ -1011,7 +1039,7 @@ async function setCurrentVersion(
         AND azure_project_id = @azureProjectId
       RETURNING ${DOCUMENT_SELECT_COLUMNS}
     `,
-    { ...scopeParams(scope), documentId, versionId, now },
+    { ...scopeParams(scope), documentId, versionId, documentKind, now },
     client,
   );
   if (!row) throw new ProjectSourceDocumentNotFoundError("document");

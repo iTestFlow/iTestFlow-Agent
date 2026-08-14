@@ -129,6 +129,28 @@ describeDb("project source documents service (DB-backed)", () => {
     expect(current?.currentVersionId).toBe(versioned.version.id);
   });
 
+  it("keeps document_kind aligned with the current version format", async () => {
+    const created = await createDocumentWithVersion({
+      scope,
+      documentName: `Image ${uniqueTestId("name")}`,
+      createdBy: uniqueTestId("user"),
+      version: versionInput({
+        originalFileName: "scan.png",
+        mimeType: "image/png",
+        fileFormat: "png",
+      }),
+    });
+    expect(created.document.documentKind).toBe("image");
+
+    const versioned = await createVersionForDocument({
+      scope,
+      documentId: created.document.id,
+      version: versionInput(),
+    });
+    expect(versioned.document.documentKind).toBe("document");
+    expect((await getProjectSourceDocument({ scope, documentId: created.document.id }))?.documentKind).toBe("document");
+  });
+
   it("archive sets lifecycle_status=archived with archived_at, rejects new versions, then restore flips back", async () => {
     const created = await createDocumentWithVersion({
       scope,

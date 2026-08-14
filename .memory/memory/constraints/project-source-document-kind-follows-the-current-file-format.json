@@ -1,0 +1,38 @@
+{
+  "body_path": "memory/constraints/project-source-document-kind-follows-the-current-file-format.md",
+  "content_hash": "sha256:db94a980e3f87802fe11af4b3964f5bbead932d0a53454d03c5660882663c56a",
+  "created_at": "2026-08-14T16:05:54+03:00",
+  "evidence": [
+    {
+      "id": "src/modules/documents/project-source-documents.service.ts",
+      "kind": "file"
+    },
+    {
+      "id": "src/app/api/context/documents/upload/route.db.test.ts",
+      "kind": "file"
+    }
+  ],
+  "facets": {
+    "applies_to": [
+      "src/modules/documents/project-source-documents.service.ts",
+      "src/app/api/context/documents/upload/route.ts"
+    ],
+    "category": "business-rule"
+  },
+  "id": "constraint.project-source-document-kind-follows-the-current-file-format",
+  "scope": {
+    "branch": null,
+    "kind": "project",
+    "project": "project.itestflow-agent",
+    "task": null
+  },
+  "source": {
+    "kind": "agent",
+    "task": "Preserve the corrected OCR source-kind invariant"
+  },
+  "status": "active",
+  "tags": [],
+  "title": "Project source document kind follows the current file format",
+  "type": "constraint",
+  "updated_at": "2026-08-14T16:05:54+03:00"
+}

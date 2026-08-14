@@ -14,7 +14,8 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 const embeddingMocks = vi.hoisted(() => ({
   syncProjectDocumentEmbeddings: vi.fn(async () => ({ embeddedChunkCount: 0, removedCount: 0 })),
 }));
-vi.mock("@/modules/rag/embedding-store.service", () => ({
+vi.mock("@/modules/rag/embedding-store.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/rag/embedding-store.service")>(),
   syncProjectDocumentEmbeddings: embeddingMocks.syncProjectDocumentEmbeddings,
 }));
 
@@ -33,6 +34,7 @@ import {
 } from "@/modules/documents/project-source-documents.service";
 import { createLocalFilesystemStorageBackend } from "@/modules/documents/storage/local-filesystem-backend";
 import { UPLOADED_DOCUMENT_INGEST } from "@/modules/jobs/uploaded-document-jobs.service";
+import { retrieveStoredProjectContext } from "@/modules/rag/project-context-store.service";
 import type { Job } from "@/modules/jobs/job-queue.service";
 import type { JobHandlerContext } from "@/modules/jobs/job-handlers";
 import { runUploadedDocumentIngestJob } from "./uploaded-document-ingest.handler";
@@ -198,10 +200,13 @@ describeDb("uploaded document ingest handler (DB-backed, embeddings mocked)", ()
     expect(ftsRows.length).toBe(chunks.length);
   });
 
-  it("persists OCR status and region provenance through version metadata and chunks", async () => {
+  it.each([
+    { language: "eng", visibleText: "PAYMENT GATEWAY", expectedText: "PAYMENT GATEWAY", direction: "ltr" },
+    { language: "ara", visibleText: "مرحبا", expectedText: "مرحبا", direction: "rtl" },
+  ] as const)("persists and retrieves real $language OCR context with image provenance", async ({ language, visibleText, expectedText, direction }) => {
     const backend = createLocalFilesystemStorageBackend();
     const content = await sharp(Buffer.from(
-      '<svg width="640" height="140" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><text x="320" y="95" text-anchor="middle" font-family="DejaVu Sans" font-size="64">OCR SOURCE</text></svg>',
+      `<svg width="800" height="160" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><text x="400" y="105" text-anchor="middle" direction="${direction}" font-family="DejaVu Sans" font-size="64">${visibleText}</text></svg>`,
     )).png().toBuffer();
     const contentHash = sha256Hex(content);
     const stored = await backend.put({
@@ -212,8 +217,8 @@ describeDb("uploaded document ingest handler (DB-backed, embeddings mocked)", ()
     });
     const created = await createDocumentWithVersion({
       scope,
-      documentName: "OCR provenance sample",
-      languageHint: "en",
+      documentName: `${language} OCR provenance sample`,
+      languageHint: language,
       createdBy: uniqueTestId("user"),
       version: {
         storageKey: stored.storageKey,
@@ -232,10 +237,11 @@ describeDb("uploaded document ingest handler (DB-backed, embeddings mocked)", ()
     );
 
     expect(result).toMatchObject({ outcome: "parsed", parseStatus: "parsed", chunkCount: 1 });
+    expect(created.document.documentKind).toBe("image");
     const version = await getProjectSourceDocumentVersion({ scope, versionId: created.version.id });
     expect(version?.metadata.ocr).toEqual(expect.objectContaining({
       engine: "tesseract.js",
-      language: "eng",
+      language,
       status: "parsed",
       acceptedRegionCount: 1,
       rejectedRegionCount: 0,
@@ -246,6 +252,7 @@ describeDb("uploaded document ingest handler (DB-backed, embeddings mocked)", ()
       sourceDocumentVersionId: created.version.id,
     });
     expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.content).toContain(expectedText);
     expect(chunks[0]).toMatchObject({
       documentId: created.document.id,
       sourceDocumentVersionId: created.version.id,
@@ -254,11 +261,27 @@ describeDb("uploaded document ingest handler (DB-backed, embeddings mocked)", ()
         origin: "ocr_text",
         engine: "tesseract.js",
         engineVersion: expect.any(String),
-        language: "eng",
+        language,
         confidence: expect.any(Number),
         bbox: { x0: expect.any(Number), y0: expect.any(Number), x1: expect.any(Number), y1: expect.any(Number) },
       },
     });
+
+    const retrieved = await retrieveStoredProjectContext({
+      scope,
+      query: expectedText,
+      embeddingProvider: null,
+      rerankProvider: null,
+      sourceKinds: ["uploaded_document"],
+    });
+    expect(retrieved).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceType: "uploaded_document",
+        documentId: created.document.id,
+        documentVersionId: created.version.id,
+        content: expect.stringContaining(expectedText),
+      }),
+    ]));
   }, 30_000);
 
   it("a corrupted DOCX buffer completes without throwing and ends parse_failed with parse_error set", async () => {

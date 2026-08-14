@@ -6,6 +6,7 @@ import { writeAuditLog } from "@/modules/audit/audit.service";
 import { getDocumentStorageBackend } from "@/modules/documents/document-storage.service";
 import {
   createDocumentWithVersion,
+  projectSourceDocumentKindForFileFormat,
 } from "@/modules/documents/project-source-documents.service";
 import {
   canonicalDocumentMimeType,
@@ -99,6 +100,7 @@ export async function POST(request: Request) {
         description: metadata.data.description,
         tags: metadata.data.tags,
         languageHint: ["png", "jpeg", "webp"].includes(item.validation.format) ? metadata.data.languageHint : undefined,
+        documentKind: projectSourceDocumentKindForFileFormat(item.validation.format),
         createdBy: ctx.userId,
         version: {
           storageBackend: storage.kind,
