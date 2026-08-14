@@ -37,7 +37,7 @@ All controls use native labelled inputs, selects, links, and buttons. The flow i
 
 ## Artifact Backends
 
-One active backend is stored per workspace project. Switching backend replaces the prior configuration; secret columns are cleared when the new backend does not need them. The next publish of an existing local artifact atomically rebinds its current trace link to the newly selected backend and republishes it there; the prior remote artifact is not deleted.
+One active backend is stored per workspace project. Switching backend replaces the prior configuration; secret columns are cleared when the new backend does not need them. A backend change is rejected while any artifact publish for that project owns a live publishing claim. The next publish of an existing local artifact atomically rebinds its current trace link to the newly selected backend and republishes it there; the prior remote artifact is not deleted.
 
 ### Plain Jira
 
@@ -49,7 +49,7 @@ Provide the Xray Cloud client ID, client secret, and immutable `customfield_<num
 
 ### Zephyr Scale Cloud
 
-Provide the Zephyr Scale API token, the approved US/EU/AU/DE region, and immutable local-ID field name. The token is encrypted and the region selects a closed endpoint allowlist. Case/Cycle identity scans are bounded, execution publishing uses a fenced durable claim, and request headers plus bodies are subject to a 30-second timeout.
+Provide the Zephyr Scale API token, the approved US/EU/AU/DE region, and immutable local-ID field name. The token is encrypted and the region selects a closed endpoint allowlist. Case/Cycle identity scans are bounded, execution publishing uses a fenced durable claim, and request headers plus bodies are subject to a 30-second timeout. Trace links open the Zephyr Scale Test Case view for the remote key rather than a Jira issue view.
 
 ## Webhooks and Synchronization
 

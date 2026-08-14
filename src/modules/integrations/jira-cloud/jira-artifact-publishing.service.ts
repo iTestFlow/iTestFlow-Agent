@@ -62,6 +62,10 @@ export async function storePlainJiraArtifactConfig(input: {
      JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @actorUserId
        AND wm.status = 'active' AND wm.role IN ('owner', 'admin')
      WHERE p.workspace_id = @workspaceId AND p.id = @projectId AND p.provider_id = 'jira-cloud' AND p.status = 'active'
+       AND NOT EXISTS (
+         SELECT 1 FROM jira_artifact_links l
+         WHERE l.workspace_id = p.workspace_id AND l.project_id = p.id AND l.status = 'publishing'
+       )
      ON CONFLICT (workspace_id, project_id) DO UPDATE SET
        backend_type = 'plain_jira', config_json = excluded.config_json,
        encrypted_secret = NULL, secret_iv = NULL, secret_tag = NULL, key_version = NULL, region = NULL,
@@ -117,6 +121,8 @@ async function publishJiraTestCase(input: {
             NULL, NULL, 'publishing', @now, @now
      FROM projects p
      JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @userId AND wm.status = 'active'
+     JOIN jira_artifact_backend_configs c ON c.workspace_id = p.workspace_id AND c.project_id = p.id
+       AND c.backend_type = @backendType AND c.status = 'active'
      WHERE p.id = @projectId AND p.workspace_id = @workspaceId AND p.provider_id = 'jira-cloud' AND p.status = 'active'
      ON CONFLICT (workspace_id, project_id, local_artifact_type, local_artifact_id)
      DO UPDATE SET backend_type = excluded.backend_type, remote_artifact_id = NULL, remote_url = NULL,
@@ -131,7 +137,10 @@ async function publishJiraTestCase(input: {
   const published = await input.backend.createTestCase({ projectId: backendProjectId, testCase: input.testCase });
   if (!published.success || !published.azureTestCaseId) throw new Error("Plain Jira test-case publishing failed.");
   const remoteId = published.azureTestCaseId;
-  const remoteUrl = `${(input.siteUrl ?? "").replace(/\/+$/, "")}/browse/${encodeURIComponent(remoteId)}`;
+  const remoteBaseUrl = (input.siteUrl ?? "").replace(/\/+$/, "");
+  const remoteUrl = input.backendType === "zephyr_scale"
+    ? `${remoteBaseUrl}/secure/Tests.jspa#/testCase/${encodeURIComponent(remoteId)}`
+    : `${remoteBaseUrl}/browse/${encodeURIComponent(remoteId)}`;
   const linked = await sqlGet<LinkRow>(
     `UPDATE jira_artifact_links SET remote_artifact_id = @remoteId, remote_url = @remoteUrl,
        status = 'active', updated_at = @now

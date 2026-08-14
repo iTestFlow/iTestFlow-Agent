@@ -15,6 +15,10 @@ export async function storeZephyrScaleConfig(input: { workspaceId: string; proje
      SELECT @id, p.workspace_id, p.id, 'zephyr_scale', @configJson, @encryptedSecret, @secretIv, @secretTag, @keyVersion, @region, 'active', @now, @now
      FROM projects p JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @actorUserId AND wm.status = 'active' AND wm.role IN ('owner', 'admin')
      WHERE p.workspace_id = @workspaceId AND p.id = @projectId AND p.provider_id = 'jira-cloud' AND p.status = 'active'
+       AND NOT EXISTS (
+         SELECT 1 FROM jira_artifact_links l
+         WHERE l.workspace_id = p.workspace_id AND l.project_id = p.id AND l.status = 'publishing'
+       )
      ON CONFLICT (workspace_id, project_id) DO UPDATE SET backend_type = 'zephyr_scale', config_json = excluded.config_json, encrypted_secret = excluded.encrypted_secret, secret_iv = excluded.secret_iv, secret_tag = excluded.secret_tag, key_version = excluded.key_version, region = excluded.region, status = 'active', updated_at = excluded.updated_at RETURNING id`,
     { id: createId("jirabackend"), workspaceId, projectId, actorUserId, configJson: JSON.stringify({ localIdFieldName: input.localIdFieldName }), encryptedSecret: secret.ciphertext, secretIv: secret.iv, secretTag: secret.tag, keyVersion: secret.keyVersion, region: input.region, now },
   );

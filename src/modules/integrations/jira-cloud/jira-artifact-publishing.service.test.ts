@@ -45,6 +45,8 @@ describe("publishPlainJiraTestCase", () => {
     expect(backend.createTestCase).toHaveBeenCalledWith({ projectId: "10000", testCase: input.testCase });
     const [insertSql, params] = mocks.sqlGet.mock.calls[2];
     expect(insertSql).toContain("JOIN workspace_members");
+    expect(insertSql).toContain("JOIN jira_artifact_backend_configs c");
+    expect(insertSql).toContain("c.backend_type = @backendType");
     expect(insertSql).toContain("ON CONFLICT (workspace_id, project_id, local_artifact_type, local_artifact_id)");
     expect(params).toMatchObject({ workspaceId: "ws-1", projectId: "project-1", userId: "user-1", localId: "case-1" });
     expect(mocks.sqlGet.mock.calls[3][1]).toMatchObject({ id: "link-1", remoteId: "QA-9" });
@@ -58,6 +60,8 @@ describe("publishPlainJiraTestCase", () => {
     const [sql, params] = mocks.sqlGet.mock.calls[0];
     expect(sql).toContain("'plain_jira'");
     expect(sql).toContain("wm.role IN ('owner', 'admin')");
+    expect(sql).toContain("NOT EXISTS");
+    expect(sql).toContain("l.status = 'publishing'");
     expect(params.configJson).toBe('{"testCaseIssueTypeId":"10001","localIdFieldId":"customfield_10002"}');
     expect(params).not.toHaveProperty("encryptedSecret");
   });
@@ -97,6 +101,9 @@ describe("publishPlainJiraTestCase", () => {
     await plainJiraPublishing.publishConfiguredJiraTestCases({ ...input, testCases: [input.testCase] });
 
     expect(mocks.zephyrCreate).toHaveBeenCalledWith({ projectId: "QA", testCase: input.testCase });
+    expect(mocks.sqlGet.mock.calls[4][1]).toMatchObject({
+      remoteUrl: "https://quality.atlassian.net/secure/Tests.jspa#/testCase/QA-T1",
+    });
   });
 
   it("rebinds an existing trace when the project switches artifact backend", async () => {

@@ -12,6 +12,8 @@ describe("Zephyr Scale configuration", () => {
     expect(mocks.encryptSecret).toHaveBeenCalledWith(" opaque-token ");
     const [sql, params] = mocks.sqlGet.mock.calls[0];
     expect(sql).toContain("wm.role IN ('owner', 'admin')");
+    expect(sql).toContain("NOT EXISTS");
+    expect(sql).toContain("l.status = 'publishing'");
     expect(sql).toContain("backend_type = 'zephyr_scale'");
     expect(JSON.stringify(params)).not.toContain("opaque-token");
     expect(params).toMatchObject({ encryptedSecret: "encrypted", region: "eu" });

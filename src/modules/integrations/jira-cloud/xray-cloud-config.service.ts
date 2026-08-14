@@ -38,6 +38,10 @@ export async function storeXrayCloudConfig(input: {
        AND wm.status = 'active' AND wm.role IN ('owner', 'admin')
      WHERE p.workspace_id = @workspaceId AND p.id = @projectId
        AND p.provider_id = 'jira-cloud' AND p.status = 'active'
+       AND NOT EXISTS (
+         SELECT 1 FROM jira_artifact_links l
+         WHERE l.workspace_id = p.workspace_id AND l.project_id = p.id AND l.status = 'publishing'
+       )
      ON CONFLICT (workspace_id, project_id) DO UPDATE SET
        backend_type = 'xray_cloud', config_json = excluded.config_json,
        encrypted_secret = excluded.encrypted_secret, secret_iv = excluded.secret_iv,

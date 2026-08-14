@@ -14,6 +14,8 @@ describe("Xray Cloud configuration", () => {
     expect(mocks.encryptSecret).toHaveBeenCalledWith(" opaque-secret ");
     const [sql, params] = mocks.sqlGet.mock.calls[0];
     expect(sql).toContain("wm.role IN ('owner', 'admin')");
+    expect(sql).toContain("NOT EXISTS");
+    expect(sql).toContain("l.status = 'publishing'");
     expect(sql).toContain("backend_type = 'xray_cloud'");
     expect(JSON.stringify(params)).not.toContain("opaque-secret");
     expect(params).toMatchObject({ encryptedSecret: "encrypted", secretIv: "iv", secretTag: "tag", keyVersion: 1 });
