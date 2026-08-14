@@ -80,12 +80,12 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
     const releaseSwitch = deferred<void>();
     const switching = withAuthorizedJiraArtifactConfigurationLock(
       { workspaceId, projectId, actorUserId: ownerId },
-      async ({ client, now }) => {
+      async ({ client }) => {
         await sqlRun(
           `UPDATE jira_artifact_backend_configs
-           SET backend_type = 'xray_cloud', config_json = '{}', status = 'active', updated_at = @now
+           SET backend_type = 'xray_cloud', config_json = '{}', status = 'active', updated_at = clock_timestamp()
            WHERE workspace_id = @workspaceId AND project_id = @projectId`,
-          { workspaceId, projectId, now },
+          { workspaceId, projectId },
           client,
         );
         switchStarted.resolve();
@@ -115,13 +115,13 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
     const releaseReplacement = deferred<void>();
     const replacement = withAuthorizedJiraArtifactConfigurationLock(
       { workspaceId, projectId, actorUserId: ownerId },
-      async ({ client, now }) => {
+      async ({ client }) => {
         await sqlRun(
           `UPDATE jira_artifact_backend_configs
-           SET config_json = @configJson, updated_at = @now
+           SET config_json = @configJson, updated_at = clock_timestamp()
            WHERE workspace_id = @workspaceId AND project_id = @projectId`,
           {
-            workspaceId, projectId, now,
+            workspaceId, projectId,
             configJson: JSON.stringify({ testCaseIssueTypeId: "10002", localIdFieldId: "customfield_10003" }),
           },
           client,
@@ -167,6 +167,39 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
     });
     expect(createdFields).not.toHaveProperty("customfield_10002");
   });
+
+  it("completes a full pool of configured publishers without nested connection acquisition", async () => {
+    authMocks.resolveJiraAccessToken.mockImplementation(async () => (
+      await sqlGet<{ token: string }>(`SELECT 'access-token'::text AS token`)
+    )?.token ?? "");
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/issue/QA-7?")) return json({ fields: { project: { id: providerProjectId, key: "QA" } } });
+      if (url.endsWith("/search/jql")) return json({ issues: [] });
+      if (url.endsWith("/issue") && init?.method === "POST") {
+        const fields = (JSON.parse(String(init.body)) as { fields: Record<string, unknown> }).fields;
+        const localId = String(fields.customfield_10002);
+        return json({ key: `QA-${localId.replace(/\D/g, "")}` });
+      }
+      if (url.endsWith("/remotelink")) return json({});
+      if (url.includes("/comment?")) return json({ comments: [], isLast: true });
+      if (url.endsWith("/comment") && init?.method === "POST") return json({});
+      throw new Error(`Unexpected Jira request: ${url}`);
+    }));
+
+    const publications = Array.from({ length: 10 }, (_, index) => publishConfiguredJiraTestCases({
+      workspaceId, projectId, actorUserId: ownerId,
+      testCases: [{ localId: `case-pool-${index + 1}`, targetUserStoryId: "QA-7", title: `Pool ${index + 1}`, steps: [] }],
+    }));
+    const outcome = await Promise.race([
+      Promise.all(publications),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 5_000)),
+    ]);
+
+    expect(outcome).not.toBe("timeout");
+    expect(outcome).toEqual(expect.arrayContaining(Array.from({ length: 10 }, () => (
+      expect.objectContaining({ results: [expect.objectContaining({ success: true })] })
+    ))));
+  }, 10_000);
 
   it("retires a failed claim immediately so configuration repair and retry can proceed", async () => {
     const localId = "case-failed";

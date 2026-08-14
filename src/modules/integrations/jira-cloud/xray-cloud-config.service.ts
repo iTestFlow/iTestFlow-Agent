@@ -5,7 +5,7 @@ import { createId, sqlGet } from "@/modules/shared/infrastructure/database/db";
 import type { XrayCloudSettings } from "./xray-cloud-backend";
 import { withAuthorizedJiraArtifactConfigurationLock } from "./jira-artifact-project-lock";
 
-type ConfigRow = {
+export type XrayCloudConfigRow = {
   config_json: string;
   encrypted_secret: string;
   secret_iv: string;
@@ -28,23 +28,23 @@ export async function storeXrayCloudConfig(input: {
   const secret = encryptSecret(input.clientSecret);
   const written = await withAuthorizedJiraArtifactConfigurationLock(
     { workspaceId, projectId, actorUserId },
-    ({ client, now }) => sqlGet<{ id: string }>(
+    ({ client }) => sqlGet<{ id: string }>(
       `INSERT INTO jira_artifact_backend_configs (
          id, workspace_id, project_id, backend_type, config_json,
          encrypted_secret, secret_iv, secret_tag, key_version, region, status, created_at, updated_at
        )
        VALUES (@id, @workspaceId, @projectId, 'xray_cloud', @configJson,
-               @encryptedSecret, @secretIv, @secretTag, @keyVersion, 'global', 'active', @now, @now)
+               @encryptedSecret, @secretIv, @secretTag, @keyVersion, 'global', 'active', clock_timestamp(), clock_timestamp())
        ON CONFLICT (workspace_id, project_id) DO UPDATE SET
          backend_type = 'xray_cloud', config_json = excluded.config_json,
          encrypted_secret = excluded.encrypted_secret, secret_iv = excluded.secret_iv,
          secret_tag = excluded.secret_tag, key_version = excluded.key_version,
-         region = excluded.region, status = 'active', updated_at = excluded.updated_at
+         region = excluded.region, status = 'active', updated_at = clock_timestamp()
        RETURNING id`,
       {
         id: createId("jirabackend"), workspaceId, projectId,
         configJson: JSON.stringify({ clientId, localIdFieldId: input.localIdFieldId }),
-        encryptedSecret: secret.ciphertext, secretIv: secret.iv, secretTag: secret.tag, keyVersion: secret.keyVersion, now,
+        encryptedSecret: secret.ciphertext, secretIv: secret.iv, secretTag: secret.tag, keyVersion: secret.keyVersion,
       },
       client,
     ),
@@ -53,7 +53,7 @@ export async function storeXrayCloudConfig(input: {
 }
 
 export async function resolveXrayCloudConfig(input: { workspaceId: string; projectId: string; actorUserId: string }): Promise<XrayCloudSettings> {
-  const row = await sqlGet<ConfigRow>(
+  const row = await sqlGet<XrayCloudConfigRow>(
     `SELECT c.config_json, c.encrypted_secret, c.secret_iv, c.secret_tag, c.key_version,
             p.provider_project_id, p.provider_project_key
      FROM jira_artifact_backend_configs c
@@ -65,6 +65,10 @@ export async function resolveXrayCloudConfig(input: { workspaceId: string; proje
     input,
   );
   if (!row) throw new Error("Xray Cloud configuration is not available for this Jira project.");
+  return resolveXrayCloudConfigRow(row);
+}
+
+export function resolveXrayCloudConfigRow(row: XrayCloudConfigRow): XrayCloudSettings {
   const config = parseConfig(row.config_json);
   if (!row.provider_project_id?.trim() || !row.provider_project_key?.trim()) throw new Error("Xray Cloud Jira project identity is invalid.");
   return {

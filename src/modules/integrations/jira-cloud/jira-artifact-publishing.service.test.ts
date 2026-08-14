@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   sqlGet: vi.fn(), sqlRun: vi.fn(), resolveAccess: vi.fn(), plainCreate: vi.fn(), xrayCreate: vi.fn(), zephyrCreate: vi.fn(),
-  resolveXray: vi.fn(), resolveZephyr: vi.fn(),
+  resolveXrayRow: vi.fn(), resolveZephyrRow: vi.fn(),
 }));
 vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   createId: () => "link-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet, sqlRun: mocks.sqlRun,
@@ -12,8 +12,8 @@ vi.mock("@/modules/auth/jira-connection.service", () => ({ resolveJiraAccessToke
 vi.mock("./plain-jira-artifact-backend", () => ({ PlainJiraArtifactBackend: class { createTestCase = mocks.plainCreate; } }));
 vi.mock("./xray-cloud-backend", () => ({ XrayCloudBackend: class { createTestCase = mocks.xrayCreate; } }));
 vi.mock("./zephyr-scale-backend", () => ({ ZephyrScaleBackend: class { createTestCase = mocks.zephyrCreate; } }));
-vi.mock("./xray-cloud-config.service", () => ({ resolveXrayCloudConfig: mocks.resolveXray }));
-vi.mock("./zephyr-scale-config.service", () => ({ resolveZephyrScaleConfig: mocks.resolveZephyr }));
+vi.mock("./xray-cloud-config.service", () => ({ resolveXrayCloudConfigRow: mocks.resolveXrayRow }));
+vi.mock("./zephyr-scale-config.service", () => ({ resolveZephyrScaleConfigRow: mocks.resolveZephyrRow }));
 import * as plainJiraPublishing from "./jira-artifact-publishing.service";
 
 const { publishPlainJiraTestCase } = plainJiraPublishing;
@@ -52,9 +52,11 @@ describe("publishPlainJiraTestCase", () => {
     expect(mocks.sqlGet.mock.calls[0][0]).toContain("JOIN jira_artifact_backend_configs c");
     expect(mocks.sqlGet.mock.calls[0][2]).toEqual({ tx: true });
     expect(insertSql).toContain("id = excluded.id");
+    expect(insertSql).toContain("clock_timestamp()");
     expect(insertSql).toContain("status IN ('error', 'missing_remote')");
     expect(insertSql).toContain("ON CONFLICT (workspace_id, project_id, local_artifact_type, local_artifact_id)");
     expect(params).toMatchObject({ workspaceId: "ws-1", projectId: "project-1", localId: "case-1" });
+    expect(params).not.toHaveProperty("now");
     expect(mocks.sqlGet.mock.calls[0][1]).toMatchObject({ userId: "user-1" });
     expect(mocks.sqlGet.mock.calls[3][1]).toMatchObject({ id: "link-1", remoteId: "QA-9" });
   });
@@ -88,6 +90,8 @@ describe("publishPlainJiraTestCase", () => {
       .resolves.toMatchObject({ results: [{ localId: "case-1", azureTestCaseId: "QA-9", success: true }] });
 
     expect(mocks.sqlGet.mock.calls[0][2]).toEqual({ tx: true });
+    expect(mocks.resolveAccess.mock.invocationCallOrder[0]).toBeLessThan(mocks.sqlRun.mock.invocationCallOrder[0]);
+    expect(mocks.sqlGet.mock.calls.slice(0, 4).every((call) => call[2]?.tx === true)).toBe(true);
     expect(mocks.plainCreate).toHaveBeenCalledWith({ projectId: "10000", testCase: input.testCase });
   });
 
@@ -113,7 +117,7 @@ describe("publishPlainJiraTestCase", () => {
   });
 
   it("passes the Jira project key to the configured Zephyr backend", async () => {
-    mocks.resolveZephyr.mockResolvedValue({ apiToken: "token", region: "us", jiraProjectKey: "QA", localIdFieldName: "iTestFlow ID" });
+    mocks.resolveZephyrRow.mockReturnValue({ apiToken: "token", region: "us", jiraProjectKey: "QA", localIdFieldName: "iTestFlow ID" });
     mocks.sqlGet
       .mockResolvedValueOnce({
         backend_type: "zephyr_scale", config_json: "{}", provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
@@ -134,7 +138,7 @@ describe("publishPlainJiraTestCase", () => {
   });
 
   it("rebinds an existing trace when the project switches artifact backend", async () => {
-    mocks.resolveXray.mockResolvedValue({ clientId: "client", clientSecret: "secret", jiraProjectId: "10000", jiraProjectKey: "QA", localIdFieldId: "customfield_1" });
+    mocks.resolveXrayRow.mockReturnValue({ clientId: "client", clientSecret: "secret", jiraProjectId: "10000", jiraProjectKey: "QA", localIdFieldId: "customfield_1" });
     mocks.sqlGet
       .mockResolvedValueOnce({
         backend_type: "xray_cloud", config_json: "{}", provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",

@@ -1,13 +1,11 @@
 import "server-only";
 
 import type { PoolClient } from "pg";
-import { nowIso, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
-
-const CLAIM_LEASE_MS = 10 * 60 * 1000;
+import { sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 
 type ProjectLockInput = { workspaceId: string; projectId: string };
 type ConfigurationLockInput = ProjectLockInput & { actorUserId: string };
-export type JiraArtifactProjectLock = { client: PoolClient; now: string; staleCutoff: string };
+export type JiraArtifactProjectLock = { client: PoolClient };
 
 export class JiraArtifactPublishInProgressError extends Error {
   constructor() {
@@ -27,9 +25,7 @@ export async function withJiraArtifactProjectLock<T>(
       { lockKey },
       client,
     );
-    const now = nowIso();
-    const staleCutoff = new Date(Date.parse(now) - CLAIM_LEASE_MS).toISOString();
-    return work({ client, now, staleCutoff });
+    return work({ client });
   });
 }
 
@@ -39,10 +35,10 @@ export async function retireStaleJiraArtifactClaims(
 ): Promise<void> {
   await sqlRun(
     `UPDATE jira_artifact_links
-     SET status = 'error', updated_at = @now
+     SET status = 'error', updated_at = clock_timestamp()
      WHERE workspace_id = @workspaceId AND project_id = @projectId
-       AND status = 'publishing' AND updated_at < @staleCutoff`,
-    { ...input, now: lock.now, staleCutoff: lock.staleCutoff },
+       AND status = 'publishing' AND updated_at < clock_timestamp() - INTERVAL '10 minutes'`,
+    input,
     lock.client,
   );
 }

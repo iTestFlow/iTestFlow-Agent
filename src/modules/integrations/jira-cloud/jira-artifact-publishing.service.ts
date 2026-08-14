@@ -7,9 +7,9 @@ import { resolveJiraAccessToken } from "@/modules/auth/jira-connection.service";
 import { JiraCloudAdapter } from "./jira-cloud-adapter";
 import { PlainJiraArtifactBackend } from "./plain-jira-artifact-backend";
 import { XrayCloudBackend } from "./xray-cloud-backend";
-import { resolveXrayCloudConfig } from "./xray-cloud-config.service";
+import { resolveXrayCloudConfigRow } from "./xray-cloud-config.service";
 import { ZephyrScaleBackend } from "./zephyr-scale-backend";
-import { resolveZephyrScaleConfig } from "./zephyr-scale-config.service";
+import { resolveZephyrScaleConfigRow } from "./zephyr-scale-config.service";
 import { retireStaleJiraArtifactClaims, withAuthorizedJiraArtifactConfigurationLock, withJiraArtifactProjectLock } from "./jira-artifact-project-lock";
 
 type PlainPublisher = { createTestCase(input: { projectId: string; testCase: FinalApprovedTestCase }): Promise<{ success: boolean; azureTestCaseId?: string; error?: string }> };
@@ -18,6 +18,7 @@ type BackendType = "plain_jira" | "xray_cloud" | "zephyr_scale";
 type BackendAnchor = {
   backend_type: BackendType; config_json: string; provider_project_id: string; provider_project_key: string;
   provider_project_name: string; provider_site_id: string; provider_site_url: string;
+  encrypted_secret: string; secret_iv: string; secret_tag: string; key_version: number; region: string;
 };
 type ResolvedBackend = { backend: PlainPublisher; backendType: BackendType; siteUrl: string };
 
@@ -27,10 +28,11 @@ export async function publishConfiguredJiraTestCases(input: {
   const results = [];
   for (const testCase of input.testCases) {
     try {
+      const accessToken = await resolveJiraAccessToken({ workspaceId: input.workspaceId, userId: input.actorUserId });
       const published = await publishJiraTestCase({
         ...input,
         testCase,
-        resolveBackend: (client) => resolveConfiguredBackend(input, client),
+        resolveBackend: (client) => resolveConfiguredBackend(input, accessToken, client),
       });
       results.push({
         localId: testCase.localId, azureTestCaseId: published.remoteId, success: true,
@@ -60,19 +62,19 @@ export async function storePlainJiraArtifactConfig(input: {
   }
   const row = await withAuthorizedJiraArtifactConfigurationLock(
     { workspaceId, projectId, actorUserId },
-    ({ client, now }) => sqlGet<{ id: string }>(
+    ({ client }) => sqlGet<{ id: string }>(
       `INSERT INTO jira_artifact_backend_configs (
          id, workspace_id, project_id, backend_type, config_json, encrypted_secret, secret_iv, secret_tag, key_version, region, status, created_at, updated_at
        )
-       VALUES (@id, @workspaceId, @projectId, 'plain_jira', @configJson, NULL, NULL, NULL, NULL, NULL, 'active', @now, @now)
+       VALUES (@id, @workspaceId, @projectId, 'plain_jira', @configJson, NULL, NULL, NULL, NULL, NULL, 'active', clock_timestamp(), clock_timestamp())
        ON CONFLICT (workspace_id, project_id) DO UPDATE SET
          backend_type = 'plain_jira', config_json = excluded.config_json,
          encrypted_secret = NULL, secret_iv = NULL, secret_tag = NULL, key_version = NULL, region = NULL,
-         status = 'active', updated_at = excluded.updated_at
+         status = 'active', updated_at = clock_timestamp()
        RETURNING id`,
       {
         id: createId("jirabackend"), workspaceId, projectId,
-        configJson: JSON.stringify({ testCaseIssueTypeId, localIdFieldId }), now,
+        configJson: JSON.stringify({ testCaseIssueTypeId, localIdFieldId }),
       },
       client,
     ),
@@ -94,7 +96,7 @@ async function publishJiraTestCase(input: {
 }): Promise<{ remoteId: string; remoteUrl: string; created: boolean }> {
   const params = { workspaceId: input.workspaceId, projectId: input.projectId, localType: "test_case", localId: input.testCase.localId };
   const claimed = await withJiraArtifactProjectLock(params, async (lock) => {
-    const { client, now } = lock;
+    const { client } = lock;
     const resolved = input.resolveBackend
       ? await input.resolveBackend(client)
       : input.backend && input.backendType
@@ -130,7 +132,7 @@ async function publishJiraTestCase(input: {
          remote_artifact_id, remote_url, status, created_at, updated_at
        )
        VALUES (@id, @workspaceId, @projectId, @backendType, @localType, @localId,
-               NULL, NULL, 'publishing', @now, @now)
+               NULL, NULL, 'publishing', clock_timestamp(), clock_timestamp())
        ON CONFLICT (workspace_id, project_id, local_artifact_type, local_artifact_id)
        DO UPDATE SET id = excluded.id, backend_type = excluded.backend_type,
          remote_artifact_id = NULL, remote_url = NULL, status = 'publishing',
@@ -138,7 +140,7 @@ async function publishJiraTestCase(input: {
        WHERE jira_artifact_links.status IN ('error', 'missing_remote')
           OR (jira_artifact_links.status = 'active' AND jira_artifact_links.backend_type <> @backendType)
        RETURNING id`,
-      { ...params, id: createId("jiraartifact"), backendType: resolved.backendType, now },
+      { ...params, id: createId("jiraartifact"), backendType: resolved.backendType },
       client,
     );
     if (!claim) throw new Error("This iTestFlow artifact is already being published.");
@@ -165,7 +167,7 @@ async function publishJiraTestCase(input: {
     await retireStaleJiraArtifactClaims(params, lock);
     return sqlGet<LinkRow>(
       `UPDATE jira_artifact_links l SET remote_artifact_id = @remoteId, remote_url = @remoteUrl,
-         status = 'active', updated_at = @now
+         status = 'active', updated_at = clock_timestamp()
        WHERE l.id = @id AND l.workspace_id = @workspaceId AND l.project_id = @projectId AND l.status = 'publishing'
          AND EXISTS (
            SELECT 1 FROM jira_artifact_backend_configs c
@@ -173,7 +175,7 @@ async function publishJiraTestCase(input: {
              AND c.backend_type = @backendType AND c.status = 'active'
          )
        RETURNING l.remote_artifact_id, l.remote_url`,
-      { ...params, id: claimed.claim.id, backendType: claimed.resolved.backendType, remoteId, remoteUrl, now: lock.now },
+      { ...params, id: claimed.claim.id, backendType: claimed.resolved.backendType, remoteId, remoteUrl },
       lock.client,
     );
   });
@@ -188,9 +190,9 @@ async function failOwnedClaim(
   await withJiraArtifactProjectLock(params, async (lock) => {
     await retireStaleJiraArtifactClaims(params, lock);
     await sqlRun(
-      `UPDATE jira_artifact_links SET status = 'error', updated_at = @now
+      `UPDATE jira_artifact_links SET status = 'error', updated_at = clock_timestamp()
        WHERE id = @id AND workspace_id = @workspaceId AND project_id = @projectId AND status = 'publishing'`,
-      { ...params, id: claimId, now: lock.now },
+      { ...params, id: claimId },
       lock.client,
     );
   });
@@ -198,10 +200,12 @@ async function failOwnedClaim(
 
 async function resolveConfiguredBackend(
   input: { workspaceId: string; projectId: string; actorUserId: string },
+  accessToken: string,
   client: PoolClient,
 ): Promise<ResolvedBackend> {
   const anchor = await sqlGet<BackendAnchor>(
-    `SELECT c.backend_type, c.config_json, p.provider_project_id, p.provider_project_key, p.provider_project_name,
+    `SELECT c.backend_type, c.config_json, c.encrypted_secret, c.secret_iv, c.secret_tag, c.key_version, c.region,
+            p.provider_project_id, p.provider_project_key, p.provider_project_name,
             w.provider_site_id, w.provider_site_url
      FROM jira_artifact_backend_configs c
      JOIN projects p ON p.workspace_id = c.workspace_id AND p.id = c.project_id AND p.provider_id = 'jira-cloud' AND p.status = 'active'
@@ -213,16 +217,15 @@ async function resolveConfiguredBackend(
   );
   if (!anchor) throw new Error("A Jira artifact backend is not configured for this project.");
   if (anchor.backend_type === "xray_cloud") {
-    return { backend: new XrayCloudBackend(await resolveXrayCloudConfig(input)), backendType: anchor.backend_type, siteUrl: anchor.provider_site_url };
+    return { backend: new XrayCloudBackend(resolveXrayCloudConfigRow(anchor)), backendType: anchor.backend_type, siteUrl: anchor.provider_site_url };
   }
   if (anchor.backend_type === "zephyr_scale") {
-    const accessToken = await resolveJiraAccessToken({ workspaceId: input.workspaceId, userId: input.actorUserId });
     const jira = new JiraCloudAdapter({
       cloudId: anchor.provider_site_id, siteUrl: anchor.provider_site_url, accessToken,
     }, {
       jiraProjectId: anchor.provider_project_id, jiraProjectKey: anchor.provider_project_key, jiraProjectName: anchor.provider_project_name,
     });
-    const settings = await resolveZephyrScaleConfig(input);
+    const settings = resolveZephyrScaleConfigRow(anchor);
     return {
       backend: new ZephyrScaleBackend({
         ...settings,
@@ -236,7 +239,6 @@ async function resolveConfiguredBackend(
     };
   }
   const config = parsePlainConfig(anchor.config_json);
-  const accessToken = await resolveJiraAccessToken({ workspaceId: input.workspaceId, userId: input.actorUserId });
   const appBaseUrl = process.env.ITESTFLOW_PUBLIC_URL?.trim();
   if (!appBaseUrl) throw new Error("Plain Jira artifact publishing is not configured for this deployment.");
   return {
