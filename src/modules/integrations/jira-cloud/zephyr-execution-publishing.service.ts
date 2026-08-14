@@ -32,7 +32,7 @@ export async function publishZephyrExecution(input: {
     if (existing) return { kind: "existing", existing } as const;
     const claim = await sqlGet<{ id: string }>(
       `INSERT INTO jira_artifact_links (id, workspace_id, project_id, backend_type, local_artifact_type, local_artifact_id, remote_artifact_id, remote_url, status, created_at, updated_at)
-       VALUES (@id, @workspaceId, @projectId, 'zephyr_scale', @localType, @localId, NULL, NULL, 'publishing', clock_timestamp(), clock_timestamp())
+       VALUES (@id, @workspaceId, @projectId, 'zephyr_scale', @localType, @localId, NULL, NULL, 'publishing', clock_timestamp()::text, clock_timestamp()::text)
        ON CONFLICT (workspace_id, project_id, local_artifact_type, local_artifact_id) DO UPDATE SET
          id = excluded.id, backend_type = excluded.backend_type, remote_artifact_id = NULL, remote_url = NULL,
          status = 'publishing', created_at = excluded.created_at, updated_at = excluded.updated_at
@@ -56,7 +56,7 @@ export async function publishZephyrExecution(input: {
   const linked = await withJiraArtifactProjectLock(params, async (lock) => {
     await retireStaleJiraArtifactClaims(params, lock);
     return sqlGet<{ remote_artifact_id: string }>(
-      `UPDATE jira_artifact_links l SET remote_artifact_id = @remoteId, remote_url = '', status = 'active', updated_at = clock_timestamp()
+      `UPDATE jira_artifact_links l SET remote_artifact_id = @remoteId, remote_url = '', status = 'active', updated_at = clock_timestamp()::text
        WHERE l.id = @id AND l.workspace_id = @workspaceId AND l.project_id = @projectId AND l.status = 'publishing'
          AND EXISTS (
            SELECT 1 FROM jira_artifact_backend_configs c
@@ -75,7 +75,7 @@ async function failOwnedExecutionClaim(params: { workspaceId: string; projectId:
   await withJiraArtifactProjectLock(params, async (lock) => {
     await retireStaleJiraArtifactClaims(params, lock);
     await sqlRun(
-      `UPDATE jira_artifact_links SET status = 'error', updated_at = clock_timestamp()
+      `UPDATE jira_artifact_links SET status = 'error', updated_at = clock_timestamp()::text
        WHERE id = @id AND workspace_id = @workspaceId AND project_id = @projectId AND status = 'publishing'`,
       { ...params, id: claimId },
       lock.client,

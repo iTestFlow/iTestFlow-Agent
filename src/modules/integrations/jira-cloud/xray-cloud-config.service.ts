@@ -34,12 +34,12 @@ export async function storeXrayCloudConfig(input: {
          encrypted_secret, secret_iv, secret_tag, key_version, region, status, created_at, updated_at
        )
        VALUES (@id, @workspaceId, @projectId, 'xray_cloud', @configJson,
-               @encryptedSecret, @secretIv, @secretTag, @keyVersion, 'global', 'active', clock_timestamp(), clock_timestamp())
+               @encryptedSecret, @secretIv, @secretTag, @keyVersion, 'global', 'active', clock_timestamp()::text, clock_timestamp()::text)
        ON CONFLICT (workspace_id, project_id) DO UPDATE SET
          backend_type = 'xray_cloud', config_json = excluded.config_json,
          encrypted_secret = excluded.encrypted_secret, secret_iv = excluded.secret_iv,
          secret_tag = excluded.secret_tag, key_version = excluded.key_version,
-         region = excluded.region, status = 'active', updated_at = clock_timestamp()
+         region = excluded.region, status = 'active', updated_at = clock_timestamp()::text
        RETURNING id`,
       {
         id: createId("jirabackend"), workspaceId, projectId,

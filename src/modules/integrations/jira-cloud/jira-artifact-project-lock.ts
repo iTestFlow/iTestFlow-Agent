@@ -35,9 +35,9 @@ export async function retireStaleJiraArtifactClaims(
 ): Promise<void> {
   await sqlRun(
     `UPDATE jira_artifact_links
-     SET status = 'error', updated_at = clock_timestamp()
+     SET status = 'error', updated_at = clock_timestamp()::text
      WHERE workspace_id = @workspaceId AND project_id = @projectId
-       AND status = 'publishing' AND updated_at < clock_timestamp() - INTERVAL '10 minutes'`,
+       AND status = 'publishing' AND updated_at::timestamptz < clock_timestamp() - INTERVAL '10 minutes'`,
     input,
     lock.client,
   );

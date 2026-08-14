@@ -15,8 +15,8 @@ export async function storeZephyrScaleConfig(input: { workspaceId: string; proje
     { workspaceId, projectId, actorUserId },
     ({ client }) => sqlGet<{ id: string }>(
       `INSERT INTO jira_artifact_backend_configs (id, workspace_id, project_id, backend_type, config_json, encrypted_secret, secret_iv, secret_tag, key_version, region, status, created_at, updated_at)
-       VALUES (@id, @workspaceId, @projectId, 'zephyr_scale', @configJson, @encryptedSecret, @secretIv, @secretTag, @keyVersion, @region, 'active', clock_timestamp(), clock_timestamp())
-       ON CONFLICT (workspace_id, project_id) DO UPDATE SET backend_type = 'zephyr_scale', config_json = excluded.config_json, encrypted_secret = excluded.encrypted_secret, secret_iv = excluded.secret_iv, secret_tag = excluded.secret_tag, key_version = excluded.key_version, region = excluded.region, status = 'active', updated_at = clock_timestamp() RETURNING id`,
+       VALUES (@id, @workspaceId, @projectId, 'zephyr_scale', @configJson, @encryptedSecret, @secretIv, @secretTag, @keyVersion, @region, 'active', clock_timestamp()::text, clock_timestamp()::text)
+       ON CONFLICT (workspace_id, project_id) DO UPDATE SET backend_type = 'zephyr_scale', config_json = excluded.config_json, encrypted_secret = excluded.encrypted_secret, secret_iv = excluded.secret_iv, secret_tag = excluded.secret_tag, key_version = excluded.key_version, region = excluded.region, status = 'active', updated_at = clock_timestamp()::text RETURNING id`,
       { id: createId("jirabackend"), workspaceId, projectId, configJson: JSON.stringify({ localIdFieldName: input.localIdFieldName }), encryptedSecret: secret.ciphertext, secretIv: secret.iv, secretTag: secret.tag, keyVersion: secret.keyVersion, region: input.region },
       client,
     ),

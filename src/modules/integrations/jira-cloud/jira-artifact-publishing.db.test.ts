@@ -83,7 +83,7 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
       async ({ client }) => {
         await sqlRun(
           `UPDATE jira_artifact_backend_configs
-           SET backend_type = 'xray_cloud', config_json = '{}', status = 'active', updated_at = clock_timestamp()
+           SET backend_type = 'xray_cloud', config_json = '{}', status = 'active', updated_at = clock_timestamp()::text
            WHERE workspace_id = @workspaceId AND project_id = @projectId`,
           { workspaceId, projectId },
           client,
@@ -118,7 +118,7 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
       async ({ client }) => {
         await sqlRun(
           `UPDATE jira_artifact_backend_configs
-           SET config_json = @configJson, updated_at = clock_timestamp()
+           SET config_json = @configJson, updated_at = clock_timestamp()::text
            WHERE workspace_id = @workspaceId AND project_id = @projectId`,
           {
             workspaceId, projectId,
