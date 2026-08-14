@@ -25,7 +25,7 @@ vi.mock("./jira-oauth", async (importOriginal) => {
   return { ...actual, refreshAtlassianOAuthTokens: mocks.refreshTokens };
 });
 
-import { resolveJiraAccessToken, revokeJiraConnection, storeJiraConnection } from "./jira-connection.service";
+import { resolveJiraAccessToken, resolveJiraSyncPrincipalAccessToken, revokeJiraConnection, storeJiraConnection } from "./jira-connection.service";
 
 describe("Jira OAuth connection storage", () => {
   beforeEach(() => {
@@ -62,6 +62,23 @@ describe("Jira OAuth connection storage", () => {
     expect(update?.[1]).toMatchObject({ encryptedAccessToken: "opaque-a", encryptedRefreshToken: "opaque-r" });
     expect(JSON.stringify(update?.[1])).not.toContain("plain-new-access");
     expect(JSON.stringify(update?.[1])).not.toContain("plain-new-refresh");
+  });
+
+  it("resolves the active workspace sync principal through the normal refresh path", async () => {
+    mocks.sqlGet
+      .mockResolvedValueOnce({ user_id: "sync-user" })
+      .mockResolvedValueOnce({
+        id: "conn-1", encrypted_access_token: "access", access_token_iv: "iv-a", access_token_tag: "tag-a",
+        encrypted_refresh_token: "refresh", refresh_token_iv: "iv-r", refresh_token_tag: "tag-r",
+        key_version: 1, access_expires_at: "2026-08-13T12:00:00.000Z",
+      });
+    mocks.decryptSecret.mockReturnValueOnce("sync-access-token");
+
+    await expect(resolveJiraSyncPrincipalAccessToken("ws-1")).resolves.toEqual({
+      userId: "sync-user", accessToken: "sync-access-token",
+    });
+    expect(mocks.sqlGet.mock.calls[0][0]).toContain("is_sync_principal = true");
+    expect(mocks.sqlGet.mock.calls[0][0]).toContain("w.provider_id = 'jira-cloud'");
   });
 
   it("revokes a connection and clears sync-principal ownership without deleting audit-safe metadata", async () => {

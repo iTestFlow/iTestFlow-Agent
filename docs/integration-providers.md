@@ -1,13 +1,14 @@
 # Integration Providers
 
-This document describes the integration provider boundary for iTestFlow. Azure DevOps is currently the only registered provider. The provider architecture exists so future work-management and test-management systems can be added without rewriting the core workflow services.
+This document describes the integration provider boundary for iTestFlow. Azure DevOps and Jira Cloud are registered work-management providers. Jira projects select one test-artifact backend: Plain Jira, Xray Cloud, or Zephyr Scale Cloud.
 
 ## Status
 
-- Runtime behavior is unchanged: existing routes, UI labels, response messages, publishing flows, and Azure-branded result fields remain in place.
+- Existing Azure routes, stored scopes, PAT flows, and compatibility result fields remain in place.
 - Azure DevOps is the first implementation behind generic work-management and test-management ports.
-- No provider picker or UI option exists yet.
+- Jira OAuth onboarding, trusted site/project selection, mappings, backend configuration, sync/conflict status, trace links, and disconnect are exposed through provider-aware login, header, and Settings surfaces.
 - Provider identity is persisted on `workspaces.provider_id` and `projects.provider_id`, both defaulting to `azure-devops`.
+- Jira OAuth and backend secrets are encrypted; client responses expose status and redacted metadata only.
 
 ## Source Map
 
@@ -147,11 +148,11 @@ Split-provider orchestration is deferred. The current registry returns one provi
 
 ## Deferred Decisions
 
-This provider boundary is ADR-11 in practice, although no separate ADR file exists yet. Deferred until a second provider exists:
+This provider boundary is ADR-11 in practice, although no separate ADR file exists yet. Still deferred for compatibility:
 
 - Rename Azure-branded routes, accessors, fields, and local storage shapes.
 - Split `AzureDevOpsRestAdapter` into work and test classes.
-- Add UI provider selection and capability-based UI gating.
+- Rename the legacy `/api/azure-devops/*` compatibility routes after clients migrate to neutral paths.
 - Replace Azure-specific string heuristics in response classification with code-driven integration handling.
 - Generalize workspace setup variables beyond Azure DevOps organizations.
 - Extend credential type checks for non-Azure provider credentials.

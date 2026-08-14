@@ -3,6 +3,12 @@
 
 export type Provider = "openai" | "gemini" | "anthropic"
 
+export function workProviderDisplay(providerId?: string | null) {
+  return providerId === "jira-cloud"
+    ? { name: "Jira Cloud", short: "Jira" }
+    : { name: "Azure DevOps", short: "Azure" }
+}
+
 export function providerLabel(value?: string | null) {
   switch (value) {
     case "openai":

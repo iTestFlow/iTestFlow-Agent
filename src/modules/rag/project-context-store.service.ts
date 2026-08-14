@@ -3,7 +3,7 @@ import "server-only";
 import { createId, getPool, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { writeAuditLog } from "@/modules/audit/audit.service";
-import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
+import type { WorkManagementProvider } from "@/modules/integrations/core/work-management-provider";
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { DEFAULT_CONTEXT_FETCH_LIMIT, MAX_CONTEXT_FETCH_LIMIT } from "@/lib/project-context-defaults";
 import { chunkText } from "./rag-pipeline.service";
@@ -205,7 +205,7 @@ const INSERT_SOURCE_SNAPSHOT_SQL = `
 export async function indexAzureWorkItemsAsProjectContext(input: {
   scope: ProjectScope;
   actor: string;
-  adapter: AzureDevOpsAdapter;
+  adapter: Pick<WorkManagementProvider, "fetchWorkItems">;
   workItemTypes: string[];
   states: string[];
   mode?: "incremental" | "rebuild";
@@ -216,11 +216,13 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
    * entirely so a test never loads the ~131 MB ONNX weights.
    */
   embeddingProvider?: EmbeddingProvider | null;
+  /** Provider runtimes such as Jira use an empty list to mean all configured issue types/states. */
+  allowEmptyFilters?: boolean;
 }) {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
-  if (!input.workItemTypes.length) throw new Error("Select at least one work item type to index.");
-  if (!input.states.length) throw new Error("Select at least one work item state to index.");
+  if (!input.allowEmptyFilters && !input.workItemTypes.length) throw new Error("Select at least one work item type to index.");
+  if (!input.allowEmptyFilters && !input.states.length) throw new Error("Select at least one work item state to index.");
 
   const workItems = await input.adapter.fetchWorkItems({
     projectId: scope.azureProjectId,

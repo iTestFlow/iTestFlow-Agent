@@ -47,7 +47,7 @@ describe("verifyAndUpsertWorkspaceProject", () => {
       azureOrganizationUrl: "https://quality.atlassian.net", workspaceId: "ws-jira",
     });
     expect(mocks.upsertJiraProjectMapping).toHaveBeenCalledWith({
-      workspaceId: "ws-jira", providerId: "jira-cloud", jiraProjectId: "10000",
+      workspaceId: "ws-jira", actorUserId: "user-1", providerId: "jira-cloud", jiraProjectId: "10000",
       jiraProjectKey: "QA", jiraProjectName: "Quality",
     });
   });

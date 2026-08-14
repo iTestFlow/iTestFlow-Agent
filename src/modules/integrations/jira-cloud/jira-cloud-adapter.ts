@@ -255,22 +255,44 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
     return `${this.siteUrl}/browse/${encodeURIComponent(input.workItemId)}`;
   }
 
-  fetchLinkedTestCases(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  fetchTestPlans(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  fetchTestSuites(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  fetchTestSuiteTree(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  createTestSuite(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  deleteTestSuite(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  fetchTestPoints(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  fetchTestRuns(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  fetchTestResults(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  addTestCasesToSuite(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  addTestCaseToSuite(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  updateTestPoints(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  createTestCase(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  createRequirementBasedSuite(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  linkTestCaseToUserStory(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
-  linkTestCaseToWorkItem(..._args: unknown[]): Promise<never> { return this.unsupportedTestManagement(); }
+  async updateIssueFields(input: { issueKey: string; fields: Record<string, unknown> }): Promise<void> {
+    const issueKey = input.issueKey.trim();
+    if (!issueKey || !input.fields || Object.keys(input.fields).length === 0) throw new Error("Jira sync field update is invalid.");
+    const keys = Object.keys(input.fields);
+    if (keys.some((field) => !/^(summary|description|labels|priority|customfield_[0-9]+)$/.test(field))) {
+      throw new Error("Jira sync field update contains an unsupported field.");
+    }
+    await this.fetchScopedIssue(issueKey);
+    await this.requestJson(`/issue/${encodeURIComponent(issueKey)}`, { method: "PUT", body: JSON.stringify({ fields: input.fields }) });
+  }
+
+  async transitionIssue(input: { issueKey: string; statusName: string }): Promise<void> {
+    const issueKey = input.issueKey.trim();
+    const statusName = input.statusName.trim();
+    if (!issueKey || !statusName) throw new Error("Jira sync transition is invalid.");
+    await this.fetchScopedIssue(issueKey);
+    const response = await this.requestJson<{ transitions?: Array<{ id?: string; to?: { name?: string } }> }>(`/issue/${encodeURIComponent(issueKey)}/transitions`);
+    const matches = (response.transitions ?? []).filter((transition) => transition.to?.name?.toLocaleLowerCase() === statusName.toLocaleLowerCase() && transition.id);
+    if (matches.length !== 1) throw new Error("The requested Jira status transition is not uniquely available.");
+    await this.requestJson(`/issue/${encodeURIComponent(issueKey)}/transitions`, { method: "POST", body: JSON.stringify({ transition: { id: matches[0].id } }) });
+  }
+
+  fetchLinkedTestCases(): Promise<never> { return this.unsupportedTestManagement(); }
+  fetchTestPlans(): Promise<never> { return this.unsupportedTestManagement(); }
+  fetchTestSuites(): Promise<never> { return this.unsupportedTestManagement(); }
+  fetchTestSuiteTree(): Promise<never> { return this.unsupportedTestManagement(); }
+  createTestSuite(): Promise<never> { return this.unsupportedTestManagement(); }
+  deleteTestSuite(): Promise<never> { return this.unsupportedTestManagement(); }
+  fetchTestPoints(): Promise<never> { return this.unsupportedTestManagement(); }
+  fetchTestRuns(): Promise<never> { return this.unsupportedTestManagement(); }
+  fetchTestResults(): Promise<never> { return this.unsupportedTestManagement(); }
+  addTestCasesToSuite(): Promise<never> { return this.unsupportedTestManagement(); }
+  addTestCaseToSuite(): Promise<never> { return this.unsupportedTestManagement(); }
+  updateTestPoints(): Promise<never> { return this.unsupportedTestManagement(); }
+  createTestCase(): Promise<never> { return this.unsupportedTestManagement(); }
+  createRequirementBasedSuite(): Promise<never> { return this.unsupportedTestManagement(); }
+  linkTestCaseToUserStory(): Promise<never> { return this.unsupportedTestManagement(); }
+  linkTestCaseToWorkItem(): Promise<never> { return this.unsupportedTestManagement(); }
 
   private fields() {
     return unique([...ISSUE_FIELDS, ...Object.values(this.mapping).filter((value): value is string => typeof value === "string")]);
@@ -317,7 +339,7 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
       title: text(fields.summary) ?? "Untitled Jira issue", description: adfText(fields.description),
       acceptanceCriteria: mapping.acceptanceCriteriaFieldId ? text(fields[mapping.acceptanceCriteriaFieldId]) : undefined,
       state: text(object(fields.status)?.name), assignedTo: text(object(fields.assignee)?.displayName),
-      priority: priorityNumber(text(object(fields.priority)?.name)), tags: strings(fields.labels),
+      priority: number(object(fields.priority)?.id), tags: strings(fields.labels),
       areaPath: text(array(fields.components)[0]?.name), iterationPath: text(array(fields.fixVersions)[0]?.name),
       storyPoints: mapping.storyPointsFieldId ? number(fields[mapping.storyPointsFieldId]) : undefined,
       parentLinks: [text(object(fields.parent)?.key)].filter(defined), childLinks: array(fields.subtasks).map((item) => text(item.key)).filter(defined),
@@ -331,6 +353,11 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
     if (projectId !== this.scope.jiraProjectId && projectId !== this.scope.jiraProjectKey) {
       throw new Error(`Project ${projectId} is not the selected Jira project.`);
     }
+  }
+
+  private async fetchScopedIssue(issueKey: string) {
+    if (!this.scope) throw new Error("A Jira project scope is required for this operation.");
+    return this.fetchWorkItemById({ projectId: this.scope.jiraProjectId, workItemId: issueKey });
   }
 
   private assertIssueScope(issue: Json) {
@@ -355,6 +382,7 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
       const code = response.status === 401 ? "integration_auth_failed" : response.status === 403 ? "integration_permission_denied" : response.status === 404 ? "integration_not_found" : response.status === 429 ? "integration_rate_limited" : response.status >= 500 ? "integration_unavailable" : "integration_unknown";
       throw new IntegrationError({ providerId: "jira-cloud", code, message: "Jira Cloud request failed.", statusCode: response.status });
     }
+    if (response.status === 204) return undefined as T;
     return response.json() as Promise<T>;
   }
 }
@@ -377,4 +405,3 @@ function number(value: unknown): number | undefined { const parsed = typeof valu
 function strings(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []; }
 function unique<T>(values: T[]): T[] { return [...new Set(values)]; }
 function defined<T>(value: T | undefined): value is T { return value !== undefined; }
-function priorityNumber(value?: string) { const match = value?.match(/\d+/); return match ? Number(match[0]) : undefined; }

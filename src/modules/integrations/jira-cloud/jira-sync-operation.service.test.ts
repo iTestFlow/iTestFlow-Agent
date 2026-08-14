@@ -34,6 +34,14 @@ describe("completeJiraSyncOperation", () => {
     expect(String(mocks.sqlRun.mock.calls[0][0])).toContain("processing_started_at < @staleCutoff");
   });
 
+  it("restricts a worker claim to its trusted project when supplied", async () => {
+    mocks.sqlGet.mockResolvedValue(null);
+    await expect(claimNextJiraSyncOperation("ws-1", "project-1")).resolves.toBeNull();
+    const candidate = mocks.sqlGet.mock.calls.find(([sql]) => String(sql).includes("SKIP LOCKED"));
+    expect(candidate?.[0]).toContain("m.project_id = @projectId");
+    expect(candidate?.[1]).toMatchObject({ workspaceId: "ws-1", projectId: "project-1" });
+  });
+
   it("records a fixed failure code and moves the mapping to error", async () => {
     mocks.sqlGet.mockResolvedValue({ mapping_id: "mapping-1", attempts: 5 });
     await failJiraSyncOperation({ operationId: "op-1", errorCode: "integration_rate_limited" });
@@ -42,7 +50,8 @@ describe("completeJiraSyncOperation", () => {
 
   it("requeues transient failures with bounded backoff and a fixed error code", async () => {
     mocks.sqlGet.mockResolvedValue({ mapping_id: "mapping-1", attempts: 1 });
-    await failJiraSyncOperation({ operationId: "op-1", errorCode: "integration_rate_limited" });
+    await expect(failJiraSyncOperation({ operationId: "op-1", errorCode: "integration_rate_limited" }))
+      .resolves.toEqual({ retry: true, runAfter: "2026-08-13T00:00:02.000Z" });
     expect(mocks.sqlRun.mock.calls.some(([sql, params]) => String(sql).includes("run_after") && params.status === "pending" && params.errorCode === "integration_rate_limited")).toBe(true);
     expect(mocks.sqlRun.mock.calls.some(([sql]) => String(sql).includes("status = 'error'"))).toBe(false);
   });

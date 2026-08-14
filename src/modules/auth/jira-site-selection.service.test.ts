@@ -66,4 +66,43 @@ describe("Jira multi-site selection continuation", () => {
     expect(mocks.sqlGet.mock.calls[0][0]).toContain("SELECT resources_json");
     expect(mocks.sqlGet.mock.calls[0][0]).not.toContain("encrypted_access_token");
   });
+
+  it("rejects invalid creation inputs and encryption key mismatches before persistence", async () => {
+    await expect(createJiraSiteSelection({
+      browserBinding: " ", returnTo: "/", accessToken: "access", refreshToken: "refresh", expiresInSeconds: 60,
+      scopes: "", resources: [],
+    })).rejects.toThrow("required");
+    mocks.encryptSecret.mockReset()
+      .mockReturnValueOnce({ ciphertext: "a", iv: "a", tag: "a", keyVersion: 1 })
+      .mockReturnValueOnce({ ciphertext: "r", iv: "r", tag: "r", keyVersion: 2 });
+    await expect(createJiraSiteSelection({
+      browserBinding: "browser", returnTo: "/", accessToken: "access", refreshToken: "refresh", expiresInSeconds: 60,
+      scopes: "", resources: [
+        { id: "cloud-a", name: "A", url: "https://a.atlassian.net", scopes: [] },
+        { id: "cloud-b", name: "B", url: "https://b.atlassian.net", scopes: [] },
+      ],
+    })).rejects.toThrow("key versions");
+    expect(mocks.sqlRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing, expired, and wrong-browser continuations", async () => {
+    await expect(getJiraSiteSelectionOptions(" ", "browser")).rejects.toThrow("invalid");
+    mocks.sqlGet.mockResolvedValueOnce(undefined);
+    await expect(getJiraSiteSelectionOptions("continuation", "browser")).rejects.toThrow("expired");
+    mocks.sqlGet.mockResolvedValueOnce(undefined);
+    await expect(consumeJiraSiteSelection("continuation", "browser", "cloud-a")).rejects.toThrow("already used");
+  });
+
+  it("rejects a consumed selection whose access token expired while choosing", async () => {
+    mocks.sqlGet.mockResolvedValue({
+      encrypted_access_token: "enc-a", access_token_iv: "iv-a", access_token_tag: "tag-a",
+      encrypted_refresh_token: "enc-r", refresh_token_iv: "iv-r", refresh_token_tag: "tag-r", key_version: 1,
+      access_expires_at: "2026-08-13T09:59:59.000Z", scopes: "", return_to: "/",
+      resources_json: JSON.stringify([
+        { id: "cloud-a", name: "A", url: "https://a.atlassian.net", scopes: [] },
+        { id: "cloud-b", name: "B", url: "https://b.atlassian.net", scopes: [] },
+      ]),
+    });
+    await expect(consumeJiraSiteSelection("continuation", "browser", "cloud-a")).rejects.toThrow("expired");
+  });
 });

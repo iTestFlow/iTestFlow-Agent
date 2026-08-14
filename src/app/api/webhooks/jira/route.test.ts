@@ -44,4 +44,22 @@ describe("Jira webhook route", () => {
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({ error: "Jira webhook delivery could not be persisted." });
   });
+
+  it("rejects invalid JSON before persistence", async () => {
+    const response = await POST(new Request("https://app.test/api/webhooks/jira", {
+      method: "POST", body: "{", headers: { authorization: "Bearer signed" },
+    }));
+    expect(response.status).toBe(400);
+    expect(mocks.accept).not.toHaveBeenCalled();
+  });
+
+  it("returns a non-retryable fixed response for a rejected delivery", async () => {
+    const { JiraWebhookRejectedError } = await import("@/modules/integrations/jira-cloud/jira-webhook-events.service");
+    mocks.accept.mockRejectedValue(new JiraWebhookRejectedError("registration secret"));
+    const response = await POST(new Request("https://app.test/api/webhooks/jira", {
+      method: "POST", body: "{}", headers: { authorization: "Bearer signed" },
+    }));
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "Jira webhook delivery was rejected." });
+  });
 });

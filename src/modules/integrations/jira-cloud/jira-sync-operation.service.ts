@@ -13,7 +13,7 @@ export type ClaimedJiraSyncOperation = {
   id: string; mappingId: string; field: string; operation: "pull" | "push"; target: unknown;
 };
 
-export async function claimNextJiraSyncOperation(workspaceId: string): Promise<ClaimedJiraSyncOperation | null> {
+export async function claimNextJiraSyncOperation(workspaceId: string, projectId?: string, operationId?: string): Promise<ClaimedJiraSyncOperation | null> {
   return withTransaction(async (client) => {
     const staleCutoff = new Date(Date.parse(nowIso()) - 5 * 60 * 1000).toISOString();
     await sqlRun(
@@ -46,11 +46,13 @@ export async function claimNextJiraSyncOperation(workspaceId: string): Promise<C
     const candidate = await sqlGet<{ id: string; mapping_id: string; field_name: string; operation: "pull" | "push"; target_json: string | null }>(
       `SELECT o.id, o.mapping_id, o.field_name, o.operation, o.target_json
        FROM jira_sync_operations o JOIN jira_sync_mappings m ON m.id = o.mapping_id
-       WHERE m.workspace_id = @workspaceId AND m.status IN ('syncing', 'conflict')
+       WHERE m.workspace_id = @workspaceId ${projectId ? "AND m.project_id = @projectId" : ""}
+         ${operationId ? "AND o.id = @operationId" : ""}
+         AND m.status IN ('syncing', 'conflict')
          AND o.status = 'pending' AND o.run_after <= @now
        ORDER BY o.created_at ASC
        FOR UPDATE OF o SKIP LOCKED LIMIT 1`,
-      { workspaceId, now: nowIso() }, client,
+      { workspaceId, ...(projectId ? { projectId } : {}), ...(operationId ? { operationId } : {}), now: nowIso() }, client,
     );
     if (!candidate) return null;
     const claimed = await sqlRun(
@@ -68,8 +70,8 @@ export async function claimNextJiraSyncOperation(workspaceId: string): Promise<C
 }
 
 const RETRYABLE_CODES = new Set<IntegrationErrorCode>(["integration_rate_limited", "integration_unavailable", "integration_unknown"]);
-export async function failJiraSyncOperation(input: { operationId: string; errorCode: IntegrationErrorCode }): Promise<void> {
-  await withTransaction(async (client) => {
+export async function failJiraSyncOperation(input: { operationId: string; errorCode: IntegrationErrorCode }): Promise<{ retry: boolean; runAfter: string }> {
+  return withTransaction(async (client) => {
     const operation = await sqlGet<{ mapping_id: string; attempts: number }>(
       `SELECT mapping_id, attempts FROM jira_sync_operations
        WHERE id = @operationId AND status = 'processing' FOR UPDATE`,
@@ -85,7 +87,7 @@ export async function failJiraSyncOperation(input: { operationId: string; errorC
        WHERE id = @operationId AND status = 'processing'`,
       { operationId: input.operationId, status: retry ? "pending" : "failed", errorCode: input.errorCode, runAfter, now }, client,
     );
-    if (retry) return;
+    if (retry) return { retry: true, runAfter };
     await sqlRun(
       `UPDATE jira_sync_field_states SET status = 'error', updated_at = @now
        WHERE mapping_id = @mappingId AND field_name = (
@@ -97,6 +99,7 @@ export async function failJiraSyncOperation(input: { operationId: string; errorC
       `UPDATE jira_sync_mappings SET status = 'error', updated_at = @now WHERE id = @mappingId`,
       { mappingId: operation.mapping_id, now }, client,
     );
+    return { retry: false, runAfter };
   });
 }
 

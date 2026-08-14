@@ -109,7 +109,7 @@ describe("ZephyrScaleBackend", () => {
 
   it("fails closed when an immutable identity search reaches its safety cap with more pages", async () => {
     const values = Array.from({ length: 1000 }, (_, index) => ({ key: `QA-T${index + 1}`, project: { key: "QA" } }));
-    const fetchMock = vi.fn().mockImplementation((_url: string) => json({ values, nextStartAtId: fetchMock.mock.calls.length * 1000 }));
+    const fetchMock = vi.fn().mockImplementation(() => json({ values, nextStartAtId: fetchMock.mock.calls.length * 1000 }));
     vi.stubGlobal("fetch", fetchMock);
     await expect(backend().createTestCase({ projectId: "QA", testCase: { localId: "missing", targetUserStoryId: "QA-7", title: "Case", steps: [] } })).rejects.toThrow("safe identity search limit");
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);

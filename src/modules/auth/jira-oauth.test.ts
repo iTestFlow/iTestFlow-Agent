@@ -148,4 +148,28 @@ describe("Jira Cloud OAuth", () => {
     await expect(getAtlassianUserIdentity("access-secret", "cloud-c")).rejects.toThrow("not approved");
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("fails closed for missing inputs, network failures, and malformed upstream JSON", async () => {
+    expect(() => buildAtlassianAuthorizationUrl(" ")).toThrow("state");
+    await expect(exchangeAtlassianAuthorizationCode(" ")).rejects.toThrow("code");
+    await expect(refreshAtlassianOAuthTokens(" ")).rejects.toThrow("refresh token");
+    await expect(getAtlassianUserIdentity("access", " ")).rejects.toThrow("site ID");
+    await expect(listAllowedAtlassianResources(" ")).rejects.toThrow("access token");
+
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network secret")));
+    await expect(exchangeAtlassianAuthorizationCode("code")).rejects.toThrow("unavailable");
+    await expect(listAllowedAtlassianResources("access")).rejects.toThrow("unavailable");
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{", { status: 200 })));
+    await expect(exchangeAtlassianAuthorizationCode("code")).rejects.toThrow("invalid OAuth");
+    await expect(listAllowedAtlassianResources("access")).rejects.toThrow("invalid response");
+  });
+
+  it("distinguishes terminal refresh rejection from transient token failure", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 401 })));
+    await expect(refreshAtlassianOAuthTokens("refresh")).rejects.toBeInstanceOf((await import("./jira-oauth")).AtlassianReauthorizationRequiredError);
+    await expect(exchangeAtlassianAuthorizationCode("code")).rejects.toThrow("rejected");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 500 })));
+    await expect(exchangeAtlassianAuthorizationCode("code")).rejects.toThrow("failed");
+  });
 });

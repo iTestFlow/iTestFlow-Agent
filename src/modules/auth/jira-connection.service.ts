@@ -193,6 +193,26 @@ export async function resolveJiraAccessToken(input: { workspaceId: string; userI
   return outcome.accessToken;
 }
 
+/** Resolve the single active owner/admin connection designated for background Jira synchronization. */
+export async function resolveJiraSyncPrincipalAccessToken(workspaceId: string): Promise<{ userId: string; accessToken: string }> {
+  const principal = await sqlGet<{ user_id: string }>(
+    `SELECT c.user_id
+     FROM jira_connections c
+     JOIN workspaces w ON w.id = c.workspace_id
+     JOIN workspace_members m ON m.workspace_id = c.workspace_id AND m.user_id = c.user_id
+     WHERE c.workspace_id = @workspaceId AND c.status = 'active' AND c.is_sync_principal = true
+       AND w.status = 'active' AND w.provider_id = 'jira-cloud'
+       AND m.status = 'active' AND m.role IN ('owner', 'admin')
+     LIMIT 1`,
+    { workspaceId },
+  );
+  if (!principal) throw new Error("No active Jira sync principal is configured for this workspace.");
+  return {
+    userId: principal.user_id,
+    accessToken: await resolveJiraAccessToken({ workspaceId, userId: principal.user_id }),
+  };
+}
+
 export async function revokeJiraConnection(input: {
   workspaceId: string;
   actorUserId: string;

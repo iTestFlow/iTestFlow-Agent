@@ -50,6 +50,10 @@ describe("POST /api/auth/jira/select", () => {
     }));
     expect(response.status).toBe(400);
     expect(mocks.consumeSelection).not.toHaveBeenCalled();
+    const invalidJson = await POST(new Request("https://itestflow.example/api/auth/jira/select", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{",
+    }));
+    expect(invalidJson.status).toBe(400);
   });
 
   it("redacts a replayed selection and stops downstream mutation", async () => {
@@ -62,5 +66,22 @@ describe("POST /api/auth/jira/select", () => {
     expect(JSON.stringify(await response.json())).not.toContain("leaked token detail");
     expect(mocks.getIdentity).not.toHaveBeenCalled();
     expect(mocks.provision).not.toHaveBeenCalled();
+  });
+
+  it("maps typed Atlassian failures without leaking details", async () => {
+    const { AtlassianOAuthError, AtlassianReauthorizationRequiredError } = await import("@/modules/auth/jira-oauth");
+    for (const [error, status] of [[new AtlassianOAuthError("secret"), 503], [new AtlassianReauthorizationRequiredError(), 401]] as const) {
+      mocks.consumeSelection.mockResolvedValueOnce({
+        resource: { id: "cloud-b", name: "B", url: "https://b.atlassian.net", scopes: [] },
+        accessToken: "access", refreshToken: "refresh", expiresInSeconds: 3600, scopes: "offline_access", returnTo: "/",
+      });
+      mocks.getIdentity.mockRejectedValueOnce(error);
+      const response = await POST(new Request("https://itestflow.example/api/auth/jira/select", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ continuation: "continuation", cloudId: "cloud-b" }),
+      }));
+      expect(response.status).toBe(status);
+      expect(JSON.stringify(await response.json())).not.toContain("secret");
+    }
   });
 });

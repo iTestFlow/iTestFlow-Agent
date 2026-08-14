@@ -14,15 +14,19 @@ import {
 type AzureProject = {
   id: string;
   name: string;
+  key?: string;
+  providerProjectId?: string;
+  providerProjectKey?: string;
   azureOrganizationUrl: string;
   workspaceId?: string;
 };
 
-function organizationLabel(value?: string) {
-  if (!value) return "Org: Not configured";
+function organizationLabel(value?: string, providerId = "azure-devops", siteName?: string) {
+  if (providerId === "jira-cloud" && siteName) return `Site: ${siteName}`;
+  if (!value) return providerId === "jira-cloud" ? "Site: Not configured" : "Org: Not configured";
   const trimmed = value.replace(/\/$/, "");
   const org = trimmed.split("/").filter(Boolean).pop() ?? trimmed;
-  return `Org: ${org}`;
+  return `${providerId === "jira-cloud" ? "Site" : "Org"}: ${org}`;
 }
 
 export function HeaderProjectSelector() {
@@ -30,6 +34,8 @@ export function HeaderProjectSelector() {
   const [projects, setProjects] = useState<AzureProject[]>([]);
   const [activeProject, setActiveProject] = useState<ActiveProjectScope | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [providerId, setProviderId] = useState("azure-devops");
+  const [providerSiteName, setProviderSiteName] = useState<string | undefined>();
 
   async function selectProject(project: AzureProject): Promise<ActiveProjectScope> {
     const response = await fetch("/api/azure-devops/project/select", {
@@ -48,9 +54,11 @@ export function HeaderProjectSelector() {
       .then(async (response) => {
         const json = await response.json();
         if (!response.ok) throw new Error(apiErrorMessage(json, "Failed to fetch Azure DevOps projects."));
-        return json as { projects?: AzureProject[]; workspaceId?: string };
+        return json as { projects?: AzureProject[]; workspaceId?: string; providerId?: string; providerSiteName?: string };
       })
       .then(async (json) => {
+        setProviderId(json.providerId ?? "azure-devops");
+        setProviderSiteName(json.providerSiteName);
         // Listing projects is proof Azure DevOps is actually connected: clear any
         // earlier "not configured" state and show the real project list, even if
         // the background re-select step below runs into trouble.
@@ -69,10 +77,10 @@ export function HeaderProjectSelector() {
           // previously active project no longer resolving) is not a connection
           // problem: Azure DevOps is connected, we just couldn't refresh which
           // project is active. Don't misreport the connection as unconfigured.
-          toast.error(caughtErrorMessage(err, "Could not refresh the active Azure DevOps project."));
+          toast.error(caughtErrorMessage(err, "Could not refresh the active work-management project."));
         }
       })
-      .catch((err: unknown) => setError(caughtErrorMessage(err, "Azure DevOps is not configured.")));
+      .catch((err: unknown) => setError(caughtErrorMessage(err, "The work-management provider is not configured.")));
 
     const onChange = (event: Event) => {
       const custom = event as CustomEvent<ActiveProjectScope>;
@@ -86,10 +94,10 @@ export function HeaderProjectSelector() {
     return (
       <div className="flex w-full min-w-0 items-center gap-2 sm:gap-5">
         <div className="hidden h-8 w-[260px] shrink-0 items-center rounded-lg border border-border bg-background px-3 text-sm text-foreground 2xl:flex">
-          Org: Not configured
+          {providerId === "jira-cloud" ? "Site: Not configured" : "Org: Not configured"}
         </div>
         <div className="flex h-8 min-w-0 max-w-[330px] flex-1 items-center truncate rounded-lg border border-warning/40 bg-warning/15 px-3 text-sm text-warning-foreground dark:text-warning">
-          Azure DevOps not configured
+          {providerId === "jira-cloud" ? "Jira Cloud not configured" : "Azure DevOps not configured"}
         </div>
       </div>
     );
@@ -98,7 +106,7 @@ export function HeaderProjectSelector() {
   return (
     <div className="flex w-full min-w-0 items-center gap-2 sm:gap-5">
       <div className="hidden h-8 w-[260px] shrink-0 items-center truncate rounded-lg border border-border bg-background px-3 text-sm text-foreground 2xl:flex">
-        {organizationLabel(activeProject?.azureOrganizationUrl ?? projects[0]?.azureOrganizationUrl)}
+        {organizationLabel(activeProject?.azureOrganizationUrl ?? projects[0]?.azureOrganizationUrl, providerId, providerSiteName)}
       </div>
       <select
         className="focus-ring h-8 min-w-0 max-w-[330px] flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground"
@@ -114,7 +122,7 @@ export function HeaderProjectSelector() {
               // A failed manual re-select is not a connection problem either: keep
               // showing the loaded project list and surface this as a one-off
               // notification instead of collapsing to "not configured".
-              toast.error(caughtErrorMessage(err, "Azure DevOps project selection failed."));
+              toast.error(caughtErrorMessage(err, `${providerId === "jira-cloud" ? "Jira Cloud" : "Azure DevOps"} project selection failed.`));
             });
           });
         }}

@@ -117,4 +117,18 @@ describe("GET /api/auth/jira/callback", () => {
     expect(mocks.storeConnection).not.toHaveBeenCalled();
     expect(mocks.cookieDelete).not.toHaveBeenCalled();
   });
+
+  it("maps typed Atlassian and unknown failures to fixed redacted responses", async () => {
+    const { AtlassianOAuthError, AtlassianReauthorizationRequiredError } = await import("@/modules/auth/jira-oauth");
+    for (const [error, status] of [
+      [new AtlassianOAuthError("secret upstream body"), 503],
+      [new AtlassianReauthorizationRequiredError(), 401],
+      [new Error("secret internal detail"), 500],
+    ] as const) {
+      mocks.exchangeCode.mockRejectedValueOnce(error);
+      const response = await GET(new Request("https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code"));
+      expect(response.status).toBe(status);
+      expect(JSON.stringify(await response.json())).not.toContain("secret");
+    }
+  });
 });

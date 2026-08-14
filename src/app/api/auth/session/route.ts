@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getOptionalSession } from "@/modules/auth/session.service";
 import { getWorkspaceMembership, type WorkspaceRole } from "@/modules/workspace/workspace-access.service";
-import { resolveActiveWorkspaceForUser } from "@/modules/workspace/workspace.service";
+import { getWorkspaceById, resolveActiveWorkspaceForUser, type WorkspaceRef } from "@/modules/workspace/workspace.service";
 
 export const runtime = "nodejs";
 
@@ -20,12 +20,15 @@ export async function GET(request: Request) {
 
   const workspaceId = new URL(request.url).searchParams.get("workspaceId");
   let membership: { workspaceId: string; role: WorkspaceRole } | null = null;
+  let workspace: WorkspaceRef | null = null;
   if (workspaceId) {
     const scopedMembership = await getWorkspaceMembership(session.userId, workspaceId);
     membership = scopedMembership ? { workspaceId: scopedMembership.workspaceId, role: scopedMembership.role } : null;
+    workspace = scopedMembership ? await getWorkspaceById(workspaceId) : null;
   } else {
     const activeWorkspace = await resolveActiveWorkspaceForUser(session.userId, session.activeWorkspaceId);
     membership = activeWorkspace ? { workspaceId: activeWorkspace.id, role: activeWorkspace.role } : null;
+    workspace = activeWorkspace;
   }
 
   return NextResponse.json(
@@ -33,6 +36,13 @@ export async function GET(request: Request) {
       authenticated: true,
       userId: session.userId,
       membership,
+      workspace: workspace ? {
+        id: workspace.id,
+        name: workspace.name,
+        providerId: workspace.providerId,
+        providerSiteName: workspace.providerSiteName,
+        providerSiteUrl: workspace.providerSiteUrl,
+      } : null,
     },
     { headers: { "Cache-Control": "no-store" } },
   );

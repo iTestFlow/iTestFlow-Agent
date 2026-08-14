@@ -6,6 +6,40 @@ import { createId, nowIso, sqlGet } from "@/modules/shared/infrastructure/databa
 type PlainPublisher = { createTestCase(input: { projectId: string; testCase: FinalApprovedTestCase }): Promise<{ success: boolean; azureTestCaseId?: string; error?: string }> };
 type LinkRow = { remote_artifact_id: string; remote_url: string };
 
+export async function storePlainJiraArtifactConfig(input: {
+  workspaceId: string; projectId: string; actorUserId: string; testCaseIssueTypeId: string; localIdFieldId: string;
+}): Promise<void> {
+  const workspaceId = input.workspaceId.trim();
+  const projectId = input.projectId.trim();
+  const actorUserId = input.actorUserId.trim();
+  const testCaseIssueTypeId = input.testCaseIssueTypeId.trim();
+  const localIdFieldId = input.localIdFieldId.trim();
+  if (!workspaceId || !projectId || !actorUserId || !/^[1-9][0-9]*$/.test(testCaseIssueTypeId) || !/^customfield_[0-9]+$/.test(localIdFieldId)) {
+    throw new Error("Plain Jira artifact configuration is invalid.");
+  }
+  const now = nowIso();
+  const row = await sqlGet<{ id: string }>(
+    `INSERT INTO jira_artifact_backend_configs (
+       id, workspace_id, project_id, backend_type, config_json, encrypted_secret, secret_iv, secret_tag, key_version, region, status, created_at, updated_at
+     )
+     SELECT @id, p.workspace_id, p.id, 'plain_jira', @configJson, NULL, NULL, NULL, NULL, NULL, 'active', @now, @now
+     FROM projects p
+     JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @actorUserId
+       AND wm.status = 'active' AND wm.role IN ('owner', 'admin')
+     WHERE p.workspace_id = @workspaceId AND p.id = @projectId AND p.provider_id = 'jira-cloud' AND p.status = 'active'
+     ON CONFLICT (workspace_id, project_id) DO UPDATE SET
+       backend_type = 'plain_jira', config_json = excluded.config_json,
+       encrypted_secret = NULL, secret_iv = NULL, secret_tag = NULL, key_version = NULL, region = NULL,
+       status = 'active', updated_at = excluded.updated_at
+     RETURNING id`,
+    {
+      id: createId("jirabackend"), workspaceId, projectId, actorUserId,
+      configJson: JSON.stringify({ testCaseIssueTypeId, localIdFieldId }), now,
+    },
+  );
+  if (!row) throw new Error("Plain Jira artifact configuration is not authorized for this project.");
+}
+
 export async function publishPlainJiraTestCase(input: {
   workspaceId: string; projectId: string; actorUserId: string; testCase: FinalApprovedTestCase;
   backend: PlainPublisher; siteUrl?: string;

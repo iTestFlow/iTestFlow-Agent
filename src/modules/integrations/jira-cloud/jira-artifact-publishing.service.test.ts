@@ -5,7 +5,9 @@ vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   createId: () => "link-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet,
   withTransaction: (work: (client: object) => unknown) => work({ tx: true }),
 }));
-import { publishPlainJiraTestCase } from "./jira-artifact-publishing.service";
+import * as plainJiraPublishing from "./jira-artifact-publishing.service";
+
+const { publishPlainJiraTestCase } = plainJiraPublishing;
 
 describe("publishPlainJiraTestCase", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -37,5 +39,17 @@ describe("publishPlainJiraTestCase", () => {
     expect(insertSql).toContain("ON CONFLICT (workspace_id, project_id, local_artifact_type, local_artifact_id)");
     expect(params).toMatchObject({ workspaceId: "ws-1", projectId: "project-1", userId: "user-1", localId: "case-1" });
     expect(mocks.sqlGet.mock.calls[3][1]).toMatchObject({ id: "link-1", remoteId: "QA-9" });
+  });
+
+  it("stores a plain Jira backend configuration without secrets", async () => {
+    expect(typeof (plainJiraPublishing as Record<string, unknown>).storePlainJiraArtifactConfig).toBe("function");
+    mocks.sqlGet.mockResolvedValue({ id: "config-1" });
+    const store = (plainJiraPublishing as unknown as { storePlainJiraArtifactConfig(input: unknown): Promise<void> }).storePlainJiraArtifactConfig;
+    await store({ workspaceId: "ws-1", projectId: "project-1", actorUserId: "owner-1", testCaseIssueTypeId: "10001", localIdFieldId: "customfield_10002" });
+    const [sql, params] = mocks.sqlGet.mock.calls[0];
+    expect(sql).toContain("'plain_jira'");
+    expect(sql).toContain("wm.role IN ('owner', 'admin')");
+    expect(params.configJson).toBe('{"testCaseIssueTypeId":"10001","localIdFieldId":"customfield_10002"}');
+    expect(params).not.toHaveProperty("encryptedSecret");
   });
 });

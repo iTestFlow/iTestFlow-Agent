@@ -5,6 +5,9 @@ export type ActiveProjectScope = {
   azureOrganizationUrl: string;
   /** The workspace this project belongs to; sent with feature requests for server-side validation. */
   workspaceId?: string;
+  providerProjectId?: string;
+  providerProjectKey?: string;
+  providerProjectName?: string;
 };
 
 export type ActiveProjectOption = {
@@ -12,6 +15,8 @@ export type ActiveProjectOption = {
   name: string;
   azureOrganizationUrl: string;
   workspaceId?: string;
+  providerProjectId?: string;
+  providerProjectKey?: string;
 };
 
 export const activeProjectStorageKey = "itestflow.activeProject";

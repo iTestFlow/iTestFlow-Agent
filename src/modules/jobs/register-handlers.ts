@@ -5,6 +5,10 @@ import { runWorkspaceContextSync, WORKSPACE_CONTEXT_SYNC } from "./workspace-syn
 import { PROJECT_KNOWLEDGE_JOB, runProjectKnowledgeJob } from "./project-knowledge.handler";
 import { runUploadedDocumentIngestJob } from "./uploaded-document-ingest.handler";
 import { UPLOADED_DOCUMENT_INGEST } from "./uploaded-document-jobs.service";
+import { JIRA_WEBHOOK_RECONCILE } from "@/modules/integrations/jira-cloud/jira-webhook-events.service";
+import { runJiraWebhookReconcile } from "./jira-webhook-reconcile.handler";
+import { JIRA_SYNC_OPERATIONS } from "@/modules/integrations/jira-cloud/jira-sync-runtime.service";
+import { runJiraSyncOperations } from "./jira-sync-operations.handler";
 
 let registered = false;
 
@@ -14,5 +18,7 @@ export function registerAllJobHandlers(): void {
   registerJobHandler(WORKSPACE_CONTEXT_SYNC, runWorkspaceContextSync);
   registerJobHandler(PROJECT_KNOWLEDGE_JOB, runProjectKnowledgeJob);
   registerJobHandler(UPLOADED_DOCUMENT_INGEST, runUploadedDocumentIngestJob);
+  registerJobHandler(JIRA_WEBHOOK_RECONCILE, runJiraWebhookReconcile);
+  registerJobHandler(JIRA_SYNC_OPERATIONS, runJiraSyncOperations);
   registered = true;
 }

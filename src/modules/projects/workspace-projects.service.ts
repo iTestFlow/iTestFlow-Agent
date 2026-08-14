@@ -133,7 +133,7 @@ export async function verifyAndUpsertWorkspaceProject(
       throw new WorkflowAuthError("Jira Cloud returned an incomplete project mapping.", 502);
     }
     const projectId = await upsertJiraProjectMapping({
-      workspaceId: ctx.workspace.id, providerId, jiraProjectId: project.id,
+      workspaceId: ctx.workspace.id, actorUserId: ctx.userId, providerId, jiraProjectId: project.id,
       jiraProjectKey: project.key, jiraProjectName: project.name,
     });
     return {
