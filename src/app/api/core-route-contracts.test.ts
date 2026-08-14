@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 const mocks = vi.hoisted(() => ({
   sqlGet: vi.fn(),
@@ -50,12 +52,17 @@ describe("core API route contracts", () => {
       workspace: {
         id: "ws",
         azureOrgUrl: "https://dev.azure.com/demo",
+        providerId: "azure-devops",
       },
     });
     mocks.getUserAzureAdapterOrgLevel.mockResolvedValue({
       fetchProjects: mocks.fetchProjects,
     });
     mocks.fetchProjects.mockResolvedValue([{ id: "p1", name: "Demo" }]);
+  });
+
+  it("exposes a provider-neutral Jira integration settings boundary", () => {
+    expect(existsSync(join(process.cwd(), "src/app/api/integrations/jira/route.ts"))).toBe(true);
   });
 
   it("reports healthy and unhealthy database state without throwing", async () => {
@@ -91,6 +98,26 @@ describe("core API route contracts", () => {
         name: "Demo",
         azureOrganizationUrl: "https://dev.azure.com/demo",
         workspaceId: "ws",
+      }],
+    });
+  });
+
+  it("maps Jira projects with provider-aware site and project identities", async () => {
+    mocks.requireWorkflowContext.mockResolvedValue({
+      userId: "user",
+      workspace: {
+        id: "jira-ws", azureOrgUrl: "", providerId: "jira-cloud",
+        providerSiteName: "Quality Jira", providerSiteUrl: "https://quality.atlassian.net",
+      },
+    });
+    mocks.fetchProjects.mockResolvedValue([{ id: "10000", key: "QA", name: "Quality" }]);
+    const response = await projects();
+    expect(await response.json()).toEqual({
+      mode: "live", providerId: "jira-cloud", providerSiteName: "Quality Jira",
+      organizationUrl: "https://quality.atlassian.net", workspaceId: "jira-ws",
+      projects: [{
+        id: "10000", key: "QA", name: "Quality", providerProjectId: "10000", providerProjectKey: "QA",
+        azureOrganizationUrl: "https://quality.atlassian.net", workspaceId: "jira-ws",
       }],
     });
   });

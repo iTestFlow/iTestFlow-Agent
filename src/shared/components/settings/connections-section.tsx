@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { apiErrorMessage } from "@/shared/lib/api-error-message"
 import { Field, SecretField, SectionCard, StatusBadge, type StatusTone } from "./section-card"
+import { JiraIntegrationSection } from "./jira-integration-section"
 import { PlaywrightMcpSection } from "./playwright-mcp-section"
 
 type CredentialSummary = {
@@ -34,6 +35,23 @@ export function credentialBadge(summary?: CredentialSummary): { tone: StatusTone
 }
 
 export function ConnectionsSection() {
+  const [providerId, setProviderId] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void fetch("/api/auth/session", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data: { workspace?: { providerId?: string } | null }) => { if (active) setProviderId(data.workspace?.providerId ?? "azure-devops") })
+      .catch(() => { if (active) setProviderId("azure-devops") })
+    return () => { active = false }
+  }, [])
+
+  if (providerId === "jira-cloud") return <JiraIntegrationSection />
+  if (providerId === null) return <div role="status" aria-live="polite" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />Loading connection settings…</div>
+  return <AzureConnectionsSection />
+}
+
+function AzureConnectionsSection() {
   const [status, setStatus] = useState<CredentialStatusResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)

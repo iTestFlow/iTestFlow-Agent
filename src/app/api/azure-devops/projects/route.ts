@@ -13,13 +13,17 @@ export async function GET() {
     const ctx = await requireWorkflowContext();
     const adapter = await getUserAzureAdapterOrgLevel(ctx);
     const projects = await adapter.fetchProjects();
+    const isJira = ctx.workspace.providerId === "jira-cloud";
+    const organizationUrl = isJira ? ctx.workspace.providerSiteUrl ?? "" : ctx.workspace.azureOrgUrl;
     return NextResponse.json({
       mode: "live",
-      organizationUrl: ctx.workspace.azureOrgUrl,
+      ...(isJira ? { providerId: "jira-cloud", providerSiteName: ctx.workspace.providerSiteName } : {}),
+      organizationUrl,
       workspaceId: ctx.workspace.id,
       projects: projects.map((project) => ({
         ...project,
-        azureOrganizationUrl: ctx.workspace.azureOrgUrl,
+        ...(isJira ? { providerProjectId: project.id, providerProjectKey: project.key } : {}),
+        azureOrganizationUrl: organizationUrl,
         workspaceId: ctx.workspace.id,
       })),
     });

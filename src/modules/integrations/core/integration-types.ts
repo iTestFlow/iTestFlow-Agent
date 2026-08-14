@@ -1,5 +1,6 @@
 export type ProviderProject = {
   id: string;
+  key?: string;
   name: string;
   url?: string;
   state?: string;

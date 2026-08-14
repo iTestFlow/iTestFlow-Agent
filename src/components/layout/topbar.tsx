@@ -38,7 +38,7 @@ import { ThemeToggle } from "@/components/theme/theme-toggle"
 import { HeaderProjectSelector } from "@/shared/components/live/project-status"
 import { cn } from "@/lib/utils"
 import { NavigationLink } from "@/components/navigation/navigation-link"
-import { isProvider, modelDisplayLabel, providerLabel, type Provider } from "@/components/layout/topbar-labels"
+import { isProvider, modelDisplayLabel, providerLabel, workProviderDisplay, type Provider } from "@/components/layout/topbar-labels"
 import { apiErrorMessage, caughtErrorMessage } from "@/shared/lib/api-error-message"
 
 type AzureProfile = {
@@ -70,6 +70,7 @@ type SessionSummary = {
     workspaceId: string
     role: WorkspaceRole
   } | null
+  workspace?: { providerId?: string; providerSiteName?: string } | null
 }
 
 type SyncScheduleStatus = {
@@ -106,6 +107,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   const [syncScheduleLoading, setSyncScheduleLoading] = useState(true)
   const [syncScheduleVisible, setSyncScheduleVisible] = useState(true)
   const [workspaceRole, setWorkspaceRole] = useState<WorkspaceRole | null>(null)
+  const [workspaceProviderId, setWorkspaceProviderId] = useState("azure-devops")
   const [workspaceRoleLoading, setWorkspaceRoleLoading] = useState(true)
   const [loggingOut, setLoggingOut] = useState(false)
   const [patDialogOpen, setPatDialogOpen] = useState(false)
@@ -139,6 +141,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
       }
       const data = (await response.json()) as SessionSummary
       setWorkspaceRole(data.authenticated ? data.membership?.role ?? null : null)
+      setWorkspaceProviderId(data.workspace?.providerId ?? "azure-devops")
     } catch {
       setWorkspaceRole(null)
     } finally {
@@ -263,16 +266,17 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
     }
   }, [loadProfile, loadSession, loadCredentials, loadSyncSchedule])
 
-  const azureConfiguredError = profileError?.toLowerCase().includes("not configured") || profileError?.toLowerCase().includes("personal access token")
-  const azureStatus = profile
-    ? { label: "Azure", status: "success" as const, detail: `Azure DevOps connected as ${profile.displayName}.` }
+  const workProvider = workProviderDisplay(workspaceProviderId)
+  const workConfiguredError = profileError?.toLowerCase().includes("not configured") || profileError?.toLowerCase().includes("personal access token") || profileError?.toLowerCase().includes("reauthorization")
+  const workStatus = profile
+    ? { label: workProvider.short, status: "success" as const, detail: `${workProvider.name} connected as ${profile.displayName}.` }
     : profileError
       ? {
-          label: azureConfiguredError ? "Azure Off" : "Azure Issue",
+          label: workConfiguredError ? `${workProvider.short} Off` : `${workProvider.short} Issue`,
           status: "error" as const,
-          detail: `Azure DevOps ${azureConfiguredError ? "is not configured" : "is unavailable"}. ${profileError}`,
+          detail: `${workProvider.name} ${workConfiguredError ? "is not configured" : "is unavailable"}. ${profileError}`,
         }
-      : { label: "Azure", status: "loading" as const, detail: "Checking Azure DevOps connection." }
+      : { label: workProvider.short, status: "loading" as const, detail: `Checking ${workProvider.name} connection.` }
 
   const llm = credentials?.llm
   const llmConnected = llm?.status === "configured"
@@ -313,12 +317,12 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   // Proactive PAT health: only surfaced when there's a problem (expired/rejected
   // at use-time, or stale). A healthy PAT shows nothing extra here.
   const pat = credentials?.azurePat
-  const patWarning =
+  const patWarning = workspaceProviderId === "azure-devops" && (
     pat?.status === "expired" || pat?.status === "invalid"
       ? { label: "PAT Expired", detail: "Azure DevOps rejected your PAT. Re-enter it in Settings → My Credentials." }
       : pat?.isStale
         ? { label: "Check PAT", detail: "Your Azure DevOps PAT hasn't been validated in a while. Re-enter it in Settings → My Credentials." }
-        : null
+        : null)
 
   return (
     <header className="sticky top-0 z-30 flex min-h-16 items-center gap-3 border-b border-border bg-card/95 px-4 text-card-foreground shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/85 lg:px-6">
@@ -337,7 +341,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
       </div>
 
       <div className="hidden min-w-0 items-center gap-1.5 xl:flex">
-        <HeaderStatusChip {...azureStatus} />
+        <HeaderStatusChip {...workStatus} />
         {patWarning ? (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -372,8 +376,8 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
             void loadSyncSchedule()
           }}
           disabled={profileLoading || workspaceRoleLoading || credentialsLoading || syncScheduleLoading}
-          aria-label="Refresh Azure DevOps, role, credential, and sync status"
-          title="Refresh Azure DevOps, role, credential, and sync status"
+          aria-label={`Refresh ${workProvider.name}, role, credential, and sync status`}
+          title={`Refresh ${workProvider.name}, role, credential, and sync status`}
         >
           <RefreshCw className={cn("size-3.5", (profileLoading || workspaceRoleLoading || credentialsLoading || syncScheduleLoading) && "animate-spin")} />
         </Button>
@@ -397,7 +401,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
             <div className="hidden min-w-0 sm:block">
               <div className="flex max-w-56 items-center gap-1.5">
                 <span className="min-w-0 truncate text-sm font-medium">
-                  {profile?.displayName ?? (profileError ? "Azure DevOps user unavailable" : "Loading Azure DevOps user")}
+                  {profile?.displayName ?? (profileError ? `${workProvider.name} user unavailable` : `Loading ${workProvider.name} user`)}
                 </span>
                 <RoleBadge role={workspaceRole} className="hidden md:inline-flex" />
               </div>
@@ -409,7 +413,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         <DropdownMenuContent align="end" className="w-64">
           <DropdownMenuLabel className="space-y-1">
             <span className="block truncate text-sm font-medium text-foreground">
-              {profile?.displayName ?? (profileError ? "Azure DevOps user unavailable" : "Loading Azure DevOps user")}
+              {profile?.displayName ?? (profileError ? `${workProvider.name} user unavailable` : `Loading ${workProvider.name} user`)}
             </span>
             {profile?.uniqueName ? <span className="block truncate font-normal">{profile.uniqueName}</span> : null}
             {workspaceRole ? (
@@ -428,14 +432,9 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
               Settings
             </NavigationLink>
           </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              handlePatDialogOpenChange(true)
-            }}
-          >
-            <KeyRound className="size-4" />
-            Replace access token
-          </DropdownMenuItem>
+          {workspaceProviderId === "azure-devops" ? <DropdownMenuItem
+            onSelect={() => { handlePatDialogOpenChange(true) }}
+          ><KeyRound className="size-4" />Replace access token</DropdownMenuItem> : <DropdownMenuItem asChild><NavigationLink href="/settings"><KeyRound className="size-4" />Manage Jira connection</NavigationLink></DropdownMenuItem>}
           <DropdownMenuSeparator />
           <DropdownMenuItem
             variant="destructive"
@@ -451,7 +450,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <ReplacePatDialog
+      {workspaceProviderId === "azure-devops" ? <ReplacePatDialog
         open={patDialogOpen}
         onOpenChange={handlePatDialogOpenChange}
         azurePat={credentials?.azurePat ?? null}
@@ -462,7 +461,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         onRevealChange={setPatReveal}
         saving={patSaving}
         onSubmit={handleReplacePat}
-      />
+      /> : null}
     </header>
   )
 }

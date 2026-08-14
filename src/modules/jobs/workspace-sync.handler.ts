@@ -5,15 +5,15 @@ import { resolveWorkspaceSyncPat } from "@/modules/credentials/credential.servic
 import { createIntegrationProvider } from "@/modules/integrations/provider-registry";
 import { indexAzureWorkItemsAsProjectContext } from "@/modules/rag/project-context-store.service";
 import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
+import { runJiraProjectReconciliation } from "@/modules/integrations/jira-cloud/jira-sync-runtime.service";
 import { enqueueJob, type Job } from "./job-queue.service";
 
 export const WORKSPACE_CONTEXT_SYNC = "workspace_context_sync";
 
 /**
- * Scheduled Azure DevOps context sync for one workspace project. Runs in the
- * worker with NO logged-in user: it uses the WORKSPACE sync credential (a service
- * account / admin PAT marked for sync), never a user's interactive PAT. The
- * project and org are resolved server-side from the workspace-scoped projects row.
+ * Scheduled provider-aware context sync for one workspace project. It runs with
+ * no logged-in user and resolves only the designated workspace sync principal.
+ * Project and site scope always come from the workspace-owned project row.
  */
 export async function runWorkspaceContextSync(job: Job): Promise<void> {
   if (!job.workspaceId) throw new Error("workspace_context_sync requires a workspaceId.");
@@ -32,6 +32,14 @@ export async function runWorkspaceContextSync(job: Job): Promise<void> {
   );
   if (!project) throw new Error("Project not found in this workspace.");
 
+  if (project.provider_id === "jira-cloud") {
+    await runJiraProjectReconciliation({
+      workspaceId: job.workspaceId, projectId, actor: "system:worker", indexContext: true,
+    });
+    return;
+  }
+  if (project.provider_id !== "azure-devops") throw new Error("The project integration provider is unsupported by this worker.");
+
   const pat = await resolveWorkspaceSyncPat(job.workspaceId);
   if (!pat) throw new Error("No workspace sync credential configured. Set one in Workspace settings.");
 
@@ -42,7 +50,7 @@ export async function runWorkspaceContextSync(job: Job): Promise<void> {
     azureOrganizationUrl: project.azure_organization_url,
   };
   const adapter = createIntegrationProvider({
-    providerId: project.provider_id,
+    providerId: "azure-devops",
     settings: { organizationUrl: scope.azureOrganizationUrl, personalAccessToken: pat },
     projectScope: { azureProjectId: scope.azureProjectId, azureProjectName: scope.azureProjectName },
   });
@@ -80,6 +88,7 @@ export async function enqueueWorkspaceContextSync(
         ...(filters?.states?.length ? { states: filters.states } : {}),
       },
       dedupeKey: `context_sync:${project.id}`,
+      maxAttempts: 5,
       createdByUserId,
     });
     if (id) enqueued += 1;

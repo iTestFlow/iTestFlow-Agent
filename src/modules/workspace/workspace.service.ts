@@ -11,18 +11,27 @@ export type WorkspaceRef = {
   azureOrgName: string;
   azureOrgUrl: string;
   providerId: string;
+  providerSiteId?: string;
+  providerSiteName?: string;
+  providerSiteUrl?: string;
 };
 
-type WorkspaceRow = { id: string; name: string; azure_org_name: string; azure_org_url: string; provider_id: string };
-type WorkspaceListRow = Omit<WorkspaceRow, "id" | "provider_id">;
+type WorkspaceRow = {
+  id: string; name: string; azure_org_name: string | null; azure_org_url: string | null; provider_id: string;
+  provider_site_id: string | null; provider_site_name: string | null; provider_site_url: string | null;
+};
+type WorkspaceListRow = Pick<WorkspaceRow, "name" | "azure_org_name" | "azure_org_url">;
 
 function mapWorkspace(row: WorkspaceRow): WorkspaceRef {
   return {
     id: row.id,
     name: row.name,
-    azureOrgName: row.azure_org_name,
-    azureOrgUrl: row.azure_org_url,
+    azureOrgName: row.azure_org_name ?? "",
+    azureOrgUrl: row.azure_org_url ?? "",
     providerId: row.provider_id,
+    providerSiteId: row.provider_site_id ?? undefined,
+    providerSiteName: row.provider_site_name ?? undefined,
+    providerSiteUrl: row.provider_site_url ?? undefined,
   };
 }
 
@@ -33,7 +42,8 @@ function mapWorkspace(row: WorkspaceRow): WorkspaceRef {
  */
 export async function findWorkspaceByAzureOrgUrl(azureOrgUrl: string): Promise<WorkspaceRef | null> {
   const row = await sqlGet<WorkspaceRow>(
-    `SELECT id, name, azure_org_name, azure_org_url, provider_id FROM workspaces WHERE azure_org_url = @url AND status = 'active' LIMIT 1`,
+    `SELECT id, name, azure_org_name, azure_org_url, provider_id, provider_site_id, provider_site_name, provider_site_url
+     FROM workspaces WHERE azure_org_url = @url AND status = 'active' LIMIT 1`,
     { url: azureOrgUrl },
   );
   return row ? mapWorkspace(row) : null;
@@ -41,7 +51,8 @@ export async function findWorkspaceByAzureOrgUrl(azureOrgUrl: string): Promise<W
 
 export async function getWorkspaceById(workspaceId: string): Promise<WorkspaceRef | null> {
   const row = await sqlGet<WorkspaceRow>(
-    `SELECT id, name, azure_org_name, azure_org_url, provider_id FROM workspaces WHERE id = @id AND status = 'active' LIMIT 1`,
+    `SELECT id, name, azure_org_name, azure_org_url, provider_id, provider_site_id, provider_site_name, provider_site_url
+     FROM workspaces WHERE id = @id AND status = 'active' LIMIT 1`,
     { id: workspaceId },
   );
   return row ? mapWorkspace(row) : null;
@@ -50,7 +61,8 @@ export async function getWorkspaceById(workspaceId: string): Promise<WorkspaceRe
 /** Active workspaces the user belongs to, oldest membership first, with their role. */
 export async function getWorkspacesForUser(userId: string): Promise<Array<WorkspaceRef & { role: WorkspaceRole }>> {
   const rows = await sqlAll<WorkspaceRow & { role: WorkspaceRole }>(
-    `SELECT w.id, w.name, w.azure_org_name, w.azure_org_url, w.provider_id, m.role
+    `SELECT w.id, w.name, w.azure_org_name, w.azure_org_url, w.provider_id,
+            w.provider_site_id, w.provider_site_name, w.provider_site_url, m.role
      FROM workspace_members m
      JOIN workspaces w ON w.id = m.workspace_id
      WHERE m.user_id = @userId AND m.status = 'active' AND w.status = 'active'
@@ -66,7 +78,8 @@ export async function getWorkspacesForUser(userId: string): Promise<Array<Worksp
  */
 export async function getPrimaryWorkspaceForUser(userId: string): Promise<WorkspaceRef | null> {
   const row = await sqlGet<WorkspaceRow>(
-    `SELECT w.id, w.name, w.azure_org_name, w.azure_org_url, w.provider_id
+    `SELECT w.id, w.name, w.azure_org_name, w.azure_org_url, w.provider_id,
+            w.provider_site_id, w.provider_site_name, w.provider_site_url
      FROM workspace_members m
      JOIN workspaces w ON w.id = m.workspace_id
      WHERE m.user_id = @userId AND m.status = 'active' AND w.status = 'active'
@@ -106,14 +119,16 @@ export async function resolveActiveWorkspaceForUser(
  * org display fields (never the internal workspace id) so the login page can
  * list the orgs a deployment enables.
  */
-export async function listActiveWorkspaces(): Promise<Array<Omit<WorkspaceRef, "id" | "providerId">>> {
+export async function listActiveWorkspaces(): Promise<Array<Pick<WorkspaceRef, "name" | "azureOrgName" | "azureOrgUrl">>> {
   const rows = await sqlAll<WorkspaceListRow>(
-    `SELECT name, azure_org_name, azure_org_url FROM workspaces WHERE status = 'active' ORDER BY name ASC`,
+    `SELECT name, azure_org_name, azure_org_url FROM workspaces
+     WHERE status = 'active' AND provider_id = 'azure-devops'
+     ORDER BY name ASC`,
   );
   return rows.map((row) => ({
     name: row.name,
-    azureOrgName: row.azure_org_name,
-    azureOrgUrl: row.azure_org_url,
+    azureOrgName: row.azure_org_name ?? "",
+    azureOrgUrl: row.azure_org_url ?? "",
   }));
 }
 
@@ -131,7 +146,7 @@ export async function setWorkspaceStatusByOrgUrl(
   const row = await sqlGet<WorkspaceRow>(
     `UPDATE workspaces SET status = @status, updated_at = @now
      WHERE azure_org_url = @url
-     RETURNING id, name, azure_org_name, azure_org_url, provider_id`,
+     RETURNING id, name, azure_org_name, azure_org_url, provider_id, provider_site_id, provider_site_name, provider_site_url`,
     { status, url: azureOrgUrl, now: nowIso() },
   );
   return row ? mapWorkspace(row) : null;

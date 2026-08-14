@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getOptionalSession: vi.fn(),
+  getWorkspaceById: vi.fn(),
   getWorkspaceMembership: vi.fn(),
   resolveActiveWorkspaceForUser: vi.fn(),
 }));
@@ -13,6 +14,7 @@ vi.mock("@/modules/workspace/workspace-access.service", () => ({
   getWorkspaceMembership: mocks.getWorkspaceMembership,
 }));
 vi.mock("@/modules/workspace/workspace.service", () => ({
+  getWorkspaceById: mocks.getWorkspaceById,
   resolveActiveWorkspaceForUser: mocks.resolveActiveWorkspaceForUser,
 }));
 
@@ -41,6 +43,10 @@ describe("GET /api/auth/session", () => {
     });
     mocks.resolveActiveWorkspaceForUser.mockResolvedValue({
       id: "ws-selected",
+      name: "Quality Cloud",
+      providerId: "jira-cloud",
+      providerSiteName: "Quality Jira",
+      providerSiteUrl: "https://quality.atlassian.net",
       role: "admin",
     });
 
@@ -50,6 +56,13 @@ describe("GET /api/auth/session", () => {
       authenticated: true,
       userId: "user-1",
       membership: { workspaceId: "ws-selected", role: "admin" },
+      workspace: {
+        id: "ws-selected",
+        name: "Quality Cloud",
+        providerId: "jira-cloud",
+        providerSiteName: "Quality Jira",
+        providerSiteUrl: "https://quality.atlassian.net",
+      },
     });
   });
 
@@ -85,6 +98,11 @@ describe("GET /api/auth/session", () => {
       status: "active",
       internal: "not-public",
     });
+    mocks.getWorkspaceById.mockResolvedValue({
+      id: "ws-2",
+      name: "Workspace Two",
+      providerId: "azure-devops",
+    });
 
     const response = await GET(
       new Request("http://localhost/api/auth/session?workspaceId=ws-2"),
@@ -93,6 +111,11 @@ describe("GET /api/auth/session", () => {
       authenticated: true,
       userId: "user-1",
       membership: { workspaceId: "ws-2", role: "member" },
+      workspace: {
+        id: "ws-2",
+        name: "Workspace Two",
+        providerId: "azure-devops",
+      },
     });
   });
 });

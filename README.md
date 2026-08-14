@@ -343,7 +343,8 @@ not support exact path/glob room rules. Source directories still route through
 the path-based rooms in `mempalace.yaml`.
 
 - [Project Architecture](PROJECT_ARCHITECTURE.md) - routes, modules, integrations, storage, and architecture decisions
-- [Integration Providers](docs/integration-providers.md) - work/test management contracts, Azure DevOps provider boundary, capabilities, and extension rules
+- [Integration Providers](docs/integration-providers.md) - provider contracts, capabilities, and Azure DevOps/Jira Cloud composition
+- [Jira Cloud Operations](docs/jira-cloud.md) - OAuth, project onboarding, synchronization, artifact backends, recovery, and rollback
 - [Deployment Guide](docs/deployment.md) - private hosted runtime, environment, workers, backups, and migrations
 - [Knowledge Wiki and RAG Enhancement](docs/knowledge-wiki-rag-enhancement.md) - compiled knowledge and wiki design
 - [Environment Variable Template](.env.example) - supported bootstrap configuration

@@ -1,14 +1,14 @@
 import "server-only";
 
 import type { NextResponse } from "next/server";
-import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
 import type { TestManagementProvider } from "@/modules/integrations/core/test-management-provider";
 import type { WorkManagementProvider } from "@/modules/integrations/core/work-management-provider";
-import { createIntegrationProvider, resolveWorkspaceProviderId } from "@/modules/integrations/provider-registry";
+import { createIntegrationProvider, resolveWorkspaceProviderId, type IntegrationProvider } from "@/modules/integrations/provider-registry";
 import { createLLMProvider } from "@/modules/llm/llm-provider.factory";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { DEFAULT_RETRY_ATTEMPTS, getMaxOutputTokenCapDefaultFromEnv } from "@/modules/llm/llm-defaults";
 import { requireSession, SessionError } from "@/modules/auth/session.service";
+import { resolveJiraAccessToken } from "@/modules/auth/jira-connection.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import { getWorkspaceMembership, type WorkspaceRole } from "@/modules/workspace/workspace-access.service";
 import { getWorkspaceById, resolveActiveWorkspaceForUser, type WorkspaceRef } from "@/modules/workspace/workspace.service";
@@ -92,7 +92,9 @@ export async function requireExternalLlmEnabled(ctx: WorkflowContext): Promise<v
 export async function getUserAzureAdapter(
   ctx: WorkflowContext,
   project: ProjectScope,
-): Promise<AzureDevOpsAdapter> {
+): Promise<IntegrationProvider> {
+  const providerId = resolveWorkspaceProviderId(ctx.workspace);
+  if (providerId === "jira-cloud") return getUserJiraProvider(ctx, project);
   const pat = await resolveUserAzurePat(ctx.workspace.id, ctx.userId);
   if (!pat) {
     throw new WorkflowAuthError(
@@ -101,7 +103,7 @@ export async function getUserAzureAdapter(
     );
   }
   return createIntegrationProvider({
-    providerId: resolveWorkspaceProviderId(ctx.workspace),
+    providerId,
     settings: { organizationUrl: ctx.workspace.azureOrgUrl, personalAccessToken: pat },
     projectScope: { azureProjectId: project.azureProjectId, azureProjectName: project.azureProjectName },
     hooks: expirePatOnUnauthorized(ctx),
@@ -109,7 +111,9 @@ export async function getUserAzureAdapter(
 }
 
 /** Org-level adapter (no project binding) for org-wide reads: list projects, profile. */
-export async function getUserAzureAdapterOrgLevel(ctx: WorkflowContext): Promise<AzureDevOpsAdapter> {
+export async function getUserAzureAdapterOrgLevel(ctx: WorkflowContext): Promise<IntegrationProvider> {
+  const providerId = resolveWorkspaceProviderId(ctx.workspace);
+  if (providerId === "jira-cloud") return getUserJiraProvider(ctx);
   const pat = await resolveUserAzurePat(ctx.workspace.id, ctx.userId);
   if (!pat) {
     throw new WorkflowAuthError(
@@ -118,7 +122,7 @@ export async function getUserAzureAdapterOrgLevel(ctx: WorkflowContext): Promise
     );
   }
   return createIntegrationProvider({
-    providerId: resolveWorkspaceProviderId(ctx.workspace),
+    providerId,
     settings: { organizationUrl: ctx.workspace.azureOrgUrl, personalAccessToken: pat },
     projectScope: undefined,
     hooks: expirePatOnUnauthorized(ctx),
@@ -129,7 +133,29 @@ export async function getUserWorkManagementProvider(
   ctx: WorkflowContext,
   project: ProjectScope,
 ): Promise<WorkManagementProvider> {
-  return getUserAzureAdapter(ctx, project);
+  const providerId = resolveWorkspaceProviderId(ctx.workspace);
+  return providerId === "azure-devops" ? getUserAzureAdapter(ctx, project) : getUserJiraProvider(ctx, project);
+}
+
+export async function getUserWorkManagementProviderOrgLevel(ctx: WorkflowContext): Promise<WorkManagementProvider> {
+  const providerId = resolveWorkspaceProviderId(ctx.workspace);
+  return providerId === "azure-devops" ? getUserAzureAdapterOrgLevel(ctx) : getUserJiraProvider(ctx);
+}
+
+async function getUserJiraProvider(ctx: WorkflowContext, project?: ProjectScope): Promise<IntegrationProvider> {
+  const cloudId = ctx.workspace.providerSiteId;
+  const siteUrl = ctx.workspace.providerSiteUrl;
+  if (!cloudId || !siteUrl) throw new WorkflowAuthError("This Jira Cloud workspace is missing its site configuration.", 500);
+  const accessToken = await resolveJiraAccessToken({ workspaceId: ctx.workspace.id, userId: ctx.userId });
+  return createIntegrationProvider({
+    providerId: "jira-cloud",
+    settings: { cloudId, siteUrl, accessToken },
+    projectScope: project ? {
+      jiraProjectId: project.providerProjectId ?? project.azureProjectId,
+      jiraProjectKey: project.providerProjectKey ?? project.azureProjectId,
+      jiraProjectName: project.providerProjectName ?? project.azureProjectName,
+    } : undefined,
+  });
 }
 
 export async function getUserTestManagementProvider(

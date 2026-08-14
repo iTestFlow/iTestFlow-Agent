@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getUserAzureAdapter: vi.fn(),
   resolveProjectScope: vi.fn(),
   publishApprovedTestCases: vi.fn(),
+  publishConfiguredJiraTestCases: vi.fn(),
   completeWorkflowRun: vi.fn(),
   failWorkflowRun: vi.fn(),
 }));
@@ -23,6 +24,9 @@ vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal
 // service; here the route's contract is what it forwards in and derives out.
 vi.mock("@/modules/integrations/azure-devops/azure-devops-test-plan.service", () => ({
   publishApprovedTestCases: mocks.publishApprovedTestCases,
+}));
+vi.mock("@/modules/integrations/jira-cloud/jira-artifact-publishing.service", () => ({
+  publishConfiguredJiraTestCases: mocks.publishConfiguredJiraTestCases,
 }));
 vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
@@ -79,6 +83,30 @@ describe("POST /api/publish/test-cases", () => {
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
     mocks.getUserAzureAdapter.mockResolvedValue(fakeAzureAdapter());
     mocks.publishApprovedTestCases.mockResolvedValue({ results: [caseResult()] });
+    mocks.publishConfiguredJiraTestCases.mockResolvedValue({ results: [caseResult({ suite: undefined })] });
+  });
+
+  it("routes Jira workspaces through their configured artifact backend", async () => {
+    mocks.requireWorkflowContext.mockResolvedValue({ userId: "user-1", workspace: { id: "ws-1", providerId: "jira-cloud" } });
+
+    const response = await POST(publishRequest({ suiteMode: "none", testPlanId: undefined, testSuiteId: undefined }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.publishConfiguredJiraTestCases).toHaveBeenCalledWith({
+      workspaceId: "ws-1", projectId: trustedScope.projectId, actorUserId: "user-1", testCases: [expect.objectContaining({ localId: "tc-1" })],
+    });
+    expect(mocks.getUserAzureAdapter).not.toHaveBeenCalled();
+    expect(mocks.publishApprovedTestCases).not.toHaveBeenCalled();
+  });
+
+  it("returns provider-aware guidance when Jira artifact publishing fails", async () => {
+    mocks.requireWorkflowContext.mockResolvedValue({ userId: "user-1", workspace: { id: "ws-1", providerId: "jira-cloud" } });
+    mocks.publishConfiguredJiraTestCases.mockRejectedValue(new Error("backend unavailable"));
+
+    const response = await POST(publishRequest({ suiteMode: "none", testPlanId: undefined, testSuiteId: undefined }));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: "Jira artifact publish failed." });
   });
 
   it("normalizes plan/suite URLs to numeric IDs before publishing", async () => {

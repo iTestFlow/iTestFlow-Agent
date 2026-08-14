@@ -55,8 +55,10 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
   if (!snapshot || JSON.stringify(snapshot) !== JSON.stringify(currentNonSecretConfig)) {
     throw new Error("Playwright MCP configuration changed after this run was queued. Start a new execution.");
   }
+  const providerId = resolveWorkspaceProviderId(workspace);
+  if (providerId !== "azure-devops") throw new Error("Playwright execution currently requires an Azure DevOps workspace.");
   const azure = createIntegrationProvider({
-    providerId: resolveWorkspaceProviderId(workspace),
+    providerId,
     settings: { organizationUrl: workspace.azureOrgUrl, personalAccessToken: pat },
     projectScope: { azureProjectId: payload.scope.azureProjectId, azureProjectName: payload.scope.azureProjectName },
   });

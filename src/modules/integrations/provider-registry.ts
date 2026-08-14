@@ -3,6 +3,8 @@ import "server-only";
 import { azureDevOpsDescriptor } from "./azure-devops/azure-devops-descriptor";
 import { AzureDevOpsRestAdapter, type AzureDevOpsProjectScope } from "./azure-devops/azure-devops-client";
 import type { AzureDevOpsSettings } from "./azure-devops/azure-devops-types";
+import { JiraCloudAdapter, type JiraCloudProjectScope, type JiraCloudSettings } from "./jira-cloud/jira-cloud-adapter";
+import { jiraCloudDescriptor } from "./jira-cloud/jira-cloud-descriptor";
 import { providerConfigurationError, unsupportedProviderError } from "./core/capabilities";
 import type { ProviderDescriptor, ProviderId } from "./core/provider-types";
 import type { TestManagementProvider } from "./core/test-management-provider";
@@ -10,23 +12,33 @@ import type { WorkManagementProvider } from "./core/work-management-provider";
 
 const PROVIDER_DESCRIPTORS = {
   "azure-devops": azureDevOpsDescriptor,
+  "jira-cloud": jiraCloudDescriptor,
 } satisfies Record<ProviderId, ProviderDescriptor>;
 
 export type IntegrationProvider = WorkManagementProvider & TestManagementProvider;
 
-export type IntegrationProviderConfig = {
-  providerId: ProviderId | string;
-  settings: AzureDevOpsSettings;
-  projectScope?: AzureDevOpsProjectScope;
-  hooks?: { onUnauthorized?: () => void };
-};
+export type IntegrationProviderConfig =
+  | {
+      providerId: "azure-devops";
+      settings: AzureDevOpsSettings;
+      projectScope?: AzureDevOpsProjectScope;
+      hooks?: { onUnauthorized?: () => void };
+    }
+  | {
+      providerId: "jira-cloud";
+      settings: JiraCloudSettings;
+      projectScope?: JiraCloudProjectScope;
+      hooks?: never;
+    };
 
 export function createIntegrationProvider(config: IntegrationProviderConfig): IntegrationProvider {
   switch (config.providerId) {
     case "azure-devops":
       return new AzureDevOpsRestAdapter(config.settings, config.projectScope, config.hooks);
+    case "jira-cloud":
+      return new JiraCloudAdapter(config.settings, config.projectScope);
     default:
-      throw unsupportedProviderError(config.providerId);
+      throw unsupportedProviderError((config as { providerId: string }).providerId);
   }
 }
 

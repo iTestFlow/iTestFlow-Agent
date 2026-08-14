@@ -8,12 +8,14 @@ const credentials = vi.hoisted(() => ({ resolveWorkspaceSyncPat: vi.fn() }));
 const registry = vi.hoisted(() => ({ createIntegrationProvider: vi.fn() }));
 const contextStore = vi.hoisted(() => ({ indexAzureWorkItemsAsProjectContext: vi.fn() }));
 const jobQueue = vi.hoisted(() => ({ enqueueJob: vi.fn() }));
+const jiraSync = vi.hoisted(() => ({ runJiraProjectReconciliation: vi.fn() }));
 
 vi.mock("@/modules/shared/infrastructure/database/db", () => database);
 vi.mock("@/modules/credentials/credential.service", () => credentials);
 vi.mock("@/modules/integrations/provider-registry", () => registry);
 vi.mock("@/modules/rag/project-context-store.service", () => contextStore);
 vi.mock("./job-queue.service", () => jobQueue);
+vi.mock("@/modules/integrations/jira-cloud/jira-sync-runtime.service", () => jiraSync);
 
 import { DEFAULT_CONTEXT_STATES, DEFAULT_CONTEXT_WORK_ITEM_TYPES } from "@/lib/project-context-defaults";
 import type { Job } from "./job-queue.service";
@@ -129,6 +131,19 @@ describe("runWorkspaceContextSync", () => {
     });
   });
 
+  it("runs provider-scoped Jira reconciliation without resolving an Azure PAT", async () => {
+    database.sqlGet.mockResolvedValue({
+      ...projectRow, provider_id: "jira-cloud", provider_project_id: "10000",
+      provider_project_key: "QA", provider_project_name: "Quality",
+    });
+    jiraSync.runJiraProjectReconciliation.mockResolvedValue({ issueCount: 2, operationCount: 1 });
+    await runWorkspaceContextSync(makeJob());
+    expect(credentials.resolveWorkspaceSyncPat).not.toHaveBeenCalled();
+    expect(jiraSync.runJiraProjectReconciliation).toHaveBeenCalledWith({
+      workspaceId: "ws-1", projectId: "proj-1", actor: "system:worker", indexContext: true,
+    });
+  });
+
   it.each([
     {},
     { workItemTypes: [], states: [] },
@@ -164,6 +179,7 @@ describe("enqueueWorkspaceContextSync", () => {
       workspaceId: "ws-1",
       payload: { projectId: "p1" },
       dedupeKey: "context_sync:p1",
+      maxAttempts: 5,
       createdByUserId: "user-1",
     });
     expect(jobQueue.enqueueJob).toHaveBeenNthCalledWith(

@@ -132,7 +132,7 @@ describeDb("document route authz helpers (DB-backed, session/role-gated, resolve
     } catch (error) {
       expect(error).toBeInstanceOf(WorkflowAuthError);
       expect((error as WorkflowAuthError).status).toBe(403);
-      expect((error as Error).message).toBe("The selected Azure DevOps project does not belong to this workspace.");
+      expect((error as Error).message).toBe("The selected project does not belong to this workspace.");
     }
   });
 

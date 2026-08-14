@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { publishApprovedTestCases } from "@/modules/integrations/azure-devops/azure-devops-test-plan.service";
+import { publishConfiguredJiraTestCases } from "@/modules/integrations/jira-cloud/jira-artifact-publishing.service";
 import { azureIdSchema, normalizeTestCasePriority } from "@/modules/integrations/azure-devops/publish-normalization";
 import {
   completeWorkflowRun,
@@ -88,19 +89,25 @@ export async function POST(request: Request) {
   }
 
   let trustedScope: ProjectScope | undefined;
+  let jiraWorkspace = false;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    jiraWorkspace = ctx.workspace.providerId === "jira-cloud";
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
-    const adapter = await getUserAzureAdapter(ctx, trustedScope);
-    const result = await publishApprovedTestCases(adapter, trustedScope, {
-      actor: ctx.userId,
-      targetUserStoryId: parsed.data.targetWorkItemId,
-      testPlanId: parsed.data.testPlanId,
-      testSuiteId: parsed.data.testSuiteId,
-      parentSuiteId: parsed.data.parentSuiteId,
-      suiteMode: parsed.data.suiteMode,
-      testCases: parsed.data.testCases,
-    });
+    const result = jiraWorkspace
+      ? await publishConfiguredJiraTestCases({
+          workspaceId: ctx.workspace.id, projectId: trustedScope.projectId,
+          actorUserId: ctx.userId, testCases: parsed.data.testCases,
+        })
+      : await publishApprovedTestCases(await getUserAzureAdapter(ctx, trustedScope), trustedScope, {
+          actor: ctx.userId,
+          targetUserStoryId: parsed.data.targetWorkItemId,
+          testPlanId: parsed.data.testPlanId,
+          testSuiteId: parsed.data.testSuiteId,
+          parentSuiteId: parsed.data.parentSuiteId,
+          suiteMode: parsed.data.suiteMode,
+          testCases: parsed.data.testCases,
+        });
     const successCount = result.results.filter((item) => item.success).length;
     if (parsed.data.analyticsRunId) {
       if (successCount > 0) {
@@ -137,19 +144,20 @@ export async function POST(request: Request) {
       failWorkflowRun({
         scope: trustedScope,
         runId: parsed.data.analyticsRunId,
-        error: error instanceof Error ? error.message : "Azure Test Plan publish failed.",
+        error: error instanceof Error ? error.message : jiraWorkspace ? "Jira artifact publish failed." : "Azure Test Plan publish failed.",
       });
     }
+    if (jiraWorkspace) return NextResponse.json({ error: "Jira artifact publish failed." }, { status: 503 });
     return routeErrorResponse(error, { domain: "azure", status: 503, fallback: "Azure Test Plan publish failed." });
   }
 }
 
-function countPublishActions(result: Awaited<ReturnType<typeof publishApprovedTestCases>>) {
+function countPublishActions(result: Awaited<ReturnType<typeof publishApprovedTestCases>> | Awaited<ReturnType<typeof publishConfiguredJiraTestCases>>) {
   const caseActions = result.results.reduce((total, item) => {
     return total
       + (item.create.success ? 1 : 0)
       + (item.link.success ? 1 : 0)
       + (item.suite?.success ? 1 : 0);
   }, 0);
-  return caseActions + (result.requirementSuite?.success ? 1 : 0);
+  return caseActions + ("requirementSuite" in result && result.requirementSuite?.success ? 1 : 0);
 }

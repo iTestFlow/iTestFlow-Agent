@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { humanizeModelId, isProvider, modelDisplayLabel, providerLabel, type Provider } from "./topbar-labels";
+import * as labels from "./topbar-labels";
+
+const { humanizeModelId, isProvider, modelDisplayLabel, providerLabel } = labels;
+type Provider = labels.Provider;
+
+describe("workProviderDisplay", () => {
+  it("uses Jira Cloud or Azure DevOps labels from the workspace provider", () => {
+    expect(typeof (labels as Record<string, unknown>).workProviderDisplay).toBe("function");
+    const display = (labels as unknown as { workProviderDisplay(id?: string): { name: string; short: string } }).workProviderDisplay;
+    expect(display("jira-cloud")).toEqual({ name: "Jira Cloud", short: "Jira" });
+    expect(display("azure-devops")).toEqual({ name: "Azure DevOps", short: "Azure" });
+  });
+});
 
 describe("humanizeModelId", () => {
   it("strips the vendor prefix only when it matches the given provider", () => {

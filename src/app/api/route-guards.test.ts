@@ -8,6 +8,12 @@ const PUBLIC_ROUTES = new Set([
   "auth/logout/route.ts",
   "auth/organizations/route.ts",
   "auth/session/route.ts",
+  "auth/jira/start/route.ts",
+  "auth/jira/callback/route.ts",
+  "auth/jira/select/route.ts",
+  // Atlassian calls this without an app session; the route verifies JWT bearer
+  // authentication plus its unguessable registration binding before persistence.
+  "webhooks/jira/route.ts",
   "health/route.ts",
 ]);
 
