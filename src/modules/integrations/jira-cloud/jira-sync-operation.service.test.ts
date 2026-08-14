@@ -51,7 +51,7 @@ describe("completeJiraSyncOperation", () => {
   it("requeues transient failures with bounded backoff and a fixed error code", async () => {
     mocks.sqlGet.mockResolvedValue({ mapping_id: "mapping-1", attempts: 1 });
     await expect(failJiraSyncOperation({ operationId: "op-1", errorCode: "integration_rate_limited" }))
-      .resolves.toEqual({ retry: true, runAfter: "2026-08-13T00:00:02.000Z" });
+      .resolves.toEqual({ retry: true, runAfter: "2026-08-13T00:00:01.000Z" });
     expect(mocks.sqlRun.mock.calls.some(([sql, params]) => String(sql).includes("run_after") && params.status === "pending" && params.errorCode === "integration_rate_limited")).toBe(true);
     expect(mocks.sqlRun.mock.calls.some(([sql]) => String(sql).includes("status = 'error'"))).toBe(false);
   });

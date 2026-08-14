@@ -2,9 +2,44 @@ import "server-only";
 
 import type { FinalApprovedTestCase } from "../core/integration-types";
 import { createId, nowIso, sqlGet } from "@/modules/shared/infrastructure/database/db";
+import { resolveJiraAccessToken } from "@/modules/auth/jira-connection.service";
+import { JiraCloudAdapter } from "./jira-cloud-adapter";
+import { PlainJiraArtifactBackend } from "./plain-jira-artifact-backend";
+import { XrayCloudBackend } from "./xray-cloud-backend";
+import { resolveXrayCloudConfig } from "./xray-cloud-config.service";
+import { ZephyrScaleBackend } from "./zephyr-scale-backend";
+import { resolveZephyrScaleConfig } from "./zephyr-scale-config.service";
 
 type PlainPublisher = { createTestCase(input: { projectId: string; testCase: FinalApprovedTestCase }): Promise<{ success: boolean; azureTestCaseId?: string; error?: string }> };
 type LinkRow = { remote_artifact_id: string; remote_url: string };
+type BackendType = "plain_jira" | "xray_cloud" | "zephyr_scale";
+type BackendAnchor = {
+  backend_type: BackendType; config_json: string; provider_project_id: string; provider_project_key: string;
+  provider_project_name: string; provider_site_id: string; provider_site_url: string;
+};
+
+export async function publishConfiguredJiraTestCases(input: {
+  workspaceId: string; projectId: string; actorUserId: string; testCases: FinalApprovedTestCase[];
+}) {
+  const resolved = await resolveConfiguredBackend(input);
+  const results = [];
+  for (const testCase of input.testCases) {
+    try {
+      const published = await publishJiraTestCase({ ...input, testCase, backend: resolved.backend, backendType: resolved.backendType, siteUrl: resolved.siteUrl });
+      results.push({
+        localId: testCase.localId, azureTestCaseId: published.remoteId, success: true,
+        create: { success: true, azureTestCaseId: published.remoteId }, link: { success: true }, suite: undefined,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Jira artifact publishing failed.";
+      results.push({
+        localId: testCase.localId, success: false,
+        create: { success: false, error: message }, link: { success: false, error: message }, suite: undefined,
+      });
+    }
+  }
+  return { results };
+}
 
 export async function storePlainJiraArtifactConfig(input: {
   workspaceId: string; projectId: string; actorUserId: string; testCaseIssueTypeId: string; localIdFieldId: string;
@@ -44,16 +79,23 @@ export async function publishPlainJiraTestCase(input: {
   workspaceId: string; projectId: string; actorUserId: string; testCase: FinalApprovedTestCase;
   backend: PlainPublisher; siteUrl?: string;
 }): Promise<{ remoteId: string; remoteUrl: string; created: boolean }> {
+  return publishJiraTestCase({ ...input, backendType: "plain_jira" });
+}
+
+async function publishJiraTestCase(input: {
+  workspaceId: string; projectId: string; actorUserId: string; testCase: FinalApprovedTestCase;
+  backend: PlainPublisher; backendType: BackendType; siteUrl?: string;
+}): Promise<{ remoteId: string; remoteUrl: string; created: boolean }> {
   const params = { workspaceId: input.workspaceId, projectId: input.projectId, localType: "test_case", localId: input.testCase.localId };
   const authorized = await sqlGet<{ provider_project_id: string }>(
     `SELECT p.provider_project_id
      FROM projects p
      JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @userId AND wm.status = 'active'
      JOIN jira_artifact_backend_configs c ON c.workspace_id = p.workspace_id AND c.project_id = p.id
-       AND c.backend_type = 'plain_jira' AND c.status = 'active'
+       AND c.backend_type = @backendType AND c.status = 'active'
      WHERE p.id = @projectId AND p.workspace_id = @workspaceId
        AND p.provider_id = 'jira-cloud' AND p.status = 'active'`,
-    { ...params, userId: input.actorUserId },
+    { ...params, userId: input.actorUserId, backendType: input.backendType },
   );
   if (!authorized?.provider_project_id) throw new Error("Plain Jira publishing is not authorized for this workspace project.");
   const existing = await sqlGet<LinkRow>(
@@ -69,7 +111,7 @@ export async function publishPlainJiraTestCase(input: {
        id, workspace_id, project_id, backend_type, local_artifact_type, local_artifact_id,
        remote_artifact_id, remote_url, status, created_at, updated_at
      )
-     SELECT @id, p.workspace_id, p.id, 'plain_jira', @localType, @localId,
+     SELECT @id, p.workspace_id, p.id, @backendType, @localType, @localId,
             NULL, NULL, 'publishing', @now, @now
      FROM projects p
      JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = @userId AND wm.status = 'active'
@@ -78,7 +120,7 @@ export async function publishPlainJiraTestCase(input: {
      DO UPDATE SET updated_at = excluded.updated_at
        WHERE jira_artifact_links.status = 'publishing' AND jira_artifact_links.updated_at < @staleCutoff
      RETURNING id`,
-    { ...params, id: createId("jiraartifact"), userId: input.actorUserId, now, staleCutoff },
+    { ...params, id: createId("jiraartifact"), userId: input.actorUserId, backendType: input.backendType, now, staleCutoff },
   );
   if (!claim) throw new Error("This iTestFlow artifact is already being published.");
   const published = await input.backend.createTestCase({ projectId: authorized.provider_project_id, testCase: input.testCase });
@@ -94,4 +136,68 @@ export async function publishPlainJiraTestCase(input: {
   );
   if (!linked) throw new Error("The Jira artifact link is not authorized for this workspace project.");
   return { remoteId: linked.remote_artifact_id, remoteUrl: linked.remote_url, created: true };
+}
+
+async function resolveConfiguredBackend(input: { workspaceId: string; projectId: string; actorUserId: string }): Promise<{
+  backend: PlainPublisher; backendType: BackendType; siteUrl: string;
+}> {
+  const anchor = await sqlGet<BackendAnchor>(
+    `SELECT c.backend_type, c.config_json, p.provider_project_id, p.provider_project_key, p.provider_project_name,
+            w.provider_site_id, w.provider_site_url
+     FROM jira_artifact_backend_configs c
+     JOIN projects p ON p.workspace_id = c.workspace_id AND p.id = c.project_id AND p.provider_id = 'jira-cloud' AND p.status = 'active'
+     JOIN workspaces w ON w.id = p.workspace_id AND w.provider_id = 'jira-cloud' AND w.status = 'active'
+     JOIN workspace_members wm ON wm.workspace_id = c.workspace_id AND wm.user_id = @actorUserId AND wm.status = 'active'
+     WHERE c.workspace_id = @workspaceId AND c.project_id = @projectId AND c.status = 'active'`,
+    input,
+  );
+  if (!anchor) throw new Error("A Jira artifact backend is not configured for this project.");
+  if (anchor.backend_type === "xray_cloud") {
+    return { backend: new XrayCloudBackend(await resolveXrayCloudConfig(input)), backendType: anchor.backend_type, siteUrl: anchor.provider_site_url };
+  }
+  if (anchor.backend_type === "zephyr_scale") {
+    const accessToken = await resolveJiraAccessToken({ workspaceId: input.workspaceId, userId: input.actorUserId });
+    const jira = new JiraCloudAdapter({
+      cloudId: anchor.provider_site_id, siteUrl: anchor.provider_site_url, accessToken,
+    }, {
+      jiraProjectId: anchor.provider_project_id, jiraProjectKey: anchor.provider_project_key, jiraProjectName: anchor.provider_project_name,
+    });
+    const settings = await resolveZephyrScaleConfig(input);
+    return {
+      backend: new ZephyrScaleBackend({
+        ...settings,
+        assertJiraIssueInProject: async (issueKey) => {
+          const issues = await jira.fetchWorkItemsByIds({ projectId: anchor.provider_project_id, workItemIds: [String(issueKey)] });
+          if (issues.length !== 1) throw new Error("The target Jira issue is not in the selected project.");
+        },
+      }),
+      backendType: anchor.backend_type,
+      siteUrl: anchor.provider_site_url,
+    };
+  }
+  const config = parsePlainConfig(anchor.config_json);
+  const accessToken = await resolveJiraAccessToken({ workspaceId: input.workspaceId, userId: input.actorUserId });
+  const appBaseUrl = process.env.ITESTFLOW_PUBLIC_URL?.trim();
+  if (!appBaseUrl) throw new Error("Plain Jira artifact publishing is not configured for this deployment.");
+  return {
+    backend: new PlainJiraArtifactBackend({
+      cloudId: anchor.provider_site_id, siteUrl: anchor.provider_site_url, accessToken, appBaseUrl,
+      testCaseIssueTypeId: config.testCaseIssueTypeId, localIdFieldId: config.localIdFieldId,
+    }, {
+      jiraProjectId: anchor.provider_project_id, jiraProjectKey: anchor.provider_project_key, jiraProjectName: anchor.provider_project_name,
+    }),
+    backendType: anchor.backend_type,
+    siteUrl: anchor.provider_site_url,
+  };
+}
+
+function parsePlainConfig(value: string): { testCaseIssueTypeId: string; localIdFieldId: string } {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { throw new Error("Plain Jira artifact configuration metadata is invalid."); }
+  const record = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  if (typeof record.testCaseIssueTypeId !== "string" || !/^[1-9][0-9]*$/.test(record.testCaseIssueTypeId)
+      || typeof record.localIdFieldId !== "string" || !/^customfield_[0-9]+$/.test(record.localIdFieldId)) {
+    throw new Error("Plain Jira artifact configuration metadata is invalid.");
+  }
+  return { testCaseIssueTypeId: record.testCaseIssueTypeId, localIdFieldId: record.localIdFieldId };
 }

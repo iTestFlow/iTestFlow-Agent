@@ -1,16 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ sqlGet: vi.fn() }));
+const mocks = vi.hoisted(() => ({ sqlGet: vi.fn(), resolveAccess: vi.fn(), plainCreate: vi.fn(), xrayCreate: vi.fn(), zephyrCreate: vi.fn() }));
 vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   createId: () => "link-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet,
   withTransaction: (work: (client: object) => unknown) => work({ tx: true }),
 }));
+vi.mock("@/modules/auth/jira-connection.service", () => ({ resolveJiraAccessToken: mocks.resolveAccess }));
+vi.mock("./plain-jira-artifact-backend", () => ({ PlainJiraArtifactBackend: class { createTestCase = mocks.plainCreate; } }));
+vi.mock("./xray-cloud-backend", () => ({ XrayCloudBackend: class { createTestCase = mocks.xrayCreate; } }));
+vi.mock("./zephyr-scale-backend", () => ({ ZephyrScaleBackend: class { createTestCase = mocks.zephyrCreate; } }));
+vi.mock("./xray-cloud-config.service", () => ({ resolveXrayCloudConfig: vi.fn() }));
+vi.mock("./zephyr-scale-config.service", () => ({ resolveZephyrScaleConfig: vi.fn() }));
 import * as plainJiraPublishing from "./jira-artifact-publishing.service";
 
 const { publishPlainJiraTestCase } = plainJiraPublishing;
 
 describe("publishPlainJiraTestCase", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); vi.stubEnv("ITESTFLOW_PUBLIC_URL", "https://itestflow.example"); mocks.resolveAccess.mockResolvedValue("access"); });
   const input = {
     workspaceId: "ws-1", projectId: "project-1", actorUserId: "user-1",
     testCase: { localId: "case-1", targetUserStoryId: "QA-7", title: "Checkout", steps: [] },
@@ -51,5 +57,24 @@ describe("publishPlainJiraTestCase", () => {
     expect(sql).toContain("wm.role IN ('owner', 'admin')");
     expect(params.configJson).toBe('{"testCaseIssueTypeId":"10001","localIdFieldId":"customfield_10002"}');
     expect(params).not.toHaveProperty("encryptedSecret");
+  });
+
+  it("publishes through the configured plain Jira backend and records a trace link", async () => {
+    mocks.sqlGet
+      .mockResolvedValueOnce({
+        backend_type: "plain_jira", config_json: '{"testCaseIssueTypeId":"10001","localIdFieldId":"customfield_10002"}',
+        provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
+        provider_site_id: "cloud-a", provider_site_url: "https://quality.atlassian.net",
+      })
+      .mockResolvedValueOnce({ provider_project_id: "10000" })
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ id: "link-1" })
+      .mockResolvedValueOnce({ remote_artifact_id: "QA-9", remote_url: "https://quality.atlassian.net/browse/QA-9" });
+    mocks.plainCreate.mockResolvedValue({ success: true, azureTestCaseId: "QA-9" });
+
+    await expect(plainJiraPublishing.publishConfiguredJiraTestCases({ ...input, testCases: [input.testCase] }))
+      .resolves.toMatchObject({ results: [{ localId: "case-1", azureTestCaseId: "QA-9", success: true }] });
+
+    expect(mocks.plainCreate).toHaveBeenCalledWith({ projectId: "10000", testCase: input.testCase });
   });
 });

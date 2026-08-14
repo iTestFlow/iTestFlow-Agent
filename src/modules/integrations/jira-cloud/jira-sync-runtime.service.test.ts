@@ -133,6 +133,29 @@ describe("runJiraProjectReconciliation", () => {
     });
   });
 
+  it("retries an exact operation without reconciling the project or self-enqueueing", async () => {
+    mocks.sqlGet.mockReset()
+      .mockResolvedValueOnce({
+        project_id: "project-1", provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
+        provider_site_id: "cloud-a", provider_site_url: "https://quality.atlassian.net", direction: "two_way",
+        field_mapping_json: JSON.stringify([{ localField: "title", jiraField: "summary" }]), status_mapping_json: "[]",
+      })
+      .mockResolvedValueOnce({ jira_issue_key: "QA-7", local_entity_id: "local-1" });
+    mocks.claim.mockResolvedValueOnce({ id: "op-3", mappingId: "mapping-1", field: "title", operation: "push", target: "Title" });
+    mocks.updateIssueFields.mockRejectedValueOnce(new Error("transient"));
+    mocks.fail.mockResolvedValueOnce({ retry: true, runAfter: "2026-08-13T10:00:02.000Z" });
+
+    await expect(runJiraProjectReconciliation({
+      workspaceId: "ws-1", projectId: "project-1", operationId: "op-3", actor: "system:worker", indexContext: false,
+    })).rejects.toThrow("remains pending");
+
+    expect(mocks.fetchWorkItems).not.toHaveBeenCalled();
+    expect(mocks.fetchWorkItemsByIds).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
+    expect(mocks.claim).toHaveBeenCalledWith("ws-1", "project-1", "op-3");
+    expect(mocks.enqueueJob).not.toHaveBeenCalled();
+  });
+
   it("transitions Jira status through the configured status mapping", async () => {
     mocks.sqlGet.mockResolvedValueOnce({ jira_issue_key: "QA-7", local_entity_id: "local-1" });
     mocks.claim

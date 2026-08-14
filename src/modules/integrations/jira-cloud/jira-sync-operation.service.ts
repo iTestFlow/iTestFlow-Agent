@@ -80,7 +80,7 @@ export async function failJiraSyncOperation(input: { operationId: string; errorC
     if (!operation) throw new Error("The Jira sync operation is not available for failure handling.");
     const retry = RETRYABLE_CODES.has(input.errorCode) && operation.attempts < 5;
     const now = nowIso();
-    const runAfter = new Date(Date.parse(now) + Math.min(300, 2 ** Math.max(0, operation.attempts)) * 1000).toISOString();
+    const runAfter = new Date(Date.parse(now) + Math.min(300, 2 ** Math.max(0, operation.attempts - 1)) * 1000).toISOString();
     await sqlRun(
       `UPDATE jira_sync_operations SET status = @status, error_code = @errorCode,
          run_after = @runAfter, processing_started_at = NULL, updated_at = @now

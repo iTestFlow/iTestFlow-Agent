@@ -15,6 +15,19 @@ exports.up = (pgm) => {
       last_login_at text NOT NULL,
       UNIQUE (provider_id, provider_subject)
     );
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM users
+        WHERE email_or_unique_name IS NOT NULL
+        GROUP BY LOWER(email_or_unique_name)
+        HAVING COUNT(*) > 1
+      ) THEN
+        RAISE EXCEPTION 'Resolve case-insensitive duplicate user emails before applying Jira OAuth identity migration';
+      END IF;
+    END
+    $$;
     CREATE UNIQUE INDEX idx_users_email_ci
       ON users(LOWER(email_or_unique_name))
       WHERE email_or_unique_name IS NOT NULL;

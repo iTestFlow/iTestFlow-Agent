@@ -17,6 +17,10 @@ describe("Jira OAuth identity migration", () => {
     expect(ddl).toContain("CREATE TABLE external_identities");
     expect(ddl).toContain("UNIQUE (provider_id, provider_subject)");
     expect(ddl).toContain("CREATE UNIQUE INDEX idx_users_email_ci");
+    expect(ddl).toContain("GROUP BY LOWER(email_or_unique_name)");
+    expect(ddl).toContain("HAVING COUNT(*) > 1");
+    expect(ddl).toContain("Resolve case-insensitive duplicate user emails before applying Jira OAuth identity migration");
+    expect(ddl.indexOf("HAVING COUNT(*) > 1")).toBeLessThan(ddl.indexOf("CREATE UNIQUE INDEX idx_users_email_ci"));
     expect(ddl).toContain("ADD COLUMN provider_site_id");
     expect(ddl).toContain("DROP NOT NULL");
     expect(ddl).toContain("CREATE TABLE jira_oauth_states");

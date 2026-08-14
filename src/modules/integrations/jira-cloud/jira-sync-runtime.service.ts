@@ -47,6 +47,13 @@ export async function runJiraProjectReconciliation(input: {
     jiraProjectKey: project.provider_project_key,
     jiraProjectName: project.provider_project_name,
   });
+  if (input.operationId) {
+    const operationCount = await drainOperations({
+      workspaceId: input.workspaceId, projectId: input.projectId, operationId: input.operationId,
+      actor: input.actor, adapter, fieldMappings, statusMappings,
+    });
+    return { issueCount: 0, operationCount };
+  }
   const issueKeys = unique((input.issueKeys ?? []).map((value) => value.trim()).filter(Boolean));
   const remoteIssues = issueKeys.length
     ? await adapter.fetchWorkItemsByIds({ projectId: project.provider_project_id, workItemIds: issueKeys })
@@ -241,6 +248,7 @@ async function drainOperations(input: {
     } catch (error) {
       const failure = await failJiraSyncOperation({ operationId: operation.id, errorCode: errorCode(error) });
       if (failure.retry) {
+        if (input.operationId) throw new Error("The exact Jira sync operation remains pending for retry.");
         await enqueueJob({
           jobType: JIRA_SYNC_OPERATIONS, workspaceId: input.workspaceId, projectId: input.projectId,
           payload: { projectId: input.projectId, operationId: operation.id }, dedupeKey: `${JIRA_SYNC_OPERATIONS}:${operation.id}`,
