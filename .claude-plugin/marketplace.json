@@ -9,7 +9,7 @@
       "description": "Neutral project-local agent harness.",
       "name": "chaos-engine",
       "source": "./plugins/chaos-engine",
-      "version": "1.0.2274913757"
+      "version": "1.0.3758865170"
     },
     {
       "description": "Ultra-compressed communication mode.",
