@@ -48,7 +48,7 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 - **Requirements Analysis** finds ambiguities, risks, omissions, and testability concerns, then publishes reviewed comments to Azure DevOps.
 - **Test Case Design** generates editable positive, negative, boundary, and edge-case scenarios and publishes approved cases to Azure Test Plans.
 - **Test Gap Analysis** maps requirement details and acceptance criteria to linked test cases, identifies missing coverage, and creates selected additions.
-- **Automated Test Execution** expands an Azure Test Suite tree and executes its Test Plan steps through a bounded Playwright MCP agent. Results and trace artifacts remain in iTestFlow for review until a user explicitly publishes outcomes to Azure DevOps.
+- **Test Execution** expands an Azure Test Suite tree and executes its Test Plan steps through a bounded Playwright MCP agent. Results and trace artifacts remain in iTestFlow for review until a user explicitly publishes outcomes to Azure DevOps.
 - **Report Bug** converts QA notes into reviewed Azure DevOps Bug work items with fields, relationships, and attachments.
 
 ### Utilities and Governance
@@ -109,7 +109,7 @@ These links work while the local development or production server is running on 
 | Testing | [Requirements Analysis](http://127.0.0.1:3000/requirements-analysis) | Analyze a real Azure DevOps requirement |
 | Testing | [Test Case Design](http://127.0.0.1:3000/test-case-design) | Generate, review, and publish test cases |
 | Testing | [Test Gap Analysis](http://127.0.0.1:3000/test-gap-analysis) | Review traceability and missing coverage |
-| Testing | [Automated Test Execution](http://127.0.0.1:3000/test-execution) | Run and review Azure Test Plan steps through Playwright MCP |
+| Testing | [Test Execution](http://127.0.0.1:3000/test-execution) | Run and review Azure Test Plan steps through Playwright MCP |
 | Testing | [Report Bug](http://127.0.0.1:3000/report-bug) | Generate and post Azure DevOps bugs |
 | Utilities | [Suite Migration](http://127.0.0.1:3000/suite-migration) | Preview and execute Test Suite copy or move |
 | Utilities | [Bulk Task Creation](http://127.0.0.1:3000/bulk-task-creation) | Create multiple tasks across selected User Stories |

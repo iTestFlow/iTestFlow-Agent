@@ -18,4 +18,15 @@ describe("execution persistence redaction", () => {
   it("redacts free-form browser typing text even when the value has no secret-shaped prefix", () => {
     expect(sanitizeExecutionPayload({ text: "hunter2", selector: "#password" })).toEqual({ text: "[REDACTED]", selector: "#password" });
   });
+
+  it("scrubs exact secret values from payload strings and errors regardless of key", () => {
+    const secrets = ["Sup3rS3cret!", "ab"];
+    const payload = sanitizeExecutionPayload(
+      { snapshot: "The field shows Sup3rS3cret! and the label ab stays.", nested: ["typed Sup3rS3cret! twice Sup3rS3cret!"] },
+      secrets,
+    );
+    expect(JSON.stringify(payload)).not.toContain("Sup3rS3cret!");
+    expect(JSON.stringify(payload)).toContain("label ab stays");
+    expect(sanitizeExecutionError("navigation failed after typing Sup3rS3cret!", secrets)).not.toContain("Sup3rS3cret!");
+  });
 });

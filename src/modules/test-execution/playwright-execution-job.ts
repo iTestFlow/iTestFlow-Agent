@@ -9,10 +9,12 @@ import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { getWorkspaceById } from "@/modules/workspace/workspace.service";
 import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import {
-  casesForRun, executionConfigSnapshot, finishCase, finishRun, finishStep, incrementCompletedCases, isRunCancellationRequested,
-  markCaseStarted, markRunStarted, recordStepToolCall, stepsForCase,
+  casesForRun, executionConfigSnapshot, executionRunSettings, finishCase, finishRun, finishStep, incrementCompletedCases, isRunCancellationRequested,
+  markCaseStarted, markRunStarted, markStepStarted, recordStepToolCall, skipRemainingQueuedSteps, stepsForCase,
 } from "./execution-store.service";
-import { createPlaywrightToolPolicy, executeTestStepWithAgent, type ExecutionOutcome } from "./playwright-agent";
+import { decryptedRunTestData } from "./execution-test-data.service";
+import { DEFAULT_SCREENSHOT_POLICY, shouldCaptureScreenshot } from "./screenshot-policy";
+import { createPlaywrightToolPolicy, executeTestStepWithAgent, validatePlaywrightToolArguments, type ExecutionOutcome } from "./playwright-agent";
 import { connectPlaywrightMcp } from "./playwright-mcp-client";
 import { resolvePlaywrightMcpConfig } from "./playwright-mcp-config.service";
 import { artifactUrls, importHttpArtifact, importInlineMcpArtifacts } from "./execution-artifact.service";
@@ -51,12 +53,25 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
   if (!mcpConfig || mcpConfig.status !== "configured") throw new Error("Playwright MCP is no longer configured and enabled.");
   const toolPolicy = createPlaywrightToolPolicy(mcpConfig.transport!);
   const snapshot = await executionConfigSnapshot(payload.runId);
-  const currentNonSecretConfig = { transport: mcpConfig.transport, endpoint: mcpConfig.endpoint, artifactBaseUrl: mcpConfig.artifactBaseUrl };
-  if (!snapshot || JSON.stringify(snapshot) !== JSON.stringify(currentNonSecretConfig)) {
+  // Field-by-field, never stringify equality: jsonb round-trips reorder object keys.
+  const snapshotMatchesLiveConfig = Boolean(snapshot)
+    && snapshot!.transport === mcpConfig.transport
+    && (snapshot!.endpoint ?? null) === (mcpConfig.endpoint ?? null)
+    && (snapshot!.artifactBaseUrl ?? null) === (mcpConfig.artifactBaseUrl ?? null);
+  if (!snapshotMatchesLiveConfig) {
     throw new Error("Playwright MCP configuration changed after this run was queued. Start a new execution.");
   }
   const providerId = resolveWorkspaceProviderId(workspace);
   if (providerId !== "azure-devops") throw new Error("Playwright execution currently requires an Azure DevOps workspace.");
+  const settings = await executionRunSettings(payload.runId);
+  const screenshotPolicy = settings?.screenshotPolicy ?? DEFAULT_SCREENSHOT_POLICY;
+  const runTestData = await decryptedRunTestData(payload.runId);
+  const secretValues = runTestData.filter((entry) => entry.isSecret).map((entry) => entry.value).filter(Boolean);
+  const runContext = {
+    baseUrl: settings?.baseUrl ?? null,
+    executionNotes: settings?.executionNotes ?? null,
+    testData: runTestData.map((entry) => ({ title: entry.title, value: entry.value })),
+  };
   const azure = createIntegrationProvider({
     providerId,
     settings: { organizationUrl: workspace.azureOrgUrl, personalAccessToken: pat },
@@ -83,32 +98,70 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
       let errorMessage: string | null = null;
       let connection;
       try {
-        connection = await connectPlaywrightMcp(mcpConfig);
+        connection = await connectPlaywrightMcp(mcpConfig, { headless: settings?.headless ?? true });
       } catch (error) {
         errorMessage = error instanceof Error ? error.message : "Playwright MCP connection failed.";
-        await finishCase(testCase.id, "error", errorMessage);
+        await skipRemainingQueuedSteps(testCase.id);
+        await finishCase(testCase.id, "error", errorMessage, secretValues);
         await incrementCompletedCases(payload.runId);
         outcomes.push("error");
         continue;
       }
       try {
+        const captureStepScreenshot = async (stepId: string) => {
+          try {
+            const result = await connection.tools.callTool("browser_take_screenshot", {}, context.signal);
+            await importInlineMcpArtifacts({ workspaceId: workspace.id, runId: payload.runId, caseId: testCase.id, stepId, toolName: "browser_take_screenshot", result, secrets: secretValues });
+          } catch {
+            // Evidence capture is best-effort and must never change the step outcome.
+          }
+        };
         const steps = await stepsForCase(testCase.id);
         if (!steps.length) { outcome = "blocked"; errorMessage = "Azure Test Case has no executable steps."; }
-        for (const step of steps) {
+        let baseNavigationFailed = false;
+        if (settings?.baseUrl && steps.length) {
+          try {
+            const navigateArgs = await validatePlaywrightToolArguments("browser_navigate", { url: settings.baseUrl }, toolPolicy);
+            await connection.tools.callTool("browser_navigate", navigateArgs, context.signal);
+          } catch (error) {
+            outcome = context.signal.aborted ? "cancelled" : "error";
+            errorMessage = error instanceof Error && /allowed origin/i.test(error.message)
+              ? "The Base URL is not on an allowed test origin for this deployment. Add its origin to PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS in the server's .env file (for example https://staging.example.com) and restart the app, or set it to \"*\" to allow all origins."
+              : "The browser could not open the Base URL before the first step.";
+            baseNavigationFailed = true;
+          }
+        }
+        if (!baseNavigationFailed && settings?.baseUrl && steps.length) {
+          // After the base navigation so a tab exists — some Playwright MCP
+          // servers reject browser_resize on a tabless browser. Best-effort:
+          // a resize failure must never fail the case.
+          try {
+            await connection.tools.callTool(
+              "browser_resize",
+              { width: settings?.viewportWidth ?? 1920, height: settings?.viewportHeight ?? 1080 },
+              context.signal,
+            );
+          } catch {
+            // Viewport sizing is best-effort and must never fail the case.
+          }
+        }
+        if (!baseNavigationFailed) for (const step of steps) {
           if (step.status === "passed") continue;
           if (context.signal.aborted || await isRunCancellationRequested(payload.runId)) {
             outcome = "cancelled"; errorMessage = "Execution was cancelled.";
-            await finishStep(step.id, outcome, errorMessage); break;
+            await finishStep(step.id, outcome, errorMessage, secretValues); break;
           }
+          await markStepStarted(step.id);
           try {
             const result = await executeTestStepWithAgent({
               action: step.action, expectedResult: step.expectedResult, llm, tools: connection.tools,
-              signal: context.signal, toolPolicy,
+              signal: context.signal, toolPolicy, runContext,
               onEvent: async (event) => {
                 if (event.kind === "tool_call") {
-                  await recordStepToolCall(step.id, event.toolName, event.arguments, event.result);
+                  await recordStepToolCall(step.id, event.toolName, event.arguments, event.result, secretValues);
                   await importInlineMcpArtifacts({ workspaceId: workspace.id, runId: payload.runId,
-                    caseId: testCase.id, stepId: step.id, toolName: event.toolName, result: event.result });
+                    caseId: testCase.id, stepId: step.id, toolName: event.toolName, result: event.result,
+                    persistInlineScreenshots: screenshotPolicy !== "none", secrets: secretValues });
                   if (mcpConfig.transport === "http" && mcpConfig.artifactBaseUrl) {
                     for (const sourceUrl of artifactUrls(event.result)) {
                       await importHttpArtifact({ workspaceId: workspace.id, runId: payload.runId,
@@ -120,23 +173,35 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
                 }
               },
             });
-            await finishStep(step.id, result.outcome, result.outcome === "passed" ? null : result.summary);
+            await finishStep(step.id, result.outcome, result.outcome === "passed" ? null : result.summary, secretValues);
+            if (shouldCaptureScreenshot(screenshotPolicy, { hasExpectedResult: Boolean(step.expectedResult), outcome: result.outcome })) {
+              await captureStepScreenshot(step.id);
+            }
             if (result.outcome !== "passed") { outcome = result.outcome; errorMessage = result.summary; break; }
           } catch (error) {
             outcome = context.signal.aborted ? "cancelled" : "error";
             errorMessage = error instanceof Error ? error.message : "Playwright step failed.";
-            await finishStep(step.id, outcome, errorMessage); break;
+            await finishStep(step.id, outcome, errorMessage, secretValues);
+            if (shouldCaptureScreenshot(screenshotPolicy, { hasExpectedResult: Boolean(step.expectedResult), outcome })) {
+              await captureStepScreenshot(step.id);
+            }
+            break;
           }
         }
       } finally {
         await connection.close().catch(() => undefined);
       }
-      await finishCase(testCase.id, outcome, errorMessage);
+      // Steps the case never reached are terminal "skipped", not "Queued".
+      // Cancellation keeps its own sweep in finishRun ('cancelled').
+      if (outcome !== "passed" && outcome !== "cancelled") {
+        await skipRemainingQueuedSteps(testCase.id);
+      }
+      await finishCase(testCase.id, outcome, errorMessage, secretValues);
       await incrementCompletedCases(payload.runId);
       outcomes.push(outcome);
     }
     const outcome = combineOutcomes(outcomes);
-    await finishRun(payload.runId, outcome, outcome === "passed" ? null : "One or more test cases did not pass.");
+    await finishRun(payload.runId, outcome, outcome === "passed" ? null : "One or more test cases did not pass.", secretValues);
     return { runId: payload.runId, outcome, completedCases: outcomes.length };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Playwright execution failed.";

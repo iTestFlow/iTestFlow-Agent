@@ -98,11 +98,15 @@ export async function storeArtifactBytes(input: {
 
 export async function importInlineMcpArtifacts(input: {
   workspaceId: string; runId: string; caseId: string; stepId: string; toolName: string; result: unknown;
+  /** Set false (screenshot policy "none") to skip persisting inline image blocks. */
+  persistInlineScreenshots?: boolean;
+  /** Run secret values scrubbed from persisted textual artifacts (console logs). */
+  secrets?: readonly string[];
 }): Promise<string[]> {
   const ids: string[] = [];
   const content = input.result && typeof input.result === "object" && "content" in input.result
     ? (input.result as { content?: unknown }).content : undefined;
-  if (Array.isArray(content)) {
+  if (Array.isArray(content) && input.persistInlineScreenshots !== false) {
     for (const block of content) {
       if (block && typeof block === "object" && (block as { type?: unknown }).type === "image" && typeof (block as { data?: unknown }).data === "string") {
         const mimeType = typeof (block as { mimeType?: unknown }).mimeType === "string" ? (block as { mimeType: string }).mimeType : "image/png";
@@ -111,7 +115,7 @@ export async function importInlineMcpArtifacts(input: {
     }
   }
   if (input.toolName === "browser_console_messages") {
-    const bytes = Buffer.from(`${JSON.stringify(sanitizeExecutionPayload(input.result), null, 2)}\n`, "utf8");
+    const bytes = Buffer.from(`${JSON.stringify(sanitizeExecutionPayload(input.result, input.secrets ?? []), null, 2)}\n`, "utf8");
     ids.push(await storeArtifactBytes({ ...input, kind: "log", bytes, mimeType: "application/json" }));
   }
   return ids;

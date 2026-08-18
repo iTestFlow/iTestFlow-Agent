@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const transportConstructor = vi.fn();
+const stdioConstructor = vi.fn();
 const connect = vi.fn();
 const listTools = vi.fn();
 const close = vi.fn();
@@ -11,7 +12,11 @@ vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
     constructor(url: URL, options: unknown) { transportConstructor(url, options); }
   },
 }));
-vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({ StdioClientTransport: class {} }));
+vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({
+  StdioClientTransport: class {
+    constructor(params: unknown) { stdioConstructor(params); }
+  },
+}));
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
   Client: class {
     connect = connect;
@@ -133,5 +138,43 @@ describe("Playwright MCP HTTP transport", () => {
       "- 0: (current) [App](https://app.example/)",
     ].join("\n") }] });
     await expect(connection.tools.listOpenTabs(new AbortController().signal)).rejects.toThrow(/could not be verified/i);
+  });
+});
+
+describe("Playwright MCP stdio transport", () => {
+  const stdioConfig = { status: "configured" as const, transport: "stdio" as const, endpoint: null, artifactBaseUrl: null, bearerToken: null };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    connect.mockResolvedValue(undefined);
+    listTools.mockResolvedValue({ tools: [{ name: "browser_navigate" }, { name: "browser_snapshot" }, { name: "browser_tabs" }] });
+    close.mockResolvedValue(undefined);
+    process.env.PLAYWRIGHT_MCP_STDIO_COMMAND = "npx";
+    process.env.PLAYWRIGHT_MCP_STDIO_ARGS = JSON.stringify(["@playwright/mcp@latest"]);
+  });
+
+  afterEach(() => {
+    delete process.env.PLAYWRIGHT_MCP_STDIO_COMMAND;
+    delete process.env.PLAYWRIGHT_MCP_STDIO_ARGS;
+    vi.restoreAllMocks();
+  });
+
+  it("appends the literal --headless flag for headless runs, defaulting to headless", async () => {
+    await connectPlaywrightMcp(stdioConfig, { headless: true });
+    expect(stdioConstructor).toHaveBeenCalledWith({ command: "npx", args: ["@playwright/mcp@latest", "--headless"] });
+
+    await connectPlaywrightMcp(stdioConfig);
+    expect(stdioConstructor.mock.calls[1]?.[0]).toEqual({ command: "npx", args: ["@playwright/mcp@latest", "--headless"] });
+  });
+
+  it("never duplicates --headless when the deployment args already carry it", async () => {
+    process.env.PLAYWRIGHT_MCP_STDIO_ARGS = JSON.stringify(["@playwright/mcp@latest", "--headless"]);
+    await connectPlaywrightMcp(stdioConfig, { headless: true });
+    expect(stdioConstructor).toHaveBeenCalledWith({ command: "npx", args: ["@playwright/mcp@latest", "--headless"] });
+  });
+
+  it("leaves the deployment args untouched for headed runs", async () => {
+    await connectPlaywrightMcp(stdioConfig, { headless: false });
+    expect(stdioConstructor).toHaveBeenCalledWith({ command: "npx", args: ["@playwright/mcp@latest"] });
   });
 });

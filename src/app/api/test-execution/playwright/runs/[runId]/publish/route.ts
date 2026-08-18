@@ -19,7 +19,7 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
     if (!run) return NextResponse.json({ error: "Execution run not found." }, { status: 404 });
     if (["queued", "running"].includes(run.status)) return NextResponse.json({ error: "Review results after execution completes before publishing." }, { status: 409 });
     let cases = await publishableCases(runId);
-    if (!cases.length) return NextResponse.json({ error: "This execution has no terminal Test Point results to publish." }, { status: 409 });
+    if (!cases.length) return NextResponse.json({ error: "This execution has no terminal Test Point results to publish. Only cases imported from a Test Plan carry a Test Point." }, { status: 409 });
     const azure = await getUserAzureAdapter(ctx, scope);
     const retry = parsed.data.retryFailed ? await beginFailedExecutionPublicationRetry(runId) : null;
     const priorResults = retry?.prior ?? [];
@@ -36,14 +36,8 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
     const results = priorResults.filter((result) => result.success);
     try {
       for (const testCase of cases) {
-        if (!testCase.azureTestPointId) {
-          const receipt = { testCaseId: testCase.azureTestCaseId, testPointId: null, success: false, error: "No Azure Test Point ID was captured." };
-          results.push(receipt);
-          if (!await recordExecutionPublicationResult(publication.id, publication.leaseToken, receipt)) throw new Error("Publication lease was lost.");
-          continue;
-        }
         const result = await azure.updateTestPoints({
-          projectId: scope.azureProjectId, testPlanId: String(run.azurePlanId), testSuiteId: String(testCase.azureSuiteId),
+          projectId: scope.azureProjectId, testPlanId: String(testCase.azurePlanId), testSuiteId: String(testCase.azureSuiteId),
           pointIds: [String(testCase.azureTestPointId)], outcome: mapExecutionOutcomeToAzure(testCase.outcome),
         });
         const receipt = { testCaseId: testCase.azureTestCaseId, testPointId: testCase.azureTestPointId, success: result.success, error: result.error };

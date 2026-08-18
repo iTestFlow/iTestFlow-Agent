@@ -1,9 +1,16 @@
 import type { Metadata } from "next"
 import { ContentShell } from "@/components/layout/content-shell"
-import { PlaywrightExecutionClient } from "./playwright-execution-client"
+import { TestExecutionClient } from "./test-execution-client"
 
-export const metadata: Metadata = { title: "Automated Test Execution" }
+export const metadata: Metadata = { title: "Test Execution" }
 
 export default function TestExecutionPage() {
-  return <ContentShell title="Automated Test Execution" description="Run Azure Test Plan steps through a bounded Playwright MCP agent, review the stored results, then explicitly publish outcomes to Azure DevOps."><PlaywrightExecutionClient /></ContentShell>
+  return (
+    <ContentShell
+      title="Test Execution"
+      description="Import, write, and edit test cases, run them through the AI-driven browser agent, then review evidence and publish outcomes to Azure DevOps."
+    >
+      <TestExecutionClient />
+    </ContentShell>
+  )
 }
