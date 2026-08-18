@@ -444,6 +444,17 @@ export function TestExecutionClient() {
         />
       ) : null}
 
+      {!liveRun && activeStep === "setup" ? (
+        <RunHistoryCard
+          runs={runs}
+          loading={historyLoading}
+          busy={rerunBusy || Boolean(liveRun)}
+          onRefresh={() => void loadHistory()}
+          onView={(runId) => void viewRun(runId)}
+          onRerun={requestRerun}
+        />
+      ) : null}
+
       {!stepper.locked ? (
         <StepNav
           activeStep={activeStep}
@@ -452,15 +463,6 @@ export function TestExecutionClient() {
           nextBlockedReason={issues[0]}
         />
       ) : null}
-
-      <RunHistoryCard
-        runs={runs}
-        loading={historyLoading}
-        busy={rerunBusy || Boolean(liveRun)}
-        onRefresh={() => void loadHistory()}
-        onView={(runId) => void viewRun(runId)}
-        onRerun={requestRerun}
-      />
 
       <ConfirmationDialog
         open={Boolean(pendingRerunId)}
