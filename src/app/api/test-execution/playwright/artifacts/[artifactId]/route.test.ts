@@ -28,7 +28,16 @@ describe("execution artifact response", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/octet-stream");
     expect(response.headers.get("content-disposition")).toContain("attachment");
+    expect(response.headers.get("content-disposition")).toContain('filename="execution-artifact-a.bin"');
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("content-security-policy")).toBe("sandbox");
+  });
+
+  it("names downloads with an extension derived from the allowlisted mime type", async () => {
+    getExecutionArtifact.mockResolvedValue({ storage_key: "artifact", mime_type: "image/png", byte_size: 4 });
+    const url = "http://local/artifact?workspaceId=w&projectId=p&azureProjectId=ap&azureProjectName=P&azureOrganizationUrl=https%3A%2F%2Fdev.azure.com%2Fo";
+    const response = await GET(new Request(url), { params: Promise.resolve({ artifactId: "a" }) });
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("content-disposition")).toContain('filename="execution-artifact-a.png"');
   });
 });

@@ -7,8 +7,21 @@ import { getExecutionArtifact } from "@/modules/test-execution/execution-artifac
 
 const SAFE_ARTIFACT_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "application/zip", "text/plain", "application/json"]);
 
+const ARTIFACT_EXTENSIONS: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "application/zip": ".zip",
+  "text/plain": ".txt",
+  "application/json": ".json",
+};
+
 function safeArtifactContentType(value: string): string {
   return SAFE_ARTIFACT_TYPES.has(value.toLowerCase().split(";", 1)[0]!) ? value : "application/octet-stream";
+}
+
+function artifactFileExtension(value: string): string {
+  return ARTIFACT_EXTENSIONS[value.toLowerCase().split(";", 1)[0]!] ?? ".bin";
 }
 
 export async function GET(request: Request, context: { params: Promise<{ artifactId: string }> }) {
@@ -30,7 +43,7 @@ export async function GET(request: Request, context: { params: Promise<{ artifac
       headers: {
         "Content-Type": safeArtifactContentType(artifact.mime_type),
         "Content-Length": String(artifact.byte_size),
-        "Content-Disposition": `attachment; filename="execution-artifact-${artifactId}"`,
+        "Content-Disposition": `attachment; filename="execution-artifact-${artifactId}${artifactFileExtension(artifact.mime_type)}"`,
         "Content-Security-Policy": "sandbox",
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, no-store",
