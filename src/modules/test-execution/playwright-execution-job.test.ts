@@ -46,7 +46,7 @@ vi.mock("./execution-store.service", () => ({
 }));
 vi.mock("./execution-test-data.service", () => ({ decryptedRunTestData: (...a: unknown[]) => decryptedRunTestData(...a) }));
 vi.mock("./playwright-agent", () => ({
-  createPlaywrightToolPolicy: vi.fn(() => ({ transport: "stdio", allowedNavigationOrigins: new Set(["https://app.example.com"]), uploadRoots: [] })),
+  createPlaywrightToolPolicy: vi.fn(() => ({ transport: "stdio", allowAllOrigins: false, allowedNavigationOrigins: new Set(["https://app.example.com"]), uploadRoots: [] })),
   validatePlaywrightToolArguments: (name: string, args: unknown) => validateToolArguments(name, args),
   executeTestStepWithAgent: (input: AgentInput) => executeTestStepWithAgent(input),
 }));

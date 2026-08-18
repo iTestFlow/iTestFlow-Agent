@@ -55,6 +55,7 @@ export function normalizeToolArguments(value: unknown): Record<string, unknown> 
 
 export type PlaywrightToolPolicy = {
   transport: "http" | "stdio";
+  allowAllOrigins: boolean;
   allowedNavigationOrigins: ReadonlySet<string>;
   uploadRoots: readonly string[];
 };
@@ -69,17 +70,21 @@ const TabsArgumentsSchema = z.discriminatedUnion("action", [
 ]);
 
 export function createPlaywrightToolPolicy(transport: "http" | "stdio"): PlaywrightToolPolicy {
+  const rawOrigins = (process.env.PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS ?? "").trim();
+  const allowAllOrigins = rawOrigins === "*";
   const allowedNavigationOrigins = new Set<string>();
-  for (const entry of (process.env.PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS ?? "").split(",").map((value) => value.trim()).filter(Boolean)) {
-    const url = new URL(entry);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password
-      || url.pathname !== "/" || url.search || url.hash) {
-      throw new Error("PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS must contain exact HTTP(S) origins without credentials, paths, queries, or fragments.");
+  if (!allowAllOrigins) {
+    for (const entry of rawOrigins.split(",").map((value) => value.trim()).filter(Boolean)) {
+      const url = new URL(entry);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password
+        || url.pathname !== "/" || url.search || url.hash) {
+        throw new Error("PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS must contain exact HTTP(S) origins without credentials, paths, queries, or fragments, or be \"*\" to allow all origins.");
+      }
+      allowedNavigationOrigins.add(url.origin);
     }
-    allowedNavigationOrigins.add(url.origin);
-  }
-  if (!allowedNavigationOrigins.size) {
-    throw new Error("PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS must configure at least one browser target origin.");
+    if (!allowedNavigationOrigins.size) {
+      throw new Error("PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS must configure at least one browser target origin, or be \"*\" to allow all origins.");
+    }
   }
   let uploadRoots: unknown;
   try {
@@ -90,7 +95,7 @@ export function createPlaywrightToolPolicy(transport: "http" | "stdio"): Playwri
   if (!Array.isArray(uploadRoots) || uploadRoots.some((value) => typeof value !== "string" || !path.isAbsolute(value))) {
     throw new Error("PLAYWRIGHT_EXECUTION_UPLOAD_ROOTS must be a JSON array of absolute directory paths.");
   }
-  return { transport, allowedNavigationOrigins, uploadRoots };
+  return { transport, allowAllOrigins, allowedNavigationOrigins, uploadRoots };
 }
 
 function isWithinRoot(candidate: string, root: string): boolean {
@@ -160,7 +165,7 @@ function allowedNavigationUrl(value: string, policy: PlaywrightToolPolicy): URL 
     throw new Error("Playwright navigation URL is not on an allowed origin.");
   }
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password
-    || !policy.allowedNavigationOrigins.has(url.origin)) {
+    || !(policy.allowAllOrigins || policy.allowedNavigationOrigins.has(url.origin))) {
     throw new Error("Playwright navigation URL is not on an allowed origin.");
   }
   return url;

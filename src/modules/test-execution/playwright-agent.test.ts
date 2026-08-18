@@ -13,6 +13,7 @@ import type { LLMProvider } from "@/modules/llm/llm-types";
 
 const httpPolicy = {
   transport: "http" as const,
+  allowAllOrigins: false,
   allowedNavigationOrigins: new Set(["https://example.com"]),
   uploadRoots: [],
 };
@@ -40,11 +41,27 @@ describe("Playwright MCP agent guardrails", () => {
     vi.stubEnv("PLAYWRIGHT_EXECUTION_UPLOAD_ROOTS", JSON.stringify([path.resolve("src")]));
     expect(createPlaywrightToolPolicy("stdio")).toEqual({
       transport: "stdio",
+      allowAllOrigins: false,
       allowedNavigationOrigins: new Set(["https://example.com", "http://localhost:3000"]),
       uploadRoots: [path.resolve("src")],
     });
     vi.stubEnv("PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS", "");
     expect(() => createPlaywrightToolPolicy("http")).toThrow(/at least one/i);
+  });
+
+  it("allows every origin when the deployment opts in with a wildcard", async () => {
+    vi.stubEnv("PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS", "*");
+    vi.stubEnv("PLAYWRIGHT_EXECUTION_UPLOAD_ROOTS", "[]");
+    const policy = createPlaywrightToolPolicy("http");
+    expect(policy).toEqual({
+      transport: "http",
+      allowAllOrigins: true,
+      allowedNavigationOrigins: new Set(),
+      uploadRoots: [],
+    });
+    await expect(validatePlaywrightToolArguments(
+      "browser_navigate", { url: "https://anywhere.example" }, policy,
+    )).resolves.toEqual({ url: "https://anywhere.example/" });
   });
 
   it.each([
@@ -78,6 +95,7 @@ describe("Playwright MCP agent guardrails", () => {
   it("allows only canonical stdio fixture files and chooser cancellation", async () => {
     const uploadPolicy = {
       transport: "stdio" as const,
+      allowAllOrigins: false,
       allowedNavigationOrigins: httpPolicy.allowedNavigationOrigins,
       uploadRoots: [path.resolve("src")],
     };
@@ -94,6 +112,7 @@ describe("Playwright MCP agent guardrails", () => {
   it("uses one path-free rejection for missing and outside-root upload candidates", async () => {
     const uploadPolicy = {
       transport: "stdio" as const,
+      allowAllOrigins: false,
       allowedNavigationOrigins: httpPolicy.allowedNavigationOrigins,
       uploadRoots: [path.resolve("src")],
     };
@@ -128,7 +147,7 @@ describe("Playwright MCP agent guardrails", () => {
       },
       signal: new AbortController().signal,
       toolPolicy: {
-        transport: "stdio", allowedNavigationOrigins: httpPolicy.allowedNavigationOrigins,
+        transport: "stdio", allowAllOrigins: false, allowedNavigationOrigins: httpPolicy.allowedNavigationOrigins,
         uploadRoots: [path.resolve("src")],
       },
       onEvent: (event) => { events.push(event); },
@@ -155,7 +174,7 @@ describe("Playwright MCP agent guardrails", () => {
       },
       signal: new AbortController().signal,
       toolPolicy: {
-        transport: "stdio", allowedNavigationOrigins: httpPolicy.allowedNavigationOrigins,
+        transport: "stdio", allowAllOrigins: false, allowedNavigationOrigins: httpPolicy.allowedNavigationOrigins,
         uploadRoots: [path.resolve("src")],
       },
     }).then(() => "resolved", (error: unknown) => error instanceof Error ? error.message : String(error));
@@ -317,7 +336,7 @@ describe("Playwright MCP agent guardrails", () => {
     const callTool = vi.fn();
     await expect(executeTestStepWithAgent({
       action: "Upload the fixture", llm, tools: { callTool, listOpenTabs: async () => ["about:blank"] }, signal: new AbortController().signal,
-      toolPolicy: { transport: "stdio", allowedNavigationOrigins: httpPolicy.allowedNavigationOrigins, uploadRoots: [uploadRoot] },
+      toolPolicy: { transport: "stdio", allowAllOrigins: false, allowedNavigationOrigins: httpPolicy.allowedNavigationOrigins, uploadRoots: [uploadRoot] },
     })).rejects.toThrow(/allowed fixture/i);
     expect(callTool).not.toHaveBeenCalled();
   });
