@@ -13,6 +13,9 @@ data/uploads/*
 data/indexes/*
 data/model-cache/*
 data/document-store/*
+# Stray output of IDE-level Playwright MCP servers (screenshots/session YMLs);
+# the app's own execution artifacts live in data/document-store (ignored above).
+.playwright-mcp/
 *.log
 tsconfig.tsbuildinfo
 graphify-out/
