@@ -53,3 +53,23 @@ function completedSteps(input: { draft: ExecutionDraft; hasViewedRun: boolean })
   if (input.hasViewedRun) completed.push("review");
   return completed;
 }
+
+export type StepNavTargets = {
+  backTarget: ExecutionStepId | null;
+  nextTarget: ExecutionStepId | null;
+  nextEnabled: boolean;
+};
+
+/**
+ * Bottom-of-step navigation targets. Next only exists for setup/cases — the
+ * review step's primary action is Approve & Execute, and results is reached
+ * through a finished run. Back lands on the nearest *enabled* earlier step,
+ * so a cleared draft never strands the user on a disabled target.
+ */
+export function stepNavTargets(activeStep: ExecutionStepId, enabledStepIds: ExecutionStepId[]): StepNavTargets {
+  const order = EXECUTION_STEPS.map((step) => step.id);
+  const index = order.indexOf(activeStep);
+  const backTarget = order.slice(0, Math.max(index, 0)).reverse().find((id) => enabledStepIds.includes(id)) ?? null;
+  const nextTarget = activeStep === "setup" ? "cases" : activeStep === "cases" ? "review" : null;
+  return { backTarget, nextTarget, nextEnabled: nextTarget !== null && enabledStepIds.includes(nextTarget) };
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyDraft, mergeImportedCases, type ExecutionDraft } from "./execution-draft";
-import { EXECUTION_STEPS, deriveStepperState, draftIsExecutable, isTerminalRunStatus } from "./stepper-gating";
+import { EXECUTION_STEPS, deriveStepperState, draftIsExecutable, isTerminalRunStatus, stepNavTargets } from "./stepper-gating";
 
 function executableDraft(): ExecutionDraft {
   const draft = createEmptyDraft();
@@ -45,5 +45,19 @@ describe("stepper gating", () => {
     for (const status of ["passed", "failed", "blocked", "timeout", "cancelled", "error"]) {
       expect(isTerminalRunStatus(status)).toBe(true);
     }
+  });
+
+  it("derives bottom-nav targets: forward only for setup/cases, gated by enablement", () => {
+    expect(stepNavTargets("setup", ["setup", "cases"])).toEqual({ backTarget: null, nextTarget: "cases", nextEnabled: true });
+    expect(stepNavTargets("cases", ["setup", "cases"])).toEqual({ backTarget: "setup", nextTarget: "review", nextEnabled: false });
+    expect(stepNavTargets("cases", ["setup", "cases", "review"])).toEqual({ backTarget: "setup", nextTarget: "review", nextEnabled: true });
+    expect(stepNavTargets("review", ["setup", "cases", "review"])).toEqual({ backTarget: "cases", nextTarget: null, nextEnabled: false });
+    expect(stepNavTargets("results", ["setup", "cases", "results"])).toEqual({ backTarget: "cases", nextTarget: null, nextEnabled: false });
+  });
+
+  it("routes Back to the nearest enabled earlier step when review is disabled", () => {
+    // After a run the draft is cleared, so review drops out of the enabled set.
+    expect(stepNavTargets("results", ["setup", "cases", "results"]).backTarget).toBe("cases");
+    expect(stepNavTargets("cases", ["cases"]).backTarget).toBeNull();
   });
 });

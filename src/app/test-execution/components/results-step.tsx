@@ -11,6 +11,7 @@ import { SectionCard } from "@/components/workflow/test-intelligence-shared";
 import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import type { ActiveProjectScope } from "@/shared/lib/active-project";
 import { runStatusLabel, runStatusTone, type RunArtifact, type RunDetail } from "../lib/run-types";
+import { ExecutionStepRow } from "./execution-step-row";
 
 function artifactHref(scope: ActiveProjectScope, artifactId: string): string {
   const query = new URLSearchParams(
@@ -114,15 +115,9 @@ export function ResultsStep({
               <div className="space-y-2 p-3">
                 {testCase.errorMessage ? <p className="text-sm text-destructive">{testCase.errorMessage}</p> : null}
                 {testCase.steps.map((step) => (
-                  <div key={step.id} className="rounded-lg bg-muted/40 p-3 text-sm">
-                    <div className="flex items-start justify-between gap-3">
-                      <span className="min-w-0 break-words">{step.index + 1}. {step.action}</span>
-                      <StatusChip tone={runStatusTone(step.status)} className="shrink-0">{runStatusLabel(step.status)}</StatusChip>
-                    </div>
-                    {step.expectedResult ? <p className="mt-1 text-muted-foreground">Expected: {step.expectedResult}</p> : null}
-                    {step.errorMessage ? <p className="mt-1 text-destructive">{step.errorMessage}</p> : null}
+                  <ExecutionStepRow key={step.id} step={step}>
                     <StepArtifacts scope={scope} artifacts={artifactsByStep.get(step.id) ?? []} />
-                  </div>
+                  </ExecutionStepRow>
                 ))}
               </div>
             </div>

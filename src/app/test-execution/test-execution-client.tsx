@@ -34,6 +34,7 @@ import { WorkingSetEditor } from "./components/working-set-editor";
 import { ReviewStep } from "./components/review-step";
 import { ResultsStep } from "./components/results-step";
 import { RunHistoryCard } from "./components/run-history-card";
+import { StepNav } from "./components/step-nav";
 
 const RUN_POLL_MS = 1000;
 
@@ -434,6 +435,15 @@ export function TestExecutionClient() {
           onRerun={() => requestRerun(viewedRun.id)}
           onPublish={(retryFailed) => void publish(retryFailed)}
           publishBusy={publishBusy}
+        />
+      ) : null}
+
+      {!stepper.locked ? (
+        <StepNav
+          activeStep={activeStep}
+          enabledStepIds={stepper.enabledStepIds}
+          onNavigate={setActiveStep}
+          nextBlockedReason={issues[0]}
         />
       ) : null}
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { Loader2, Play, Square } from "lucide-react";
+import { useState } from "react";
+import { ChevronDown, Loader2, Play, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -10,8 +11,10 @@ import { StatusChip } from "@/components/qa/status-chip";
 import { SectionCard } from "@/components/workflow/test-intelligence-shared";
 import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import { SCREENSHOT_POLICY_LABELS } from "@/modules/test-execution/screenshot-policy";
+import { cn } from "@/lib/utils";
 import type { ExecutionDraft } from "../lib/execution-draft";
 import { runStatusLabel, runStatusTone, type RunDetail } from "../lib/run-types";
+import { ExecutionStepRow } from "./execution-step-row";
 
 function SummaryRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -46,26 +49,56 @@ export function ReviewStep({
   const publishable = draft.cases.filter((testCase) => testCase.azureTestPointId).length;
   const secretCount = draft.setup.testData.filter((entry) => entry.isSecret).length;
   const dataCount = draft.setup.testData.filter((entry) => entry.title.trim()).length;
+  // Live-view expansion: the running case auto-opens; a manual toggle wins
+  // from then on, and untouched cases fold back once they finish.
+  const [toggled, setToggled] = useState<Record<string, boolean>>({});
 
   if (liveRun) {
     const percent = liveRun.totalCases ? Math.round((liveRun.completedCases / liveRun.totalCases) * 100) : 0;
     return (
       <SectionCard title="Execution in progress" description="You can leave this page — the run continues on the worker and the results are kept.">
-        <div className="space-y-4 p-4" aria-live="polite">
-          <div className="flex flex-wrap items-center gap-3">
-            <StatusChip tone={runStatusTone(liveRun.status)}>{runStatusLabel(liveRun.status)}</StatusChip>
-            <span className="text-sm text-muted-foreground">
-              {liveRun.completedCases} of {liveRun.totalCases} test case{liveRun.totalCases === 1 ? "" : "s"} finished
-            </span>
+        <div className="space-y-4 p-4">
+          {/* Live region covers only the compact summary — announcing every
+              streamed step row below would flood screen readers. */}
+          <div className="space-y-4" aria-live="polite">
+            <div className="flex flex-wrap items-center gap-3">
+              <StatusChip tone={runStatusTone(liveRun.status)}>{runStatusLabel(liveRun.status)}</StatusChip>
+              <span className="text-sm text-muted-foreground">
+                {liveRun.completedCases} of {liveRun.totalCases} test case{liveRun.totalCases === 1 ? "" : "s"} finished
+              </span>
+            </div>
+            <Progress value={percent} aria-label="Run progress" />
           </div>
-          <Progress value={percent} aria-label="Run progress" />
           <ul className="space-y-2">
-            {liveRun.cases.map((testCase) => (
-              <li key={testCase.id} className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
-                <span className="min-w-0 truncate text-sm font-medium">{testCase.title}</span>
-                <StatusChip tone={runStatusTone(testCase.status)}>{runStatusLabel(testCase.status)}</StatusChip>
-              </li>
-            ))}
+            {liveRun.cases.map((testCase) => {
+              const isOpen = toggled[testCase.id] ?? testCase.status === "running";
+              return (
+                <li key={testCase.id} className="rounded-lg border border-border">
+                  <div className="flex items-center gap-2 p-3">
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      aria-expanded={isOpen}
+                      onClick={() => setToggled((current) => ({ ...current, [testCase.id]: !isOpen }))}
+                    >
+                      <ChevronDown className={cn("size-4 shrink-0 text-muted-foreground transition-transform", isOpen && "rotate-180")} aria-hidden="true" />
+                      <span className="min-w-0 truncate text-sm font-medium">{testCase.title}</span>
+                    </button>
+                    <StatusChip tone={runStatusTone(testCase.status)}>{runStatusLabel(testCase.status)}</StatusChip>
+                  </div>
+                  {isOpen ? (
+                    <div className="space-y-2 border-t border-border p-3">
+                      {testCase.errorMessage ? <p className="text-sm text-destructive">{testCase.errorMessage}</p> : null}
+                      {testCase.steps.length ? (
+                        testCase.steps.map((step) => <ExecutionStepRow key={step.id} step={step} />)
+                      ) : (
+                        <p className="text-sm text-muted-foreground">Waiting for the first step…</p>
+                      )}
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
           </ul>
           <div className="flex justify-end">
             <ConfirmationDialog

@@ -97,7 +97,7 @@ export function TestDataEditor({
                 aria-label={`Remove ${entry.title || "test data entry"}`}
                 onClick={() => removeEntry(entry.localId)}
               >
-                <Trash2 className="size-4" aria-hidden="true" />
+                <Trash2 className="size-4 text-destructive" aria-hidden="true" />
               </Button>
             </div>
           </div>

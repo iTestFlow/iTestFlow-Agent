@@ -89,7 +89,7 @@ export function WorkingSetEditor({
               <ConfirmationDialog
                 trigger={
                   <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${testCase.title.trim() || "test case"}`}>
-                    <Trash2 className="size-4" aria-hidden="true" />
+                    <Trash2 className="size-4 text-destructive" aria-hidden="true" />
                   </Button>
                 }
                 title="Remove this test case?"
@@ -111,9 +111,9 @@ export function WorkingSetEditor({
                 </div>
                 <ol className="space-y-2">
                   {testCase.steps.map((step, index) => (
-                    <li key={step.localId} className="rounded-lg bg-muted/40 p-3">
+                    <li key={step.localId} className="rounded-lg border border-border bg-card p-3">
                       <div className="flex items-start gap-2">
-                        <span className="mt-2 w-6 shrink-0 text-right text-sm font-medium tabular-nums text-muted-foreground">{index + 1}.</span>
+                        <span className="mt-1.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold tabular-nums text-primary">{index + 1}</span>
                         <div className="min-w-0 flex-1 space-y-2">
                           <div className="space-y-1.5">
                             <Label htmlFor={`step-action-${step.localId}`}>Step</Label>
@@ -148,7 +148,7 @@ export function WorkingSetEditor({
                           </Button>
                           <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove step ${index + 1}`} disabled={testCase.steps.length === 1}
                             onClick={() => updateCase(testCase.localId, { steps: testCase.steps.filter((entry) => entry.localId !== step.localId) })}>
-                            <Trash2 className="size-3.5" aria-hidden="true" />
+                            <Trash2 className="size-3.5 text-destructive" aria-hidden="true" />
                           </Button>
                         </div>
                       </div>
