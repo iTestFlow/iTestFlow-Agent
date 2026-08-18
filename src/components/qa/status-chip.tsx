@@ -40,8 +40,8 @@ export function StatusChip({
       variant="outline"
       className={cn("gap-1.5 rounded-full border px-2.5", toneClass[statusToneMap[tone]], className)}
     >
-      {tone === "info" && children === "Syncing" ? (
-        <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+      {tone === "info" && (children === "Syncing" || children === "Running") ? (
+        <Loader2 className="size-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
       ) : (
         <Icon className="size-3" aria-hidden="true" />
       )}

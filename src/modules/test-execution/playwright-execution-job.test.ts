@@ -16,6 +16,8 @@ const finishStep = vi.fn();
 const finishCase = vi.fn();
 const casesForRun = vi.fn();
 const stepsForCase = vi.fn();
+const markStepStarted = vi.fn();
+const skipRemainingQueuedSteps = vi.fn();
 const executionConfigSnapshot = vi.fn();
 const executionRunSettings = vi.fn();
 const decryptedRunTestData = vi.fn();
@@ -42,6 +44,8 @@ vi.mock("./execution-store.service", () => ({
   finishCase: (...a: unknown[]) => finishCase(...a), finishStep: (...a: unknown[]) => finishStep(...a),
   incrementCompletedCases: vi.fn(),
   isRunCancellationRequested: vi.fn(async () => false), markCaseStarted: vi.fn(),
+  markStepStarted: (...a: unknown[]) => markStepStarted(...a),
+  skipRemainingQueuedSteps: (...a: unknown[]) => skipRemainingQueuedSteps(...a),
   recordStepToolCall: (...a: unknown[]) => recordStepToolCall(...a), stepsForCase: (...a: unknown[]) => stepsForCase(...a),
 }));
 vi.mock("./execution-test-data.service", () => ({ decryptedRunTestData: (...a: unknown[]) => decryptedRunTestData(...a) }));
@@ -136,6 +140,10 @@ describe("Playwright execution job", () => {
 
     expect(finishStep).toHaveBeenCalledWith("s1", "passed", null, ["S3cret!Value"]);
     expect(finishCase).toHaveBeenCalledWith("c1", "failed", "button missing", ["S3cret!Value"]);
+    // Each executed step is explicitly marked running before the agent works on it,
+    // and the failing case terminalizes any steps it never reached.
+    expect(markStepStarted.mock.calls.map((call) => call[0])).toEqual(["s1", "s2"]);
+    expect(skipRemainingQueuedSteps).toHaveBeenCalledWith("c1");
     const screenshotImports = importInlineMcpArtifacts.mock.calls.filter((call) => call[0].toolName === "browser_take_screenshot");
     expect(screenshotImports).toHaveLength(2);
     expect(finishRun).toHaveBeenCalledWith("r", "failed", "One or more test cases did not pass.", ["S3cret!Value"]);
@@ -176,6 +184,8 @@ describe("Playwright execution job", () => {
     validateToolArguments.mockRejectedValueOnce(new Error("Playwright navigation URL is not on an allowed origin."));
     await runPlaywrightExecutionJob(job, jobContext());
     expect(executeTestStepWithAgent).not.toHaveBeenCalled();
+    expect(markStepStarted).not.toHaveBeenCalled();
+    expect(skipRemainingQueuedSteps).toHaveBeenCalledWith("c1");
     expect(finishCase).toHaveBeenCalledWith("c1", "error", "The Base URL is not on an allowed test origin for this deployment.", expect.anything());
   });
 });

@@ -1,6 +1,6 @@
 import type { ScreenshotPolicy } from "@/modules/test-execution/screenshot-policy";
 
-export type RunStatus = "queued" | "running" | "passed" | "failed" | "blocked" | "timeout" | "cancelled" | "error";
+export type RunStatus = "queued" | "running" | "passed" | "failed" | "blocked" | "timeout" | "cancelled" | "error" | "skipped";
 
 export type RunSummary = {
   id: string;
@@ -89,8 +89,9 @@ export function runStatusTone(status: RunStatus): "success" | "warning" | "error
     case "error": return "error";
     case "blocked":
     case "timeout": return "warning";
-    case "running":
-    case "queued": return "info";
+    case "running": return "info";
+    case "queued":
+    case "skipped": return "neutral";
     default: return "neutral";
   }
 }
@@ -104,6 +105,7 @@ const STATUS_LABELS: Record<RunStatus, string> = {
   timeout: "Timed out",
   cancelled: "Cancelled",
   error: "Error",
+  skipped: "Skipped",
 };
 
 export function runStatusLabel(status: RunStatus): string {

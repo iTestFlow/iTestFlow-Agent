@@ -10,7 +10,7 @@ import { getWorkspaceById } from "@/modules/workspace/workspace.service";
 import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import {
   casesForRun, executionConfigSnapshot, executionRunSettings, finishCase, finishRun, finishStep, incrementCompletedCases, isRunCancellationRequested,
-  markCaseStarted, markRunStarted, recordStepToolCall, stepsForCase,
+  markCaseStarted, markRunStarted, markStepStarted, recordStepToolCall, skipRemainingQueuedSteps, stepsForCase,
 } from "./execution-store.service";
 import { decryptedRunTestData } from "./execution-test-data.service";
 import { DEFAULT_SCREENSHOT_POLICY, shouldCaptureScreenshot } from "./screenshot-policy";
@@ -101,6 +101,7 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
         connection = await connectPlaywrightMcp(mcpConfig, { headless: settings?.headless ?? true });
       } catch (error) {
         errorMessage = error instanceof Error ? error.message : "Playwright MCP connection failed.";
+        await skipRemainingQueuedSteps(testCase.id);
         await finishCase(testCase.id, "error", errorMessage, secretValues);
         await incrementCompletedCases(payload.runId);
         outcomes.push("error");
@@ -150,6 +151,7 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
             outcome = "cancelled"; errorMessage = "Execution was cancelled.";
             await finishStep(step.id, outcome, errorMessage, secretValues); break;
           }
+          await markStepStarted(step.id);
           try {
             const result = await executeTestStepWithAgent({
               action: step.action, expectedResult: step.expectedResult, llm, tools: connection.tools,
@@ -188,6 +190,11 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
         }
       } finally {
         await connection.close().catch(() => undefined);
+      }
+      // Steps the case never reached are terminal "skipped", not "Queued".
+      // Cancellation keeps its own sweep in finishRun ('cancelled').
+      if (outcome !== "passed" && outcome !== "cancelled") {
+        await skipRemainingQueuedSteps(testCase.id);
       }
       await finishCase(testCase.id, outcome, errorMessage, secretValues);
       await incrementCompletedCases(payload.runId);

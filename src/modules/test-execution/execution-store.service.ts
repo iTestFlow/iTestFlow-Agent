@@ -8,7 +8,7 @@ import type { ScreenshotPolicy } from "./screenshot-policy";
 import { enqueueJob } from "@/modules/jobs/job-queue.service";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 
-export type RunStatus = "queued" | "running" | ExecutionOutcome;
+export type RunStatus = "queued" | "running" | "skipped" | ExecutionOutcome;
 
 export type ExecutionRun = {
   id: string;
@@ -260,6 +260,22 @@ export async function markRunStarted(runId: string) {
 export async function markCaseStarted(caseId: string) {
   const now = nowIso();
   await sqlRun(`UPDATE playwright_execution_cases SET status = 'running', started_at = @now, updated_at = @now WHERE id = @caseId`, { caseId, now });
+}
+
+export async function markStepStarted(stepId: string) {
+  const now = nowIso();
+  await sqlRun(`UPDATE playwright_execution_steps SET status = 'running', updated_at = @now WHERE id = @stepId`, { stepId, now });
+}
+
+/**
+ * Steps that never ran because their case ended early (failed step, base-URL
+ * navigation failure, browser session failure) become 'skipped' — a terminal
+ * status, so "Queued" never lingers on work that will not happen. Cancellation
+ * keeps its own sweep in finishRun ('cancelled').
+ */
+export async function skipRemainingQueuedSteps(caseId: string) {
+  const now = nowIso();
+  await sqlRun(`UPDATE playwright_execution_steps SET status = 'skipped', updated_at = @now WHERE case_id = @caseId AND status = 'queued'`, { caseId, now });
 }
 
 export async function recordStepToolCall(stepId: string, toolName: string, args: Record<string, unknown>, result: unknown, secrets: readonly string[] = []) {

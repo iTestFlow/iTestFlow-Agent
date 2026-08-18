@@ -1,5 +1,7 @@
 "use client";
 
+import { Loader2 } from "lucide-react";
+
 import { StatusChip } from "@/components/qa/status-chip";
 import { cn } from "@/lib/utils";
 import { runStatusLabel, runStatusTone, type RunStatus, type RunStep } from "../lib/run-types";
@@ -20,7 +22,11 @@ export function ExecutionStepRow({ step, children }: { step: RunStep; children?:
     <div className="rounded-lg border border-border bg-card p-3 text-sm">
       <div className="flex items-start gap-3">
         <span className={cn("mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold tabular-nums", stepNumberClass(step.status))}>
-          {step.index + 1}
+          {step.status === "running" ? (
+            <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+          ) : (
+            step.index + 1
+          )}
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">

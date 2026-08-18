@@ -5,7 +5,9 @@ import { cleanupFixtures, describeDb, seedProject, seedUser, seedWorkspace, uniq
 import {
   beginFailedExecutionPublicationRetry,
   finishExecutionPublication,
+  markStepStarted,
   recordExecutionPublicationResult,
+  skipRemainingQueuedSteps,
 } from "./execution-store.service";
 
 const workspaceId = uniqueTestId("ws_pw_publication");
@@ -76,5 +78,41 @@ describeDb("Playwright execution publication leases (DB-backed)", () => {
     expect(row?.lease_token).toBe(reclaimed?.leaseToken);
     expect(new Date(row!.updated_at).getTime()).toBeGreaterThan(new Date(staleAt).getTime());
     await expect(beginFailedExecutionPublicationRetry(runId)).resolves.toBeNull();
+  });
+
+  it("marks a step running and skips only the remaining queued steps of a case", async () => {
+    const runId = uniqueTestId("pwrun");
+    const caseId = uniqueTestId("pwcase");
+    const now = new Date().toISOString();
+    await sqlRun(
+      `INSERT INTO playwright_execution_runs (
+         id, workspace_id, project_id, azure_plan_id, azure_suite_id, status,
+         requested_by_user_id, created_at, updated_at
+       ) VALUES (@runId, @workspaceId, @projectId, 1, 2, 'running', @userId, @now, @now)`,
+      { runId, workspaceId, projectId, userId, now },
+    );
+    await sqlRun(
+      `INSERT INTO playwright_execution_cases (id, run_id, title, status, created_at, updated_at)
+       VALUES (@caseId, @runId, 'Case', 'running', @now, @now)`,
+      { caseId, runId, now },
+    );
+    for (const [index, status] of (["passed", "queued", "queued"] as const).entries()) {
+      await sqlRun(
+        `INSERT INTO playwright_execution_steps (id, case_id, step_index, action, status, created_at, updated_at)
+         VALUES (@id, @caseId, @stepIndex, 'Do', @status, @now, @now)`,
+        { id: `${caseId}-s${index}`, caseId, stepIndex: index, status, now },
+      );
+    }
+
+    await markStepStarted(`${caseId}-s1`);
+    // 'skipped' must pass the steps CHECK constraint and touch only queued rows.
+    await skipRemainingQueuedSteps(caseId);
+
+    const row = await sqlGet<{ statuses: string }>(
+      `SELECT string_agg(status, ',' ORDER BY step_index) AS statuses
+         FROM playwright_execution_steps WHERE case_id = @caseId`,
+      { caseId },
+    );
+    expect(row?.statuses).toBe("passed,running,skipped");
   });
 });
