@@ -350,6 +350,49 @@ describe("Playwright MCP agent guardrails", () => {
     });
     expect(result).toEqual({ outcome: "timeout", summary: "Step exceeded the 2-turn agent limit.", turns: 2 });
   });
+
+  it("threads base URL, execution notes, and test data into the agent prompt", async () => {
+    const generateStructuredOutput = vi.fn(async (input: { system: string; user: string }) => {
+      void input;
+      return { validatedOutput: { kind: "complete", outcome: "passed", summary: "Done." } };
+    });
+    await executeTestStepWithAgent({
+      action: "Enter the Admin Password and sign in", expectedResult: "The dashboard is visible",
+      llm: { generateStructuredOutput } as unknown as LLMProvider,
+      tools: { callTool: vi.fn(), listOpenTabs: async () => ["https://example.com/app"] },
+      signal: new AbortController().signal, toolPolicy: httpPolicy,
+      runContext: {
+        baseUrl: "https://example.com/app",
+        executionNotes: "Use the staging tenant.",
+        testData: [{ title: "Admin Password", value: "S3cret!Value" }],
+      },
+    });
+    const call = generateStructuredOutput.mock.calls[0]![0];
+    expect(call.system).toMatch(/title\/value pairs/);
+    expect(call.system).toMatch(/never override/);
+    const user = JSON.parse(call.user);
+    expect(user.baseUrl).toBe("https://example.com/app");
+    expect(user.executionNotes).toBe("Use the staging tenant.");
+    expect(user.testData).toEqual([{ title: "Admin Password", value: "S3cret!Value" }]);
+  });
+
+  it("keeps the prompt free of run-context sections when none is provided", async () => {
+    const generateStructuredOutput = vi.fn(async (input: { system: string; user: string }) => {
+      void input;
+      return { validatedOutput: { kind: "complete", outcome: "passed", summary: "Done." } };
+    });
+    await executeTestStepWithAgent({
+      action: "Open the page",
+      llm: { generateStructuredOutput } as unknown as LLMProvider,
+      tools: { callTool: vi.fn(), listOpenTabs: async () => ["https://example.com"] },
+      signal: new AbortController().signal, toolPolicy: httpPolicy,
+    });
+    const call = generateStructuredOutput.mock.calls[0]![0];
+    expect(call.system).not.toMatch(/title\/value pairs/);
+    const user = JSON.parse(call.user);
+    expect(user).not.toHaveProperty("baseUrl");
+    expect(user).not.toHaveProperty("testData");
+  });
 });
 
 describe("Azure outcome mapping", () => {

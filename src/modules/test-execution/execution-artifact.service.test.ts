@@ -14,7 +14,7 @@ vi.mock("@/modules/documents/storage/local-filesystem-backend", () => ({
   },
 }));
 
-import { artifactUrls, importHttpArtifact, resolveProtectedArtifactUrl } from "./execution-artifact.service";
+import { artifactUrls, importHttpArtifact, importInlineMcpArtifacts, resolveProtectedArtifactUrl } from "./execution-artifact.service";
 
 describe("protected Playwright MCP artifacts", () => {
   beforeEach(() => {
@@ -63,5 +63,31 @@ describe("protected Playwright MCP artifacts", () => {
       sourceUrl: "https://mcp.example/artifacts/run-42/trace.zip",
     }));
     expect(JSON.stringify(sqlRun.mock.calls)).not.toContain("temporary-download-secret");
+  });
+
+  it("scrubs run secret values from persisted console-log artifacts even outside sensitive-named keys", async () => {
+    await importInlineMcpArtifacts({
+      workspaceId: "workspace-1", runId: "run-1", caseId: "case-1", stepId: "step-1",
+      toolName: "browser_console_messages",
+      result: { structuredContent: { messages: ["auth Hunter2!23 accepted"] } },
+      secrets: ["Hunter2!23"],
+    });
+    const stored = put.mock.calls[0]?.[0] as { content: NodeJS.ReadableStream };
+    const chunks: Buffer[] = [];
+    for await (const chunk of stored.content) chunks.push(Buffer.from(chunk as Buffer));
+    const persisted = Buffer.concat(chunks).toString("utf8");
+    expect(persisted).not.toContain("Hunter2!23");
+    expect(persisted).toContain("[REDACTED]");
+  });
+
+  it("skips inline image persistence when the screenshot policy is none", async () => {
+    const ids = await importInlineMcpArtifacts({
+      workspaceId: "workspace-1", runId: "run-1", caseId: "case-1", stepId: "step-1",
+      toolName: "browser_click",
+      result: { content: [{ type: "image", data: Buffer.from("hi").toString("base64") }] },
+      persistInlineScreenshots: false,
+    });
+    expect(ids).toEqual([]);
+    expect(put).not.toHaveBeenCalled();
   });
 });
