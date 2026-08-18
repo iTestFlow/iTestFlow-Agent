@@ -40,6 +40,9 @@ describe("draftToRunRequest", () => {
       scope,
       baseUrl: "https://app.example.com/login",
       screenshotPolicy: "failures-only",
+      headless: true,
+      viewportWidth: 1920,
+      viewportHeight: 1080,
       testData: [],
       planId: 7,
       suiteId: 8,
@@ -50,6 +53,19 @@ describe("draftToRunRequest", () => {
       }],
     });
     expect(request).not.toHaveProperty("executionNotes");
+    expect(request).not.toHaveProperty("name");
+  });
+
+  it("includes a trimmed run name and the chosen browser settings", () => {
+    const draft = createEmptyDraft();
+    draft.setup.baseUrl = "https://app.example.com";
+    draft.setup.runName = "  Nightly smoke  ";
+    draft.setup.headless = false;
+    draft.setup.viewportWidth = "1280";
+    draft.setup.viewportHeight = "720";
+    draft.cases = mergeImportedCases([], [{ title: "Manual", steps: [{ action: "Do" }], source: "manual" }]);
+    const request = draftToRunRequest(draft, scope);
+    expect(request).toMatchObject({ name: "Nightly smoke", headless: false, viewportWidth: 1280, viewportHeight: 720 });
   });
 
   it("sends null Azure ids for manual cases and includes trimmed notes", () => {
@@ -75,6 +91,9 @@ describe("setupToProfileRequest", () => {
       baseUrl: null,
       executionNotes: null,
       screenshotPolicy: "every-step",
+      headless: true,
+      viewportWidth: 1920,
+      viewportHeight: 1080,
       testData: [{ title: "Password", isSecret: true, value: "S3cret" }],
     });
   });

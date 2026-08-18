@@ -98,7 +98,7 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
       let errorMessage: string | null = null;
       let connection;
       try {
-        connection = await connectPlaywrightMcp(mcpConfig);
+        connection = await connectPlaywrightMcp(mcpConfig, { headless: settings?.headless ?? true });
       } catch (error) {
         errorMessage = error instanceof Error ? error.message : "Playwright MCP connection failed.";
         await finishCase(testCase.id, "error", errorMessage, secretValues);
@@ -128,6 +128,20 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
               ? "The Base URL is not on an allowed test origin for this deployment."
               : "The browser could not open the Base URL before the first step.";
             baseNavigationFailed = true;
+          }
+        }
+        if (!baseNavigationFailed && settings?.baseUrl && steps.length) {
+          // After the base navigation so a tab exists — some Playwright MCP
+          // servers reject browser_resize on a tabless browser. Best-effort:
+          // a resize failure must never fail the case.
+          try {
+            await connection.tools.callTool(
+              "browser_resize",
+              { width: settings?.viewportWidth ?? 1920, height: settings?.viewportHeight ?? 1080 },
+              context.signal,
+            );
+          } catch {
+            // Viewport sizing is best-effort and must never fail the case.
           }
         }
         if (!baseNavigationFailed) for (const step of steps) {

@@ -4,6 +4,7 @@ export type RunStatus = "queued" | "running" | "passed" | "failed" | "blocked" |
 
 export type RunSummary = {
   id: string;
+  name?: string | null;
   status: RunStatus;
   totalCases: number;
   completedCases: number;
@@ -55,6 +56,9 @@ export type RunDetail = RunSummary & {
   baseUrl: string | null;
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
+  headless?: boolean;
+  viewportWidth?: number;
+  viewportHeight?: number;
   testData?: Array<{ title: string; isSecret: boolean; value: string | null }>;
   publication?: RunPublication | null;
   cases: RunCase[];
@@ -67,6 +71,9 @@ export type ExecutionProfileView = {
   baseUrl: string | null;
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
+  headless: boolean;
+  viewportWidth: number;
+  viewportHeight: number;
   testData: Array<{ title: string; isSecret: boolean; value: string | null }>;
   updatedAt: string;
 };

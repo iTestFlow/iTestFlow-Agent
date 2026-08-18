@@ -22,7 +22,7 @@ export {
 
 type ProfileRow = {
   id: string; name: string; base_url: string | null; execution_notes: string | null;
-  screenshot_policy: ScreenshotPolicy; updated_at: string;
+  screenshot_policy: ScreenshotPolicy; headless: boolean; viewport_width: number; viewport_height: number; updated_at: string;
 };
 
 type ProfileDataRow = { profile_id: string; title: string; is_secret: boolean; value: string | null };
@@ -56,6 +56,9 @@ function mapProfile(row: ProfileRow, data: readonly ProfileDataRow[]): Execution
     baseUrl: row.base_url,
     executionNotes: row.execution_notes,
     screenshotPolicy: row.screenshot_policy,
+    headless: row.headless,
+    viewportWidth: row.viewport_width,
+    viewportHeight: row.viewport_height,
     testData: data
       .filter((entry) => entry.profile_id === row.id)
       .map((entry) => ({ title: entry.title, isSecret: entry.is_secret, value: entry.is_secret ? null : entry.value })),
@@ -65,7 +68,7 @@ function mapProfile(row: ProfileRow, data: readonly ProfileDataRow[]): Execution
 
 export async function listExecutionProfiles(workspaceId: string, projectId: string): Promise<ExecutionProfile[]> {
   const rows = await sqlAll<ProfileRow>(
-    `SELECT id, name, base_url, execution_notes, screenshot_policy, updated_at
+    `SELECT id, name, base_url, execution_notes, screenshot_policy, headless, viewport_width, viewport_height, updated_at
        FROM playwright_execution_profiles
       WHERE workspace_id = @workspaceId AND project_id = @projectId
       ORDER BY lower(name)`,
@@ -85,7 +88,7 @@ export async function listExecutionProfiles(workspaceId: string, projectId: stri
 
 export async function getExecutionProfile(profileId: string, workspaceId: string, projectId: string): Promise<ExecutionProfile | null> {
   const row = await sqlGet<ProfileRow>(
-    `SELECT id, name, base_url, execution_notes, screenshot_policy, updated_at
+    `SELECT id, name, base_url, execution_notes, screenshot_policy, headless, viewport_width, viewport_height, updated_at
        FROM playwright_execution_profiles
       WHERE id = @profileId AND workspace_id = @workspaceId AND project_id = @projectId`,
     { profileId, workspaceId, projectId },
@@ -107,6 +110,9 @@ export type ProfileWriteInput = {
   baseUrl: string | null;
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
+  headless: boolean;
+  viewportWidth: number;
+  viewportHeight: number;
   testData: readonly TestDataInput[];
 };
 
@@ -119,12 +125,15 @@ export async function createExecutionProfile(input: ProfileWriteInput): Promise<
     const inserted = await sqlGet<{ id: string }>(
       `INSERT INTO playwright_execution_profiles (
          id, workspace_id, project_id, name, base_url, execution_notes, screenshot_policy,
+         headless, viewport_width, viewport_height,
          created_by_user_id, updated_by_user_id, created_at, updated_at
-       ) VALUES (@id, @workspaceId, @projectId, @name, @baseUrl, @notes, @policy, @userId, @userId, @now, @now)
+       ) VALUES (@id, @workspaceId, @projectId, @name, @baseUrl, @notes, @policy,
+         @headless, @viewportWidth, @viewportHeight, @userId, @userId, @now, @now)
        ON CONFLICT (workspace_id, project_id, lower(name)) DO NOTHING RETURNING id`,
       {
         id: profileId, workspaceId: input.workspaceId, projectId: input.projectId, name,
         baseUrl: input.baseUrl, notes: input.executionNotes, policy: input.screenshotPolicy,
+        headless: input.headless, viewportWidth: input.viewportWidth, viewportHeight: input.viewportHeight,
         userId: input.userId, now,
       },
       client,
@@ -166,9 +175,12 @@ export async function updateExecutionProfile(profileId: string, input: ProfileWr
       await sqlRun(
         `UPDATE playwright_execution_profiles
             SET name = @name, base_url = @baseUrl, execution_notes = @notes, screenshot_policy = @policy,
+                headless = @headless, viewport_width = @viewportWidth, viewport_height = @viewportHeight,
                 updated_by_user_id = @userId, updated_at = @now
           WHERE id = @profileId`,
-        { profileId, name, baseUrl: input.baseUrl, notes: input.executionNotes, policy: input.screenshotPolicy, userId: input.userId, now },
+        { profileId, name, baseUrl: input.baseUrl, notes: input.executionNotes, policy: input.screenshotPolicy,
+          headless: input.headless, viewportWidth: input.viewportWidth, viewportHeight: input.viewportHeight,
+          userId: input.userId, now },
         client,
       );
       await sqlRun(`DELETE FROM playwright_execution_profile_data WHERE profile_id = @profileId`, { profileId }, client);

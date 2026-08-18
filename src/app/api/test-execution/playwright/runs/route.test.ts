@@ -109,7 +109,11 @@ describe("Playwright execution start", () => {
   it("creates the run from caller-supplied cases with settings and provenance", async () => {
     const response = await POST(postRequest({
       ...validBody,
+      name: "Nightly smoke",
       executionNotes: "  Log in with the default account first.  ",
+      headless: false,
+      viewportWidth: 1280,
+      viewportHeight: 720,
       planId: 7,
       suiteId: 8,
       testData: [{ title: "Username", isSecret: false, value: "qa@example.com" }],
@@ -126,13 +130,33 @@ describe("Playwright execution start", () => {
     expect(createExecutionRun).toHaveBeenCalledWith(expect.objectContaining({
       planId: 7,
       suiteId: 8,
+      name: "Nightly smoke",
       settings: expect.objectContaining({
         baseUrl: "https://app.example.com/login",
         executionNotes: "Log in with the default account first.",
         screenshotPolicy: "validation-points",
+        headless: false,
+        viewportWidth: 1280,
+        viewportHeight: 720,
       }),
       cases: [expect.objectContaining({ testCaseId: 100, testPointId: 200, planId: 7, suiteId: 8 })],
     }));
     expect(getUserAzureAdapter).not.toHaveBeenCalled();
+  });
+
+  it("defaults the browser settings and stores no name when they are omitted", async () => {
+    const response = await POST(postRequest(validBody));
+    expect(response.status).toBe(202);
+    expect(createExecutionRun).toHaveBeenCalledWith(expect.objectContaining({
+      name: null,
+      settings: expect.objectContaining({ headless: true, viewportWidth: 1920, viewportHeight: 1080 }),
+    }));
+  });
+
+  it("rejects out-of-range viewport dimensions with the authored message", async () => {
+    const response = await POST(postRequest({ ...validBody, viewportWidth: 100 }));
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe("Viewport width must be between 320 and 3840 pixels.");
+    expect(createExecutionRun).not.toHaveBeenCalled();
   });
 });

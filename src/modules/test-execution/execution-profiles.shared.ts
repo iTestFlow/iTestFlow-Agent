@@ -23,6 +23,9 @@ export type ExecutionProfile = {
   baseUrl: string | null;
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
+  headless: boolean;
+  viewportWidth: number;
+  viewportHeight: number;
   testData: TestDataMetaEntry[];
   updatedAt: string;
 };

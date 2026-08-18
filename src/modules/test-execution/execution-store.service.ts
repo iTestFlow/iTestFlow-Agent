@@ -12,6 +12,7 @@ export type RunStatus = "queued" | "running" | ExecutionOutcome;
 
 export type ExecutionRun = {
   id: string;
+  name: string | null;
   workspaceId: string;
   projectId: string;
   azurePlanId: number | null;
@@ -23,28 +24,34 @@ export type ExecutionRun = {
   baseUrl: string | null;
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
+  headless: boolean;
+  viewportWidth: number;
+  viewportHeight: number;
   errorMessage: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
 type RunRow = {
-  id: string; workspace_id: string; project_id: string; azure_plan_id: number | null; azure_suite_id: number | null;
+  id: string; name: string | null; workspace_id: string; project_id: string; azure_plan_id: number | null; azure_suite_id: number | null;
   status: RunStatus; cancel_requested: boolean; total_cases: number; completed_cases: number;
   base_url: string | null; execution_notes: string | null; screenshot_policy: ScreenshotPolicy;
+  headless: boolean; viewport_width: number; viewport_height: number;
   error_message: string | null; created_at: string; updated_at: string;
 };
 
-const RUN_COLUMNS = `id, workspace_id, project_id, azure_plan_id, azure_suite_id, status, cancel_requested,
-            total_cases, completed_cases, base_url, execution_notes, screenshot_policy, error_message, created_at, updated_at`;
+const RUN_COLUMNS = `id, name, workspace_id, project_id, azure_plan_id, azure_suite_id, status, cancel_requested,
+            total_cases, completed_cases, base_url, execution_notes, screenshot_policy,
+            headless, viewport_width, viewport_height, error_message, created_at, updated_at`;
 
 function mapRun(row: RunRow): ExecutionRun {
   return {
-    id: row.id, workspaceId: row.workspace_id, projectId: row.project_id,
+    id: row.id, name: row.name, workspaceId: row.workspace_id, projectId: row.project_id,
     azurePlanId: row.azure_plan_id, azureSuiteId: row.azure_suite_id,
     status: row.status, cancelRequested: row.cancel_requested,
     totalCases: row.total_cases, completedCases: row.completed_cases,
     baseUrl: row.base_url, executionNotes: row.execution_notes, screenshotPolicy: row.screenshot_policy,
+    headless: row.headless, viewportWidth: row.viewport_width, viewportHeight: row.viewport_height,
     errorMessage: row.error_message, createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
@@ -60,7 +67,8 @@ export type ExecutionCaseInput = {
 
 export async function createExecutionRun(input: {
   workspaceId: string; projectId: string; planId: number | null; suiteId: number | null; requestedByUserId: string;
-  settings: { baseUrl: string; executionNotes: string | null; screenshotPolicy: ScreenshotPolicy };
+  name: string | null;
+  settings: { baseUrl: string; executionNotes: string | null; screenshotPolicy: ScreenshotPolicy; headless: boolean; viewportWidth: number; viewportHeight: number };
   testData: readonly PreparedTestDataEntry[];
   configSnapshot: Record<string, unknown>;
   job: { userId: string; scope: ProjectScope };
@@ -71,15 +79,18 @@ export async function createExecutionRun(input: {
   await withTransaction(async (client) => {
   await sqlRun(
     `INSERT INTO playwright_execution_runs (
-       id, workspace_id, project_id, azure_plan_id, azure_suite_id, status,
+       id, name, workspace_id, project_id, azure_plan_id, azure_suite_id, status,
        requested_by_user_id, total_cases, base_url, execution_notes, screenshot_policy,
+       headless, viewport_width, viewport_height,
        config_snapshot_json, created_at, updated_at
-     ) VALUES (@id, @workspaceId, @projectId, @planId, @suiteId, 'queued',
-       @userId, @totalCases, @baseUrl, @executionNotes, @screenshotPolicy, @snapshot::jsonb, @now, @now)`,
-    { id: runId, workspaceId: input.workspaceId, projectId: input.projectId, planId: input.planId ?? null,
+     ) VALUES (@id, @name, @workspaceId, @projectId, @planId, @suiteId, 'queued',
+       @userId, @totalCases, @baseUrl, @executionNotes, @screenshotPolicy,
+       @headless, @viewportWidth, @viewportHeight, @snapshot::jsonb, @now, @now)`,
+    { id: runId, name: input.name, workspaceId: input.workspaceId, projectId: input.projectId, planId: input.planId ?? null,
       suiteId: input.suiteId ?? null, userId: input.requestedByUserId, totalCases: input.cases.length,
       baseUrl: input.settings.baseUrl, executionNotes: input.settings.executionNotes,
       screenshotPolicy: input.settings.screenshotPolicy,
+      headless: input.settings.headless, viewportWidth: input.settings.viewportWidth, viewportHeight: input.settings.viewportHeight,
       snapshot: JSON.stringify(input.configSnapshot), now },
     client,
   );
@@ -129,13 +140,19 @@ export type ExecutionRunSettings = {
   baseUrl: string | null;
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
+  headless: boolean;
+  viewportWidth: number;
+  viewportHeight: number;
 };
 
 export async function executionRunSettings(runId: string): Promise<ExecutionRunSettings | null> {
-  const row = await sqlGet<{ base_url: string | null; execution_notes: string | null; screenshot_policy: ScreenshotPolicy }>(
-    `SELECT base_url, execution_notes, screenshot_policy FROM playwright_execution_runs WHERE id = @runId`, { runId },
+  const row = await sqlGet<{ base_url: string | null; execution_notes: string | null; screenshot_policy: ScreenshotPolicy; headless: boolean; viewport_width: number; viewport_height: number }>(
+    `SELECT base_url, execution_notes, screenshot_policy, headless, viewport_width, viewport_height FROM playwright_execution_runs WHERE id = @runId`, { runId },
   );
-  return row ? { baseUrl: row.base_url, executionNotes: row.execution_notes, screenshotPolicy: row.screenshot_policy } : null;
+  return row ? {
+    baseUrl: row.base_url, executionNotes: row.execution_notes, screenshotPolicy: row.screenshot_policy,
+    headless: row.headless, viewportWidth: row.viewport_width, viewportHeight: row.viewport_height,
+  } : null;
 }
 
 export type ExecutionPublicationSummary = {

@@ -32,7 +32,8 @@ describe("Playwright execution persistence", () => {
   it("enqueues a single-attempt non-idempotent browser job", async () => {
     await createExecutionRun({
       workspaceId: "w", projectId: "p", planId: 1, suiteId: 2, requestedByUserId: "u",
-      settings: { baseUrl: "https://app.example.com", executionNotes: null, screenshotPolicy: "validation-points" },
+      name: "Nightly smoke",
+      settings: { baseUrl: "https://app.example.com", executionNotes: null, screenshotPolicy: "validation-points", headless: true, viewportWidth: 1920, viewportHeight: 1080 },
       testData: [],
       configSnapshot: {}, job: { userId: "u", scope: { workspaceId: "w", projectId: "p", azureProjectId: "ap", azureProjectName: "P", azureOrganizationUrl: "https://dev.azure.com/o" } },
       cases: [],
@@ -40,7 +41,7 @@ describe("Playwright execution persistence", () => {
     expect(enqueueJob).toHaveBeenCalledWith(expect.objectContaining({ jobType: "playwright_mcp_execution", maxAttempts: 1 }), expect.any(Object));
     expect(sqlRun).toHaveBeenCalledWith(
       expect.stringMatching(/INSERT INTO playwright_execution_runs[\s\S]*base_url, execution_notes, screenshot_policy/),
-      expect.objectContaining({ baseUrl: "https://app.example.com", screenshotPolicy: "validation-points" }),
+      expect.objectContaining({ name: "Nightly smoke", baseUrl: "https://app.example.com", screenshotPolicy: "validation-points", headless: true, viewportWidth: 1920, viewportHeight: 1080 }),
       expect.any(Object),
     );
   });

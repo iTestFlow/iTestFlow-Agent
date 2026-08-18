@@ -19,6 +19,7 @@ import {
   isValidHttpUrl,
   mergeImportedCases,
   testDataIssues,
+  viewportIssues,
   type DraftCase,
   type DraftSetup,
   type ExecutionDraft,
@@ -202,9 +203,12 @@ export function TestExecutionClient() {
       if (projectId) clearDraft(projectId);
       const detail = await fetchRunDetail(queued.runId);
       setLiveRun(detail ?? {
-        id: queued.runId, status: "queued", totalCases: draft.cases.length, completedCases: 0,
+        id: queued.runId, name: draft.setup.runName.trim() || null, status: "queued",
+        totalCases: draft.cases.length, completedCases: 0,
         createdAt: new Date().toISOString(), azurePlanId: null, azureSuiteId: null,
         baseUrl: draft.setup.baseUrl, executionNotes: null, screenshotPolicy: draft.setup.screenshotPolicy,
+        headless: draft.setup.headless,
+        viewportWidth: Number(draft.setup.viewportWidth) || 1920, viewportHeight: Number(draft.setup.viewportHeight) || 1080,
         cases: [], artifacts: [],
       });
       setActiveStep("review");
@@ -295,6 +299,8 @@ export function TestExecutionClient() {
     if (draft.setup.baseUrl.trim() && !isValidHttpUrl(draft.setup.baseUrl)) {
       return "The Base URL must start with http:// or https://.";
     }
+    const viewportProblems = viewportIssues(draft.setup);
+    if (viewportProblems.length) return viewportProblems[0];
     return null;
   }
 

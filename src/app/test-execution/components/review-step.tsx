@@ -119,8 +119,11 @@ export function ReviewStep({
     <div className="content-stack">
       <SectionCard title="Review the plan" description="Check the summary, then approve to start the execution.">
         <dl className="divide-y divide-border p-4">
+          <SummaryRow label="Run name" value={draft.setup.runName.trim() || <span className="text-muted-foreground">Not set</span>} />
           <SummaryRow label="Base URL" value={draft.setup.baseUrl.trim() || <span className="text-muted-foreground">Not set</span>} />
           <SummaryRow label="Screenshots" value={SCREENSHOT_POLICY_LABELS[draft.setup.screenshotPolicy]} />
+          <SummaryRow label="Browser" value={draft.setup.headless ? "Headless" : "Headed (visible window)"} />
+          <SummaryRow label="Viewport" value={`${draft.setup.viewportWidth} × ${draft.setup.viewportHeight}`} />
           <SummaryRow
             label="Test data"
             value={dataCount ? `${dataCount} value${dataCount === 1 ? "" : "s"}${secretCount ? ` (${secretCount} private)` : ""}` : "None"}

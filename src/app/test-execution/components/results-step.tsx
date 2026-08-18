@@ -94,12 +94,16 @@ export function ResultsStep({
     <div className="content-stack">
       <SectionCard
         title="Run results"
-        description={<span className="font-mono text-xs">{run.id}</span>}
+        description={
+          <span className="[overflow-wrap:anywhere]" title={run.id}>
+            {run.name?.trim() ? `${run.name.trim()} — ` : ""}{new Date(run.createdAt).toLocaleString()}
+          </span>
+        }
         action={<StatusChip tone={runStatusTone(run.status)}>{runStatusLabel(run.status)}</StatusChip>}
       >
         <div className="space-y-3 p-4">
           <p className="text-sm text-muted-foreground">
-            {run.completedCases} of {run.totalCases} case{run.totalCases === 1 ? "" : "s"} finished · started {new Date(run.createdAt).toLocaleString()}
+            {run.completedCases} of {run.totalCases} case{run.totalCases === 1 ? "" : "s"} finished
           </p>
           {run.errorMessage ? <Callout tone="error" title="Run error" role="alert">{run.errorMessage}</Callout> : null}
         </div>

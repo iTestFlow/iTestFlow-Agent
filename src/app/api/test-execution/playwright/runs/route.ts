@@ -45,9 +45,19 @@ const CaseSchema = z.object({
 
 const Schema = z.object({
   scope: ProjectScopeSchema,
+  name: z.string().trim().max(200, "Run names are limited to 200 characters.").optional(),
   baseUrl: z.string().trim().min(1).max(2048),
   executionNotes: z.string().trim().max(EXTRA_INSTRUCTIONS_MAX_LENGTH).optional(),
   screenshotPolicy: z.enum(SCREENSHOT_POLICIES),
+  headless: z.boolean().default(true),
+  viewportWidth: z.coerce.number().int()
+    .min(320, "Viewport width must be between 320 and 3840 pixels.")
+    .max(3840, "Viewport width must be between 320 and 3840 pixels.")
+    .default(1920),
+  viewportHeight: z.coerce.number().int()
+    .min(240, "Viewport height must be between 240 and 2160 pixels.")
+    .max(2160, "Viewport height must be between 240 and 2160 pixels.")
+    .default(1080),
   testData: z.array(TestDataEntrySchema).max(MAX_TEST_DATA_ENTRIES, `Use at most ${MAX_TEST_DATA_ENTRIES} test data entries.`).default([]),
   planId: z.coerce.number().int().positive().nullish(),
   suiteId: z.coerce.number().int().positive().nullish(),
@@ -135,10 +145,14 @@ export async function POST(request: Request) {
         planId: parsed.data.planId ?? null,
         suiteId: parsed.data.suiteId ?? null,
         requestedByUserId: ctx.userId,
+        name: parsed.data.name || null,
         settings: {
           baseUrl: parsed.data.baseUrl,
           executionNotes: normalizeExtraInstructions(parsed.data.executionNotes) || null,
           screenshotPolicy: parsed.data.screenshotPolicy,
+          headless: parsed.data.headless,
+          viewportWidth: parsed.data.viewportWidth,
+          viewportHeight: parsed.data.viewportHeight,
         },
         testData,
         configSnapshot: { transport: config.transport, endpoint: config.endpoint, artifactBaseUrl: config.artifactBaseUrl },

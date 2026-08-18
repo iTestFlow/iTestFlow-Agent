@@ -62,9 +62,13 @@ function caseToPayload(testCase: DraftCase) {
 export function draftToRunRequest(draft: ExecutionDraft, scope: ActiveProjectScope) {
   return {
     scope,
+    ...(draft.setup.runName.trim() ? { name: draft.setup.runName.trim() } : {}),
     baseUrl: draft.setup.baseUrl.trim(),
     ...(draft.setup.executionNotes.trim() ? { executionNotes: draft.setup.executionNotes.trim() } : {}),
     screenshotPolicy: draft.setup.screenshotPolicy,
+    headless: draft.setup.headless,
+    viewportWidth: Number(draft.setup.viewportWidth),
+    viewportHeight: Number(draft.setup.viewportHeight),
     testData: testDataToPayload(draft.setup.testData),
     ...(draft.provenance.planId ? { planId: draft.provenance.planId } : {}),
     ...(draft.provenance.suiteId ? { suiteId: draft.provenance.suiteId } : {}),
@@ -83,6 +87,9 @@ export function setupToProfileRequest(input: {
     baseUrl: input.setup.baseUrl.trim() || null,
     executionNotes: input.setup.executionNotes.trim() || null,
     screenshotPolicy: input.setup.screenshotPolicy,
+    headless: input.setup.headless,
+    viewportWidth: Number(input.setup.viewportWidth),
+    viewportHeight: Number(input.setup.viewportHeight),
     testData: testDataToPayload(input.setup.testData),
   };
 }

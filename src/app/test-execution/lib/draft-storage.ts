@@ -1,4 +1,4 @@
-import type { ExecutionDraft } from "./execution-draft";
+import { createEmptyDraft, type ExecutionDraft } from "./execution-draft";
 
 /* --------------------------------------------------------------------------
  * Per-project localStorage draft so a refresh never loses authored work.
@@ -43,7 +43,9 @@ export function loadDraft(projectId: string): ExecutionDraft | null {
     if (!raw) return null;
     const stored = JSON.parse(raw) as StoredDraft;
     if (stored?.version !== DRAFT_VERSION || !stored.draft?.setup || !Array.isArray(stored.draft.cases)) return null;
-    return stored.draft;
+    // Default-merge instead of a version bump: setup fields added after a draft
+    // was saved fill in from the empty draft, and the user's values always win.
+    return { ...stored.draft, setup: { ...createEmptyDraft().setup, ...stored.draft.setup } };
   } catch {
     return null;
   }

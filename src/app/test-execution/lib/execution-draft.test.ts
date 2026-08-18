@@ -103,6 +103,24 @@ describe("draftIssues", () => {
     expect(draftIssues(overText).join(" ")).toMatch(/longer than 4000 characters/);
   });
 
+  it("flags viewport dimensions that are out of range or not whole numbers", () => {
+    const draft = executableDraft();
+    draft.setup.viewportWidth = "100";
+    draft.setup.viewportHeight = "abc";
+    const issues = draftIssues(draft);
+    expect(issues).toContain("Viewport width must be between 320 and 3840 pixels.");
+    expect(issues).toContain("Viewport height must be between 240 and 2160 pixels.");
+
+    const fractional = executableDraft();
+    fractional.setup.viewportWidth = "1920.5";
+    expect(draftIssues(fractional)).toContain("Viewport width must be between 320 and 3840 pixels.");
+
+    const valid = executableDraft();
+    valid.setup.viewportWidth = "1280";
+    valid.setup.viewportHeight = "720";
+    expect(draftIssues(valid)).toEqual([]);
+  });
+
   it("detects whether a draft carries authored content worth confirming before overwrite", () => {
     expect(draftHasContent(createEmptyDraft())).toBe(false);
     expect(draftHasContent(executableDraft())).toBe(true);
@@ -138,6 +156,11 @@ describe("rerun and profile prefill", () => {
     });
     expect(draft.setup.baseUrl).toBe("https://app.example.com");
     expect(draft.setup.screenshotPolicy).toBe("every-step");
+    // Legacy run details without the newer fields fall back to the defaults.
+    expect(draft.setup.runName).toBe("");
+    expect(draft.setup.headless).toBe(true);
+    expect(draft.setup.viewportWidth).toBe("1920");
+    expect(draft.setup.viewportHeight).toBe("1080");
     expect(draft.setup.testData[0]).toMatchObject({ title: "Username", value: "qa@example.com" });
     expect(draft.setup.testData[1]).toMatchObject({ title: "Password", value: "", savedRef: { kind: "run", id: "run-9", title: "Password" } });
     expect(draft.cases.map((testCase) => testCase.source)).toEqual(["plan-suite", "user-story", "manual"]);
@@ -164,17 +187,45 @@ describe("rerun and profile prefill", () => {
     expect(draft.cases[1].azurePlanId).toBeUndefined();
   });
 
-  it("applies a profile to the setup without touching the case list", () => {
+  it("prefills the run name and browser settings when rerunning a named run", () => {
+    const draft = draftFromRunDetail({
+      id: "run-named",
+      name: "Nightly smoke",
+      baseUrl: "https://app.example.com",
+      executionNotes: null,
+      screenshotPolicy: "validation-points",
+      headless: false,
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      azurePlanId: null,
+      azureSuiteId: null,
+      cases: [{ azureTestCaseId: null, azureTestPointId: null, title: "Manual", steps: [{ action: "Open", expectedResult: null }] }],
+    });
+    expect(draft.setup.runName).toBe("Nightly smoke");
+    expect(draft.setup.headless).toBe(false);
+    expect(draft.setup.viewportWidth).toBe("1280");
+    expect(draft.setup.viewportHeight).toBe("720");
+  });
+
+  it("applies a profile to the setup without touching the case list or run name", () => {
     const draft = executableDraft();
+    draft.setup.runName = "Keep me";
     const applied = applyProfileToDraft(draft, {
       id: "prof-1",
       baseUrl: "https://staging.example.com",
       executionNotes: null,
       screenshotPolicy: "failures-only",
+      headless: false,
+      viewportWidth: 1366,
+      viewportHeight: 768,
       testData: [{ title: "Password", isSecret: true, value: null }],
     });
     expect(applied.setup.profileId).toBe("prof-1");
     expect(applied.setup.baseUrl).toBe("https://staging.example.com");
+    expect(applied.setup.runName).toBe("Keep me");
+    expect(applied.setup.headless).toBe(false);
+    expect(applied.setup.viewportWidth).toBe("1366");
+    expect(applied.setup.viewportHeight).toBe("768");
     expect(applied.setup.testData[0].savedRef).toEqual({ kind: "profile", id: "prof-1", title: "Password" });
     expect(applied.cases).toBe(draft.cases);
   });

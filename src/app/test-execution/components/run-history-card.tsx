@@ -47,7 +47,12 @@ export function RunHistoryCard({
             <div key={run.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3">
               <div className="min-w-0 flex-1 space-y-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-xs">{run.id}</span>
+                  <span
+                    className="min-w-0 truncate text-sm font-medium"
+                    title={run.name?.trim() ? `${run.name.trim()} (${run.id})` : run.id}
+                  >
+                    {run.name?.trim() || new Date(run.createdAt).toLocaleString()}
+                  </span>
                   <StatusChip tone={runStatusTone(run.status)}>{runStatusLabel(run.status)}</StatusChip>
                 </div>
                 <p className="text-sm text-muted-foreground">

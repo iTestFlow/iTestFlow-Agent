@@ -43,6 +43,15 @@ const Schema = z.object({
   baseUrl: BaseUrlSchema.nullish(),
   executionNotes: z.string().trim().max(EXTRA_INSTRUCTIONS_MAX_LENGTH).nullish(),
   screenshotPolicy: z.enum(SCREENSHOT_POLICIES),
+  headless: z.boolean().default(true),
+  viewportWidth: z.coerce.number().int()
+    .min(320, "Viewport width must be between 320 and 3840 pixels.")
+    .max(3840, "Viewport width must be between 320 and 3840 pixels.")
+    .default(1920),
+  viewportHeight: z.coerce.number().int()
+    .min(240, "Viewport height must be between 240 and 2160 pixels.")
+    .max(2160, "Viewport height must be between 240 and 2160 pixels.")
+    .default(1080),
   testData: z.array(TestDataEntrySchema).max(MAX_TEST_DATA_ENTRIES).default([]),
 });
 
@@ -64,6 +73,9 @@ export async function POST(request: Request, context: { params: Promise<{ profil
       baseUrl: parsed.data.baseUrl || null,
       executionNotes: parsed.data.executionNotes || null,
       screenshotPolicy: parsed.data.screenshotPolicy,
+      headless: parsed.data.headless,
+      viewportWidth: parsed.data.viewportWidth,
+      viewportHeight: parsed.data.viewportHeight,
       testData: parsed.data.testData,
     });
     return NextResponse.json({ profile });

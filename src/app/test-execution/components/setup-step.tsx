@@ -13,7 +13,16 @@ import { SectionCard } from "@/components/workflow/test-intelligence-shared";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
 import { cn } from "@/lib/utils";
 import { SCREENSHOT_POLICIES, SCREENSHOT_POLICY_LABELS, type ScreenshotPolicy } from "@/modules/test-execution/screenshot-policy";
-import { isValidHttpUrl, type DraftSetup } from "../lib/execution-draft";
+import {
+  RUN_NAME_LIMIT,
+  VIEWPORT_HEIGHT_MAX,
+  VIEWPORT_HEIGHT_MIN,
+  VIEWPORT_WIDTH_MAX,
+  VIEWPORT_WIDTH_MIN,
+  isValidHttpUrl,
+  viewportIssues,
+  type DraftSetup,
+} from "../lib/execution-draft";
 import type { ExecutionProfileView } from "../lib/run-types";
 import { TestDataEditor } from "./test-data-editor";
 
@@ -75,6 +84,9 @@ export function SetupStep({
 }) {
   const [profileName, setProfileName] = useState("");
   const baseUrlInvalid = Boolean(setup.baseUrl.trim()) && !isValidHttpUrl(setup.baseUrl);
+  const viewportProblems = viewportIssues(setup);
+  const widthInvalid = viewportProblems.some((message) => message.includes("width"));
+  const heightInvalid = viewportProblems.some((message) => message.includes("height"));
   const selectedProfile = profiles.find((profile) => profile.id === setup.profileId) ?? null;
   const hasOptionalContent = setup.testData.length > 0;
 
@@ -119,6 +131,20 @@ export function SetupStep({
         ) : null}
 
         <div className="space-y-1.5">
+          <Label htmlFor="execution-run-name">Run name (optional)</Label>
+          <Input
+            id="execution-run-name"
+            value={setup.runName}
+            maxLength={RUN_NAME_LIMIT}
+            placeholder="e.g. Nightly smoke — staging"
+            onChange={(event) => onSetupChange({ ...setup, runName: event.target.value })}
+          />
+          <p className="text-xs text-muted-foreground">
+            Shown in run history next to the date. Leave empty to identify runs by date alone.
+          </p>
+        </div>
+
+        <div className="space-y-1.5">
           <Label htmlFor="execution-base-url">Base URL <span aria-hidden="true" className="text-destructive">*</span></Label>
           <Input
             id="execution-base-url"
@@ -152,6 +178,57 @@ export function SetupStep({
           </NativeSelect>
           <p className="text-xs text-muted-foreground">
             “Validation points only” captures each step that has an expected result, plus evidence whenever a step fails.
+          </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="execution-browser-mode">Browser window</Label>
+          <NativeSelect
+            id="execution-browser-mode"
+            className="max-w-md"
+            value={setup.headless ? "headless" : "headed"}
+            onChange={(event) => onSetupChange({ ...setup, headless: event.target.value === "headless" })}
+          >
+            <option value="headless">Headless — no visible browser window (default)</option>
+            <option value="headed">Headed — show the browser while tests run</option>
+          </NativeSelect>
+          <p className="text-xs text-muted-foreground">
+            Applies when this deployment runs Playwright over stdio. A remote (HTTP) Playwright server controls its own browser window, and a deployment that already forces headless stays headless.
+          </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="grid max-w-md gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="execution-viewport-width">Viewport width (px)</Label>
+              <Input
+                id="execution-viewport-width"
+                type="number"
+                min={VIEWPORT_WIDTH_MIN}
+                max={VIEWPORT_WIDTH_MAX}
+                value={setup.viewportWidth}
+                aria-invalid={widthInvalid || undefined}
+                aria-describedby="execution-viewport-help"
+                onChange={(event) => onSetupChange({ ...setup, viewportWidth: event.target.value })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="execution-viewport-height">Viewport height (px)</Label>
+              <Input
+                id="execution-viewport-height"
+                type="number"
+                min={VIEWPORT_HEIGHT_MIN}
+                max={VIEWPORT_HEIGHT_MAX}
+                value={setup.viewportHeight}
+                aria-invalid={heightInvalid || undefined}
+                aria-describedby="execution-viewport-help"
+                onChange={(event) => onSetupChange({ ...setup, viewportHeight: event.target.value })}
+              />
+            </div>
+          </div>
+          <p id="execution-viewport-help" className={cn("text-xs", viewportProblems.length ? "text-destructive" : "text-muted-foreground")}>
+            {viewportProblems[0]
+              ?? `Browser size for every test case. Width ${VIEWPORT_WIDTH_MIN}–${VIEWPORT_WIDTH_MAX}, height ${VIEWPORT_HEIGHT_MIN}–${VIEWPORT_HEIGHT_MAX}. Default 1920 × 1080.`}
           </p>
         </div>
 

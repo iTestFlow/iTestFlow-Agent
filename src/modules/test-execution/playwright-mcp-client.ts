@@ -7,7 +7,7 @@ import type { ResolvedPlaywrightMcpConfig } from "./playwright-mcp-config.servic
 import { assertAllowedPlaywrightTool, type PlaywrightToolClient } from "./playwright-agent";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-function deploymentStdioCommand(): { command: string; args: string[] } {
+function deploymentStdioCommand(headless: boolean): { command: string; args: string[] } {
   const command = process.env.PLAYWRIGHT_MCP_STDIO_COMMAND?.trim();
   if (!command) throw new Error("PLAYWRIGHT_MCP_STDIO_COMMAND is not configured by the deployment.");
   const rawArgs = process.env.PLAYWRIGHT_MCP_STDIO_ARGS?.trim();
@@ -15,6 +15,9 @@ function deploymentStdioCommand(): { command: string; args: string[] } {
   if (!Array.isArray(args) || args.some((value) => typeof value !== "string")) {
     throw new Error("PLAYWRIGHT_MCP_STDIO_ARGS must be a JSON array of strings.");
   }
+  // The only per-run influence on the spawn is this hard-coded literal flag —
+  // deployment args stay authoritative and user input never reaches argv.
+  if (headless && !args.includes("--headless")) args.push("--headless");
   return { command, args };
 }
 
@@ -56,7 +59,7 @@ function parseTabSection(section: string): string[] {
   return urls;
 }
 
-export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig): Promise<{
+export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig, options?: { headless?: boolean }): Promise<{
   tools: PlaywrightToolClient;
   close: () => Promise<void>;
 }> {
@@ -69,7 +72,7 @@ export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig):
           ...(config.bearerToken ? { headers: { Authorization: `Bearer ${config.bearerToken}` } } : {}),
         },
       })
-    : new StdioClientTransport(deploymentStdioCommand());
+    : new StdioClientTransport(deploymentStdioCommand(options?.headless ?? true));
   const client = new Client({ name: "itestflow-agent", version: "0.1.0" });
   const timeout = AbortSignal.timeout(15_000);
   try {

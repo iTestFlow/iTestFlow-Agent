@@ -26,6 +26,9 @@ function writeInput(overrides: Partial<Parameters<typeof createExecutionProfile>
     baseUrl: "https://staging.example.test",
     executionNotes: "Use the staging tenant.",
     screenshotPolicy: "validation-points" as const,
+    headless: false,
+    viewportWidth: 1440,
+    viewportHeight: 900,
     testData: [
       { title: "Username", isSecret: false, value: "qa@example.test" },
       { title: "Password", isSecret: true, value: "Pr0file!Secret" },
@@ -49,6 +52,7 @@ describeDb("Execution profiles (DB-backed)", () => {
 
   it("creates profiles with encrypted secrets, lists metadata only, and rejects duplicate names case-insensitively", async () => {
     const profile = await createExecutionProfile(writeInput());
+    expect(profile).toMatchObject({ headless: false, viewportWidth: 1440, viewportHeight: 900 });
     expect(profile.testData).toEqual([
       { title: "Username", isSecret: false, value: "qa@example.test" },
       { title: "Password", isSecret: true, value: null },
@@ -72,12 +76,16 @@ describeDb("Execution profiles (DB-backed)", () => {
     const profile = await createExecutionProfile(writeInput({ name: "Keep-secrets" }));
     const updated = await updateExecutionProfile(profile.id, writeInput({
       name: "Keep-secrets renamed",
+      headless: true,
+      viewportWidth: 1280,
+      viewportHeight: 720,
       testData: [
         { title: "Password", isSecret: true },
         { title: "OTP seed", isSecret: true, value: "N3w!Secret" },
       ],
     }));
     expect(updated.name).toBe("Keep-secrets renamed");
+    expect(updated).toMatchObject({ headless: true, viewportWidth: 1280, viewportHeight: 720 });
     expect(updated.testData).toEqual([
       { title: "Password", isSecret: true, value: null },
       { title: "OTP seed", isSecret: true, value: null },

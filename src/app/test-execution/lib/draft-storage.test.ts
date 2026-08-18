@@ -42,6 +42,29 @@ describe("draft storage", () => {
     expect(loadDraft(projectId)).toBeNull();
   });
 
+  it("fills setup fields added after a draft was saved with defaults, keeping stored values", () => {
+    // A v1 draft persisted before runName/headless/viewport existed.
+    const legacySetup = {
+      profileId: null,
+      baseUrl: "https://app.example.com",
+      executionNotes: "Old notes",
+      screenshotPolicy: "failures-only",
+      testData: [],
+    };
+    window.localStorage.setItem(
+      `itestflow.testExecution.draft.${projectId}`,
+      JSON.stringify({ version: 1, savedAt: "2026-01-01T00:00:00.000Z", draft: { setup: legacySetup, cases: [], provenance: {} } }),
+    );
+    const loaded = loadDraft(projectId);
+    expect(loaded?.setup.baseUrl).toBe("https://app.example.com");
+    expect(loaded?.setup.executionNotes).toBe("Old notes");
+    expect(loaded?.setup.screenshotPolicy).toBe("failures-only");
+    expect(loaded?.setup.runName).toBe("");
+    expect(loaded?.setup.headless).toBe(true);
+    expect(loaded?.setup.viewportWidth).toBe("1920");
+    expect(loaded?.setup.viewportHeight).toBe("1080");
+  });
+
   it("clears saved drafts", () => {
     saveDraft(projectId, sampleDraft());
     clearDraft(projectId);

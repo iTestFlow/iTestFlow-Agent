@@ -38,7 +38,11 @@ async function createRun(input: {
     planId: null,
     suiteId: null,
     requestedByUserId: userId,
-    settings: { baseUrl: "https://app.example.test/start", executionNotes: "Use the staging tenant.", screenshotPolicy: "failures-only" },
+    name: null,
+    settings: {
+      baseUrl: "https://app.example.test/start", executionNotes: "Use the staging tenant.", screenshotPolicy: "failures-only",
+      headless: true, viewportWidth: 1920, viewportHeight: 1080,
+    },
     testData: input.testData ?? [],
     configSnapshot: { transport: "stdio", endpoint: null, artifactBaseUrl: null },
     job: { userId, scope: { ...scope, projectId: input.runProjectId ?? projectId } },
@@ -73,6 +77,9 @@ describeDb("Execution run test data (DB-backed)", () => {
       baseUrl: "https://app.example.test/start",
       executionNotes: "Use the staging tenant.",
       screenshotPolicy: "failures-only",
+      headless: true,
+      viewportWidth: 1920,
+      viewportHeight: 1080,
     });
 
     const caseRow = await sqlGet<{ azure_test_case_id: number | null; azure_plan_id: number | null; azure_suite_id: number | null }>(

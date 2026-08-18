@@ -66,13 +66,16 @@ function jobContext() {
   return { signal: new AbortController().signal, updateProgress: vi.fn() } as never;
 }
 
-function primeHappyRun(input: { screenshotPolicy: string; agentOutcomes: Array<{ outcome: string; summary: string }> }) {
+function primeHappyRun(input: { screenshotPolicy: string; agentOutcomes: Array<{ outcome: string; summary: string }>; headless?: boolean; viewportWidth?: number; viewportHeight?: number }) {
   const callTool = vi.fn(async (..._args: unknown[]) => ({ content: [] as unknown[] }));
   resolvePlaywrightMcpConfig.mockResolvedValue({ status: "configured", transport: "stdio", endpoint: null, artifactBaseUrl: null, bearerToken: null });
   // jsonb round-trips reorder object keys — the mock mimics that so a regression
   // to stringify-equality drift checking fails here.
   executionConfigSnapshot.mockResolvedValue({ artifactBaseUrl: null, endpoint: null, transport: "stdio" });
-  executionRunSettings.mockResolvedValue({ baseUrl: "https://app.example.com/start", executionNotes: "Use staging.", screenshotPolicy: input.screenshotPolicy });
+  executionRunSettings.mockResolvedValue({
+    baseUrl: "https://app.example.com/start", executionNotes: "Use staging.", screenshotPolicy: input.screenshotPolicy,
+    headless: input.headless ?? true, viewportWidth: input.viewportWidth ?? 1920, viewportHeight: input.viewportHeight ?? 1080,
+  });
   decryptedRunTestData.mockResolvedValue([
     { title: "Username", value: "qa@example.com", isSecret: false },
     { title: "Password", value: "S3cret!Value", isSecret: true },
@@ -107,14 +110,17 @@ describe("Playwright execution job", () => {
     expect(casesForRun).not.toHaveBeenCalled();
   });
 
-  it("navigates to the base URL first and captures policy-driven screenshots with secret-aware persistence", async () => {
+  it("navigates to the base URL, then sizes the viewport, and captures policy-driven screenshots with secret-aware persistence", async () => {
     const { callTool } = primeHappyRun({
       screenshotPolicy: "validation-points",
       agentOutcomes: [{ outcome: "passed", summary: "ok" }, { outcome: "failed", summary: "button missing" }],
     });
     await runPlaywrightExecutionJob(job, jobContext());
 
+    expect(connectPlaywrightMcp).toHaveBeenCalledWith(expect.objectContaining({ transport: "stdio" }), { headless: true });
     expect(callTool.mock.calls[0]).toEqual(["browser_navigate", { url: "https://app.example.com/start" }, expect.anything()]);
+    // Resize comes after navigation — some MCP servers reject it on a tabless browser.
+    expect(callTool.mock.calls[1]).toEqual(["browser_resize", { width: 1920, height: 1080 }, expect.anything()]);
     const screenshotCalls = callTool.mock.calls.filter((call) => call[0] === "browser_take_screenshot");
     expect(screenshotCalls).toHaveLength(2); // validation point (s1 passed w/ expected) + failure evidence (s2)
 
@@ -146,6 +152,23 @@ describe("Playwright execution job", () => {
     expect(callTool.mock.calls.filter((call) => call[0] === "browser_take_screenshot")).toHaveLength(0);
     const inlineImport = importInlineMcpArtifacts.mock.calls[0]?.[0];
     expect(inlineImport?.persistInlineScreenshots).toBe(false);
+  });
+
+  it("threads the headed choice and custom viewport into the browser session", async () => {
+    const { callTool } = primeHappyRun({
+      screenshotPolicy: "validation-points", agentOutcomes: [],
+      headless: false, viewportWidth: 1280, viewportHeight: 720,
+    });
+    await runPlaywrightExecutionJob(job, jobContext());
+    expect(connectPlaywrightMcp).toHaveBeenCalledWith(expect.anything(), { headless: false });
+    expect(callTool.mock.calls[1]).toEqual(["browser_resize", { width: 1280, height: 720 }, expect.anything()]);
+  });
+
+  it("skips the viewport resize when the base navigation fails", async () => {
+    const { callTool } = primeHappyRun({ screenshotPolicy: "validation-points", agentOutcomes: [] });
+    validateToolArguments.mockRejectedValueOnce(new Error("Playwright navigation URL is not on an allowed origin."));
+    await runPlaywrightExecutionJob(job, jobContext());
+    expect(callTool.mock.calls.filter((call) => call[0] === "browser_resize")).toHaveLength(0);
   });
 
   it("fails the case with a friendly error when the base URL is not allowed, without running any step", async () => {

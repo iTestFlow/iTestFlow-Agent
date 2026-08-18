@@ -39,9 +39,16 @@ export type TestDataDraftEntry = {
 
 export type DraftSetup = {
   profileId: string | null;
+  /** Optional per-run identity shown in history next to the date. */
+  runName: string;
   baseUrl: string;
   executionNotes: string;
   screenshotPolicy: ScreenshotPolicy;
+  /** Browser window mode; headless is the default for unattended runs. */
+  headless: boolean;
+  /** Kept as strings so empty inputs and localStorage round-trips stay lossless. */
+  viewportWidth: string;
+  viewportHeight: string;
   testData: TestDataDraftEntry[];
 };
 
@@ -61,7 +68,17 @@ export function newLocalId(prefix: string): string {
 
 export function createEmptyDraft(): ExecutionDraft {
   return {
-    setup: { profileId: null, baseUrl: "", executionNotes: "", screenshotPolicy: DEFAULT_SCREENSHOT_POLICY, testData: [] },
+    setup: {
+      profileId: null,
+      runName: "",
+      baseUrl: "",
+      executionNotes: "",
+      screenshotPolicy: DEFAULT_SCREENSHOT_POLICY,
+      headless: true,
+      viewportWidth: String(DEFAULT_VIEWPORT_WIDTH),
+      viewportHeight: String(DEFAULT_VIEWPORT_HEIGHT),
+      testData: [],
+    },
     cases: [],
     provenance: {},
   };
@@ -128,9 +145,13 @@ export function mergeImportedCases(cases: readonly DraftCase[], imported: readon
 /** Structural subset of the run-detail response the rerun flow consumes. */
 export type RunDetailForDraft = {
   id: string;
+  name?: string | null;
   baseUrl: string | null;
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
+  headless?: boolean;
+  viewportWidth?: number;
+  viewportHeight?: number;
   azurePlanId: number | null;
   azureSuiteId: number | null;
   testData?: Array<{ title: string; isSecret: boolean; value: string | null }>;
@@ -153,9 +174,13 @@ export function draftFromRunDetail(detail: RunDetailForDraft): ExecutionDraft {
   return {
     setup: {
       profileId: null,
+      runName: detail.name ?? "",
       baseUrl: detail.baseUrl ?? "",
       executionNotes: detail.executionNotes ?? "",
       screenshotPolicy: detail.screenshotPolicy,
+      headless: detail.headless ?? true,
+      viewportWidth: String(detail.viewportWidth ?? DEFAULT_VIEWPORT_WIDTH),
+      viewportHeight: String(detail.viewportHeight ?? DEFAULT_VIEWPORT_HEIGHT),
       testData: (detail.testData ?? []).map((entry) => ({
         localId: newLocalId("data"),
         title: entry.title,
@@ -185,18 +210,29 @@ export type ProfileForDraft = {
   baseUrl: string | null;
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
+  headless: boolean;
+  viewportWidth: number;
+  viewportHeight: number;
   testData: Array<{ title: string; isSecret: boolean; value: string | null }>;
 };
 
-/** Replaces the setup with a profile's saved values; the case list is untouched. */
+/**
+ * Replaces the setup with a profile's saved values; the case list and the
+ * per-run identity (run name) are untouched — profiles describe environments,
+ * not individual runs.
+ */
 export function applyProfileToDraft(draft: ExecutionDraft, profile: ProfileForDraft): ExecutionDraft {
   return {
     ...draft,
     setup: {
       profileId: profile.id,
+      runName: draft.setup.runName,
       baseUrl: profile.baseUrl ?? "",
       executionNotes: profile.executionNotes ?? "",
       screenshotPolicy: profile.screenshotPolicy,
+      headless: profile.headless,
+      viewportWidth: String(profile.viewportWidth),
+      viewportHeight: String(profile.viewportHeight),
       testData: profile.testData.map((entry) => ({
         localId: newLocalId("data"),
         title: entry.title,
@@ -222,6 +258,13 @@ export const RUN_CASE_LIMIT = 200;
 export const CASE_STEP_LIMIT = 100;
 export const STEP_TEXT_LIMIT = 4000;
 export const CASE_TITLE_LIMIT = 400;
+export const RUN_NAME_LIMIT = 200;
+export const VIEWPORT_WIDTH_MIN = 320;
+export const VIEWPORT_WIDTH_MAX = 3840;
+export const VIEWPORT_HEIGHT_MIN = 240;
+export const VIEWPORT_HEIGHT_MAX = 2160;
+export const DEFAULT_VIEWPORT_WIDTH = 1920;
+export const DEFAULT_VIEWPORT_HEIGHT = 1080;
 
 export function caseIsReady(testCase: DraftCase): boolean {
   return Boolean(testCase.title.trim()) && testCase.steps.length > 0 && testCase.steps.every((step) => Boolean(step.action.trim()));
@@ -253,11 +296,30 @@ export function testDataIssues(entries: readonly TestDataDraftEntry[]): string[]
   return issues;
 }
 
+/**
+ * Non-integer or out-of-range viewport dimensions → authored issue messages.
+ * Shared by run gating, profile saves, and the setup step's inline feedback.
+ */
+export function viewportIssues(setup: Pick<DraftSetup, "viewportWidth" | "viewportHeight">): string[] {
+  const issues: string[] = [];
+  const width = Number(setup.viewportWidth.trim());
+  if (!Number.isInteger(width) || width < VIEWPORT_WIDTH_MIN || width > VIEWPORT_WIDTH_MAX) {
+    issues.push(`Viewport width must be between ${VIEWPORT_WIDTH_MIN} and ${VIEWPORT_WIDTH_MAX} pixels.`);
+  }
+  const height = Number(setup.viewportHeight.trim());
+  if (!Number.isInteger(height) || height < VIEWPORT_HEIGHT_MIN || height > VIEWPORT_HEIGHT_MAX) {
+    issues.push(`Viewport height must be between ${VIEWPORT_HEIGHT_MIN} and ${VIEWPORT_HEIGHT_MAX} pixels.`);
+  }
+  return issues;
+}
+
 /** Blocking problems, phrased for the review step's "cannot run yet" callout. */
 export function draftIssues(draft: ExecutionDraft): string[] {
   const issues: string[] = [];
   if (!draft.setup.baseUrl.trim()) issues.push("Enter the Base URL the tests should start from.");
   else if (!isValidHttpUrl(draft.setup.baseUrl)) issues.push("The Base URL must start with http:// or https://.");
+  if (draft.setup.runName.trim().length > RUN_NAME_LIMIT) issues.push(`Run names are limited to ${RUN_NAME_LIMIT} characters.`);
+  issues.push(...viewportIssues(draft.setup));
   if (!draft.cases.length) issues.push("Add at least one test case.");
   if (draft.cases.length > RUN_CASE_LIMIT) {
     issues.push(`Runs are limited to ${RUN_CASE_LIMIT} test cases — remove ${draft.cases.length - RUN_CASE_LIMIT} to continue.`);
