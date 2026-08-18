@@ -1,0 +1,189 @@
+{
+  "capabilities": {
+    "core": {
+      "lifecycle": "receipt-owned",
+      "owner": "installer",
+      "scope": "project",
+      "taskImpact": "required"
+    },
+    "graphify": {
+      "lifecycle": "derived-single-writer",
+      "owner": "project",
+      "scope": "repository",
+      "taskImpact": "advisory"
+    },
+    "hooks": {
+      "lifecycle": "receipt-owned",
+      "owner": "installer",
+      "scope": "project",
+      "taskImpact": "required"
+    },
+    "maven-tools-mcp": {
+      "lifecycle": "user-managed-cache",
+      "owner": "user",
+      "scope": "user",
+      "taskImpact": "optional"
+    },
+    "mcps": {
+      "lifecycle": "receipt-owned",
+      "owner": "project",
+      "scope": "project",
+      "taskImpact": "required"
+    },
+    "memory": {
+      "lifecycle": "persistent-data",
+      "owner": "project",
+      "scope": "project",
+      "taskImpact": "advisory"
+    },
+    "mempalace": {
+      "lifecycle": "persistent-data",
+      "owner": "project",
+      "scope": "project",
+      "taskImpact": "advisory"
+    },
+    "playbooks": {
+      "lifecycle": "receipt-owned",
+      "owner": "installer",
+      "scope": "repository",
+      "taskImpact": "required"
+    },
+    "plugins": {
+      "lifecycle": "receipt-owned",
+      "owner": "installer",
+      "scope": "project",
+      "taskImpact": "required"
+    },
+    "projection-policy": {
+      "lifecycle": "receipt-owned",
+      "owner": "installer",
+      "scope": "project",
+      "taskImpact": "required"
+    },
+    "retrieval-config": {
+      "lifecycle": "persistent-data",
+      "owner": "project",
+      "scope": "project",
+      "taskImpact": "required"
+    },
+    "roles": {
+      "lifecycle": "receipt-owned",
+      "owner": "installer",
+      "scope": "project",
+      "taskImpact": "required"
+    },
+    "skills": {
+      "lifecycle": "receipt-owned",
+      "owner": "installer",
+      "scope": "project",
+      "taskImpact": "required"
+    },
+    "tools": {
+      "lifecycle": "receipt-owned",
+      "owner": "installer",
+      "scope": "project",
+      "taskImpact": "required"
+    }
+  },
+  "capabilityPolicySha256": "a2f7631497f0b970e7e73fd2638e6c13c2fb2f3205bd5c4401e0eff65b93a7d9",
+  "distribution": {
+    "id": "portable",
+    "policySha256": "04a7eb59d5f9be24d49ef2f6a7d81db01ef63e0e92bfdc12c74140bdd4f5116f"
+  },
+  "files": {
+    "INSTALL.md": "6875bd1c08531a18eaa57cdea594061572b03945245a68fd3ca6007e1579c9b0",
+    "LICENSE": "78c39f57ad52763b633dc3cb3aec52b2093a09efb748b0056b40c478aa73d913",
+    "README.md": "2cbd33fe13055316c360fb5c42e653e41524967d2ea5bfeff3995c6cef7180af",
+    "RESEARCH.md": "28acdbe77d9ab0b90263290eeb8938b0d5d77caede3ae95781284fe5fcf9a7c3",
+    "THIRD_PARTY_NOTICES.md": "ccd7ead70ca963cbab652f1100754a18a29370a9d960f637875d46f80aca98cb",
+    "assets/brand/BRAND.md": "d38c6a14bc4cc4aa2fc23c369dab9b6d69108a956051040ed455b7b6cd247a15",
+    "assets/brand/favicon-16-dark.svg": "fe41ea16aa14add173c1afea056654e963f13fa70e84f867efce6e16bd85df2d",
+    "assets/brand/favicon-16.svg": "176d639b4433eb5a590a8733b174ae47b8f387a0d01f2008e0ef4eff4b4a07bd",
+    "assets/brand/favicon-dark.svg": "69789204630ff9dae339da1355f8ce54e0e0d363ad480475a783c10da26002b2",
+    "assets/brand/favicon.svg": "cebafc4aae4f988e0ea1e884de7b13cbbc904f171c9a010ff7500cd8a9c63329",
+    "assets/brand/lockup-dark.svg": "bac975e8fc420b857f13225bc353a3c6a55a5fff1bcea0880264a56be53e5ea6",
+    "assets/brand/lockup-light.svg": "626602b0ee166282fa30716d4541e1e149a0a588551fa925eb7171dbd53d9b99",
+    "assets/brand/palette.json": "a4d833b85b8cf769b563f64b4aee58645de04ea8ee112921e6c374eaa696da5e",
+    "assets/brand/specimen.svg": "901eae183b0ac89abe78cc5ee62accd2bf7ed92048519f9a504ef6214ce1cdbe",
+    "assets/brand/symbol-dark.svg": "78b78756507eba0e91c56a0f62fb58240bd8ed97c915b3cb627424861492cb9e",
+    "assets/brand/symbol-light.svg": "0d8dc294bf59cb315c7f7a9eb2443ca25268bbc79c9a580364fe86993b011fe9",
+    "assets/brand/symbol-monochrome-black.svg": "653d5d524b18da7487ef6afbd252eb3f00a82c13143e3626f586bed050c45812",
+    "assets/brand/symbol-monochrome-white.svg": "df45439f44574fe4aebb83968027339206c83ac855572d3ef1144d91ba0eb37d",
+    "assets/brand/symbol-primary.svg": "13081f84f23c4138227802de457419677c41c48293820c1acd5004bdd964030e",
+    "assets/memory-v5/SCHEMAS.md": "ba09c9c5d9ad851f8a47c3adf64d2b9101daa8be6273622c240c6cdb6ca9b909",
+    "assets/memory-v5/config.schema.json": "80607cbb359e9da8db14f22386f2667f67ca7509fe7457a0daea84cb69f90e4a",
+    "assets/memory-v5/event.schema.json": "274ea04c893e2e29bc00e6b7239c58723de682ce2fff3b6ae41384d05633da9d",
+    "assets/memory-v5/object.schema.json": "b976a1f36132b83e7b04b0cac6beab9f1aa9c22a6d484be36c94e6c624cc661d",
+    "assets/memory-v5/patch.schema.json": "9d8ea4bfd6cd697b58a2eb88056b970b081d12b355032b46aac66c56ed462712",
+    "assets/memory-v5/relation.schema.json": "5da3f2fb69015f019b916a15caa7a699fc0160559dfd31d71b7f15d30c4b3e3f",
+    "bootstrap.py": "a3ac0deb92ea926d5f1d047e3ee7244f27f528d1a703f8aa1d9e30130920f1cb",
+    "dependencies.json": "b93fa0f30a635401bbd5f908b3720b1115f9bc7402dd6bba9f9cb55281e55c2b",
+    "dependencies.py": "a301e68e94046f42f09d9ffa544a8f0b1e149d3a05ad4a4caad2da657335c24d",
+    "hooks/guard.py": "43045904443c36b7c5c0171a6530b7f16b05239db0f814b7f154fdad89454985",
+    "hooks/reflection.py": "9e415a84c29a39ea6df1a723c431292ee19ad4283ed72bad8d31fba89332494d",
+    "hosts.py": "9e53f1b2b598ecdfde0b15bfa7863031f5ada2b6cdad2ae998aab2afa755cabb",
+    "install.ps1": "a58f972d29d0b780d772f32fc87597063ce66b2a4cbe3994f0f8c33b929687b7",
+    "install.py": "4f1f388fb37819c704c6f57cc06fb0fda6435f670befeeb8c6410002bceeee69",
+    "install.sh": "a03a680ff31ee61cf904553898792260677933da64f2e1a25e2fe713081f481e",
+    "learning.py": "e3ccc51cdc1f9f7beaa0bc0934f210b6009ffcaef7a083cb29ba041154817423",
+    "profiles/README.md": "b5b2087b798731d1ac1d339fbfe0ec68e051cdf3c168b77ecd9b0e2b92a0c991",
+    "profiles/portable/entrypoint.md": "7aa0a77d7756e933f8dce7bd633d03141cc6ee92672db65c983d5abfaaf63c65",
+    "profiles/portable/profile.json": "e21e3c97106717e5212857079f4760cfd96d65926e453e6a1e1ba2f1eae97c82",
+    "profiles/portable/references/routing.md": "1420f1d7287aa2fa8fe277315a7ab0f2a4f4198214513d1779634b88fae30cee",
+    "references/caveman.LICENSE": "5eb826cd03151bcc7cce3f80d40e87733237fedfc6c36d6908aca5fd650a0bdb",
+    "references/cleanup-scopes.md": "590f332ffcdc85737d7bea4b666300dc0d22a7708c745245a05ba59f9b277f9a",
+    "references/consult-first.md": "c6d7fa91dbaaa586c894ed765b83e949ac6b25a0101a0ba070aa503a61a5da30",
+    "references/context-economy.md": "c274b8af666484721fb7f5b2749673f92178c6dee9dd7bbdf24c7f4b46b3dd34",
+    "references/delegation.md": "3483d81031d4781c4de0d506eb0553715a8483ab169eec48cf40e733cd0d5d43",
+    "references/ethical-conduct.md": "f0960dc44ed8f2d57364d41bb6535e7264dc885e13c2d8d5ff0049d262119341",
+    "references/graphify.md": "12b47a2dd90d49c7a9f7c206bc47b98d3ca0abf335efd33b240efe453cfe16c5",
+    "references/heuristics.md": "a2ea79cc3094a51188a70a381fbf5fea23886afe3578f4c48724bd674407c97c",
+    "references/lifecycle-hooks.md": "4b3ddf1e916a8a1acea9d100d7eaec25f0ad11a6e8b5567fa2985dabb2a38472",
+    "references/orchestrator-bootstrap.md": "0c7dd2f5b818a25d5d6af848d76677a7dd4a5e4063c010555dbe32b025c20fe8",
+    "references/ponytail.LICENSE": "fb1bc6909ac3ef82d5c22106e32ef682b0cff66788fa915fb9b53b15c9d2f3ab",
+    "references/reflection-checkpoints.md": "e6cf2021653e41b1fa4ec05e2d755f4d688bb9690323da9f21064c5faf2ecdb6",
+    "references/research-receipt.md": "1303a41ee420354d63838b9f30e5a6fec5eabf08ecbee8cc5020f856de1738a4",
+    "references/retrieve-first.md": "c4cc202d08a814bdb432b802ca9ca6ecb2ab33a0677db25c10f1110a8a69c6b1",
+    "references/roles.md": "2251c4211b13d1830f2950670f727d92dc4477466976321b282efd797690a3ee",
+    "references/script-first.md": "d6e39468d1100161a11fb9bbe262b9208eade6f0a7a94175da33e5f0a7de653b",
+    "references/task-isolation.md": "d59b1a3002384ef57783ee0168ebd459ba021b64bacebd0a1bca7901712efd08",
+    "references/tdd-failure-modes.md": "a023c52527cde8f5ab334201e96182c167838bdf0a623815a590cea69e610182",
+    "references/tdd.md": "b2516007673083fd1d20eeffd498a36e587a2d6129c770cf4a119af6158f2f3b",
+    "references/test-driven-development.LICENSE": "a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400",
+    "references/verification-gap-lens.md": "622789db1917d9a9cf891ee25713c1ef7ba98534cee3656f21dfd802e9754f78",
+    "references/work-github-planning.md": "c72eb8bc17f10b42e73f39cb752c5e2e6e4778e856fe4090f702a19b12d94c1a",
+    "references/work-github-playbook.md": "e45b2b2b3103920b1b77a340c3e5eabe2aed60ab23dd208778cb4e654891b2f7",
+    "skills/chaos-engine/SKILL.md": "233d0fbf9de7601bf14c3636bd90fc7c7435cc9104d23ae9f64d173a1c5d5467",
+    "skills/local-coding-delegate/SKILL.md": "45b51ccaafbcb3039eea8ddde4d754c6f41be97a4b5dd1d0552d998cca384cc0",
+    "skills/local-coding-delegate/scripts/probe_hardware.py": "b5e9b9ea6952f09a542a2522f2fa53300c2739b9ce706c85c2b21657d49d5df8",
+    "tool.py": "77640470b246644b4975b5a39c3b29d7ee5000e6e58397b1d45c6c385f3b2585",
+    "vendor/caveman/INVENTORY.md": "4d7542a4972c953797815aa965a70c2089619129b1465b6e4abbe13f598a9286",
+    "vendor/caveman/LICENSE": "f0abc56b6f49ab2e285bb6e6723f028abb7ebd4fe0e242bbdc2b4dded0ace8b9",
+    "vendor/caveman/PIN.json": "1fe745ee966f3ce936d69458639fc3602e701812a6d290767c492dac3634ef1b",
+    "vendor/caveman/skills/caveman/SKILL.md": "1eddf7055618153869975678d9ff36635602a3aa333f8b4cc0787f12de75b6f8",
+    "vendor/caveman/src/hooks/caveman-activate.js": "b4ced6061e11f2f8077ba6f28c4b390cbee72efd3a6151c62ca9bef56f07c670",
+    "vendor/caveman/src/hooks/caveman-config.js": "6c0f359b4706cc57bcbb6f28cbdd9a82dfaa0135b5b7a23b794999c732335eca",
+    "vendor/caveman/src/hooks/caveman-mode-tracker.js": "873cb1fe7107a2b45eafc701a67fe6efe3cc7160a762c09ab0052dc74e64593d",
+    "vendor/caveman/src/hooks/caveman-parse.js": "a25af414462980df2fe8aab96bb3dbaae38c9c945cb7028214ed440cc826b7f6",
+    "vendor/caveman/src/hooks/package.json": "8005a3491db7d92f36ac66369861589f9c47123d3a7c71e643fc2c06168cd45a",
+    "vendor/ponytail/INVENTORY.md": "9fcb71c84221475b6a001f33c657974330c9ec0260f6c6a012154254986e11b2",
+    "vendor/ponytail/LICENSE": "fb1bc6909ac3ef82d5c22106e32ef682b0cff66788fa915fb9b53b15c9d2f3ab",
+    "vendor/ponytail/PIN.json": "1ac8e91f6489059451cd97210ab9065cfe51d7a7f5f6a953ea86d67844186064",
+    "vendor/ponytail/hooks/claude-codex-hooks.json": "25f1af0c65db50fcc3b7c7e7535144a3ce2303d79c1a83feedf31bc4ce8673b1",
+    "vendor/ponytail/hooks/ponytail-activate.js": "1c428c4ee9687c2f4321924109ee92e8f8b06fd6600cb6be9ec5b59633cafab1",
+    "vendor/ponytail/hooks/ponytail-config.js": "0a8daf96cf9ac703dc4cb7b5065253567e513c951d60b8eb94a0fe727514aeca",
+    "vendor/ponytail/hooks/ponytail-instructions.js": "23c050103f28dbe6bad953ae21d98cd06d720a20f33d4716e9de419f947d495e",
+    "vendor/ponytail/hooks/ponytail-mode-tracker.js": "5d1a960ff01b73f651ec0242052a8cf1e064cb88147806bf6e13f92798aca251",
+    "vendor/ponytail/hooks/ponytail-runtime.js": "02fa6127cf6c4b65a7b07b66541677ea587a0691802b6d1d2be2419bccea9110",
+    "vendor/ponytail/hooks/ponytail-subagent.js": "7f6bee86702a488d29ef0dcaabf424bbe2aca345a6a642319d43a1fe0276792e",
+    "vendor/ponytail/skills/ponytail/SKILL.md": "1316a2f3f95741d2300b116fe0c2d81ce4a9568656ed0a62643f54aaf09957f2"
+  },
+  "hostToken": "37e7c5c4d2037f1699aa3db8382cf15987e2c103075d8768728d827d07928f4b",
+  "schemaVersion": 1,
+  "source": {
+    "branchSha256": "0d6e4079e36703ebd37c00722f5891d28b0e2811dc114b129215123adcce3605",
+    "commit": "87986dddbc7e76ef3067ba9d7e208701d1e1ec33",
+    "kind": "git-digest",
+    "repositorySha256": "784908b613872582bc8185e13b6132a40ace924b406c1b60fa86c1d45eebd135"
+  }
+}

@@ -55,3 +55,6 @@ If loaded memory conflicts with the user request, current code, or test results,
 
 Before finalizing, say whether Memory changed. If it changed, mention that asynchronous inspection is available through `inspect_memory`, `memory view`, `memory diff`, Git tools, or MCP `diff_memory` when available.
 <!-- memory:end -->
+<!-- CHAOSENGINE:START -->
+Before every task, follow the canonical [ChaosEngine](.chaos-engine/skills/chaos-engine/SKILL.md). Use `.chaos-engine/tool.py` for the project-local Memory, MemPalace, and Graphify tools.
+<!-- CHAOSENGINE:END -->
