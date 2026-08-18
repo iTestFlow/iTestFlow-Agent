@@ -12,6 +12,7 @@ import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import type { ActiveProjectScope } from "@/shared/lib/active-project";
 import { runStatusLabel, runStatusTone, type RunArtifact, type RunDetail } from "../lib/run-types";
 import { ExecutionStepRow } from "./execution-step-row";
+import { ScreenshotPreviewDialog } from "./screenshot-preview-dialog";
 
 function artifactHref(scope: ActiveProjectScope, artifactId: string): string {
   const query = new URLSearchParams(
@@ -29,15 +30,21 @@ function StepArtifacts({ scope, artifacts }: { scope: ActiveProjectScope; artifa
       {screenshots.length ? (
         <div className="flex flex-wrap gap-2">
           {screenshots.map((artifact) => (
-            <a key={artifact.id} href={artifactHref(scope, artifact.id)} target="_blank" rel="noreferrer" className="focus-ring block overflow-hidden rounded-md border border-border">
-              {/* eslint-disable-next-line @next/next/no-img-element -- streamed evidence bytes, not an optimizable asset */}
-              <img
-                src={artifactHref(scope, artifact.id)}
-                alt="Step screenshot evidence — open full size"
-                loading="lazy"
-                className="h-24 w-auto max-w-40 object-cover"
-              />
-            </a>
+            <ScreenshotPreviewDialog
+              key={artifact.id}
+              href={artifactHref(scope, artifact.id)}
+              trigger={
+                <button type="button" className="focus-ring block cursor-zoom-in overflow-hidden rounded-md border border-border">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- streamed evidence bytes, not an optimizable asset */}
+                  <img
+                    src={artifactHref(scope, artifact.id)}
+                    alt="Step screenshot evidence — open preview"
+                    loading="lazy"
+                    className="h-24 w-auto max-w-40 object-cover"
+                  />
+                </button>
+              }
+            />
           ))}
         </div>
       ) : null}
