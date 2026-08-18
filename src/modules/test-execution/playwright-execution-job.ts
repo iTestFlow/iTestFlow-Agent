@@ -126,7 +126,7 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
           } catch (error) {
             outcome = context.signal.aborted ? "cancelled" : "error";
             errorMessage = error instanceof Error && /allowed origin/i.test(error.message)
-              ? "The Base URL is not on an allowed test origin for this deployment."
+              ? "The Base URL is not on an allowed test origin for this deployment. Add its origin to PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS in the server's .env file (for example https://staging.example.com) and restart the app, or set it to \"*\" to allow all origins."
               : "The browser could not open the Base URL before the first step.";
             baseNavigationFailed = true;
           }

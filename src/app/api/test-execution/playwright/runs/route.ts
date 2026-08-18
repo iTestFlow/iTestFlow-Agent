@@ -91,7 +91,7 @@ function invalidBaseUrlMessage(baseUrl: string): string | null {
     try {
       const origins = new Set(configured.map((entry) => new URL(entry).origin));
       if (!origins.has(url.origin)) {
-        return "The Base URL must be on one of the allowed test origins configured for this deployment.";
+        return "The Base URL must be on one of the allowed test origins configured for this deployment. An administrator can add its origin to PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS in the server's .env file (for example https://staging.example.com) and restart the app.";
       }
     } catch {
       // Malformed deployment config — leave enforcement to the worker.

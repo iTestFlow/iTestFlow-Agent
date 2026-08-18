@@ -186,6 +186,6 @@ describe("Playwright execution job", () => {
     expect(executeTestStepWithAgent).not.toHaveBeenCalled();
     expect(markStepStarted).not.toHaveBeenCalled();
     expect(skipRemainingQueuedSteps).toHaveBeenCalledWith("c1");
-    expect(finishCase).toHaveBeenCalledWith("c1", "error", "The Base URL is not on an allowed test origin for this deployment.", expect.anything());
+    expect(finishCase).toHaveBeenCalledWith("c1", "error", expect.stringContaining("The Base URL is not on an allowed test origin for this deployment."), expect.anything());
   });
 });

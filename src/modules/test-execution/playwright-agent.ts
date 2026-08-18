@@ -78,12 +78,12 @@ export function createPlaywrightToolPolicy(transport: "http" | "stdio"): Playwri
       const url = new URL(entry);
       if (!["http:", "https:"].includes(url.protocol) || url.username || url.password
         || url.pathname !== "/" || url.search || url.hash) {
-        throw new Error("PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS must contain exact HTTP(S) origins without credentials, paths, queries, or fragments, or be \"*\" to allow all origins.");
+        throw new Error("PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS contains an invalid entry. Use comma-separated exact http(s) origins without credentials, paths, queries, or fragments — for example https://staging.example.com — or \"*\" to allow all origins. Update the server's .env file and restart the app.");
       }
       allowedNavigationOrigins.add(url.origin);
     }
     if (!allowedNavigationOrigins.size) {
-      throw new Error("PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS must configure at least one browser target origin, or be \"*\" to allow all origins.");
+      throw new Error("PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS must configure at least one browser target origin. In the server's .env file, set it to the origins the test browser may open — for example PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS=https://staging.example.com — or to \"*\" to allow all origins, then restart the app.");
     }
   }
   let uploadRoots: unknown;
