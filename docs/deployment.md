@@ -220,6 +220,8 @@ Stdio is deployment-managed. Set `PLAYWRIGHT_MCP_STDIO_COMMAND` and a JSON strin
 
 Apply `npm run db:migrate` before enabling the feature. Execution history and metadata remain until workspace deletion; content-addressed artifacts use `DOCUMENT_STORAGE_ROOT`. Azure Test Point outcomes are written only when a user clicks **Publish reviewed results**.
 
+Set `PLAYWRIGHT_EXECUTION_ALLOWED_ORIGINS` identically for the web and worker processes. The run-creation API pre-checks the user's Base URL against this list only when the variable is present in the web process; the worker is the hard enforcement point. If the two processes diverge, a run can queue successfully and then fail at its first navigation with "The Base URL is not on an allowed test origin for this deployment."
+
 ```bash
 cp .env.example .env
 docker compose up -d postgres

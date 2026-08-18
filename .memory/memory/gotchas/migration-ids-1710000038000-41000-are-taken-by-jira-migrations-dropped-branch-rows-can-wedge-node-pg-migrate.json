@@ -1,0 +1,28 @@
+{
+  "body_path": "memory/gotchas/migration-ids-1710000038000-41000-are-taken-by-jira-migrations-dropped-branch-rows-can-wedge-node-pg-migrate.md",
+  "content_hash": "sha256:47050daab905cbf931a5618de542a4266093e111401051e47d390095b1467de2",
+  "created_at": "2026-08-18T13:16:29+03:00",
+  "evidence": [],
+  "facets": {
+    "applies_to": [
+      "migrations"
+    ],
+    "category": "gotcha"
+  },
+  "id": "gotcha.migration-ids-1710000038000-41000-are-taken-by-jira-migrations-dropped-branch-rows-can-wedge-node-pg-migrate",
+  "scope": {
+    "branch": null,
+    "kind": "project",
+    "project": "project.itestflow-agent",
+    "task": null
+  },
+  "source": {
+    "kind": "agent",
+    "task": "Rebuilt the Test Execution page as a 4-step workbench with supporting backend on branch test-execution-enhancements"
+  },
+  "status": "active",
+  "tags": [],
+  "title": "Migration ids 1710000038000-41000 are taken by Jira migrations; dropped-branch rows can wedge node-pg-migrate",
+  "type": "gotcha",
+  "updated_at": "2026-08-18T13:16:29+03:00"
+}

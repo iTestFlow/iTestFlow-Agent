@@ -79,3 +79,11 @@
 {"actor":"agent","event":"memory.updated","id":"constraint.playwright-browser-and-artifact-boundary","timestamp":"2026-08-14T15:16:28+03:00"}
 {"actor":"agent","event":"memory.created","id":"constraint.project-source-document-kind-follows-the-current-file-format","timestamp":"2026-08-14T16:05:54+03:00"}
 {"actor":"agent","event":"memory.created","id":"gotcha.browser-multipart-filenames-require-utf-8-parameter-decoding","timestamp":"2026-08-14T18:18:38+03:00"}
+{"actor":"agent","event":"memory.created","id":"decision.test-execution-workbench-immutable-runs-client-side-draft","timestamp":"2026-08-18T13:16:29+03:00"}
+{"actor":"agent","event":"memory.created","id":"decision.run-level-execution-settings-live-in-dedicated-columns-never-in-config-snapshot-json","timestamp":"2026-08-18T13:16:29+03:00"}
+{"actor":"agent","event":"memory.created","id":"fact.test-data-secrets-are-reused-by-reference-never-resent-by-the-browser","timestamp":"2026-08-18T13:16:29+03:00"}
+{"actor":"agent","event":"memory.created","id":"fact.screenshot-policy-semantics-and-enforcement-point","timestamp":"2026-08-18T13:16:29+03:00"}
+{"actor":"agent","event":"memory.created","id":"gotcha.route-mocked-services-need-pure-shared-ts-modules-for-schemas-and-error-classes","timestamp":"2026-08-18T13:16:29+03:00"}
+{"actor":"agent","event":"memory.created","id":"gotcha.migration-ids-1710000038000-41000-are-taken-by-jira-migrations-dropped-branch-rows-can-wedge-node-pg-migrate","timestamp":"2026-08-18T13:16:29+03:00"}
+{"actor":"agent","event":"memory.created","id":"fact.test-point-publication-is-per-case-and-restricted-to-point-carrying-cases","timestamp":"2026-08-18T13:16:29+03:00"}
+{"actor":"agent","event":"memory.created","id":"gotcha.never-stringify-compare-values-round-tripped-through-jsonb","timestamp":"2026-08-18T13:46:54+03:00"}

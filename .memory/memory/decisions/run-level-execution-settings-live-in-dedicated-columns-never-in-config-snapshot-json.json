@@ -1,0 +1,29 @@
+{
+  "body_path": "memory/decisions/run-level-execution-settings-live-in-dedicated-columns-never-in-config-snapshot-json.md",
+  "content_hash": "sha256:2202ce8c50f9d0cd85522a616b2b68db06e4f000c81cbc45f18079be0a535ee3",
+  "created_at": "2026-08-18T13:16:29+03:00",
+  "evidence": [],
+  "facets": {
+    "applies_to": [
+      "migrations/1710000042000_test_execution_workbench.js",
+      "src/modules/test-execution/playwright-execution-job.ts"
+    ],
+    "category": "decision-rationale"
+  },
+  "id": "decision.run-level-execution-settings-live-in-dedicated-columns-never-in-config-snapshot-json",
+  "scope": {
+    "branch": null,
+    "kind": "project",
+    "project": "project.itestflow-agent",
+    "task": null
+  },
+  "source": {
+    "kind": "agent",
+    "task": "Rebuilt the Test Execution page as a 4-step workbench with supporting backend on branch test-execution-enhancements"
+  },
+  "status": "active",
+  "tags": [],
+  "title": "Run-level execution settings live in dedicated columns, never in config_snapshot_json",
+  "type": "decision",
+  "updated_at": "2026-08-18T13:16:29+03:00"
+}
