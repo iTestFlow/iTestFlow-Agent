@@ -156,25 +156,80 @@ describe("Playwright MCP stdio transport", () => {
   afterEach(() => {
     delete process.env.PLAYWRIGHT_MCP_STDIO_COMMAND;
     delete process.env.PLAYWRIGHT_MCP_STDIO_ARGS;
+    delete process.env.PLAYWRIGHT_MCP_NO_SANDBOX;
+    delete process.env.PLAYWRIGHT_MCP_ALLOW_NO_SANDBOX;
+    delete process.env.PLAYWRIGHT_MCP_ALLOW_NO_SANDBOX_IN_PRODUCTION;
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
+  function spawnedStdio(): { command: string; args: string[]; env?: Record<string, string> } {
+    return stdioConstructor.mock.calls.at(-1)?.[0] as {
+      command: string;
+      args: string[];
+      env?: Record<string, string>;
+    };
+  }
+
   it("appends the literal --headless flag for headless runs, defaulting to headless", async () => {
     await connectPlaywrightMcp(stdioConfig, { headless: true });
-    expect(stdioConstructor).toHaveBeenCalledWith({ command: "npx", args: ["@playwright/mcp@latest", "--headless"] });
+    expect(spawnedStdio().command).toBe("npx");
+    expect(spawnedStdio().args).toEqual(["@playwright/mcp@latest", "--headless"]);
 
     await connectPlaywrightMcp(stdioConfig);
-    expect(stdioConstructor.mock.calls[1]?.[0]).toEqual({ command: "npx", args: ["@playwright/mcp@latest", "--headless"] });
+    expect(spawnedStdio().command).toBe("npx");
+    expect(spawnedStdio().args).toEqual(["@playwright/mcp@latest", "--headless"]);
   });
 
   it("never duplicates --headless when the deployment args already carry it", async () => {
     process.env.PLAYWRIGHT_MCP_STDIO_ARGS = JSON.stringify(["@playwright/mcp@latest", "--headless"]);
     await connectPlaywrightMcp(stdioConfig, { headless: true });
-    expect(stdioConstructor).toHaveBeenCalledWith({ command: "npx", args: ["@playwright/mcp@latest", "--headless"] });
+    expect(spawnedStdio().command).toBe("npx");
+    expect(spawnedStdio().args).toEqual(["@playwright/mcp@latest", "--headless"]);
   });
 
   it("leaves the deployment args untouched for headed runs", async () => {
     await connectPlaywrightMcp(stdioConfig, { headless: false });
-    expect(stdioConstructor).toHaveBeenCalledWith({ command: "npx", args: ["@playwright/mcp@latest"] });
+    expect(spawnedStdio().command).toBe("npx");
+    expect(spawnedStdio().args).toEqual(["@playwright/mcp@latest"]);
+  });
+
+  it("does not pass --no-sandbox on the default headed or headless path", async () => {
+    await connectPlaywrightMcp(stdioConfig, { headless: false });
+    expect(spawnedStdio().args).toEqual(["@playwright/mcp@latest"]);
+    expect(spawnedStdio().args).not.toContain("--no-sandbox");
+
+    await connectPlaywrightMcp(stdioConfig, { headless: true });
+    expect(spawnedStdio().args).toEqual(["@playwright/mcp@latest", "--headless"]);
+    expect(spawnedStdio().args).not.toContain("--no-sandbox");
+  });
+
+  it("strips --no-sandbox from deployment args unless both allow envs authorize it", async () => {
+    process.env.PLAYWRIGHT_MCP_STDIO_ARGS = JSON.stringify(["@playwright/mcp@latest", "--no-sandbox"]);
+    await connectPlaywrightMcp(stdioConfig, { headless: false });
+    expect(spawnedStdio().args).toEqual(["@playwright/mcp@latest"]);
+    expect(spawnedStdio().args).not.toContain("--no-sandbox");
+
+    process.env.PLAYWRIGHT_MCP_ALLOW_NO_SANDBOX = "true";
+    process.env.PLAYWRIGHT_MCP_ALLOW_NO_SANDBOX_IN_PRODUCTION = "true";
+    await connectPlaywrightMcp(stdioConfig, { headless: false });
+    expect(spawnedStdio().args).toEqual(["@playwright/mcp@latest", "--no-sandbox"]);
+  });
+
+  it("does not inherit parent PLAYWRIGHT_MCP_NO_SANDBOX on the default path", async () => {
+    process.env.PLAYWRIGHT_MCP_NO_SANDBOX = "true";
+    await connectPlaywrightMcp(stdioConfig, { headless: false });
+    expect(spawnedStdio().env).toBeDefined();
+    expect(spawnedStdio().env).not.toHaveProperty("PLAYWRIGHT_MCP_NO_SANDBOX");
+  });
+
+  it("still strips --no-sandbox in production when only PLAYWRIGHT_MCP_ALLOW_NO_SANDBOX is set", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.PLAYWRIGHT_MCP_ALLOW_NO_SANDBOX = "true";
+    process.env.PLAYWRIGHT_MCP_NO_SANDBOX = "true";
+    process.env.PLAYWRIGHT_MCP_STDIO_ARGS = JSON.stringify(["@playwright/mcp@latest", "--no-sandbox"]);
+    await connectPlaywrightMcp(stdioConfig, { headless: false });
+    expect(spawnedStdio().args).not.toContain("--no-sandbox");
+    expect(spawnedStdio().env).not.toHaveProperty("PLAYWRIGHT_MCP_NO_SANDBOX");
   });
 });
