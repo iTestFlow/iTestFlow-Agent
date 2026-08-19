@@ -541,10 +541,10 @@ describe("PlaywrightAgentDecision normalization", () => {
       signal: new AbortController().signal,
       toolPolicy: httpPolicy,
     });
-    expect(generateStructuredOutput.mock.calls[0]![0]).toMatchObject({
+    expect(generateStructuredOutput).toHaveBeenCalledWith(expect.objectContaining({
       schema: PlaywrightAgentDecisionSchema,
       schemaName: "PlaywrightAgentDecision",
-    });
+    }));
   });
 });
 
