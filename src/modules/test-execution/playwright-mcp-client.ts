@@ -7,18 +7,48 @@ import type { ResolvedPlaywrightMcpConfig } from "./playwright-mcp-config.servic
 import { assertAllowedPlaywrightTool, type PlaywrightToolClient } from "./playwright-agent";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-function deploymentStdioCommand(headless: boolean): { command: string; args: string[] } {
+function allowNoSandbox(): boolean {
+  if (process.env.PLAYWRIGHT_MCP_ALLOW_NO_SANDBOX !== "true") return false;
+  return process.env.NODE_ENV !== "production" || process.env.PLAYWRIGHT_MCP_ALLOW_NO_SANDBOX_IN_PRODUCTION === "true";
+}
+
+function stripUnauthorizedSandboxArgs(args: readonly string[]): string[] {
+  const stripped: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--no-sandbox" || arg.startsWith("--no-sandbox=")) continue;
+    if (arg === "--sandbox=false" || arg === "--sandbox=0") continue;
+    if (arg === "--config" || arg === "-c") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--config=") || arg.startsWith("-c=")) continue;
+    stripped.push(arg);
+  }
+  return stripped;
+}
+
+function stdioSpawnEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (allowNoSandbox() && process.env.PLAYWRIGHT_MCP_NO_SANDBOX !== undefined) {
+    env.PLAYWRIGHT_MCP_NO_SANDBOX = process.env.PLAYWRIGHT_MCP_NO_SANDBOX;
+  }
+  return env;
+}
+
+function deploymentStdioCommand(headless: boolean): { command: string; args: string[]; env: Record<string, string> } {
   const command = process.env.PLAYWRIGHT_MCP_STDIO_COMMAND?.trim();
   if (!command) throw new Error("PLAYWRIGHT_MCP_STDIO_COMMAND is not configured by the deployment.");
   const rawArgs = process.env.PLAYWRIGHT_MCP_STDIO_ARGS?.trim();
-  const args = rawArgs ? JSON.parse(rawArgs) : [];
-  if (!Array.isArray(args) || args.some((value) => typeof value !== "string")) {
+  const parsed = rawArgs ? JSON.parse(rawArgs) : [];
+  if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string")) {
     throw new Error("PLAYWRIGHT_MCP_STDIO_ARGS must be a JSON array of strings.");
   }
+  const args = allowNoSandbox() ? [...parsed] : stripUnauthorizedSandboxArgs(parsed);
   // The only per-run influence on the spawn is this hard-coded literal flag —
   // deployment args stay authoritative and user input never reaches argv.
   if (headless && !args.includes("--headless")) args.push("--headless");
-  return { command, args };
+  return { command, args, env: stdioSpawnEnv() };
 }
 
 const noRedirectFetch: typeof fetch = (url, init) => fetch(url, { ...init, redirect: "error" });

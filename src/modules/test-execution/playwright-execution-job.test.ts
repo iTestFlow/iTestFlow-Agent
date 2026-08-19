@@ -179,6 +179,28 @@ describe("Playwright execution job", () => {
     expect(callTool.mock.calls.filter((call) => call[0] === "browser_resize")).toHaveLength(0);
   });
 
+  it("skips remaining queued steps when the first step throws a schema-validation error", async () => {
+    primeHappyRun({ screenshotPolicy: "none", agentOutcomes: [] });
+    executeTestStepWithAgent.mockRejectedValueOnce(new Error(
+      "LLM output failed schema validation for PlaywrightAgentDecision: invalid_union_discriminator",
+    ));
+    await runPlaywrightExecutionJob(job, jobContext());
+    expect(executeTestStepWithAgent).toHaveBeenCalledTimes(1);
+    expect(finishStep).toHaveBeenCalledWith(
+      "s1",
+      "error",
+      expect.stringContaining("PlaywrightAgentDecision"),
+      ["S3cret!Value"],
+    );
+    expect(skipRemainingQueuedSteps).toHaveBeenCalledWith("c1");
+    expect(finishCase).toHaveBeenCalledWith(
+      "c1",
+      "error",
+      expect.stringContaining("PlaywrightAgentDecision"),
+      ["S3cret!Value"],
+    );
+  });
+
   it("fails the case with a friendly error when the base URL is not allowed, without running any step", async () => {
     primeHappyRun({ screenshotPolicy: "validation-points", agentOutcomes: [] });
     validateToolArguments.mockRejectedValueOnce(new Error("Playwright navigation URL is not on an allowed origin."));

@@ -86,6 +86,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/llm/providers/base-json-provider.ts",
   "src/modules/llm/providers/fetch-with-transient-retry.ts",
   "src/modules/llm/providers/provider-param-compat.ts",
+  "src/modules/llm/providers/structured-output-json-schema.ts",
   "src/modules/projects/project-isolation.guard.ts",
   "src/modules/projects/jira-project-mapping.service.ts",
   "src/modules/rag/embedding-provider.ts",

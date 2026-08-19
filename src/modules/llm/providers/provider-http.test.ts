@@ -13,6 +13,7 @@ import { RequirementAnalysisOutputSchema } from "../../requirement-analysis/sche
 import { TestCaseGenerationOutputSchema } from "../../test-case-design/schemas/test-case.schema";
 import { ExistingTestCaseReviewOutputSchema } from "../../existing-test-case-review/schemas/existing-test-case-review.schema";
 import { ProjectKnowledgeGeneratedBaseSchema } from "../../rag/project-knowledge-grounding";
+import { PlaywrightAgentDecisionSchema } from "../../test-execution/playwright-agent";
 
 describe("provider HTTP adapters", () => {
   afterEach(() => {
@@ -102,7 +103,7 @@ describe("provider HTTP adapters", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.example/v1/messages");
   });
 
-  it.each(["claude-sonnet-5", "claude-fable-5"])(
+  it.each(["claude-sonnet-5", "claude-fable-5", "claude-sonnet-4-5", "claude-opus-4", "claude-haiku-4-5", "claude-sonnet-4"])(
     "reads %s structured output from text blocks after adaptive thinking",
     async (model) => {
       const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
@@ -154,6 +155,33 @@ describe("provider HTTP adapters", () => {
           },
         },
       });
+    },
+  );
+
+  it.each(["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"])(
+    "omits native output_config for Claude 3.x model %s",
+    async (model) => {
+      const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+        content: [{ type: "text", text: "{\"value\":1}" }],
+        stop_reason: "end_turn",
+      }), { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const provider = new AnthropicProvider({
+        provider: "anthropic",
+        model,
+        apiKey: "key",
+        retryAttempts: 0,
+      });
+
+      await provider.generateStructuredOutput({
+        schemaName: "ExampleOutput",
+        schema: z.object({ value: z.number() }),
+        system: "Return structured data.",
+        user: "Create the object.",
+      });
+
+      const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(requestBody).not.toHaveProperty("output_config");
     },
   );
 
@@ -348,6 +376,14 @@ describe("provider HTTP adapters", () => {
       .output_config.format.schema;
     expect(testDesignSchema.properties.testCases.items.properties.type.enum).toContain("functional");
     expect(testDesignSchema.properties.testCases.items.properties.priority.enum).toEqual([1, 2, 3, 4]);
+    expect(testDesignSchema.properties.summary.properties.byType).toMatchObject({
+      type: "string",
+      description: "JSON-encoded object",
+    });
+    expect(testDesignSchema.properties.summary.properties.byPriority).toMatchObject({
+      type: "string",
+      description: "JSON-encoded object",
+    });
 
     const gapAnalysisSchema = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
       .output_config.format.schema;
@@ -355,6 +391,157 @@ describe("provider HTTP adapters", () => {
       .toContain("Not covered");
     expect(gapAnalysisSchema.properties.findings.items.properties.category.enum)
       .toContain("Missing coverage");
+  });
+
+  it("uses json_schema response_format for PlaywrightAgentDecision", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{
+        message: { content: JSON.stringify({ kind: "complete", outcome: "passed", summary: "Done." }) },
+        finish_reason: "stop",
+      }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new OpenAIProvider({
+      provider: "openai", model: "gpt-5.5", apiKey: "key", retryAttempts: 0,
+    });
+
+    await expect(provider.generateStructuredOutput({
+      schemaName: "PlaywrightAgentDecision",
+      schema: PlaywrightAgentDecisionSchema,
+      system: "Return a decision.",
+      user: "Decide.",
+    })).resolves.toMatchObject({
+      validatedOutput: { kind: "complete", outcome: "passed", summary: "Done." },
+    });
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            kind: "tool_call",
+            toolName: "browser_click",
+            arguments: "{\"ref\":\"e12\",\"element\":null}",
+            reason: "Click",
+            outcome: null,
+            summary: null,
+          }),
+        },
+        finish_reason: "stop",
+      }],
+    }), { status: 200 }));
+    await expect(provider.generateStructuredOutput({
+      schemaName: "PlaywrightAgentDecision",
+      schema: PlaywrightAgentDecisionSchema,
+      system: "Return a decision.",
+      user: "Decide.",
+    })).resolves.toMatchObject({
+      validatedOutput: {
+        kind: "tool_call",
+        toolName: "browser_click",
+        arguments: { ref: "e12" },
+        reason: "Click",
+      },
+    });
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(requestBody.response_format).toMatchObject({
+      type: "json_schema",
+      json_schema: {
+        name: "PlaywrightAgentDecision",
+        strict: true,
+      },
+    });
+    const sentSchema = requestBody.response_format.json_schema.schema as Record<string, unknown>;
+    expect(JSON.stringify(sentSchema)).toMatch(/tool_call/);
+    expect(JSON.stringify(sentSchema)).toMatch(/complete/);
+    expect(sentSchema.anyOf).toBeUndefined();
+    expect(sentSchema.oneOf).toBeUndefined();
+    expect(sentSchema.type).toBe("object");
+    expect(sentSchema.additionalProperties).toBe(false);
+    expect(sentSchema.required).toEqual(expect.arrayContaining(Object.keys(sentSchema.properties as object)));
+    expect(Object.keys(sentSchema.properties as object).sort()).toEqual(
+      [...(sentSchema.required as string[])].sort(),
+    );
+    const argumentSchema = structuredOutputProperty(sentSchema, "arguments");
+    expect(argumentSchema).toBeDefined();
+    expect(JSON.stringify(argumentSchema)).toMatch(/string/);
+    expect(argumentSchema).not.toMatchObject({ type: "object", additionalProperties: {} });
+    expect(requestBody.messages[0].content).toMatch(/tool_call/);
+    expect(requestBody.messages[0].content).toMatch(/complete/);
+  });
+
+  it("lets Anthropic native PlaywrightAgentDecision schema emit dynamic tool arguments", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      content: [{ type: "text", text: JSON.stringify({ kind: "complete", outcome: "passed", summary: "Done." }) }],
+      stop_reason: "end_turn",
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new AnthropicProvider({
+      provider: "anthropic", model: "claude-sonnet-5", apiKey: "key", retryAttempts: 0,
+    });
+
+    await provider.generateStructuredOutput({
+      schemaName: "PlaywrightAgentDecision",
+      schema: PlaywrightAgentDecisionSchema,
+      system: "Return a decision.",
+      user: "Decide.",
+    });
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const sentSchema = requestBody.output_config.format.schema as Record<string, unknown>;
+    const argumentSchema = structuredOutputProperty(sentSchema, "arguments");
+    expect(argumentSchema).toBeDefined();
+    expect(JSON.stringify(argumentSchema)).toMatch(/string/);
+    expect(argumentSchema).not.toEqual({ type: "object", additionalProperties: false });
+  });
+
+  it("falls back to json_object when OpenAI rejects json_schema", async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(
+        "Invalid schema for response_format 'json_schema': too many optional properties",
+        { status: 400 },
+      ))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: "{\"value\":1}" }, finish_reason: "stop" }],
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new OpenAIProvider({
+      provider: "openai", model: "gpt-4o", apiKey: "key", retryAttempts: 0,
+    });
+
+    await expect(provider.generateStructuredOutput({
+      schemaName: "Value",
+      schema: z.object({ value: z.number() }),
+      system: "Return structured data.",
+      user: "Create the object.",
+    })).resolves.toMatchObject({ validatedOutput: { value: 1 } });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const nativeBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const fallbackBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(nativeBody.response_format.type).toBe("json_schema");
+    expect(fallbackBody.response_format).toEqual({ type: "json_object" });
+  });
+
+  it("does not fall back to json_object on an unrelated response_format 400", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(
+      "Invalid parameter: response_format must be an object with a type field",
+      { status: 400 },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new OpenAIProvider({
+      provider: "openai", model: "gpt-4o", apiKey: "key", retryAttempts: 0,
+    });
+
+    await expect(provider.generateStructuredOutput({
+      schemaName: "Value",
+      schema: z.object({ value: z.number() }),
+      system: "Return structured data.",
+      user: "Create the object.",
+    })).rejects.toThrow(/response_format must be an object/i);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("retries transient responses and network failures with deterministic timers", async () => {
@@ -467,3 +654,20 @@ describe("provider HTTP adapters", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+function structuredOutputProperty(schema: unknown, name: string): Record<string, unknown> | undefined {
+  if (!schema || typeof schema !== "object") return undefined;
+  const node = schema as Record<string, unknown>;
+  const properties = node.properties as Record<string, unknown> | undefined;
+  const direct = properties?.[name];
+  if (direct && typeof direct === "object") return direct as Record<string, unknown>;
+  for (const key of ["anyOf", "oneOf", "allOf"] as const) {
+    const variants = node[key];
+    if (!Array.isArray(variants)) continue;
+    for (const variant of variants) {
+      const found = structuredOutputProperty(variant, name);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}

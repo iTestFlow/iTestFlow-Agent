@@ -6,6 +6,7 @@ import { withStructuredOutputInstruction } from "../prompts";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
 import { isMaxTokensRenameError, withMaxCompletionTokens } from "./provider-param-compat";
+import { toOpenAIStrictJsonSchema } from "./structured-output-json-schema";
 import type { GenerateStructuredOutputInput, GenerateTextInput } from "../llm-types";
 
 export class OpenAIProvider extends BaseJsonProvider {
@@ -57,19 +58,37 @@ export class OpenAIProvider extends BaseJsonProvider {
 
   protected async callModel<TSchema extends z.ZodTypeAny>(input: GenerateStructuredOutputInput<TSchema>): Promise<LLMProviderCallResult> {
     if (!this.config.apiKey) throw new Error("OpenAI API key is not configured.");
+    const messages = [
+      { role: "system", content: withStructuredOutputInstruction(input.system, input.schemaName) },
+      { role: "user", content: input.user },
+    ];
     const requestBody = {
       model: this.model,
       max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: withStructuredOutputInstruction(input.system, input.schemaName) },
-        { role: "user", content: input.user },
-      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: input.schemaName,
+          schema: toOpenAIStrictJsonSchema(input.schema),
+          strict: true,
+        },
+      },
+      messages,
     };
     const response = await this.requestChatCompletion(requestBody, input.signal);
 
     if (!response.ok) {
       const errorText = await response.text();
+      if (isOpenAIJsonSchemaFallbackError(errorText)) {
+        const fallbackRequestBody = {
+          model: this.model,
+          max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
+          response_format: { type: "json_object" },
+          messages,
+        };
+        const fallbackResponse = await this.requestChatCompletion(fallbackRequestBody, input.signal);
+        return openAIStructuredCallResult(fallbackResponse, fallbackRequestBody);
+      }
       return {
         rawOutput: "{}",
         requestBody,
@@ -77,14 +96,7 @@ export class OpenAIProvider extends BaseJsonProvider {
         errorMessage: `OpenAI request failed: ${errorText}`,
       };
     }
-    const json = await response.json();
-    return {
-      rawOutput: json.choices?.[0]?.message?.content ?? "{}",
-      requestBody,
-      responseBody: json,
-      finishReason: json.choices?.[0]?.finish_reason,
-      tokenUsage: openAITokenUsage(json.usage),
-    };
+    return openAIStructuredCallResult(response, requestBody);
   }
 
   private buildCompatibleBody(requestBody: Record<string, unknown>) {
@@ -124,6 +136,33 @@ export class OpenAIProvider extends BaseJsonProvider {
 
     return response;
   }
+}
+
+async function openAIStructuredCallResult(
+  response: Response,
+  requestBody: Record<string, unknown>,
+): Promise<LLMProviderCallResult> {
+  if (!response.ok) {
+    const errorText = await response.text();
+    return {
+      rawOutput: "{}",
+      requestBody,
+      responseBody: errorText,
+      errorMessage: `OpenAI request failed: ${errorText}`,
+    };
+  }
+  const json = await response.json();
+  return {
+    rawOutput: json.choices?.[0]?.message?.content ?? "{}",
+    requestBody,
+    responseBody: json,
+    finishReason: json.choices?.[0]?.finish_reason,
+    tokenUsage: openAITokenUsage(json.usage),
+  };
+}
+
+function isOpenAIJsonSchemaFallbackError(errorText: string) {
+  return /invalid schema for response_format|too many optional propert|json_schema is not supported|unsupported json_schema|compiled grammar is too large/i.test(errorText);
 }
 
 function openAITokenUsage(usage: unknown) {

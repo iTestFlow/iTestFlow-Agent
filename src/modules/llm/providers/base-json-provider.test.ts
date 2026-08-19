@@ -6,6 +6,7 @@ vi.mock("../llm-request-log.service", () => ({
 }));
 
 import { AppErrorCode } from "@/modules/shared/errors/app-error";
+import { TestCaseGenerationSummarySchema } from "@/modules/test-case-design/schemas/test-case.schema";
 import {
   BaseJsonProvider,
   resolveModelInputTokenLimit,
@@ -69,6 +70,31 @@ describe("BaseJsonProvider", () => {
       .toEqual({ tokens: 16_000, source: "unknown_fallback" });
   });
 
+  it("revives JSON-encoded record fields before Zod validation", async () => {
+    const instance = provider();
+    instance.structured = {
+      rawOutput: JSON.stringify({
+        totalCases: 1,
+        byType: "{\"functional\":2,\"regression\":null}",
+        byPriority: "{}",
+        coverageEstimate: 50,
+      }),
+    };
+    await expect(instance.generateStructuredOutput({
+      schemaName: "TestCaseGenerationSummary",
+      schema: TestCaseGenerationSummarySchema,
+      system: "system",
+      user: "user",
+    })).resolves.toMatchObject({
+      validatedOutput: {
+        totalCases: 1,
+        byType: { functional: 2 },
+        byPriority: {},
+        coverageEstimate: 50,
+      },
+    });
+  });
+
   it("parses and validates structured output within the configured cap", async () => {
     const instance = provider();
     const result = await instance.generateStructuredOutput({
@@ -112,6 +138,22 @@ describe("BaseJsonProvider", () => {
       system: "s",
       user: "u",
     })).rejects.toMatchObject({ code: AppErrorCode.SchemaValidation });
+  });
+
+  it("names provider and model in schema-validation errors", async () => {
+    const instance = provider();
+    instance.structured = { rawOutput: "{\"kind\":\"function_call\"}" };
+    const error = await instance.generateStructuredOutput({
+      schemaName: "PlaywrightAgentDecision",
+      schema: z.object({ kind: z.literal("tool_call") }),
+      system: "s",
+      user: "u",
+    }).then(() => null, (thrown: unknown) => thrown as { code: string; message: string; userMessage: string });
+    expect(error).toMatchObject({ code: AppErrorCode.SchemaValidation });
+    expect(error?.message).toMatch(/openai/i);
+    expect(error?.message).toMatch(/test/);
+    expect(error?.userMessage).toMatch(/openai/i);
+    expect(error?.userMessage).toMatch(/test/);
   });
 
   it("surfaces provider failures without attempting schema validation", async () => {

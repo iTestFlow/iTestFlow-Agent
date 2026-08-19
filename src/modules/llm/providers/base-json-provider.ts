@@ -12,6 +12,7 @@ import {
   getMaxOutputTokenCapDefaultFromEnv,
 } from "../llm-defaults";
 import { writeLLMRequestLog } from "../llm-request-log.service";
+import { reviveJsonEncodedRecords } from "./structured-output-json-schema";
 import type {
   GenerateStructuredOutputInput,
   GenerateTextInput,
@@ -209,12 +210,14 @@ export abstract class BaseJsonProvider implements LLMProvider {
       });
     }
 
-    const result = input.schema.safeParse(stripNullProperties(parsedJson));
+    const result = input.schema.safeParse(
+      stripNullProperties(reviveJsonEncodedRecords(parsedJson, input.schema)),
+    );
     if (!result.success) {
       throw new AppError({
         code: AppErrorCode.SchemaValidation,
-        message: `LLM output failed schema validation for ${input.schemaName}: ${result.error.message}`,
-        userMessage: "The AI returned a response that did not match the expected format. Please retry or adjust the input.",
+        message: `LLM output failed schema validation for ${input.schemaName} (${this.name}/${this.model}): ${result.error.message}`,
+        userMessage: `The ${this.name} model ${this.model} returned a response that did not match the expected format. Please retry or adjust the input.`,
         technicalContext: {
           provider: this.name,
           model: this.model,
