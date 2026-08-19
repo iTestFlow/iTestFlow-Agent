@@ -519,6 +519,35 @@ describe("PlaywrightAgentDecision normalization", () => {
     });
   });
 
+  it("rejects malformed JSON tool arguments instead of coercing them to {}", () => {
+    expect(PlaywrightAgentDecisionSchema.safeParse({
+      kind: "tool_call",
+      toolName: "browser_snapshot",
+      arguments: "{not-json",
+      reason: "Inspect",
+    }).success).toBe(false);
+    expect(PlaywrightAgentDecisionSchema.safeParse({
+      kind: "tool_call",
+      toolName: "browser_snapshot",
+      arguments: ["not", "an", "object"],
+      reason: "Inspect",
+    }).success).toBe(false);
+  });
+
+  it("parses JSON-string tool arguments into an object", () => {
+    expect(PlaywrightAgentDecisionSchema.parse({
+      kind: "tool_call",
+      toolName: "browser_click",
+      arguments: "{\"ref\":\"e12\"}",
+      reason: "Click",
+    })).toEqual({
+      kind: "tool_call",
+      toolName: "browser_click",
+      arguments: { ref: "e12" },
+      reason: "Click",
+    });
+  });
+
   it("fails closed on an unknown leftover kind", () => {
     const leftover = {
       kind: "handoff",

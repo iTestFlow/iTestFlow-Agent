@@ -1,12 +1,12 @@
 import "server-only";
 
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
 import { DEFAULT_TEXT_OUTPUT_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defaults";
 import { withStructuredOutputInstruction } from "../prompts";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
 import { isMaxTokensRenameError, withMaxCompletionTokens } from "./provider-param-compat";
+import { toOpenAIStrictJsonSchema } from "./structured-output-json-schema";
 import type { GenerateStructuredOutputInput, GenerateTextInput } from "../llm-types";
 
 export class OpenAIProvider extends BaseJsonProvider {
@@ -69,7 +69,7 @@ export class OpenAIProvider extends BaseJsonProvider {
         type: "json_schema",
         json_schema: {
           name: input.schemaName,
-          schema: openaiJsonSchema(input.schema),
+          schema: toOpenAIStrictJsonSchema(input.schema),
           strict: true,
         },
       },
@@ -162,27 +162,7 @@ async function openAIStructuredCallResult(
 }
 
 function isOpenAIJsonSchemaFallbackError(errorText: string) {
-  return /json_schema|response_format|invalid schema/i.test(errorText);
-}
-
-function unwrapZodEffects(schema: z.ZodTypeAny): z.ZodTypeAny {
-  let current: z.ZodTypeAny = schema;
-  for (;;) {
-    const def = current._def as { typeName?: string; schema?: z.ZodTypeAny };
-    if (def.typeName !== "ZodEffects" || !def.schema) return current;
-    current = def.schema;
-  }
-}
-
-function openaiJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
-  const jsonSchema = zodToJsonSchema(unwrapZodEffects(schema), {
-    $refStrategy: "none",
-    target: "jsonSchema7",
-  }) as Record<string, unknown>;
-  delete jsonSchema.$schema;
-  delete jsonSchema.definitions;
-  delete jsonSchema.$defs;
-  return jsonSchema;
+  return /invalid schema for response_format|too many optional propert|json_schema is not supported|unsupported json_schema|compiled grammar is too large/i.test(errorText);
 }
 
 function openAITokenUsage(usage: unknown) {

@@ -12,6 +12,7 @@ import {
   getMaxOutputTokenCapDefaultFromEnv,
 } from "../llm-defaults";
 import { writeLLMRequestLog } from "../llm-request-log.service";
+import { reviveJsonEncodedRecords } from "./structured-output-json-schema";
 import type {
   GenerateStructuredOutputInput,
   GenerateTextInput,
@@ -209,7 +210,9 @@ export abstract class BaseJsonProvider implements LLMProvider {
       });
     }
 
-    const result = input.schema.safeParse(stripNullProperties(parsedJson));
+    const result = input.schema.safeParse(
+      stripNullProperties(reviveJsonEncodedRecords(parsedJson, input.schema)),
+    );
     if (!result.success) {
       throw new AppError({
         code: AppErrorCode.SchemaValidation,

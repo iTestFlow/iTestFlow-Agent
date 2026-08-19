@@ -6,6 +6,7 @@ vi.mock("../llm-request-log.service", () => ({
 }));
 
 import { AppErrorCode } from "@/modules/shared/errors/app-error";
+import { TestCaseGenerationSummarySchema } from "@/modules/test-case-design/schemas/test-case.schema";
 import {
   BaseJsonProvider,
   resolveModelInputTokenLimit,
@@ -67,6 +68,31 @@ describe("BaseJsonProvider", () => {
       .toEqual({ tokens: 1_000_000, source: "model_capability" });
     expect(resolveModelInputTokenLimit({ provider: "openai", model: "future-model-2025-04-14" }))
       .toEqual({ tokens: 16_000, source: "unknown_fallback" });
+  });
+
+  it("revives JSON-encoded record fields before Zod validation", async () => {
+    const instance = provider();
+    instance.structured = {
+      rawOutput: JSON.stringify({
+        totalCases: 1,
+        byType: "{\"functional\":2,\"regression\":null}",
+        byPriority: "{}",
+        coverageEstimate: 50,
+      }),
+    };
+    await expect(instance.generateStructuredOutput({
+      schemaName: "TestCaseGenerationSummary",
+      schema: TestCaseGenerationSummarySchema,
+      system: "system",
+      user: "user",
+    })).resolves.toMatchObject({
+      validatedOutput: {
+        totalCases: 1,
+        byType: { functional: 2 },
+        byPriority: {},
+        coverageEstimate: 50,
+      },
+    });
   });
 
   it("parses and validates structured output within the configured cap", async () => {

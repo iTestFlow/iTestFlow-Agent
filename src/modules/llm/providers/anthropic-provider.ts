@@ -1,12 +1,12 @@
 import "server-only";
 
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
 import { DEFAULT_TEXT_OUTPUT_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defaults";
 import { withStructuredOutputInstruction } from "../prompts";
 import { normalizeProviderBaseUrl } from "../provider-base-url";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
+import { toAnthropicCompatibleJsonSchema } from "./structured-output-json-schema";
 import type { GenerateStructuredOutputInput, GenerateTextInput } from "../llm-types";
 
 const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
@@ -157,21 +157,8 @@ function supportsNativeStructuredOutput(model: string) {
   return /sonnet|opus|haiku|fable/.test(normalized) || /(?:^|[-_])4(?:\.5)?(?:[-_]|$)/.test(normalized);
 }
 
-function unwrapZodEffects(schema: z.ZodTypeAny): z.ZodTypeAny {
-  let current: z.ZodTypeAny = schema;
-  for (;;) {
-    const def = current._def as { typeName?: string; schema?: z.ZodTypeAny };
-    if (def.typeName !== "ZodEffects" || !def.schema) return current;
-    current = def.schema;
-  }
-}
-
 function anthropicJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
-  const jsonSchema = zodToJsonSchema(unwrapZodEffects(schema), {
-    $refStrategy: "none",
-    target: "jsonSchema7",
-  });
-  return sanitizeAnthropicJsonSchema(jsonSchema) as Record<string, unknown>;
+  return sanitizeAnthropicJsonSchema(toAnthropicCompatibleJsonSchema(schema)) as Record<string, unknown>;
 }
 
 async function anthropicStructuredCallResult(

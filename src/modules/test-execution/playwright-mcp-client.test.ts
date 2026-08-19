@@ -232,4 +232,28 @@ describe("Playwright MCP stdio transport", () => {
     expect(spawnedStdio().args).not.toContain("--no-sandbox");
     expect(spawnedStdio().env).not.toHaveProperty("PLAYWRIGHT_MCP_NO_SANDBOX");
   });
+
+  it("keeps --no-sandbox in production when both authorization env vars are set", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.PLAYWRIGHT_MCP_ALLOW_NO_SANDBOX = "true";
+    process.env.PLAYWRIGHT_MCP_ALLOW_NO_SANDBOX_IN_PRODUCTION = "true";
+    process.env.PLAYWRIGHT_MCP_STDIO_ARGS = JSON.stringify(["@playwright/mcp@latest", "--no-sandbox"]);
+    await connectPlaywrightMcp(stdioConfig, { headless: false });
+    expect(spawnedStdio().args).toEqual(["@playwright/mcp@latest", "--no-sandbox"]);
+  });
+
+  it("strips --config and -c unless sandbox disable is authorized", async () => {
+    process.env.PLAYWRIGHT_MCP_STDIO_ARGS = JSON.stringify([
+      "@playwright/mcp@latest", "--config", "mcp.json", "-c", "other.json", "--config=evil.json", "-c=also.json", "--no-sandbox",
+    ]);
+    await connectPlaywrightMcp(stdioConfig, { headless: false });
+    expect(spawnedStdio().args).toEqual(["@playwright/mcp@latest"]);
+
+    process.env.PLAYWRIGHT_MCP_ALLOW_NO_SANDBOX = "true";
+    process.env.PLAYWRIGHT_MCP_ALLOW_NO_SANDBOX_IN_PRODUCTION = "true";
+    await connectPlaywrightMcp(stdioConfig, { headless: false });
+    expect(spawnedStdio().args).toEqual([
+      "@playwright/mcp@latest", "--config", "mcp.json", "-c", "other.json", "--config=evil.json", "-c=also.json", "--no-sandbox",
+    ]);
+  });
 });

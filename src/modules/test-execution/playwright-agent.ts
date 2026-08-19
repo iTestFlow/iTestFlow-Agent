@@ -211,34 +211,41 @@ function asDecisionRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function parseDecisionArguments(value: unknown): Record<string, unknown> {
+  if (value === undefined) return {};
   if (typeof value === "string") {
+    let parsed: unknown;
     try {
-      return parseDecisionArguments(JSON.parse(value));
+      parsed = JSON.parse(value);
     } catch {
-      return {};
+      throw new Error("Playwright MCP tool arguments must be valid JSON.");
     }
+    return parseDecisionArguments(parsed);
   }
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
   }
-  return {};
+  throw new Error("Playwright MCP tool arguments must be a JSON object.");
 }
 
 function liftedToolCall(input: Record<string, unknown>): { toolName: string; arguments: Record<string, unknown> } | null {
-  if (typeof input.toolName === "string" && input.toolName) {
-    return { toolName: input.toolName, arguments: parseDecisionArguments(input.arguments) };
+  try {
+    if (typeof input.toolName === "string" && input.toolName) {
+      return { toolName: input.toolName, arguments: parseDecisionArguments(input.arguments) };
+    }
+    if (typeof input.tool === "string" && input.tool) {
+      return { toolName: input.tool, arguments: parseDecisionArguments(input.args ?? input.arguments) };
+    }
+    if (typeof input.name === "string" && input.name) {
+      return { toolName: input.name, arguments: parseDecisionArguments(input.input ?? input.arguments) };
+    }
+    const fn = asDecisionRecord(input.function);
+    if (fn && typeof fn.name === "string" && fn.name) {
+      return { toolName: fn.name, arguments: parseDecisionArguments(fn.arguments) };
+    }
+    return null;
+  } catch {
+    return null;
   }
-  if (typeof input.tool === "string" && input.tool) {
-    return { toolName: input.tool, arguments: parseDecisionArguments(input.args ?? input.arguments) };
-  }
-  if (typeof input.name === "string" && input.name) {
-    return { toolName: input.name, arguments: parseDecisionArguments(input.input ?? input.arguments) };
-  }
-  const fn = asDecisionRecord(input.function);
-  if (fn && typeof fn.name === "string" && fn.name) {
-    return { toolName: fn.name, arguments: parseDecisionArguments(fn.arguments) };
-  }
-  return null;
 }
 
 export function normalizePlaywrightAgentDecision(value: unknown): unknown {
