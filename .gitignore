@@ -73,8 +73,12 @@ graphify-out/
 !.claude/
 !.claude/**
 .claude/settings.local.json
+/.claude/skills/*
+!/.claude/skills/chaos-engine/
+!/.claude/skills/chaos-engine/**
 !.codex/
 !.codex/**
+/.codex/skills/
 !.grok/
 !.grok/hooks/
 !.grok/hooks/*.json
