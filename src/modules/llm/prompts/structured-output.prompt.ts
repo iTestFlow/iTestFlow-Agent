@@ -37,6 +37,17 @@ function buildStructuredOutputInstruction(schemaName: string) {
 }
 
 function requiredOutputShape(schemaName: string) {
+  if (schemaName === "PlaywrightAgentDecision") {
+    return {
+      kind: "tool_call | complete",
+      toolName: "string; required when kind is tool_call",
+      arguments: "object; required when kind is tool_call",
+      reason: "string; required when kind is tool_call",
+      outcome: "passed | failed | blocked | error; required when kind is complete",
+      summary: "string; required when kind is complete",
+    };
+  }
+
   if (schemaName === "ContextSuggestionOutput") {
     return {
       suggestedItems: [

@@ -62,6 +62,9 @@ export function modelDisplayLabel(provider?: string | null, model?: string | nul
     if (normalizedModel.includes("haiku")) return "Claude: Haiku"
     if (normalizedModel.includes("sonnet")) return "Claude: Sonnet"
     if (normalizedModel.includes("opus")) return "Claude: Opus"
+    if (model && !normalizedModel.includes("claude")) {
+      return `${providerName}: ${humanizeModelId(model, provider)}`
+    }
     return model ? `Claude: ${humanizeModelId(model, provider)}` : "Claude"
   }
 

@@ -114,6 +114,22 @@ describe("BaseJsonProvider", () => {
     })).rejects.toMatchObject({ code: AppErrorCode.SchemaValidation });
   });
 
+  it("names provider and model in schema-validation errors", async () => {
+    const instance = provider();
+    instance.structured = { rawOutput: "{\"kind\":\"function_call\"}" };
+    const error = await instance.generateStructuredOutput({
+      schemaName: "PlaywrightAgentDecision",
+      schema: z.object({ kind: z.literal("tool_call") }),
+      system: "s",
+      user: "u",
+    }).then(() => null, (thrown: unknown) => thrown as { code: string; message: string; userMessage: string });
+    expect(error).toMatchObject({ code: AppErrorCode.SchemaValidation });
+    expect(error?.message).toMatch(/openai/i);
+    expect(error?.message).toMatch(/test/);
+    expect(error?.userMessage).toMatch(/openai/i);
+    expect(error?.userMessage).toMatch(/test/);
+  });
+
   it("surfaces provider failures without attempting schema validation", async () => {
     const instance = provider();
     instance.structured = {
