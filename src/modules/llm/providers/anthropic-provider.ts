@@ -153,7 +153,7 @@ const UNSUPPORTED_STRUCTURED_OUTPUT_KEYWORDS = new Set([
 
 function supportsNativeStructuredOutput(model: string) {
   const normalized = model.toLowerCase();
-  if (!normalized.includes("claude")) return false;
+  if (!normalized.includes("claude") || normalized.includes("claude-3")) return false;
   return /sonnet|opus|haiku|fable/.test(normalized) || /(?:^|[-_])4(?:\.5)?(?:[-_]|$)/.test(normalized);
 }
 

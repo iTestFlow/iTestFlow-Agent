@@ -158,6 +158,33 @@ describe("provider HTTP adapters", () => {
     },
   );
 
+  it.each(["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"])(
+    "omits native output_config for Claude 3.x model %s",
+    async (model) => {
+      const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+        content: [{ type: "text", text: "{\"value\":1}" }],
+        stop_reason: "end_turn",
+      }), { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const provider = new AnthropicProvider({
+        provider: "anthropic",
+        model,
+        apiKey: "key",
+        retryAttempts: 0,
+      });
+
+      await provider.generateStructuredOutput({
+        schemaName: "ExampleOutput",
+        schema: z.object({ value: z.number() }),
+        system: "Return structured data.",
+        user: "Create the object.",
+      });
+
+      const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(requestBody).not.toHaveProperty("output_config");
+    },
+  );
+
   it.each([
     ["the compiled grammar is too large", "The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools."],
     ["there are too many optional parameters", "Schemas contains too many optional parameters (37), which would make grammar compilation inefficient. Reduce the number of optional parameters in your tool schemas (limit: 24)."],
