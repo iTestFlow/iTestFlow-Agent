@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "chaosengine-memory": {
+      "args": [
+        "-3",
+        ".chaos-engine/tool.py",
+        "memory-mcp"
+      ],
+      "command": "py",
+      "cwd": "."
+    },
+    "chaosengine-mempalace": {
+      "args": [
+        "-3",
+        ".chaos-engine/tool.py",
+        "mempalace-mcp",
+        "--palace",
+        ".chaos-engine-state/mempalace",
+        "--backend",
+        "sqlite_exact"
+      ],
+      "command": "py",
+      "cwd": ".",
+      "env": {
+        "MEMPALACE_EMBEDDING_MODEL": "minilm"
+      }
+    }
+  }
+}

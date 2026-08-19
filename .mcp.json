@@ -1,7 +1,31 @@
 {
   "mcpServers": {
+    "chaosengine-memory": {
+      "args": [
+        "-3",
+        ".chaos-engine/tool.py",
+        "memory-mcp"
+      ],
+      "command": "py",
+      "cwd": "."
+    },
+    "chaosengine-mempalace": {
+      "args": [
+        "-3",
+        ".chaos-engine/tool.py",
+        "mempalace-mcp",
+        "--palace",
+        ".chaos-engine-state/mempalace",
+        "--backend",
+        "sqlite_exact"
+      ],
+      "command": "py",
+      "cwd": ".",
+      "env": {
+        "MEMPALACE_EMBEDDING_MODEL": "minilm"
+      }
+    },
     "itestflow-memory": {
-      "command": "npx",
       "args": [
         "--yes",
         "--package",
@@ -9,10 +33,10 @@
         "--",
         "memory-mcp"
       ],
+      "command": "npx",
       "cwd": "."
     },
     "itestflow-mempalace": {
-      "command": "uvx",
       "args": [
         "--from",
         "mempalace==3.7.0",
@@ -20,6 +44,7 @@
         "--palace",
         ".mempalace/palace"
       ],
+      "command": "uvx",
       "cwd": ".",
       "env": {
         "MEMPALACE_EMBEDDING_MODEL": "minilm"

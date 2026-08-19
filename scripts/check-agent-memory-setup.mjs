@@ -4,6 +4,11 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+for (const adapter of [".claude/settings.json", ".codex/config.toml"]) {
+  const ignoreProbe = spawnSync("git", ["check-ignore", "-q", adapter], { encoding: "utf8" });
+  assert.notEqual(ignoreProbe.status, 0, `${adapter} must remain trackable`);
+}
+
 const mcp = JSON.parse(readFileSync(".mcp.json", "utf8"));
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 assert.equal(packageJson.scripts["check:agent-memory"], "node scripts/check-agent-memory-setup.mjs");
@@ -19,14 +24,17 @@ assert.deepEqual(
 );
 
 const taxonomy = readFileSync("mempalace.yaml", "utf8");
-assert.match(taxonomy, /^- \.memory\/\*\*$/m, "all native Memory state must be excluded");
-assert.doesNotMatch(taxonomy, /^- \.memory\/(?!\*\*$)/m, "do not enumerate partial Memory exclusions");
+assert.match(taxonomy, /^\s*- \.memory\/\*\*$/m, "all native Memory state must be excluded");
+assert.doesNotMatch(taxonomy, /^\s*- \.memory\/(?!\*\*$)/m, "do not enumerate partial Memory exclusions");
 const toolingTaxonomy = taxonomy.match(/- name: tooling[\s\S]*?(?=\n- name:)/)?.[0] ?? "";
 assert.doesNotMatch(toolingTaxonomy, /keywords:.*\b(private|license|test)\b/, "tooling taxonomy must not capture broad repository content");
 
 const claude = readFileSync("CLAUDE.md", "utf8");
-assert.ok(claude.length < 120, "CLAUDE.md must remain a thin adapter");
 assert.match(claude, /Follow \[AGENTS\.md\]\(AGENTS\.md\)/, "CLAUDE.md must delegate to AGENTS.md");
+assert.match(claude, /<!-- CHAOSENGINE:START -->[\s\S]*ChaosEngine[\s\S]*<!-- CHAOSENGINE:END -->/, "CLAUDE.md must route through ChaosEngine");
+assert.ok(mcp.mcpServers["itestflow-memory"], "keep the existing iTestFlow Memory MCP");
+assert.ok(mcp.mcpServers["chaosengine-memory"], "install the ChaosEngine Memory MCP");
+assert.ok(mcp.mcpServers["chaosengine-mempalace"], "install the ChaosEngine MemPalace MCP");
 
 const objectIds = new Set(readdirSync(".memory/memory", { recursive: true })
   .filter((path) => path.endsWith(".json"))

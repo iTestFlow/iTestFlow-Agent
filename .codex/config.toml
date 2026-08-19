@@ -1,0 +1,12 @@
+# CHAOSENGINE:START
+[mcp_servers."chaosengine-memory"]
+command = "py"
+args = ["-3", ".chaos-engine/tool.py", "memory-mcp"]
+cwd = ".."
+
+[mcp_servers."chaosengine-mempalace"]
+command = "py"
+args = ["-3", ".chaos-engine/tool.py", "mempalace-mcp", "--palace", ".chaos-engine-state/mempalace", "--backend", "sqlite_exact"]
+cwd = ".."
+env = { MEMPALACE_EMBEDDING_MODEL = "minilm" }
+# CHAOSENGINE:END
