@@ -213,8 +213,8 @@ export abstract class BaseJsonProvider implements LLMProvider {
     if (!result.success) {
       throw new AppError({
         code: AppErrorCode.SchemaValidation,
-        message: `LLM output failed schema validation for ${input.schemaName}: ${result.error.message}`,
-        userMessage: "The AI returned a response that did not match the expected format. Please retry or adjust the input.",
+        message: `LLM output failed schema validation for ${input.schemaName} (${this.name}/${this.model}): ${result.error.message}`,
+        userMessage: `The ${this.name} model ${this.model} returned a response that did not match the expected format. Please retry or adjust the input.`,
         technicalContext: {
           provider: this.name,
           model: this.model,

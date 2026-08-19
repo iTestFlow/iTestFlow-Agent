@@ -153,11 +153,21 @@ const UNSUPPORTED_STRUCTURED_OUTPUT_KEYWORDS = new Set([
 
 function supportsNativeStructuredOutput(model: string) {
   const normalized = model.toLowerCase();
-  return normalized.includes("claude-sonnet-5") || normalized.includes("claude-fable-5");
+  if (!normalized.includes("claude")) return false;
+  return /sonnet|opus|haiku|fable/.test(normalized) || /(?:^|[-_])4(?:\.5)?(?:[-_]|$)/.test(normalized);
+}
+
+function unwrapZodEffects(schema: z.ZodTypeAny): z.ZodTypeAny {
+  let current: z.ZodTypeAny = schema;
+  for (;;) {
+    const def = current._def as { typeName?: string; schema?: z.ZodTypeAny };
+    if (def.typeName !== "ZodEffects" || !def.schema) return current;
+    current = def.schema;
+  }
 }
 
 function anthropicJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
-  const jsonSchema = zodToJsonSchema(schema, {
+  const jsonSchema = zodToJsonSchema(unwrapZodEffects(schema), {
     $refStrategy: "none",
     target: "jsonSchema7",
   });

@@ -103,6 +103,16 @@ describe("modelDisplayLabel", () => {
     expect(modelDisplayLabel("openai", null)).toBe("OpenAI");
   });
 
+  it("renders OpenAI gpt-5.5 as OpenAI, never Claude", () => {
+    expect(modelDisplayLabel("openai", "gpt-5.5")).toBe("OpenAI: GPT 5.5");
+    expect(modelDisplayLabel("openai", "gpt-5.5")).not.toBe("Claude: GPT 5.5");
+  });
+
+  it("does not present an Anthropic-stored gpt model as a successful OpenAI configuration", () => {
+    expect(modelDisplayLabel("anthropic", "gpt-5.5")).not.toBe("OpenAI: GPT 5.5");
+    expect(modelDisplayLabel("anthropic", "gpt-5.5")).toBe("Anthropic: GPT 5.5");
+  });
+
   it("falls back to the generic provider label for unknown or missing providers", () => {
     // Unknown provider passes through uncapitalized; its prefix is not stripped.
     expect(modelDisplayLabel("mistral", "mistral-large-2")).toBe("mistral: Mistral Large 2");

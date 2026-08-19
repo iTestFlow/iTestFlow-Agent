@@ -13,6 +13,7 @@ import { RequirementAnalysisOutputSchema } from "../../requirement-analysis/sche
 import { TestCaseGenerationOutputSchema } from "../../test-case-design/schemas/test-case.schema";
 import { ExistingTestCaseReviewOutputSchema } from "../../existing-test-case-review/schemas/existing-test-case-review.schema";
 import { ProjectKnowledgeGeneratedBaseSchema } from "../../rag/project-knowledge-grounding";
+import { PlaywrightAgentDecisionSchema } from "../../test-execution/playwright-agent";
 
 describe("provider HTTP adapters", () => {
   afterEach(() => {
@@ -102,7 +103,7 @@ describe("provider HTTP adapters", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.example/v1/messages");
   });
 
-  it.each(["claude-sonnet-5", "claude-fable-5"])(
+  it.each(["claude-sonnet-5", "claude-fable-5", "claude-sonnet-4-5", "claude-opus-4", "claude-haiku-4-5", "claude-sonnet-4"])(
     "reads %s structured output from text blocks after adaptive thinking",
     async (model) => {
       const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
@@ -355,6 +356,71 @@ describe("provider HTTP adapters", () => {
       .toContain("Not covered");
     expect(gapAnalysisSchema.properties.findings.items.properties.category.enum)
       .toContain("Missing coverage");
+  });
+
+  it("uses json_schema response_format for PlaywrightAgentDecision", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{
+        message: { content: JSON.stringify({ kind: "complete", outcome: "passed", summary: "Done." }) },
+        finish_reason: "stop",
+      }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new OpenAIProvider({
+      provider: "openai", model: "gpt-5.5", apiKey: "key", retryAttempts: 0,
+    });
+
+    await expect(provider.generateStructuredOutput({
+      schemaName: "PlaywrightAgentDecision",
+      schema: PlaywrightAgentDecisionSchema,
+      system: "Return a decision.",
+      user: "Decide.",
+    })).resolves.toMatchObject({
+      validatedOutput: { kind: "complete", outcome: "passed", summary: "Done." },
+    });
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(requestBody.response_format).toMatchObject({
+      type: "json_schema",
+      json_schema: {
+        name: "PlaywrightAgentDecision",
+        strict: true,
+      },
+    });
+    const sentSchema = JSON.stringify(requestBody.response_format.json_schema.schema);
+    expect(sentSchema).toMatch(/tool_call/);
+    expect(sentSchema).toMatch(/complete/);
+    expect(requestBody.messages[0].content).toMatch(/tool_call/);
+    expect(requestBody.messages[0].content).toMatch(/complete/);
+  });
+
+  it("falls back to json_object when OpenAI rejects json_schema", async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(
+        "Invalid schema for response_format 'json_schema': too many optional properties",
+        { status: 400 },
+      ))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: "{\"value\":1}" }, finish_reason: "stop" }],
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new OpenAIProvider({
+      provider: "openai", model: "gpt-4o", apiKey: "key", retryAttempts: 0,
+    });
+
+    await expect(provider.generateStructuredOutput({
+      schemaName: "Value",
+      schema: z.object({ value: z.number() }),
+      system: "Return structured data.",
+      user: "Create the object.",
+    })).resolves.toMatchObject({ validatedOutput: { value: 1 } });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const nativeBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const fallbackBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(nativeBody.response_format.type).toBe("json_schema");
+    expect(fallbackBody.response_format).toEqual({ type: "json_object" });
   });
 
   it("retries transient responses and network failures with deterministic timers", async () => {

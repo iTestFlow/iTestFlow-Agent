@@ -6,7 +6,9 @@ import {
   createPlaywrightToolPolicy,
   executeTestStepWithAgent,
   mapExecutionOutcomeToAzure,
+  normalizePlaywrightAgentDecision,
   normalizeToolArguments,
+  PlaywrightAgentDecisionSchema,
   validatePlaywrightToolArguments,
 } from "./playwright-agent";
 import type { LLMProvider } from "@/modules/llm/llm-types";
@@ -411,6 +413,138 @@ describe("Playwright MCP agent guardrails", () => {
     const user = JSON.parse(call.user);
     expect(user).not.toHaveProperty("baseUrl");
     expect(user).not.toHaveProperty("testData");
+  });
+});
+
+describe("PlaywrightAgentDecision normalization", () => {
+  const toolCall = {
+    kind: "tool_call" as const,
+    toolName: "browser_click",
+    arguments: { ref: "e12" },
+    reason: "Execute the next browser action.",
+  };
+
+  it("maps OpenAI-shaped function_call JSON onto tool_call", () => {
+    expect(normalizePlaywrightAgentDecision({
+      kind: "function_call",
+      function: { name: "browser_click", arguments: { ref: "e12" } },
+    })).toEqual(toolCall);
+    expect(PlaywrightAgentDecisionSchema.parse({
+      kind: "function_call",
+      name: "browser_click",
+      arguments: { ref: "e12" },
+    })).toEqual(toolCall);
+  });
+
+  it("maps Anthropic-shaped tool_use JSON onto tool_call", () => {
+    expect(normalizePlaywrightAgentDecision({
+      type: "tool_use",
+      name: "browser_click",
+      input: { ref: "e12" },
+    })).toEqual(toolCall);
+    expect(PlaywrightAgentDecisionSchema.parse({
+      type: "tool_use",
+      name: "browser_click",
+      input: { ref: "e12" },
+    })).toEqual(toolCall);
+  });
+
+  it("maps done onto complete", () => {
+    const complete = { kind: "complete", outcome: "passed", summary: "Heading was visible." };
+    expect(normalizePlaywrightAgentDecision({
+      kind: "done",
+      outcome: "passed",
+      summary: "Heading was visible.",
+    })).toEqual(complete);
+    expect(PlaywrightAgentDecisionSchema.parse({
+      kind: "done",
+      outcome: "passed",
+      summary: "Heading was visible.",
+    })).toEqual(complete);
+  });
+
+  it.each(["function_call", "tool", "action", "tool_use"] as const)("maps kind alias %s to tool_call", (kind) => {
+    expect(normalizePlaywrightAgentDecision({
+      kind,
+      toolName: "browser_snapshot",
+      arguments: {},
+    })).toEqual({
+      kind: "tool_call",
+      toolName: "browser_snapshot",
+      arguments: {},
+      reason: "Execute the next browser action.",
+    });
+  });
+
+  it.each(["done", "stop", "finish", "end"] as const)("maps kind alias %s to complete", (kind) => {
+    expect(normalizePlaywrightAgentDecision({
+      kind,
+      outcome: "failed",
+      summary: "Stopped.",
+    })).toEqual({ kind: "complete", outcome: "failed", summary: "Stopped." });
+  });
+
+  it("lifts {tool, args} and {name, input} onto tool_call", () => {
+    expect(normalizePlaywrightAgentDecision({
+      tool: "browser_hover",
+      args: { ref: "e1" },
+    })).toEqual({
+      kind: "tool_call",
+      toolName: "browser_hover",
+      arguments: { ref: "e1" },
+      reason: "Execute the next browser action.",
+    });
+    expect(normalizePlaywrightAgentDecision({
+      name: "browser_hover",
+      input: { ref: "e1" },
+    })).toEqual({
+      kind: "tool_call",
+      toolName: "browser_hover",
+      arguments: { ref: "e1" },
+      reason: "Execute the next browser action.",
+    });
+  });
+
+  it("keeps an explicit reason on a mapped tool_call", () => {
+    expect(normalizePlaywrightAgentDecision({
+      kind: "action",
+      toolName: "browser_click",
+      arguments: { ref: "e12" },
+      reason: "Click submit.",
+    })).toEqual({
+      kind: "tool_call",
+      toolName: "browser_click",
+      arguments: { ref: "e12" },
+      reason: "Click submit.",
+    });
+  });
+
+  it("fails closed on an unknown leftover kind", () => {
+    const leftover = {
+      kind: "handoff",
+      toolName: "browser_click",
+      arguments: { ref: "e12" },
+      reason: "Nope",
+    };
+    expect(normalizePlaywrightAgentDecision(leftover)).toEqual(leftover);
+    expect(PlaywrightAgentDecisionSchema.safeParse(leftover).success).toBe(false);
+  });
+
+  it("passes the preprocessed schema into generateStructuredOutput", async () => {
+    const generateStructuredOutput = vi.fn(async () => ({
+      validatedOutput: { kind: "complete", outcome: "passed", summary: "Done." },
+    }));
+    await executeTestStepWithAgent({
+      action: "Verify",
+      llm: { generateStructuredOutput } as unknown as LLMProvider,
+      tools: { callTool: vi.fn(), listOpenTabs: async () => ["https://example.com"] },
+      signal: new AbortController().signal,
+      toolPolicy: httpPolicy,
+    });
+    expect(generateStructuredOutput.mock.calls[0]![0]).toMatchObject({
+      schema: PlaywrightAgentDecisionSchema,
+      schemaName: "PlaywrightAgentDecision",
+    });
   });
 });
 
