@@ -7,7 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ResolvedPlaywrightMcpConfig } from "./playwright-mcp-config.service";
-import { assertAllowedPlaywrightTool, type PlaywrightToolClient } from "./playwright-agent";
+import { assertAllowedPlaywrightTool, type PlaywrightBrowserTab, type PlaywrightToolClient } from "./playwright-agent";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 function allowNoSandbox(): boolean {
@@ -95,7 +95,7 @@ function waitForStdioClose(closed: Promise<void>): Promise<void> {
 
 const noRedirectFetch: typeof fetch = (url, init) => fetch(url, { ...init, redirect: "error" });
 
-function parseOpenTabUrls(result: CallToolResult): string[] {
+function parseOpenTabUrls(result: CallToolResult): PlaywrightBrowserTab[] {
   if (result.isError || result.content.length !== 1 || result.content[0]?.type !== "text") {
     throw new Error("Playwright browser tab state could not be verified.");
   }
@@ -119,16 +119,16 @@ function parseOpenTabUrls(result: CallToolResult): string[] {
   return parsed[0];
 }
 
-function parseTabSection(section: string): string[] {
+function parseTabSection(section: string): PlaywrightBrowserTab[] {
   if (section === "No open tabs. Navigate to a URL to create one.") return [];
-  const urls: string[] = [];
+  const tabs: PlaywrightBrowserTab[] = [];
   for (const line of section.split("\n")) {
-    const match = line.match(/^- \d+:(?: \(current\))? \[.*\]\((.*)\)(?: \[crashed\])?$/);
-    if (!match?.[1]) throw new Error("Playwright browser tab state could not be verified.");
-    urls.push(match[1]);
+    const match = line.match(/^- \d+:(?: (\(current\)))? \[.*\]\((.*)\)(?: \[crashed\])?$/);
+    if (!match?.[2]) throw new Error("Playwright browser tab state could not be verified.");
+    tabs.push({ url: match[2], current: Boolean(match[1]) });
   }
-  if (!urls.length) throw new Error("Playwright browser tab state could not be verified.");
-  return urls;
+  if (!tabs.length) throw new Error("Playwright browser tab state could not be verified.");
+  return tabs;
 }
 
 export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig, options?: { headless?: boolean }): Promise<{

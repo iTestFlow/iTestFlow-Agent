@@ -130,7 +130,7 @@ describe("Playwright execution job", () => {
 
     const agentInput = executeTestStepWithAgent.mock.calls[0]?.[0];
     expect(agentInput?.runContext).toEqual({
-      baseUrl: "https://app.example.com/start",
+      startingPageAlreadyOpened: "https://app.example.com/start",
       executionNotes: "Use staging.",
       testData: [
         { title: "Username", value: "qa@example.com" },

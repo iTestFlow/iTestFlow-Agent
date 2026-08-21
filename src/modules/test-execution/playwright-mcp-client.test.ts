@@ -130,15 +130,14 @@ describe("Playwright MCP HTTP transport", () => {
       undefined, expect.any(Object));
   });
 
-  it("lists canonical open-tab URLs without exposing the inspection as an agent result", async () => {
+  it("lists canonical current-tab state without exposing the inspection as an agent result", async () => {
     const connection = await connectPlaywrightMcp({
       status: "configured", transport: "http", endpoint: "https://mcp.example/mcp",
       artifactBaseUrl: null, bearerToken: null,
     });
     expect(connection.tools).toHaveProperty("listOpenTabs");
-    await expect((connection.tools as { listOpenTabs(signal: AbortSignal): Promise<string[]> })
-      .listOpenTabs(new AbortController().signal))
-      .resolves.toEqual(["https://app.example/"]);
+    await expect(connection.tools.listOpenTabs(new AbortController().signal))
+      .resolves.toEqual([{ url: "https://app.example/", current: true }]);
     expect(callTool).toHaveBeenCalledWith(
       { name: "browser_tabs", arguments: { action: "list" } }, undefined, expect.any(Object),
     );
@@ -158,14 +157,21 @@ describe("Playwright MCP HTTP transport", () => {
       artifactBaseUrl: null, bearerToken: null,
     });
     await expect(connection.tools.listOpenTabs(new AbortController().signal))
-      .resolves.toEqual(["https://app.example/", "https://docs.example/guide"]);
+      .resolves.toEqual([
+        { url: "https://app.example/", current: true },
+        { url: "https://docs.example/guide", current: false },
+      ]);
 
     callTool.mockResolvedValueOnce({ content: [{ type: "text", text: [
       "### Open tabs",
-      "- 0: (current) [App](https://app.example/)",
+      "- 0: [App](https://app.example/)",
+      "- 1: (current) [Docs](https://docs.example/guide)",
     ].join("\n") }] });
     await expect(connection.tools.listOpenTabs(new AbortController().signal))
-      .resolves.toEqual(["https://app.example/"]);
+      .resolves.toEqual([
+        { url: "https://app.example/", current: false },
+        { url: "https://docs.example/guide", current: true },
+      ]);
 
     callTool.mockResolvedValueOnce({ content: [{ type: "text", text: [
       "### Result",

@@ -230,7 +230,7 @@ describe("Playwright MCP agent guardrails", () => {
     const callTool = vi.fn();
     const tools = {
       callTool,
-      listOpenTabs: vi.fn(async () => ["http://127.0.0.1:8080/admin"]),
+      listOpenTabs: vi.fn(async () => [{ url: "http://127.0.0.1:8080/admin", current: true }]),
     };
     await expect(executeTestStepWithAgent({
       action: "Inspect the app",
@@ -247,7 +247,10 @@ describe("Playwright MCP agent guardrails", () => {
     const generateStructuredOutput = vi.fn();
     const tools = {
       callTool: vi.fn(),
-      listOpenTabs: vi.fn(async () => ["https://example.com/app", "http://127.0.0.1:8080/admin"]),
+      listOpenTabs: vi.fn(async () => [
+        { url: "https://example.com/app", current: true },
+        { url: "http://127.0.0.1:8080/admin", current: false },
+      ]),
     };
     await expect(executeTestStepWithAgent({
       action: "Inspect the app",
@@ -417,7 +420,7 @@ describe("Playwright MCP agent guardrails", () => {
     expect(callTool).not.toHaveBeenCalled();
   });
 
-  it("executes one advertised tool at a time and completes from observed evidence", async () => {
+  it("keeps explicit navigation advertised and executable", async () => {
     const decisions = [
       { kind: "tool_call", toolName: "browser_navigate", arguments: { url: "https://example.com" }, reason: "Open page" },
       { kind: "complete", outcome: "passed", summary: "Expected heading was observed." },
@@ -446,7 +449,7 @@ describe("Playwright MCP agent guardrails", () => {
     expect(result).toEqual({ outcome: "timeout", summary: "Step exceeded the 2-turn agent limit.", turns: 2 });
   });
 
-  it("threads base URL, execution notes, and test data into the agent prompt", async () => {
+  it("threads the already-opened starting page, execution notes, and test data into the agent prompt", async () => {
     const generateStructuredOutput = vi.fn(async (input: { system: string; user: string }) => {
       void input;
       return { validatedOutput: { kind: "complete", outcome: "passed", summary: "Done." } };
@@ -457,7 +460,7 @@ describe("Playwright MCP agent guardrails", () => {
       tools: testTools({ callTool: vi.fn(), listOpenTabs: async () => ["https://example.com/app"] }),
       signal: new AbortController().signal, toolPolicy: httpPolicy,
       runContext: {
-        baseUrl: "https://example.com/app",
+        startingPageAlreadyOpened: "https://example.com/app",
         executionNotes: "Use the staging tenant.",
         testData: [{ title: "Admin Password", value: "S3cret!Value" }],
       },
@@ -465,10 +468,52 @@ describe("Playwright MCP agent guardrails", () => {
     const call = generateStructuredOutput.mock.calls[0]![0];
     expect(call.system).toMatch(/title\/value pairs/);
     expect(call.system).toMatch(/never override/);
+    expect(call.system).toMatch(/browser session and page state persist across case steps/i);
+    expect(call.system).toMatch(/Navigate only when the current action requires it/i);
+    expect(call.system).toMatch(/Do not automatically navigate at the start of each step/i);
     const user = JSON.parse(call.user);
-    expect(user.baseUrl).toBe("https://example.com/app");
+    expect(user).not.toHaveProperty("baseUrl");
+    expect(user.startingPageAlreadyOpened).toBe("https://example.com/app");
     expect(user.executionNotes).toBe("Use the staging tenant.");
     expect(user.testData).toEqual([{ title: "Admin Password", value: "S3cret!Value" }]);
+  });
+
+  it("refreshes security-checked current tabs before every native-tool decision", async () => {
+    const tabState = [{ url: "https://example.com/app", current: true }];
+    const decisions = [
+      { kind: "tool_call", toolName: "browser_tabs", arguments: { action: "new", url: "https://example.com/docs" }, reason: "Open docs" },
+      { kind: "tool_call", toolName: "browser_tabs", arguments: { action: "select", index: 0 }, reason: "Switch back" },
+      { kind: "tool_call", toolName: "browser_tabs", arguments: { action: "close", index: 1 }, reason: "Close docs" },
+      { kind: "complete", outcome: "passed", summary: "Observed state." },
+    ];
+    const generateStructuredOutput = vi.fn(async (input: { user: string }) => {
+      void input;
+      return { validatedOutput: decisions.shift() };
+    });
+    const callTool = vi.fn(async (_name: string, args: Record<string, unknown>) => {
+      if (args.action === "new") {
+        tabState.forEach((tab) => { tab.current = false; });
+        tabState.push({ url: "https://example.com/docs", current: true });
+      }
+      if (args.action === "select") tabState.forEach((tab, index) => { tab.current = index === args.index; });
+      if (args.action === "close") tabState.splice(args.index as number, 1);
+      return { content: [] };
+    });
+
+    await expect(executeTestStepWithAgent({
+      action: "Manage tabs", llm: nativeLlm(generateStructuredOutput),
+      tools: testTools({ callTool, listOpenTabs: async () => tabState.map((tab) => ({ ...tab })) }),
+      signal: new AbortController().signal, toolPolicy: httpPolicy,
+    })).resolves.toMatchObject({ outcome: "passed", turns: 4 });
+
+    const prompts = generateStructuredOutput.mock.calls.map(([input]) => JSON.parse((input as { user: string }).user));
+    expect(prompts.map((prompt) => prompt.currentTabs)).toEqual([
+      [{ url: "https://example.com/app", current: true }],
+      [{ url: "https://example.com/app", current: false }, { url: "https://example.com/docs", current: true }],
+      [{ url: "https://example.com/app", current: true }, { url: "https://example.com/docs", current: false }],
+      [{ url: "https://example.com/app", current: true }],
+    ]);
+    expect(callTool.mock.calls.map(([name]) => name)).toEqual(["browser_tabs", "browser_tabs", "browser_tabs"]);
   });
 
   it("keeps the prompt free of run-context sections when none is provided", async () => {
