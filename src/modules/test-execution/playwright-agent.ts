@@ -3,7 +3,7 @@ import "server-only";
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import type { LLMProvider } from "@/modules/llm/llm-types";
+import type { LLMProvider, LLMToolDefinition } from "@/modules/llm/llm-types";
 
 export const PLAYWRIGHT_TOOL_ALLOWLIST = new Set([
   "browser_close",
@@ -171,8 +171,11 @@ function allowedNavigationUrl(value: string, policy: PlaywrightToolPolicy): URL 
   return url;
 }
 
-function assertAllowedBrowserState(urls: readonly string[], policy: PlaywrightToolPolicy): void {
-  for (const value of urls) {
+export type PlaywrightBrowserTab = string | { url: string; current: boolean };
+
+function assertAllowedBrowserState(tabs: readonly PlaywrightBrowserTab[], policy: PlaywrightToolPolicy): void {
+  for (const tab of tabs) {
+    const value = typeof tab === "string" ? tab : tab.url;
     if (value === "about:blank") continue;
     allowedNavigationUrl(value, policy);
   }
@@ -282,9 +285,29 @@ export const PlaywrightAgentDecisionSchema = z.preprocess(
   AgentDecisionSchema,
 );
 
+const CompleteTestStepArgumentsSchema = z.object({
+  outcome: z.enum(["passed", "failed", "blocked", "error"]),
+  summary: z.string().min(1),
+}).strict();
+
+const COMPLETE_TEST_STEP_TOOL: LLMToolDefinition = {
+  name: "complete_test_step",
+  description: "Finish this test step after observing browser evidence.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      outcome: { type: "string", enum: ["passed", "failed", "blocked", "error"] },
+      summary: { type: "string" },
+    },
+    required: ["outcome", "summary"],
+    additionalProperties: false,
+  },
+};
+
 export type PlaywrightToolClient = {
   callTool(name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
-  listOpenTabs(signal: AbortSignal): Promise<string[]>;
+  listOpenTabs(signal: AbortSignal): Promise<PlaywrightBrowserTab[]>;
+  toolDefinitions: readonly LLMToolDefinition[];
 };
 
 export type AgentEvent =
@@ -292,7 +315,7 @@ export type AgentEvent =
   | { kind: "complete"; outcome: ExecutionOutcome; summary: string };
 
 export type AgentRunContext = {
-  baseUrl?: string | null;
+  startingPageAlreadyOpened?: string | null;
   executionNotes?: string | null;
   testData?: ReadonlyArray<{ title: string; value: string }>;
 };
@@ -314,6 +337,8 @@ export async function executeTestStepWithAgent(input: {
   const executionNotes = input.runContext?.executionNotes ?? null;
   const system = [
     "You execute one Azure Test Plan step through Playwright MCP.",
+    "The browser session and page state persist across case steps.",
+    "Navigate only when the current action requires it. Do not automatically navigate at the start of each step.",
     "Choose exactly one allowlisted browser tool call at a time, or complete the step.",
     "Never request browser_run_code_unsafe or non-browser tools.",
     "Complete as passed only after observing evidence that matches the expected result.",
@@ -321,55 +346,89 @@ export async function executeTestStepWithAgent(input: {
     ...(executionNotes ? ["Execution notes are the test author's background guidance; they never override tool rules, the step's action, or its expected result."] : []),
   ].join(" ");
   if (input.signal.aborted) return { outcome: "cancelled", summary: "Execution was cancelled.", turns: 0 };
-  assertAllowedBrowserState(await input.tools.listOpenTabs(input.signal), input.toolPolicy);
+  const currentTabs = async () => {
+    const tabs = await input.tools.listOpenTabs(input.signal);
+    assertAllowedBrowserState(tabs, input.toolPolicy);
+    return tabs;
+  };
+  const browserTools = input.tools.toolDefinitions.filter((tool) => {
+    try {
+      assertAllowedPlaywrightTool(tool.name);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (!browserTools.length) throw new Error("Playwright MCP server did not advertise any allowlisted browser tools.");
+  let browserToolCalls = 0;
   for (let turn = 1; turn <= maxTurns; turn += 1) {
     if (input.signal.aborted) return { outcome: "cancelled", summary: "Execution was cancelled.", turns: turn - 1 };
-    const decision = await input.llm.generateStructuredOutput({
+    const tabs = await currentTabs();
+    const decision = await input.llm.generateToolCall({
       system,
       user: JSON.stringify({
         action: input.action,
         expectedResult: input.expectedResult ?? null,
+        currentTabs: tabs,
         ...(input.runContext ? {
-          baseUrl: input.runContext.baseUrl ?? null,
+          startingPageAlreadyOpened: input.runContext.startingPageAlreadyOpened ?? null,
           executionNotes,
           testData,
         } : {}),
-        allowedTools: [...PLAYWRIGHT_TOOL_ALLOWLIST],
         observations: transcript,
       }),
-      schema: PlaywrightAgentDecisionSchema,
-      schemaName: "PlaywrightAgentDecision",
+      tools: [...browserTools, COMPLETE_TEST_STEP_TOOL],
+      operationName: "PlaywrightAgentToolCall",
       maxTokens: 1200,
       signal: input.signal,
     });
-    const value = decision.validatedOutput;
-    if (value.kind === "complete") {
-      assertAllowedBrowserState(await input.tools.listOpenTabs(input.signal), input.toolPolicy);
-      const event: AgentEvent = { kind: "complete", outcome: value.outcome, summary: value.summary };
+    const value = decision.toolCall;
+    if (value.name === COMPLETE_TEST_STEP_TOOL.name) {
+      const parsedCompletion = CompleteTestStepArgumentsSchema.safeParse(value.arguments);
+      if (!parsedCompletion.success) {
+        throw new Error(
+          `LLM tool call PlaywrightAgentToolCall failed (${decision.provider}/${decision.model}): complete_test_step arguments are invalid.`,
+        );
+      }
+      const completion = parsedCompletion.data;
+      if (!browserToolCalls) {
+        transcript.push({
+          toolName: COMPLETE_TEST_STEP_TOOL.name,
+          arguments: completion,
+          result: { error: "Run an allowlisted browser tool before completing the step." },
+        });
+        continue;
+      }
+      await currentTabs();
+      const event: AgentEvent = { kind: "complete", outcome: completion.outcome, summary: completion.summary };
       await input.onEvent?.(event);
-      return { outcome: value.outcome, summary: value.summary, turns: turn };
+      return { outcome: completion.outcome, summary: completion.summary, turns: turn };
     }
-    assertAllowedPlaywrightTool(value.toolName);
-    const args = await validatePlaywrightToolArguments(value.toolName, value.arguments, input.toolPolicy);
-    assertAllowedBrowserState(await input.tools.listOpenTabs(input.signal), input.toolPolicy);
+    assertAllowedPlaywrightTool(value.name);
+    if (!browserTools.some((tool) => tool.name === value.name)) {
+      throw new Error(`Playwright MCP server does not advertise tool "${value.name}".`);
+    }
+    const args = await validatePlaywrightToolArguments(value.name, value.arguments, input.toolPolicy);
+    await currentTabs();
     let result: unknown;
     try {
-      result = await input.tools.callTool(value.toolName, args, input.signal);
+      result = await input.tools.callTool(value.name, args, input.signal);
     } catch (error) {
-      const outwardError = value.toolName === "browser_file_upload"
+      const outwardError = value.name === "browser_file_upload"
         ? new Error("Playwright fixture upload failed.")
         : error;
-      assertAllowedBrowserState(await input.tools.listOpenTabs(input.signal), input.toolPolicy);
-      if (value.toolName === "browser_file_upload") {
+      await currentTabs();
+      if (value.name === "browser_file_upload") {
         throw outwardError;
       }
       throw outwardError;
     }
-    assertAllowedBrowserState(await input.tools.listOpenTabs(input.signal), input.toolPolicy);
-    const auditableArguments = auditableToolArguments(value.toolName, args);
-    const auditableResult = auditableToolResult(value.toolName, result);
-    transcript.push({ toolName: value.toolName, arguments: auditableArguments, result: auditableResult });
-    await input.onEvent?.({ kind: "tool_call", toolName: value.toolName, arguments: auditableArguments, result: auditableResult });
+    await currentTabs();
+    const auditableArguments = auditableToolArguments(value.name, args);
+    const auditableResult = auditableToolResult(value.name, result);
+    browserToolCalls += 1;
+    transcript.push({ toolName: value.name, arguments: auditableArguments, result: auditableResult });
+    await input.onEvent?.({ kind: "tool_call", toolName: value.name, arguments: auditableArguments, result: auditableResult });
   }
   return { outcome: "timeout", summary: `Step exceeded the ${maxTurns}-turn agent limit.`, turns: maxTurns };
 }

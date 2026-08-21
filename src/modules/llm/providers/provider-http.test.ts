@@ -15,9 +15,84 @@ import { ExistingTestCaseReviewOutputSchema } from "../../existing-test-case-rev
 import { ProjectKnowledgeGeneratedBaseSchema } from "../../rag/project-knowledge-grounding";
 import { PlaywrightAgentDecisionSchema } from "../../test-execution/playwright-agent";
 
+const browserTool = {
+  name: "browser_snapshot",
+  description: "Inspect the current page.",
+  inputSchema: { type: "object", properties: {} },
+};
+
 describe("provider HTTP adapters", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it.each([
+    {
+      name: "OpenAI",
+      create: () => new OpenAIProvider({ provider: "openai", model: "gpt-test", apiKey: "key", retryAttempts: 0 }),
+      response: { choices: [{ message: { tool_calls: [{ type: "function", function: { name: "browser_snapshot", arguments: "{}" } }] }, finish_reason: "tool_calls" }] },
+      assertRequest: (body: Record<string, unknown>) => {
+        expect(body).toMatchObject({ tool_choice: "required", parallel_tool_calls: false });
+        expect(body.tools).toEqual([{ type: "function", function: { name: browserTool.name, description: browserTool.description, parameters: browserTool.inputSchema } }]);
+      },
+    },
+    {
+      name: "Anthropic",
+      create: () => new AnthropicProvider({ provider: "anthropic", model: "claude-sonnet-5", apiKey: "key", retryAttempts: 0 }),
+      response: { content: [{ type: "tool_use", name: "browser_snapshot", input: {} }], stop_reason: "tool_use" },
+      assertRequest: (body: Record<string, unknown>) => {
+        expect(body).toMatchObject({ tool_choice: { type: "any", disable_parallel_tool_use: true } });
+        expect(body.tools).toEqual([{ name: browserTool.name, description: browserTool.description, input_schema: browserTool.inputSchema }]);
+      },
+    },
+    {
+      name: "Gemini",
+      create: () => new GeminiProvider({ provider: "gemini", model: "gemini-2.5-flash", apiKey: "key", retryAttempts: 0 }),
+      response: { candidates: [{ content: { parts: [{ functionCall: { name: "browser_snapshot", args: {} } }] }, finishReason: "STOP" }] },
+      assertRequest: (body: Record<string, unknown>) => {
+        expect(body).toMatchObject({ toolConfig: { functionCallingConfig: { mode: "ANY" } } });
+        expect(body.tools).toEqual([{ functionDeclarations: [{ name: browserTool.name, description: browserTool.description, parameters: browserTool.inputSchema }] }]);
+      },
+    },
+  ])("uses one native %s function call", async ({ create, response, assertRequest }) => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = create();
+    const generateToolCall = (provider as unknown as {
+      generateToolCall: (input: { system: string; user: string; tools: readonly typeof browserTool[]; operationName: string }) => Promise<unknown>;
+    }).generateToolCall.bind(provider);
+
+    await expect(generateToolCall({ system: "s", user: "u", tools: [browserTool], operationName: "PlaywrightAgentToolCall" }))
+      .resolves.toMatchObject({ toolCall: { name: "browser_snapshot", arguments: {} } });
+
+    assertRequest(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)));
+  });
+
+  it.each([
+    {
+      name: "OpenAI prose-only response",
+      create: () => new OpenAIProvider({ provider: "openai", model: "gpt-test", apiKey: "key", retryAttempts: 0 }),
+      response: { choices: [{ message: { content: "I cannot call tools.", tool_calls: [] }, finish_reason: "stop" }] },
+    },
+    {
+      name: "Anthropic multiple calls",
+      create: () => new AnthropicProvider({ provider: "anthropic", model: "claude-sonnet-5", apiKey: "key", retryAttempts: 0 }),
+      response: { content: [
+        { type: "tool_use", name: "browser_snapshot", input: {} },
+        { type: "tool_use", name: "browser_snapshot", input: {} },
+      ], stop_reason: "tool_use" },
+    },
+    {
+      name: "Gemini malformed arguments",
+      create: () => new GeminiProvider({ provider: "gemini", model: "gemini-2.5-flash", apiKey: "key", retryAttempts: 0 }),
+      response: { candidates: [{ content: { parts: [{ functionCall: { name: "browser_snapshot", args: "{}" } }] }, finishReason: "STOP" }] },
+    },
+  ])("rejects %s with provider and model context", async ({ create, response }) => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => new Response(JSON.stringify(response), { status: 200 })));
+    const provider = create();
+    await expect(provider.generateToolCall({
+      system: "s", user: "u", tools: [browserTool], operationName: "PlaywrightAgentToolCall",
+    })).rejects.toThrow(new RegExp(`${provider.name}/${provider.model}`));
   });
 
   it("maps OpenAI text responses and usage", async () => {

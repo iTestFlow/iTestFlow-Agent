@@ -31,6 +31,36 @@ export type GenerateTextInput = {
   signal?: AbortSignal;
 };
 
+export type LLMToolDefinition = {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+};
+
+export type GenerateToolCallInput = {
+  system: string;
+  user: string;
+  tools: readonly LLMToolDefinition[];
+  operationName: string;
+  maxTokens?: number;
+  metadata?: LLMRequestLogMetadata;
+  signal?: AbortSignal;
+};
+
+export type LLMToolCall = {
+  name: string;
+  arguments: Record<string, unknown>;
+};
+
+export type LLMToolCallResult = {
+  provider: LLMProviderName;
+  model: string;
+  rawOutput: string;
+  toolCall: LLMToolCall;
+  tokenUsage?: TokenUsage;
+  warnings?: string[];
+};
+
 export type TokenUsage = {
   input?: number;
   output?: number;
@@ -68,4 +98,5 @@ export interface LLMProvider {
   generateStructuredOutput<TSchema extends z.ZodTypeAny>(
     input: GenerateStructuredOutputInput<TSchema>,
   ): Promise<LLMResult<z.infer<TSchema>>>;
+  generateToolCall(input: GenerateToolCallInput): Promise<LLMToolCallResult>;
 }

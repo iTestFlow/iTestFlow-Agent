@@ -68,7 +68,7 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
   const runTestData = await decryptedRunTestData(payload.runId);
   const secretValues = runTestData.filter((entry) => entry.isSecret).map((entry) => entry.value).filter(Boolean);
   const runContext = {
-    baseUrl: settings?.baseUrl ?? null,
+    startingPageAlreadyOpened: settings?.baseUrl ?? null,
     executionNotes: settings?.executionNotes ?? null,
     testData: runTestData.map((entry) => ({ title: entry.title, value: entry.value })),
   };

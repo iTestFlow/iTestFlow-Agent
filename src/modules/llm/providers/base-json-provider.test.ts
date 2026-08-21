@@ -12,7 +12,7 @@ import {
   resolveModelInputTokenLimit,
   type LLMProviderCallResult,
 } from "./base-json-provider";
-import type { GenerateStructuredOutputInput } from "../llm-types";
+import type { GenerateStructuredOutputInput, GenerateToolCallInput } from "../llm-types";
 
 class TestProvider extends BaseJsonProvider {
   structured: LLMProviderCallResult = { rawOutput: "{\"value\":1}" };
@@ -38,6 +38,10 @@ class TestProvider extends BaseJsonProvider {
     this.receivedMaxTokens = input.maxTokens;
     if (this.structuredThrows) throw this.structuredThrows;
     return this.structured;
+  }
+
+  protected async callToolModel(_input: GenerateToolCallInput) {
+    return { rawOutput: "", toolCall: { name: "test_tool", arguments: {} } };
   }
 }
 

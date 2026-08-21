@@ -7,7 +7,7 @@ import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provid
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
 import { isMaxTokensRenameError, withMaxCompletionTokens } from "./provider-param-compat";
 import { toOpenAIStrictJsonSchema } from "./structured-output-json-schema";
-import type { GenerateStructuredOutputInput, GenerateTextInput } from "../llm-types";
+import type { GenerateStructuredOutputInput, GenerateTextInput, GenerateToolCallInput } from "../llm-types";
 
 export class OpenAIProvider extends BaseJsonProvider {
   // GPT-5 / o-series reasoning models require `max_completion_tokens` instead of `max_tokens`.
@@ -97,6 +97,43 @@ export class OpenAIProvider extends BaseJsonProvider {
       };
     }
     return openAIStructuredCallResult(response, requestBody);
+  }
+
+  protected async callToolModel(input: GenerateToolCallInput): Promise<LLMProviderCallResult> {
+    if (!this.config.apiKey) throw new Error("OpenAI API key is not configured.");
+    const requestBody = {
+      model: this.model,
+      max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
+      tools: input.tools.map((tool) => ({
+        type: "function" as const,
+        function: { name: tool.name, description: tool.description, parameters: tool.inputSchema },
+      })),
+      tool_choice: "required" as const,
+      parallel_tool_calls: false,
+      messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }],
+    };
+    const response = await this.requestChatCompletion(requestBody, input.signal);
+    if (!response.ok) {
+      const errorText = await response.text();
+      return { rawOutput: "", requestBody, responseBody: errorText, errorMessage: `OpenAI request failed: ${errorText}` };
+    }
+    const json = await response.json();
+    const calls = json?.choices?.[0]?.message?.tool_calls;
+    if (!Array.isArray(calls) || calls.length !== 1) {
+      return { rawOutput: JSON.stringify(json), requestBody, responseBody: json, errorMessage: "response must contain exactly one function tool call." };
+    }
+    const call = calls[0];
+    const functionCall = call && typeof call === "object" ? call.function : undefined;
+    if (call.type !== "function" || !functionCall || typeof functionCall.name !== "string" || typeof functionCall.arguments !== "string") {
+      return { rawOutput: JSON.stringify(json), requestBody, responseBody: json, errorMessage: "function tool call is malformed." };
+    }
+    try {
+      const argumentsValue = JSON.parse(functionCall.arguments);
+      if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) throw new Error();
+      return { rawOutput: JSON.stringify(json), requestBody, responseBody: json, finishReason: json?.choices?.[0]?.finish_reason, tokenUsage: openAITokenUsage(json?.usage), toolCall: { name: functionCall.name, arguments: argumentsValue } };
+    } catch {
+      return { rawOutput: JSON.stringify(json), requestBody, responseBody: json, errorMessage: "function tool call arguments must be a JSON object." };
+    }
   }
 
   private buildCompatibleBody(requestBody: Record<string, unknown>) {
