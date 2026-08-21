@@ -1,5 +1,8 @@
 import "server-only";
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -44,11 +47,48 @@ function deploymentStdioCommand(headless: boolean): { command: string; args: str
   if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string")) {
     throw new Error("PLAYWRIGHT_MCP_STDIO_ARGS must be a JSON array of strings.");
   }
-  const args = allowNoSandbox() ? [...parsed] : stripUnauthorizedSandboxArgs(parsed);
+  const args = stripDeploymentOutputDirArgs(allowNoSandbox() ? [...parsed] : stripUnauthorizedSandboxArgs(parsed));
   // The only per-run influence on the spawn is this hard-coded literal flag —
   // deployment args stay authoritative and user input never reaches argv.
   if (headless && !args.includes("--headless")) args.push("--headless");
   return { command, args, env: stdioSpawnEnv() };
+}
+
+function stripDeploymentOutputDirArgs(args: readonly string[]): string[] {
+  const stripped: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--output-dir") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--output-dir=")) continue;
+    stripped.push(arg);
+  }
+  return stripped;
+}
+
+function withoutTopLevelFilename(inputSchema: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!inputSchema) return {};
+  const properties = inputSchema.properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties) || !("filename" in properties)) return inputSchema;
+  const { filename: _filename, ...safeProperties } = properties as Record<string, unknown>;
+  const required = Array.isArray(inputSchema.required)
+    ? inputSchema.required.filter((name) => name !== "filename")
+    : inputSchema.required;
+  return { ...inputSchema, properties: safeProperties, ...(required === undefined ? {} : { required }) };
+}
+
+function withoutModelFilename(args: Record<string, unknown>): Record<string, unknown> {
+  const { filename: _filename, ...safeArgs } = args;
+  return safeArgs;
+}
+
+function waitForStdioClose(closed: Promise<void>): Promise<void> {
+  return Promise.race([
+    closed,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Playwright MCP stdio transport did not close.")), 2_000).unref()),
+  ]);
 }
 
 const noRedirectFetch: typeof fetch = (url, init) => fetch(url, { ...init, redirect: "error" });
@@ -94,20 +134,42 @@ export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig, 
   close: () => Promise<void>;
 }> {
   if (config.status !== "configured" || !config.transport) throw new Error("Playwright MCP is not enabled.");
-  const transport = config.transport === "http"
+  const stdioCommand = config.transport === "stdio" ? deploymentStdioCommand(options?.headless ?? true) : undefined;
+  let runtimeDir: string | undefined;
+  if (stdioCommand) runtimeDir = await mkdtemp(path.join(tmpdir(), "itestflow-playwright-mcp-"));
+  const clientTransport = config.transport === "http"
     ? new StreamableHTTPClientTransport(new URL(config.endpoint!), {
         fetch: noRedirectFetch,
         requestInit: {
           redirect: "error",
           ...(config.bearerToken ? { headers: { Authorization: `Bearer ${config.bearerToken}` } } : {}),
         },
-      })
-    : new StdioClientTransport(deploymentStdioCommand(options?.headless ?? true));
+    })
+    : new StdioClientTransport({ ...stdioCommand!, args: [...stdioCommand!.args, "--output-dir", runtimeDir!], cwd: runtimeDir });
+  const stdioClosed = runtimeDir
+    ? new Promise<void>((resolve) => {
+      clientTransport.onclose = resolve;
+    })
+    : undefined;
   const client = new Client({ name: "itestflow-agent", version: "0.1.0" });
+  let closePromise: Promise<void> | undefined;
+  const closeConnection = () => {
+    closePromise ??= (async () => {
+      try {
+        await client.close();
+      } finally {
+        if (runtimeDir && stdioClosed) {
+          await waitForStdioClose(stdioClosed);
+          await rm(runtimeDir, { recursive: true, force: true });
+        }
+      }
+    })();
+    return closePromise;
+  };
   const timeout = AbortSignal.timeout(15_000);
   try {
     await Promise.race([
-      client.connect(transport),
+      client.connect(clientTransport),
       new Promise<never>((_, reject) => timeout.addEventListener("abort", () => reject(new Error("Playwright MCP connection timed out.")), { once: true })),
     ]);
     const available = await client.listTools(undefined, { signal: timeout });
@@ -119,12 +181,11 @@ export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig, 
     .map((tool) => ({
       name: tool.name,
       description: tool.description ?? "",
-      inputSchema: tool.inputSchema as Record<string, unknown>,
+      inputSchema: withoutTopLevelFilename(tool.inputSchema as Record<string, unknown> | undefined),
     }));
   for (const required of ["browser_navigate", "browser_snapshot", "browser_tabs"]) {
-    if (!approved.has(required)) {
-      await client.close();
-      throw new Error(`Playwright MCP server is missing required tool "${required}".`);
+      if (!approved.has(required)) {
+        throw new Error(`Playwright MCP server is missing required tool "${required}".`);
     }
   }
     return {
@@ -133,7 +194,7 @@ export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig, 
       async callTool(name, args, signal) {
         assertAllowedPlaywrightTool(name);
         if (!approved.has(name)) throw new Error(`Playwright MCP server does not advertise tool "${name}".`);
-        return client.callTool({ name, arguments: args }, undefined, { signal });
+        return client.callTool({ name, arguments: withoutModelFilename(args) }, undefined, { signal });
       },
       async listOpenTabs(signal) {
         const result = await client.callTool(
@@ -142,10 +203,10 @@ export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig, 
         return parseOpenTabUrls(result);
       },
     },
-    close: () => client.close(),
+    close: closeConnection,
     };
   } catch (error) {
-    await client.close().catch(() => undefined);
+    await closeConnection().catch(() => undefined);
     throw error;
   }
 }
