@@ -20,7 +20,7 @@ function stripUnauthorizedSandboxArgs(args: readonly string[]): string[] {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--no-sandbox" || arg.startsWith("--no-sandbox=")) continue;
-    if (arg === "--sandbox=false" || arg === "--sandbox=0") continue;
+    if (arg === "--sandbox" || arg.startsWith("--sandbox=")) continue;
     if (arg === "--config" || arg === "-c") {
       index += 1;
       continue;
@@ -31,9 +31,9 @@ function stripUnauthorizedSandboxArgs(args: readonly string[]): string[] {
   return stripped;
 }
 
-function stdioSpawnEnv(): Record<string, string> {
+function stdioSpawnEnv(noSandboxAllowed: boolean): Record<string, string> {
   const env: Record<string, string> = {};
-  if (allowNoSandbox() && process.env.PLAYWRIGHT_MCP_NO_SANDBOX !== undefined) {
+  if (noSandboxAllowed && process.env.PLAYWRIGHT_MCP_NO_SANDBOX !== undefined) {
     env.PLAYWRIGHT_MCP_NO_SANDBOX = process.env.PLAYWRIGHT_MCP_NO_SANDBOX;
   }
   return env;
@@ -47,11 +47,13 @@ function deploymentStdioCommand(headless: boolean): { command: string; args: str
   if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string")) {
     throw new Error("PLAYWRIGHT_MCP_STDIO_ARGS must be a JSON array of strings.");
   }
-  const args = stripDeploymentOutputDirArgs(allowNoSandbox() ? [...parsed] : stripUnauthorizedSandboxArgs(parsed));
+  const noSandboxAllowed = allowNoSandbox();
+  const args = stripDeploymentOutputDirArgs(noSandboxAllowed ? [...parsed] : stripUnauthorizedSandboxArgs(parsed));
   // The only per-run influence on the spawn is this hard-coded literal flag —
   // deployment args stay authoritative and user input never reaches argv.
   if (headless && !args.includes("--headless")) args.push("--headless");
-  return { command, args, env: stdioSpawnEnv() };
+  if (!noSandboxAllowed) args.push("--sandbox");
+  return { command, args, env: stdioSpawnEnv(noSandboxAllowed) };
 }
 
 function stripDeploymentOutputDirArgs(args: readonly string[]): string[] {
