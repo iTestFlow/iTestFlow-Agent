@@ -16,11 +16,13 @@ import { reviveJsonEncodedRecords } from "./structured-output-json-schema";
 import type {
   GenerateStructuredOutputInput,
   GenerateTextInput,
+  GenerateToolCallInput,
   LLMProvider,
   LLMProviderConfig,
   LLMProviderName,
   LLMResult,
   LLMTextResult,
+  LLMToolCallResult,
   TokenUsage,
 } from "../llm-types";
 
@@ -32,6 +34,7 @@ export type LLMProviderCallResult = {
   userMessage?: string;
   finishReason?: string;
   tokenUsage?: TokenUsage;
+  toolCall?: { name: string; arguments: Record<string, unknown> };
 };
 
 type ProviderErrorContext = {
@@ -171,9 +174,63 @@ export abstract class BaseJsonProvider implements LLMProvider {
     }
   }
 
+  async generateToolCall(input: GenerateToolCallInput): Promise<LLMToolCallResult> {
+    const startedAt = Date.now();
+    let callResult: LLMProviderCallResult | null = null;
+    const cap = positiveIntegerOrDefault(
+      this.config.maxOutputTokenCap,
+      getMaxOutputTokenCapDefaultFromEnv() || DEFAULT_MAX_OUTPUT_TOKEN_CAP,
+    );
+    const budget = Math.min(positiveIntegerOrDefault(input.maxTokens, cap), cap);
+
+    try {
+      if (!input.tools.length) throw new Error("Native tool calls require at least one tool definition.");
+      callResult = await this.callToolModel({ ...input, maxTokens: budget });
+      this.recordTokenUsage(callResult.tokenUsage);
+      const toolCall = callResult.toolCall;
+      if (callResult.errorMessage || !toolCall
+        || !input.tools.some((tool) => tool.name === toolCall.name)) {
+        throw this.providerError(
+          `LLM tool call ${input.operationName} failed (${this.name}/${this.model}): ${callResult.errorMessage ?? "response did not contain exactly one valid advertised tool call."}`,
+          {
+            schemaName: input.operationName,
+            rawOutput: callResult.rawOutput,
+            finishReason: callResult.finishReason,
+            tokenUsage: callResult.tokenUsage,
+            durationMs: Date.now() - startedAt,
+            userMessage: callResult.userMessage,
+          },
+        );
+      }
+      this.logToolRequest(input, callResult, "Success", Date.now() - startedAt);
+      return {
+        provider: this.name,
+        model: this.model,
+        rawOutput: callResult.rawOutput,
+        toolCall,
+        tokenUsage: hasTokenUsage(callResult.tokenUsage) ? callResult.tokenUsage : undefined,
+        warnings: buildTruncationWarnings(callResult.finishReason, budget),
+      };
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      const normalizedError = this.normalizeProviderThrownError(error, {
+        schemaName: input.operationName,
+        rawOutput: callResult?.rawOutput,
+        finishReason: callResult?.finishReason,
+        tokenUsage: callResult?.tokenUsage,
+        durationMs,
+      });
+      const message = normalizedError instanceof Error ? normalizedError.message : "Unknown LLM tool call error.";
+      this.logToolRequest(input, callResult, "Failed", durationMs, message);
+      throw normalizedError;
+    }
+  }
+
   protected abstract callTextModel(input: GenerateTextInput): Promise<LLMProviderCallResult>;
 
   protected abstract callModel<TSchema extends z.ZodTypeAny>(input: GenerateStructuredOutputInput<TSchema>): Promise<LLMProviderCallResult>;
+
+  protected abstract callToolModel(input: GenerateToolCallInput): Promise<LLMProviderCallResult>;
 
   private parseAndValidate<TSchema extends z.ZodTypeAny>(
     input: GenerateStructuredOutputInput<TSchema>,
@@ -304,6 +361,34 @@ export abstract class BaseJsonProvider implements LLMProvider {
       });
     } catch (logError) {
       console.error("Failed to write LLM text request log", logError);
+    }
+  }
+
+  private logToolRequest(
+    input: GenerateToolCallInput,
+    callResult: LLMProviderCallResult | null,
+    status: "Success" | "Failed",
+    durationMs: number,
+    errorDetails?: string,
+  ) {
+    try {
+      writeLLMRequestLog({
+        ...input.metadata,
+        provider: this.name,
+        model: this.model,
+        schemaName: input.operationName,
+        systemPrompt: input.system,
+        userPrompt: input.user,
+        requestBody: callResult?.requestBody,
+        responseBody: callResult?.responseBody,
+        rawOutput: callResult?.rawOutput,
+        validatedOutput: callResult?.toolCall,
+        status,
+        errorDetails,
+        durationMs,
+      });
+    } catch (logError) {
+      console.error("Failed to write LLM tool request log", logError);
     }
   }
 

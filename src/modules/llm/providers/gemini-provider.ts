@@ -5,7 +5,7 @@ import { DEFAULT_TEXT_OUTPUT_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defau
 import { withStructuredOutputInstruction } from "../prompts";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
-import type { GenerateStructuredOutputInput, GenerateTextInput } from "../llm-types";
+import type { GenerateStructuredOutputInput, GenerateTextInput, GenerateToolCallInput } from "../llm-types";
 
 export class GeminiProvider extends BaseJsonProvider {
   async testConnection(): Promise<boolean> {
@@ -112,6 +112,38 @@ export class GeminiProvider extends BaseJsonProvider {
       finishReason: json.candidates?.[0]?.finishReason,
       tokenUsage: geminiTokenUsage(json.usageMetadata),
     };
+  }
+
+  protected async callToolModel(input: GenerateToolCallInput): Promise<LLMProviderCallResult> {
+    if (!this.config.apiKey) throw new Error("Gemini API key is not configured.");
+    const baseUrl = this.config.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
+    const requestBody = {
+      generationConfig: { maxOutputTokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS, ...geminiStructuredOutputOptions(this.model) },
+      systemInstruction: { parts: [{ text: input.system }] },
+      contents: [{ role: "user", parts: [{ text: input.user }] }],
+      tools: [{ functionDeclarations: input.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema })) }],
+      toolConfig: { functionCallingConfig: { mode: "ANY" } },
+    };
+    const response = await fetchWithTransientRetry(
+      `${baseUrl}/models/${this.model}:generateContent?key=${this.config.apiKey}`,
+      { method: "POST", headers: this.headers(), body: JSON.stringify(requestBody), signal: input.signal },
+      this.config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS,
+    );
+    if (!response.ok) {
+      const errorText = await response.text();
+      return { rawOutput: "", requestBody, responseBody: errorText, errorMessage: `Gemini request failed: ${errorText}` };
+    }
+    const json = await response.json();
+    const parts = json?.candidates?.[0]?.content?.parts;
+    const calls = Array.isArray(parts) ? parts.filter((part) => part?.functionCall) : [];
+    if (calls.length !== 1) {
+      return { rawOutput: JSON.stringify(json), requestBody, responseBody: json, errorMessage: "response must contain exactly one functionCall." };
+    }
+    const call = calls[0].functionCall;
+    if (typeof call?.name !== "string" || !call.args || typeof call.args !== "object" || Array.isArray(call.args)) {
+      return { rawOutput: JSON.stringify(json), requestBody, responseBody: json, errorMessage: "functionCall is malformed." };
+    }
+    return { rawOutput: JSON.stringify(json), requestBody, responseBody: json, finishReason: json?.candidates?.[0]?.finishReason, tokenUsage: geminiTokenUsage(json?.usageMetadata), toolCall: { name: call.name, arguments: call.args } };
   }
 }
 

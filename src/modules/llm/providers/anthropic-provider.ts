@@ -7,7 +7,7 @@ import { normalizeProviderBaseUrl } from "../provider-base-url";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
 import { toAnthropicCompatibleJsonSchema } from "./structured-output-json-schema";
-import type { GenerateStructuredOutputInput, GenerateTextInput } from "../llm-types";
+import type { GenerateStructuredOutputInput, GenerateTextInput, GenerateToolCallInput } from "../llm-types";
 
 const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
 
@@ -102,6 +102,36 @@ export class AnthropicProvider extends BaseJsonProvider {
     }
 
     return anthropicStructuredCallResult(response, requestBody);
+  }
+
+  protected async callToolModel(input: GenerateToolCallInput): Promise<LLMProviderCallResult> {
+    const requestBody = {
+      model: this.model,
+      max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
+      system: input.system,
+      messages: [{ role: "user", content: input.user }],
+      tools: input.tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.inputSchema })),
+      tool_choice: { type: "any" as const, disable_parallel_tool_use: true },
+    };
+    const response = await this.postMessages(requestBody, input.signal);
+    if (!response.ok) {
+      const errorText = await response.text();
+      return { rawOutput: "", requestBody, responseBody: errorText, errorMessage: `Anthropic request failed: ${errorText}` };
+    }
+    const json = await response.json();
+    const calls = Array.isArray(json?.content)
+      ? json.content.filter((block: unknown): block is Record<string, unknown> => (
+          Boolean(block) && typeof block === "object" && (block as Record<string, unknown>).type === "tool_use"
+        ))
+      : [];
+    if (calls.length !== 1) {
+      return { rawOutput: JSON.stringify(json), requestBody, responseBody: json, errorMessage: "response must contain exactly one tool_use call." };
+    }
+    const call = calls[0];
+    if (typeof call.name !== "string" || !call.input || typeof call.input !== "object" || Array.isArray(call.input)) {
+      return { rawOutput: JSON.stringify(json), requestBody, responseBody: json, errorMessage: "tool_use call is malformed." };
+    }
+    return { rawOutput: JSON.stringify(json), requestBody, responseBody: json, finishReason: json?.stop_reason, tokenUsage: anthropicTokenUsage(json?.usage), toolCall: { name: call.name, arguments: call.input } };
   }
 
   private structuredRequestBody<TSchema extends z.ZodTypeAny>(

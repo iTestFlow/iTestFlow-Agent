@@ -68,6 +68,26 @@ describe("Playwright MCP HTTP transport", () => {
     })).rejects.toThrow('missing required tool "browser_tabs"');
   });
 
+  it("exposes only advertised allowlisted tool definitions to the agent", async () => {
+    listTools.mockResolvedValue({
+      tools: [
+        { name: "browser_navigate", description: "Navigate.", inputSchema: { type: "object", properties: { url: { type: "string" } } } },
+        { name: "browser_snapshot", description: "Snapshot.", inputSchema: { type: "object", properties: {} } },
+        { name: "browser_tabs", description: "Tabs.", inputSchema: { type: "object", properties: {} } },
+        { name: "filesystem_read_file", description: "Forbidden.", inputSchema: { type: "object", properties: {} } },
+      ],
+    });
+    const connection = await connectPlaywrightMcp({
+      status: "configured", transport: "http", endpoint: "https://mcp.example/mcp",
+      artifactBaseUrl: null, bearerToken: null,
+    });
+    expect(connection.tools.toolDefinitions).toEqual([
+      { name: "browser_navigate", description: "Navigate.", inputSchema: { type: "object", properties: { url: { type: "string" } } } },
+      { name: "browser_snapshot", description: "Snapshot.", inputSchema: { type: "object", properties: {} } },
+      { name: "browser_tabs", description: "Tabs.", inputSchema: { type: "object", properties: {} } },
+    ]);
+  });
+
   it("lists canonical open-tab URLs without exposing the inspection as an agent result", async () => {
     const connection = await connectPlaywrightMcp({
       status: "configured", transport: "http", endpoint: "https://mcp.example/mcp",

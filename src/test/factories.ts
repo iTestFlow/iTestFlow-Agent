@@ -85,6 +85,12 @@ export function fakeLlmProvider(input: {
       rawOutput: JSON.stringify(input.structuredOutput ?? {}),
       validatedOutput: input.structuredOutput ?? {},
     })),
+    generateToolCall: vi.fn(async (request) => ({
+      provider,
+      model,
+      rawOutput: "",
+      toolCall: { name: request.tools[0]?.name ?? "complete_test_step", arguments: {} },
+    })),
   };
 }
 

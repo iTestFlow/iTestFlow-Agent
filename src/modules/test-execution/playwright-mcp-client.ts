@@ -114,6 +114,13 @@ export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig, 
   const approved = new Set(available.tools.map((tool) => tool.name).filter((name) => {
     try { assertAllowedPlaywrightTool(name); return true; } catch { return false; }
   }));
+  const toolDefinitions = available.tools
+    .filter((tool) => approved.has(tool.name))
+    .map((tool) => ({
+      name: tool.name,
+      description: tool.description ?? "",
+      inputSchema: tool.inputSchema as Record<string, unknown>,
+    }));
   for (const required of ["browser_navigate", "browser_snapshot", "browser_tabs"]) {
     if (!approved.has(required)) {
       await client.close();
@@ -122,6 +129,7 @@ export async function connectPlaywrightMcp(config: ResolvedPlaywrightMcpConfig, 
   }
     return {
     tools: {
+      toolDefinitions,
       async callTool(name, args, signal) {
         assertAllowedPlaywrightTool(name);
         if (!approved.has(name)) throw new Error(`Playwright MCP server does not advertise tool "${name}".`);
