@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   createState: vi.fn(),
   buildUrl: vi.fn(),
   cookieSet: vi.fn(),
+  findSite: vi.fn(),
 }));
 
 vi.mock("@/modules/security/rate-limit", () => ({
@@ -13,6 +14,7 @@ vi.mock("@/modules/security/rate-limit", () => ({
 }));
 vi.mock("@/modules/auth/jira-oauth-state", () => ({ createJiraOAuthState: mocks.createState }));
 vi.mock("@/modules/auth/jira-oauth", () => ({ buildAtlassianAuthorizationUrl: mocks.buildUrl }));
+vi.mock("@/modules/workspace/workspace.service", () => ({ findActiveJiraSiteByUrl: mocks.findSite }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ set: mocks.cookieSet }) }));
 
 import { GET } from "./route";
@@ -42,11 +44,50 @@ describe("GET /api/auth/jira/start", () => {
     const response = await GET(new Request("https://itestflow.example/api/auth/jira/start?returnTo=%2Fsettings"));
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe("https://auth.atlassian.com/authorize?state=opaque-state");
-    expect(mocks.createState).toHaveBeenCalledWith("/settings", expect.stringMatching(/^[A-Za-z0-9_-]{40,}$/));
+    expect(mocks.createState).toHaveBeenCalledWith("/settings", expect.stringMatching(/^[A-Za-z0-9_-]{40,}$/), null);
     expect(mocks.cookieSet).toHaveBeenCalledWith("itf_jira_oauth", expect.any(String), expect.objectContaining({
       httpOnly: true, sameSite: "lax", path: "/", maxAge: 600,
     }));
     expect(mocks.buildUrl).toHaveBeenCalledWith("opaque-state");
+  });
+
+  it("carries a validated pre-selected site into the OAuth state", async () => {
+    mocks.findSite.mockResolvedValue({ name: "Quality", siteUrl: "https://quality.atlassian.net" });
+
+    const response = await GET(new Request(
+      "https://itestflow.example/api/auth/jira/start?returnTo=%2Fdashboards&site=" +
+        encodeURIComponent("https://Quality.Atlassian.Net/"),
+    ));
+
+    expect(response.status).toBe(307);
+    // The site is normalized before lookup and the stored value is the canonical row value.
+    expect(mocks.findSite).toHaveBeenCalledWith("https://quality.atlassian.net");
+    expect(mocks.createState).toHaveBeenCalledWith(
+      "/dashboards",
+      expect.any(String),
+      "https://quality.atlassian.net",
+    );
+  });
+
+  it("rejects a site that is not enabled for this deployment before any state or cookie", async () => {
+    mocks.findSite.mockResolvedValue(null);
+
+    const response = await GET(new Request("https://itestflow.example/api/auth/jira/start?site=unknown-site"));
+
+    expect(response.status).toBe(403);
+    expect(JSON.stringify(await response.json())).toContain("BOOTSTRAP_JIRA_SITES");
+    expect(mocks.createState).not.toHaveBeenCalled();
+    expect(mocks.cookieSet).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed site with 400 before any lookup", async () => {
+    const response = await GET(new Request(
+      "https://itestflow.example/api/auth/jira/start?site=" + encodeURIComponent("https://evil.example.com"),
+    ));
+
+    expect(response.status).toBe(400);
+    expect(mocks.findSite).not.toHaveBeenCalled();
+    expect(mocks.createState).not.toHaveBeenCalled();
   });
 
   it("rate limits before creating state", async () => {

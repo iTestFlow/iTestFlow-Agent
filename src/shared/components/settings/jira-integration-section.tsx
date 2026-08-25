@@ -86,7 +86,7 @@ export function JiraIntegrationSection() {
         <div><div className="text-xs text-muted-foreground">Workspace role</div><div className="font-medium capitalize">{overview.role}</div></div>
       </div>
       <a className="inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={overview.workspace.siteUrl} target="_blank" rel="noreferrer">Open Jira site <ExternalLink className="size-3.5" aria-hidden="true" /></a>
-      {!connected ? <Button asChild><a href="/api/auth/jira/start?returnTo=%2Fsettings">Reconnect Jira Cloud</a></Button> : null}
+      {!connected ? <Button asChild><a href={`/api/auth/jira/start?returnTo=%2Fsettings&site=${encodeURIComponent(overview.workspace.siteUrl)}`}>Reconnect Jira Cloud</a></Button> : null}
       {confirmDisconnect ? (
         <div className="flex flex-wrap items-center gap-2" role="status" aria-live="polite">
           <span className="text-sm text-destructive">Disconnect this Jira account? Shared history remains.</span>

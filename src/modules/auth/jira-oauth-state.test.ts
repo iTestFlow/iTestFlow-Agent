@@ -25,7 +25,7 @@ describe("Jira OAuth state", () => {
     expect(state).toMatch(/^[A-Za-z0-9_-]{40,}$/);
     expect(mocks.sqlRun).toHaveBeenCalledOnce();
     const [, params] = mocks.sqlRun.mock.calls[0];
-    expect(params).toMatchObject({ id: "oauthstate_fixed", returnTo: "/settings/integrations" });
+    expect(params).toMatchObject({ id: "oauthstate_fixed", returnTo: "/settings/integrations", selectedSiteUrl: null });
     expect(params.stateHash).toMatch(/^[a-f0-9]{64}$/);
     expect(params.stateHash).not.toContain(state);
     expect(params.browserBindingHash).toMatch(/^[a-f0-9]{64}$/);
@@ -33,15 +33,40 @@ describe("Jira OAuth state", () => {
     expect(Date.parse(params.expiresAt) - Date.parse(params.now)).toBe(10 * 60 * 1000);
   });
 
-  it("atomically consumes a matching unexpired state exactly once", async () => {
-    mocks.sqlGet.mockResolvedValueOnce({ return_to: "/settings/integrations" }).mockResolvedValueOnce(undefined);
+  it("persists the pre-selected site so the callback can verify grant access to it", async () => {
+    mocks.sqlRun.mockResolvedValue(1);
 
-    await expect(consumeJiraOAuthState("opaque-state", "browser-secret")).resolves.toEqual({ returnTo: "/settings/integrations" });
+    await createJiraOAuthState("/dashboards", "browser-secret", "https://quality.atlassian.net");
+
+    const [sql, params] = mocks.sqlRun.mock.calls[0];
+    expect(sql).toContain("selected_site_url");
+    expect(params).toMatchObject({ selectedSiteUrl: "https://quality.atlassian.net" });
+  });
+
+  it("atomically consumes a matching unexpired state exactly once", async () => {
+    mocks.sqlGet
+      .mockResolvedValueOnce({ return_to: "/settings/integrations", selected_site_url: null })
+      .mockResolvedValueOnce(undefined);
+
+    await expect(consumeJiraOAuthState("opaque-state", "browser-secret")).resolves.toEqual({
+      returnTo: "/settings/integrations",
+      selectedSiteUrl: null,
+    });
     expect(mocks.sqlGet.mock.calls[0][0]).toContain("DELETE FROM jira_oauth_states");
     expect(mocks.sqlGet.mock.calls[0][0]).toContain("expires_at > @now");
+    expect(mocks.sqlGet.mock.calls[0][0]).toContain("selected_site_url");
     expect(mocks.sqlGet.mock.calls[0][1].stateHash).toMatch(/^[a-f0-9]{64}$/);
     expect(mocks.sqlGet.mock.calls[0][1].browserBindingHash).toMatch(/^[a-f0-9]{64}$/);
     await expect(consumeJiraOAuthState("opaque-state", "different-browser")).rejects.toBeInstanceOf(JiraOAuthStateError);
+  });
+
+  it("returns the pre-selected site from a consumed state", async () => {
+    mocks.sqlGet.mockResolvedValueOnce({ return_to: "/dashboards", selected_site_url: "https://quality.atlassian.net" });
+
+    await expect(consumeJiraOAuthState("opaque-state", "browser-secret")).resolves.toEqual({
+      returnTo: "/dashboards",
+      selectedSiteUrl: "https://quality.atlassian.net",
+    });
   });
 
   it("rejects unsafe return destinations before persistence", async () => {

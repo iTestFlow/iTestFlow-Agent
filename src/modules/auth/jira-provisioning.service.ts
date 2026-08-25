@@ -3,7 +3,7 @@ import "server-only";
 import type { PoolClient } from "pg";
 
 import { createId, nowIso, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
-import { normalizeJiraSite } from "./bootstrap.service";
+import { canonicalJiraSiteUrl } from "./bootstrap.service";
 import { isAllowedAtlassianCloudId, type AtlassianAccessibleResource, type AtlassianUserIdentity } from "./jira-oauth";
 
 export type JiraLoginProvisioningResult = {
@@ -11,20 +11,6 @@ export type JiraLoginProvisioningResult = {
   userId: string;
   role: "owner" | "admin" | "member";
 };
-
-/**
- * Canonical form of an Atlassian resource URL, matching the normalization the
- * bootstrap seeder and the site-URL uniqueness migration apply. Defensive
- * fallback: a non-*.atlassian.net resource URL still gets a stable lowercase,
- * slash-free form instead of failing the login.
- */
-function canonicalSiteUrl(resourceUrl: string): string {
-  try {
-    return normalizeJiraSite(resourceUrl).url;
-  } catch {
-    return resourceUrl.trim().replace(/\/+$/, "").toLowerCase();
-  }
-}
 
 export async function provisionJiraLogin(input: {
   resource: AtlassianAccessibleResource;
@@ -35,7 +21,7 @@ export async function provisionJiraLogin(input: {
     const now = nowIso();
     const siteId = input.resource.id.trim();
     const siteName = input.resource.name;
-    const siteUrl = canonicalSiteUrl(input.resource.url);
+    const siteUrl = canonicalJiraSiteUrl(input.resource.url);
 
     // A bootstrap-seeded site (BOOTSTRAP_JIRA_SITES) exists with a NULL
     // provider_site_id until its first OAuth grant reveals the cloudId. Claim

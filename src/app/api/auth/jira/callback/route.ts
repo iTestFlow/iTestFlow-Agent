@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 
 import { writeAuditLog } from "@/modules/audit/audit.service";
+import { canonicalJiraSiteUrl } from "@/modules/auth/bootstrap.service";
 import { storeJiraConnection } from "@/modules/auth/jira-connection.service";
 import {
   AtlassianOAuthError,
@@ -27,28 +28,45 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const cookieStore = await cookies();
     const browserBinding = cookieStore.get(JIRA_OAUTH_BINDING_COOKIE)?.value ?? "";
-    const { returnTo } = await consumeJiraOAuthState(state, browserBinding);
+    const { returnTo, selectedSiteUrl } = await consumeJiraOAuthState(state, browserBinding);
     const tokens = await exchangeAtlassianAuthorizationCode(code);
     const resources = await listAllowedAtlassianResources(tokens.accessToken);
-    if (resources.length === 0) {
-      return NextResponse.json(
-        { error: "No approved Jira Cloud site is available for this account." },
-        { status: 403 },
-      );
+
+    let resource;
+    if (selectedSiteUrl) {
+      // The user chose this site before OAuth. Verify the authenticated
+      // account can access exactly it — never silently switch to another site.
+      resource = resources.find((candidate) => canonicalJiraSiteUrl(candidate.url) === selectedSiteUrl);
+      if (!resource) {
+        cookieStore.delete(JIRA_OAUTH_BINDING_COOKIE);
+        const redirect = new URL("/login", url.origin);
+        redirect.searchParams.set("error", "jira_site_access");
+        redirect.searchParams.set("site", selectedSiteUrl);
+        return NextResponse.redirect(redirect);
+      }
+    } else {
+      // Legacy site-less start: keep the post-callback selection flow.
+      if (resources.length === 0) {
+        return NextResponse.json(
+          { error: "No approved Jira Cloud site is available for this account." },
+          { status: 403 },
+        );
+      }
+      if (resources.length > 1) {
+        const continuation = await createJiraSiteSelection({
+          browserBinding,
+          returnTo,
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
+          expiresInSeconds: tokens.expiresInSeconds,
+          scopes: tokens.scope,
+          resources,
+        });
+        return NextResponse.redirect(new URL(`/login/jira/select?continuation=${encodeURIComponent(continuation)}`, url.origin));
+      }
+      resource = resources[0];
     }
-    if (resources.length > 1) {
-      const continuation = await createJiraSiteSelection({
-      browserBinding,
-      returnTo,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      expiresInSeconds: tokens.expiresInSeconds,
-      scopes: tokens.scope,
-      resources,
-      });
-      return NextResponse.redirect(new URL(`/login/jira/select?continuation=${encodeURIComponent(continuation)}`, url.origin));
-    }
-    const resource = resources[0];
+
     const identity = await getAtlassianUserIdentity(tokens.accessToken, resource.id);
     const provisioned = await provisionJiraLogin({ resource, identity });
     await storeJiraConnection({

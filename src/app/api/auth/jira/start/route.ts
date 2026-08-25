@@ -6,6 +6,8 @@ import { buildAtlassianAuthorizationUrl } from "@/modules/auth/jira-oauth";
 import { createJiraOAuthState } from "@/modules/auth/jira-oauth-state";
 import { JIRA_OAUTH_BINDING_COOKIE } from "@/modules/auth/jira-oauth-cookie";
 import { isLoginProviderEnabled } from "@/modules/auth/enabled-providers";
+import { normalizeJiraSite } from "@/modules/auth/bootstrap.service";
+import { findActiveJiraSiteByUrl } from "@/modules/workspace/workspace.service";
 import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
 
 export const runtime = "nodejs";
@@ -21,9 +23,35 @@ export async function GET(request: Request): Promise<Response> {
   if (!isLoginProviderEnabled("jira-cloud")) {
     return NextResponse.json({ error: "Jira Cloud sign-in is disabled for this deployment." }, { status: 403 });
   }
-  const returnTo = new URL(request.url).searchParams.get("returnTo") ?? "/dashboards";
+  const url = new URL(request.url);
+  const returnTo = url.searchParams.get("returnTo") ?? "/dashboards";
+
+  // Site-before-OAuth: the login page passes the site the user chose so the
+  // callback can verify grant access to exactly that site. The picker is
+  // deployment-scoped, mirroring the Azure org rule: only an enabled (seeded
+  // or already-connected) active site is accepted. Omitted `site` keeps the
+  // legacy post-callback selection flow.
+  let selectedSiteUrl: string | null = null;
+  const siteParam = url.searchParams.get("site")?.trim();
+  if (siteParam) {
+    let normalized: { name: string; url: string };
+    try {
+      normalized = normalizeJiraSite(siteParam);
+    } catch {
+      return NextResponse.json({ error: "The requested Jira site is not valid." }, { status: 400 });
+    }
+    const site = await findActiveJiraSiteByUrl(normalized.url);
+    if (!site) {
+      return NextResponse.json(
+        { error: "This Jira Cloud site is not enabled for iTestFlow. Ask your administrator to add it to BOOTSTRAP_JIRA_SITES." },
+        { status: 403 },
+      );
+    }
+    selectedSiteUrl = site.siteUrl;
+  }
+
   const browserBinding = randomBytes(32).toString("base64url");
-  const state = await createJiraOAuthState(returnTo, browserBinding);
+  const state = await createJiraOAuthState(returnTo, browserBinding, selectedSiteUrl);
   (await cookies()).set(JIRA_OAUTH_BINDING_COOKIE, browserBinding, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",

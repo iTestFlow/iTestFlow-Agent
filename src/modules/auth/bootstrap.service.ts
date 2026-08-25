@@ -298,3 +298,17 @@ export function normalizeJiraSite(input: string): { name: string; url: string } 
   }
   return { name: match[1], url: `https://${host}` };
 }
+
+/**
+ * Canonical comparison/storage form of a Jira site URL, shared by the OAuth
+ * adoption path and the callback's pre-selected-site matching. Defensive
+ * fallback: a non-*.atlassian.net resource URL (e.g. a future custom domain)
+ * still gets a stable lowercase, slash-free form instead of throwing.
+ */
+export function canonicalJiraSiteUrl(input: string): string {
+  try {
+    return normalizeJiraSite(input).url;
+  } catch {
+    return input.trim().replace(/\/+$/, "").toLowerCase();
+  }
+}

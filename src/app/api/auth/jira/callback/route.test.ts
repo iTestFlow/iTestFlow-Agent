@@ -37,7 +37,7 @@ import { GET } from "./route";
 describe("GET /api/auth/jira/callback", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.consumeState.mockResolvedValue({ returnTo: "/settings/integrations" });
+    mocks.consumeState.mockResolvedValue({ returnTo: "/settings/integrations", selectedSiteUrl: null });
     mocks.exchangeCode.mockResolvedValue({
       accessToken: "access-secret", refreshToken: "refresh-secret", expiresInSeconds: 3600,
       scope: "offline_access read:jira-work", tokenType: "Bearer",
@@ -130,5 +130,53 @@ describe("GET /api/auth/jira/callback", () => {
       expect(response.status).toBe(status);
       expect(JSON.stringify(await response.json())).not.toContain("secret");
     }
+  });
+
+  it("provisions exactly the pre-selected site from a multi-site grant without a selection detour", async () => {
+    mocks.consumeState.mockResolvedValue({ returnTo: "/dashboards", selectedSiteUrl: "https://b.atlassian.net" });
+    mocks.listResources.mockResolvedValueOnce([
+      { id: "cloud-a", name: "A", url: "https://a.atlassian.net", scopes: [] },
+      { id: "cloud-b", name: "B", url: "https://B.Atlassian.Net/", scopes: [] }, // matched after normalization
+    ]);
+
+    const response = await GET(new Request("https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code"));
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("https://itestflow.example/dashboards");
+    expect(mocks.provision).toHaveBeenCalledWith(expect.objectContaining({
+      resource: expect.objectContaining({ id: "cloud-b" }),
+    }));
+    expect(mocks.getIdentity).toHaveBeenCalledWith("access-secret", "cloud-b");
+    expect(mocks.createSelection).not.toHaveBeenCalled();
+  });
+
+  it("never silently switches sites: a pre-selected site outside the grant bounces to the login page", async () => {
+    mocks.consumeState.mockResolvedValue({ returnTo: "/dashboards", selectedSiteUrl: "https://chosen.atlassian.net" });
+    mocks.listResources.mockResolvedValueOnce([
+      { id: "cloud-a", name: "Other", url: "https://other.atlassian.net", scopes: [] },
+    ]);
+
+    const response = await GET(new Request("https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code"));
+
+    expect(response.status).toBe(307);
+    const location = new URL(response.headers.get("location") ?? "");
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.get("error")).toBe("jira_site_access");
+    expect(location.searchParams.get("site")).toBe("https://chosen.atlassian.net");
+    expect(mocks.provision).not.toHaveBeenCalled();
+    expect(mocks.storeConnection).not.toHaveBeenCalled();
+    expect(mocks.createSession).not.toHaveBeenCalled();
+    expect(mocks.cookieDelete).toHaveBeenCalledWith("itf_jira_oauth");
+  });
+
+  it("bounces a pre-selected site to the login page when the grant has no approved sites at all", async () => {
+    mocks.consumeState.mockResolvedValue({ returnTo: "/dashboards", selectedSiteUrl: "https://chosen.atlassian.net" });
+    mocks.listResources.mockResolvedValueOnce([]);
+
+    const response = await GET(new Request("https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code"));
+
+    expect(response.status).toBe(307);
+    expect(new URL(response.headers.get("location") ?? "").searchParams.get("error")).toBe("jira_site_access");
+    expect(mocks.provision).not.toHaveBeenCalled();
   });
 });
