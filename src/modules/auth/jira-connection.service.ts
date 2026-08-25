@@ -49,7 +49,19 @@ export async function storeJiraConnection(input: StoreJiraConnectionInput): Prom
        @id, @workspaceId, @userId, @cloudId,
        @encryptedAccessToken, @accessTokenIv, @accessTokenTag,
        @encryptedRefreshToken, @refreshTokenIv, @refreshTokenTag, @keyVersion,
-       @accessExpiresAt, @scopes, 'active', @isSyncPrincipal, @now, @now
+       @accessExpiresAt, @scopes, 'active',
+       -- Yield to an existing active sync principal held by someone else:
+       -- with bootstrap-seeded owners (issue #186) a workspace can have two
+       -- owners, and the second owner's login must not violate the
+       -- one-active-principal unique index. The first principal keeps the
+       -- role until it is revoked or expires.
+       (@isSyncPrincipal AND NOT EXISTS (
+         SELECT 1 FROM jira_connections other
+         WHERE other.workspace_id = @workspaceId
+           AND other.user_id <> @userId
+           AND other.is_sync_principal = true
+           AND other.status = 'active'
+       )), @now, @now
      FROM workspaces w
      JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = @userId
      WHERE w.id = @workspaceId

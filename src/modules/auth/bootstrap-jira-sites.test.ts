@@ -41,6 +41,24 @@ describe("normalizeJiraSite", () => {
     expect(() => normalizeJiraSite("my site")).toThrow(/atlassian\.net/i);
   });
 
+  it("rejects URLs carrying credentials", () => {
+    expect(() => normalizeJiraSite("https://evil@mysite.atlassian.net")).toThrow(/credentials/i);
+    expect(() => normalizeJiraSite("https://user:pass@mysite.atlassian.net")).toThrow(/credentials/i);
+  });
+
+  it("rejects non-ASCII hosts that URL parsing would punycode into un-adoptable sites", () => {
+    expect(() => normalizeJiraSite("https://мysite.atlassian.net")).toThrow(/atlassian\.net/i);
+    expect(() => normalizeJiraSite("https://xn--ysite-k0d.atlassian.net")).toThrow(/atlassian\.net/i);
+  });
+
+  it("accepts the default https port and rejects a trailing-dot host", () => {
+    expect(normalizeJiraSite("https://mysite.atlassian.net:443")).toEqual({
+      name: "mysite",
+      url: "https://mysite.atlassian.net",
+    });
+    expect(() => normalizeJiraSite("mysite.atlassian.net.")).toThrow(/atlassian\.net/i);
+  });
+
   it("rejects an empty input", () => {
     expect(() => normalizeJiraSite("  ")).toThrow(/empty/i);
   });

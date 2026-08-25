@@ -94,6 +94,7 @@ describe("Jira login provisioning", () => {
     mocks.sqlGet
       .mockResolvedValueOnce(undefined) // adopt claim
       .mockResolvedValueOnce(undefined) // insert no-op
+      .mockResolvedValueOnce(undefined) // re-claim after lost insert
       .mockResolvedValueOnce({ id: "ws_existing" }) // fallback select
       .mockResolvedValueOnce({ user_id: "user_existing" }) // external identity
       .mockResolvedValueOnce({ role: "admin" }); // membership
@@ -105,6 +106,25 @@ describe("Jira login provisioning", () => {
 
     expect(mocks.sqlGet.mock.calls.some(([sql]) => sql.includes("email_or_unique_name"))).toBe(false);
     expect(mocks.sqlGet.mock.calls.some(([sql, params]) => sql.includes("INSERT INTO workspace_members") && params.role === "member")).toBe(true);
+  });
+
+  it("re-claims a seeded workspace committed between the first claim and the lost insert", async () => {
+    mocks.sqlGet
+      .mockResolvedValueOnce(undefined) // adopt claim: seeded row not committed yet
+      .mockResolvedValueOnce(undefined) // insert loses to the freshly committed seeded row
+      .mockResolvedValueOnce({ id: "ws_seeded_late" }) // re-claim adopts it
+      .mockResolvedValueOnce(undefined) // external identity
+      .mockResolvedValueOnce(undefined) // user by email
+      .mockResolvedValueOnce({ id: "user_fixed" }) // user insert
+      .mockResolvedValueOnce({ role: "member" }); // membership
+
+    await expect(provisionJiraLogin({
+      resource: { id: "cloud-a", name: "Quality", url: "https://quality.atlassian.net", scopes: [] },
+      identity: { accountId: "account-3", displayName: "Racing Login", emailAddress: "race@example.com" },
+    })).resolves.toEqual({ workspaceId: "ws_seeded_late", userId: "user_fixed", role: "member" });
+
+    expect(mocks.sqlGet.mock.calls[2][0]).toContain("provider_site_id IS NULL");
+    expect(mocks.sqlGet.mock.calls.some(([sql, params]) => sql.includes("INSERT INTO workspace_members") && params.role === "owner")).toBe(false);
   });
 
   it("links a mixed-case existing email through the case-insensitive identity invariant", async () => {

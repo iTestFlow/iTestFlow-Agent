@@ -176,4 +176,26 @@ describe("Jira OAuth connection storage", () => {
       isSyncPrincipal: true,
     })).rejects.toThrow("not authorized");
   });
+
+  it("yields the sync-principal role to another user's active principal instead of violating its unique index", async () => {
+    // Bootstrap-seeded owners (issue #186) make two owners per workspace a
+    // normal state; the second owner's requested principal must compute to
+    // false in SQL while another active principal exists.
+    await storeJiraConnection({
+      workspaceId: "ws-1",
+      userId: "user-2",
+      cloudId: "cloud-a",
+      accessToken: "access",
+      refreshToken: "refresh",
+      expiresInSeconds: 3600,
+      scopes: "offline_access",
+      isSyncPrincipal: true,
+    });
+
+    const [sql] = mocks.sqlRun.mock.calls[0];
+    expect(sql).toContain("@isSyncPrincipal AND NOT EXISTS");
+    expect(sql).toContain("other.user_id <> @userId");
+    expect(sql).toContain("other.is_sync_principal = true");
+    expect(sql).toContain("other.status = 'active'");
+  });
 });

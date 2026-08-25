@@ -50,17 +50,7 @@ export async function ensureBootstrapOwner(): Promise<BootstrapResult> {
     );
     if (!workspace) throw new Error("Bootstrap failed to resolve workspace.");
 
-    await sqlRun(
-      `INSERT INTO users (id, display_name, email_or_unique_name, status, created_at)
-       VALUES (@id, @displayName, @email, 'active', @now)
-       ON CONFLICT (email_or_unique_name) DO NOTHING`,
-      { id: createId("user"), displayName: entry.email, email: entry.email, now },
-    );
-    const user = await sqlGet<{ id: string }>(
-      `SELECT id FROM users WHERE email_or_unique_name = @email LIMIT 1`,
-      { email: entry.email },
-    );
-    if (!user) throw new Error("Bootstrap failed to resolve owner user.");
+    const userId = await ensureBootstrapUser(entry.email, now);
 
     await sqlRun(
       `INSERT INTO workspace_members (id, workspace_id, user_id, role, status, created_at, updated_at)
@@ -68,15 +58,15 @@ export async function ensureBootstrapOwner(): Promise<BootstrapResult> {
        ON CONFLICT (workspace_id, user_id)
        DO UPDATE SET role = 'owner', status = 'active', updated_at = @now
        WHERE workspace_members.role <> 'owner' OR workspace_members.status <> 'active'`,
-      { id: createId("wm"), workspaceId: workspace.id, userId: user.id, now },
+      { id: createId("wm"), workspaceId: workspace.id, userId, now },
     );
 
-    if (!first) first = { workspaceId: workspace.id, userId: user.id };
+    if (!first) first = { workspaceId: workspace.id, userId };
   }
 
   for (const entry of jiraEntries) {
     const workspaceId = await ensureJiraSiteWorkspace(entry, now);
-    const userId = await ensureJiraOwnerUser(entry.email, now);
+    const userId = await ensureBootstrapUser(entry.email, now);
     await sqlRun(
       `INSERT INTO workspace_members (id, workspace_id, user_id, role, status, created_at, updated_at)
        VALUES (@id, @workspaceId, @userId, 'owner', 'active', @now, @now)
@@ -133,11 +123,14 @@ async function ensureJiraSiteWorkspace(entry: BootstrapJiraSiteEntry, now: strin
 }
 
 /**
- * The idx_users_email_ci invariant forbids inserting a case-variant of an
- * existing email, so resolve case-insensitively first (matching the OAuth
- * email-linking in provisionJiraLogin) before a conflict-tolerant insert.
+ * Shared owner-user resolution for both provider loops. The idx_users_email_ci
+ * invariant forbids inserting a case-variant of an existing email (a raw
+ * ON CONFLICT (email_or_unique_name) arbiter would raise 23505 on the CI index
+ * instead of no-oping), so resolve case-insensitively first — matching the
+ * OAuth email-linking in provisionJiraLogin — and use a bare conflict-tolerant
+ * insert as the fallback.
  */
-async function ensureJiraOwnerUser(email: string, now: string): Promise<string> {
+async function ensureBootstrapUser(email: string, now: string): Promise<string> {
   const existing = await sqlGet<{ id: string }>(
     `SELECT id FROM users WHERE LOWER(email_or_unique_name) = LOWER(@email) LIMIT 1`,
     { email },
@@ -280,6 +273,9 @@ export function normalizeJiraSite(input: string): { name: string; url: string } 
     } catch {
       throw new Error(`Jira site "${input}" is not a valid URL.`);
     }
+    if (parsed.username || parsed.password) {
+      throw new Error(`Jira site "${input}" must not contain credentials.`);
+    }
     if ((parsed.pathname !== "/" && parsed.pathname !== "") || parsed.search || parsed.hash || parsed.port) {
       throw new Error(
         `Jira site "${input}" must be a bare *.atlassian.net site URL without a path, query, or port.`,
@@ -291,7 +287,10 @@ export function normalizeJiraSite(input: string): { name: string; url: string } 
   host = host.toLowerCase().replace(/\/+$/, "");
   if (!host.includes(".")) host = `${host}.atlassian.net`;
   const match = /^([a-z0-9][a-z0-9-]*)\.atlassian\.net$/.exec(host);
-  if (!match) {
+  // Reject punycoded labels: WHATWG URL parsing IDN-encodes non-ASCII input
+  // into xn--, which Atlassian site names (ASCII-only) can never match — the
+  // seeded row would be permanently un-adoptable.
+  if (!match || match[1].startsWith("xn--")) {
     throw new Error(
       `Jira site "${input}" must be a *.atlassian.net site (e.g. "mysite" or https://mysite.atlassian.net).`,
     );

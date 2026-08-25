@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 
-import { describeDb } from "@/test/db";
+import { describeDb, suspendJiraBootstrapEnv } from "@/test/db";
 import { createId, getPool, nowIso, resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
 import { getWorkspaceById } from "@/modules/workspace/workspace.service";
@@ -27,8 +27,10 @@ async function cleanup(workspaceId?: string) {
 
 describeDb("workspace sync schedule (DB-backed)", () => {
   let workspaceId: string;
+  let restoreJiraEnv = () => {};
 
   beforeAll(async () => {
+    restoreJiraEnv = suspendJiraBootstrapEnv();
     process.env.BOOTSTRAP_OWNER_EMAIL = TEST_EMAIL;
     process.env.BOOTSTRAP_OWNER_AZURE_ORG = TEST_ORG;
     await cleanup();
@@ -38,6 +40,7 @@ describeDb("workspace sync schedule (DB-backed)", () => {
 
   afterAll(async () => {
     await cleanup(workspaceId);
+    restoreJiraEnv();
     await resetDatabaseForTests();
   });
 

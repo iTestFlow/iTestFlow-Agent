@@ -27,7 +27,7 @@ export async function provisionJiraLogin(input: {
     // provider_site_id until its first OAuth grant reveals the cloudId. Claim
     // that row by URL instead of inserting a duplicate; the row lock
     // serializes concurrent first logins.
-    const adopted = await sqlGet<{ id: string }>(
+    const claimSeededWorkspace = () => sqlGet<{ id: string }>(
       `UPDATE workspaces
        SET provider_site_id = @siteId, provider_site_name = @siteName, name = @siteName, updated_at = @now
        WHERE provider_id = 'jira-cloud' AND provider_site_id IS NULL
@@ -36,6 +36,8 @@ export async function provisionJiraLogin(input: {
       { siteId, siteName, siteUrl, now },
       client,
     );
+
+    let adopted = await claimSeededWorkspace();
     // Bare ON CONFLICT: both the (provider_id, provider_site_id) and the
     // (provider_id, provider_site_url) partial unique indexes may arbitrate,
     // and either one must resolve to a no-op instead of an error.
@@ -54,6 +56,12 @@ export async function provisionJiraLogin(input: {
           { id: createId("ws"), name: siteName, providerId: "jira-cloud", siteId, siteName, siteUrl, now },
           client,
         );
+    if (!adopted && !createdWorkspace) {
+      // The insert lost to a row committed after our first claim. That row is
+      // either the seeded workspace (URL index, site id still NULL — claim it
+      // now) or a fully provisioned one (site-id index — the select below).
+      adopted = await claimSeededWorkspace();
+    }
     const workspace = adopted ?? createdWorkspace ?? await sqlGet<{ id: string }>(
       `SELECT id FROM workspaces
        WHERE provider_id = 'jira-cloud' AND provider_site_id = @siteId AND status = 'active'

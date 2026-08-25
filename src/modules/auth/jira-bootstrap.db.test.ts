@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 
 import { resetDatabaseForTests, sqlAll, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
+import { storeJiraConnection } from "@/modules/auth/jira-connection.service";
 import { provisionJiraLogin } from "@/modules/auth/jira-provisioning.service";
 import { getWorkspaceMembership } from "@/modules/workspace/workspace-access.service";
 import { describeDb } from "@/test/db";
@@ -11,11 +12,13 @@ import { describeDb } from "@/test/db";
 const SITE_A = "https://itf-jira-boot-a.atlassian.net"; // seeded → adopted by OAuth
 const SITE_B = "https://itf-jira-boot-b.atlassian.net"; // unseeded → first-login-wins regression
 const SITE_C = "https://itf-jira-boot-c.atlassian.net"; // seeded → concurrent first logins
+const SITE_D = "https://itf-jira-boot-d.atlassian.net"; // connected first, seeded afterwards
 const ORG_M = "https://dev.azure.com/itf-jira-boot-mixed";
 const OWNER_A = "jira-owner-a@itf-bootstrap.test";
 const VISITOR = "jira-visitor@itf-bootstrap.test";
 const RACER_1 = "jira-racer-1@itf-bootstrap.test";
 const RACER_2 = "jira-racer-2@itf-bootstrap.test";
+const FIRST_D = "jira-first-d@itf-bootstrap.test";
 
 const ENV_KEYS = [
   "BOOTSTRAP_OWNER_EMAIL",
@@ -24,6 +27,7 @@ const ENV_KEYS = [
   "BOOTSTRAP_OWNER_JIRA_SITE",
   "BOOTSTRAP_JIRA_SITES",
   "ATLASSIAN_ALLOWED_CLOUD_IDS",
+  "APP_ENCRYPTION_KEY",
 ] as const;
 
 async function userIdByEmail(email: string): Promise<string | undefined> {
@@ -52,7 +56,7 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
   let saved: Record<string, string | undefined>;
 
   async function cleanup() {
-    for (const url of [SITE_A, SITE_B, SITE_C]) {
+    for (const url of [SITE_A, SITE_B, SITE_C, SITE_D]) {
       const rows = await sqlAll<{ id: string }>(
         `SELECT id FROM workspaces WHERE provider_id = 'jira-cloud' AND provider_site_url = @url`,
         { url },
@@ -67,7 +71,7 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
       await sqlRun(`DELETE FROM workspace_members WHERE workspace_id = @id`, { id: azure.id });
       await sqlRun(`DELETE FROM workspaces WHERE id = @id`, { id: azure.id });
     }
-    for (const email of [OWNER_A, VISITOR, RACER_1, RACER_2]) {
+    for (const email of [OWNER_A, VISITOR, RACER_1, RACER_2, FIRST_D]) {
       // external_identities cascade with the user row
       await sqlRun(`DELETE FROM users WHERE LOWER(email_or_unique_name) = LOWER(@email)`, { email });
     }
@@ -77,7 +81,8 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
     saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
     for (const k of ENV_KEYS) delete process.env[k];
     process.env.BOOTSTRAP_JIRA_SITES = `${SITE_A}|${OWNER_A}, ${SITE_C}|${OWNER_A}`;
-    process.env.ATLASSIAN_ALLOWED_CLOUD_IDS = "cloud-boot-a,cloud-boot-b,cloud-boot-c";
+    process.env.ATLASSIAN_ALLOWED_CLOUD_IDS = "cloud-boot-a,cloud-boot-b,cloud-boot-c,cloud-boot-d";
+    process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
     await cleanup();
   });
 
@@ -169,7 +174,9 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
   });
 
   it("seeds Azure orgs and Jira sites side by side for a shared owner without cross-contamination", async () => {
-    process.env.BOOTSTRAP_AZURE_ORGS = `${ORG_M}|${OWNER_A}`;
+    // Case-variant email across providers must resolve to ONE user through the
+    // shared case-insensitive bootstrap-user helper (idx_users_email_ci).
+    process.env.BOOTSTRAP_AZURE_ORGS = `${ORG_M}|${OWNER_A.toUpperCase()}`;
     try {
       const result = await ensureBootstrapOwner();
 
@@ -180,16 +187,77 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
       expect(azure).toBeTruthy();
       expect(azure!.provider_site_url).toBeNull(); // Azure rows never enter the Jira URL namespace
 
-      const ownerId = await userIdByEmail(OWNER_A);
+      const users = await sqlAll<{ id: string }>(
+        `SELECT id FROM users WHERE LOWER(email_or_unique_name) = LOWER(@email)`,
+        { email: OWNER_A },
+      );
+      expect(users).toHaveLength(1);
+      const ownerId = users[0].id;
       expect(result).toEqual({ workspaceId: azure!.id, userId: ownerId }); // Azure entries stay first
-      expect((await getWorkspaceMembership(ownerId!, azure!.id))?.role).toBe("owner");
+      expect((await getWorkspaceMembership(ownerId, azure!.id))?.role).toBe("owner");
 
       // The already-adopted Jira workspace is untouched (no duplicate, owner intact).
       const jira = await jiraWorkspacesByUrl(SITE_A);
       expect(jira).toHaveLength(1);
-      expect((await getWorkspaceMembership(ownerId!, jira[0].id))?.role).toBe("owner");
+      expect((await getWorkspaceMembership(ownerId, jira[0].id))?.role).toBe("owner");
     } finally {
       delete process.env.BOOTSTRAP_AZURE_ORGS;
     }
+  });
+
+  it("seeding an already-connected site keeps the first owner's sync principal and still lets the seeded owner connect", async () => {
+    // A site connects organically first: its first user becomes owner + sync principal.
+    const first = await provisionJiraLogin({
+      resource: { id: "cloud-boot-d", name: "Boot D", url: SITE_D, scopes: [] },
+      identity: { accountId: "acc-d-first", displayName: "First D", emailAddress: FIRST_D },
+    });
+    expect(first.role).toBe("owner");
+    await storeJiraConnection({
+      workspaceId: first.workspaceId,
+      userId: first.userId,
+      cloudId: "cloud-boot-d",
+      accessToken: "first-access",
+      refreshToken: "first-refresh",
+      expiresInSeconds: 3600,
+      scopes: "offline_access",
+      isSyncPrincipal: first.role === "owner",
+    });
+
+    // The operator then adds the site to BOOTSTRAP_JIRA_SITES with a declared owner.
+    const savedSites = process.env.BOOTSTRAP_JIRA_SITES;
+    process.env.BOOTSTRAP_JIRA_SITES = `${savedSites}, ${SITE_D}|${OWNER_A}`;
+    try {
+      await ensureBootstrapOwner();
+    } finally {
+      process.env.BOOTSTRAP_JIRA_SITES = savedSites;
+    }
+    expect(await jiraWorkspacesByUrl(SITE_D)).toHaveLength(1); // adopted, not duplicated
+
+    // The seeded owner's own first OAuth login must succeed — their connection
+    // yields the sync principal instead of violating its unique index.
+    const seededOwner = await provisionJiraLogin({
+      resource: { id: "cloud-boot-d", name: "Boot D", url: SITE_D, scopes: [] },
+      identity: { accountId: "acc-d-owner", displayName: "Seeded Owner D", emailAddress: OWNER_A },
+    });
+    expect(seededOwner.workspaceId).toBe(first.workspaceId);
+    expect(seededOwner.role).toBe("owner");
+    await storeJiraConnection({
+      workspaceId: seededOwner.workspaceId,
+      userId: seededOwner.userId,
+      cloudId: "cloud-boot-d",
+      accessToken: "owner-access",
+      refreshToken: "owner-refresh",
+      expiresInSeconds: 3600,
+      scopes: "offline_access",
+      isSyncPrincipal: seededOwner.role === "owner",
+    });
+
+    const principals = await sqlAll<{ user_id: string; is_sync_principal: boolean }>(
+      `SELECT user_id, is_sync_principal FROM jira_connections WHERE workspace_id = @id ORDER BY created_at ASC`,
+      { id: first.workspaceId },
+    );
+    expect(principals).toHaveLength(2);
+    expect(principals.find((row) => row.user_id === first.userId)?.is_sync_principal).toBe(true);
+    expect(principals.find((row) => row.user_id === seededOwner.userId)?.is_sync_principal).toBe(false);
   });
 });

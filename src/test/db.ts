@@ -13,6 +13,25 @@ import { persistSession } from "@/modules/auth/session.service";
 
 export const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
 
+/**
+ * Keep ambient Jira bootstrap vars (a developer's .env is loaded by
+ * with-test-database.mjs) out of suites that call ensureBootstrapOwner for
+ * Azure-focused fixtures: an ambient BOOTSTRAP_JIRA_SITES would seed stray
+ * Jira rows — or throw on an invalid value — inside unrelated suites.
+ * Call in beforeAll and invoke the returned restore in afterAll.
+ */
+export function suspendJiraBootstrapEnv(): () => void {
+  const keys = ["BOOTSTRAP_OWNER_JIRA_SITE", "BOOTSTRAP_JIRA_SITES"] as const;
+  const saved = keys.map((key) => [key, process.env[key]] as const);
+  for (const key of keys) delete process.env[key];
+  return () => {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
 // Mechanical isolation: fixture IDs built with uniqueTestId never collide with rows
 // left behind by a crashed earlier run (afterAll cleanup does not run on a crash, and
 // unlike CI's fresh service container, a local database persists between runs).

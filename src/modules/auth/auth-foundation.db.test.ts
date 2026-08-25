@@ -10,7 +10,7 @@ import {
 } from "@/modules/workspace/workspace-access.service";
 import { getWorkspaceById, getWorkspacesForUser } from "@/modules/workspace/workspace.service";
 import { persistSession, resolveSessionToken, revokeSessionToken } from "@/modules/auth/session.service";
-import { describeDb } from "@/test/db";
+import { describeDb, suspendJiraBootstrapEnv } from "@/test/db";
 
 const TEST_EMAIL = "owner@itestflow.test";
 const TEST_ORG = "itestflow-test-org";
@@ -20,8 +20,10 @@ describeDb("auth & workspace foundation (DB-backed)", () => {
   const savedOwnerEmail = process.env.BOOTSTRAP_OWNER_EMAIL;
   const savedOwnerAzureOrg = process.env.BOOTSTRAP_OWNER_AZURE_ORG;
   const savedAzureOrgs = process.env.BOOTSTRAP_AZURE_ORGS;
+  let restoreJiraEnv = () => {};
 
   beforeAll(async () => {
+    restoreJiraEnv = suspendJiraBootstrapEnv();
     process.env.BOOTSTRAP_OWNER_EMAIL = TEST_EMAIL;
     process.env.BOOTSTRAP_OWNER_AZURE_ORG = TEST_ORG;
     delete process.env.BOOTSTRAP_AZURE_ORGS; // exercise the legacy single-org path exactly
@@ -39,6 +41,7 @@ describeDb("auth & workspace foundation (DB-backed)", () => {
     else process.env.BOOTSTRAP_OWNER_AZURE_ORG = savedOwnerAzureOrg;
     if (savedAzureOrgs === undefined) delete process.env.BOOTSTRAP_AZURE_ORGS;
     else process.env.BOOTSTRAP_AZURE_ORGS = savedAzureOrgs;
+    restoreJiraEnv();
     await resetDatabaseForTests();
   });
 
