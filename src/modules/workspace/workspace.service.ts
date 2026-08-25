@@ -132,6 +132,45 @@ export async function listActiveWorkspaces(): Promise<Array<Pick<WorkspaceRef, "
   }));
 }
 
+export type JiraSiteOption = { name: string; siteUrl: string };
+
+type JiraSiteRow = Pick<WorkspaceRow, "name" | "provider_site_name" | "provider_site_url">;
+
+function mapJiraSite(row: JiraSiteRow): JiraSiteOption {
+  return { name: row.provider_site_name ?? row.name, siteUrl: row.provider_site_url ?? "" };
+}
+
+/**
+ * Active Jira sites, for the pre-auth login site picker — the Jira mirror of
+ * {@link listActiveWorkspaces} and equally intentionally unscoped. Display
+ * fields ONLY: never the internal workspace id, and never the Atlassian
+ * cloudId. Includes bootstrap-seeded sites that have not completed their first
+ * OAuth yet (provider_site_id still NULL).
+ */
+export async function listActiveJiraSites(): Promise<JiraSiteOption[]> {
+  const rows = await sqlAll<JiraSiteRow>(
+    `SELECT name, provider_site_name, provider_site_url FROM workspaces
+     WHERE status = 'active' AND provider_id = 'jira-cloud' AND provider_site_url IS NOT NULL
+     ORDER BY name ASC`,
+  );
+  return rows.map(mapJiraSite);
+}
+
+/**
+ * Pre-OAuth site lookup for the /api/auth/jira/start `site` validation. Exact
+ * match on the canonical URL: every writer stores the normalized form
+ * (bootstrap seeding, OAuth adoption, and the site-URL uniqueness migration).
+ */
+export async function findActiveJiraSiteByUrl(siteUrl: string): Promise<JiraSiteOption | null> {
+  const row = await sqlGet<JiraSiteRow>(
+    `SELECT name, provider_site_name, provider_site_url FROM workspaces
+     WHERE status = 'active' AND provider_id = 'jira-cloud' AND provider_site_url = @siteUrl
+     LIMIT 1`,
+    { siteUrl },
+  );
+  return row ? mapJiraSite(row) : null;
+}
+
 /**
  * Enable/disable an org by its canonical Azure org URL (the `npm run org:enable` /
  * `org:disable` admin path). Disabling is a SOFT delete: `status='inactive'` keeps
