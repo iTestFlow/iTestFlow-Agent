@@ -3,6 +3,7 @@ import "server-only";
 import type { PoolClient } from "pg";
 
 import { createId, nowIso, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
+import { normalizeJiraSite } from "./bootstrap.service";
 import { isAllowedAtlassianCloudId, type AtlassianAccessibleResource, type AtlassianUserIdentity } from "./jira-oauth";
 
 export type JiraLoginProvisioningResult = {
@@ -11,6 +12,20 @@ export type JiraLoginProvisioningResult = {
   role: "owner" | "admin" | "member";
 };
 
+/**
+ * Canonical form of an Atlassian resource URL, matching the normalization the
+ * bootstrap seeder and the site-URL uniqueness migration apply. Defensive
+ * fallback: a non-*.atlassian.net resource URL still gets a stable lowercase,
+ * slash-free form instead of failing the login.
+ */
+function canonicalSiteUrl(resourceUrl: string): string {
+  try {
+    return normalizeJiraSite(resourceUrl).url;
+  } catch {
+    return resourceUrl.trim().replace(/\/+$/, "").toLowerCase();
+  }
+}
+
 export async function provisionJiraLogin(input: {
   resource: AtlassianAccessibleResource;
   identity: AtlassianUserIdentity;
@@ -18,27 +33,46 @@ export async function provisionJiraLogin(input: {
   if (!isAllowedAtlassianCloudId(input.resource.id)) throw new Error("This Jira Cloud site is not approved.");
   return withTransaction(async (client) => {
     const now = nowIso();
-    const createdWorkspace = await sqlGet<{ id: string }>(
-      `INSERT INTO workspaces (
-         id, name, azure_org_name, azure_org_url, provider_id,
-         provider_site_id, provider_site_name, provider_site_url, status, created_at, updated_at
-       ) VALUES (
-         @id, @name, NULL, NULL, @providerId,
-         @siteId, @siteName, @siteUrl, 'active', @now, @now
-       )
-       ON CONFLICT (provider_id, provider_site_id) WHERE provider_site_id IS NOT NULL DO NOTHING
+    const siteId = input.resource.id.trim();
+    const siteName = input.resource.name;
+    const siteUrl = canonicalSiteUrl(input.resource.url);
+
+    // A bootstrap-seeded site (BOOTSTRAP_JIRA_SITES) exists with a NULL
+    // provider_site_id until its first OAuth grant reveals the cloudId. Claim
+    // that row by URL instead of inserting a duplicate; the row lock
+    // serializes concurrent first logins.
+    const adopted = await sqlGet<{ id: string }>(
+      `UPDATE workspaces
+       SET provider_site_id = @siteId, provider_site_name = @siteName, name = @siteName, updated_at = @now
+       WHERE provider_id = 'jira-cloud' AND provider_site_id IS NULL
+         AND provider_site_url = @siteUrl AND status = 'active'
        RETURNING id`,
-      {
-        id: createId("ws"), name: input.resource.name, providerId: "jira-cloud",
-        siteId: input.resource.id.trim(), siteName: input.resource.name, siteUrl: input.resource.url, now,
-      },
+      { siteId, siteName, siteUrl, now },
       client,
     );
-    const workspace = createdWorkspace ?? await sqlGet<{ id: string }>(
+    // Bare ON CONFLICT: both the (provider_id, provider_site_id) and the
+    // (provider_id, provider_site_url) partial unique indexes may arbitrate,
+    // and either one must resolve to a no-op instead of an error.
+    const createdWorkspace = adopted
+      ? undefined
+      : await sqlGet<{ id: string }>(
+          `INSERT INTO workspaces (
+             id, name, azure_org_name, azure_org_url, provider_id,
+             provider_site_id, provider_site_name, provider_site_url, status, created_at, updated_at
+           ) VALUES (
+             @id, @name, NULL, NULL, @providerId,
+             @siteId, @siteName, @siteUrl, 'active', @now, @now
+           )
+           ON CONFLICT DO NOTHING
+           RETURNING id`,
+          { id: createId("ws"), name: siteName, providerId: "jira-cloud", siteId, siteName, siteUrl, now },
+          client,
+        );
+    const workspace = adopted ?? createdWorkspace ?? await sqlGet<{ id: string }>(
       `SELECT id FROM workspaces
        WHERE provider_id = 'jira-cloud' AND provider_site_id = @siteId AND status = 'active'
        LIMIT 1`,
-      { siteId: input.resource.id.trim() },
+      { siteId },
       client,
     );
     if (!workspace) throw new Error("Jira workspace could not be provisioned.");
