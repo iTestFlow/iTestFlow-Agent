@@ -411,9 +411,12 @@ describe("LoginPage", () => {
 
     const alert = await screen.findByRole("alert")
     expect(alert).toHaveTextContent("Jira site access was denied.")
-    expect(alert).toHaveTextContent("Quality (https://quality.atlassian.net)")
+    // The named variant appears once the deployment's site list resolves.
+    await waitFor(() => expect(alert).toHaveTextContent("Quality (https://quality.atlassian.net)"))
     // The Jira pane is pre-selected so the user can act immediately.
-    expect(screen.getByRole("radio", { name: "Jira Cloud" })).toHaveAttribute("aria-checked", "true")
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "Jira Cloud" })).toHaveAttribute("aria-checked", "true"),
+    )
     expect(screen.queryByLabelText("Personal Access Token")).not.toBeInTheDocument()
 
     cleanup()
