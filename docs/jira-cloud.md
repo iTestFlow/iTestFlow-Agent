@@ -22,10 +22,26 @@ Set these deployment variables:
 
 Restart the web and worker processes after changing deployment variables. Never put real credentials in source control, logs, screenshots, issue comments, or support bundles.
 
+### Bootstrap and Provider Enablement
+
+The Jira mirror of the Azure org bootstrap. These are optional; without them a Jira site is created lazily on its first OAuth login and that first user becomes the workspace owner.
+
+- `BOOTSTRAP_OWNER_JIRA_SITE` + `BOOTSTRAP_OWNER_EMAIL`: legacy single-site pair, seeded only when both are set.
+- `BOOTSTRAP_JIRA_SITES`: comma-separated `siteUrl|ownerEmail` entries (a site accepts `mysite`, `mysite.atlassian.net`, or `https://mysite.atlassian.net`; omit `|email` to inherit `BOOTSTRAP_OWNER_EMAIL`). Each entry seeds the site's workspace, its owner user, and the owner membership at startup, so the site appears in the login page's site picker before any OAuth and its declared owner — not the first visitor — owns the workspace.
+- `BOOTSTRAP_ENABLED_PROVIDERS`: which sign-in providers the login page offers (`azure-devops`, `jira-cloud`, comma-separated, first entry is the default pane). Unset auto-detects: Azure DevOps always, Jira Cloud when `ATLASSIAN_OAUTH_CLIENT_ID` is set. Enabling `jira-cloud` without its OAuth client refuses to start.
+
+Operational notes:
+
+- The owner email must match the owner's Atlassian account email (case-insensitive) so the seeded user reconciles in place on their first OAuth login.
+- Seeding does not replace the security allowlist: each seeded site's cloud ID must also be listed in `ATLASSIAN_ALLOWED_CLOUD_IDS`, or logins to it are rejected.
+- A seeded site's cloud ID is learned on its first successful OAuth login, which "adopts" the seeded workspace row. Jira synchronization waits until the seeded owner completes OAuth (the sync principal is the owner's connection), so the declared owner should sign in before members rely on sync.
+- Seeding an already-connected site adopts the existing workspace and adds the declared owner alongside the first-login owner; the earlier owner's sync-principal connection is kept.
+- Bootstrap is additive and never flips a disabled site back to active; multi-instance deployments should let one instance finish startup seeding before serving first logins, since a login racing the very first seed can still win first-login ownership.
+
 ## Connect-to-Disconnect Flow
 
-1. Select **Continue with Jira Cloud** on the login page. OAuth state is bound to the initiating browser with an HttpOnly, SameSite cookie.
-2. If the grant contains multiple approved sites, choose one on the browser-bound selection page. Sites outside `ATLASSIAN_ALLOWED_CLOUD_IDS` are rejected.
+1. Select **Jira Cloud** on the login page, pick the Jira site (a single configured site is selected automatically), and continue to Atlassian. OAuth state is bound to the initiating browser with an HttpOnly, SameSite cookie and carries the chosen site, which the callback verifies against the authenticated account's accessible sites — the user is never silently switched to another site. If the account cannot access the chosen site, the login page explains it and offers another attempt.
+2. If OAuth is started without a pre-selected site (legacy links) and the grant contains multiple approved sites, choose one on the browser-bound selection page. Sites outside `ATLASSIAN_ALLOWED_CLOUD_IDS` are rejected.
 3. Open **Settings → Connections**. The page shows the connected site and current workspace role without returning tokens.
 4. Add a visible Jira project. The server re-reads Jira project access, stores the site-local project identity, and registers the tenant-anchored webhook.
 5. Owners or admins configure synchronization direction plus field and status mappings. Members can inspect state and resolve field conflicts but cannot alter shared configuration.

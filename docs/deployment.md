@@ -36,6 +36,20 @@ iTestFlow supports two bootstrap modes:
 | --- | --- | --- |
 | `BOOTSTRAP_AZURE_ORGS` | yes | Comma-separated `orgUrl\|ownerEmail` entries. Each org has its own owner. Omit `\|email` to inherit `BOOTSTRAP_OWNER_EMAIL`. When set, takes precedence over `BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG`. |
 
+### Jira Cloud Sign-In (Optional)
+
+Jira Cloud sign-in and its site/owner bootstrap mirror the Azure entries above. See [jira-cloud.md](jira-cloud.md) for the OAuth app setup and operational notes.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `ATLASSIAN_OAUTH_CLIENT_ID` / `ATLASSIAN_OAUTH_CLIENT_SECRET` | for Jira | Atlassian OAuth 2.0 (3LO) app credentials |
+| `ATLASSIAN_OAUTH_REDIRECT_URI` | for Jira | Exact registered callback, `https://<deployment>/api/auth/jira/callback` |
+| `ATLASSIAN_ALLOWED_CLOUD_IDS` | for Jira | Comma-separated allowlist of approved Atlassian cloud IDs; empty fails closed |
+| `ITESTFLOW_PUBLIC_URL` | for Jira sync | Public HTTPS origin used to register `/api/webhooks/jira` |
+| `BOOTSTRAP_OWNER_JIRA_SITE` | optional | Legacy single-site pair with `BOOTSTRAP_OWNER_EMAIL`; seeds one Jira site and its owner |
+| `BOOTSTRAP_JIRA_SITES` | optional | Comma-separated `siteUrl\|ownerEmail` entries (accepts `mysite` or `https://mysite.atlassian.net`). Seeds each site's workspace and declared owner at startup so the login site picker works before any OAuth; each site's cloud ID must also be in `ATLASSIAN_ALLOWED_CLOUD_IDS` |
+| `BOOTSTRAP_ENABLED_PROVIDERS` | optional | Which sign-in providers the login page offers (`azure-devops`, `jira-cloud`; first entry is the default pane). Unset auto-detects: Azure always, Jira when `ATLASSIAN_OAUTH_CLIENT_ID` is set |
+
 ### Common Variables (Both Modes)
 
 | Variable | Required | Purpose |
@@ -169,7 +183,7 @@ These operations are reversible and preserve all workspace data, user records, p
 ## Production Checklist
 
 - [ ] HTTPS is enabled.
-- [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, and bootstrap variables (`BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG` or `BOOTSTRAP_AZURE_ORGS`) are set through secrets.
+- [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, and bootstrap variables (`BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG` or `BOOTSTRAP_AZURE_ORGS`; plus `BOOTSTRAP_JIRA_SITES` and the `ATLASSIAN_*` variables for Jira Cloud deployments) are set through secrets.
 - [ ] `npm run db:migrate` runs before the new application version receives traffic.
 - [ ] At least one supervised application process is running, or the advanced split topology has at least one web process and one capable background process.
 - [ ] PostgreSQL automated backups are enabled and restore has been tested.

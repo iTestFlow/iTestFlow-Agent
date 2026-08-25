@@ -12,7 +12,7 @@ describe("Jira Cloud operator documentation", () => {
       expect(docs).toContain(heading);
     }
     for (const scope of ["offline_access", "read:jira-work", "write:jira-work", "read:jira-user", "manage:jira-webhook"]) expect(docs).toContain(scope);
-    for (const variable of ["ATLASSIAN_OAUTH_CLIENT_ID", "ATLASSIAN_OAUTH_CLIENT_SECRET", "ATLASSIAN_OAUTH_REDIRECT_URI", "ATLASSIAN_ALLOWED_CLOUD_IDS", "ITESTFLOW_PUBLIC_URL", "APP_ENCRYPTION_KEY"]) {
+    for (const variable of ["ATLASSIAN_OAUTH_CLIENT_ID", "ATLASSIAN_OAUTH_CLIENT_SECRET", "ATLASSIAN_OAUTH_REDIRECT_URI", "ATLASSIAN_ALLOWED_CLOUD_IDS", "ITESTFLOW_PUBLIC_URL", "APP_ENCRYPTION_KEY", "BOOTSTRAP_OWNER_JIRA_SITE", "BOOTSTRAP_JIRA_SITES", "BOOTSTRAP_ENABLED_PROVIDERS"]) {
       expect(docs).toContain(variable);
       expect(env).toContain(`${variable}=`);
     }

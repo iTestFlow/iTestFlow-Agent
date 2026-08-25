@@ -88,6 +88,8 @@ npm run dev -- --hostname 127.0.0.1 --port 3000
 BOOTSTRAP_AZURE_ORGS=https://dev.azure.com/org-a|admin@company.com, https://dev.azure.com/org-b|owner-b@company.com
 ```
 
+**Jira Cloud sign-in** (optional): configure the `ATLASSIAN_*` OAuth variables, then mirror the Azure bootstrap with `BOOTSTRAP_JIRA_SITES` (comma-separated `siteUrl|ownerEmail`, e.g. `mysite|admin@company.com`) so seeded sites appear in the login site picker with their declared owners. `BOOTSTRAP_ENABLED_PROVIDERS` controls which providers the login page offers (unset auto-detects). See [docs/jira-cloud.md](docs/jira-cloud.md).
+
 After starting:
 1. Visit [Login](http://127.0.0.1:3000/login) and select an organization (or enter one by URL).
 2. Sign in with a PAT for that organization.
