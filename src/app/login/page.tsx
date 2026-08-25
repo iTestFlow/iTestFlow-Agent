@@ -32,16 +32,36 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { resolveLoginDestination } from "@/app/login/login-destination"
 import { apiErrorMessage, caughtErrorMessage } from "@/shared/lib/api-error-message"
 
+type LoginProviderId = "azure-devops" | "jira-cloud"
+
+type ProviderOption = {
+  id: LoginProviderId
+  label: string
+}
+
 type OrganizationOption = {
   name: string
   azureOrgName: string
   azureOrgUrl: string
 }
 
-type OrganizationLoadState = "loading" | "ready" | "error"
+type JiraSiteOption = {
+  name: string
+  siteUrl: string
+}
+
+type LoadState = "loading" | "ready" | "error"
+
+type ProviderListResponse = {
+  providers?: ProviderOption[]
+}
 
 type OrganizationListResponse = {
   organizations?: OrganizationOption[]
+}
+
+type JiraSiteListResponse = {
+  sites?: JiraSiteOption[]
 }
 
 const azurePatHelpUrl =
@@ -149,15 +169,79 @@ function OrganizationConfigurationHelp() {
   )
 }
 
+function JiraSiteConfigurationHelp() {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label="How to add a Jira Cloud site"
+          className="grid size-10 shrink-0 place-items-center rounded-lg border border-input bg-background/80 text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+        >
+          <Info className="size-4" aria-hidden="true" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" sideOffset={8} className="max-w-sm whitespace-normal text-left leading-5">
+        <span>
+          Jira sites are configured by your iTestFlow administrator. To add one, update{" "}
+          <code className="rounded bg-background/15 px-1 font-mono text-[11px]">BOOTSTRAP_JIRA_SITES</code> in the
+          server&apos;s <code className="rounded bg-background/15 px-1 font-mono text-[11px]">.env</code> file with a{" "}
+          <code className="rounded bg-background/15 px-1 font-mono text-[11px]">siteUrl|ownerEmail</code> entry, then
+          restart iTestFlow. Example: <code className="rounded bg-background/15 px-1 font-mono text-[11px]">mysite.atlassian.net|owner@company.com</code>.
+        </span>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 export default function LoginPage() {
   const router = useRouter()
+  const [providers, setProviders] = useState<ProviderOption[]>([])
+  const [providerLoadState, setProviderLoadState] = useState<LoadState>("loading")
+  const [providerLoadError, setProviderLoadError] = useState("")
+  const [activeProvider, setActiveProvider] = useState<LoginProviderId | null>(null)
+  const [nextPath, setNextPath] = useState<string | null>(null)
+  // null = no access error; "" = error without a site echo; otherwise the denied site URL.
+  const [deniedSite, setDeniedSite] = useState<string | null>(null)
+
   const [organization, setOrganization] = useState("")
   const [personalAccessToken, setPersonalAccessToken] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [showPersonalAccessToken, setShowPersonalAccessToken] = useState(false)
   const [organizations, setOrganizations] = useState<OrganizationOption[]>([])
-  const [organizationLoadState, setOrganizationLoadState] = useState<OrganizationLoadState>("loading")
+  const [organizationLoadState, setOrganizationLoadState] = useState<LoadState>("loading")
   const [organizationLoadError, setOrganizationLoadError] = useState("")
+
+  const [sites, setSites] = useState<JiraSiteOption[]>([])
+  const [siteLoadState, setSiteLoadState] = useState<LoadState>("loading")
+  const [siteLoadError, setSiteLoadError] = useState("")
+  const [selectedSite, setSelectedSite] = useState("")
+
+  const loadProviders = useCallback(async (signal?: AbortSignal) => {
+    setProviderLoadState("loading")
+    setProviderLoadError("")
+    setProviders([])
+
+    try {
+      const response = await fetch("/api/auth/providers", { cache: "no-store", signal })
+      const data = (await response.json().catch(() => null)) as ProviderListResponse | null
+      if (signal?.aborted) return
+
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(data, "Unable to load sign-in options."))
+      }
+      if (!Array.isArray(data?.providers) || data.providers.length === 0) {
+        throw new Error("Unable to load sign-in options.")
+      }
+
+      setProviders(data.providers)
+      setProviderLoadState("ready")
+    } catch (error) {
+      if (signal?.aborted) return
+      setProviderLoadError(caughtErrorMessage(error, "Unable to load sign-in options."))
+      setProviderLoadState("error")
+    }
+  }, [])
 
   const loadOrganizations = useCallback(async (signal?: AbortSignal) => {
     setOrganizationLoadState("loading")
@@ -190,18 +274,96 @@ export default function LoginPage() {
     }
   }, [])
 
+  const loadJiraSites = useCallback(async (signal?: AbortSignal) => {
+    setSiteLoadState("loading")
+    setSiteLoadError("")
+    setSites([])
+    setSelectedSite("")
+
+    try {
+      const response = await fetch("/api/auth/jira/sites", { cache: "no-store", signal })
+      const data = (await response.json().catch(() => null)) as JiraSiteListResponse | null
+      if (signal?.aborted) return
+
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(data, "Unable to load configured Jira sites."))
+      }
+      if (!Array.isArray(data?.sites)) {
+        throw new Error("Unable to load configured Jira sites.")
+      }
+
+      const list = data.sites
+      setSites(list)
+      // Mirror the Azure org behavior: a single configured site is selected
+      // automatically; the OAuth start link carries its canonical URL.
+      setSelectedSite(list.length === 1 ? list[0].siteUrl : "")
+      setSiteLoadState("ready")
+    } catch (error) {
+      if (signal?.aborted) return
+      setSiteLoadError(caughtErrorMessage(error, "Unable to load configured Jira sites."))
+      setSiteLoadState("error")
+    }
+  }, [])
+
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    setNextPath(params.get("next"))
+    if (params.get("error") === "jira_site_access") {
+      setDeniedSite(params.get("site") ?? "")
+    }
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void loadProviders(controller.signal)
+    return () => {
+      controller.abort()
+    }
+  }, [loadProviders])
+
+  const azureEnabled = providers.some((provider) => provider.id === "azure-devops")
+  const jiraEnabled = providers.some((provider) => provider.id === "jira-cloud")
+
+  // Default pane: the operator's first enabled provider — except after a Jira
+  // site-access bounce, where landing back on the Jira pane is actionable.
+  useEffect(() => {
+    if (providerLoadState !== "ready" || providers.length === 0) return
+    setActiveProvider((current) => {
+      if (current && providers.some((provider) => provider.id === current)) return current
+      if (deniedSite !== null && providers.some((provider) => provider.id === "jira-cloud")) return "jira-cloud"
+      return providers[0].id
+    })
+  }, [providerLoadState, providers, deniedSite])
+
+  useEffect(() => {
+    if (!azureEnabled) return
     const controller = new AbortController()
     void loadOrganizations(controller.signal)
     return () => {
       controller.abort()
     }
-  }, [loadOrganizations])
+  }, [azureEnabled, loadOrganizations])
+
+  useEffect(() => {
+    if (!jiraEnabled) return
+    const controller = new AbortController()
+    void loadJiraSites(controller.signal)
+    return () => {
+      controller.abort()
+    }
+  }, [jiraEnabled, loadJiraSites])
 
   const singleOrganization =
     organizationLoadState === "ready" && organizations.length === 1 ? organizations[0] : null
   const signInDisabled =
     submitting || organizationLoadState !== "ready" || organizations.length === 0 || !organization.trim()
+
+  const singleSite = siteLoadState === "ready" && sites.length === 1 ? sites[0] : null
+  const jiraContinueDisabled = siteLoadState !== "ready" || sites.length === 0 || !selectedSite.trim()
+  // returnTo is re-validated server-side (safeReturnTo); site is re-validated
+  // against the enabled sites by /api/auth/jira/start.
+  const jiraStartHref = `/api/auth/jira/start?site=${encodeURIComponent(selectedSite)}&returnTo=${encodeURIComponent(resolveLoginDestination(nextPath))}`
+  const deniedKnownSite = deniedSite ? sites.find((site) => site.siteUrl === deniedSite) ?? null : null
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -224,8 +386,7 @@ export default function LoginPage() {
       toast.success("Signed in.")
       // Return the user to where the session-expiry redirect sent them from, if it's
       // a safe in-app path; otherwise land directly on the dashboard.
-      const nextParam = new URLSearchParams(window.location.search).get("next")
-      router.push(resolveLoginDestination(nextParam))
+      router.push(resolveLoginDestination(nextPath))
       router.refresh()
     } catch {
       toast.error("Sign in failed. Check your connection and try again.")
@@ -246,183 +407,363 @@ export default function LoginPage() {
           <CardHeader className="gap-2 px-5 sm:px-8">
             <CardTitle className="text-xl font-semibold leading-tight">Sign in to iTestFlow</CardTitle>
             <CardDescription className="max-w-[520px] leading-6">
-              Connect iTestFlow to your Azure DevOps organization using a Personal Access Token. Your token is validated
-              securely and stored encrypted in this private deployment.
+              {activeProvider === "jira-cloud"
+                ? "Connect iTestFlow to your Jira Cloud site with Atlassian OAuth. You approve access on Atlassian's sign-in page, and only encrypted tokens are stored in this private deployment."
+                : "Connect iTestFlow to your Azure DevOps organization using a Personal Access Token. Your token is validated securely and stored encrypted in this private deployment."}
             </CardDescription>
           </CardHeader>
           <CardContent className="px-5 sm:px-8">
-            <form className="space-y-5" onSubmit={onSubmit}>
-              <div className="space-y-2">
-                {organizationLoadState === "loading" || organizationLoadState === "error" || organizations.length === 0 ? (
-                  <p className="text-sm font-medium leading-none">Azure DevOps organization</p>
-                ) : (
-                  <Label htmlFor="organization">Azure DevOps organization</Label>
-                )}
-                {organizationLoadState === "loading" ? (
-                  <>
-                    <div className="flex min-w-0 items-center gap-2">
-                      <div
-                        className="flex h-10 min-w-0 flex-1 items-center gap-3 rounded-lg border border-input bg-muted/30 px-3 text-sm text-muted-foreground"
-                        role="status"
-                        aria-live="polite"
-                        aria-atomic="true"
+            {providerLoadState === "loading" ? (
+              <div
+                className="flex h-10 items-center gap-3 rounded-lg border border-input bg-muted/30 px-3 text-sm text-muted-foreground"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <Loader2 className="size-4 shrink-0 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" />
+                <span>Checking sign-in options…</span>
+              </div>
+            ) : providerLoadState === "error" ? (
+              <Callout
+                tone="error"
+                role="alert"
+                title="Unable to load sign-in options."
+                action={
+                  <Button type="button" variant="outline" size="sm" onClick={() => void loadProviders()}>
+                    <RefreshCw className="size-3.5" aria-hidden="true" />
+                    Retry
+                  </Button>
+                }
+              >
+                {providerLoadError}
+              </Callout>
+            ) : (
+              <>
+                {deniedSite !== null ? (
+                  <div className="mb-5">
+                    <Callout tone="error" role="alert" title="Jira site access was denied.">
+                      {deniedKnownSite
+                        ? `Your Atlassian account does not have access to ${deniedKnownSite.name} (${deniedKnownSite.siteUrl}). Sign in with an Atlassian account that is a member of that site, or pick another site.`
+                        : "Your Atlassian account does not have access to the selected Jira site. Sign in with an Atlassian account that is a member of that site, or pick another site."}
+                    </Callout>
+                  </div>
+                ) : null}
+
+                {providers.length > 1 ? (
+                  <div
+                    className="mb-5 grid grid-cols-2 gap-1 rounded-lg border border-input bg-muted/30 p-1"
+                    role="radiogroup"
+                    aria-label="Sign-in provider"
+                  >
+                    {providers.map((provider) => (
+                      <Button
+                        key={provider.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={activeProvider === provider.id}
+                        variant={activeProvider === provider.id ? "default" : "ghost"}
+                        className="h-9 w-full font-semibold"
+                        onClick={() => setActiveProvider(provider.id)}
                       >
-                        <Loader2
-                          className="size-4 shrink-0 animate-spin text-primary motion-reduce:animate-none"
-                          aria-hidden="true"
-                        />
-                        <span>Loading configured organizations…</span>
-                      </div>
-                      <OrganizationConfigurationHelp />
-                    </div>
-                    <p className="text-xs leading-5 text-muted-foreground">
-                      Checking this deployment&apos;s organization configuration.
-                    </p>
-                  </>
-                ) : organizationLoadState === "error" ? (
-                  <Callout
-                    tone="error"
-                    role="alert"
-                    title="Unable to load organizations."
-                    action={
-                      <Button type="button" variant="outline" size="sm" onClick={() => void loadOrganizations()}>
-                        <RefreshCw className="size-3.5" aria-hidden="true" />
-                        Retry
+                        {provider.label}
                       </Button>
-                    }
-                  >
-                    {organizationLoadError}
-                  </Callout>
-                ) : organizations.length === 0 ? (
-                  <Callout
-                    tone="warning"
-                    role="status"
-                    title="No Azure DevOps organization is configured."
-                    action={<OrganizationConfigurationHelp />}
-                  >
-                    Ask your iTestFlow administrator to configure <code>BOOTSTRAP_AZURE_ORGS</code> and restart iTestFlow.
-                  </Callout>
-                ) : singleOrganization ? (
-                  <>
-                    <div className="flex min-w-0 items-center gap-2">
-                      <div className="relative min-w-0 flex-1">
-                        <Building2
-                          className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-primary"
+                    ))}
+                  </div>
+                ) : null}
+
+                {activeProvider === "azure-devops" ? (
+                  <form className="space-y-5" onSubmit={onSubmit}>
+                    <div className="space-y-2">
+                      {organizationLoadState === "loading" || organizationLoadState === "error" || organizations.length === 0 ? (
+                        <p className="text-sm font-medium leading-none">Azure DevOps organization</p>
+                      ) : (
+                        <Label htmlFor="organization">Azure DevOps organization</Label>
+                      )}
+                      {organizationLoadState === "loading" ? (
+                        <>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <div
+                              className="flex h-10 min-w-0 flex-1 items-center gap-3 rounded-lg border border-input bg-muted/30 px-3 text-sm text-muted-foreground"
+                              role="status"
+                              aria-live="polite"
+                              aria-atomic="true"
+                            >
+                              <Loader2
+                                className="size-4 shrink-0 animate-spin text-primary motion-reduce:animate-none"
+                                aria-hidden="true"
+                              />
+                              <span>Loading configured organizations…</span>
+                            </div>
+                            <OrganizationConfigurationHelp />
+                          </div>
+                          <p className="text-xs leading-5 text-muted-foreground">
+                            Checking this deployment&apos;s organization configuration.
+                          </p>
+                        </>
+                      ) : organizationLoadState === "error" ? (
+                        <Callout
+                          tone="error"
+                          role="alert"
+                          title="Unable to load organizations."
+                          action={
+                            <Button type="button" variant="outline" size="sm" onClick={() => void loadOrganizations()}>
+                              <RefreshCw className="size-3.5" aria-hidden="true" />
+                              Retry
+                            </Button>
+                          }
+                        >
+                          {organizationLoadError}
+                        </Callout>
+                      ) : organizations.length === 0 ? (
+                        <Callout
+                          tone="warning"
+                          role="status"
+                          title="No Azure DevOps organization is configured."
+                          action={<OrganizationConfigurationHelp />}
+                        >
+                          Ask your iTestFlow administrator to configure <code>BOOTSTRAP_AZURE_ORGS</code> and restart iTestFlow.
+                        </Callout>
+                      ) : singleOrganization ? (
+                        <>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <div className="relative min-w-0 flex-1">
+                              <Building2
+                                className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-primary"
+                                aria-hidden="true"
+                              />
+                              <Input
+                                id="organization"
+                                className="h-10 bg-muted/30 pl-11 pr-3 text-foreground"
+                                value={singleOrganization.name}
+                                readOnly
+                                aria-describedby="organization-help"
+                              />
+                            </div>
+                            <OrganizationConfigurationHelp />
+                          </div>
+                          <p id="organization-help" className="text-xs leading-5 text-muted-foreground">
+                            This is the only organization configured for this deployment.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <div className="relative min-w-0 flex-1">
+                              <Building2
+                                className="pointer-events-none absolute left-4 top-1/2 z-10 size-5 -translate-y-1/2 text-primary"
+                                aria-hidden="true"
+                              />
+                              <Select
+                                value={organization}
+                                onValueChange={setOrganization}
+                                disabled={submitting}
+                              >
+                                <SelectTrigger
+                                  id="organization"
+                                  className="h-10 w-full bg-background/80 pl-11 pr-3"
+                                  aria-describedby="organization-help"
+                                >
+                                  <SelectValue placeholder="Select your organization" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {organizations.map((org) => (
+                                    <SelectItem key={org.azureOrgUrl} value={org.azureOrgUrl}>
+                                      {org.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <OrganizationConfigurationHelp />
+                          </div>
+                          <p id="organization-help" className="text-xs leading-5 text-muted-foreground">
+                            Choose the organization you want to sign in to.
+                          </p>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="pat">Personal Access Token</Label>
+                      <div className="relative">
+                        <LockKeyhole
+                          className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-muted-foreground"
                           aria-hidden="true"
                         />
                         <Input
-                          id="organization"
-                          className="h-10 bg-muted/30 pl-11 pr-3 text-foreground"
-                          value={singleOrganization.name}
-                          readOnly
-                          aria-describedby="organization-help"
+                          id="pat"
+                          className="h-10 bg-background/80 pl-11 pr-11"
+                          type={showPersonalAccessToken ? "text" : "password"}
+                          placeholder="Azure DevOps PAT"
+                          value={personalAccessToken}
+                          onChange={(event) => setPersonalAccessToken(event.target.value)}
+                          autoComplete="off"
+                          aria-describedby="pat-help"
+                          required
                         />
-                      </div>
-                      <OrganizationConfigurationHelp />
-                    </div>
-                    <p id="organization-help" className="text-xs leading-5 text-muted-foreground">
-                      This is the only organization configured for this deployment.
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex min-w-0 items-center gap-2">
-                      <div className="relative min-w-0 flex-1">
-                        <Building2
-                          className="pointer-events-none absolute left-4 top-1/2 z-10 size-5 -translate-y-1/2 text-primary"
-                          aria-hidden="true"
-                        />
-                        <Select
-                          value={organization}
-                          onValueChange={setOrganization}
-                          disabled={submitting}
+                        <button
+                          type="button"
+                          className="absolute inset-y-0 right-0 grid w-11 place-items-center rounded-r-lg text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+                          onClick={() => setShowPersonalAccessToken((current) => !current)}
+                          aria-label={showPersonalAccessToken ? "Hide Personal Access Token" : "Show Personal Access Token"}
+                          aria-pressed={showPersonalAccessToken}
                         >
-                          <SelectTrigger
-                            id="organization"
-                            className="h-10 w-full bg-background/80 pl-11 pr-3"
-                            aria-describedby="organization-help"
-                          >
-                            <SelectValue placeholder="Select your organization" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {organizations.map((org) => (
-                              <SelectItem key={org.azureOrgUrl} value={org.azureOrgUrl}>
-                                {org.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                          {showPersonalAccessToken ? (
+                            <Eye className="size-4" aria-hidden="true" />
+                          ) : (
+                            <EyeOff className="size-4" aria-hidden="true" />
+                          )}
+                        </button>
                       </div>
-                      <OrganizationConfigurationHelp />
+                      <p id="pat-help" className="text-xs leading-5 text-muted-foreground">
+                        Use a PAT with access to Work Items, Test Plans, and Project metadata.
+                      </p>
+                      <a
+                        href={azurePatHelpUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-2 text-sm font-semibold text-primary outline-none transition-colors hover:text-primary/80 hover:underline focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+                      >
+                        <CircleHelp className="size-4" aria-hidden="true" />
+                        How to create an Azure DevOps PAT
+                        <ExternalLink className="size-3.5" aria-hidden="true" />
+                      </a>
                     </div>
-                    <p id="organization-help" className="text-xs leading-5 text-muted-foreground">
-                      Choose the organization you want to sign in to.
+
+                    <div className="pt-1">
+                      <Button type="submit" size="lg" className="h-10 w-full font-semibold" disabled={signInDisabled}>
+                        {submitting ? "Signing in..." : "Sign In"}
+                      </Button>
+                    </div>
+                  </form>
+                ) : null}
+
+                {activeProvider === "jira-cloud" ? (
+                  <div className="space-y-5">
+                    <div className="space-y-2">
+                      {siteLoadState === "loading" || siteLoadState === "error" || sites.length === 0 ? (
+                        <p className="text-sm font-medium leading-none">Jira Cloud site</p>
+                      ) : (
+                        <Label htmlFor="jira-site">Jira Cloud site</Label>
+                      )}
+                      {siteLoadState === "loading" ? (
+                        <>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <div
+                              className="flex h-10 min-w-0 flex-1 items-center gap-3 rounded-lg border border-input bg-muted/30 px-3 text-sm text-muted-foreground"
+                              role="status"
+                              aria-live="polite"
+                              aria-atomic="true"
+                            >
+                              <Loader2
+                                className="size-4 shrink-0 animate-spin text-primary motion-reduce:animate-none"
+                                aria-hidden="true"
+                              />
+                              <span>Loading configured Jira sites…</span>
+                            </div>
+                            <JiraSiteConfigurationHelp />
+                          </div>
+                          <p className="text-xs leading-5 text-muted-foreground">
+                            Checking this deployment&apos;s Jira site configuration.
+                          </p>
+                        </>
+                      ) : siteLoadState === "error" ? (
+                        <Callout
+                          tone="error"
+                          role="alert"
+                          title="Unable to load Jira sites."
+                          action={
+                            <Button type="button" variant="outline" size="sm" onClick={() => void loadJiraSites()}>
+                              <RefreshCw className="size-3.5" aria-hidden="true" />
+                              Retry
+                            </Button>
+                          }
+                        >
+                          {siteLoadError}
+                        </Callout>
+                      ) : sites.length === 0 ? (
+                        <Callout
+                          tone="warning"
+                          role="status"
+                          title="No Jira Cloud site is configured."
+                          action={<JiraSiteConfigurationHelp />}
+                        >
+                          Ask your iTestFlow administrator to configure <code>BOOTSTRAP_JIRA_SITES</code> and restart iTestFlow.
+                        </Callout>
+                      ) : singleSite ? (
+                        <>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <div className="relative min-w-0 flex-1">
+                              <Building2
+                                className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-primary"
+                                aria-hidden="true"
+                              />
+                              <Input
+                                id="jira-site"
+                                className="h-10 bg-muted/30 pl-11 pr-3 text-foreground"
+                                value={singleSite.name}
+                                readOnly
+                                aria-describedby="jira-site-help"
+                              />
+                            </div>
+                            <JiraSiteConfigurationHelp />
+                          </div>
+                          <p id="jira-site-help" className="text-xs leading-5 text-muted-foreground">
+                            This is the only Jira site configured for this deployment.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <div className="relative min-w-0 flex-1">
+                              <Building2
+                                className="pointer-events-none absolute left-4 top-1/2 z-10 size-5 -translate-y-1/2 text-primary"
+                                aria-hidden="true"
+                              />
+                              <Select value={selectedSite} onValueChange={setSelectedSite}>
+                                <SelectTrigger
+                                  id="jira-site"
+                                  className="h-10 w-full bg-background/80 pl-11 pr-3"
+                                  aria-describedby="jira-site-help"
+                                >
+                                  <SelectValue placeholder="Select your Jira site" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {sites.map((site) => (
+                                    <SelectItem key={site.siteUrl} value={site.siteUrl}>
+                                      {site.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <JiraSiteConfigurationHelp />
+                          </div>
+                          <p id="jira-site-help" className="text-xs leading-5 text-muted-foreground">
+                            Choose the Jira site you want to sign in to.
+                          </p>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="pt-1">
+                      {jiraContinueDisabled ? (
+                        <Button type="button" size="lg" className="h-10 w-full font-semibold" disabled>
+                          Continue with Jira Cloud
+                        </Button>
+                      ) : (
+                        <Button asChild size="lg" className="h-10 w-full font-semibold">
+                          <a href={jiraStartHref}>Continue with Jira Cloud</a>
+                        </Button>
+                      )}
+                    </div>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      You&apos;ll approve access on Atlassian&apos;s sign-in page and return here automatically.
                     </p>
-                  </>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="pat">Personal Access Token</Label>
-                <div className="relative">
-                  <LockKeyhole
-                    className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-muted-foreground"
-                    aria-hidden="true"
-                  />
-                  <Input
-                    id="pat"
-                    className="h-10 bg-background/80 pl-11 pr-11"
-                    type={showPersonalAccessToken ? "text" : "password"}
-                    placeholder="Azure DevOps PAT"
-                    value={personalAccessToken}
-                    onChange={(event) => setPersonalAccessToken(event.target.value)}
-                    autoComplete="off"
-                    aria-describedby="pat-help"
-                    required
-                  />
-                  <button
-                    type="button"
-                    className="absolute inset-y-0 right-0 grid w-11 place-items-center rounded-r-lg text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
-                    onClick={() => setShowPersonalAccessToken((current) => !current)}
-                    aria-label={showPersonalAccessToken ? "Hide Personal Access Token" : "Show Personal Access Token"}
-                    aria-pressed={showPersonalAccessToken}
-                  >
-                    {showPersonalAccessToken ? (
-                      <Eye className="size-4" aria-hidden="true" />
-                    ) : (
-                      <EyeOff className="size-4" aria-hidden="true" />
-                    )}
-                  </button>
-                </div>
-                <p id="pat-help" className="text-xs leading-5 text-muted-foreground">
-                  Use a PAT with access to Work Items, Test Plans, and Project metadata.
-                </p>
-                <a
-                  href={azurePatHelpUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-2 text-sm font-semibold text-primary outline-none transition-colors hover:text-primary/80 hover:underline focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
-                >
-                  <CircleHelp className="size-4" aria-hidden="true" />
-                  How to create an Azure DevOps PAT
-                  <ExternalLink className="size-3.5" aria-hidden="true" />
-                </a>
-              </div>
-
-              <div className="pt-1">
-                <Button type="submit" size="lg" className="h-10 w-full font-semibold" disabled={signInDisabled}>
-                  {submitting ? "Signing in..." : "Sign In"}
-                </Button>
-              </div>
-            </form>
-            <div className="my-5 flex items-center gap-3" aria-hidden="true">
-              <span className="h-px flex-1 bg-border" />
-              <span className="text-xs uppercase tracking-wide text-muted-foreground">or</span>
-              <span className="h-px flex-1 bg-border" />
-            </div>
-            <Button asChild type="button" variant="outline" size="lg" className="h-10 w-full font-semibold">
-              <a href="/api/auth/jira/start?returnTo=%2Fdashboards">Continue with Jira Cloud</a>
-            </Button>
+                  </div>
+                ) : null}
+              </>
+            )}
           </CardContent>
         </Card>
       </div>
