@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   checkRateLimit: vi.fn(),
@@ -18,11 +18,24 @@ vi.mock("next/headers", () => ({ cookies: async () => ({ set: mocks.cookieSet })
 import { GET } from "./route";
 
 describe("GET /api/auth/jira/start", () => {
+  const savedProviders = process.env.BOOTSTRAP_ENABLED_PROVIDERS;
+  const savedClientId = process.env.ATLASSIAN_OAUTH_CLIENT_ID;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    // Auto-detect requires the OAuth client for jira-cloud to be enabled.
+    delete process.env.BOOTSTRAP_ENABLED_PROVIDERS;
+    process.env.ATLASSIAN_OAUTH_CLIENT_ID = "client-1";
     mocks.checkRateLimit.mockResolvedValue({ allowed: true, retryAfterSeconds: 0 });
     mocks.createState.mockResolvedValue("opaque-state");
     mocks.buildUrl.mockReturnValue("https://auth.atlassian.com/authorize?state=opaque-state");
+  });
+
+  afterEach(() => {
+    if (savedProviders === undefined) delete process.env.BOOTSTRAP_ENABLED_PROVIDERS;
+    else process.env.BOOTSTRAP_ENABLED_PROVIDERS = savedProviders;
+    if (savedClientId === undefined) delete process.env.ATLASSIAN_OAUTH_CLIENT_ID;
+    else process.env.ATLASSIAN_OAUTH_CLIENT_ID = savedClientId;
   });
 
   it("persists state and redirects to Atlassian", async () => {
@@ -41,5 +54,14 @@ describe("GET /api/auth/jira/start", () => {
     const response = await GET(new Request("https://itestflow.example/api/auth/jira/start"));
     expect(response.status).toBe(429);
     expect(mocks.createState).not.toHaveBeenCalled();
+  });
+
+  it("fails closed with 403 when Jira Cloud sign-in is disabled, before any state or cookie", async () => {
+    process.env.BOOTSTRAP_ENABLED_PROVIDERS = "azure-devops";
+    const response = await GET(new Request("https://itestflow.example/api/auth/jira/start"));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "Jira Cloud sign-in is disabled for this deployment." });
+    expect(mocks.createState).not.toHaveBeenCalled();
+    expect(mocks.cookieSet).not.toHaveBeenCalled();
   });
 });

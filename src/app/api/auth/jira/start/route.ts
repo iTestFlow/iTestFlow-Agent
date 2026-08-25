@@ -5,6 +5,7 @@ import { randomBytes } from "crypto";
 import { buildAtlassianAuthorizationUrl } from "@/modules/auth/jira-oauth";
 import { createJiraOAuthState } from "@/modules/auth/jira-oauth-state";
 import { JIRA_OAUTH_BINDING_COOKIE } from "@/modules/auth/jira-oauth-cookie";
+import { isLoginProviderEnabled } from "@/modules/auth/enabled-providers";
 import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
 
 export const runtime = "nodejs";
@@ -16,6 +17,9 @@ export async function GET(request: Request): Promise<Response> {
       { error: "Too many Jira connection attempts. Please wait and try again." },
       { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } },
     );
+  }
+  if (!isLoginProviderEnabled("jira-cloud")) {
+    return NextResponse.json({ error: "Jira Cloud sign-in is disabled for this deployment." }, { status: 403 });
   }
   const returnTo = new URL(request.url).searchParams.get("returnTo") ?? "/dashboards";
   const browserBinding = randomBytes(32).toString("base64url");

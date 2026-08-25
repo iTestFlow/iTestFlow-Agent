@@ -1,6 +1,7 @@
 import path from "path";
 import migrate from "node-pg-migrate";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
+import { getEnabledLoginProviders } from "@/modules/auth/enabled-providers";
 import { warmLocalModels } from "@/modules/rag/local-model-warmup";
 
 async function runMigrations() {
@@ -30,6 +31,9 @@ async function runStartup() {
     return;
   }
   await runMigrations();
+  // Validate the provider-enablement contract before seeding: a misconfigured
+  // BOOTSTRAP_ENABLED_PROVIDERS must refuse to boot, not 500 on the login page.
+  getEnabledLoginProviders();
   await ensureBootstrapOwner();
 }
 

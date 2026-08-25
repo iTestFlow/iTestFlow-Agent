@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { listActiveWorkspaces } from "@/modules/workspace/workspace.service";
+import { isLoginProviderEnabled } from "@/modules/auth/enabled-providers";
 import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
 
 export const runtime = "nodejs";
@@ -19,6 +20,10 @@ export async function GET(request: Request) {
       { error: "Too many requests. Please wait and try again." },
       { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } },
     );
+  }
+
+  if (!isLoginProviderEnabled("azure-devops")) {
+    return NextResponse.json({ error: "Azure DevOps sign-in is disabled for this deployment." }, { status: 403 });
   }
 
   const organizations = await listActiveWorkspaces();
