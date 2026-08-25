@@ -7,6 +7,7 @@ import { storeJiraConnection } from "@/modules/auth/jira-connection.service";
 import { JIRA_OAUTH_BINDING_COOKIE } from "@/modules/auth/jira-oauth-cookie";
 import { getAtlassianUserIdentity } from "@/modules/auth/jira-oauth";
 import { AtlassianOAuthError, AtlassianReauthorizationRequiredError } from "@/modules/auth/jira-oauth";
+import { isLoginProviderEnabled } from "@/modules/auth/enabled-providers";
 import { provisionJiraLogin } from "@/modules/auth/jira-provisioning.service";
 import { consumeJiraSiteSelection } from "@/modules/auth/jira-site-selection.service";
 import { createSession } from "@/modules/auth/session.service";
@@ -17,6 +18,11 @@ const SelectionSchema = z.object({
 });
 
 export async function POST(request: Request): Promise<Response> {
+  // Escrowed continuations survive a restart, so disablement must also close
+  // the selection endpoint (mirrors the callback gate).
+  if (!isLoginProviderEnabled("jira-cloud")) {
+    return NextResponse.json({ error: "Jira Cloud sign-in is disabled for this deployment." }, { status: 403 });
+  }
   const parsed = SelectionSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "A Jira continuation and site are required." }, { status: 400 });
   try {

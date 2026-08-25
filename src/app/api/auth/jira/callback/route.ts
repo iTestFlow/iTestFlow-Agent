@@ -13,6 +13,7 @@ import {
 } from "@/modules/auth/jira-oauth";
 import { consumeJiraOAuthState, JiraOAuthStateError } from "@/modules/auth/jira-oauth-state";
 import { JIRA_OAUTH_BINDING_COOKIE } from "@/modules/auth/jira-oauth-cookie";
+import { isLoginProviderEnabled } from "@/modules/auth/enabled-providers";
 import { provisionJiraLogin } from "@/modules/auth/jira-provisioning.service";
 import { createSession } from "@/modules/auth/session.service";
 import { createJiraSiteSelection } from "@/modules/auth/jira-site-selection.service";
@@ -20,6 +21,12 @@ import { createJiraSiteSelection } from "@/modules/auth/jira-site-selection.serv
 export const runtime = "nodejs";
 
 export async function GET(request: Request): Promise<Response> {
+  // Persisted OAuth state survives a restart, so disablement must also close
+  // the callback: without this, an in-flight sign-in could still complete for
+  // up to the state TTL after the operator disabled jira-cloud.
+  if (!isLoginProviderEnabled("jira-cloud")) {
+    return NextResponse.json({ error: "Jira Cloud sign-in is disabled for this deployment." }, { status: 403 });
+  }
   const url = new URL(request.url);
   const state = url.searchParams.get("state")?.trim();
   const code = url.searchParams.get("code")?.trim();

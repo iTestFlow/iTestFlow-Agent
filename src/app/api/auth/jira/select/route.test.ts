@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   consumeSelection: vi.fn(), getIdentity: vi.fn(), provision: vi.fn(), store: vi.fn(), session: vi.fn(),
@@ -19,8 +19,21 @@ vi.mock("next/headers", () => ({ cookies: async () => ({ get: mocks.cookieGet, d
 import { POST } from "./route";
 
 describe("POST /api/auth/jira/select", () => {
+  const savedProviders = process.env.BOOTSTRAP_ENABLED_PROVIDERS;
+  const savedClientId = process.env.ATLASSIAN_OAUTH_CLIENT_ID;
+
+  afterEach(() => {
+    if (savedProviders === undefined) delete process.env.BOOTSTRAP_ENABLED_PROVIDERS;
+    else process.env.BOOTSTRAP_ENABLED_PROVIDERS = savedProviders;
+    if (savedClientId === undefined) delete process.env.ATLASSIAN_OAUTH_CLIENT_ID;
+    else process.env.ATLASSIAN_OAUTH_CLIENT_ID = savedClientId;
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    // Auto-detect requires the OAuth client for jira-cloud to be enabled.
+    delete process.env.BOOTSTRAP_ENABLED_PROVIDERS;
+    process.env.ATLASSIAN_OAUTH_CLIENT_ID = "client-1";
     mocks.cookieGet.mockReturnValue({ value: "browser-secret" });
     mocks.consumeSelection.mockResolvedValue({
       resource: { id: "cloud-b", name: "B", url: "https://b.atlassian.net", scopes: [] },
@@ -29,6 +42,19 @@ describe("POST /api/auth/jira/select", () => {
     });
     mocks.getIdentity.mockResolvedValue({ accountId: "acct", displayName: "Jamie", emailAddress: null });
     mocks.provision.mockResolvedValue({ workspaceId: "ws-b", userId: "user-1", role: "owner" });
+  });
+
+  it("fails closed before consuming the continuation when Jira Cloud sign-in is disabled", async () => {
+    process.env.BOOTSTRAP_ENABLED_PROVIDERS = "azure-devops";
+
+    const response = await POST(new Request("https://itestflow.example/api/auth/jira/select", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ continuation: "continuation", cloudId: "cloud-b" }),
+    }));
+
+    expect(response.status).toBe(403);
+    expect(mocks.consumeSelection).not.toHaveBeenCalled();
+    expect(mocks.session).not.toHaveBeenCalled();
   });
 
   it("consumes the browser-bound selection and completes login for the chosen site", async () => {

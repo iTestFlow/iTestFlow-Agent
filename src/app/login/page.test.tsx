@@ -110,12 +110,12 @@ describe("LoginPage", () => {
   it("renders a provider chooser defaulting to Azure DevOps when both providers are enabled", async () => {
     renderLoginPage()
 
-    const chooser = await screen.findByRole("radiogroup", { name: "Sign-in provider" })
+    const chooser = await screen.findByRole("group", { name: "Sign-in provider" })
     expect(chooser).toBeInTheDocument()
     await waitFor(() =>
-      expect(screen.getByRole("radio", { name: "Azure DevOps" })).toHaveAttribute("aria-checked", "true"),
+      expect(screen.getByRole("button", { name: "Azure DevOps" })).toHaveAttribute("aria-pressed", "true"),
     )
-    expect(screen.getByRole("radio", { name: "Jira Cloud" })).toHaveAttribute("aria-checked", "false")
+    expect(screen.getByRole("button", { name: "Jira Cloud" })).toHaveAttribute("aria-pressed", "false")
 
     // Azure pane is active: PAT form present, no Jira continue action.
     await screen.findByLabelText("Personal Access Token")
@@ -132,11 +132,11 @@ describe("LoginPage", () => {
     const patInput = await screen.findByLabelText("Personal Access Token")
     await user.type(patInput, "pat-secret")
 
-    await user.click(screen.getByRole("radio", { name: "Jira Cloud" }))
+    await user.click(screen.getByRole("button", { name: "Jira Cloud" }))
     expect(screen.queryByLabelText("Personal Access Token")).not.toBeInTheDocument()
     await screen.findByDisplayValue("Quality")
 
-    await user.click(screen.getByRole("radio", { name: "Azure DevOps" }))
+    await user.click(screen.getByRole("button", { name: "Azure DevOps" }))
     expect(await screen.findByLabelText("Personal Access Token")).toHaveValue("pat-secret")
   })
 
@@ -146,7 +146,7 @@ describe("LoginPage", () => {
     renderLoginPage()
 
     await screen.findByLabelText("Personal Access Token")
-    expect(screen.queryByRole("radiogroup", { name: "Sign-in provider" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("group", { name: "Sign-in provider" })).not.toBeInTheDocument()
     expect(callsTo("/api/auth/jira/sites")).toHaveLength(0)
   })
 
@@ -159,7 +159,7 @@ describe("LoginPage", () => {
     renderLoginPage()
 
     await screen.findByDisplayValue("Quality")
-    expect(screen.queryByRole("radiogroup", { name: "Sign-in provider" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("group", { name: "Sign-in provider" })).not.toBeInTheDocument()
     expect(screen.queryByLabelText("Personal Access Token")).not.toBeInTheDocument()
     expect(callsTo("/api/auth/organizations")).toHaveLength(0)
   })
@@ -182,7 +182,7 @@ describe("LoginPage", () => {
     expect(screen.queryByRole("button", { name: "Sign In" })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: "Retry" }))
-    await screen.findByRole("radiogroup", { name: "Sign-in provider" })
+    await screen.findByRole("group", { name: "Sign-in provider" })
   })
 
   it("shows a non-interactive loading state without a dropdown", async () => {
@@ -307,8 +307,8 @@ describe("LoginPage", () => {
 
     renderLoginPage()
 
-    await screen.findByRole("radiogroup", { name: "Sign-in provider" })
-    await user.click(screen.getByRole("radio", { name: "Jira Cloud" }))
+    await screen.findByRole("group", { name: "Sign-in provider" })
+    await user.click(screen.getByRole("button", { name: "Jira Cloud" }))
 
     expect(screen.getByRole("status")).toHaveTextContent("Loading configured Jira sites")
     expect(screen.getByRole("button", { name: "Continue with Jira Cloud" })).toBeDisabled()
@@ -415,7 +415,7 @@ describe("LoginPage", () => {
     await waitFor(() => expect(alert).toHaveTextContent("Quality (https://quality.atlassian.net)"))
     // The Jira pane is pre-selected so the user can act immediately.
     await waitFor(() =>
-      expect(screen.getByRole("radio", { name: "Jira Cloud" })).toHaveAttribute("aria-checked", "true"),
+      expect(screen.getByRole("button", { name: "Jira Cloud" })).toHaveAttribute("aria-pressed", "true"),
     )
     expect(screen.queryByLabelText("Personal Access Token")).not.toBeInTheDocument()
 

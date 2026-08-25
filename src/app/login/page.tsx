@@ -452,15 +452,14 @@ export default function LoginPage() {
                 {providers.length > 1 ? (
                   <div
                     className="mb-5 grid grid-cols-2 gap-1 rounded-lg border border-input bg-muted/30 p-1"
-                    role="radiogroup"
+                    role="group"
                     aria-label="Sign-in provider"
                   >
                     {providers.map((provider) => (
                       <Button
                         key={provider.id}
                         type="button"
-                        role="radio"
-                        aria-checked={activeProvider === provider.id}
+                        aria-pressed={activeProvider === provider.id}
                         variant={activeProvider === provider.id ? "default" : "ghost"}
                         className="h-9 w-full font-semibold"
                         onClick={() => setActiveProvider(provider.id)}

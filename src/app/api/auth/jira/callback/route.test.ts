@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   consumeState: vi.fn(),
@@ -35,8 +35,21 @@ vi.mock("@/modules/auth/jira-site-selection.service", () => ({ createJiraSiteSel
 import { GET } from "./route";
 
 describe("GET /api/auth/jira/callback", () => {
+  const savedProviders = process.env.BOOTSTRAP_ENABLED_PROVIDERS;
+  const savedClientId = process.env.ATLASSIAN_OAUTH_CLIENT_ID;
+
+  afterEach(() => {
+    if (savedProviders === undefined) delete process.env.BOOTSTRAP_ENABLED_PROVIDERS;
+    else process.env.BOOTSTRAP_ENABLED_PROVIDERS = savedProviders;
+    if (savedClientId === undefined) delete process.env.ATLASSIAN_OAUTH_CLIENT_ID;
+    else process.env.ATLASSIAN_OAUTH_CLIENT_ID = savedClientId;
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    // Auto-detect requires the OAuth client for jira-cloud to be enabled.
+    delete process.env.BOOTSTRAP_ENABLED_PROVIDERS;
+    process.env.ATLASSIAN_OAUTH_CLIENT_ID = "client-1";
     mocks.consumeState.mockResolvedValue({ returnTo: "/settings/integrations", selectedSiteUrl: null });
     mocks.exchangeCode.mockResolvedValue({
       accessToken: "access-secret", refreshToken: "refresh-secret", expiresInSeconds: 3600,
@@ -130,6 +143,16 @@ describe("GET /api/auth/jira/callback", () => {
       expect(response.status).toBe(status);
       expect(JSON.stringify(await response.json())).not.toContain("secret");
     }
+  });
+
+  it("fails closed before state consumption when Jira Cloud sign-in is disabled", async () => {
+    process.env.BOOTSTRAP_ENABLED_PROVIDERS = "azure-devops";
+
+    const response = await GET(new Request("https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code"));
+
+    expect(response.status).toBe(403);
+    expect(mocks.consumeState).not.toHaveBeenCalled();
+    expect(mocks.exchangeCode).not.toHaveBeenCalled();
   });
 
   it("provisions exactly the pre-selected site from a multi-site grant without a selection detour", async () => {
