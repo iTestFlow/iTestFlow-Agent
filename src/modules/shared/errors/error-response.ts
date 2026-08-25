@@ -51,6 +51,17 @@ export function toErrorResponse(error: unknown, options: FriendlyErrorOptions = 
 
 export function toFriendlyErrorResponse(error: unknown, options: FriendlyErrorOptions = {}): FriendlyErrorResult {
   if (isIntegrationError(error)) {
+    // Unsupported-capability guidance is authored internally (provider
+    // adapters, assertCapability) and must reach the user verbatim: the
+    // generic normalize path would replace it with the route's
+    // provider-branded fallback (e.g. "Azure Test Plan fetch failed." for a
+    // Jira workspace missing its test-management backend).
+    if (error.code === "integration_unsupported_capability") {
+      return {
+        body: { error: error.message },
+        status: statusForIntegrationErrorCode(error.code),
+      };
+    }
     return {
       body: normalizePlainError(error, options).body,
       status: statusForIntegrationErrorCode(error.code),
@@ -121,6 +132,9 @@ export function statusForIntegrationErrorCode(code: IntegrationErrorCode) {
     case "integration_unavailable":
       return 503;
     case "integration_unsupported_capability":
+      // Actionable configuration conflict (e.g. no Jira test-management
+      // backend configured), not a server fault.
+      return 409;
     case "integration_unsupported_provider":
     case "integration_configuration":
     case "integration_unknown":

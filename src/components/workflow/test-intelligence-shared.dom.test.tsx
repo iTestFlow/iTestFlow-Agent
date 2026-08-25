@@ -49,7 +49,7 @@ function completeResult(overrides: Partial<PublishRunResult> = {}): PublishRunRe
   };
 }
 
-function renderPanel(testCases = [generatedCase()], onPublished = vi.fn()) {
+function renderPanel(testCases = [generatedCase()], onPublished = vi.fn(), providerId: string | null = null) {
   return {
     onPublished,
     ...render(
@@ -58,6 +58,7 @@ function renderPanel(testCases = [generatedCase()], onPublished = vi.fn()) {
         targetWorkItemId="123"
         testCases={testCases}
         onPublished={onPublished}
+        providerId={providerId}
       />,
     ),
   };
@@ -92,6 +93,33 @@ afterEach(() => {
 });
 
 describe("PublishGeneratedCasesPanel", () => {
+  it("hides the Azure requirement-suite controls for Jira projects and never fetches Azure test plans", async () => {
+    api.postJson.mockImplementation((path: string) => {
+      if (path === "/api/publish/test-cases") return Promise.resolve(completeResult());
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    renderPanel([generatedCase()], vi.fn(), "jira-cloud");
+
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByText("Create requirement-based suite for this user story")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Select Azure Test Plan" })).not.toBeInTheDocument();
+    expect(screen.getByText(/configured test management backend/)).toBeInTheDocument();
+
+    confirmPublish();
+    await waitFor(() => expect(publishRequests()).toHaveLength(1));
+    expect(api.postJson.mock.calls.every(([path]) => path !== "/api/azure-devops/test-plans")).toBe(true);
+  });
+
+  it("keeps the Azure requirement-suite controls for Azure projects", () => {
+    api.postJson.mockResolvedValue({ testPlans: [] });
+
+    renderPanel([generatedCase()], vi.fn(), "azure-devops");
+
+    expect(screen.getByRole("checkbox")).toBeInTheDocument();
+    expect(screen.getByText("Create requirement-based suite for this user story")).toBeInTheDocument();
+  });
+
   it("dims and locks a fully published batch through later edits until a new mount", async () => {
     const response = deferred<PublishRunResult>();
     api.postJson.mockImplementation((path: string) => {

@@ -320,7 +320,7 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
     return Promise.reject(new IntegrationError({
       providerId: "jira-cloud",
       code: "integration_unsupported_capability",
-      message: "Jira Cloud test management requires a configured plain Jira, Xray, or Zephyr backend.",
+      message: "This test management operation requires a configured backend and is not yet available for Jira Cloud projects. A workspace owner or admin can choose Plain Jira, Xray, or Zephyr Scale in Settings → Connections.",
     }));
   }
 

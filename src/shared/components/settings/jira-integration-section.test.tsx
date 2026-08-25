@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JiraIntegrationSection } from "./jira-integration-section";
 
@@ -58,5 +58,40 @@ describe("JiraIntegrationSection", () => {
     await waitFor(() => {
       expect(screen.queryByRole("link", { name: "Reconnect Jira Cloud" })).toBeNull();
     });
+  });
+
+  it("requires an explicit backend choice for an unconfigured project — Plain Jira is never a silent default", async () => {
+    fetchMock.mockResolvedValue(json(overview({
+      projects: [{
+        id: "project-1", providerProjectId: "10000", key: "QA", name: "Quality",
+        backend: null,
+        sync: null,
+      }],
+    })));
+
+    render(<JiraIntegrationSection />);
+
+    const backendSelect = await screen.findByLabelText("Artifact backend");
+    expect(backendSelect).toHaveValue("");
+    expect(screen.getByRole("option", { name: "Select a backend" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save artifact backend" })).toBeDisabled();
+
+    fireEvent.change(backendSelect, { target: { value: "xray_cloud" } });
+    expect(screen.getByRole("button", { name: "Save artifact backend" })).toBeEnabled();
+  });
+
+  it("keeps the configured backend pre-selected with Save enabled", async () => {
+    fetchMock.mockResolvedValue(json(overview({
+      projects: [{
+        id: "project-1", providerProjectId: "10000", key: "QA", name: "Quality",
+        backend: { type: "zephyr_scale", status: "active", region: "eu" },
+        sync: null,
+      }],
+    })));
+
+    render(<JiraIntegrationSection />);
+
+    expect(await screen.findByLabelText("Artifact backend")).toHaveValue("zephyr_scale");
+    expect(screen.getByRole("button", { name: "Save artifact backend" })).toBeEnabled();
   });
 });

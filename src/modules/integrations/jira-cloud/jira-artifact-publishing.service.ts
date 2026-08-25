@@ -238,6 +238,13 @@ async function resolveConfiguredBackend(
       siteUrl: anchor.provider_site_url,
     };
   }
+  // Explicit backend dispatch: anything but the three known types fails the
+  // case instead of silently projecting through Plain Jira. Unreachable via
+  // SQL (the CHECK constraint owns the column) but load-bearing if the row
+  // ever arrives from another source.
+  if (anchor.backend_type !== "plain_jira") {
+    throw new Error(`The configured Jira artifact backend type is not supported: ${anchor.backend_type}.`);
+  }
   const config = parsePlainConfig(anchor.config_json);
   const appBaseUrl = process.env.ITESTFLOW_PUBLIC_URL?.trim();
   if (!appBaseUrl) throw new Error("Plain Jira artifact publishing is not configured for this deployment.");

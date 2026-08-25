@@ -61,6 +61,15 @@ export function TestCaseDesignClient() {
   const promptSectionRef = useRef<HTMLDivElement | null>(null);
   const [activeStep, setActiveStep] = useState<"generate" | "review">("generate");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
+  const [providerId, setProviderId] = useState<string | null>(null);
+
+  useEffect(() => {
+    void fetch("/api/auth/session", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data: { workspace?: { providerId?: string } | null }) => setProviderId(data.workspace?.providerId ?? "azure-devops"))
+      .catch(() => setProviderId("azure-devops"));
+  }, []);
+
   const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const externalLlmAvailability = useExternalLlmAvailability(scope?.workspaceId);
@@ -536,6 +545,7 @@ export function TestCaseDesignClient() {
                 analyticsRunId={state.data.analyticsRunId}
                 itemsGenerated={state.data.testCases.length}
                 itemsEdited={editedSelectedCaseCount}
+                providerId={providerId}
               />
             </>
           ) : (

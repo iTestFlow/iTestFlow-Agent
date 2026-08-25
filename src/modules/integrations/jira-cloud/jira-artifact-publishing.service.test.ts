@@ -116,6 +116,21 @@ describe("publishPlainJiraTestCase", () => {
     expect(mocks.sqlGet.mock.calls[3][2]).toEqual({ tx: true });
   });
 
+  it("fails the case instead of silently falling back to Plain Jira for an unknown backend type", async () => {
+    mocks.sqlGet.mockResolvedValueOnce({
+      backend_type: "banana", config_json: "{}",
+      provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
+      provider_site_id: "cloud-a", provider_site_url: "https://quality.atlassian.net",
+    });
+
+    await expect(plainJiraPublishing.publishConfiguredJiraTestCases({ ...input, testCases: [input.testCase] }))
+      .resolves.toMatchObject({
+        results: [{ localId: "case-1", success: false, create: { success: false, error: expect.stringContaining("not supported") } }],
+      });
+
+    expect(mocks.plainCreate).not.toHaveBeenCalled();
+  });
+
   it("passes the Jira project key to the configured Zephyr backend", async () => {
     mocks.resolveZephyrRow.mockReturnValue({ apiToken: "token", region: "us", jiraProjectKey: "QA", localIdFieldName: "iTestFlow ID" });
     mocks.sqlGet
