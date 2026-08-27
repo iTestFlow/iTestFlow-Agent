@@ -38,72 +38,97 @@ export async function storeJiraConnection(input: StoreJiraConnectionInput): Prom
   if (access.keyVersion !== refresh.keyVersion) throw new Error("Jira OAuth token encryption key versions do not match.");
   const now = nowIso();
   const accessExpiresAt = new Date(Date.parse(now) + input.expiresInSeconds * 1000).toISOString();
-  const written = await sqlRun(
-    `INSERT INTO jira_connections (
-       id, workspace_id, user_id, cloud_id,
-       encrypted_access_token, access_token_iv, access_token_tag,
-       encrypted_refresh_token, refresh_token_iv, refresh_token_tag, key_version,
-       access_expires_at, scopes, status, is_sync_principal, created_at, updated_at
-     )
-     SELECT
-       @id, @workspaceId, @userId, @cloudId,
-       @encryptedAccessToken, @accessTokenIv, @accessTokenTag,
-       @encryptedRefreshToken, @refreshTokenIv, @refreshTokenTag, @keyVersion,
-       @accessExpiresAt, @scopes, 'active',
-       -- Yield to an existing active sync principal held by someone else:
-       -- with bootstrap-seeded owners (issue #186) a workspace can have two
-       -- owners, and the second owner's login must not violate the
-       -- one-active-principal unique index. The first principal keeps the
-       -- role until it is revoked or expires.
-       (@isSyncPrincipal AND NOT EXISTS (
-         SELECT 1 FROM jira_connections other
+  const requestedSyncPrincipal = input.isSyncPrincipal ?? false;
+  await withTransaction(async (client) => {
+    // Every principal decision for a workspace begins with the same parent-row
+    // lock. Different owners therefore serialize before inspecting the partial
+    // unique-index predicate, while the membership row keeps authorization
+    // atomic with the write.
+    const authorized = await sqlGet<{ role: "owner" | "admin" | "member" }>(
+      `SELECT m.role
+       FROM workspaces w
+       JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = @userId
+       WHERE w.id = @workspaceId
+         AND w.provider_id = 'jira-cloud'
+         AND w.provider_site_id = @cloudId
+         AND w.status = 'active'
+         AND m.status = 'active'
+         AND (@isSyncPrincipal = false OR m.role IN ('owner', 'admin'))
+       FOR UPDATE OF w, m`,
+      { workspaceId, userId, cloudId, isSyncPrincipal: requestedSyncPrincipal },
+      client,
+    );
+    if (!authorized) throw new Error("Jira connection is not authorized for this workspace and user.");
+
+    let isSyncPrincipal = requestedSyncPrincipal;
+    if (requestedSyncPrincipal) {
+      const otherPrincipal = await sqlGet<{ id: string }>(
+        `SELECT other.id
+         FROM jira_connections other
          WHERE other.workspace_id = @workspaceId
            AND other.user_id <> @userId
            AND other.is_sync_principal = true
            AND other.status = 'active'
-       )), @now, @now
-     FROM workspaces w
-     JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = @userId
-     WHERE w.id = @workspaceId
-       AND w.provider_id = 'jira-cloud'
-       AND w.provider_site_id = @cloudId
-       AND w.status = 'active'
-       AND m.status = 'active'
-       AND (@isSyncPrincipal = false OR m.role IN ('owner', 'admin'))
-     ON CONFLICT (workspace_id, user_id) DO UPDATE SET
-       cloud_id = excluded.cloud_id,
-       encrypted_access_token = excluded.encrypted_access_token,
-       access_token_iv = excluded.access_token_iv,
-       access_token_tag = excluded.access_token_tag,
-       encrypted_refresh_token = excluded.encrypted_refresh_token,
-       refresh_token_iv = excluded.refresh_token_iv,
-       refresh_token_tag = excluded.refresh_token_tag,
-       key_version = excluded.key_version,
-       access_expires_at = excluded.access_expires_at,
-       scopes = excluded.scopes,
-       status = 'active',
-       is_sync_principal = excluded.is_sync_principal,
-       revoked_at = NULL,
-       updated_at = excluded.updated_at`,
-    {
-      id: createId("jiraconn"),
-      workspaceId,
-      userId,
-      cloudId,
-      encryptedAccessToken: access.ciphertext,
-      accessTokenIv: access.iv,
-      accessTokenTag: access.tag,
-      encryptedRefreshToken: refresh.ciphertext,
-      refreshTokenIv: refresh.iv,
-      refreshTokenTag: refresh.tag,
-      keyVersion: access.keyVersion,
-      accessExpiresAt,
-      scopes,
-      isSyncPrincipal: input.isSyncPrincipal ?? false,
-      now,
-    },
-  );
-  if (written !== 1) throw new Error("Jira connection is not authorized for this workspace and user.");
+         ORDER BY other.id ASC
+         LIMIT 1
+         FOR UPDATE`,
+        { workspaceId, userId },
+        client,
+      );
+      // Bootstrap-seeded workspaces may have multiple owners. The first active
+      // principal remains designated; later owners yield without violating the
+      // one-active-principal partial unique index.
+      isSyncPrincipal = !otherPrincipal;
+    }
+
+    const written = await sqlRun(
+      `INSERT INTO jira_connections (
+         id, workspace_id, user_id, cloud_id,
+         encrypted_access_token, access_token_iv, access_token_tag,
+         encrypted_refresh_token, refresh_token_iv, refresh_token_tag, key_version,
+         access_expires_at, scopes, status, is_sync_principal, created_at, updated_at
+       ) VALUES (
+         @id, @workspaceId, @userId, @cloudId,
+         @encryptedAccessToken, @accessTokenIv, @accessTokenTag,
+         @encryptedRefreshToken, @refreshTokenIv, @refreshTokenTag, @keyVersion,
+         @accessExpiresAt, @scopes, 'active', @isSyncPrincipal, @now, @now
+       )
+       ON CONFLICT (workspace_id, user_id) DO UPDATE SET
+         cloud_id = excluded.cloud_id,
+         encrypted_access_token = excluded.encrypted_access_token,
+         access_token_iv = excluded.access_token_iv,
+         access_token_tag = excluded.access_token_tag,
+         encrypted_refresh_token = excluded.encrypted_refresh_token,
+         refresh_token_iv = excluded.refresh_token_iv,
+         refresh_token_tag = excluded.refresh_token_tag,
+         key_version = excluded.key_version,
+         access_expires_at = excluded.access_expires_at,
+         scopes = excluded.scopes,
+         status = 'active',
+         is_sync_principal = excluded.is_sync_principal,
+         revoked_at = NULL,
+         updated_at = excluded.updated_at`,
+      {
+        id: createId("jiraconn"),
+        workspaceId,
+        userId,
+        cloudId,
+        encryptedAccessToken: access.ciphertext,
+        accessTokenIv: access.iv,
+        accessTokenTag: access.tag,
+        encryptedRefreshToken: refresh.ciphertext,
+        refreshTokenIv: refresh.iv,
+        refreshTokenTag: refresh.tag,
+        keyVersion: access.keyVersion,
+        accessExpiresAt,
+        scopes,
+        isSyncPrincipal,
+        now,
+      },
+      client,
+    );
+    if (written !== 1) throw new Error("Jira connection is not authorized for this workspace and user.");
+  });
 }
 
 type JiraConnectionRow = {
@@ -120,16 +145,25 @@ type JiraConnectionRow = {
 
 export async function resolveJiraAccessToken(input: { workspaceId: string; userId: string }): Promise<string> {
   const outcome = await withTransaction(async (client) => {
+    const authorized = await sqlGet<{ role: "owner" | "admin" | "member" }>(
+      `SELECT m.role
+       FROM workspaces w
+       JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = @userId
+       WHERE w.id = @workspaceId AND w.status = 'active' AND m.status = 'active'
+       FOR UPDATE OF w, m`,
+      { workspaceId: input.workspaceId, userId: input.userId },
+      client,
+    );
+    if (!authorized) throw new Error("No active Jira connection is available for this user and workspace.");
+
     const row = await sqlGet<JiraConnectionRow>(
       `SELECT c.id, c.encrypted_access_token, c.access_token_iv, c.access_token_tag,
               c.encrypted_refresh_token, c.refresh_token_iv, c.refresh_token_tag,
               c.key_version, c.access_expires_at
        FROM jira_connections c
-       JOIN workspaces w ON w.id = c.workspace_id
-       JOIN workspace_members m ON m.workspace_id = c.workspace_id AND m.user_id = c.user_id
        WHERE c.workspace_id = @workspaceId AND c.user_id = @userId
-         AND c.status = 'active' AND w.status = 'active' AND m.status = 'active'
-       FOR UPDATE`,
+         AND c.status = 'active'
+       FOR UPDATE OF c`,
       { workspaceId: input.workspaceId, userId: input.userId },
       client,
     );

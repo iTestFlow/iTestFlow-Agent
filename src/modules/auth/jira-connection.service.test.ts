@@ -28,23 +28,30 @@ vi.mock("./jira-oauth", async (importOriginal) => {
 import { resolveJiraAccessToken, resolveJiraSyncPrincipalAccessToken, revokeJiraConnection, storeJiraConnection } from "./jira-connection.service";
 
 describe("Jira OAuth connection storage", () => {
+  const transactionClient = { query: vi.fn() };
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("ATLASSIAN_ALLOWED_CLOUD_IDS", "cloud-a");
-    mocks.sqlRun.mockResolvedValue(1);
-    mocks.withTransaction.mockImplementation(async (fn) => fn({ query: vi.fn() }));
+    mocks.sqlGet.mockReset();
+    mocks.sqlRun.mockReset().mockResolvedValue(1);
+    mocks.withTransaction.mockReset().mockImplementation(async (fn) => fn(transactionClient));
     mocks.encryptSecret.mockReset();
+    mocks.decryptSecret.mockReset();
+    mocks.refreshTokens.mockReset();
     mocks.encryptSecret
       .mockReturnValueOnce({ ciphertext: "enc-access", iv: "iv-a", tag: "tag-a", keyVersion: 1 })
       .mockReturnValueOnce({ ciphertext: "enc-refresh", iv: "iv-r", tag: "tag-r", keyVersion: 1 });
   });
 
   it("serializes an expired token refresh and atomically stores both rotated tokens", async () => {
-    mocks.sqlGet.mockResolvedValue({
-      id: "conn-1", encrypted_access_token: "old-access", access_token_iv: "iv-a", access_token_tag: "tag-a",
-      encrypted_refresh_token: "old-refresh", refresh_token_iv: "iv-r", refresh_token_tag: "tag-r",
-      key_version: 1, access_expires_at: "2026-08-13T09:59:00.000Z",
-    });
+    mocks.sqlGet
+      .mockResolvedValueOnce({ role: "member" })
+      .mockResolvedValueOnce({
+        id: "conn-1", encrypted_access_token: "old-access", access_token_iv: "iv-a", access_token_tag: "tag-a",
+        encrypted_refresh_token: "old-refresh", refresh_token_iv: "iv-r", refresh_token_tag: "tag-r",
+        key_version: 1, access_expires_at: "2026-08-13T09:59:00.000Z",
+      });
     mocks.decryptSecret.mockReturnValueOnce("old-refresh-secret");
     mocks.refreshTokens.mockResolvedValue({
       accessToken: "plain-new-access", refreshToken: "plain-new-refresh", expiresInSeconds: 3600,
@@ -56,7 +63,10 @@ describe("Jira OAuth connection storage", () => {
       .mockReturnValueOnce({ ciphertext: "opaque-r", iv: "iv-nr", tag: "tag-nr", keyVersion: 1 });
 
     await expect(resolveJiraAccessToken({ workspaceId: "ws-1", userId: "user-1" })).resolves.toBe("plain-new-access");
-    expect(mocks.sqlGet.mock.calls[0][0]).toContain("FOR UPDATE");
+    expect(mocks.sqlGet.mock.calls[0][0]).toContain("FOR UPDATE OF w, m");
+    expect(mocks.sqlGet.mock.calls[1][0]).toContain("FOR UPDATE OF c");
+    expect(mocks.sqlGet.mock.calls[0][2]).toBe(transactionClient);
+    expect(mocks.sqlGet.mock.calls[1][2]).toBe(transactionClient);
     expect(mocks.refreshTokens).toHaveBeenCalledWith("old-refresh-secret");
     const update = mocks.sqlRun.mock.calls.find(([sql]) => sql.includes("UPDATE jira_connections"));
     expect(update?.[1]).toMatchObject({ encryptedAccessToken: "opaque-a", encryptedRefreshToken: "opaque-r" });
@@ -67,6 +77,7 @@ describe("Jira OAuth connection storage", () => {
   it("resolves the active workspace sync principal through the normal refresh path", async () => {
     mocks.sqlGet
       .mockResolvedValueOnce({ user_id: "sync-user" })
+      .mockResolvedValueOnce({ role: "owner" })
       .mockResolvedValueOnce({
         id: "conn-1", encrypted_access_token: "access", access_token_iv: "iv-a", access_token_tag: "tag-a",
         encrypted_refresh_token: "refresh", refresh_token_iv: "iv-r", refresh_token_tag: "tag-r",
@@ -102,11 +113,13 @@ describe("Jira OAuth connection storage", () => {
 
   it("marks a terminal refresh rejection for reauthorization outside the rolled-back refresh transaction", async () => {
     const { AtlassianReauthorizationRequiredError } = await import("./jira-oauth");
-    mocks.sqlGet.mockResolvedValue({
-      id: "conn-1", encrypted_access_token: "old-access", access_token_iv: "iv-a", access_token_tag: "tag-a",
-      encrypted_refresh_token: "old-refresh", refresh_token_iv: "iv-r", refresh_token_tag: "tag-r",
-      key_version: 1, access_expires_at: "2026-08-13T09:59:00.000Z",
-    });
+    mocks.sqlGet
+      .mockResolvedValueOnce({ role: "member" })
+      .mockResolvedValueOnce({
+        id: "conn-1", encrypted_access_token: "old-access", access_token_iv: "iv-a", access_token_tag: "tag-a",
+        encrypted_refresh_token: "old-refresh", refresh_token_iv: "iv-r", refresh_token_tag: "tag-r",
+        key_version: 1, access_expires_at: "2026-08-13T09:59:00.000Z",
+      });
     mocks.decryptSecret.mockReturnValue("old-refresh-secret");
     mocks.refreshTokens.mockRejectedValue(new AtlassianReauthorizationRequiredError());
     await expect(resolveJiraAccessToken({ workspaceId: "ws-1", userId: "user-1" }))
@@ -117,6 +130,10 @@ describe("Jira OAuth connection storage", () => {
   });
 
   it("stores encrypted access and refresh tokens and never passes plaintext to SQL", async () => {
+    mocks.sqlGet
+      .mockResolvedValueOnce({ role: "owner" })
+      .mockResolvedValueOnce(undefined);
+
     await storeJiraConnection({
       workspaceId: "ws-1",
       userId: "user-1",
@@ -130,7 +147,22 @@ describe("Jira OAuth connection storage", () => {
 
     expect(mocks.encryptSecret).toHaveBeenNthCalledWith(1, " access-secret ");
     expect(mocks.encryptSecret).toHaveBeenNthCalledWith(2, " refresh-secret ");
-    const [sql, params] = mocks.sqlRun.mock.calls[0];
+    expect(mocks.withTransaction).toHaveBeenCalledOnce();
+    expect(mocks.encryptSecret.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.withTransaction.mock.invocationCallOrder[0]);
+    const [authorizationSql, authorizationParams, authorizationClient] = mocks.sqlGet.mock.calls[0];
+    expect(authorizationSql).toContain("FOR UPDATE OF w, m");
+    expect(authorizationSql).toContain("w.provider_site_id = @cloudId");
+    expect(authorizationSql).toContain("m.status = 'active'");
+    expect(authorizationSql).toContain("m.role IN ('owner', 'admin')");
+    expect(authorizationParams).toMatchObject({ workspaceId: "ws-1", userId: "user-1", cloudId: "cloud-a" });
+    expect(authorizationClient).toBe(transactionClient);
+    const [principalSql, , principalClient] = mocks.sqlGet.mock.calls[1];
+    expect(principalSql).toContain("other.user_id <> @userId");
+    expect(principalSql).toContain("other.is_sync_principal = true");
+    expect(principalSql).toContain("FOR UPDATE");
+    expect(principalClient).toBe(transactionClient);
+    const [sql, params, writeClient] = mocks.sqlRun.mock.calls[0];
     expect(sql).toContain("INSERT INTO jira_connections");
     expect(sql).toContain("ON CONFLICT (workspace_id, user_id) DO UPDATE");
     expect(params).toMatchObject({
@@ -143,10 +175,7 @@ describe("Jira OAuth connection storage", () => {
     expect(JSON.stringify(params)).not.toContain("access-secret");
     expect(JSON.stringify(params)).not.toContain("refresh-secret");
     expect(params.accessExpiresAt).toBe("2026-08-13T11:00:00.000Z");
-    expect(sql).toContain("JOIN workspace_members");
-    expect(sql).toContain("w.provider_site_id = @cloudId");
-    expect(sql).toContain("m.status = 'active'");
-    expect(sql).toContain("m.role IN ('owner', 'admin')");
+    expect(writeClient).toBe(transactionClient);
   });
 
   it("rejects invalid or unapproved inputs before encryption and SQL", async () => {
@@ -161,10 +190,11 @@ describe("Jira OAuth connection storage", () => {
     }
     expect(mocks.encryptSecret).not.toHaveBeenCalled();
     expect(mocks.sqlRun).not.toHaveBeenCalled();
+    expect(mocks.withTransaction).not.toHaveBeenCalled();
   });
 
   it("fails closed when workspace site, membership, or sync-principal role does not authorize the write", async () => {
-    mocks.sqlRun.mockResolvedValue(0);
+    mocks.sqlGet.mockResolvedValueOnce(undefined);
     await expect(storeJiraConnection({
       workspaceId: "ws-other",
       userId: "user-1",
@@ -175,12 +205,17 @@ describe("Jira OAuth connection storage", () => {
       scopes: "offline_access",
       isSyncPrincipal: true,
     })).rejects.toThrow("not authorized");
+    expect(mocks.sqlRun).not.toHaveBeenCalled();
   });
 
   it("yields the sync-principal role to another user's active principal instead of violating its unique index", async () => {
     // Bootstrap-seeded owners (issue #186) make two owners per workspace a
     // normal state; the second owner's requested principal must compute to
     // false in SQL while another active principal exists.
+    mocks.sqlGet
+      .mockResolvedValueOnce({ role: "owner" })
+      .mockResolvedValueOnce({ id: "other-connection" });
+
     await storeJiraConnection({
       workspaceId: "ws-1",
       userId: "user-2",
@@ -192,10 +227,25 @@ describe("Jira OAuth connection storage", () => {
       isSyncPrincipal: true,
     });
 
-    const [sql] = mocks.sqlRun.mock.calls[0];
-    expect(sql).toContain("@isSyncPrincipal AND NOT EXISTS");
-    expect(sql).toContain("other.user_id <> @userId");
-    expect(sql).toContain("other.is_sync_principal = true");
-    expect(sql).toContain("other.status = 'active'");
+    const [, params] = mocks.sqlRun.mock.calls[0];
+    expect(params.isSyncPrincipal).toBe(false);
+  });
+
+  it("keeps non-principal connection storage available to an active member", async () => {
+    mocks.sqlGet.mockResolvedValueOnce({ role: "member" });
+
+    await storeJiraConnection({
+      workspaceId: "ws-1",
+      userId: "member-1",
+      cloudId: "cloud-a",
+      accessToken: "access",
+      refreshToken: "refresh",
+      expiresInSeconds: 3600,
+      scopes: "offline_access",
+      isSyncPrincipal: false,
+    });
+
+    expect(mocks.sqlGet).toHaveBeenCalledOnce();
+    expect(mocks.sqlRun.mock.calls[0][1]).toMatchObject({ isSyncPrincipal: false });
   });
 });
