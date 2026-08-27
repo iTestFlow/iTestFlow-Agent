@@ -29,7 +29,8 @@ describe("ensureBootstrapOwner (unit)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.sqlRun.mockResolvedValue(1);
+    mocks.sqlGet.mockReset();
+    mocks.sqlRun.mockReset().mockResolvedValue(1);
     saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
     for (const k of ENV_KEYS) delete process.env[k];
   });
@@ -53,7 +54,8 @@ describe("ensureBootstrapOwner (unit)", () => {
       .mockResolvedValueOnce(undefined) // adopt lookup: site not present yet
       .mockResolvedValueOnce({ id: "ws_fixed" }) // re-select after insert
       .mockResolvedValueOnce(undefined) // owner user CI lookup
-      .mockResolvedValueOnce({ id: "user_fixed" }); // re-select after insert
+      .mockResolvedValueOnce({ id: "user_fixed" }) // re-select after insert
+      .mockResolvedValueOnce({ workspace_id: "ws_fixed" }); // guarded membership upsert
 
     await expect(ensureBootstrapOwner()).resolves.toEqual({ workspaceId: "ws_fixed", userId: "user_fixed" });
 
@@ -67,8 +69,11 @@ describe("ensureBootstrapOwner (unit)", () => {
     const userLookup = mocks.sqlGet.mock.calls[2][0];
     expect(userLookup).toContain("LOWER(email_or_unique_name)");
 
-    const membership = mocks.sqlRun.mock.calls.find(([sql]) => sql.includes("INSERT INTO workspace_members"));
+    const membership = mocks.sqlGet.mock.calls.find(([sql]) => sql.includes("INSERT INTO workspace_members"));
     expect(membership?.[0]).toContain("'owner'");
+    expect(membership?.[0]).toContain("status = 'active'");
+    expect(membership?.[0]).toContain("provider_site_url = @siteUrl");
+    expect(membership?.[0]).toContain("FOR UPDATE OF w");
     expect(membership?.[1]).toMatchObject({ workspaceId: "ws_fixed", userId: "user_fixed" });
   });
 
@@ -76,13 +81,14 @@ describe("ensureBootstrapOwner (unit)", () => {
     process.env.BOOTSTRAP_JIRA_SITES = "mysite|owner@x.com";
     mocks.sqlGet
       .mockResolvedValueOnce({ id: "ws_existing" }) // adopt lookup hits
-      .mockResolvedValueOnce({ id: "user_existing" }); // owner user CI lookup hits
+      .mockResolvedValueOnce({ id: "user_existing" }) // owner user CI lookup hits
+      .mockResolvedValueOnce({ workspace_id: "ws_existing" }); // guarded membership upsert
 
     await expect(ensureBootstrapOwner()).resolves.toEqual({ workspaceId: "ws_existing", userId: "user_existing" });
 
     expect(mocks.sqlRun.mock.calls.some(([sql]) => sql.includes("INSERT INTO workspaces"))).toBe(false);
     expect(mocks.sqlRun.mock.calls.some(([sql]) => sql.includes("INSERT INTO users"))).toBe(false);
-    expect(mocks.sqlRun.mock.calls.some(([sql]) => sql.includes("INSERT INTO workspace_members"))).toBe(true);
+    expect(mocks.sqlGet.mock.calls.some(([sql]) => sql.includes("INSERT INTO workspace_members"))).toBe(true);
   });
 
   it("keeps Azure entries first and shares the owner-user resolution across providers", async () => {
@@ -92,7 +98,8 @@ describe("ensureBootstrapOwner (unit)", () => {
       .mockResolvedValueOnce({ id: "ws_azure" }) // azure workspace select after insert
       .mockResolvedValueOnce({ id: "user_shared" }) // azure owner CI lookup
       .mockResolvedValueOnce({ id: "ws_jira" }) // jira adopt lookup
-      .mockResolvedValueOnce({ id: "user_shared" }); // jira owner CI lookup (case-variant)
+      .mockResolvedValueOnce({ id: "user_shared" }) // jira owner CI lookup (case-variant)
+      .mockResolvedValueOnce({ workspace_id: "ws_jira" }); // guarded Jira membership upsert
 
     await expect(ensureBootstrapOwner()).resolves.toEqual({ workspaceId: "ws_azure", userId: "user_shared" });
 
@@ -100,5 +107,25 @@ describe("ensureBootstrapOwner (unit)", () => {
     // email can never crash on the CI-unique index.
     const ciLookups = mocks.sqlGet.mock.calls.filter(([sql]) => sql.includes("LOWER(email_or_unique_name)"));
     expect(ciLookups).toHaveLength(2);
+  });
+
+  it("re-resolves the site when reconciliation retires a cached placeholder before membership write", async () => {
+    process.env.BOOTSTRAP_JIRA_SITES = "new-name|owner@x.com";
+    mocks.sqlGet
+      .mockResolvedValueOnce({ id: "ws-placeholder" }) // cached URL lookup
+      .mockResolvedValueOnce({ id: "user-owner" }) // owner user
+      .mockResolvedValueOnce(undefined) // guarded write sees retired placeholder
+      .mockResolvedValueOnce({ id: "ws-target" }) // URL now belongs to cloud-ID target
+      .mockResolvedValueOnce({ workspace_id: "ws-target" }); // retry succeeds
+
+    await expect(ensureBootstrapOwner()).resolves.toEqual({
+      workspaceId: "ws-target",
+      userId: "user-owner",
+    });
+
+    const membershipWrites = mocks.sqlGet.mock.calls.filter(([sql]) => sql.includes("INSERT INTO workspace_members"));
+    expect(membershipWrites).toHaveLength(2);
+    expect(membershipWrites[0][1]).toMatchObject({ workspaceId: "ws-placeholder" });
+    expect(membershipWrites[1][1]).toMatchObject({ workspaceId: "ws-target" });
   });
 });

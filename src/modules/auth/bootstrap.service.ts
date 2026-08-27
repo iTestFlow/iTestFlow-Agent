@@ -65,20 +65,64 @@ export async function ensureBootstrapOwner(): Promise<BootstrapResult> {
   }
 
   for (const entry of jiraEntries) {
-    const workspaceId = await ensureJiraSiteWorkspace(entry, now);
+    let workspaceId = await ensureJiraSiteWorkspace(entry, now);
     const userId = await ensureBootstrapUser(entry.email, now);
-    await sqlRun(
-      `INSERT INTO workspace_members (id, workspace_id, user_id, role, status, created_at, updated_at)
-       VALUES (@id, @workspaceId, @userId, 'owner', 'active', @now, @now)
-       ON CONFLICT (workspace_id, user_id)
-       DO UPDATE SET role = 'owner', status = 'active', updated_at = @now
-       WHERE workspace_members.role <> 'owner' OR workspace_members.status <> 'active'`,
-      { id: createId("wm"), workspaceId, userId, now },
-    );
+    let membershipWritten = await ensureJiraOwnerMembership({
+      workspaceId,
+      siteUrl: entry.siteUrl,
+      userId,
+      now,
+    });
+    if (!membershipWritten) {
+      // Rename reconciliation may retire a placeholder after the URL lookup
+      // above but before its owner write. Resolve the URL again: it now points
+      // at the cloud-ID-backed target. If the same row remains, it was
+      // intentionally disabled, so preserve the existing bootstrap no-op.
+      const cachedWorkspaceId = workspaceId;
+      workspaceId = await ensureJiraSiteWorkspace(entry, now);
+      if (workspaceId !== cachedWorkspaceId) {
+        membershipWritten = await ensureJiraOwnerMembership({
+          workspaceId,
+          siteUrl: entry.siteUrl,
+          userId,
+          now,
+        });
+        if (!membershipWritten) {
+          throw new Error("Bootstrap failed to assign the Jira site owner after workspace reconciliation.");
+        }
+      }
+    }
     if (!first) first = { workspaceId, userId };
   }
 
   return first;
+}
+
+async function ensureJiraOwnerMembership(input: {
+  workspaceId: string;
+  siteUrl: string;
+  userId: string;
+  now: string;
+}): Promise<boolean> {
+  const membership = await sqlGet<{ workspace_id: string }>(
+    `WITH active_workspace AS (
+       SELECT w.id
+       FROM workspaces w
+       WHERE w.id = @workspaceId
+         AND w.provider_id = 'jira-cloud'
+         AND w.provider_site_url = @siteUrl
+         AND w.status = 'active'
+       FOR UPDATE OF w
+     )
+     INSERT INTO workspace_members (id, workspace_id, user_id, role, status, created_at, updated_at)
+     SELECT @id, active_workspace.id, @userId, 'owner', 'active', @now, @now
+     FROM active_workspace
+     ON CONFLICT (workspace_id, user_id)
+     DO UPDATE SET role = 'owner', status = 'active', updated_at = excluded.updated_at
+     RETURNING workspace_id`,
+    { id: createId("wm"), ...input },
+  );
+  return Boolean(membership);
 }
 
 /**
