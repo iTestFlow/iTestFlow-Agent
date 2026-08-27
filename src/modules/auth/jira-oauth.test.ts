@@ -29,6 +29,7 @@ describe("Jira Cloud OAuth", () => {
     expect(url.searchParams.get("prompt")).toBe("consent");
     expect(url.searchParams.get("scope")?.split(" ")).toEqual([
       "offline_access",
+      "read:me",
       "read:jira-work",
       "write:jira-work",
       "read:jira-user",
@@ -126,11 +127,11 @@ describe("Jira Cloud OAuth", () => {
     });
   });
 
-  it("loads the Atlassian account identity through the selected cloud site", async () => {
+  it("loads a login-safe Atlassian account identity from the user identity API", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      accountId: "account-123",
-      displayName: "Jamie Jira",
-      emailAddress: "jamie@example.com",
+      account_id: "account-123",
+      name: "Jamie Jira",
+      email: "jamie@example.com",
     }), { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -139,7 +140,7 @@ describe("Jira Cloud OAuth", () => {
       displayName: "Jamie Jira",
       emailAddress: "jamie@example.com",
     });
-    expect(fetchMock).toHaveBeenCalledWith("https://api.atlassian.com/ex/jira/cloud-a/rest/api/3/myself", {
+    expect(fetchMock).toHaveBeenCalledWith("https://api.atlassian.com/me", {
       headers: { Authorization: "Bearer access-secret", Accept: "application/json" },
       cache: "no-store",
     });
@@ -147,6 +148,20 @@ describe("Jira Cloud OAuth", () => {
     fetchMock.mockClear();
     await expect(getAtlassianUserIdentity("access-secret", "cloud-c")).rejects.toThrow("not approved");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing", { account_id: "account-123", name: "Jamie Jira" }],
+    ["null", { account_id: "account-123", name: "Jamie Jira", email: null }],
+    ["invalid", { account_id: "account-123", name: "Jamie Jira", email: "not-an-email" }],
+  ])("rejects a %s email before provisioning can begin", async (_label, payload) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })));
+
+    await expect(getAtlassianUserIdentity("access-secret", "cloud-a"))
+      .rejects.toBeInstanceOf(AtlassianOAuthError);
   });
 
   it("fails closed for missing inputs, network failures, and malformed upstream JSON", async () => {

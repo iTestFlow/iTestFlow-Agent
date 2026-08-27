@@ -6,6 +6,7 @@ const AUTHORIZE_URL = "https://auth.atlassian.com/authorize";
 const TOKEN_URL = "https://auth.atlassian.com/oauth/token";
 const JIRA_OAUTH_SCOPES = [
   "offline_access",
+  "read:me",
   "read:jira-work",
   "write:jira-work",
   "read:jira-user",
@@ -28,9 +29,9 @@ const AccessibleResourcesSchema = z.array(z.object({
 }));
 
 const UserIdentitySchema = z.object({
-  accountId: z.string().min(1),
-  displayName: z.string().min(1),
-  emailAddress: z.string().email().nullish(),
+  account_id: z.string().min(1),
+  name: z.string().min(1),
+  email: z.string().email(),
 });
 
 export type AtlassianOAuthTokens = {
@@ -51,7 +52,7 @@ export type AtlassianAccessibleResource = {
 export type AtlassianUserIdentity = {
   accountId: string;
   displayName: string;
-  emailAddress: string | null;
+  emailAddress: string;
 };
 
 export class AtlassianOAuthError extends Error {
@@ -209,11 +210,15 @@ export async function getAtlassianUserIdentity(
     throw new AtlassianOAuthError("This Jira Cloud site is not approved for this deployment.");
   }
   const identity = await requestAtlassianJson(
-    `https://api.atlassian.com/ex/jira/${encodeURIComponent(normalizedCloudId)}/rest/api/3/myself`,
+    "https://api.atlassian.com/me",
     accessToken,
     UserIdentitySchema,
   );
-  return { ...identity, emailAddress: identity.emailAddress ?? null };
+  return {
+    accountId: identity.account_id,
+    displayName: identity.name,
+    emailAddress: identity.email,
+  };
 }
 
 async function requestAtlassianJson<T>(url: string, accessToken: string, schema: z.ZodType<T>): Promise<T> {

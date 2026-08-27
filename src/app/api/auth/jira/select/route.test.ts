@@ -40,7 +40,11 @@ describe("POST /api/auth/jira/select", () => {
       accessToken: "access", refreshToken: "refresh", expiresInSeconds: 3600,
       scopes: "offline_access", returnTo: "/settings",
     });
-    mocks.getIdentity.mockResolvedValue({ accountId: "acct", displayName: "Jamie", emailAddress: null });
+    mocks.getIdentity.mockResolvedValue({
+      accountId: "acct",
+      displayName: "Jamie",
+      emailAddress: "jamie@example.com",
+    });
     mocks.provision.mockResolvedValue({ workspaceId: "ws-b", userId: "user-1", role: "owner" });
   });
 
@@ -109,5 +113,21 @@ describe("POST /api/auth/jira/select", () => {
       expect(response.status).toBe(status);
       expect(JSON.stringify(await response.json())).not.toContain("secret");
     }
+  });
+
+  it("fails closed without provisioning when Atlassian does not supply a usable email", async () => {
+    const { AtlassianOAuthError } = await import("@/modules/auth/jira-oauth");
+    mocks.getIdentity.mockRejectedValueOnce(new AtlassianOAuthError("Atlassian identity email is unavailable."));
+
+    const response = await POST(new Request("https://itestflow.example/api/auth/jira/select", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ continuation: "continuation", cloudId: "cloud-b" }),
+    }));
+
+    expect(response.status).toBe(503);
+    expect(mocks.provision).not.toHaveBeenCalled();
+    expect(mocks.store).not.toHaveBeenCalled();
+    expect(mocks.session).not.toHaveBeenCalled();
   });
 });

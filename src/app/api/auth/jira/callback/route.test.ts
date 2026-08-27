@@ -82,9 +82,31 @@ describe("GET /api/auth/jira/callback", () => {
       accessToken: "access-secret", refreshToken: "refresh-secret", isSyncPrincipal: true,
     }));
     expect(mocks.createSession).toHaveBeenCalledWith({ workspaceId: "ws-1", userId: "user-1", userAgent: "vitest-agent" });
-    const order = [mocks.consumeState, mocks.exchangeCode, mocks.provision, mocks.storeConnection, mocks.createSession]
+    const order = [
+      mocks.consumeState,
+      mocks.exchangeCode,
+      mocks.getIdentity,
+      mocks.provision,
+      mocks.storeConnection,
+      mocks.createSession,
+    ]
       .map((fn) => fn.mock.invocationCallOrder[0]);
     expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  it("stops all login mutations when Atlassian cannot supply a usable identity", async () => {
+    const { AtlassianOAuthError } = await import("@/modules/auth/jira-oauth");
+    mocks.getIdentity.mockRejectedValueOnce(new AtlassianOAuthError("identity detail"));
+
+    const response = await GET(new Request(
+      "https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code",
+    ));
+
+    expect(response.status).toBe(503);
+    expect(mocks.provision).not.toHaveBeenCalled();
+    expect(mocks.storeConnection).not.toHaveBeenCalled();
+    expect(mocks.createSession).not.toHaveBeenCalled();
+    expect(mocks.writeAuditLog).not.toHaveBeenCalled();
   });
 
   it("fails closed before token exchange for missing state or code", async () => {
