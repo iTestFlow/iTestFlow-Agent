@@ -31,7 +31,7 @@ export async function GET(request: Request): Promise<Response> {
   // deployment-scoped, mirroring the Azure org rule: only an enabled (seeded
   // or already-connected) active site is accepted. Omitted `site` keeps the
   // legacy post-callback selection flow.
-  let selectedSiteUrl: string | null = null;
+  let selectedWorkspace: { workspaceId: string; siteUrl: string } | null = null;
   const siteParam = url.searchParams.get("site")?.trim();
   if (siteParam) {
     let normalized: { name: string; url: string };
@@ -47,11 +47,11 @@ export async function GET(request: Request): Promise<Response> {
         { status: 403 },
       );
     }
-    selectedSiteUrl = site.siteUrl;
+    selectedWorkspace = { workspaceId: site.workspaceId, siteUrl: site.siteUrl };
   }
 
   const browserBinding = randomBytes(32).toString("base64url");
-  const state = await createJiraOAuthState(returnTo, browserBinding, selectedSiteUrl);
+  const state = await createJiraOAuthState(returnTo, browserBinding, selectedWorkspace);
   (await cookies()).set(JIRA_OAUTH_BINDING_COOKIE, browserBinding, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",

@@ -135,9 +135,26 @@ export async function listActiveWorkspaces(): Promise<Array<Pick<WorkspaceRef, "
 export type JiraSiteOption = { name: string; siteUrl: string };
 
 type JiraSiteRow = Pick<WorkspaceRow, "name" | "provider_site_name" | "provider_site_url">;
+type JiraSiteSelectionRow = Pick<
+  WorkspaceRow,
+  "id" | "name" | "provider_site_id" | "provider_site_name" | "provider_site_url"
+>;
+
+export type JiraSiteSelection = JiraSiteOption & {
+  workspaceId: string;
+  cloudId: string | null;
+};
 
 function mapJiraSite(row: JiraSiteRow): JiraSiteOption {
   return { name: row.provider_site_name ?? row.name, siteUrl: row.provider_site_url ?? "" };
+}
+
+function mapJiraSiteSelection(row: JiraSiteSelectionRow): JiraSiteSelection {
+  return {
+    workspaceId: row.id,
+    ...mapJiraSite(row),
+    cloudId: row.provider_site_id,
+  };
 }
 
 /**
@@ -161,14 +178,26 @@ export async function listActiveJiraSites(): Promise<JiraSiteOption[]> {
  * match on the canonical URL: every writer stores the normalized form
  * (bootstrap seeding, OAuth adoption, and the site-URL uniqueness migration).
  */
-export async function findActiveJiraSiteByUrl(siteUrl: string): Promise<JiraSiteOption | null> {
-  const row = await sqlGet<JiraSiteRow>(
-    `SELECT name, provider_site_name, provider_site_url FROM workspaces
+export async function findActiveJiraSiteByUrl(siteUrl: string): Promise<JiraSiteSelection | null> {
+  const row = await sqlGet<JiraSiteSelectionRow>(
+    `SELECT id, name, provider_site_id, provider_site_name, provider_site_url FROM workspaces
      WHERE status = 'active' AND provider_id = 'jira-cloud' AND provider_site_url = @siteUrl
      LIMIT 1`,
     { siteUrl },
   );
-  return row ? mapJiraSite(row) : null;
+  return row ? mapJiraSiteSelection(row) : null;
+}
+
+/** Stable callback lookup for a pre-selected active Jira workspace. */
+export async function findActiveJiraSiteById(workspaceId: string): Promise<JiraSiteSelection | null> {
+  const row = await sqlGet<JiraSiteSelectionRow>(
+    `SELECT id, name, provider_site_id, provider_site_name, provider_site_url FROM workspaces
+     WHERE id = @workspaceId AND status = 'active' AND provider_id = 'jira-cloud'
+       AND provider_site_url IS NOT NULL
+     LIMIT 1`,
+    { workspaceId },
+  );
+  return row ? mapJiraSiteSelection(row) : null;
 }
 
 /**

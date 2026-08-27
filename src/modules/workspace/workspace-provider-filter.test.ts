@@ -6,7 +6,12 @@ vi.mock("@/modules/shared/infrastructure/database/db", () => ({
 }));
 vi.mock("./workspace-access.service", () => ({ getWorkspaceMembership: vi.fn() }));
 
-import { findActiveJiraSiteByUrl, listActiveJiraSites, listActiveWorkspaces } from "./workspace.service";
+import {
+  findActiveJiraSiteById,
+  findActiveJiraSiteByUrl,
+  listActiveJiraSites,
+  listActiveWorkspaces,
+} from "./workspace.service";
 
 beforeEach(() => {
   mocks.sqlAll.mockReset().mockResolvedValue([]);
@@ -40,7 +45,11 @@ it("lists only active Jira sites that carry a site URL, as display fields", asyn
 
 it("finds an active Jira site by its canonical URL for the OAuth start validation", async () => {
   mocks.sqlGet.mockResolvedValueOnce({
-    name: "seeded-a", provider_site_name: null, provider_site_url: "https://a.atlassian.net",
+    id: "ws-a",
+    name: "seeded-a",
+    provider_site_id: null,
+    provider_site_name: null,
+    provider_site_url: "https://a.atlassian.net",
   });
 
   const site = await findActiveJiraSiteByUrl("https://a.atlassian.net");
@@ -49,7 +58,37 @@ it("finds an active Jira site by its canonical URL for the OAuth start validatio
   expect(sql).toContain("provider_id = 'jira-cloud'");
   expect(sql).toContain("status = 'active'");
   expect(params).toEqual({ siteUrl: "https://a.atlassian.net" });
-  expect(site).toEqual({ name: "seeded-a", siteUrl: "https://a.atlassian.net" });
+  expect(sql).toContain("provider_site_id");
+  expect(site).toEqual({
+    workspaceId: "ws-a",
+    name: "seeded-a",
+    cloudId: null,
+    siteUrl: "https://a.atlassian.net",
+  });
 
   expect(await findActiveJiraSiteByUrl("https://missing.atlassian.net")).toBeNull();
+});
+
+it("loads an active Jira selection by stable workspace id without exposing it in the picker", async () => {
+  mocks.sqlGet.mockResolvedValueOnce({
+    id: "ws-connected",
+    name: "old-name",
+    provider_site_id: "cloud-a",
+    provider_site_name: "Connected A",
+    provider_site_url: "https://old-name.atlassian.net",
+  });
+
+  await expect(findActiveJiraSiteById("ws-connected")).resolves.toEqual({
+    workspaceId: "ws-connected",
+    name: "Connected A",
+    cloudId: "cloud-a",
+    siteUrl: "https://old-name.atlassian.net",
+  });
+  const [sql, params] = mocks.sqlGet.mock.calls[0];
+  expect(sql).toContain("id = @workspaceId");
+  expect(sql).toContain("provider_id = 'jira-cloud'");
+  expect(sql).toContain("status = 'active'");
+  expect(params).toEqual({ workspaceId: "ws-connected" });
+
+  expect(await findActiveJiraSiteById("ws-disabled-or-wrong-provider")).toBeNull();
 });

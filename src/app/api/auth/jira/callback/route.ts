@@ -17,6 +17,7 @@ import { isLoginProviderEnabled } from "@/modules/auth/enabled-providers";
 import { provisionJiraLogin } from "@/modules/auth/jira-provisioning.service";
 import { createSession } from "@/modules/auth/session.service";
 import { createJiraSiteSelection } from "@/modules/auth/jira-site-selection.service";
+import { findActiveJiraSiteById } from "@/modules/workspace/workspace.service";
 
 export const runtime = "nodejs";
 
@@ -35,21 +36,45 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const cookieStore = await cookies();
     const browserBinding = cookieStore.get(JIRA_OAUTH_BINDING_COOKIE)?.value ?? "";
-    const { returnTo, selectedSiteUrl } = await consumeJiraOAuthState(state, browserBinding);
+    const { returnTo, selectedWorkspaceId, selectedSiteUrl } = await consumeJiraOAuthState(state, browserBinding);
+
+    const rejectSelectedSite = () => {
+      cookieStore.delete(JIRA_OAUTH_BINDING_COOKIE);
+      const redirect = new URL("/login", url.origin);
+      redirect.searchParams.set("error", "jira_site_access");
+      if (selectedSiteUrl) redirect.searchParams.set("site", selectedSiteUrl);
+      return NextResponse.redirect(redirect);
+    };
+
+    const selectedWorkspace = selectedWorkspaceId
+      ? await findActiveJiraSiteById(selectedWorkspaceId)
+      : null;
+    if (
+      selectedWorkspaceId &&
+      (
+        !selectedWorkspace ||
+        !selectedSiteUrl ||
+        (!selectedWorkspace.cloudId && selectedWorkspace.siteUrl !== selectedSiteUrl)
+      )
+    ) {
+      return rejectSelectedSite();
+    }
+
     const tokens = await exchangeAtlassianAuthorizationCode(code);
     const resources = await listAllowedAtlassianResources(tokens.accessToken);
 
     let resource;
-    if (selectedSiteUrl) {
+    if (selectedWorkspace) {
+      resource = selectedWorkspace.cloudId
+        ? resources.find((candidate) => candidate.id === selectedWorkspace.cloudId)
+        : resources.find((candidate) => canonicalJiraSiteUrl(candidate.url) === selectedSiteUrl);
+      if (!resource) return rejectSelectedSite();
+    } else if (selectedSiteUrl) {
       // The user chose this site before OAuth. Verify the authenticated
       // account can access exactly it — never silently switch to another site.
       resource = resources.find((candidate) => canonicalJiraSiteUrl(candidate.url) === selectedSiteUrl);
       if (!resource) {
-        cookieStore.delete(JIRA_OAUTH_BINDING_COOKIE);
-        const redirect = new URL("/login", url.origin);
-        redirect.searchParams.set("error", "jira_site_access");
-        redirect.searchParams.set("site", selectedSiteUrl);
-        return NextResponse.redirect(redirect);
+        return rejectSelectedSite();
       }
     } else {
       // Legacy site-less start: keep the post-callback selection flow.

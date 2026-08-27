@@ -52,7 +52,12 @@ describe("GET /api/auth/jira/start", () => {
   });
 
   it("carries a validated pre-selected site into the OAuth state", async () => {
-    mocks.findSite.mockResolvedValue({ name: "Quality", siteUrl: "https://quality.atlassian.net" });
+    mocks.findSite.mockResolvedValue({
+      workspaceId: "ws-quality",
+      name: "Quality",
+      cloudId: "cloud-quality",
+      siteUrl: "https://quality.atlassian.net",
+    });
 
     const response = await GET(new Request(
       "https://itestflow.example/api/auth/jira/start?returnTo=%2Fdashboards&site=" +
@@ -65,7 +70,7 @@ describe("GET /api/auth/jira/start", () => {
     expect(mocks.createState).toHaveBeenCalledWith(
       "/dashboards",
       expect.any(String),
-      "https://quality.atlassian.net",
+      { workspaceId: "ws-quality", siteUrl: "https://quality.atlassian.net" },
     );
   });
 

@@ -8,19 +8,23 @@ const migration = require("../../../migrations/1710000046000_jira_oauth_state_se
 };
 
 describe("Jira OAuth state selected-site migration", () => {
-  it("adds the nullable selected_site_url column", () => {
+  it("adds a nullable workspace identity with an explicit cascading foreign key", () => {
     const sql = vi.fn();
     migration.up({ sql });
     const ddl = sql.mock.calls.map(([statement]) => statement).join("\n");
     expect(ddl).toContain("ALTER TABLE jira_oauth_states ADD COLUMN selected_site_url text");
-    expect(ddl).not.toContain("NOT NULL");
+    expect(ddl).toContain(
+      "ADD COLUMN selected_workspace_id text REFERENCES workspaces(id) ON DELETE CASCADE",
+    );
+    expect(ddl).not.toMatch(/selected_(?:site_url|workspace_id)[^;]*NOT NULL/);
   });
 
-  it("drops the column on rollback", () => {
+  it("drops the workspace foreign key before the legacy URL column on rollback", () => {
     const sql = vi.fn();
     migration.down({ sql });
-    expect(String(sql.mock.calls[0][0])).toContain(
-      "ALTER TABLE jira_oauth_states DROP COLUMN IF EXISTS selected_site_url",
-    );
+    const ddl = sql.mock.calls.map(([statement]) => statement).join("\n");
+    expect(ddl).toContain("ALTER TABLE jira_oauth_states DROP COLUMN IF EXISTS selected_workspace_id");
+    expect(ddl).toContain("ALTER TABLE jira_oauth_states DROP COLUMN IF EXISTS selected_site_url");
+    expect(ddl.indexOf("selected_workspace_id")).toBeLessThan(ddl.indexOf("selected_site_url"));
   });
 });

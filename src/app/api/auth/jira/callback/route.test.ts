@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   cookieGet: vi.fn(),
   cookieDelete: vi.fn(),
   createSelection: vi.fn(),
+  findSiteById: vi.fn(),
 }));
 
 vi.mock("@/modules/auth/jira-oauth-state", () => ({
@@ -31,6 +32,7 @@ vi.mock("@/modules/auth/session.service", () => ({ createSession: mocks.createSe
 vi.mock("@/modules/audit/audit.service", () => ({ writeAuditLog: mocks.writeAuditLog }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: mocks.cookieGet, delete: mocks.cookieDelete }) }));
 vi.mock("@/modules/auth/jira-site-selection.service", () => ({ createJiraSiteSelection: mocks.createSelection }));
+vi.mock("@/modules/workspace/workspace.service", () => ({ findActiveJiraSiteById: mocks.findSiteById }));
 
 import { GET } from "./route";
 
@@ -50,7 +52,11 @@ describe("GET /api/auth/jira/callback", () => {
     // Auto-detect requires the OAuth client for jira-cloud to be enabled.
     delete process.env.BOOTSTRAP_ENABLED_PROVIDERS;
     process.env.ATLASSIAN_OAUTH_CLIENT_ID = "client-1";
-    mocks.consumeState.mockResolvedValue({ returnTo: "/settings/integrations", selectedSiteUrl: null });
+    mocks.consumeState.mockResolvedValue({
+      returnTo: "/settings/integrations",
+      selectedWorkspaceId: null,
+      selectedSiteUrl: null,
+    });
     mocks.exchangeCode.mockResolvedValue({
       accessToken: "access-secret", refreshToken: "refresh-secret", expiresInSeconds: 3600,
       scope: "offline_access read:jira-work", tokenType: "Bearer",
@@ -178,7 +184,11 @@ describe("GET /api/auth/jira/callback", () => {
   });
 
   it("provisions exactly the pre-selected site from a multi-site grant without a selection detour", async () => {
-    mocks.consumeState.mockResolvedValue({ returnTo: "/dashboards", selectedSiteUrl: "https://b.atlassian.net" });
+    mocks.consumeState.mockResolvedValue({
+      returnTo: "/dashboards",
+      selectedWorkspaceId: null,
+      selectedSiteUrl: "https://b.atlassian.net",
+    });
     mocks.listResources.mockResolvedValueOnce([
       { id: "cloud-a", name: "A", url: "https://a.atlassian.net", scopes: [] },
       { id: "cloud-b", name: "B", url: "https://B.Atlassian.Net/", scopes: [] }, // matched after normalization
@@ -196,7 +206,11 @@ describe("GET /api/auth/jira/callback", () => {
   });
 
   it("never silently switches sites: a pre-selected site outside the grant bounces to the login page", async () => {
-    mocks.consumeState.mockResolvedValue({ returnTo: "/dashboards", selectedSiteUrl: "https://chosen.atlassian.net" });
+    mocks.consumeState.mockResolvedValue({
+      returnTo: "/dashboards",
+      selectedWorkspaceId: null,
+      selectedSiteUrl: "https://chosen.atlassian.net",
+    });
     mocks.listResources.mockResolvedValueOnce([
       { id: "cloud-a", name: "Other", url: "https://other.atlassian.net", scopes: [] },
     ]);
@@ -215,13 +229,160 @@ describe("GET /api/auth/jira/callback", () => {
   });
 
   it("bounces a pre-selected site to the login page when the grant has no approved sites at all", async () => {
-    mocks.consumeState.mockResolvedValue({ returnTo: "/dashboards", selectedSiteUrl: "https://chosen.atlassian.net" });
+    mocks.consumeState.mockResolvedValue({
+      returnTo: "/dashboards",
+      selectedWorkspaceId: null,
+      selectedSiteUrl: "https://chosen.atlassian.net",
+    });
     mocks.listResources.mockResolvedValueOnce([]);
 
     const response = await GET(new Request("https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code"));
 
     expect(response.status).toBe(307);
     expect(new URL(response.headers.get("location") ?? "").searchParams.get("error")).toBe("jira_site_access");
+    expect(mocks.provision).not.toHaveBeenCalled();
+  });
+
+  it("matches a pre-selected connected workspace by cloud id after its Jira URL changes", async () => {
+    mocks.consumeState.mockResolvedValue({
+      returnTo: "/dashboards",
+      selectedWorkspaceId: "ws-quality",
+      selectedSiteUrl: "https://old-name.atlassian.net",
+    });
+    mocks.findSiteById.mockResolvedValue({
+      workspaceId: "ws-quality",
+      name: "Quality",
+      cloudId: "cloud-a",
+      siteUrl: "https://old-name.atlassian.net",
+    });
+    mocks.listResources.mockResolvedValueOnce([
+      { id: "cloud-a", name: "Quality", url: "https://new-name.atlassian.net", scopes: [] },
+    ]);
+
+    const response = await GET(new Request(
+      "https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code",
+    ));
+
+    expect(response.status).toBe(307);
+    expect(mocks.findSiteById).toHaveBeenCalledWith("ws-quality");
+    expect(mocks.provision).toHaveBeenCalledWith(expect.objectContaining({
+      resource: expect.objectContaining({ id: "cloud-a", url: "https://new-name.atlassian.net" }),
+    }));
+  });
+
+  it("matches an unadopted placeholder by its unchanged URL", async () => {
+    mocks.consumeState.mockResolvedValue({
+      returnTo: "/dashboards",
+      selectedWorkspaceId: "ws-placeholder",
+      selectedSiteUrl: "https://quality.atlassian.net",
+    });
+    mocks.findSiteById.mockResolvedValue({
+      workspaceId: "ws-placeholder",
+      name: "Quality",
+      cloudId: null,
+      siteUrl: "https://quality.atlassian.net",
+    });
+
+    const response = await GET(new Request(
+      "https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code",
+    ));
+
+    expect(response.status).toBe(307);
+    expect(mocks.provision).toHaveBeenCalledWith(expect.objectContaining({
+      resource: expect.objectContaining({ id: "cloud-a" }),
+    }));
+  });
+
+  it("fails closed before token exchange when the selected workspace is disabled, deleted, or not Jira", async () => {
+    mocks.consumeState.mockResolvedValue({
+      returnTo: "/dashboards",
+      selectedWorkspaceId: "ws-unavailable",
+      selectedSiteUrl: "https://quality.atlassian.net",
+    });
+    mocks.findSiteById.mockResolvedValue(null);
+
+    const response = await GET(new Request(
+      "https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code",
+    ));
+
+    expect(response.status).toBe(307);
+    expect(new URL(response.headers.get("location") ?? "").searchParams.get("error"))
+      .toBe("jira_site_access");
+    expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    expect(mocks.provision).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before token exchange for an ID-only persisted selection", async () => {
+    mocks.consumeState.mockResolvedValue({
+      returnTo: "/dashboards",
+      selectedWorkspaceId: "ws-quality",
+      selectedSiteUrl: null,
+    });
+    mocks.findSiteById.mockResolvedValue({
+      workspaceId: "ws-quality",
+      name: "Quality",
+      cloudId: "cloud-a",
+      siteUrl: "https://quality.atlassian.net",
+    });
+
+    const response = await GET(new Request(
+      "https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code",
+    ));
+
+    expect(response.status).toBe(307);
+    expect(new URL(response.headers.get("location") ?? "").searchParams.get("error"))
+      .toBe("jira_site_access");
+    expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    expect(mocks.provision).not.toHaveBeenCalled();
+  });
+
+  it("never substitutes a different cloud id for a stable selected workspace", async () => {
+    mocks.consumeState.mockResolvedValue({
+      returnTo: "/dashboards",
+      selectedWorkspaceId: "ws-quality",
+      selectedSiteUrl: "https://old-name.atlassian.net",
+    });
+    mocks.findSiteById.mockResolvedValue({
+      workspaceId: "ws-quality",
+      name: "Quality",
+      cloudId: "cloud-a",
+      siteUrl: "https://old-name.atlassian.net",
+    });
+    mocks.listResources.mockResolvedValueOnce([
+      { id: "cloud-b", name: "Impostor", url: "https://old-name.atlassian.net", scopes: [] },
+    ]);
+
+    const response = await GET(new Request(
+      "https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code",
+    ));
+
+    expect(response.status).toBe(307);
+    expect(new URL(response.headers.get("location") ?? "").searchParams.get("error"))
+      .toBe("jira_site_access");
+    expect(mocks.provision).not.toHaveBeenCalled();
+  });
+
+  it("fails closed if an unadopted placeholder URL changes during OAuth", async () => {
+    mocks.consumeState.mockResolvedValue({
+      returnTo: "/dashboards",
+      selectedWorkspaceId: "ws-placeholder",
+      selectedSiteUrl: "https://old-name.atlassian.net",
+    });
+    mocks.findSiteById.mockResolvedValue({
+      workspaceId: "ws-placeholder",
+      name: "Quality",
+      cloudId: null,
+      siteUrl: "https://new-name.atlassian.net",
+    });
+
+    const response = await GET(new Request(
+      "https://itestflow.example/api/auth/jira/callback?state=opaque&code=auth-code",
+    ));
+
+    expect(response.status).toBe(307);
+    expect(new URL(response.headers.get("location") ?? "").searchParams.get("error"))
+      .toBe("jira_site_access");
+    expect(mocks.exchangeCode).not.toHaveBeenCalled();
     expect(mocks.provision).not.toHaveBeenCalled();
   });
 });
