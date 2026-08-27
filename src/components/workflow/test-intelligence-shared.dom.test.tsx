@@ -11,7 +11,7 @@ vi.mock("@/components/navigation/unsaved-changes-provider", () => ({
 }));
 
 import type { GeneratedTestCase, PublishRunResult } from "./test-intelligence-types";
-import { PublishGeneratedCasesPanel } from "./test-intelligence-shared";
+import { PublishGeneratedCasesPanel, projectWarning } from "./test-intelligence-shared";
 
 const scope = {
   workspaceId: "workspace-1",
@@ -49,7 +49,7 @@ function completeResult(overrides: Partial<PublishRunResult> = {}): PublishRunRe
   };
 }
 
-function renderPanel(testCases = [generatedCase()], onPublished = vi.fn(), providerId: string | null = null) {
+function renderPanel(testCases = [generatedCase()], onPublished = vi.fn(), providerId: string | null = "azure-devops") {
   return {
     onPublished,
     ...render(
@@ -93,9 +93,29 @@ afterEach(() => {
 });
 
 describe("PublishGeneratedCasesPanel", () => {
+  it("stays neutral and disables publishing while the workspace provider is unresolved", () => {
+    renderPanel([generatedCase()], vi.fn(), null);
+
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.getByText("Workspace provider is still loading. Publishing will be available when it resolves.")).toBeInTheDocument();
+    expect(screen.getByText("Work item 123")).toBeInTheDocument();
+    expect(publishButton()).toBeDisabled();
+    expect(screen.queryByText(/Azure DevOps|user story|Story 123/i)).not.toBeInTheDocument();
+  });
+
   it("hides the Azure requirement-suite controls for Jira projects and never fetches Azure test plans", async () => {
     api.postJson.mockImplementation((path: string) => {
-      if (path === "/api/publish/test-cases") return Promise.resolve(completeResult());
+      if (path === "/api/publish/test-cases") {
+        return Promise.resolve(completeResult({
+          results: [{
+            localId: "TC-001",
+            azureTestCaseId: "QA-9",
+            success: true,
+            create: { success: true },
+            link: { success: true },
+          }],
+        }));
+      }
       throw new Error(`Unexpected request: ${path}`);
     });
 
@@ -105,19 +125,38 @@ describe("PublishGeneratedCasesPanel", () => {
     expect(screen.queryByText("Create requirement-based suite for this user story")).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Select Azure Test Plan" })).not.toBeInTheDocument();
     expect(screen.getByText(/configured test management backend/)).toBeInTheDocument();
+    expect(screen.getByText("Issue 123")).toBeInTheDocument();
+    expect(screen.getByText("Ready to create and link the selected cases to the Jira issue.")).toBeInTheDocument();
 
-    confirmPublish();
+    fireEvent.click(publishButton());
+    expect(screen.getByText("Jira project: Demo Project")).toBeInTheDocument();
+    expect(screen.getByText("Issue: 123")).toBeInTheDocument();
+    expect(screen.getByText("Each created test case will be linked to this issue.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Publish cases" }));
     await waitFor(() => expect(publishRequests()).toHaveLength(1));
+    await waitFor(() => expect(screen.getByText("Jira QA-9")).toBeInTheDocument());
     expect(api.postJson.mock.calls.every(([path]) => path !== "/api/azure-devops/test-plans")).toBe(true);
+    expect(screen.queryByText(/Azure 1001|Story 123|User story:/)).not.toBeInTheDocument();
   });
 
-  it("keeps the Azure requirement-suite controls for Azure projects", () => {
-    api.postJson.mockResolvedValue({ testPlans: [] });
+  it("keeps Azure wording and requirement-suite controls for Azure projects", async () => {
+    api.postJson.mockImplementation((path: string) => {
+      if (path === "/api/publish/test-cases") return Promise.resolve(completeResult());
+      return Promise.resolve({ testPlans: [] });
+    });
 
     renderPanel([generatedCase()], vi.fn(), "azure-devops");
 
     expect(screen.getByRole("checkbox")).toBeInTheDocument();
     expect(screen.getByText("Create requirement-based suite for this user story")).toBeInTheDocument();
+    expect(screen.getByText("Story 123")).toBeInTheDocument();
+    expect(screen.getByText("Ready to create and link the selected cases without creating a test suite.")).toBeInTheDocument();
+
+    fireEvent.click(publishButton());
+    expect(screen.getByText("Project: Demo Project")).toBeInTheDocument();
+    expect(screen.getByText("User story: 123")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Publish cases" }));
+    await waitFor(() => expect(screen.getByText("Azure 1001")).toBeInTheDocument());
   });
 
   it("dims and locks a fully published batch through later edits until a new mount", async () => {
@@ -157,6 +196,7 @@ describe("PublishGeneratedCasesPanel", () => {
         targetWorkItemId="123"
         testCases={[generatedCase({ title: "Updated checkout" })]}
         onPublished={onPublished}
+        providerId="azure-devops"
       />,
     );
     expect(publishButton()).toBeDisabled();
@@ -240,5 +280,18 @@ describe("PublishGeneratedCasesPanel", () => {
     await waitFor(() => expect(screen.getAllByText("Azure is unavailable").length).toBeGreaterThan(0));
     expect(publishButton()).toBeEnabled();
     expect(onPublished).not.toHaveBeenCalled();
+  });
+});
+
+describe("projectWarning", () => {
+  it("uses neutral, Jira, and Azure project labels without guessing the provider", () => {
+    const view = render(<>{projectWarning(null, null)}</>);
+    expect(screen.getByText("Please select a project before running this action.")).toBeInTheDocument();
+
+    view.rerender(<>{projectWarning(null, "jira-cloud")}</>);
+    expect(screen.getByText("Please select a Jira project before running this action.")).toBeInTheDocument();
+
+    view.rerender(<>{projectWarning(null, "azure-devops")}</>);
+    expect(screen.getByText("Please select an Azure DevOps project before running this action.")).toBeInTheDocument();
   });
 });

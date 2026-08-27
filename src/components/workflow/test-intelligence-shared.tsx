@@ -201,9 +201,14 @@ export function EmptyBlock({ message }: { message: string }) {
   );
 }
 
-export function projectWarning(scope: ActiveProjectScope | null) {
+export function projectWarning(scope: ActiveProjectScope | null, providerId: string | null = "azure-devops") {
   if (scope) return null;
-  return <Callout tone="warning">Please select an Azure DevOps project before running this action.</Callout>;
+  const projectLabel = providerId === "jira-cloud"
+    ? "a Jira project"
+    : providerId === "azure-devops"
+      ? "an Azure DevOps project"
+      : "a project";
+  return <Callout tone="warning">Please select {projectLabel} before running this action.</Callout>;
 }
 
 export function Metric({ label, value }: { label: string; value: string | number }) {
@@ -307,9 +312,10 @@ function StatusText({
   );
 }
 
-function PublishResultSummary({ data }: { data: PublishRunResult }) {
+function PublishResultSummary({ data, providerId }: { data: PublishRunResult; providerId: string | null }) {
   const successCount = data.results.filter((result) => result.success).length;
   const showSuiteResult = data.suiteMode !== "none";
+  const remoteIdLabel = providerId === "jira-cloud" ? "Jira" : providerId === "azure-devops" ? "Azure" : "Test case";
   return (
     <div className="rounded-md border border-border bg-card">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border p-3">
@@ -334,7 +340,7 @@ function PublishResultSummary({ data }: { data: PublishRunResult }) {
             )}
           >
             <span className="font-mono text-xs text-primary">{result.localId}</span>
-            <span>{result.azureTestCaseId ? `Azure ${result.azureTestCaseId}` : "Not created"}</span>
+            <span>{result.azureTestCaseId ? `${remoteIdLabel} ${result.azureTestCaseId}` : "Not created"}</span>
             <StatusText label="Create" success={result.create?.success} error={result.create?.error ?? result.error} />
             <StatusText label="Link" success={result.link?.success} error={result.link?.error} />
             {showSuiteResult ? (
@@ -432,8 +438,10 @@ export function PublishGeneratedCasesPanel({
   // publish through their configured backend, so the suite controls are
   // hidden and the flag is force-neutralized even if state went stale while
   // the provider was still resolving.
+  const isAzure = providerId === "azure-devops";
   const isJira = providerId === "jira-cloud";
-  const requirementSuite = createRequirementSuite && !isJira;
+  const providerResolved = isAzure || isJira;
+  const requirementSuite = createRequirementSuite && isAzure;
 
   useEffect(() => {
     if (!scope || !requirementSuite) {
@@ -550,6 +558,7 @@ export function PublishGeneratedCasesPanel({
       currentBatchPublished ||
       publishInFlightRef.current ||
       !scope ||
+      !providerResolved ||
       !targetWorkItemId ||
       !testCases.length ||
       (requirementSuite && (!selectedTestPlanId || !selectedSuiteId))
@@ -601,6 +610,7 @@ export function PublishGeneratedCasesPanel({
   const disabled =
     currentBatchPublished ||
     !scope ||
+    !providerResolved ||
     !targetWorkItemId ||
     !testCases.length ||
     invalidCaseCount > 0 ||
@@ -617,6 +627,7 @@ export function PublishGeneratedCasesPanel({
     loading: publishing,
     error: state.error,
     success: Boolean(state.data && state.data.results.length > 0 && state.data.results.every((result) => result.success)),
+    providerId,
   });
 
   return (
@@ -624,11 +635,13 @@ export function PublishGeneratedCasesPanel({
       <SectionCard
         title="Publish Generated Test Cases"
         description={isJira
-          ? "Publish the reviewed test cases to this project's configured test management backend and link them to the work item."
-          : "Create Azure Test Case work items, link them to the user story, and optionally create a requirement-based suite."}
+          ? "Publish the reviewed test cases to this project's configured test management backend and link them to the issue."
+          : isAzure
+            ? "Create Azure Test Case work items, link them to the user story, and optionally create a requirement-based suite."
+            : "Publish reviewed test cases after the workspace provider is resolved."}
       >
         <div className="space-y-4 p-4">
-          {!isJira ? (
+          {isAzure ? (
             <>
               <label className="flex cursor-pointer items-start gap-2">
                 <Checkbox
@@ -728,7 +741,7 @@ export function PublishGeneratedCasesPanel({
             </Callout>
           ) : null}
 
-          {state.data ? <PublishResultSummary data={state.data} /> : null}
+          {state.data ? <PublishResultSummary data={state.data} providerId={providerId} /> : null}
         </div>
       </SectionCard>
 
@@ -737,7 +750,7 @@ export function PublishGeneratedCasesPanel({
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span>{testCases.length} selected test case{testCases.length === 1 ? "" : "s"}</span>
             <span className="text-muted-foreground">|</span>
-            <span>Story {targetWorkItemId || "not selected"}</span>
+            <span>{isJira ? "Issue" : isAzure ? "Story" : "Work item"} {targetWorkItemId || "not selected"}</span>
           </span>
         }
         description={publishDescription}
@@ -752,8 +765,8 @@ export function PublishGeneratedCasesPanel({
             title="Publish generated test cases?"
             description={
               <div className="space-y-1">
-                <p>Project: {scope?.azureProjectName ?? "Selected Azure DevOps project"}</p>
-                <p>User story: {targetWorkItemId}</p>
+                <p>{isJira ? "Jira project" : "Project"}: {scope?.azureProjectName ?? (isJira ? "Selected Jira project" : isAzure ? "Selected Azure DevOps project" : "Selected project")}</p>
+                <p>{isJira ? "Issue" : isAzure ? "User story" : "Work item"}: {targetWorkItemId}</p>
                 <p>Test cases: {testCases.length}</p>
                 {requirementSuite ? (
                   <>
@@ -761,7 +774,11 @@ export function PublishGeneratedCasesPanel({
                     <p>Parent suite: {selectedSuiteLabel ? `${selectedSuiteLabel.id} - ${selectedSuiteLabel.name}` : selectedSuiteId}</p>
                   </>
                 ) : (
-                  <p>Each created test case will be linked to this user story without creating a test suite.</p>
+                  <p>{isJira
+                    ? "Each created test case will be linked to this issue."
+                    : isAzure
+                      ? "Each created test case will be linked to this user story without creating a test suite."
+                      : "Each created test case will be linked to this work item."}</p>
                 )}
               </div>
             }
@@ -786,6 +803,7 @@ function publishActionDescription({
   loading,
   error,
   success,
+  providerId,
 }: {
   scope: ActiveProjectScope | null;
   targetWorkItemId: string;
@@ -797,12 +815,16 @@ function publishActionDescription({
   loading: boolean;
   error: string | null;
   success: boolean;
+  providerId: string | null;
 }) {
+  const isAzure = providerId === "azure-devops";
+  const isJira = providerId === "jira-cloud";
+  if (!isAzure && !isJira) return "Workspace provider is still loading. Publishing will be available when it resolves.";
   if (error) return <span className="text-destructive">{error}</span>;
   if (success) return <span className="text-success">Selected test cases were published successfully.</span>;
-  if (loading) return "Publishing selected test cases to Azure DevOps.";
-  if (!scope) return "Select an Azure DevOps project before publishing.";
-  if (!targetWorkItemId) return "Select a target story before publishing.";
+  if (loading) return `Publishing selected test cases to ${isJira ? "Jira Cloud" : "Azure DevOps"}.`;
+  if (!scope) return `Select ${isJira ? "a Jira" : "an Azure DevOps"} project before publishing.`;
+  if (!targetWorkItemId) return `Select a target ${isJira ? "issue" : "story"} before publishing.`;
   if (!testCases.length) return "Select at least one reviewed test case before publishing.";
   if (invalidCaseCount > 0) {
     return (
@@ -813,7 +835,8 @@ function publishActionDescription({
   }
   if (createRequirementSuite && !selectedTestPlanId) return "Select an Azure Test Plan in the publish panel before publishing.";
   if (createRequirementSuite && !selectedSuiteId) return "Select a parent suite in the publish panel before publishing.";
-  return createRequirementSuite
-    ? "Ready to create, link, and place the selected cases in a requirement-based suite."
+  if (createRequirementSuite) return "Ready to create, link, and place the selected cases in a requirement-based suite.";
+  return isJira
+    ? "Ready to create and link the selected cases to the Jira issue."
     : "Ready to create and link the selected cases without creating a test suite.";
 }

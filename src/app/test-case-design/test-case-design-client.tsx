@@ -54,6 +54,10 @@ import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/mod
 import { cn } from "@/lib/utils";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
+import {
+  normalizeTestCaseDesignProviderId,
+  testCaseDesignProviderCopy,
+} from "./test-case-design-copy";
 
 export function TestCaseDesignClient() {
   const scope = useActiveProject();
@@ -64,11 +68,24 @@ export function TestCaseDesignClient() {
   const [providerId, setProviderId] = useState<string | null>(null);
 
   useEffect(() => {
+    let active = true;
     void fetch("/api/auth/session", { cache: "no-store" })
-      .then((response) => response.json())
-      .then((data: { workspace?: { providerId?: string } | null }) => setProviderId(data.workspace?.providerId ?? "azure-devops"))
-      .catch(() => setProviderId("azure-devops"));
+      .then((response) => {
+        if (!response.ok) throw new Error("Session lookup failed.");
+        return response.json() as Promise<{ workspace?: { providerId?: string } | null }>;
+      })
+      .then((data) => {
+        if (active) setProviderId(normalizeTestCaseDesignProviderId(data.workspace?.providerId));
+      })
+      .catch(() => {
+        if (active) setProviderId(null);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
+
+  const providerCopy = testCaseDesignProviderCopy(normalizeTestCaseDesignProviderId(providerId));
 
   const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
   const [mode, setMode] = useState<WorkflowMode>("auto");
@@ -355,7 +372,7 @@ export function TestCaseDesignClient() {
 
   return (
     <div className="content-stack">
-      {projectWarning(scope)}
+      {projectWarning(scope, providerId)}
       <WorkflowStepper
         steps={[
           {
@@ -381,7 +398,7 @@ export function TestCaseDesignClient() {
       {activeStep === "generate" ? (
         <div className="content-stack">
           <SectionCard
-            title="Generate Test Cases from Azure DevOps Requirement"
+            title={providerCopy.generationTitle}
             description="Project context is selected automatically for this run."
             action={
               <GenerationModeToggle
