@@ -36,9 +36,11 @@ iTestFlow supports two bootstrap modes:
 | --- | --- | --- |
 | `BOOTSTRAP_AZURE_ORGS` | yes | Comma-separated `orgUrl\|ownerEmail` entries. Each org has its own owner. Omit `\|email` to inherit `BOOTSTRAP_OWNER_EMAIL`. When set, takes precedence over `BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG`. |
 
-### Jira Cloud Sign-In (Optional)
+### Jira Cloud Sign-In (Optional Provider)
 
-Jira Cloud sign-in and its site/owner bootstrap mirror the Azure entries above. See [jira-cloud.md](jira-cloud.md) for the OAuth app setup and operational notes.
+Jira Cloud sign-in and its site/owner bootstrap mirror the Azure entries above. A fresh Jira Cloud deployment must set `BOOTSTRAP_JIRA_SITES` with an owner email before enabling the provider; bootstrap may be omitted only for an upgrade where every enabled site already has an active connected Jira OAuth sync principal, an active cloud-ID-backed workspace, and an established owner membership. See [jira-cloud.md](jira-cloud.md) for the OAuth app setup, URL-rename procedure, and operational notes.
+
+Enable the Atlassian **User Identity API** and its `read:me` scope in the OAuth app before deploying this application version. For an existing Jira installation, stage the change and confirm that `/me` `account_id` matches the previously stored `/myself` `accountId` identity before production rollout.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
@@ -46,8 +48,8 @@ Jira Cloud sign-in and its site/owner bootstrap mirror the Azure entries above. 
 | `ATLASSIAN_OAUTH_REDIRECT_URI` | for Jira | Exact registered callback, `https://<deployment>/api/auth/jira/callback` |
 | `ATLASSIAN_ALLOWED_CLOUD_IDS` | for Jira | Comma-separated allowlist of approved Atlassian cloud IDs; empty fails closed |
 | `ITESTFLOW_PUBLIC_URL` | for Jira sync | Public HTTPS origin used to register `/api/webhooks/jira` |
-| `BOOTSTRAP_OWNER_JIRA_SITE` | optional | Legacy single-site pair with `BOOTSTRAP_OWNER_EMAIL`; seeds one Jira site and its owner |
-| `BOOTSTRAP_JIRA_SITES` | optional | Comma-separated `siteUrl\|ownerEmail` entries (accepts `mysite` or `https://mysite.atlassian.net`). Seeds each site's workspace and declared owner at startup so the login site picker works before any OAuth; each site's cloud ID must also be in `ATLASSIAN_ALLOWED_CLOUD_IDS` |
+| `BOOTSTRAP_OWNER_JIRA_SITE` | legacy | Single-site compatibility pair with `BOOTSTRAP_OWNER_EMAIL`; prefer `BOOTSTRAP_JIRA_SITES` |
+| `BOOTSTRAP_JIRA_SITES` | fresh Jira deployment | Comma-separated `siteUrl\|ownerEmail` entries (accepts `mysite` or `https://mysite.atlassian.net`). Seeds each site's workspace and declared owner at startup so the login site picker works before any OAuth; each site's cloud ID must also be in `ATLASSIAN_ALLOWED_CLOUD_IDS` |
 | `BOOTSTRAP_ENABLED_PROVIDERS` | optional | Which sign-in providers the login page offers (`azure-devops`, `jira-cloud`; first entry is the default pane). Unset auto-detects: Azure always, Jira when `ATLASSIAN_OAUTH_CLIENT_ID` is set |
 
 ### Common Variables (Both Modes)
@@ -156,6 +158,18 @@ The app startup instrumentation also attempts pending migrations and bootstrap s
 
 The same startup-instrumentation note applies: keep the explicit `npm run db:migrate` step in the deploy pipeline so schema failures surface before serving traffic.
 
+### Jira Cloud Setup
+
+1. Enable the Atlassian User Identity API and required OAuth scopes, including `read:me`, before deploying the matching code.
+2. Configure the OAuth variables, non-empty cloud-ID allowlist, `APP_ENCRYPTION_KEY`, and public webhook origin documented above.
+3. For a fresh deployment, set `BOOTSTRAP_JIRA_SITES` with a declared owner for every site. Do not rely on first-login site creation.
+4. Run `npm run db:migrate`, then build and start the application.
+5. Confirm that configured sites appear in the login picker and site-qualified starts reject unconfigured sites; the legacy site-less compatibility path remains callable, can select an accessible allowlisted site, and can provision a first-user-owned workspace, so do not use or expose it as the fresh-deployment path.
+6. Have each declared owner complete OAuth. Verify that the seeded owner identity and membership are reused and that the account becomes the site's sync principal.
+7. For an upgrade with existing Jira identities, verify in staging that `/me` `account_id` matches the prior `/myself` `accountId` before promoting the release.
+
+When an Atlassian site URL changes but its cloud ID does not, follow the ordered rename procedure in [jira-cloud.md](jira-cloud.md): update `BOOTSTRAP_JIRA_SITES` before the restart, then complete OAuth through the new picker entry so reconciliation can absorb the placeholder. The legacy site-less flow exists for compatibility only and is not a fresh-deployment path.
+
 ### Managing Organizations
 
 Once an org is seeded, it cannot be removed via environment variable changes. To temporarily disable an org without losing data:
@@ -183,7 +197,8 @@ These operations are reversible and preserve all workspace data, user records, p
 ## Production Checklist
 
 - [ ] HTTPS is enabled.
-- [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, and bootstrap variables (`BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG` or `BOOTSTRAP_AZURE_ORGS`; plus `BOOTSTRAP_JIRA_SITES` and the `ATLASSIAN_*` variables for Jira Cloud deployments) are set through secrets.
+- [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, and bootstrap variables (`BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG` or `BOOTSTRAP_AZURE_ORGS`; plus `BOOTSTRAP_JIRA_SITES` for fresh Jira deployments, unless a qualifying upgrade already has an active connected Jira OAuth sync principal, cloud-ID-backed workspace, and owner membership for every enabled site) and, for Jira Cloud deployments, the `ATLASSIAN_*` variables are set through secrets.
+- [ ] For Jira Cloud, the Atlassian User Identity API and `read:me` scope are enabled before application rollout; upgrades have passed the existing-identity continuity smoke test.
 - [ ] `npm run db:migrate` runs before the new application version receives traffic.
 - [ ] At least one supervised application process is running, or the advanced split topology has at least one web process and one capable background process.
 - [ ] PostgreSQL automated backups are enabled and restore has been tested.

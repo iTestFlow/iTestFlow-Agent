@@ -88,7 +88,7 @@ npm run dev -- --hostname 127.0.0.1 --port 3000
 BOOTSTRAP_AZURE_ORGS=https://dev.azure.com/org-a|admin@company.com, https://dev.azure.com/org-b|owner-b@company.com
 ```
 
-**Jira Cloud sign-in** (optional): configure the `ATLASSIAN_*` OAuth variables, then mirror the Azure bootstrap with `BOOTSTRAP_JIRA_SITES` (comma-separated `siteUrl|ownerEmail`, e.g. `mysite|admin@company.com`) so seeded sites appear in the login site picker with their declared owners. `BOOTSTRAP_ENABLED_PROVIDERS` controls which providers the login page offers (unset auto-detects). See [docs/jira-cloud.md](docs/jira-cloud.md).
+**Jira Cloud sign-in** (optional provider): before deploying, enable the Atlassian User Identity API and `read:me`, then configure the `ATLASSIAN_*` OAuth variables. A fresh Jira Cloud deployment must set `BOOTSTRAP_JIRA_SITES` with an owner email (comma-separated `siteUrl|ownerEmail`, e.g. `mysite|admin@company.com`) so seeded sites appear in the login picker with their declared owners. Only an upgrade whose enabled sites already have active connected Jira OAuth sync principals may omit bootstrap. `BOOTSTRAP_ENABLED_PROVIDERS` controls which providers the login page offers (unset auto-detects). See [docs/jira-cloud.md](docs/jira-cloud.md).
 
 After starting:
 1. Visit [Login](http://127.0.0.1:3000/login) and select an organization (or enter one by URL).
