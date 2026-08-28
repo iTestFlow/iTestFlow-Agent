@@ -22,9 +22,16 @@ export type CredentialSummary = {
   isStale?: boolean;
 };
 
+export type JiraConnectionSummary = {
+  status: "active" | "invalid" | "revoked" | "not_connected";
+  lastValidatedAt?: string | null;
+  isStale?: boolean;
+};
+
 export type UserCredentialStatus = {
   azurePat: CredentialSummary;
   llm: CredentialSummary & { model?: string | null };
+  jira: JiraConnectionSummary;
 };
 
 /**
@@ -342,6 +349,14 @@ export async function getUserCredentialStatus(workspaceId: string, userId: strin
     { workspaceId, userId },
   );
 
+  const jira = await sqlGet<{ status: string; last_validated_at: string | null }>(
+    `SELECT status, last_validated_at
+     FROM jira_connections
+     WHERE workspace_id = @workspaceId AND user_id = @userId
+     LIMIT 1`,
+    { workspaceId, userId },
+  );
+
   return {
     azurePat: pat
       ? {
@@ -361,6 +376,13 @@ export async function getUserCredentialStatus(workspaceId: string, userId: strin
           isStale: llm.status === "configured" && isCredentialStale(llm.last_validated_at, now),
         }
       : { status: "not_configured", maskedPreview: null },
+    jira: jira
+      ? {
+          status: jira.status as JiraConnectionSummary["status"],
+          lastValidatedAt: jira.last_validated_at,
+          isStale: jira.status === "active" && isCredentialStale(jira.last_validated_at, now),
+        }
+      : { status: "not_connected" },
   };
 }
 

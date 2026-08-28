@@ -11,6 +11,7 @@ function overview(overrides: Record<string, unknown> = {}) {
     providerId: "jira-cloud", role: "owner",
     workspace: { id: "ws-1", name: "Quality Cloud", siteName: "Quality Jira", siteUrl: "https://quality.atlassian.net" },
     connection: { status: "active" },
+    syncPrincipal: { exists: true, status: "active", userId: "sync-user", isActor: false },
     availableProjects: [],
     projects: [],
     mappings: [],
@@ -37,27 +38,53 @@ describe("JiraIntegrationSection", () => {
     vi.unstubAllGlobals();
   });
 
-  it("reconnects through the workspace's own site so OAuth cannot silently land elsewhere", async () => {
-    fetchMock.mockResolvedValue(json(overview({ connection: { status: "reauthorization_required" } })));
+  it("opens the token form for an invalid connection and replaces it through the connect action", async () => {
+    fetchMock.mockResolvedValue(json(overview({ connection: { status: "invalid" } })));
 
     render(<JiraIntegrationSection />);
 
-    const link = await screen.findByRole("link", { name: "Reconnect Jira Cloud" });
-    expect(link).toHaveAttribute(
-      "href",
-      `/api/auth/jira/start?returnTo=%2Fsettings&site=${encodeURIComponent("https://quality.atlassian.net")}`,
-    );
+    // Tri-state badge: invalid is destructive and actionable, not a vague warning.
+    expect(await screen.findByText("Invalid token")).toBeInTheDocument();
+    const email = await screen.findByLabelText("Atlassian account email");
+    const token = screen.getByLabelText("Atlassian API token");
+    expect(token).toHaveAttribute("type", "password");
+
+    fireEvent.change(email, { target: { value: "owner@example.test" } });
+    fireEvent.change(token, { target: { value: "replacement-token" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+
+    await waitFor(() => {
+      const connectCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST");
+      expect(connectCall).toBeTruthy();
+      expect(JSON.parse(String((connectCall![1] as RequestInit).body))).toEqual({
+        action: "connect", emailAddress: "owner@example.test", apiToken: "replacement-token",
+      });
+    });
   });
 
-  it("does not offer reconnect while the connection is active", async () => {
+  it("keeps the token form behind a Replace affordance while the connection is active", async () => {
     fetchMock.mockResolvedValue(json(overview()));
 
     render(<JiraIntegrationSection />);
 
     await screen.findByText("Quality Jira");
-    await waitFor(() => {
-      expect(screen.queryByRole("link", { name: "Reconnect Jira Cloud" })).toBeNull();
-    });
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Atlassian API token")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Replace API token" }));
+    expect(screen.getByLabelText("Atlassian API token")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Keep saved token" })).toBeInTheDocument();
+  });
+
+  it("raises an actionable alert when the workspace sync owner's token is invalid", async () => {
+    fetchMock.mockResolvedValue(json(overview({
+      syncPrincipal: { exists: true, status: "invalid", userId: "sync-user", isActor: false },
+    })));
+
+    render(<JiraIntegrationSection />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Scheduled Jira sync is blocked.");
+    expect(alert).toHaveTextContent("owner or admin must replace their Jira API token");
   });
 
   it("requires an explicit backend choice for an unconfigured project — Plain Jira is never a silent default", async () => {

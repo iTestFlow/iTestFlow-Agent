@@ -725,7 +725,7 @@ export function KnowledgeBuild({
       id: "index",
       label: "Load Project Index",
       shortLabel: "Load Index",
-      description: "Sync and inspect the selected Azure DevOps source work items.",
+      description: "Sync and inspect the selected source work items.",
       icon: Database,
     },
     {

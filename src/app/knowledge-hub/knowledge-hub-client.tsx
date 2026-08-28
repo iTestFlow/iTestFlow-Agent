@@ -544,7 +544,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   }
 
   async function indexContextForBuild() {
-    if (!scope) throw new Error("Select an Azure DevOps project before loading the project index.")
+    if (!scope) throw new Error("Select a project before loading the project index.")
     const data = await postJson<IndexResult>("/api/context/index", {
       scope,
       workItemTypes,
@@ -642,7 +642,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     ? "No knowledge base has been saved yet. Use Build Knowledge to compile source-backed project knowledge."
     : "No knowledge base has been saved yet."
   const emptyContextMessage = canBuildKnowledge
-    ? "No project context has been indexed yet. Use Build Knowledge to prepare context from Azure DevOps work items."
+    ? "No project context has been indexed yet. Use Build Knowledge to prepare context from your source work items."
     : "No project context has been indexed yet."
 
   return (
@@ -651,8 +651,8 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
         <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/15 p-3 text-sm text-warning-foreground dark:text-warning">
           <AlertTriangle className="size-4" />
           {canBuildKnowledge
-            ? "Select an Azure DevOps project before building project knowledge."
-            : "Select an Azure DevOps project before viewing project knowledge."}
+            ? "Select a project before building project knowledge."
+            : "Select a project before viewing project knowledge."}
         </div>
       ) : null}
 
@@ -831,7 +831,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                       <CardHeader>
                         <CardTitle className="text-base" role="heading" aria-level={2}>Load Project Index</CardTitle>
                         <p className="text-sm leading-6 text-muted-foreground">
-                          Sync the selected Azure DevOps work items and manage uploaded documents — both feed the knowledge build from this step.
+                          Sync the selected work items and manage uploaded documents — both feed the knowledge build from this step.
                         </p>
                       </CardHeader>
                       <CardContent>
@@ -1016,7 +1016,7 @@ function IndexLoadPanel({
         <div className="min-w-0 flex-1 space-y-4">
           <ContextFilterSelector
             title="Work item types"
-            description="Load matching Azure DevOps work items into the indexed project context before building knowledge."
+            description="Load matching work items into the indexed project context before building knowledge."
             options={workItemTypeOptions}
             selectedValues={workItemTypes}
             loading={metadataLoading}

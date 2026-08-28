@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { revokeJiraConnection } from "@/modules/auth/jira-connection.service";
+import { revokeJiraConnection, storeJiraConnection } from "@/modules/auth/jira-connection.service";
+import {
+  authenticateJiraApiToken,
+  InvalidJiraTokenError,
+  JiraTokenAuthError,
+  JiraTokenScopeError,
+  resolveJiraSiteResource,
+} from "@/modules/auth/jira-token-auth.service";
+import { writeAuditLog } from "@/modules/audit/audit.service";
 import { getUserWorkManagementProviderOrgLevel } from "@/modules/credentials/scoped-resolution.service";
 import { resolveJiraFieldConflict } from "@/modules/integrations/jira-cloud/jira-conflict-resolution.service";
 import { storePlainJiraArtifactConfig } from "@/modules/integrations/jira-cloud/jira-artifact-publishing.service";
@@ -9,6 +17,9 @@ import { storeXrayCloudConfig } from "@/modules/integrations/jira-cloud/xray-clo
 import { storeZephyrScaleConfig } from "@/modules/integrations/jira-cloud/zephyr-scale-config.service";
 import { getJiraIntegrationOverview, storeJiraProjectSyncConfig } from "@/modules/projects/jira-project-mapping.service";
 import { verifyAndUpsertWorkspaceProject } from "@/modules/projects/workspace-projects.service";
+import { checkRateLimit } from "@/modules/security/rate-limit";
+import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
+import { getWorkspaceMembership } from "@/modules/workspace/workspace-access.service";
 import { resolveWorkspaceRequest, workspaceRequestError, type WorkspaceRequestContext } from "@/modules/workspace/workspace-request";
 
 export const runtime = "nodejs";
@@ -17,6 +28,11 @@ const Pair = z.object({ localField: z.string().trim().min(1).max(100), jiraField
 const StatusPair = z.object({ localStatus: z.string().trim().min(1).max(100), jiraStatus: z.string().trim().min(1).max(100) }).strict();
 const ActionSchema = z.union([
   z.object({ action: z.literal("select_project"), providerProjectId: z.string().trim().min(1) }).strict(),
+  z.object({
+    action: z.literal("connect"),
+    emailAddress: z.string().trim().min(1).email("Enter a valid Atlassian account email."),
+    apiToken: z.string().trim().min(1, "Enter your Atlassian API token."),
+  }).strict(),
   z.object({
     action: z.literal("configure_sync"), projectId: z.string().trim().min(1),
     direction: z.enum(["jira_to_itestflow", "itestflow_to_jira", "two_way"]),
@@ -62,6 +78,9 @@ export async function POST(request: Request) {
     const context = await requireJiraContext();
     const base = { workspaceId: context.workspace.id, actorUserId: context.userId };
     const action = parsed.data;
+    if (action.action === "connect") {
+      return await connectJiraToken(context, action.emailAddress, action.apiToken);
+    }
     if (action.action === "select_project") {
       const project = await verifyAndUpsertWorkspaceProject(context, action.providerProjectId);
       return NextResponse.json({ ok: true, project });
@@ -87,9 +106,72 @@ export async function DELETE() {
   try {
     const context = await requireJiraContext();
     await revokeJiraConnection({ workspaceId: context.workspace.id, actorUserId: context.userId, targetUserId: context.userId });
+    writeAuditLog({
+      workspaceId: context.workspace.id,
+      action: "JIRA_CONNECTION_REVOKED",
+      status: "Success",
+      actor: context.userId,
+      message: "Revoked the stored Jira API token connection.",
+    });
     return NextResponse.json({ ok: true });
   } catch (error) {
     return jiraSettingsError(error);
+  }
+}
+
+/**
+ * Store or replace the caller's own Jira API token: rate-limited (the action
+ * accepts the same secret class as login), re-validated against the
+ * workspace's PINNED cloud ID so a renamed or re-registered site fails closed,
+ * and audited. An owner's connect requests the sync principal; arbitration
+ * yields to any existing active principal.
+ */
+async function connectJiraToken(context: WorkspaceRequestContext, emailAddress: string, apiToken: string): Promise<NextResponse> {
+  const rate = await checkRateLimit(`jira-connect:${context.userId}`, 10, 5 * 60 * 1000);
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "Too many attempts. Please wait and try again." },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } },
+    );
+  }
+  const siteUrl = context.workspace.providerSiteUrl;
+  const pinnedCloudId = context.workspace.providerSiteId;
+  if (!siteUrl || !pinnedCloudId) throw new Error("Jira Cloud is not available for this workspace.");
+  try {
+    const resource = await resolveJiraSiteResource(siteUrl);
+    if (resource.cloudId !== pinnedCloudId) {
+      return NextResponse.json(
+        { error: "The configured Jira site no longer matches this workspace. Ask your administrator to update the configured site." },
+        { status: 409 },
+      );
+    }
+    const { identity, tokenKind } = await authenticateJiraApiToken({ resource, emailAddress, apiToken });
+    const membership = await getWorkspaceMembership(context.userId, context.workspace.id);
+    await storeJiraConnection({
+      workspaceId: context.workspace.id,
+      userId: context.userId,
+      cloudId: resource.cloudId,
+      email: identity.emailAddress,
+      apiToken,
+      tokenKind,
+      isSyncPrincipal: membership?.role === "owner",
+    });
+    writeAuditLog({
+      workspaceId: context.workspace.id,
+      action: "JIRA_CONNECTION_REPLACED",
+      status: "Success",
+      actor: context.userId,
+      message: "Stored a Jira API token connection.",
+    });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    if (error instanceof JiraTokenScopeError || error instanceof InvalidJiraTokenError) {
+      return routeErrorResponse(error, { domain: "auth", status: 401, fallback: error.message });
+    }
+    if (error instanceof JiraTokenAuthError) {
+      return routeErrorResponse(error, { domain: "auth", status: 503, fallback: error.message });
+    }
+    throw error;
   }
 }
 

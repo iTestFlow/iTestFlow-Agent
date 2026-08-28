@@ -56,9 +56,16 @@ type CredentialSummary = {
   isStale?: boolean
 }
 
+type JiraConnectionSummary = {
+  status: "active" | "invalid" | "revoked" | "not_connected"
+  lastValidatedAt?: string | null
+  isStale?: boolean
+}
+
 type CredentialStatus = {
   azurePat: CredentialSummary
   llm: CredentialSummary
+  jira?: JiraConnectionSummary
 }
 
 type WorkspaceRole = "owner" | "admin" | "member"
@@ -240,7 +247,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
       }
 
       toast.success("Azure DevOps PAT replaced.")
-      setCredentials({ azurePat: data.azurePat, llm: data.llm })
+      setCredentials({ azurePat: data.azurePat, llm: data.llm, jira: data.jira })
       setPatInput("")
       setPatReveal(false)
       setPatDialogOpen(false)
@@ -314,15 +321,23 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
               : "Scheduled knowledge sync is disabled.",
           }
 
-  // Proactive PAT health: only surfaced when there's a problem (expired/rejected
-  // at use-time, or stale). A healthy PAT shows nothing extra here.
+  // Proactive credential health for the workspace's provider: only surfaced
+  // when there's a problem (rejected at use-time, or stale). Healthy shows nothing.
   const pat = credentials?.azurePat
-  const patWarning = workspaceProviderId === "azure-devops" && (
-    pat?.status === "expired" || pat?.status === "invalid"
-      ? { label: "PAT Expired", detail: "Azure DevOps rejected your PAT. Re-enter it in Settings → My Credentials." }
-      : pat?.isStale
-        ? { label: "Check PAT", detail: "Your Azure DevOps PAT hasn't been validated in a while. Re-enter it in Settings → My Credentials." }
-        : null)
+  const jiraConnection = credentials?.jira
+  const patWarning = workspaceProviderId === "azure-devops"
+    ? (pat?.status === "expired" || pat?.status === "invalid"
+        ? { label: "PAT Expired", detail: "Azure DevOps rejected your PAT. Re-enter it in Settings → My Credentials." }
+        : pat?.isStale
+          ? { label: "Check PAT", detail: "Your Azure DevOps PAT hasn't been validated in a while. Re-enter it in Settings → My Credentials." }
+          : null)
+    : workspaceProviderId === "jira-cloud"
+      ? (jiraConnection?.status === "invalid"
+          ? { label: "Jira Token Invalid", detail: "Atlassian rejected your Jira API token. Replace it in Settings → Connections." }
+          : jiraConnection?.status === "active" && jiraConnection.isStale
+            ? { label: "Check Jira Token", detail: "Your Jira API token hasn't been validated in a while. Replace it in Settings → Connections." }
+            : null)
+      : null
 
   return (
     <header className="sticky top-0 z-30 flex min-h-16 items-center gap-3 border-b border-border bg-card/95 px-4 text-card-foreground shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/85 lg:px-6">

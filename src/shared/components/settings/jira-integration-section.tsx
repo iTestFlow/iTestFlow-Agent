@@ -23,6 +23,7 @@ type Overview = {
   providerId: "jira-cloud"; role: "owner" | "admin" | "member";
   workspace: { id: string; name: string; siteName: string; siteUrl: string };
   connection: { status: string };
+  syncPrincipal?: { exists: boolean; status: string | null; userId: string | null; isActor: boolean };
   availableProjects: Array<{ id: string; key?: string; name: string }>;
   projects: JiraProject[];
   mappings: Array<{ id: string; projectId: string; jiraIssueKey: string; localEntityType: string; localEntityId: string; direction: string; status: string; lastSyncedAt: string | null; updatedAt: string }>;
@@ -74,26 +75,52 @@ export function JiraIntegrationSection() {
   if (!overview) return null;
   const canConfigure = overview.role === "owner" || overview.role === "admin";
   const connected = overview.connection.status === "active";
+  const invalid = overview.connection.status === "invalid";
+  const badge = connected
+    ? { tone: "success" as const, label: "Connected" }
+    : invalid
+      ? { tone: "destructive" as const, label: "Invalid token" }
+      : { tone: "muted" as const, label: "Not connected" };
+  const syncPrincipal = overview.syncPrincipal ?? { exists: true, status: null, userId: null, isActor: false };
 
   return <div className="space-y-4">
+    {syncPrincipal.status === "invalid" ? (
+      <Callout tone="error" role="alert" title="Scheduled Jira sync is blocked.">
+        {syncPrincipal.isActor
+          ? "Your API token is the workspace sync token and it is invalid. Replace it below to restore scheduled sync."
+          : "The sync owner's API token is invalid. That owner or admin must replace their Jira API token in Settings to restore scheduled sync."}
+      </Callout>
+    ) : !syncPrincipal.exists ? (
+      <Callout tone="warning" role="status" title="No sync owner is connected yet.">
+        Scheduled Jira sync starts once an owner or admin connects an API token; the first to connect becomes the workspace sync owner.
+      </Callout>
+    ) : null}
+
     <SectionCard
       title="Jira Cloud Connection"
-      description="OAuth credentials are encrypted per user. Shared project, mapping, and artifact settings are restricted to workspace owners and admins."
-      action={<StatusBadge tone={connected ? "success" : "warning"} label={connected ? "Connected" : "Reconnect required"} />}
+      description="Your Atlassian API token is encrypted per user. Shared project, mapping, and artifact settings are restricted to workspace owners and admins."
+      action={<StatusBadge tone={badge.tone} label={badge.label} />}
     >
       <div className="grid gap-3 sm:grid-cols-2">
         <div><div className="text-xs text-muted-foreground">Site</div><div className="font-medium">{overview.workspace.siteName}</div></div>
         <div><div className="text-xs text-muted-foreground">Workspace role</div><div className="font-medium capitalize">{overview.role}</div></div>
       </div>
       <a className="inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={overview.workspace.siteUrl} target="_blank" rel="noreferrer">Open Jira site <ExternalLink className="size-3.5" aria-hidden="true" /></a>
-      {!connected ? <Button asChild><a href={`/api/auth/jira/start?returnTo=%2Fsettings&site=${encodeURIComponent(overview.workspace.siteUrl)}`}>Reconnect Jira Cloud</a></Button> : null}
-      {confirmDisconnect ? (
+      <ConnectTokenForm
+        connectionStatus={overview.connection.status}
+        busy={Boolean(busy)}
+        onConnect={(emailAddress, apiToken) => void mutate(
+          connected ? "Jira API token replaced." : "Jira Cloud connected.",
+          { action: "connect", emailAddress, apiToken },
+        )}
+      />
+      {connected || invalid ? (confirmDisconnect ? (
         <div className="flex flex-wrap items-center gap-2" role="status" aria-live="polite">
           <span className="text-sm text-destructive">Disconnect this Jira account? Shared history remains.</span>
           <Button type="button" variant="destructive" aria-label="Confirm Jira Cloud disconnect" disabled={Boolean(busy)} onClick={() => void mutate("Jira Cloud disconnected.", undefined, "DELETE")}>Confirm disconnect</Button>
           <Button type="button" variant="outline" onClick={() => setConfirmDisconnect(false)}>Cancel</Button>
         </div>
-      ) : <Button type="button" variant="outline" aria-label="Disconnect Jira Cloud" onClick={() => setConfirmDisconnect(true)}>Disconnect Jira Cloud</Button>}
+      ) : <Button type="button" variant="outline" aria-label="Disconnect Jira Cloud" onClick={() => setConfirmDisconnect(true)}>Disconnect Jira Cloud</Button>) : null}
     </SectionCard>
 
     {connected && canConfigure ? <SectionCard title="Jira Projects" description="Only projects visible to the connected Jira account can be added.">
@@ -128,6 +155,35 @@ export function JiraIntegrationSection() {
       {overview.traceLinks.length === 0 ? <p className="text-sm text-muted-foreground">No published traceability links yet.</p> : <ul className="space-y-2">{overview.traceLinks.map((link) => <li key={link.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"><span>{link.localArtifactType} {link.localArtifactId}</span>{link.remoteUrl && link.remoteArtifactId ? <a href={link.remoteUrl} target="_blank" rel="noreferrer" aria-label={`Open ${link.remoteArtifactId} in Jira`} className="inline-flex items-center gap-1 font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{link.remoteArtifactId}<ExternalLink className="size-3.5" aria-hidden="true" /></a> : <StatusBadge tone="warning" label={link.status} />}</li>)}</ul>}
     </SectionCard>
   </div>;
+}
+
+function ConnectTokenForm({ connectionStatus, busy, onConnect }: {
+  connectionStatus: string; busy: boolean; onConnect(emailAddress: string, apiToken: string): void;
+}) {
+  const connected = connectionStatus === "active";
+  const [open, setOpen] = useState(!connected);
+  const [emailAddress, setEmailAddress] = useState("");
+  const [apiToken, setApiToken] = useState("");
+
+  useEffect(() => { setOpen(connectionStatus !== "active"); }, [connectionStatus]);
+
+  if (!open) {
+    return <Button type="button" variant="outline" onClick={() => setOpen(true)}>Replace API token</Button>;
+  }
+  return <fieldset className="space-y-3 rounded-lg border p-3">
+    <legend className="px-1 font-medium">{connected ? "Replace API token" : "Connect with an Atlassian API token"}</legend>
+    <LabeledInput id="jira-connect-email" label="Atlassian account email" value={emailAddress} onChange={setEmailAddress} placeholder="you@company.com" />
+    <LabeledInput id="jira-connect-token" label="Atlassian API token" value={apiToken} onChange={setApiToken} secret />
+    <p className="text-xs text-muted-foreground">
+      Classic and scoped tokens both work. A scoped token needs the read:jira-work, write:jira-work, and read:jira-user scopes.
+    </p>
+    <div className="flex flex-wrap gap-2">
+      <Button type="button" disabled={busy || !emailAddress.trim() || !apiToken.trim()} onClick={() => { onConnect(emailAddress, apiToken); setApiToken(""); }}>
+        {connected ? "Replace token" : "Connect"}
+      </Button>
+      {connected ? <Button type="button" variant="ghost" onClick={() => { setOpen(false); setApiToken(""); }}>Keep saved token</Button> : null}
+    </div>
+  </fieldset>;
 }
 
 function SyncConfigForm({ project, busy, onSave }: { project: JiraProject; busy: boolean; onSave(body: Record<string, unknown>): void }) {

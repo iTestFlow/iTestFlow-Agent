@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   resolveWorkspaceRequest: vi.fn(), workspaceRequestError: vi.fn(), getOverview: vi.fn(), fetchProjects: vi.fn(),
   getProvider: vi.fn(), verifyProject: vi.fn(), storeSync: vi.fn(), storePlain: vi.fn(), storeXray: vi.fn(),
-  storeZephyr: vi.fn(), resolveConflict: vi.fn(), revokeConnection: vi.fn(),
+  storeZephyr: vi.fn(), resolveConflict: vi.fn(), revokeConnection: vi.fn(), storeConnection: vi.fn(),
+  resolveResource: vi.fn(), authenticate: vi.fn(), checkRateLimit: vi.fn(), writeAuditLog: vi.fn(),
+  getWorkspaceMembership: vi.fn(),
 }));
 vi.mock("@/modules/workspace/workspace-request", () => ({ resolveWorkspaceRequest: mocks.resolveWorkspaceRequest, workspaceRequestError: mocks.workspaceRequestError }));
 vi.mock("@/modules/projects/jira-project-mapping.service", () => ({ getJiraIntegrationOverview: mocks.getOverview, storeJiraProjectSyncConfig: mocks.storeSync }));
@@ -13,7 +15,15 @@ vi.mock("@/modules/integrations/jira-cloud/jira-artifact-publishing.service", ()
 vi.mock("@/modules/integrations/jira-cloud/xray-cloud-config.service", () => ({ storeXrayCloudConfig: mocks.storeXray }));
 vi.mock("@/modules/integrations/jira-cloud/zephyr-scale-config.service", () => ({ storeZephyrScaleConfig: mocks.storeZephyr }));
 vi.mock("@/modules/integrations/jira-cloud/jira-conflict-resolution.service", () => ({ resolveJiraFieldConflict: mocks.resolveConflict }));
-vi.mock("@/modules/auth/jira-connection.service", () => ({ revokeJiraConnection: mocks.revokeConnection }));
+vi.mock("@/modules/auth/jira-connection.service", () => ({ revokeJiraConnection: mocks.revokeConnection, storeJiraConnection: mocks.storeConnection }));
+vi.mock("@/modules/auth/jira-token-auth.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/auth/jira-token-auth.service")>(),
+  resolveJiraSiteResource: mocks.resolveResource,
+  authenticateJiraApiToken: mocks.authenticate,
+}));
+vi.mock("@/modules/security/rate-limit", () => ({ checkRateLimit: mocks.checkRateLimit, clientIp: vi.fn(() => "10.0.0.1") }));
+vi.mock("@/modules/audit/audit.service", () => ({ writeAuditLog: mocks.writeAuditLog }));
+vi.mock("@/modules/workspace/workspace-access.service", () => ({ getWorkspaceMembership: mocks.getWorkspaceMembership }));
 
 import { DELETE, GET, POST } from "./route";
 
@@ -26,6 +36,14 @@ describe("Jira integration settings API", () => {
     mocks.getProvider.mockResolvedValue({ fetchProjects: mocks.fetchProjects });
     mocks.fetchProjects.mockResolvedValue([{ id: "10000", key: "QA", name: "Quality" }]);
     mocks.getOverview.mockResolvedValue({ providerId: "jira-cloud", role: "owner", connection: { status: "active" }, projects: [] });
+    mocks.checkRateLimit.mockResolvedValue({ allowed: true });
+    mocks.resolveResource.mockResolvedValue({ cloudId: "cloud-a", siteName: "quality", siteUrl: "https://quality.atlassian.net" });
+    mocks.authenticate.mockResolvedValue({
+      identity: { accountId: "acc-1", displayName: "Owner", emailAddress: "owner@example.test" },
+      tokenKind: "scoped",
+    });
+    mocks.getWorkspaceMembership.mockResolvedValue({ role: "owner", status: "active" });
+    mocks.storeConnection.mockResolvedValue(undefined);
   });
 
   it("returns server-authorized overview and available Jira projects without secrets", async () => {
@@ -127,10 +145,50 @@ describe("Jira integration settings API", () => {
     expect(mocks.storeSync).not.toHaveBeenCalled();
   });
 
-  it("disconnects only the authenticated actor", async () => {
+  it("disconnects only the authenticated actor and audits the revocation", async () => {
     const response = await DELETE();
     expect(response.status).toBe(200);
     expect(mocks.revokeConnection).toHaveBeenCalledWith({ workspaceId: "ws-1", actorUserId: "user-1", targetUserId: "user-1" });
+    expect(mocks.writeAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: "JIRA_CONNECTION_REVOKED", actor: "user-1" }));
+  });
+
+  it("stores a replacement API token after re-validating the pinned cloud ID, with rate limiting and audit", async () => {
+    const response = await POST(request({ action: "connect", emailAddress: "Owner@Example.Test", apiToken: "token-secret" }));
+    expect(response.status).toBe(200);
+    expect(mocks.checkRateLimit).toHaveBeenCalledWith("jira-connect:user-1", 10, 5 * 60 * 1000);
+    expect(mocks.resolveResource).toHaveBeenCalledWith("https://quality.atlassian.net");
+    expect(mocks.storeConnection).toHaveBeenCalledWith({
+      workspaceId: "ws-1", userId: "user-1", cloudId: "cloud-a",
+      email: "owner@example.test", apiToken: "token-secret", tokenKind: "scoped",
+      isSyncPrincipal: true,
+    });
+    expect(mocks.writeAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: "JIRA_CONNECTION_REPLACED" }));
+    expect(JSON.stringify(await response.json())).not.toContain("token-secret");
+  });
+
+  it("fails closed when the configured site no longer resolves to the pinned cloud ID", async () => {
+    mocks.resolveResource.mockResolvedValue({ cloudId: "cloud-other", siteName: "quality", siteUrl: "https://quality.atlassian.net" });
+    const response = await POST(request({ action: "connect", emailAddress: "owner@example.test", apiToken: "token" }));
+    expect(response.status).toBe(409);
+    expect(mocks.authenticate).not.toHaveBeenCalled();
+    expect(mocks.storeConnection).not.toHaveBeenCalled();
+  });
+
+  it("rate-limits token replacement before any outbound call", async () => {
+    mocks.checkRateLimit.mockResolvedValue({ allowed: false, retryAfterSeconds: 45 });
+    const response = await POST(request({ action: "connect", emailAddress: "owner@example.test", apiToken: "token" }));
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("45");
+    expect(mocks.resolveResource).not.toHaveBeenCalled();
+  });
+
+  it("maps an invalid replacement token to a sanitized 401 without storing anything", async () => {
+    const { InvalidJiraTokenError } = await import("@/modules/auth/jira-token-auth.service");
+    mocks.authenticate.mockRejectedValue(new InvalidJiraTokenError());
+    const response = await POST(request({ action: "connect", emailAddress: "owner@example.test", apiToken: "wrong" }));
+    expect(response.status).toBe(401);
+    expect(mocks.storeConnection).not.toHaveBeenCalled();
+    expect(mocks.writeAuditLog).not.toHaveBeenCalled();
   });
 });
 
