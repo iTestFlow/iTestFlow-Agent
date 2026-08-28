@@ -9,9 +9,9 @@ export const runtime = "nodejs";
 /**
  * Pre-auth Jira site picker for the login page — the Jira mirror of
  * /api/auth/organizations. Display fields only (never internal workspace ids
- * or Atlassian cloudIds). The picker is convenience: the OAuth start route
- * re-validates the chosen site and the callback verifies the authenticated
- * account can actually access it. Lightly rate-limited per IP.
+ * or Atlassian cloudIds). The picker is convenience: the login route
+ * re-validates the chosen site against the configured list and Basic auth
+ * verifies the account can actually access it. Lightly rate-limited per IP.
  */
 export async function GET(request: Request) {
   const rate = await checkRateLimit(`jirasitelist:${clientIp(request)}`, 60, 5 * 60 * 1000);

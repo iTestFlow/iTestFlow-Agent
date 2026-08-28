@@ -128,11 +128,11 @@ async function ensureJiraOwnerMembership(input: {
 /**
  * Adopt-or-seed the workspace row for a configured Jira site. Seeded rows carry
  * the normalized site URL with a NULL provider_site_id — the Atlassian cloudId
- * is only learnable after the first OAuth grant, at which point
+ * is only learnable after the first token login, at which point
  * provisionJiraLogin claims the row (see jira-provisioning.service). Adoption
- * matches by URL so a site that already connected via OAuth is never
- * duplicated, and an existing row never has its status flipped here
- * (soft-disable stays authoritative, matching the Azure org behavior).
+ * matches by URL so a site that already connected is never duplicated, and an
+ * existing row never has its status flipped here (soft-disable stays
+ * authoritative, matching the Azure org behavior).
  */
 async function ensureJiraSiteWorkspace(entry: BootstrapJiraSiteEntry, now: string): Promise<string> {
   const existing = await sqlGet<{ id: string }>(
@@ -255,8 +255,9 @@ export function normalizeAzureOrg(input: string): { name: string; url: string } 
  * the Jira mirror of {@link parseBootstrapOrgs}. Runs entirely before any DB
  * write so a misconfigured entry fails fast with nothing half-seeded. The legacy
  * single-site pair (when both vars are set) is kept first. The owner email must
- * match the owner's Atlassian account email (case-insensitive) so the seeded
- * user reconciles in place on their first OAuth login (see provisionJiraLogin).
+ * match the owner's Atlassian account email (case-insensitive) — it is the email
+ * that owner types at sign-in — so the seeded user reconciles in place on their
+ * first token login (see provisionJiraLogin).
  */
 export function parseBootstrapJiraSites(): BootstrapJiraSiteEntry[] {
   const defaultEmail = process.env.BOOTSTRAP_OWNER_EMAIL?.trim() ?? "";
@@ -343,8 +344,8 @@ export function normalizeJiraSite(input: string): { name: string; url: string } 
 }
 
 /**
- * Canonical comparison/storage form of a Jira site URL, shared by the OAuth
- * adoption path and the callback's pre-selected-site matching. Defensive
+ * Canonical comparison/storage form of a Jira site URL, shared by the login
+ * adoption path and the login route's configured-site matching. Defensive
  * fallback: a non-*.atlassian.net resource URL (e.g. a future custom domain)
  * still gets a stable lowercase, slash-free form instead of throwing.
  */
