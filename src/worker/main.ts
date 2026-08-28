@@ -215,10 +215,13 @@ async function executeJob(handler: JobHandler, entry: ActiveJob): Promise<void> 
       return;
     }
     const message = error instanceof Error ? error.message : "Job handler failed.";
-    // Errors carrying a stable string `code` (JiraSyncPrincipalError,
-    // IntegrationError) surface it through jobs.error_code for actionable UI.
+    // Only stable application codes reach jobs.error_code (JiraSyncPrincipalError,
+    // IntegrationError); incidental infra codes (errno, SQLSTATE) never leak in
+    // as if they were part of the taxonomy.
     const rawCode = (error as { code?: unknown } | null)?.code;
-    const errorCode = typeof rawCode === "string" && rawCode.length <= 100 ? rawCode : null;
+    const errorCode = typeof rawCode === "string" && /^(jira_sync_principal_|integration_)[a-z_]{1,80}$/.test(rawCode)
+      ? rawCode
+      : null;
     const failed = await failJob(job.id, message, WORKER_ID, errorCode);
     if (!failed) {
       console.warn(`[worker] skipped failure update for ${job.jobType} ${job.id}; lock is no longer owned by ${WORKER_ID}`);

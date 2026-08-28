@@ -37,6 +37,7 @@ export function JiraIntegrationSection() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [connectError, setConnectError] = useState("");
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   const load = useCallback(async () => {
@@ -70,6 +71,33 @@ export function JiraIntegrationSection() {
     } finally { setBusy(""); }
   }
 
+  /** Connect/replace-token failures stay inline (role=alert) like the login
+   * pane's — the invalid/scope/pinned-site/429 taxonomy must outlive a toast. */
+  async function connectToken(emailAddress: string, apiToken: string): Promise<boolean> {
+    setBusy("connect");
+    setConnectError("");
+    try {
+      const response = await fetch("/api/integrations/jira", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "connect", emailAddress, apiToken }),
+      });
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) {
+        const retryAfter = response.headers.get("Retry-After");
+        const retryNote = response.status === 429 && retryAfter && /^\d+$/.test(retryAfter) ? ` Retry in ${retryAfter}s.` : "";
+        setConnectError(`${apiErrorMessage(data, "The Jira connection could not be stored.")}${retryNote}`);
+        return false;
+      }
+      toast.success(overview?.connection.status === "active" ? "Jira API token replaced." : "Jira Cloud connected.");
+      await load();
+      return true;
+    } catch {
+      setConnectError("The Jira connection could not be stored. Check your connection and try again.");
+      return false;
+    } finally { setBusy(""); }
+  }
+
   if (loading && !overview) return <div role="status" aria-live="polite" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" aria-hidden="true" />Loading Jira Cloud settings…</div>;
   if (error && !overview) return <Callout tone="error" role="alert" title="Jira Cloud settings unavailable" action={<Button type="button" variant="outline" onClick={() => void load()}>Retry</Button>}>{error}</Callout>;
   if (!overview) return null;
@@ -92,7 +120,7 @@ export function JiraIntegrationSection() {
       </Callout>
     ) : !syncPrincipal.exists ? (
       <Callout tone="warning" role="status" title="No sync owner is connected yet.">
-        Scheduled Jira sync starts once an owner or admin connects an API token; the first to connect becomes the workspace sync owner.
+        Scheduled Jira sync starts once a workspace owner connects an API token; the first owner to connect becomes the workspace sync owner.
       </Callout>
     ) : null}
 
@@ -109,10 +137,8 @@ export function JiraIntegrationSection() {
       <ConnectTokenForm
         connectionStatus={overview.connection.status}
         busy={Boolean(busy)}
-        onConnect={(emailAddress, apiToken) => void mutate(
-          connected ? "Jira API token replaced." : "Jira Cloud connected.",
-          { action: "connect", emailAddress, apiToken },
-        )}
+        error={connectError}
+        onConnect={connectToken}
       />
       {connected || invalid ? (confirmDisconnect ? (
         <div className="flex flex-wrap items-center gap-2" role="status" aria-live="polite">
@@ -157,8 +183,8 @@ export function JiraIntegrationSection() {
   </div>;
 }
 
-function ConnectTokenForm({ connectionStatus, busy, onConnect }: {
-  connectionStatus: string; busy: boolean; onConnect(emailAddress: string, apiToken: string): void;
+function ConnectTokenForm({ connectionStatus, busy, error, onConnect }: {
+  connectionStatus: string; busy: boolean; error: string; onConnect(emailAddress: string, apiToken: string): Promise<boolean>;
 }) {
   const connected = connectionStatus === "active";
   const [open, setOpen] = useState(!connected);
@@ -170,20 +196,32 @@ function ConnectTokenForm({ connectionStatus, busy, onConnect }: {
   if (!open) {
     return <Button type="button" variant="outline" onClick={() => setOpen(true)}>Replace API token</Button>;
   }
-  return <fieldset className="space-y-3 rounded-lg border p-3">
-    <legend className="px-1 font-medium">{connected ? "Replace API token" : "Connect with an Atlassian API token"}</legend>
+  return <form
+    className="space-y-3 rounded-lg border p-3"
+    onSubmit={(event) => {
+      event.preventDefault();
+      if (busy || !emailAddress.trim() || !apiToken.trim()) return;
+      void onConnect(emailAddress, apiToken).then((stored) => { if (stored) setApiToken(""); });
+    }}
+  >
+    <div className="px-1 font-medium">{connected ? "Replace API token" : "Connect with an Atlassian API token"}</div>
     <LabeledInput id="jira-connect-email" label="Atlassian account email" value={emailAddress} onChange={setEmailAddress} placeholder="you@company.com" />
     <LabeledInput id="jira-connect-token" label="Atlassian API token" value={apiToken} onChange={setApiToken} secret />
     <p className="text-xs text-muted-foreground">
       Classic and scoped tokens both work. A scoped token needs the read:jira-work, write:jira-work, and read:jira-user scopes.
     </p>
+    {error ? (
+      <Callout tone="error" role="alert" title="The Jira connection could not be stored.">
+        {error}
+      </Callout>
+    ) : null}
     <div className="flex flex-wrap gap-2">
-      <Button type="button" disabled={busy || !emailAddress.trim() || !apiToken.trim()} onClick={() => { onConnect(emailAddress, apiToken); setApiToken(""); }}>
+      <Button type="submit" disabled={busy || !emailAddress.trim() || !apiToken.trim()}>
         {connected ? "Replace token" : "Connect"}
       </Button>
       {connected ? <Button type="button" variant="ghost" onClick={() => { setOpen(false); setApiToken(""); }}>Keep saved token</Button> : null}
     </div>
-  </fieldset>;
+  </form>;
 }
 
 function SyncConfigForm({ project, busy, onSave }: { project: JiraProject; busy: boolean; onSave(body: Record<string, unknown>): void }) {

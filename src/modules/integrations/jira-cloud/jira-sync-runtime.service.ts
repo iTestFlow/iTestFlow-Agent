@@ -280,7 +280,9 @@ async function drainOperations(input: {
         `SELECT status FROM jira_connections WHERE workspace_id = @workspaceId AND user_id = @userId`,
         { workspaceId: input.workspaceId, userId: input.principalUserId },
       );
-      if (principal?.status !== "active") throw new JiraSyncPrincipalError("jira_sync_principal_invalid");
+      if (principal?.status !== "active") {
+        throw new JiraSyncPrincipalError(principal ? "jira_sync_principal_invalid" : "jira_sync_principal_missing");
+      }
     }
     const operation = await claimNextJiraSyncOperation(input.workspaceId, input.projectId, input.operationId);
     if (!operation) return completed;

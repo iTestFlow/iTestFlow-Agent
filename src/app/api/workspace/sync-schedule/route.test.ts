@@ -88,6 +88,31 @@ describe("workspace sync schedule routes", () => {
     );
   });
 
+  it("rejects an Azure schedule that clears every filter", async () => {
+    const response = await PUT(jsonRequest("/api/workspace/sync-schedule", {
+      cronExpression: "0 2 * * *",
+      workItemTypes: [],
+      states: [],
+    }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Select at least one work item type and state." });
+    expect(mocks.upsertWorkspaceSyncSchedule).not.toHaveBeenCalled();
+  });
+
+  it("stores empty filters for a Jira workspace, whose reconciliation ignores them", async () => {
+    mocks.resolveWorkspaceRequest.mockResolvedValue({
+      userId: "admin-1",
+      workspace: { id: "ws-1", providerId: "jira-cloud" },
+    });
+    const response = await PUT(jsonRequest("/api/workspace/sync-schedule", {
+      cronExpression: "0 2 * * *",
+    }));
+    expect(response.status).toBe(200);
+    expect(mocks.upsertWorkspaceSyncSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ workItemTypes: [], states: [] }),
+    );
+  });
+
   it("rejects malformed input before invoking the schedule service", async () => {
     const response = await PUT(jsonRequest("/api/workspace/sync-schedule", {
       cronExpression: "",

@@ -188,7 +188,7 @@ describe("processNextJob (serial lane)", () => {
     jobQueue.claimNextJob.mockResolvedValue(makeJob());
 
     await expect(processNextJob()).resolves.toBe(true);
-    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", "boom", WORKER_ID);
+    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", "boom", WORKER_ID, null);
     expect(jobQueue.completeJob).not.toHaveBeenCalled();
 
     // The finally block cleared the interval: advancing well past the cadence fires nothing.
@@ -200,7 +200,24 @@ describe("processNextJob (serial lane)", () => {
     registry.getJobHandler.mockReturnValue(vi.fn().mockRejectedValue("string reason"));
     jobQueue.claimNextJob.mockResolvedValue(makeJob());
     await expect(processNextJob()).resolves.toBe(true);
-    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", "Job handler failed.", WORKER_ID);
+    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", "Job handler failed.", WORKER_ID, null);
+  });
+
+  it("persists only allowlisted application error codes through failJob", async () => {
+    registry.getJobHandler.mockReturnValue(vi.fn().mockRejectedValue(
+      Object.assign(new Error("sync owner token is invalid"), { code: "jira_sync_principal_invalid" }),
+    ));
+    jobQueue.claimNextJob.mockResolvedValue(makeJob());
+    await expect(processNextJob()).resolves.toBe(true);
+    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", "sync owner token is invalid", WORKER_ID, "jira_sync_principal_invalid");
+
+    // Incidental infra codes (errno, SQLSTATE) never reach jobs.error_code.
+    jobQueue.failJob.mockClear();
+    registry.getJobHandler.mockReturnValue(vi.fn().mockRejectedValue(
+      Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+    ));
+    await expect(processNextJob()).resolves.toBe(true);
+    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", "connect ECONNREFUSED", WORKER_ID, null);
   });
 });
 
@@ -301,7 +318,7 @@ describe("dispatchReadyKnowledgeJobs", () => {
     finish("job-b");
     await expect(waitForActiveJobs(1000)).resolves.toBe(true);
 
-    expect(jobQueue.failJob).toHaveBeenCalledWith("job-a", "extraction exploded", WORKER_ID);
+    expect(jobQueue.failJob).toHaveBeenCalledWith("job-a", "extraction exploded", WORKER_ID, null);
     expect(jobQueue.completeJob).toHaveBeenCalledWith("job-b", WORKER_ID, null);
     expect(jobQueue.completeJob).not.toHaveBeenCalledWith("job-a", expect.anything(), expect.anything());
   });

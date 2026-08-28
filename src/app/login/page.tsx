@@ -300,7 +300,7 @@ export default function LoginPage() {
       const list = data.sites
       setSites(list)
       // Mirror the Azure org behavior: a single configured site is selected
-      // automatically; the OAuth start link carries its canonical URL.
+      // automatically; the sign-in request carries its canonical URL.
       setSelectedSite(list.length === 1 ? list[0].siteUrl : "")
       setSiteLoadState("ready")
     } catch (error) {

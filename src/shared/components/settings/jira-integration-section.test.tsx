@@ -75,6 +75,31 @@ describe("JiraIntegrationSection", () => {
     expect(screen.getByRole("button", { name: "Keep saved token" })).toBeInTheDocument();
   });
 
+  it("renders a failed connect inline with the API message, retry hint, and the typed token kept", async () => {
+    fetchMock.mockImplementation(async (_input, init) => {
+      if ((init as RequestInit | undefined)?.method === "POST") {
+        return {
+          ok: false, status: 429,
+          headers: new Headers({ "Retry-After": "45" }),
+          json: async () => ({ error: "Too many connection attempts." }),
+        } as Response;
+      }
+      return json(overview({ connection: { status: "revoked" } }));
+    });
+
+    render(<JiraIntegrationSection />);
+
+    fireEvent.change(await screen.findByLabelText("Atlassian account email"), { target: { value: "owner@example.test" } });
+    fireEvent.change(screen.getByLabelText("Atlassian API token"), { target: { value: "new-token" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("The Jira connection could not be stored.");
+    expect(alert).toHaveTextContent("Too many connection attempts. Retry in 45s.");
+    // The typed token survives the failure for correction — only success clears it.
+    expect(screen.getByLabelText("Atlassian API token")).toHaveValue("new-token");
+  });
+
   it("raises an actionable alert when the workspace sync owner's token is invalid", async () => {
     fetchMock.mockResolvedValue(json(overview({
       syncPrincipal: { exists: true, status: "invalid", userId: "sync-user", isActor: false },
