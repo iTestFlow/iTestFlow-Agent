@@ -5,6 +5,8 @@ import { expect, it } from "vitest";
 it("persists sync mappings, baselines, and field conflicts", () => {
   const ddl = fs.readFileSync(path.join(process.cwd(), "migrations/1710000039000_jira_sync_foundation.js"), "utf8");
   expect(ddl).toContain("CREATE TABLE jira_sync_mappings");
+  const mappingsBlock = ddl.slice(ddl.indexOf("CREATE TABLE jira_sync_mappings"), ddl.indexOf("CREATE TABLE jira_sync_field_states"));
+  expect(mappingsBlock).toContain("FOREIGN KEY (workspace_id, project_id) REFERENCES projects(workspace_id, id)");
   expect(ddl).toContain("CHECK (direction IN ('jira_to_itestflow', 'itestflow_to_jira', 'two_way'))");
   expect(ddl).toContain("CREATE TABLE jira_sync_field_states");
   expect(ddl).toContain("CHECK (status IN ('in_sync', 'pending', 'conflict', 'error'))");

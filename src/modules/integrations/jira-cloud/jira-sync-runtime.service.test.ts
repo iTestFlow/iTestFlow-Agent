@@ -37,6 +37,13 @@ const remote = {
   raw: { id: "10007", key: "QA-7", fields: { summary: "Remote title", status: { name: "In Progress" }, labels: ["api"] } },
 };
 
+const projectConfig = () => ({
+  project_id: "project-1", provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
+  provider_site_id: "cloud-a", provider_site_url: "https://quality.atlassian.net", direction: "two_way",
+  field_mapping_json: JSON.stringify([{ localField: "title", jiraField: "summary" }, { localField: "state", jiraField: "status" }]),
+  status_mapping_json: JSON.stringify([{ localStatus: "Active", jiraStatus: "In Progress" }]),
+});
+
 describe("runJiraProjectReconciliation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -45,12 +52,7 @@ describe("runJiraProjectReconciliation", () => {
     mocks.enqueueJob.mockResolvedValue("retry-job");
     mocks.resolvePrincipal.mockResolvedValue({ userId: "sync-user", accessToken: "access" });
     mocks.sqlGet
-      .mockResolvedValueOnce({
-        project_id: "project-1", provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
-        provider_site_id: "cloud-a", provider_site_url: "https://quality.atlassian.net", direction: "two_way",
-        field_mapping_json: JSON.stringify([{ localField: "title", jiraField: "summary" }, { localField: "state", jiraField: "status" }]),
-        status_mapping_json: JSON.stringify([{ localStatus: "Active", jiraStatus: "In Progress" }]),
-      })
+      .mockResolvedValueOnce(projectConfig())
       .mockResolvedValueOnce({ id: "local-1", title: "Local title", description: null, acceptance_criteria: null, state: "Active", priority: null, tags: null })
       .mockResolvedValueOnce({ id: "mapping-1", status: "active" });
     mocks.sqlAll.mockImplementation(async (sql: unknown) => String(sql).includes("FROM jira_sync_field_states")
@@ -206,7 +208,7 @@ describe("runJiraProjectReconciliation", () => {
         acceptance_criteria: "Approved", state: null, priority: 2, tags: "api; smoke",
       })
       .mockResolvedValueOnce({ id: "mapping-new", status: "active" });
-    mocks.sqlAll.mockResolvedValueOnce([]);
+    mocks.sqlAll.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
     mocks.fetchWorkItems.mockResolvedValueOnce([{
       ...remote,
       acceptanceCriteria: undefined,
@@ -235,16 +237,15 @@ describe("runJiraProjectReconciliation", () => {
   });
 
   it("retires mappings for issues deleted in Jira during a full reconciliation", async () => {
-    mocks.sqlAll
-      .mockResolvedValueOnce([
-        { field_name: "title", baseline_json: JSON.stringify("Old title") },
-        { field_name: "state", baseline_json: JSON.stringify("Active") },
-      ])
-      .mockResolvedValueOnce([
-        { jira_issue_id: "10007", jira_issue_key: "QA-7" },
-        { jira_issue_id: "10099", jira_issue_key: "QA-9" },
-      ]);
-    mocks.sqlGet.mockResolvedValueOnce({ id: "mapping-gone", local_entity_id: "local-gone" });
+    mocks.sqlGet.mockReset()
+      .mockResolvedValueOnce(projectConfig())
+      .mockResolvedValueOnce({ id: "mapping-gone", local_entity_id: "local-gone" })
+      .mockResolvedValueOnce({ id: "local-1", title: "Local title", description: null, acceptance_criteria: null, state: "Active", priority: null, tags: null })
+      .mockResolvedValueOnce({ id: "mapping-1", status: "active" });
+    mocks.sqlAll.mockResolvedValueOnce([
+      { id: "mapping-1", jira_issue_id: "10007", jira_issue_key: "QA-7", status: "active", local_entity_id: "local-1" },
+      { id: "mapping-gone", jira_issue_id: "10099", jira_issue_key: "QA-9", status: "active", local_entity_id: "local-gone" },
+    ]);
 
     await runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" });
 
@@ -256,6 +257,25 @@ describe("runJiraProjectReconciliation", () => {
     const paused = mocks.sqlRun.mock.calls.filter(([sql]) => String(sql).includes("status = 'paused'"));
     expect(paused).toHaveLength(1);
     expect(paused[0][1]).toMatchObject({ mappingId: "mapping-gone" });
+  });
+
+  it("revives a retired mapping when its Jira issue is observed again", async () => {
+    mocks.sqlAll.mockResolvedValueOnce([
+      { id: "mapping-1", jira_issue_id: "10007", jira_issue_key: "QA-7", status: "paused", local_entity_id: "local-1" },
+    ]);
+
+    await runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" });
+
+    expect(mocks.sqlRun).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = 'active'"),
+      expect.objectContaining({ mappingId: "mapping-1" }),
+    );
+    expect(mocks.sqlRun).toHaveBeenCalledWith(
+      expect.stringContaining("sync_status = 'active'"),
+      expect.objectContaining({ localId: "local-1" }),
+    );
+    expect(mocks.reconcile).toHaveBeenCalledWith(expect.objectContaining({ mappingId: "mapping-1" }));
+    expect(mocks.sqlRun.mock.calls.some(([sql]) => String(sql).includes("SET status = 'paused'"))).toBe(false);
   });
 
   it("does not retire mappings when the full fetch may be truncated", async () => {
@@ -273,13 +293,13 @@ describe("runJiraProjectReconciliation", () => {
     await runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" });
 
     expect(mocks.sqlAll.mock.calls.some(([sql]) => String(sql).includes("FROM jira_sync_mappings"))).toBe(false);
-    expect(mocks.sqlRun.mock.calls.some(([sql]) => String(sql).includes("status = 'paused'"))).toBe(false);
+    expect(mocks.sqlRun.mock.calls.some(([sql]) => String(sql).includes("SET status = 'paused'"))).toBe(false);
   });
 
   it("retires the mapping when a push fails because the Jira issue no longer exists", async () => {
-    mocks.sqlAll
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ jira_issue_id: "10007", jira_issue_key: "QA-7" }]);
+    mocks.sqlAll.mockResolvedValueOnce([
+      { id: "mapping-1", jira_issue_id: "10007", jira_issue_key: "QA-7", status: "active", local_entity_id: "local-1" },
+    ]);
     mocks.sqlGet
       .mockResolvedValueOnce({ jira_issue_key: "QA-7", local_entity_id: "local-1" })
       .mockResolvedValueOnce({ jira_issue_key: "QA-7" })

@@ -61,6 +61,42 @@ export async function runJiraProjectReconciliation(input: {
     ? await adapter.fetchWorkItemsByIds({ projectId: project.provider_project_id, workItemIds: issueKeys })
     : await adapter.fetchWorkItems({ projectId: project.provider_project_id, limit: FULL_FETCH_LIMIT });
 
+  // Deletion detection: with no webhook channel, a full fetch is the only place
+  // deleted Jira issues become observable. Only a complete page proves absence —
+  // a truncated fetch must never mass-retire mappings. Re-observation is equally
+  // authoritative: a previously retired mapping whose issue reappears (e.g. after
+  // a temporary JQL-visibility gap) is revived here, before the reconcile loop,
+  // so it syncs again in the same cycle.
+  if (!issueKeys.length && remoteIssues.length < FULL_FETCH_LIMIT) {
+    const fetchedIssueIds = new Set(remoteIssues.map((item) => rawText(item, "id") ?? item.id));
+    const mappings = await sqlAll<{ id: string; jira_issue_id: string; jira_issue_key: string; status: string; local_entity_id: string }>(
+      `SELECT id, jira_issue_id, jira_issue_key, status, local_entity_id FROM jira_sync_mappings
+       WHERE workspace_id = @workspaceId AND project_id = @projectId`,
+      { workspaceId: input.workspaceId, projectId: project.project_id },
+    );
+    for (const mapping of mappings) {
+      if (fetchedIssueIds.has(mapping.jira_issue_id)) {
+        if (mapping.status !== "paused") continue;
+        const now = nowIso();
+        await sqlRun(
+          `UPDATE jira_sync_mappings SET status = 'active', updated_at = @now WHERE id = @mappingId AND status = 'paused'`,
+          { mappingId: mapping.id, now },
+        );
+        await sqlRun(
+          `UPDATE azure_devops_work_items SET sync_status = 'active', updated_at = @now
+           WHERE id = @localId AND project_id = @projectId AND sync_status = 'inactive'`,
+          { localId: mapping.local_entity_id, projectId: project.project_id, now },
+        );
+        continue;
+      }
+      if (mapping.status === "paused") continue;
+      await retireJiraIssueMapping({
+        workspaceId: input.workspaceId, projectId: project.project_id,
+        issueKey: mapping.jira_issue_key, actor: input.actor,
+      });
+    }
+  }
+
   for (const remote of remoteIssues) {
     const local = await findOrCreateLocalIssue(project, remote);
     const jiraIssueId = rawText(remote, "id") ?? remote.id;
@@ -102,25 +138,6 @@ export async function runJiraProjectReconciliation(input: {
       workspaceId: input.workspaceId, mappingId: mapping.id, actor: input.actor,
       baseline, local: localFields, remote: remoteFields,
     });
-  }
-
-  // Deletion detection: with no webhook channel, a full fetch is the only place
-  // deleted Jira issues become observable. Only a complete page proves absence —
-  // a truncated fetch must never mass-retire mappings.
-  if (!issueKeys.length && remoteIssues.length < FULL_FETCH_LIMIT) {
-    const fetchedIssueIds = new Set(remoteIssues.map((item) => rawText(item, "id") ?? item.id));
-    const activeMappings = await sqlAll<{ jira_issue_id: string; jira_issue_key: string }>(
-      `SELECT jira_issue_id, jira_issue_key FROM jira_sync_mappings
-       WHERE workspace_id = @workspaceId AND project_id = @projectId AND status <> 'paused'`,
-      { workspaceId: input.workspaceId, projectId: project.project_id },
-    );
-    for (const mapping of activeMappings) {
-      if (fetchedIssueIds.has(mapping.jira_issue_id)) continue;
-      await retireJiraIssueMapping({
-        workspaceId: input.workspaceId, projectId: project.project_id,
-        issueKey: mapping.jira_issue_key, actor: input.actor,
-      });
-    }
   }
 
   const operationCount = await drainOperations({
