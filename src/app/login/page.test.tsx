@@ -54,12 +54,13 @@ type Endpoint = EndpointResult | (() => EndpointResult)
 
 // Routes fetches by URL so specs configure each endpoint independently; a
 // function value is invoked per call (for failures followed by retries).
-function mockApi(overrides: Partial<Record<"providers" | "organizations" | "sites" | "login", Endpoint>> = {}) {
+function mockApi(overrides: Partial<Record<"providers" | "organizations" | "sites" | "login" | "jiraLogin", Endpoint>> = {}) {
   const endpoints: Record<string, Endpoint> = {
     "/api/auth/providers": overrides.providers ?? jsonResponse({ providers: bothProviders }),
     "/api/auth/organizations": overrides.organizations ?? jsonResponse({ organizations }),
     "/api/auth/jira/sites": overrides.sites ?? jsonResponse({ sites: [] }),
     "/api/auth/login": overrides.login ?? jsonResponse({ ok: true }),
+    "/api/auth/jira/login": overrides.jiraLogin ?? jsonResponse({ ok: true }),
   }
   fetchMock.mockImplementation(async (url: string) => {
     const endpoint = endpoints[url]
@@ -117,13 +118,13 @@ describe("LoginPage", () => {
     )
     expect(screen.getByRole("button", { name: "Jira Cloud" })).toHaveAttribute("aria-pressed", "false")
 
-    // Azure pane is active: PAT form present, no Jira continue action.
+    // Azure pane is active: PAT form present, no Jira credential form.
     await screen.findByLabelText("Personal Access Token")
-    expect(screen.queryByRole("button", { name: "Continue with Jira Cloud" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("link", { name: "Continue with Jira Cloud" })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Atlassian API token")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Atlassian account email")).not.toBeInTheDocument()
   })
 
-  it("switches panes and preserves the entered PAT across switches", async () => {
+  it("switches panes and preserves both panes' entered credentials across switches", async () => {
     const user = userEvent.setup()
     mockApi({ sites: jsonResponse({ sites: [jiraSites[0]] }) })
 
@@ -135,9 +136,15 @@ describe("LoginPage", () => {
     await user.click(screen.getByRole("button", { name: "Jira Cloud" }))
     expect(screen.queryByLabelText("Personal Access Token")).not.toBeInTheDocument()
     await screen.findByDisplayValue("Quality")
+    await user.type(screen.getByLabelText("Atlassian account email"), "owner@example.test")
+    await user.type(screen.getByLabelText("Atlassian API token"), "jira-token")
 
     await user.click(screen.getByRole("button", { name: "Azure DevOps" }))
     expect(await screen.findByLabelText("Personal Access Token")).toHaveValue("pat-secret")
+
+    await user.click(screen.getByRole("button", { name: "Jira Cloud" }))
+    expect(await screen.findByLabelText("Atlassian account email")).toHaveValue("owner@example.test")
+    expect(screen.getByLabelText("Atlassian API token")).toHaveValue("jira-token")
   })
 
   it("skips the chooser and renders the Azure form directly when only Azure DevOps is enabled", async () => {
@@ -311,13 +318,13 @@ describe("LoginPage", () => {
     await user.click(screen.getByRole("button", { name: "Jira Cloud" }))
 
     expect(screen.getByRole("status")).toHaveTextContent("Loading configured Jira sites")
-    expect(screen.getByRole("button", { name: "Continue with Jira Cloud" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Sign In" })).toBeDisabled()
 
     await act(async () => {
       pending.resolve(jsonResponse({ sites: [] }))
     })
     await screen.findByText("No Jira Cloud site is configured.")
-    expect(screen.getByRole("button", { name: "Continue with Jira Cloud" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Sign In" })).toBeDisabled()
     expect(screen.getByText("BOOTSTRAP_JIRA_SITES")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "How to add a Jira Cloud site" })).toBeInTheDocument()
   })
@@ -345,7 +352,8 @@ describe("LoginPage", () => {
     expect(callsTo("/api/auth/providers")).toHaveLength(1)
   })
 
-  it("auto-selects a single Jira site and links to the site-scoped OAuth start", async () => {
+  it("auto-selects a single Jira site and signs in with the typed email and API token", async () => {
+    const user = userEvent.setup()
     mockApi({
       providers: jsonResponse({ providers: [bothProviders[1]] }),
       sites: jsonResponse({ sites: [jiraSites[0]] }),
@@ -357,14 +365,21 @@ describe("LoginPage", () => {
     expect(siteInput).toHaveAttribute("readonly")
     expect(screen.getByLabelText("Jira Cloud site")).toBe(siteInput)
 
-    const continueLink = screen.getByRole("link", { name: "Continue with Jira Cloud" })
-    expect(continueLink).toHaveAttribute(
-      "href",
-      `/api/auth/jira/start?site=${encodeURIComponent("https://quality.atlassian.net")}&returnTo=%2Fdashboards`,
-    )
+    await user.type(screen.getByLabelText("Atlassian account email"), "owner@example.test")
+    await user.type(screen.getByLabelText("Atlassian API token"), "token-secret")
+    await user.click(screen.getByRole("button", { name: "Sign In" }))
+
+    await waitFor(() => expect(callsTo("/api/auth/jira/login")).toHaveLength(1))
+    const [, request] = callsTo("/api/auth/jira/login")[0]
+    expect(JSON.parse((request as RequestInit).body as string)).toEqual({
+      siteUrl: "https://quality.atlassian.net",
+      emailAddress: "owner@example.test",
+      apiToken: "token-secret",
+    })
   })
 
-  it("renders a site dropdown for multiple Jira sites and disables Continue until one is chosen", async () => {
+  it("renders a site dropdown for multiple Jira sites and disables Sign In until everything is entered", async () => {
+    const user = userEvent.setup()
     mockApi({
       providers: jsonResponse({ providers: [bothProviders[1]] }),
       sites: jsonResponse({ sites: jiraSites }),
@@ -373,62 +388,32 @@ describe("LoginPage", () => {
     renderLoginPage()
 
     await screen.findByRole("combobox", { name: "Jira Cloud site" })
-    expect(screen.getByRole("button", { name: "Continue with Jira Cloud" })).toBeDisabled()
-    expect(screen.queryByRole("link", { name: "Continue with Jira Cloud" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Sign In" })).toBeDisabled()
+
+    await user.type(screen.getByLabelText("Atlassian account email"), "owner@example.test")
+    await user.type(screen.getByLabelText("Atlassian API token"), "token-secret")
+    // The site is still unselected, so submission stays blocked.
+    expect(screen.getByRole("button", { name: "Sign In" })).toBeDisabled()
   })
 
-  it("carries a safe ?next= into the Jira OAuth start link and falls back for unsafe values", async () => {
+  it("shows Jira sign-in failures inline as a persistent alert without echoing the token", async () => {
+    const user = userEvent.setup()
     mockApi({
       providers: jsonResponse({ providers: [bothProviders[1]] }),
       sites: jsonResponse({ sites: [jiraSites[0]] }),
+      jiraLogin: jsonResponse({ error: "Atlassian rejected this email and API token. Check both and try again." }, 401),
     })
 
-    window.history.replaceState(null, "", "/login?next=%2Fsettings")
     renderLoginPage()
-    expect(await screen.findByRole("link", { name: "Continue with Jira Cloud" })).toHaveAttribute(
-      "href",
-      `/api/auth/jira/start?site=${encodeURIComponent("https://quality.atlassian.net")}&returnTo=%2Fsettings`,
-    )
 
-    cleanup()
-    window.history.replaceState(null, "", "/login?next=https%3A%2F%2Fevil.example")
-    renderLoginPage()
-    expect(await screen.findByRole("link", { name: "Continue with Jira Cloud" })).toHaveAttribute(
-      "href",
-      `/api/auth/jira/start?site=${encodeURIComponent("https://quality.atlassian.net")}&returnTo=%2Fdashboards`,
-    )
-  })
-
-  it("surfaces a Jira site-access bounce on the Jira pane, naming only a deployment-listed site", async () => {
-    mockApi({ sites: jsonResponse({ sites: [jiraSites[0]] }) })
-
-    window.history.replaceState(
-      null,
-      "",
-      `/login?error=jira_site_access&site=${encodeURIComponent("https://quality.atlassian.net")}`,
-    )
-    renderLoginPage()
+    await screen.findByDisplayValue("Quality")
+    await user.type(screen.getByLabelText("Atlassian account email"), "owner@example.test")
+    await user.type(screen.getByLabelText("Atlassian API token"), "wrong-token")
+    await user.click(screen.getByRole("button", { name: "Sign In" }))
 
     const alert = await screen.findByRole("alert")
-    expect(alert).toHaveTextContent("Jira site access was denied.")
-    // The named variant appears once the deployment's site list resolves.
-    await waitFor(() => expect(alert).toHaveTextContent("Quality (https://quality.atlassian.net)"))
-    // The Jira pane is pre-selected so the user can act immediately.
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Jira Cloud" })).toHaveAttribute("aria-pressed", "true"),
-    )
-    expect(screen.queryByLabelText("Personal Access Token")).not.toBeInTheDocument()
-
-    cleanup()
-    window.history.replaceState(
-      null,
-      "",
-      `/login?error=jira_site_access&site=${encodeURIComponent("https://unlisted.atlassian.net")}`,
-    )
-    renderLoginPage()
-
-    const genericAlert = await screen.findByRole("alert")
-    expect(genericAlert).toHaveTextContent("Your Atlassian account does not have access to the selected Jira site.")
-    expect(genericAlert).not.toHaveTextContent("unlisted")
+    expect(alert).toHaveTextContent("Jira sign-in failed.")
+    expect(alert).toHaveTextContent("Atlassian rejected this email and API token.")
+    expect(alert).not.toHaveTextContent("wrong-token")
   })
 })

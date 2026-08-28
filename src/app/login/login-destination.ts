@@ -1,9 +1,10 @@
 const DEFAULT_LOGIN_DESTINATION = "/dashboards"
 
 export function resolveLoginDestination(nextParam: string | null) {
-  // Aligned with the server-side safeReturnTo (jira-oauth-state.ts): reject
-  // backslashes and percent-encoded path separators too — WHATWG URL
-  // resolution treats "/\" like "//", which would leave the app's origin.
+  // The single canonical safe-destination validator (the OAuth-era server-side
+  // safeReturnTo folded into it): reject backslashes and percent-encoded path
+  // separators too — WHATWG URL resolution treats "/\" like "//", which would
+  // leave the app's origin.
   const isSafeInAppPath =
     nextParam !== null &&
     nextParam.startsWith("/") &&

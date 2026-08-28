@@ -67,6 +67,8 @@ type JiraSiteListResponse = {
 const azurePatHelpUrl =
   "https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate?view=azure-devops"
 
+const atlassianTokenHelpUrl = "https://id.atlassian.com/manage-profile/security/api-tokens"
+
 function LoginBrandLogo() {
   return (
     <Image
@@ -201,8 +203,6 @@ export default function LoginPage() {
   const [providerLoadError, setProviderLoadError] = useState("")
   const [activeProvider, setActiveProvider] = useState<LoginProviderId | null>(null)
   const [nextPath, setNextPath] = useState<string | null>(null)
-  // null = no access error; "" = error without a site echo; otherwise the denied site URL.
-  const [deniedSite, setDeniedSite] = useState<string | null>(null)
 
   const [organization, setOrganization] = useState("")
   const [personalAccessToken, setPersonalAccessToken] = useState("")
@@ -216,6 +216,11 @@ export default function LoginPage() {
   const [siteLoadState, setSiteLoadState] = useState<LoadState>("loading")
   const [siteLoadError, setSiteLoadError] = useState("")
   const [selectedSite, setSelectedSite] = useState("")
+  const [jiraEmail, setJiraEmail] = useState("")
+  const [jiraApiToken, setJiraApiToken] = useState("")
+  const [showJiraApiToken, setShowJiraApiToken] = useState(false)
+  const [jiraSubmitting, setJiraSubmitting] = useState(false)
+  const [jiraError, setJiraError] = useState("")
 
   const loadProviders = useCallback(async (signal?: AbortSignal) => {
     setProviderLoadState("loading")
@@ -308,9 +313,6 @@ export default function LoginPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     setNextPath(params.get("next"))
-    if (params.get("error") === "jira_site_access") {
-      setDeniedSite(params.get("site") ?? "")
-    }
   }, [])
 
   useEffect(() => {
@@ -324,16 +326,14 @@ export default function LoginPage() {
   const azureEnabled = providers.some((provider) => provider.id === "azure-devops")
   const jiraEnabled = providers.some((provider) => provider.id === "jira-cloud")
 
-  // Default pane: the operator's first enabled provider — except after a Jira
-  // site-access bounce, where landing back on the Jira pane is actionable.
+  // Default pane: the operator's first enabled provider.
   useEffect(() => {
     if (providerLoadState !== "ready" || providers.length === 0) return
     setActiveProvider((current) => {
       if (current && providers.some((provider) => provider.id === current)) return current
-      if (deniedSite !== null && providers.some((provider) => provider.id === "jira-cloud")) return "jira-cloud"
       return providers[0].id
     })
-  }, [providerLoadState, providers, deniedSite])
+  }, [providerLoadState, providers])
 
   useEffect(() => {
     if (!azureEnabled) return
@@ -359,11 +359,9 @@ export default function LoginPage() {
     submitting || organizationLoadState !== "ready" || organizations.length === 0 || !organization.trim()
 
   const singleSite = siteLoadState === "ready" && sites.length === 1 ? sites[0] : null
-  const jiraContinueDisabled = siteLoadState !== "ready" || sites.length === 0 || !selectedSite.trim()
-  // returnTo is re-validated server-side (safeReturnTo); site is re-validated
-  // against the enabled sites by /api/auth/jira/start.
-  const jiraStartHref = `/api/auth/jira/start?site=${encodeURIComponent(selectedSite)}&returnTo=${encodeURIComponent(resolveLoginDestination(nextPath))}`
-  const deniedKnownSite = deniedSite ? sites.find((site) => site.siteUrl === deniedSite) ?? null : null
+  const jiraSignInDisabled =
+    jiraSubmitting || siteLoadState !== "ready" || sites.length === 0
+    || !selectedSite.trim() || !jiraEmail.trim() || !jiraApiToken.trim()
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -395,6 +393,35 @@ export default function LoginPage() {
     }
   }
 
+  async function onJiraSubmit(event: React.FormEvent) {
+    event.preventDefault()
+    if (jiraSignInDisabled) return
+    setJiraSubmitting(true)
+    setJiraError("")
+    try {
+      const response = await fetch("/api/auth/jira/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siteUrl: selectedSite, emailAddress: jiraEmail, apiToken: jiraApiToken }),
+      })
+      const data = (await response.json().catch(() => ({}))) as { error?: string }
+      if (!response.ok) {
+        // Inline, persistent, and screen-reader-announced: the Jira error
+        // taxonomy (invalid token vs missing scopes vs unconfigured site vs
+        // outage) is actionable and must outlive a toast.
+        setJiraError(apiErrorMessage(data, "Jira sign-in failed."))
+        return
+      }
+      toast.success("Signed in.")
+      router.push(resolveLoginDestination(nextPath))
+      router.refresh()
+    } catch {
+      setJiraError("Jira sign-in failed. Check your connection and try again.")
+    } finally {
+      setJiraSubmitting(false)
+    }
+  }
+
   return (
     <div className="relative isolate flex min-h-screen w-full items-center justify-center overflow-hidden bg-[linear-gradient(135deg,hsl(var(--background))_0%,hsl(var(--accent)/0.62)_48%,hsl(var(--background))_100%)] px-4 py-8 text-foreground sm:px-6 dark:bg-[linear-gradient(135deg,hsl(var(--background))_0%,hsl(var(--accent)/0.24)_48%,hsl(var(--background))_100%)]">
       <div className="absolute inset-x-0 top-[7%] -z-10 mx-auto h-[30rem] max-w-[44rem] rounded-full bg-[radial-gradient(circle,hsl(var(--info)/0.13)_0%,hsl(var(--primary)/0.1)_36%,transparent_72%)] blur-3xl dark:bg-[radial-gradient(circle,hsl(var(--info)/0.14)_0%,hsl(var(--primary)/0.12)_34%,transparent_72%)]" />
@@ -408,7 +435,7 @@ export default function LoginPage() {
             <CardTitle className="text-xl font-semibold leading-tight">Sign in to iTestFlow</CardTitle>
             <CardDescription className="max-w-[520px] leading-6">
               {activeProvider === "jira-cloud"
-                ? "Connect iTestFlow to your Jira Cloud site with Atlassian OAuth. You approve access on Atlassian's sign-in page, and only encrypted tokens are stored in this private deployment."
+                ? "Connect iTestFlow to your Jira Cloud site with your Atlassian account email and API token. The token is validated against Atlassian and stored encrypted in this private deployment."
                 : "Connect iTestFlow to your Azure DevOps organization using a Personal Access Token. Your token is validated securely and stored encrypted in this private deployment."}
             </CardDescription>
           </CardHeader>
@@ -439,16 +466,6 @@ export default function LoginPage() {
               </Callout>
             ) : (
               <>
-                {deniedSite !== null ? (
-                  <div className="mb-5">
-                    <Callout tone="error" role="alert" title="Jira site access was denied.">
-                      {deniedKnownSite
-                        ? `Your Atlassian account does not have access to ${deniedKnownSite.name} (${deniedKnownSite.siteUrl}). Sign in with an Atlassian account that is a member of that site, or pick another site.`
-                        : "Your Atlassian account does not have access to the selected Jira site. Sign in with an Atlassian account that is a member of that site, or pick another site."}
-                    </Callout>
-                  </div>
-                ) : null}
-
                 {providers.length > 1 ? (
                   <div
                     className="mb-5 grid grid-cols-2 gap-1 rounded-lg border border-input bg-muted/30 p-1"
@@ -638,7 +655,7 @@ export default function LoginPage() {
                 ) : null}
 
                 {activeProvider === "jira-cloud" ? (
-                  <div className="space-y-5">
+                  <form className="space-y-5" onSubmit={onJiraSubmit}>
                     <div className="space-y-2">
                       {siteLoadState === "loading" || siteLoadState === "error" || sites.length === 0 ? (
                         <p className="text-sm font-medium leading-none">Jira Cloud site</p>
@@ -745,21 +762,83 @@ export default function LoginPage() {
                       )}
                     </div>
 
-                    <div className="pt-1">
-                      {jiraContinueDisabled ? (
-                        <Button type="button" size="lg" className="h-10 w-full font-semibold" disabled>
-                          Continue with Jira Cloud
-                        </Button>
-                      ) : (
-                        <Button asChild size="lg" className="h-10 w-full font-semibold">
-                          <a href={jiraStartHref}>Continue with Jira Cloud</a>
-                        </Button>
-                      )}
+                    <div className="space-y-2">
+                      <Label htmlFor="jira-email">Atlassian account email</Label>
+                      <Input
+                        id="jira-email"
+                        className="h-10 bg-background/80 px-3"
+                        type="email"
+                        placeholder="you@company.com"
+                        value={jiraEmail}
+                        onChange={(event) => setJiraEmail(event.target.value)}
+                        autoComplete="email"
+                        aria-describedby="jira-email-help"
+                        required
+                      />
+                      <p id="jira-email-help" className="text-xs leading-5 text-muted-foreground">
+                        The email of the Atlassian account the API token belongs to.
+                      </p>
                     </div>
-                    <p className="text-xs leading-5 text-muted-foreground">
-                      You&apos;ll approve access on Atlassian&apos;s sign-in page and return here automatically.
-                    </p>
-                  </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="jira-token">Atlassian API token</Label>
+                      <div className="relative">
+                        <LockKeyhole
+                          className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <Input
+                          id="jira-token"
+                          className="h-10 bg-background/80 pl-11 pr-11"
+                          type={showJiraApiToken ? "text" : "password"}
+                          placeholder="Atlassian API token"
+                          value={jiraApiToken}
+                          onChange={(event) => setJiraApiToken(event.target.value)}
+                          autoComplete="off"
+                          aria-describedby="jira-token-help"
+                          required
+                        />
+                        <button
+                          type="button"
+                          className="absolute inset-y-0 right-0 grid w-11 place-items-center rounded-r-lg text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+                          onClick={() => setShowJiraApiToken((current) => !current)}
+                          aria-label={showJiraApiToken ? "Hide Atlassian API token" : "Show Atlassian API token"}
+                          aria-pressed={showJiraApiToken}
+                        >
+                          {showJiraApiToken ? (
+                            <Eye className="size-4" aria-hidden="true" />
+                          ) : (
+                            <EyeOff className="size-4" aria-hidden="true" />
+                          )}
+                        </button>
+                      </div>
+                      <p id="jira-token-help" className="text-xs leading-5 text-muted-foreground">
+                        Classic and scoped tokens both work. A scoped token needs the read:jira-work, write:jira-work, and read:jira-user scopes.
+                      </p>
+                      <a
+                        href={atlassianTokenHelpUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-2 text-sm font-semibold text-primary outline-none transition-colors hover:text-primary/80 hover:underline focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+                      >
+                        <CircleHelp className="size-4" aria-hidden="true" />
+                        How to create an Atlassian API token
+                        <ExternalLink className="size-3.5" aria-hidden="true" />
+                      </a>
+                    </div>
+
+                    {jiraError ? (
+                      <Callout tone="error" role="alert" title="Jira sign-in failed.">
+                        {jiraError}
+                      </Callout>
+                    ) : null}
+
+                    <div className="pt-1">
+                      <Button type="submit" size="lg" className="h-10 w-full font-semibold" disabled={jiraSignInDisabled}>
+                        {jiraSubmitting ? "Signing in..." : "Sign In"}
+                      </Button>
+                    </div>
+                  </form>
                 ) : null}
               </>
             )}
