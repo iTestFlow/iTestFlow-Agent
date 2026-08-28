@@ -104,6 +104,20 @@ describe("toFriendlyErrorResponse", () => {
     expect(response.body.technicalDetails?.length).toBeLessThanOrEqual(1235);
   });
 
+  it("redacts Basic-auth pairs and API tokens from upstream bodies", () => {
+    const basicPair = Buffer.from("user@example.test:token-secret", "utf8").toString("base64");
+    const raw = `Jira rejected the request. Authorization: Basic ${basicPair} apiToken: "atlassian-token-secret" details follow`;
+
+    const response = toFriendlyErrorResponse(new Error(raw), {
+      domain: "auth",
+      status: 401,
+    });
+
+    expect(JSON.stringify(response.body)).not.toContain(basicPair);
+    expect(JSON.stringify(response.body)).not.toContain("atlassian-token-secret");
+    expect(response.body.technicalDetails ?? "").toContain("[redacted]");
+  });
+
   it("turns HTML gateway pages into a stable friendly message", () => {
     const response = toFriendlyErrorResponse(
       new Error("<!doctype html><html><body>502 Bad Gateway</body></html>"),

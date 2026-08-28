@@ -22,7 +22,7 @@ export async function GET(request: Request) {
     );
   }
 
-  if (!isLoginProviderEnabled("azure-devops")) {
+  if (!await isLoginProviderEnabled("azure-devops")) {
     return NextResponse.json({ error: "Azure DevOps sign-in is disabled for this deployment." }, { status: 403 });
   }
 

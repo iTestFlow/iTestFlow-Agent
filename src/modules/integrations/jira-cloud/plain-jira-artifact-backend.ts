@@ -2,10 +2,11 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import type { FinalApprovedTestCase } from "../core/integration-types";
-import type { JiraCloudProjectScope } from "./jira-cloud-adapter";
+import type { JiraCloudProjectScope, JiraCloudHooks } from "./jira-cloud-adapter";
+import { jiraApiBase, jiraFetch, type JiraTokenKind } from "./jira-http";
 
 export type PlainJiraArtifactSettings = {
-  cloudId: string; siteUrl: string; accessToken: string;
+  cloudId: string; siteUrl: string; email: string; apiToken: string; tokenKind: JiraTokenKind;
   testCaseIssueTypeId: string; localIdFieldId: string;
 };
 
@@ -13,8 +14,12 @@ const RESERVED = new Set(["project", "issuetype", "summary", "description", "lab
 
 export class PlainJiraArtifactBackend {
   private readonly baseUrl: string;
-  constructor(private readonly settings: PlainJiraArtifactSettings, private readonly scope: JiraCloudProjectScope) {
-    this.baseUrl = `https://api.atlassian.com/ex/jira/${encodeURIComponent(settings.cloudId.trim())}/rest/api/3`;
+  constructor(
+    private readonly settings: PlainJiraArtifactSettings,
+    private readonly scope: JiraCloudProjectScope,
+    private readonly hooks?: JiraCloudHooks,
+  ) {
+    this.baseUrl = jiraApiBase(settings);
   }
 
   async createTestCase(input: { projectId: string; testCase: FinalApprovedTestCase }) {
@@ -83,11 +88,12 @@ export class PlainJiraArtifactBackend {
   }
 
   private async request<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
-    let response: Response;
-    try {
-      response = await fetch(`${this.baseUrl}${path}`, { ...init, cache: "no-store", headers: { Authorization: `Bearer ${this.settings.accessToken}`, Accept: "application/json", "Content-Type": "application/json" } });
-    } catch { throw new Error("Plain Jira artifact publishing is unavailable."); }
-    if (!response.ok) throw new Error("Plain Jira artifact publishing failed.");
+    const response = await jiraFetch(
+      `${this.baseUrl}${path}`,
+      init,
+      { email: this.settings.email, apiToken: this.settings.apiToken },
+      this.hooks,
+    );
     try { return await response.json() as T; } catch { throw new Error("Plain Jira returned an invalid response."); }
   }
 }

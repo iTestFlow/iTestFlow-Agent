@@ -8,7 +8,10 @@ vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   createId: () => "link-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet, sqlRun: mocks.sqlRun,
   withTransaction: (work: (client: object) => unknown) => work({ tx: true }),
 }));
-vi.mock("@/modules/auth/jira-connection.service", () => ({ resolveJiraAccessToken: mocks.resolveAccess }));
+vi.mock("@/modules/auth/jira-connection.service", () => ({
+  resolveJiraCredentials: mocks.resolveAccess,
+  markJiraConnectionInvalid: vi.fn(),
+}));
 vi.mock("./plain-jira-artifact-backend", () => ({ PlainJiraArtifactBackend: class { createTestCase = mocks.plainCreate; } }));
 vi.mock("./xray-cloud-backend", () => ({ XrayCloudBackend: class { createTestCase = mocks.xrayCreate; } }));
 vi.mock("./zephyr-scale-backend", () => ({ ZephyrScaleBackend: class { createTestCase = mocks.zephyrCreate; } }));
@@ -22,7 +25,7 @@ describe("publishPlainJiraTestCase", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.sqlRun.mockResolvedValue(0);
-    mocks.resolveAccess.mockResolvedValue("access");
+    mocks.resolveAccess.mockResolvedValue({ email: "user@example.test", apiToken: "token", tokenKind: "scoped", cloudId: "cloud-a" });
   });
   const input = {
     workspaceId: "ws-1", projectId: "project-1", actorUserId: "user-1",

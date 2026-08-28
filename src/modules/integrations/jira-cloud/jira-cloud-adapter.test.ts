@@ -5,7 +5,7 @@ import { JiraCloudAdapter } from "./jira-cloud-adapter";
 describe("JiraCloudAdapter", () => {
   beforeEach(() => vi.unstubAllGlobals());
 
-  it("uses the OAuth cloud API and maps projects and the authenticated user", async () => {
+  it("uses the scoped-token gateway API with Basic auth and maps projects and the authenticated user", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ values: [{ id: "10000", key: "QA", name: "Quality", projectTypeKey: "software" }] }))
       .mockResolvedValueOnce(json({ accountId: "acct-1", displayName: "Jamie", emailAddress: "j@example.com", avatarUrls: { "48x48": "avatar" } }));
@@ -16,7 +16,11 @@ describe("JiraCloudAdapter", () => {
     ]);
     await expect(adapter.fetchAuthenticatedUser()).resolves.toMatchObject({ id: "acct-1", displayName: "Jamie", emailAddress: "j@example.com" });
     expect(fetchMock.mock.calls[0][0]).toBe("https://api.atlassian.com/ex/jira/cloud-a/rest/api/3/project/search?startAt=0");
-    expect(fetchMock.mock.calls[0][1]).toMatchObject({ headers: expect.objectContaining({ Authorization: "Bearer access-secret" }) });
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      headers: expect.objectContaining({
+        Authorization: `Basic ${Buffer.from("user@example.test:access-secret", "utf8").toString("base64")}`,
+      }),
+    });
   });
 
   it("maps JQL results and keeps all issue reads bound to the configured project", async () => {
@@ -75,7 +79,7 @@ describe("JiraCloudAdapter", () => {
   });
 
   it("rejects project-bound operations when constructed without a project scope", async () => {
-    const adapter = new JiraCloudAdapter({ cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", accessToken: "access" });
+    const adapter = new JiraCloudAdapter({ cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", email: "user@example.test", apiToken: "access", tokenKind: "scoped" });
     await expect(adapter.fetchWorkItems({ projectId: "10000" })).rejects.toThrow("project scope is required");
   });
 
@@ -106,7 +110,7 @@ describe("JiraCloudAdapter", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const adapter = new JiraCloudAdapter({
-      cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", accessToken: "access-secret",
+      cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", email: "user@example.test", apiToken: "access-secret", tokenKind: "scoped",
       fieldMapping: { bugIssueTypeId: "bug-type", severityFieldId: "summary" },
     }, { jiraProjectId: "10000", jiraProjectKey: "QA", jiraProjectName: "Quality" });
 
@@ -222,7 +226,7 @@ describe("JiraCloudAdapter", () => {
       }));
     vi.stubGlobal("fetch", fetchMock);
     const adapter = new JiraCloudAdapter({
-      cloudId: " cloud-a ", siteUrl: "https://quality.atlassian.net/", accessToken: "access-secret",
+      cloudId: " cloud-a ", siteUrl: "https://quality.atlassian.net/", email: "user@example.test", apiToken: "access-secret", tokenKind: "scoped",
       fieldMapping: { acceptanceCriteriaFieldId: "customfield_10020", storyPointsFieldId: "customfield_10030" },
     }, { jiraProjectId: "10000", jiraProjectKey: "QA", jiraProjectName: "Quality" });
 
@@ -264,7 +268,7 @@ describe("JiraCloudAdapter", () => {
       .toBe("https://quality.atlassian.net/browse/QA%202");
 
     const unconfigured = new JiraCloudAdapter(
-      { cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", accessToken: "access" },
+      { cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", email: "user@example.test", apiToken: "access", tokenKind: "scoped" },
       { jiraProjectId: "10000", jiraProjectKey: "QA", jiraProjectName: "Quality" },
     );
     await expect(unconfigured.createChildTask({ projectId: "10000", parentStoryId: "QA-1", title: "Task" }))
@@ -321,7 +325,7 @@ describe("JiraCloudAdapter", () => {
 
 function jiraAdapter() {
   return new JiraCloudAdapter({
-    cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", accessToken: "access-secret",
+    cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", email: "user@example.test", apiToken: "access-secret", tokenKind: "scoped",
     fieldMapping: { bugIssueTypeId: "bug-type", taskIssueTypeId: "task-type", severityFieldId: "customfield_10001", priorityIds: { 1: "highest-priority" } },
   }, { jiraProjectId: "10000", jiraProjectKey: "QA", jiraProjectName: "Quality" });
 }

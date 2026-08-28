@@ -7,7 +7,8 @@ const mocks = vi.hoisted(() => ({
   getWorkspaceMembership: vi.fn(),
   getWorkspaceSettings: vi.fn(),
   resolveUserAzurePat: vi.fn(),
-  resolveJiraAccessToken: vi.fn(),
+  resolveJiraCredentials: vi.fn(),
+  markJiraConnectionInvalid: vi.fn(),
   resolveUserLlmConfig: vi.fn(),
   markUserAzurePatExpired: vi.fn(),
   createLLMProvider: vi.fn(),
@@ -39,8 +40,10 @@ vi.mock("@/modules/credentials/credential.service", () => ({
   resolveUserLlmConfig: mocks.resolveUserLlmConfig,
   markUserAzurePatExpired: mocks.markUserAzurePatExpired,
 }));
-vi.mock("@/modules/auth/jira-connection.service", () => ({
-  resolveJiraAccessToken: mocks.resolveJiraAccessToken,
+vi.mock("@/modules/auth/jira-connection.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/auth/jira-connection.service")>(),
+  resolveJiraCredentials: mocks.resolveJiraCredentials,
+  markJiraConnectionInvalid: mocks.markJiraConnectionInvalid,
 }));
 vi.mock("@/modules/llm/llm-provider.factory", () => ({
   createLLMProvider: mocks.createLLMProvider,
@@ -103,7 +106,9 @@ beforeEach(() => {
   });
   mocks.getWorkspaceSettings.mockResolvedValue(null);
   mocks.resolveUserAzurePat.mockResolvedValue("pat-secret");
-  mocks.resolveJiraAccessToken.mockResolvedValue("jira-access-secret");
+  mocks.resolveJiraCredentials.mockResolvedValue({
+    email: "user@example.test", apiToken: "jira-token-secret", tokenKind: "scoped", cloudId: "cloud-a",
+  });
   mocks.resolveUserLlmConfig.mockResolvedValue({
     provider: "openai",
     model: "gpt-test",
@@ -252,7 +257,7 @@ describe("Azure adapter resolution", () => {
 });
 
 describe("provider-neutral work-management resolution", () => {
-  it("constructs a Jira provider from the workspace site, user OAuth token, and trusted project mapping", async () => {
+  it("constructs a Jira provider from the workspace site, the stored API token, and trusted project mapping", async () => {
     const jiraContext: WorkflowContext = {
       userId: "user-1",
       workspace: {
@@ -268,12 +273,39 @@ describe("provider-neutral work-management resolution", () => {
       providerProjectId: "10000", providerProjectKey: "QA", providerProjectName: "Quality",
     });
 
-    expect(mocks.resolveJiraAccessToken).toHaveBeenCalledWith({ workspaceId: "ws-jira", userId: "user-1" });
+    expect(mocks.resolveJiraCredentials).toHaveBeenCalledWith({ workspaceId: "ws-jira", userId: "user-1" });
     expect(mocks.createIntegrationProvider).toHaveBeenCalledWith({
       providerId: "jira-cloud",
-      settings: { cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", accessToken: "jira-access-secret" },
+      settings: {
+        cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net",
+        email: "user@example.test", apiToken: "jira-token-secret", tokenKind: "scoped",
+      },
       projectScope: { jiraProjectId: "10000", jiraProjectKey: "QA", jiraProjectName: "Quality" },
+      hooks: { onUnauthorized: expect.any(Function) },
     });
+  });
+
+  it("marks the Jira token invalid through the 401 hook, mirroring the Azure PAT expiry hook", async () => {
+    const jiraContext: WorkflowContext = {
+      userId: "user-1",
+      workspace: {
+        id: "ws-jira", name: "Quality", providerId: "jira-cloud",
+        azureOrgName: "", azureOrgUrl: "",
+        providerSiteId: "cloud-a", providerSiteName: "Quality", providerSiteUrl: "https://quality.atlassian.net",
+      },
+    };
+    mocks.resolveWorkspaceProviderId.mockReturnValue("jira-cloud");
+    mocks.markJiraConnectionInvalid.mockResolvedValue(undefined);
+
+    await getUserWorkManagementProvider(jiraContext, {
+      ...projectScope(), azureProjectId: "10000", azureProjectName: "Quality",
+      providerProjectId: "10000", providerProjectKey: "QA", providerProjectName: "Quality",
+    });
+
+    const { hooks } = mocks.createIntegrationProvider.mock.calls.at(-1)![0];
+    expect(() => hooks.onUnauthorized()).not.toThrow();
+    await Promise.resolve();
+    expect(mocks.markJiraConnectionInvalid).toHaveBeenCalledWith("ws-jira", "user-1");
   });
 });
 

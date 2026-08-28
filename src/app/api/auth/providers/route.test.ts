@@ -9,7 +9,7 @@ vi.mock("@/modules/security/rate-limit", () => ({
 
 import { GET } from "./route";
 
-const ENV_KEYS = ["BOOTSTRAP_ENABLED_PROVIDERS", "ATLASSIAN_OAUTH_CLIENT_ID"] as const;
+const ENV_KEYS = ["BOOTSTRAP_ENABLED_PROVIDERS", "BOOTSTRAP_JIRA_SITES", "BOOTSTRAP_OWNER_JIRA_SITE", "BOOTSTRAP_OWNER_EMAIL", "DATABASE_URL"] as const;
 
 function request() {
   return new Request("http://localhost/api/auth/providers");
@@ -33,7 +33,7 @@ describe("GET /api/auth/providers", () => {
   });
 
   it("returns both enabled providers with labels and no-store, Azure first under auto-detect", async () => {
-    process.env.ATLASSIAN_OAUTH_CLIENT_ID = "client-1";
+    process.env.BOOTSTRAP_JIRA_SITES = "quality|owner@example.test";
 
     const response = await GET(request());
     expect(response.status).toBe(200);
@@ -54,7 +54,7 @@ describe("GET /api/auth/providers", () => {
   });
 
   it("respects the operator's explicit order", async () => {
-    process.env.ATLASSIAN_OAUTH_CLIENT_ID = "client-1";
+    process.env.BOOTSTRAP_JIRA_SITES = "quality|owner@example.test";
     process.env.BOOTSTRAP_ENABLED_PROVIDERS = "jira-cloud,azure-devops";
 
     const body = await (await GET(request())).json();

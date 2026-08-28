@@ -28,7 +28,7 @@ export type IntegrationProviderConfig =
       providerId: "jira-cloud";
       settings: JiraCloudSettings;
       projectScope?: JiraCloudProjectScope;
-      hooks?: never;
+      hooks?: { onUnauthorized?: () => void };
     };
 
 export function createIntegrationProvider(config: IntegrationProviderConfig): IntegrationProvider {
@@ -36,7 +36,7 @@ export function createIntegrationProvider(config: IntegrationProviderConfig): In
     case "azure-devops":
       return new AzureDevOpsRestAdapter(config.settings, config.projectScope, config.hooks);
     case "jira-cloud":
-      return new JiraCloudAdapter(config.settings, config.projectScope);
+      return new JiraCloudAdapter(config.settings, config.projectScope, config.hooks);
     default:
       throw unsupportedProviderError((config as { providerId: string }).providerId);
   }

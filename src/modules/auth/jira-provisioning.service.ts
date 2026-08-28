@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 
 import { createId, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import { canonicalJiraSiteUrl } from "./bootstrap.service";
-import { isAllowedAtlassianCloudId, type AtlassianAccessibleResource, type AtlassianUserIdentity } from "./jira-oauth";
+import type { JiraSiteResource, JiraUserIdentity } from "./jira-token-auth.service";
 
 export type JiraLoginProvisioningResult = {
   workspaceId: string;
@@ -19,8 +19,6 @@ type JiraWorkspaceCandidate = {
   status: string;
 };
 
-type JiraWorkspaceResolution = { id: string; created: boolean };
-
 type WorkspaceMembershipRow = {
   id: string;
   user_id: string;
@@ -29,16 +27,15 @@ type WorkspaceMembershipRow = {
 };
 
 export async function provisionJiraLogin(input: {
-  resource: AtlassianAccessibleResource;
-  identity: AtlassianUserIdentity;
+  resource: JiraSiteResource;
+  identity: JiraUserIdentity;
 }): Promise<JiraLoginProvisioningResult> {
-  if (!isAllowedAtlassianCloudId(input.resource.id)) throw new Error("This Jira Cloud site is not approved.");
   return withTransaction(async (client) => {
     const now = nowIso();
-    const siteId = input.resource.id.trim();
-    const siteName = input.resource.name;
-    const siteUrl = canonicalJiraSiteUrl(input.resource.url);
-    const workspace = await resolveJiraWorkspace({ siteId, siteName, siteUrl, now }, client);
+    const siteId = input.resource.cloudId.trim();
+    const siteName = input.resource.siteName;
+    const siteUrl = canonicalJiraSiteUrl(input.resource.siteUrl);
+    const workspaceId = await resolveJiraWorkspace({ siteId, siteName, siteUrl, now }, client);
 
     const external = await sqlGet<{ user_id: string }>(
       `SELECT user_id FROM external_identities
@@ -49,13 +46,14 @@ export async function provisionJiraLogin(input: {
     );
     let userId = external?.user_id;
     if (!userId) {
-      const email = input.identity.emailAddress?.trim().toLocaleLowerCase() ?? null;
-      const byEmail = email
-        ? await sqlGet<{ id: string }>(
-            `SELECT id FROM users WHERE LOWER(email_or_unique_name) = @email LIMIT 1`,
-            { email }, client,
-          )
-        : undefined;
+      // The identity email is the Basic-auth-verified, normalized typed email —
+      // always present, so the bootstrap-seeded owner (keyed by that email)
+      // always reconciles in place instead of duplicating.
+      const email = input.identity.emailAddress.trim().toLowerCase();
+      const byEmail = await sqlGet<{ id: string }>(
+        `SELECT id FROM users WHERE LOWER(email_or_unique_name) = @email LIMIT 1`,
+        { email }, client,
+      );
       const user = byEmail ?? await sqlGet<{ id: string }>(
         `INSERT INTO users (id, display_name, email_or_unique_name, status, created_at, last_login_at)
          VALUES (@id, @displayName, @email, 'active', @now, @now)
@@ -81,54 +79,37 @@ export async function provisionJiraLogin(input: {
       await updateJiraIdentity(userId, input.identity, now, client);
     }
 
-    const requestedRole = workspace.created ? "owner" : "member";
+    // Configured-site trust boundary: bootstrap seeds owners; everyone who can
+    // authenticate against the configured site joins as 'member' (matching the
+    // Azure enabled-org policy). Login never creates a workspace.
     const membership = await sqlGet<{ role: "owner" | "admin" | "member" }>(
       `INSERT INTO workspace_members (id, workspace_id, user_id, role, status, created_at, updated_at)
-       VALUES (@id, @workspaceId, @userId, @role, 'active', @now, @now)
+       VALUES (@id, @workspaceId, @userId, 'member', 'active', @now, @now)
        ON CONFLICT (workspace_id, user_id) DO UPDATE SET status = 'active', updated_at = excluded.updated_at
        RETURNING role`,
-      { id: createId("wm"), workspaceId: workspace.id, userId, role: requestedRole, now },
+      { id: createId("wm"), workspaceId, userId, now },
       client,
     );
     if (!membership) throw new Error("Jira workspace membership could not be provisioned.");
-    return { workspaceId: workspace.id, userId, role: membership.role };
+    return { workspaceId, userId, role: membership.role };
   });
 }
 
+/**
+ * Resolve the configured workspace for an authenticated site: adopt the seeded
+ * placeholder (pinning the cloud ID on first login), reconcile a rename, or
+ * fail closed. An unconfigured site NEVER lazily creates a workspace — the
+ * login route already rejects unknown sites, and this guard keeps provisioning
+ * fail-closed even if a caller bypasses it.
+ */
 async function resolveJiraWorkspace(
   input: { siteId: string; siteName: string; siteUrl: string; now: string },
   client: PoolClient,
-): Promise<JiraWorkspaceResolution> {
+): Promise<string> {
   const candidates = await lockJiraWorkspaceCandidates(input.siteId, input.siteUrl, client);
   const existing = await resolveLockedJiraWorkspace(candidates, input, client);
-  if (existing) return existing;
-
-  // Bare ON CONFLICT: either partial unique index may arbitrate. If a
-  // concurrent bootstrap or OAuth login wins, lock and classify its row below.
-  const created = await sqlGet<{ id: string }>(
-    `INSERT INTO workspaces (
-       id, name, azure_org_name, azure_org_url, provider_id,
-       provider_site_id, provider_site_name, provider_site_url, status, created_at, updated_at
-     ) VALUES (
-       @id, @name, NULL, NULL, @providerId,
-       @siteId, @siteName, @siteUrl, 'active', @now, @now
-     )
-     ON CONFLICT DO NOTHING
-     RETURNING id`,
-    {
-      id: createId("ws"),
-      name: input.siteName,
-      providerId: "jira-cloud",
-      ...input,
-    },
-    client,
-  );
-  if (created) return { id: created.id, created: true };
-
-  const racedCandidates = await lockJiraWorkspaceCandidates(input.siteId, input.siteUrl, client);
-  const raced = await resolveLockedJiraWorkspace(racedCandidates, input, client);
-  if (!raced) throw new Error("Jira workspace could not be provisioned after a concurrent update.");
-  return raced;
+  if (!existing) throw new Error("This Jira site is not configured for iTestFlow.");
+  return existing;
 }
 
 async function lockJiraWorkspaceCandidates(
@@ -152,7 +133,7 @@ async function resolveLockedJiraWorkspace(
   candidates: JiraWorkspaceCandidate[],
   input: { siteId: string; siteName: string; siteUrl: string; now: string },
   client: PoolClient,
-): Promise<JiraWorkspaceResolution | undefined> {
+): Promise<string | undefined> {
   if (candidates.length === 0) return undefined;
   if (candidates.some((candidate) => candidate.status !== "active")) {
     throw new Error("Jira workspace collision includes an inactive workspace.");
@@ -183,7 +164,7 @@ async function resolveLockedJiraWorkspace(
       ),
       "Jira bootstrap workspace adoption failed.",
     );
-    return { id: occupant.id, created: false };
+    return occupant.id;
   }
 
   if (!target) {
@@ -194,7 +175,7 @@ async function resolveLockedJiraWorkspace(
     await reconcileJiraPlaceholder(target.id, occupant.id, input.now, client);
   }
   await refreshJiraWorkspace(target.id, input, client);
-  return { id: target.id, created: false };
+  return target.id;
 }
 
 async function reconcileJiraPlaceholder(
@@ -297,12 +278,12 @@ async function requireSingleMutation(mutation: Promise<number>, message: string)
   if (await mutation !== 1) throw new Error(message);
 }
 
-async function updateJiraIdentity(userId: string, identity: AtlassianUserIdentity, now: string, client: PoolClient) {
+async function updateJiraIdentity(userId: string, identity: JiraUserIdentity, now: string, client: PoolClient) {
   await sqlRun(
     `UPDATE external_identities
      SET email = @email, display_name = @displayName, last_login_at = @now
      WHERE provider_id = 'jira-cloud' AND provider_subject = @providerSubject`,
-    { email: identity.emailAddress, displayName: identity.displayName, now, providerSubject: identity.accountId },
+    { email: identity.emailAddress.trim().toLowerCase(), displayName: identity.displayName, now, providerSubject: identity.accountId },
     client,
   );
   await sqlRun(

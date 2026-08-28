@@ -1,7 +1,7 @@
 import path from "path";
 import migrate from "node-pg-migrate";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
-import { getEnabledLoginProviders } from "@/modules/auth/enabled-providers";
+import { getEnabledLoginProviders, validateEnabledProviderShape } from "@/modules/auth/enabled-providers";
 import { warmLocalModels } from "@/modules/rag/local-model-warmup";
 
 async function runMigrations() {
@@ -26,14 +26,18 @@ async function runMigrations() {
  * without a DB), which skips both.
  */
 async function runStartup() {
+  // Configuration-shape validation runs even without a database: a
+  // misconfigured BOOTSTRAP_ENABLED_PROVIDERS or bootstrap entry must refuse
+  // to boot, not 500 on the login page.
+  validateEnabledProviderShape();
   if (!process.env.DATABASE_URL) {
     console.warn("[startup] DATABASE_URL not set — skipping auto-migration and bootstrap.");
     return;
   }
   await runMigrations();
-  // Validate the provider-enablement contract before seeding: a misconfigured
-  // BOOTSTRAP_ENABLED_PROVIDERS must refuse to boot, not 500 on the login page.
-  getEnabledLoginProviders();
+  // Full provider-enablement validation (includes the jira-cloud-without-sites
+  // fail-fast, which may consult the database) before seeding.
+  await getEnabledLoginProviders();
   await ensureBootstrapOwner();
 }
 

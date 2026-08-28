@@ -22,7 +22,7 @@ export async function GET(request: Request) {
     );
   }
 
-  if (!isLoginProviderEnabled("jira-cloud")) {
+  if (!await isLoginProviderEnabled("jira-cloud")) {
     return NextResponse.json({ error: "Jira Cloud sign-in is disabled for this deployment." }, { status: 403 });
   }
 

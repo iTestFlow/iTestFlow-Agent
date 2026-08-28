@@ -8,7 +8,7 @@ import { createLLMProvider } from "@/modules/llm/llm-provider.factory";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { DEFAULT_RETRY_ATTEMPTS, getMaxOutputTokenCapDefaultFromEnv } from "@/modules/llm/llm-defaults";
 import { requireSession, SessionError } from "@/modules/auth/session.service";
-import { resolveJiraAccessToken } from "@/modules/auth/jira-connection.service";
+import { InvalidJiraCredentialsError, markJiraConnectionInvalid, resolveJiraCredentials } from "@/modules/auth/jira-connection.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import { getWorkspaceMembership, type WorkspaceRole } from "@/modules/workspace/workspace-access.service";
 import { getWorkspaceById, resolveActiveWorkspaceForUser, type WorkspaceRef } from "@/modules/workspace/workspace.service";
@@ -146,15 +146,16 @@ async function getUserJiraProvider(ctx: WorkflowContext, project?: ProjectScope)
   const cloudId = ctx.workspace.providerSiteId;
   const siteUrl = ctx.workspace.providerSiteUrl;
   if (!cloudId || !siteUrl) throw new WorkflowAuthError("This Jira Cloud workspace is missing its site configuration.", 500);
-  const accessToken = await resolveJiraAccessToken({ workspaceId: ctx.workspace.id, userId: ctx.userId });
+  const credentials = await resolveJiraCredentials({ workspaceId: ctx.workspace.id, userId: ctx.userId });
   return createIntegrationProvider({
     providerId: "jira-cloud",
-    settings: { cloudId, siteUrl, accessToken },
+    settings: { cloudId, siteUrl, email: credentials.email, apiToken: credentials.apiToken, tokenKind: credentials.tokenKind },
     projectScope: project ? {
       jiraProjectId: project.providerProjectId ?? project.azureProjectId,
       jiraProjectKey: project.providerProjectKey ?? project.azureProjectId,
       jiraProjectName: project.providerProjectName ?? project.azureProjectName,
     } : undefined,
+    hooks: invalidateJiraTokenOnUnauthorized(ctx),
   });
 }
 
@@ -173,6 +174,18 @@ function expirePatOnUnauthorized(ctx: WorkflowContext): { onUnauthorized: () => 
   return {
     onUnauthorized: () => {
       void markUserAzurePatExpired(ctx.workspace.id, ctx.userId).catch(() => {});
+    },
+  };
+}
+
+/**
+ * The Jira mirror of {@link expirePatOnUnauthorized}: a plain 401 from
+ * Atlassian marks the stored API token invalid. Fire-and-forget.
+ */
+function invalidateJiraTokenOnUnauthorized(ctx: WorkflowContext): { onUnauthorized: () => void } {
+  return {
+    onUnauthorized: () => {
+      void markJiraConnectionInvalid(ctx.workspace.id, ctx.userId).catch(() => {});
     },
   };
 }
@@ -206,6 +219,13 @@ export async function getUserLLMProvider(ctx: WorkflowContext): Promise<LLMProvi
  */
 export function authErrorResponse(error: unknown): NextResponse | null {
   if (error instanceof SessionError) {
+    return routeErrorResponse(error, {
+      domain: "auth",
+      fallback: error.message,
+      status: 401,
+    });
+  }
+  if (error instanceof InvalidJiraCredentialsError) {
     return routeErrorResponse(error, {
       domain: "auth",
       fallback: error.message,

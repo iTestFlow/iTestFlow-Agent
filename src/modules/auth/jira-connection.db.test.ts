@@ -5,10 +5,15 @@ import {
   nowIso,
   resetDatabaseForTests,
   sqlAll,
+  sqlGet,
   sqlRun,
 } from "@/modules/shared/infrastructure/database/db";
 import { cleanupFixtures, describeDb, seedMembership, seedUser, uniqueTestId } from "@/test/db";
-import { storeJiraConnection } from "./jira-connection.service";
+import {
+  markJiraConnectionInvalid,
+  resolveJiraSyncPrincipalCredentials,
+  storeJiraConnection,
+} from "./jira-connection.service";
 
 const WORKSPACE_ID = uniqueTestId("ws_jira_connection_race");
 const USER_A = uniqueTestId("user_jira_connection_race_a");
@@ -16,12 +21,10 @@ const USER_B = uniqueTestId("user_jira_connection_race_b");
 const CLOUD_ID = uniqueTestId("cloud-jira-connection-race");
 const SITE_URL = `https://${WORKSPACE_ID.replaceAll("_", "-")}.atlassian.net`;
 
-describeDb("Jira connection principal serialization (DB-backed)", () => {
-  const savedAllowedCloudIds = process.env.ATLASSIAN_ALLOWED_CLOUD_IDS;
+describeDb("Jira connection principal lifecycle (DB-backed)", () => {
   const savedEncryptionKey = process.env.APP_ENCRYPTION_KEY;
 
   beforeAll(async () => {
-    process.env.ATLASSIAN_ALLOWED_CLOUD_IDS = CLOUD_ID;
     process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 17).toString("base64");
     const now = nowIso();
     await sqlRun(
@@ -43,12 +46,22 @@ describeDb("Jira connection principal serialization (DB-backed)", () => {
 
   afterAll(async () => {
     await cleanupFixtures({ workspaceIds: [WORKSPACE_ID], userIds: [USER_A, USER_B] });
-    if (savedAllowedCloudIds === undefined) delete process.env.ATLASSIAN_ALLOWED_CLOUD_IDS;
-    else process.env.ATLASSIAN_ALLOWED_CLOUD_IDS = savedAllowedCloudIds;
     if (savedEncryptionKey === undefined) delete process.env.APP_ENCRYPTION_KEY;
     else process.env.APP_ENCRYPTION_KEY = savedEncryptionKey;
     await resetDatabaseForTests();
   });
+
+  function store(userId: string, token: string, isSyncPrincipal = true) {
+    return storeJiraConnection({
+      workspaceId: WORKSPACE_ID,
+      userId,
+      cloudId: CLOUD_ID,
+      email: `${userId}@itestflow.test`,
+      apiToken: token,
+      tokenKind: "scoped",
+      isSyncPrincipal,
+    });
+  }
 
   it("blocks concurrent owner stores on the workspace and commits exactly one sync principal", async () => {
     const locker = await getPool().connect();
@@ -61,28 +74,10 @@ describeDb("Jira connection principal serialization (DB-backed)", () => {
 
       let firstSettled = false;
       let secondSettled = false;
-      const first = storeJiraConnection({
-        workspaceId: WORKSPACE_ID,
-        userId: USER_A,
-        cloudId: CLOUD_ID,
-        accessToken: "access-a",
-        refreshToken: "refresh-a",
-        expiresInSeconds: 3600,
-        scopes: "offline_access",
-        isSyncPrincipal: true,
-      }).finally(() => {
+      const first = store(USER_A, "token-a").finally(() => {
         firstSettled = true;
       });
-      const second = storeJiraConnection({
-        workspaceId: WORKSPACE_ID,
-        userId: USER_B,
-        cloudId: CLOUD_ID,
-        accessToken: "access-b",
-        refreshToken: "refresh-b",
-        expiresInSeconds: 3600,
-        scopes: "offline_access",
-        isSyncPrincipal: true,
-      }).finally(() => {
+      const second = store(USER_B, "token-b").finally(() => {
         secondSettled = true;
       });
       pendingStores = [first, second];
@@ -109,5 +104,53 @@ describeDb("Jira connection principal serialization (DB-backed)", () => {
       locker.release();
       await Promise.allSettled(pendingStores);
     }
+  });
+
+  it("keeps the invalid principal's flag, lets another owner claim, and yields on reactivation", async () => {
+    // Deterministic starting state: A is the sole active principal.
+    await sqlRun(`DELETE FROM jira_connections WHERE workspace_id = @workspaceId`, { workspaceId: WORKSPACE_ID });
+    await store(USER_A, "token-a");
+    await store(USER_B, "token-b"); // yields to A's active principal
+
+    // A use-time 401 invalidates A's token but KEEPS the principal flag, so a
+    // plain token replacement restores polling without a handover.
+    await markJiraConnectionInvalid(WORKSPACE_ID, USER_A);
+    const invalid = await sqlGet<{ is_sync_principal: boolean; status: string }>(
+      `SELECT is_sync_principal, status FROM jira_connections WHERE workspace_id = @workspaceId AND user_id = @userId`,
+      { workspaceId: WORKSPACE_ID, userId: USER_A },
+    );
+    expect(invalid).toMatchObject({ is_sync_principal: true, status: "invalid" });
+    await expect(resolveJiraSyncPrincipalCredentials(WORKSPACE_ID)).rejects.toMatchObject({
+      code: "jira_sync_principal_invalid",
+    });
+
+    // A replaces the token before anyone else claims: polling resumes in place.
+    await store(USER_A, "token-a-replaced");
+    await expect(resolveJiraSyncPrincipalCredentials(WORKSPACE_ID)).resolves.toMatchObject({
+      userId: USER_A, apiToken: "token-a-replaced", tokenKind: "scoped", cloudId: CLOUD_ID,
+    });
+
+    // A goes invalid again and B claims principal in the meantime.
+    await markJiraConnectionInvalid(WORKSPACE_ID, USER_A);
+    await store(USER_B, "token-b-2");
+    await expect(resolveJiraSyncPrincipalCredentials(WORKSPACE_ID)).resolves.toMatchObject({ userId: USER_B });
+
+    // A's later reactivation must yield to B through the arbitrating upsert.
+    await store(USER_A, "token-a-3");
+    const principals = await sqlAll<{ user_id: string }>(
+      `SELECT user_id FROM jira_connections
+       WHERE workspace_id = @workspaceId AND is_sync_principal = true AND status = 'active'`,
+      { workspaceId: WORKSPACE_ID },
+    );
+    expect(principals).toEqual([{ user_id: USER_B }]);
+  });
+
+  it("enforces the complete-encrypted-token CHECK on active rows", async () => {
+    await expect(sqlRun(
+      `UPDATE jira_connections
+       SET encrypted_api_token = NULL
+       WHERE workspace_id = @workspaceId AND user_id = @userId AND status = 'active'`,
+      { workspaceId: WORKSPACE_ID, userId: USER_A },
+    )).rejects.toThrow();
   });
 });

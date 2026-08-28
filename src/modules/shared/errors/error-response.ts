@@ -311,9 +311,11 @@ function renderPlainTechnicalDetails(raw: string, friendly: string, status: numb
 
 function redactSecrets(value: string) {
   return value
-    .replace(/(api[_-]?key|x-api-key|personalAccessToken|pat)(["'\s:=]+)([^"',\s}]+)/gi, "$1$2[redacted]")
+    .replace(/(api[_-]?key|x-api-key|personalAccessToken|pat|apiToken|api_token)(["'\s:=]+)([^"',\s}]+)/gi, "$1$2[redacted]")
     .replace(/(Authorization:\s*Bearer\s+)[A-Za-z0-9._\-]+/gi, "$1[redacted]")
+    .replace(/(Authorization:\s*Basic\s+)[A-Za-z0-9+/=]+/gi, "$1[redacted]")
     .replace(/(Bearer\s+)[A-Za-z0-9._\-]{20,}/gi, "$1[redacted]")
+    .replace(/(Basic\s+)[A-Za-z0-9+/=]{20,}/gi, "$1[redacted]")
     .replace(/sk-[A-Za-z0-9_\-]{8,}/gi, "sk-[redacted]")
     .replace(/AIza[0-9A-Za-z_\-]{20,}/g, "AIza[redacted]");
 }

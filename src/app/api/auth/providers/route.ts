@@ -20,6 +20,6 @@ export async function GET(request: Request) {
     );
   }
 
-  const providers = getEnabledLoginProviders().map((id) => ({ id, label: LOGIN_PROVIDER_LABELS[id] }));
+  const providers = (await getEnabledLoginProviders()).map((id) => ({ id, label: LOGIN_PROVIDER_LABELS[id] }));
   return NextResponse.json({ providers }, { headers: { "Cache-Control": "no-store" } });
 }

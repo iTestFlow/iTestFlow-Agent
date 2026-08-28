@@ -127,10 +127,10 @@ describe("POST /api/auth/login", () => {
   it("fails closed with 403 when Azure DevOps sign-in is disabled for the deployment", async () => {
     const saved = {
       providers: process.env.BOOTSTRAP_ENABLED_PROVIDERS,
-      clientId: process.env.ATLASSIAN_OAUTH_CLIENT_ID,
+      sites: process.env.BOOTSTRAP_JIRA_SITES,
     };
     process.env.BOOTSTRAP_ENABLED_PROVIDERS = "jira-cloud";
-    process.env.ATLASSIAN_OAUTH_CLIENT_ID = "client-1";
+    process.env.BOOTSTRAP_JIRA_SITES = "quality|owner@example.test";
     try {
       const response = await POST(loginRequest({ organization: "contoso", personalAccessToken: "pat" }));
 
@@ -141,8 +141,8 @@ describe("POST /api/auth/login", () => {
     } finally {
       if (saved.providers === undefined) delete process.env.BOOTSTRAP_ENABLED_PROVIDERS;
       else process.env.BOOTSTRAP_ENABLED_PROVIDERS = saved.providers;
-      if (saved.clientId === undefined) delete process.env.ATLASSIAN_OAUTH_CLIENT_ID;
-      else process.env.ATLASSIAN_OAUTH_CLIENT_ID = saved.clientId;
+      if (saved.sites === undefined) delete process.env.BOOTSTRAP_JIRA_SITES;
+      else process.env.BOOTSTRAP_JIRA_SITES = saved.sites;
     }
   });
 

@@ -30,6 +30,7 @@ const RENAME_BOOTSTRAP_RACE_NEW = "https://itf-jira-rename-bootstrap-race-new.at
 const ORG_M = "https://dev.azure.com/itf-jira-boot-mixed";
 const OWNER_A = "jira-owner-a@itf-bootstrap.test";
 const VISITOR = "jira-visitor@itf-bootstrap.test";
+const UNSEEDED_VISITOR = "jira-unseeded-visitor@itf-bootstrap.test";
 const RACER_1 = "jira-racer-1@itf-bootstrap.test";
 const RACER_2 = "jira-racer-2@itf-bootstrap.test";
 const FIRST_D = "jira-first-d@itf-bootstrap.test";
@@ -47,7 +48,6 @@ const ENV_KEYS = [
   "BOOTSTRAP_AZURE_ORGS",
   "BOOTSTRAP_OWNER_JIRA_SITE",
   "BOOTSTRAP_JIRA_SITES",
-  "ATLASSIAN_ALLOWED_CLOUD_IDS",
   "APP_ENCRYPTION_KEY",
 ] as const;
 
@@ -86,6 +86,29 @@ async function jiraWorkspaceByCloudId(cloudId: string): Promise<{
   );
 }
 
+/**
+ * Establish a cloud-ID-backed workspace at a site URL: seed the site with a
+ * declared owner, then complete that owner's first token login (which pins the
+ * cloud ID). Login never lazily creates workspaces, so every rename scenario
+ * starts from this configured-site state.
+ */
+async function seedAndAdoptSite(input: {
+  cloudId: string; siteName: string; siteUrl: string; ownerEmail: string; accountId: string;
+}) {
+  const savedSites = process.env.BOOTSTRAP_JIRA_SITES;
+  process.env.BOOTSTRAP_JIRA_SITES = `${input.siteUrl}|${input.ownerEmail}`;
+  try {
+    await ensureBootstrapOwner();
+  } finally {
+    if (savedSites === undefined) delete process.env.BOOTSTRAP_JIRA_SITES;
+    else process.env.BOOTSTRAP_JIRA_SITES = savedSites;
+  }
+  return provisionJiraLogin({
+    resource: { cloudId: input.cloudId, siteName: input.siteName, siteUrl: input.siteUrl },
+    identity: { accountId: input.accountId, displayName: input.siteName, emailAddress: input.ownerEmail },
+  });
+}
+
 describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
   let saved: Record<string, string | undefined>;
 
@@ -121,6 +144,7 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
     for (const email of [
       OWNER_A,
       VISITOR,
+      UNSEEDED_VISITOR,
       RACER_1,
       RACER_2,
       FIRST_D,
@@ -141,20 +165,6 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
     saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
     for (const k of ENV_KEYS) delete process.env[k];
     process.env.BOOTSTRAP_JIRA_SITES = `${SITE_A}|${OWNER_A}, ${SITE_C}|${OWNER_A}`;
-    process.env.ATLASSIAN_ALLOWED_CLOUD_IDS = [
-      "cloud-boot-a",
-      "cloud-boot-b",
-      "cloud-boot-c",
-      "cloud-boot-d",
-      "cloud-rename-simple",
-      "cloud-rename-repoint",
-      "cloud-rename-conflict",
-      "cloud-rename-malformed",
-      "cloud-rename-collision-a",
-      "cloud-rename-collision-b",
-      "cloud-rename-concurrent",
-      "cloud-rename-bootstrap-race",
-    ].join(",");
     process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
     await cleanup();
   });
@@ -189,7 +199,7 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
     const seeded = (await jiraWorkspacesByUrl(SITE_A))[0];
 
     const result = await provisionJiraLogin({
-      resource: { id: "cloud-boot-a", name: "Boot A", url: `${SITE_A}/`, scopes: [] },
+      resource: { cloudId: "cloud-boot-a", siteName: "Boot A", siteUrl: `${SITE_A}/` },
       identity: { accountId: "acc-visitor", displayName: "First Visitor", emailAddress: VISITOR },
     });
 
@@ -210,7 +220,7 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
     const ownerId = await userIdByEmail(OWNER_A);
 
     const result = await provisionJiraLogin({
-      resource: { id: "cloud-boot-a", name: "Boot A", url: SITE_A, scopes: [] },
+      resource: { cloudId: "cloud-boot-a", siteName: "Boot A", siteUrl: SITE_A },
       identity: { accountId: "acc-owner", displayName: "Seeded Owner", emailAddress: OWNER_A.toUpperCase() },
     });
 
@@ -219,23 +229,23 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
     expect(result.role).toBe("owner");
   });
 
-  it("keeps first-login-wins ownership for a site that was never seeded", async () => {
-    const result = await provisionJiraLogin({
-      resource: { id: "cloud-boot-b", name: "Boot B", url: SITE_B, scopes: [] },
-      identity: { accountId: "acc-b-first", displayName: "Unseeded First", emailAddress: VISITOR },
-    });
-    expect(result.role).toBe("owner");
-    expect(await jiraWorkspacesByUrl(SITE_B)).toHaveLength(1);
+  it("fails closed for a site that was never configured, with zero provisioning writes", async () => {
+    await expect(provisionJiraLogin({
+      resource: { cloudId: "cloud-boot-b", siteName: "Boot B", siteUrl: SITE_B },
+      identity: { accountId: "acc-b-first", displayName: "Unseeded First", emailAddress: UNSEEDED_VISITOR },
+    })).rejects.toThrow("not configured");
+    expect(await jiraWorkspacesByUrl(SITE_B)).toHaveLength(0);
+    expect(await userIdByEmail(UNSEEDED_VISITOR)).toBeUndefined();
   });
 
   it("serializes concurrent first logins against one seeded site into a single workspace", async () => {
     const [a, b] = await Promise.all([
       provisionJiraLogin({
-        resource: { id: "cloud-boot-c", name: "Boot C", url: SITE_C, scopes: [] },
+        resource: { cloudId: "cloud-boot-c", siteName: "Boot C", siteUrl: SITE_C },
         identity: { accountId: "acc-race-1", displayName: "Racer One", emailAddress: RACER_1 },
       }),
       provisionJiraLogin({
-        resource: { id: "cloud-boot-c", name: "Boot C", url: SITE_C, scopes: [] },
+        resource: { cloudId: "cloud-boot-c", siteName: "Boot C", siteUrl: SITE_C },
         identity: { accountId: "acc-race-2", displayName: "Racer Two", emailAddress: RACER_2 },
       }),
     ]);
@@ -278,10 +288,18 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
     }
   });
 
-  it("seeding an already-connected site keeps the first owner's sync principal and still lets the seeded owner connect", async () => {
-    // A site connects organically first: its first user becomes owner + sync principal.
+  it("a later-declared owner's first login yields the sync principal to the existing one", async () => {
+    // The site is seeded for its first declared owner, who logs in and becomes
+    // the sync principal.
+    const savedSites = process.env.BOOTSTRAP_JIRA_SITES;
+    process.env.BOOTSTRAP_JIRA_SITES = `${savedSites}, ${SITE_D}|${FIRST_D}`;
+    try {
+      await ensureBootstrapOwner();
+    } finally {
+      process.env.BOOTSTRAP_JIRA_SITES = savedSites;
+    }
     const first = await provisionJiraLogin({
-      resource: { id: "cloud-boot-d", name: "Boot D", url: SITE_D, scopes: [] },
+      resource: { cloudId: "cloud-boot-d", siteName: "Boot D", siteUrl: SITE_D },
       identity: { accountId: "acc-d-first", displayName: "First D", emailAddress: FIRST_D },
     });
     expect(first.role).toBe("owner");
@@ -289,15 +307,13 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
       workspaceId: first.workspaceId,
       userId: first.userId,
       cloudId: "cloud-boot-d",
-      accessToken: "first-access",
-      refreshToken: "first-refresh",
-      expiresInSeconds: 3600,
-      scopes: "offline_access",
+      email: FIRST_D,
+      apiToken: "first-token",
+      tokenKind: "scoped",
       isSyncPrincipal: first.role === "owner",
     });
 
-    // The operator then adds the site to BOOTSTRAP_JIRA_SITES with a declared owner.
-    const savedSites = process.env.BOOTSTRAP_JIRA_SITES;
+    // The operator later declares a SECOND owner for the same site.
     process.env.BOOTSTRAP_JIRA_SITES = `${savedSites}, ${SITE_D}|${OWNER_A}`;
     try {
       await ensureBootstrapOwner();
@@ -306,10 +322,10 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
     }
     expect(await jiraWorkspacesByUrl(SITE_D)).toHaveLength(1); // adopted, not duplicated
 
-    // The seeded owner's own first OAuth login must succeed — their connection
+    // The second owner's own first login must succeed — their connection
     // yields the sync principal instead of violating its unique index.
     const seededOwner = await provisionJiraLogin({
-      resource: { id: "cloud-boot-d", name: "Boot D", url: SITE_D, scopes: [] },
+      resource: { cloudId: "cloud-boot-d", siteName: "Boot D", siteUrl: SITE_D },
       identity: { accountId: "acc-d-owner", displayName: "Seeded Owner D", emailAddress: OWNER_A },
     });
     expect(seededOwner.workspaceId).toBe(first.workspaceId);
@@ -318,10 +334,9 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
       workspaceId: seededOwner.workspaceId,
       userId: seededOwner.userId,
       cloudId: "cloud-boot-d",
-      accessToken: "owner-access",
-      refreshToken: "owner-refresh",
-      expiresInSeconds: 3600,
-      scopes: "offline_access",
+      email: OWNER_A,
+      apiToken: "owner-token",
+      tokenKind: "classic",
       isSyncPrincipal: seededOwner.role === "owner",
     });
 
@@ -335,26 +350,19 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
   });
 
   it("refreshes a renamed Jira URL in place when no placeholder exists", async () => {
-    const first = await provisionJiraLogin({
-      resource: {
-        id: "cloud-rename-simple",
-        name: "ITF Rename Simple Old",
-        url: RENAME_SIMPLE_OLD,
-        scopes: [],
-      },
-      identity: {
-        accountId: "rename-simple-owner",
-        displayName: "Rename Owner A",
-        emailAddress: RENAME_OWNER_A,
-      },
+    const first = await seedAndAdoptSite({
+      cloudId: "cloud-rename-simple",
+      siteName: "ITF Rename Simple Old",
+      siteUrl: RENAME_SIMPLE_OLD,
+      ownerEmail: RENAME_OWNER_A,
+      accountId: "rename-simple-owner",
     });
 
     const renamed = await provisionJiraLogin({
       resource: {
-        id: "cloud-rename-simple",
-        name: "ITF Rename Simple New",
-        url: RENAME_SIMPLE_NEW,
-        scopes: [],
+        cloudId: "cloud-rename-simple",
+        siteName: "ITF Rename Simple New",
+        siteUrl: RENAME_SIMPLE_NEW,
       },
       identity: {
         accountId: "rename-simple-owner",
@@ -371,18 +379,12 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
   });
 
   it("re-points a bootstrapped placeholder owner, retires the placeholder, and stays idempotent", async () => {
-    const target = await provisionJiraLogin({
-      resource: {
-        id: "cloud-rename-repoint",
-        name: "ITF Rename Repoint Old",
-        url: RENAME_REPOINT_OLD,
-        scopes: [],
-      },
-      identity: {
-        accountId: "rename-repoint-owner-a",
-        displayName: "Rename Owner A",
-        emailAddress: RENAME_OWNER_A,
-      },
+    const target = await seedAndAdoptSite({
+      cloudId: "cloud-rename-repoint",
+      siteName: "ITF Rename Repoint Old",
+      siteUrl: RENAME_REPOINT_OLD,
+      ownerEmail: RENAME_OWNER_A,
+      accountId: "rename-repoint-owner-a",
     });
 
     const savedSites = process.env.BOOTSTRAP_JIRA_SITES;
@@ -402,10 +404,9 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
 
     const renamed = await provisionJiraLogin({
       resource: {
-        id: "cloud-rename-repoint",
-        name: "ITF Rename Repoint New",
-        url: RENAME_REPOINT_NEW,
-        scopes: [],
+        cloudId: "cloud-rename-repoint",
+        siteName: "ITF Rename Repoint New",
+        siteUrl: RENAME_REPOINT_NEW,
       },
       identity: {
         accountId: "rename-repoint-visitor",
@@ -415,10 +416,9 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
     });
     const repeated = await provisionJiraLogin({
       resource: {
-        id: "cloud-rename-repoint",
-        name: "ITF Rename Repoint New",
-        url: RENAME_REPOINT_NEW,
-        scopes: [],
+        cloudId: "cloud-rename-repoint",
+        siteName: "ITF Rename Repoint New",
+        siteUrl: RENAME_REPOINT_NEW,
       },
       identity: {
         accountId: "rename-repoint-visitor",
@@ -445,25 +445,18 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
   });
 
   it("upgrades the placeholder owner when that user already belongs to the target", async () => {
-    const target = await provisionJiraLogin({
-      resource: {
-        id: "cloud-rename-conflict",
-        name: "ITF Rename Conflict Old",
-        url: RENAME_CONFLICT_OLD,
-        scopes: [],
-      },
-      identity: {
-        accountId: "rename-conflict-owner-a",
-        displayName: "Rename Owner A",
-        emailAddress: RENAME_OWNER_A,
-      },
+    const target = await seedAndAdoptSite({
+      cloudId: "cloud-rename-conflict",
+      siteName: "ITF Rename Conflict Old",
+      siteUrl: RENAME_CONFLICT_OLD,
+      ownerEmail: RENAME_OWNER_A,
+      accountId: "rename-conflict-owner-a",
     });
     const existingMember = await provisionJiraLogin({
       resource: {
-        id: "cloud-rename-conflict",
-        name: "ITF Rename Conflict Old",
-        url: RENAME_CONFLICT_OLD,
-        scopes: [],
+        cloudId: "cloud-rename-conflict",
+        siteName: "ITF Rename Conflict Old",
+        siteUrl: RENAME_CONFLICT_OLD,
       },
       identity: {
         accountId: "rename-conflict-owner-b",
@@ -489,10 +482,9 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
 
     const renamed = await provisionJiraLogin({
       resource: {
-        id: "cloud-rename-conflict",
-        name: "ITF Rename Conflict New",
-        url: RENAME_CONFLICT_NEW,
-        scopes: [],
+        cloudId: "cloud-rename-conflict",
+        siteName: "ITF Rename Conflict New",
+        siteUrl: RENAME_CONFLICT_NEW,
       },
       identity: {
         accountId: "rename-conflict-owner-b",
@@ -511,18 +503,12 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
   });
 
   it("rejects a malformed placeholder and rolls every workspace mutation back", async () => {
-    const target = await provisionJiraLogin({
-      resource: {
-        id: "cloud-rename-malformed",
-        name: "ITF Rename Malformed Old",
-        url: RENAME_MALFORMED_OLD,
-        scopes: [],
-      },
-      identity: {
-        accountId: "rename-malformed-owner-a",
-        displayName: "Rename Owner A",
-        emailAddress: RENAME_OWNER_A,
-      },
+    const target = await seedAndAdoptSite({
+      cloudId: "cloud-rename-malformed",
+      siteName: "ITF Rename Malformed Old",
+      siteUrl: RENAME_MALFORMED_OLD,
+      ownerEmail: RENAME_OWNER_A,
+      accountId: "rename-malformed-owner-a",
     });
     const savedSites = process.env.BOOTSTRAP_JIRA_SITES;
     process.env.BOOTSTRAP_JIRA_SITES = `${RENAME_MALFORMED_NEW}|${RENAME_OWNER_B}`;
@@ -546,10 +532,9 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
 
     await expect(provisionJiraLogin({
       resource: {
-        id: "cloud-rename-malformed",
-        name: "ITF Rename Malformed New",
-        url: RENAME_MALFORMED_NEW,
-        scopes: [],
+        cloudId: "cloud-rename-malformed",
+        siteName: "ITF Rename Malformed New",
+        siteUrl: RENAME_MALFORMED_NEW,
       },
       identity: {
         accountId: "rename-malformed-failed",
@@ -566,39 +551,26 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
   });
 
   it("never merges two workspaces that already have different cloud IDs", async () => {
-    const targetA = await provisionJiraLogin({
-      resource: {
-        id: "cloud-rename-collision-a",
-        name: "ITF Rename Collision A",
-        url: RENAME_COLLISION_OLD,
-        scopes: [],
-      },
-      identity: {
-        accountId: "rename-collision-owner-a",
-        displayName: "Rename Owner A",
-        emailAddress: RENAME_OWNER_A,
-      },
+    const targetA = await seedAndAdoptSite({
+      cloudId: "cloud-rename-collision-a",
+      siteName: "ITF Rename Collision A",
+      siteUrl: RENAME_COLLISION_OLD,
+      ownerEmail: RENAME_OWNER_A,
+      accountId: "rename-collision-owner-a",
     });
-    const targetB = await provisionJiraLogin({
-      resource: {
-        id: "cloud-rename-collision-b",
-        name: "ITF Rename Collision B",
-        url: RENAME_COLLISION_NEW,
-        scopes: [],
-      },
-      identity: {
-        accountId: "rename-collision-owner-b",
-        displayName: "Rename Owner B",
-        emailAddress: RENAME_OWNER_B,
-      },
+    const targetB = await seedAndAdoptSite({
+      cloudId: "cloud-rename-collision-b",
+      siteName: "ITF Rename Collision B",
+      siteUrl: RENAME_COLLISION_NEW,
+      ownerEmail: RENAME_OWNER_B,
+      accountId: "rename-collision-owner-b",
     });
 
     await expect(provisionJiraLogin({
       resource: {
-        id: "cloud-rename-collision-a",
-        name: "ITF Rename Collision New",
-        url: RENAME_COLLISION_NEW,
-        scopes: [],
+        cloudId: "cloud-rename-collision-a",
+        siteName: "ITF Rename Collision New",
+        siteUrl: RENAME_COLLISION_NEW,
       },
       identity: {
         accountId: "rename-collision-failed",
@@ -616,18 +588,12 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
   });
 
   it("serializes concurrent rename reconciliation without duplicating the owner transfer", async () => {
-    const target = await provisionJiraLogin({
-      resource: {
-        id: "cloud-rename-concurrent",
-        name: "ITF Rename Concurrent Old",
-        url: RENAME_CONCURRENT_OLD,
-        scopes: [],
-      },
-      identity: {
-        accountId: "rename-concurrent-owner-a",
-        displayName: "Rename Owner A",
-        emailAddress: RENAME_OWNER_A,
-      },
+    const target = await seedAndAdoptSite({
+      cloudId: "cloud-rename-concurrent",
+      siteName: "ITF Rename Concurrent Old",
+      siteUrl: RENAME_CONCURRENT_OLD,
+      ownerEmail: RENAME_OWNER_A,
+      accountId: "rename-concurrent-owner-a",
     });
     const savedSites = process.env.BOOTSTRAP_JIRA_SITES;
     process.env.BOOTSTRAP_JIRA_SITES = `${RENAME_CONCURRENT_NEW}|${RENAME_OWNER_B}`;
@@ -643,10 +609,9 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
     const [a, b] = await Promise.all([
       provisionJiraLogin({
         resource: {
-          id: "cloud-rename-concurrent",
-          name: "ITF Rename Concurrent New",
-          url: RENAME_CONCURRENT_NEW,
-          scopes: [],
+          cloudId: "cloud-rename-concurrent",
+          siteName: "ITF Rename Concurrent New",
+          siteUrl: RENAME_CONCURRENT_NEW,
         },
         identity: {
           accountId: "rename-concurrent-visitor-a",
@@ -656,10 +621,9 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
       }),
       provisionJiraLogin({
         resource: {
-          id: "cloud-rename-concurrent",
-          name: "ITF Rename Concurrent New",
-          url: RENAME_CONCURRENT_NEW,
-          scopes: [],
+          cloudId: "cloud-rename-concurrent",
+          siteName: "ITF Rename Concurrent New",
+          siteUrl: RENAME_CONCURRENT_NEW,
         },
         identity: {
           accountId: "rename-concurrent-visitor-b",
@@ -687,18 +651,12 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
   });
 
   it("does not resurrect a placeholder membership when bootstrap cached it before reconciliation", async () => {
-    const target = await provisionJiraLogin({
-      resource: {
-        id: "cloud-rename-bootstrap-race",
-        name: "ITF Rename Bootstrap Race Old",
-        url: RENAME_BOOTSTRAP_RACE_OLD,
-        scopes: [],
-      },
-      identity: {
-        accountId: "rename-bootstrap-race-owner-a",
-        displayName: "Rename Owner A",
-        emailAddress: RENAME_OWNER_A,
-      },
+    const target = await seedAndAdoptSite({
+      cloudId: "cloud-rename-bootstrap-race",
+      siteName: "ITF Rename Bootstrap Race Old",
+      siteUrl: RENAME_BOOTSTRAP_RACE_OLD,
+      ownerEmail: RENAME_OWNER_A,
+      accountId: "rename-bootstrap-race-owner-a",
     });
     const initialSites = process.env.BOOTSTRAP_JIRA_SITES;
     process.env.BOOTSTRAP_JIRA_SITES = `${RENAME_BOOTSTRAP_RACE_NEW}|${RENAME_OWNER_B}`;
@@ -719,10 +677,9 @@ describeDb("Jira site bootstrap seeding & OAuth adoption (DB-backed)", () => {
 
       const renamePromise = provisionJiraLogin({
         resource: {
-          id: "cloud-rename-bootstrap-race",
-          name: "ITF Rename Bootstrap Race New",
-          url: RENAME_BOOTSTRAP_RACE_NEW,
-          scopes: [],
+          cloudId: "cloud-rename-bootstrap-race",
+          siteName: "ITF Rename Bootstrap Race New",
+          siteUrl: RENAME_BOOTSTRAP_RACE_NEW,
         },
         identity: {
           accountId: "rename-bootstrap-race-visitor",

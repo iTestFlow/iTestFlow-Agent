@@ -12,7 +12,10 @@ vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   createId: (prefix: string) => `${prefix}_fixed`, nowIso: () => "2026-08-13T10:00:00.000Z",
   sqlGet: mocks.sqlGet, sqlAll: mocks.sqlAll, sqlRun: mocks.sqlRun, withTransaction: mocks.withTransaction,
 }));
-vi.mock("@/modules/auth/jira-connection.service", () => ({ resolveJiraSyncPrincipalAccessToken: mocks.resolvePrincipal }));
+vi.mock("@/modules/auth/jira-connection.service", () => ({
+  resolveJiraSyncPrincipalCredentials: mocks.resolvePrincipal,
+  markJiraConnectionInvalid: vi.fn(),
+}));
 vi.mock("./jira-reconciliation.service", () => ({ reconcileJiraMapping: mocks.reconcile }));
 vi.mock("./jira-sync-operation.service", () => ({
   claimNextJiraSyncOperation: mocks.claim, completeJiraSyncOperation: mocks.complete, failJiraSyncOperation: mocks.fail,
@@ -50,7 +53,9 @@ describe("runJiraProjectReconciliation", () => {
     mocks.sqlRun.mockResolvedValue(1);
     mocks.withTransaction.mockImplementation(async (fn) => fn({ query: vi.fn() }));
     mocks.enqueueJob.mockResolvedValue("retry-job");
-    mocks.resolvePrincipal.mockResolvedValue({ userId: "sync-user", accessToken: "access" });
+    mocks.resolvePrincipal.mockResolvedValue({
+      userId: "sync-user", email: "sync@example.test", apiToken: "token", tokenKind: "scoped", cloudId: "cloud-a",
+    });
     mocks.sqlGet
       .mockResolvedValueOnce(projectConfig())
       .mockResolvedValueOnce({ id: "local-1", title: "Local title", description: null, acceptance_criteria: null, state: "Active", priority: null, tags: null })

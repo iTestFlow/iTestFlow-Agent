@@ -2,7 +2,7 @@ import "server-only";
 
 import { writeAuditLogTransactional } from "@/modules/audit/audit.service";
 import { enqueueJob } from "@/modules/jobs/job-queue.service";
-import { resolveJiraSyncPrincipalAccessToken } from "@/modules/auth/jira-connection.service";
+import { markJiraConnectionInvalid, resolveJiraSyncPrincipalCredentials } from "@/modules/auth/jira-connection.service";
 import { indexAzureWorkItemsAsProjectContext } from "@/modules/rag/project-context-store.service";
 import { createId, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import { IntegrationError, type IntegrationErrorCode } from "../core/integration-error";
@@ -38,9 +38,10 @@ export async function runJiraProjectReconciliation(input: {
   const project = await loadProjectConfig(input.workspaceId, input.projectId);
   const fieldMappings = parseArray<FieldMapping>(project.field_mapping_json, "Jira field mappings");
   const statusMappings = parseArray<StatusMapping>(project.status_mapping_json, "Jira status mappings");
-  const principal = await resolveJiraSyncPrincipalAccessToken(input.workspaceId);
+  const principal = await resolveJiraSyncPrincipalCredentials(input.workspaceId);
   const adapter = new JiraCloudAdapter({
-    cloudId: project.provider_site_id, siteUrl: project.provider_site_url, accessToken: principal.accessToken,
+    cloudId: project.provider_site_id, siteUrl: project.provider_site_url,
+    email: principal.email, apiToken: principal.apiToken, tokenKind: principal.tokenKind,
     fieldMapping: {
       acceptanceCriteriaFieldId: fieldMappings.find((item) => item.localField === "acceptanceCriteria")?.jiraField,
     },
@@ -48,6 +49,10 @@ export async function runJiraProjectReconciliation(input: {
     jiraProjectId: project.provider_project_id,
     jiraProjectKey: project.provider_project_key,
     jiraProjectName: project.provider_project_name,
+  }, {
+    onUnauthorized: () => {
+      void markJiraConnectionInvalid(input.workspaceId, principal.userId).catch(() => {});
+    },
   });
   if (input.operationId) {
     const operationCount = await drainOperations({
@@ -285,7 +290,10 @@ async function drainOperations(input: {
       completed += 1;
     } catch (error) {
       const code = errorCode(error);
-      const failure = await failJiraSyncOperation({ operationId: operation.id, errorCode: code });
+      const failure = await failJiraSyncOperation({
+        operationId: operation.id, errorCode: code,
+        retryAfterSeconds: error instanceof IntegrationError ? error.retryAfterSeconds : undefined,
+      });
       if (failure.retry) {
         if (input.operationId) throw new Error("The exact Jira sync operation remains pending for retry.");
         await enqueueJob({

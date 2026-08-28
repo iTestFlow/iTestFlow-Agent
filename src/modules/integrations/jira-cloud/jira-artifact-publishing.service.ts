@@ -3,7 +3,7 @@ import "server-only";
 import type { PoolClient } from "pg";
 import type { FinalApprovedTestCase } from "../core/integration-types";
 import { createId, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
-import { resolveJiraAccessToken } from "@/modules/auth/jira-connection.service";
+import { markJiraConnectionInvalid, resolveJiraCredentials, type JiraCredentials } from "@/modules/auth/jira-connection.service";
 import { JiraCloudAdapter } from "./jira-cloud-adapter";
 import { PlainJiraArtifactBackend } from "./plain-jira-artifact-backend";
 import { XrayCloudBackend } from "./xray-cloud-backend";
@@ -28,11 +28,11 @@ export async function publishConfiguredJiraTestCases(input: {
   const results = [];
   for (const testCase of input.testCases) {
     try {
-      const accessToken = await resolveJiraAccessToken({ workspaceId: input.workspaceId, userId: input.actorUserId });
+      const credentials = await resolveJiraCredentials({ workspaceId: input.workspaceId, userId: input.actorUserId });
       const published = await publishJiraTestCase({
         ...input,
         testCase,
-        resolveBackend: (client) => resolveConfiguredBackend(input, accessToken, client),
+        resolveBackend: (client) => resolveConfiguredBackend(input, credentials, client),
       });
       results.push({
         localId: testCase.localId, azureTestCaseId: published.remoteId, success: true,
@@ -200,7 +200,7 @@ async function failOwnedClaim(
 
 async function resolveConfiguredBackend(
   input: { workspaceId: string; projectId: string; actorUserId: string },
-  accessToken: string,
+  credentials: JiraCredentials,
   client: PoolClient,
 ): Promise<ResolvedBackend> {
   const anchor = await sqlGet<BackendAnchor>(
@@ -219,12 +219,18 @@ async function resolveConfiguredBackend(
   if (anchor.backend_type === "xray_cloud") {
     return { backend: new XrayCloudBackend(resolveXrayCloudConfigRow(anchor)), backendType: anchor.backend_type, siteUrl: anchor.provider_site_url };
   }
+  const invalidateOnUnauthorized = {
+    onUnauthorized: () => {
+      void markJiraConnectionInvalid(input.workspaceId, input.actorUserId).catch(() => {});
+    },
+  };
   if (anchor.backend_type === "zephyr_scale") {
     const jira = new JiraCloudAdapter({
-      cloudId: anchor.provider_site_id, siteUrl: anchor.provider_site_url, accessToken,
+      cloudId: anchor.provider_site_id, siteUrl: anchor.provider_site_url,
+      email: credentials.email, apiToken: credentials.apiToken, tokenKind: credentials.tokenKind,
     }, {
       jiraProjectId: anchor.provider_project_id, jiraProjectKey: anchor.provider_project_key, jiraProjectName: anchor.provider_project_name,
-    });
+    }, invalidateOnUnauthorized);
     const settings = resolveZephyrScaleConfigRow(anchor);
     return {
       backend: new ZephyrScaleBackend({
@@ -248,11 +254,12 @@ async function resolveConfiguredBackend(
   const config = parsePlainConfig(anchor.config_json);
   return {
     backend: new PlainJiraArtifactBackend({
-      cloudId: anchor.provider_site_id, siteUrl: anchor.provider_site_url, accessToken,
+      cloudId: anchor.provider_site_id, siteUrl: anchor.provider_site_url,
+      email: credentials.email, apiToken: credentials.apiToken, tokenKind: credentials.tokenKind,
       testCaseIssueTypeId: config.testCaseIssueTypeId, localIdFieldId: config.localIdFieldId,
     }, {
       jiraProjectId: anchor.provider_project_id, jiraProjectKey: anchor.provider_project_key, jiraProjectName: anchor.provider_project_name,
-    }),
+    }, invalidateOnUnauthorized),
     backendType: anchor.backend_type,
     siteUrl: anchor.provider_site_url,
   };

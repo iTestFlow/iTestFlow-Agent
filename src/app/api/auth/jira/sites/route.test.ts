@@ -14,7 +14,7 @@ vi.mock("@/modules/security/rate-limit", () => ({
 
 import { GET } from "./route";
 
-const ENV_KEYS = ["BOOTSTRAP_ENABLED_PROVIDERS", "ATLASSIAN_OAUTH_CLIENT_ID"] as const;
+const ENV_KEYS = ["BOOTSTRAP_ENABLED_PROVIDERS", "BOOTSTRAP_JIRA_SITES", "BOOTSTRAP_OWNER_JIRA_SITE", "BOOTSTRAP_OWNER_EMAIL", "DATABASE_URL"] as const;
 
 function request() {
   return new Request("http://localhost/api/auth/jira/sites");
@@ -29,7 +29,7 @@ describe("GET /api/auth/jira/sites", () => {
     checkRateLimit.mockResolvedValue({ allowed: true });
     saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
     for (const k of ENV_KEYS) delete process.env[k];
-    process.env.ATLASSIAN_OAUTH_CLIENT_ID = "client-1"; // auto-detect enables jira-cloud
+    process.env.BOOTSTRAP_JIRA_SITES = "quality|owner@example.test"; // auto-detect enables jira-cloud
   });
 
   afterEach(() => {

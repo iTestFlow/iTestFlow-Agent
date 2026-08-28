@@ -9,9 +9,9 @@ const PUBLIC_ROUTES = new Set([
   "auth/organizations/route.ts",
   "auth/providers/route.ts",
   "auth/session/route.ts",
-  "auth/jira/start/route.ts",
-  "auth/jira/callback/route.ts",
-  "auth/jira/select/route.ts",
+  // Credential-accepting login: rate-limited, origin-checked, provider-gated,
+  // and fail-closed on unconfigured sites before any outbound call.
+  "auth/jira/login/route.ts",
   // Pre-auth login pickers: display fields only, rate-limited, provider-gated.
   "auth/jira/sites/route.ts",
   "health/route.ts",

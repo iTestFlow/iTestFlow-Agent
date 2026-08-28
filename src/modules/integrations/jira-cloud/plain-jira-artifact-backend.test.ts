@@ -72,7 +72,7 @@ describe("PlainJiraArtifactBackend", () => {
 
 function plainBackend() { return new PlainJiraArtifactBackend(settings(), scope()); }
 function settings(overrides = {}) {
-  return { cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", accessToken: "secret", testCaseIssueTypeId: "test-case-type", localIdFieldId: "customfield_10100", ...overrides };
+  return { cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", email: "user@example.test", apiToken: "secret", tokenKind: "scoped" as const, testCaseIssueTypeId: "test-case-type", localIdFieldId: "customfield_10100", ...overrides };
 }
 function scope() { return { jiraProjectId: "10000", jiraProjectKey: "QA", jiraProjectName: "Quality" }; }
 function json(value: unknown) { return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } }); }
