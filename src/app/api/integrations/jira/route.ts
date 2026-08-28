@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { resolveJiraAccessToken, revokeJiraConnection } from "@/modules/auth/jira-connection.service";
+import { revokeJiraConnection } from "@/modules/auth/jira-connection.service";
 import { getUserWorkManagementProviderOrgLevel } from "@/modules/credentials/scoped-resolution.service";
 import { resolveJiraFieldConflict } from "@/modules/integrations/jira-cloud/jira-conflict-resolution.service";
 import { storePlainJiraArtifactConfig } from "@/modules/integrations/jira-cloud/jira-artifact-publishing.service";
 import { storeXrayCloudConfig } from "@/modules/integrations/jira-cloud/xray-cloud-config.service";
 import { storeZephyrScaleConfig } from "@/modules/integrations/jira-cloud/zephyr-scale-config.service";
-import { registerJiraProjectWebhook } from "@/modules/integrations/jira-cloud/jira-webhook-registration.service";
 import { getJiraIntegrationOverview, storeJiraProjectSyncConfig } from "@/modules/projects/jira-project-mapping.service";
 import { verifyAndUpsertWorkspaceProject } from "@/modules/projects/workspace-projects.service";
 import { resolveWorkspaceRequest, workspaceRequestError, type WorkspaceRequestContext } from "@/modules/workspace/workspace-request";
@@ -65,17 +64,6 @@ export async function POST(request: Request) {
     const action = parsed.data;
     if (action.action === "select_project") {
       const project = await verifyAndUpsertWorkspaceProject(context, action.providerProjectId);
-      const cloudId = context.workspace.providerSiteId;
-      const publicUrl = process.env.ITESTFLOW_PUBLIC_URL?.trim();
-      if (!cloudId || !publicUrl) throw new Error("Jira webhook configuration is not available.");
-      let publicOrigin: URL;
-      try { publicOrigin = new URL(publicUrl); } catch { throw new Error("Jira webhook configuration is not available."); }
-      if (publicOrigin.protocol !== "https:" || publicOrigin.username || publicOrigin.password || publicOrigin.pathname !== "/" || publicOrigin.search || publicOrigin.hash) {
-        throw new Error("Jira webhook configuration is not available.");
-      }
-      const callbackUrl = new URL("/api/webhooks/jira", publicOrigin).toString();
-      const accessToken = await resolveJiraAccessToken({ workspaceId: context.workspace.id, userId: context.userId });
-      await registerJiraProjectWebhook({ workspaceId: context.workspace.id, projectId: project.projectId, cloudId, accessToken, callbackUrl });
       return NextResponse.json({ ok: true, project });
     }
     if (action.action === "configure_sync") {

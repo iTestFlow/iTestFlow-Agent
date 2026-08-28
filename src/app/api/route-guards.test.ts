@@ -14,9 +14,6 @@ const PUBLIC_ROUTES = new Set([
   "auth/jira/select/route.ts",
   // Pre-auth login pickers: display fields only, rate-limited, provider-gated.
   "auth/jira/sites/route.ts",
-  // Atlassian calls this without an app session; the route verifies JWT bearer
-  // authentication plus its unguessable registration binding before persistence.
-  "webhooks/jira/route.ts",
   "health/route.ts",
 ]);
 

@@ -4,7 +4,6 @@ const mocks = vi.hoisted(() => ({
   resolveWorkspaceRequest: vi.fn(), workspaceRequestError: vi.fn(), getOverview: vi.fn(), fetchProjects: vi.fn(),
   getProvider: vi.fn(), verifyProject: vi.fn(), storeSync: vi.fn(), storePlain: vi.fn(), storeXray: vi.fn(),
   storeZephyr: vi.fn(), resolveConflict: vi.fn(), revokeConnection: vi.fn(),
-  resolveAccessToken: vi.fn(), registerWebhook: vi.fn(),
 }));
 vi.mock("@/modules/workspace/workspace-request", () => ({ resolveWorkspaceRequest: mocks.resolveWorkspaceRequest, workspaceRequestError: mocks.workspaceRequestError }));
 vi.mock("@/modules/projects/jira-project-mapping.service", () => ({ getJiraIntegrationOverview: mocks.getOverview, storeJiraProjectSyncConfig: mocks.storeSync }));
@@ -14,22 +13,19 @@ vi.mock("@/modules/integrations/jira-cloud/jira-artifact-publishing.service", ()
 vi.mock("@/modules/integrations/jira-cloud/xray-cloud-config.service", () => ({ storeXrayCloudConfig: mocks.storeXray }));
 vi.mock("@/modules/integrations/jira-cloud/zephyr-scale-config.service", () => ({ storeZephyrScaleConfig: mocks.storeZephyr }));
 vi.mock("@/modules/integrations/jira-cloud/jira-conflict-resolution.service", () => ({ resolveJiraFieldConflict: mocks.resolveConflict }));
-vi.mock("@/modules/auth/jira-connection.service", () => ({ revokeJiraConnection: mocks.revokeConnection, resolveJiraAccessToken: mocks.resolveAccessToken }));
-vi.mock("@/modules/integrations/jira-cloud/jira-webhook-registration.service", () => ({ registerJiraProjectWebhook: mocks.registerWebhook }));
+vi.mock("@/modules/auth/jira-connection.service", () => ({ revokeJiraConnection: mocks.revokeConnection }));
 
 import { DELETE, GET, POST } from "./route";
 
 describe("Jira integration settings API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv("ITESTFLOW_PUBLIC_URL", "https://itestflow.example");
     mocks.resolveWorkspaceRequest.mockResolvedValue({
       userId: "user-1", workspace: { id: "ws-1", providerId: "jira-cloud", providerSiteId: "cloud-a", providerSiteUrl: "https://quality.atlassian.net" },
     });
     mocks.getProvider.mockResolvedValue({ fetchProjects: mocks.fetchProjects });
     mocks.fetchProjects.mockResolvedValue([{ id: "10000", key: "QA", name: "Quality" }]);
     mocks.getOverview.mockResolvedValue({ providerId: "jira-cloud", role: "owner", connection: { status: "active" }, projects: [] });
-    mocks.resolveAccessToken.mockResolvedValue("access-token");
   });
 
   it("returns server-authorized overview and available Jira projects without secrets", async () => {
@@ -42,27 +38,12 @@ describe("Jira integration settings API", () => {
     expect(mocks.getOverview).toHaveBeenCalledWith({ workspaceId: "ws-1", actorUserId: "user-1" });
   });
 
-  it("verifies Jira project selection through the trusted provider", async () => {
+  it("verifies Jira project selection through the trusted provider without any webhook or public URL", async () => {
     mocks.verifyProject.mockResolvedValue({ projectId: "project-1", providerProjectId: "10000", providerProjectKey: "QA" });
     const response = await POST(request({ action: "select_project", providerProjectId: "10000" }));
     expect(response.status).toBe(200);
     expect(mocks.verifyProject).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-1" }), "10000");
-    expect(mocks.registerWebhook).toHaveBeenCalledWith(expect.objectContaining({
-      workspaceId: "ws-1", projectId: "project-1", cloudId: expect.any(String), accessToken: "access-token",
-      callbackUrl: "https://itestflow.example/api/webhooks/jira",
-    }));
     expect(await response.json()).toMatchObject({ ok: true, project: { projectId: "project-1" } });
-  });
-
-  it("rejects a non-HTTPS public webhook origin", async () => {
-    vi.stubEnv("ITESTFLOW_PUBLIC_URL", "http://itestflow.example");
-    mocks.verifyProject.mockResolvedValue({ projectId: "project-1", providerProjectId: "10000", providerProjectKey: "QA" });
-
-    const response = await POST(request({ action: "select_project", providerProjectId: "10000" }));
-
-    expect(response.status).toBe(404);
-    expect(mocks.resolveAccessToken).not.toHaveBeenCalled();
-    expect(mocks.registerWebhook).not.toHaveBeenCalled();
   });
 
   it("dispatches each backend configuration without returning secret input", async () => {

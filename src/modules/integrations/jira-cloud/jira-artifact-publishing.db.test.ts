@@ -20,7 +20,6 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
     ownerId = uniqueTestId("owner_jira_publish");
     providerProjectId = uniqueTestId("jira_numeric");
     authMocks.resolveJiraAccessToken.mockResolvedValue("access-token");
-    vi.stubEnv("ITESTFLOW_PUBLIC_URL", "https://itestflow.example");
     const siteUrl = `https://${workspaceId}.atlassian.net`;
     await seedWorkspace({ id: workspaceId, orgUrl: siteUrl });
     await seedUser({ id: ownerId, email: `${ownerId}@itestflow.test` });
@@ -140,7 +139,6 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
         createdFields = (JSON.parse(String(init.body)) as { fields: Record<string, unknown> }).fields;
         return json({ key: "QA-12" });
       }
-      if (url.endsWith("/remotelink")) return json({});
       if (url.includes("/comment?")) return json({ comments: [], isLast: true });
       if (url.endsWith("/comment") && init?.method === "POST") return json({});
       throw new Error(`Unexpected Jira request: ${url}`);
@@ -180,7 +178,6 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
         const localId = String(fields.customfield_10002);
         return json({ key: `QA-${localId.replace(/\D/g, "")}` });
       }
-      if (url.endsWith("/remotelink")) return json({});
       if (url.includes("/comment?")) return json({ comments: [], isLast: true });
       if (url.endsWith("/comment") && init?.method === "POST") return json({});
       throw new Error(`Unexpected Jira request: ${url}`);

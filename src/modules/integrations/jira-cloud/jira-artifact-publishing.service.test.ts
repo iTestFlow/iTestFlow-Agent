@@ -21,7 +21,6 @@ const { publishPlainJiraTestCase } = plainJiraPublishing;
 describe("publishPlainJiraTestCase", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv("ITESTFLOW_PUBLIC_URL", "https://itestflow.example");
     mocks.sqlRun.mockResolvedValue(0);
     mocks.resolveAccess.mockResolvedValue("access");
   });

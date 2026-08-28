@@ -57,9 +57,6 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/integrations/jira-cloud/jira-sync-conflict.ts",
   "src/modules/integrations/jira-cloud/jira-sync-operation.service.ts",
   "src/modules/integrations/jira-cloud/jira-sync-runtime.service.ts",
-  "src/modules/integrations/jira-cloud/jira-webhook-auth.ts",
-  "src/modules/integrations/jira-cloud/jira-webhook-events.service.ts",
-  "src/modules/integrations/jira-cloud/jira-webhook-registration.service.ts",
   "src/modules/integrations/jira-cloud/plain-jira-artifact-backend.ts",
   "src/modules/integrations/jira-cloud/xray-cloud-backend.ts",
   "src/modules/integrations/jira-cloud/xray-cloud-config.service.ts",
@@ -70,7 +67,6 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/integrations/core/integration-error.ts",
   "src/modules/integrations/provider-registry.ts",
   "src/modules/jobs/project-knowledge-jobs.service.ts",
-  "src/modules/jobs/jira-webhook-reconcile.handler.ts",
   "src/modules/jobs/jira-sync-operations.handler.ts",
   "src/modules/jobs/project-knowledge-operation-gate.ts",
   "src/modules/jobs/project-knowledge.handler.ts",
@@ -147,7 +143,6 @@ export const GATED_INCLUDE: string[] = [
   "src/app/api/auth/jira/sites/route.ts",
   "src/app/api/auth/jira/start/route.ts",
   "src/app/api/integrations/jira/route.ts",
-  "src/app/api/webhooks/jira/route.ts",
   "src/app/api/azure-devops/project/select/route.ts",
   "src/app/api/bugs/post/route.ts",
   "src/app/api/context/documents/[documentId]/versions/route.ts",
@@ -206,7 +201,6 @@ export const GATED_INCLUDE: string[] = [
  * boundaries cannot hide behind the aggregate percentage.
  */
 export const HIGH_RISK_GATED_INCLUDE: string[] = [
-  "src/modules/jobs/jira-webhook-reconcile.handler.ts",
   "src/modules/jobs/jira-sync-operations.handler.ts",
   "src/modules/jobs/project-knowledge-jobs.service.ts",
   "src/modules/jobs/project-knowledge-operation-gate.ts",
@@ -231,7 +225,6 @@ export const HIGH_RISK_GATED_INCLUDE: string[] = [
   "src/app/api/auth/jira/select/route.ts",
   "src/app/api/auth/jira/start/route.ts",
   "src/app/api/integrations/jira/route.ts",
-  "src/app/api/webhooks/jira/route.ts",
   "src/app/api/azure-devops/project/select/route.ts",
   "src/app/api/bugs/post/route.ts",
   "src/app/api/context/index/route.ts",

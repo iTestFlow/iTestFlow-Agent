@@ -20,6 +20,8 @@ type StatusMapping = { localStatus: string; jiraStatus: string };
 type LocalField = "title" | "description" | "acceptanceCriteria" | "state" | "priority" | "tags";
 type SyncDirection = "jira_to_itestflow" | "itestflow_to_jira" | "two_way";
 export const JIRA_SYNC_OPERATIONS = "jira_sync_operations";
+/** Page size of a full reconciliation fetch; a full page means the fetch may be truncated. */
+const FULL_FETCH_LIMIT = 1000;
 type ProjectConfig = {
   project_id: string; provider_project_id: string; provider_project_key: string; provider_project_name: string;
   provider_site_id: string; provider_site_url: string; direction: SyncDirection;
@@ -57,7 +59,7 @@ export async function runJiraProjectReconciliation(input: {
   const issueKeys = unique((input.issueKeys ?? []).map((value) => value.trim()).filter(Boolean));
   const remoteIssues = issueKeys.length
     ? await adapter.fetchWorkItemsByIds({ projectId: project.provider_project_id, workItemIds: issueKeys })
-    : await adapter.fetchWorkItems({ projectId: project.provider_project_id, limit: 1000 });
+    : await adapter.fetchWorkItems({ projectId: project.provider_project_id, limit: FULL_FETCH_LIMIT });
 
   for (const remote of remoteIssues) {
     const local = await findOrCreateLocalIssue(project, remote);
@@ -100,6 +102,25 @@ export async function runJiraProjectReconciliation(input: {
       workspaceId: input.workspaceId, mappingId: mapping.id, actor: input.actor,
       baseline, local: localFields, remote: remoteFields,
     });
+  }
+
+  // Deletion detection: with no webhook channel, a full fetch is the only place
+  // deleted Jira issues become observable. Only a complete page proves absence —
+  // a truncated fetch must never mass-retire mappings.
+  if (!issueKeys.length && remoteIssues.length < FULL_FETCH_LIMIT) {
+    const fetchedIssueIds = new Set(remoteIssues.map((item) => rawText(item, "id") ?? item.id));
+    const activeMappings = await sqlAll<{ jira_issue_id: string; jira_issue_key: string }>(
+      `SELECT jira_issue_id, jira_issue_key FROM jira_sync_mappings
+       WHERE workspace_id = @workspaceId AND project_id = @projectId AND status <> 'paused'`,
+      { workspaceId: input.workspaceId, projectId: project.project_id },
+    );
+    for (const mapping of activeMappings) {
+      if (fetchedIssueIds.has(mapping.jira_issue_id)) continue;
+      await retireJiraIssueMapping({
+        workspaceId: input.workspaceId, projectId: project.project_id,
+        issueKey: mapping.jira_issue_key, actor: input.actor,
+      });
+    }
   }
 
   const operationCount = await drainOperations({
@@ -246,7 +267,8 @@ async function drainOperations(input: {
       await completeJiraSyncOperation({ operationId: operation.id, actor: input.actor });
       completed += 1;
     } catch (error) {
-      const failure = await failJiraSyncOperation({ operationId: operation.id, errorCode: errorCode(error) });
+      const code = errorCode(error);
+      const failure = await failJiraSyncOperation({ operationId: operation.id, errorCode: code });
       if (failure.retry) {
         if (input.operationId) throw new Error("The exact Jira sync operation remains pending for retry.");
         await enqueueJob({
@@ -255,6 +277,18 @@ async function drainOperations(input: {
           runAfter: failure.runAfter, maxAttempts: 5, createdByUserId: null,
         });
         return completed;
+      }
+      if (code === "integration_not_found") {
+        const gone = await sqlGet<{ jira_issue_key: string }>(
+          `SELECT jira_issue_key FROM jira_sync_mappings WHERE id = @mappingId AND workspace_id = @workspaceId`,
+          { mappingId: operation.mappingId, workspaceId: input.workspaceId },
+        );
+        if (gone) {
+          await retireJiraIssueMapping({
+            workspaceId: input.workspaceId, projectId: input.projectId,
+            issueKey: gone.jira_issue_key, actor: input.actor,
+          });
+        }
       }
     }
   }

@@ -246,11 +246,9 @@ async function resolveConfiguredBackend(
     throw new Error(`The configured Jira artifact backend type is not supported: ${anchor.backend_type}.`);
   }
   const config = parsePlainConfig(anchor.config_json);
-  const appBaseUrl = process.env.ITESTFLOW_PUBLIC_URL?.trim();
-  if (!appBaseUrl) throw new Error("Plain Jira artifact publishing is not configured for this deployment.");
   return {
     backend: new PlainJiraArtifactBackend({
-      cloudId: anchor.provider_site_id, siteUrl: anchor.provider_site_url, accessToken, appBaseUrl,
+      cloudId: anchor.provider_site_id, siteUrl: anchor.provider_site_url, accessToken,
       testCaseIssueTypeId: config.testCaseIssueTypeId, localIdFieldId: config.localIdFieldId,
     }, {
       jiraProjectId: anchor.provider_project_id, jiraProjectKey: anchor.provider_project_key, jiraProjectName: anchor.provider_project_name,

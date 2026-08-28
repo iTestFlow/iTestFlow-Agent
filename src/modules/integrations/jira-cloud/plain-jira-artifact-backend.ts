@@ -5,7 +5,7 @@ import type { FinalApprovedTestCase } from "../core/integration-types";
 import type { JiraCloudProjectScope } from "./jira-cloud-adapter";
 
 export type PlainJiraArtifactSettings = {
-  cloudId: string; siteUrl: string; accessToken: string; appBaseUrl: string;
+  cloudId: string; siteUrl: string; accessToken: string;
   testCaseIssueTypeId: string; localIdFieldId: string;
 };
 
@@ -36,14 +36,6 @@ export class PlainJiraArtifactBackend {
     const created = existing ? undefined : await this.request<{ id?: string; key?: string }>("/issue", { method: "POST", body: JSON.stringify({ fields }) });
     const remoteId = existing ?? created?.key ?? created?.id;
     if (!remoteId) throw new Error("Jira returned an invalid test-case issue.");
-    await this.request(`/issue/${encodeURIComponent(remoteId)}/remotelink`, {
-      method: "POST", body: JSON.stringify({
-        globalId: `itestflow:test-case:${input.testCase.localId}`,
-        object: {
-        url: `${this.settings.appBaseUrl.replace(/\/+$/, "")}/test-cases/${encodeURIComponent(input.testCase.localId)}`,
-        title: `iTestFlow test case ${input.testCase.localId}`,
-      } }),
-    });
     const commentMarker = `[itestflow:test-case:${createHash("sha256").update(input.testCase.localId, "utf8").digest("base64url")}]`;
     if (!await this.hasBacklinkComment(input.testCase.targetUserStoryId, commentMarker)) {
       await this.request(`/issue/${encodeURIComponent(input.testCase.targetUserStoryId)}/comment`, {

@@ -10,7 +10,6 @@ describe("PlainJiraArtifactBackend", () => {
       .mockResolvedValueOnce(json({ id: "10007", key: "QA-7", fields: { project: { id: "10000", key: "QA" }, summary: "Story", issuetype: { name: "Story" } } }))
       .mockResolvedValueOnce(json({ issues: [] }))
       .mockResolvedValueOnce(json({ id: "10009", key: "QA-9" }))
-      .mockResolvedValueOnce(json({}))
       .mockResolvedValueOnce(json({ comments: [], isLast: true }))
       .mockResolvedValueOnce(json({ id: "1" }));
     vi.stubGlobal("fetch", fetchMock);
@@ -27,16 +26,11 @@ describe("PlainJiraArtifactBackend", () => {
       project: { id: "10000" }, issuetype: { id: "test-case-type" }, summary: "Checkout succeeds",
       labels: ["itestflow", "itestflow-test-case"], customfield_10100: "case-local-1",
     });
-    expect(String(fetchMock.mock.calls[3][0])).toMatch(/\/remotelink$/);
-    const linkBody = JSON.parse(String(fetchMock.mock.calls[3][1]?.body));
-    expect(linkBody).toEqual({
-      globalId: "itestflow:test-case:case-local-1",
-      object: { url: "https://app.example/test-cases/case-local-1", title: "iTestFlow test case case-local-1" },
-    });
-    expect(String(fetchMock.mock.calls[4][0])).toContain("/comment?startAt=0&maxResults=100");
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/remotelink"))).toBe(false);
+    expect(String(fetchMock.mock.calls[3][0])).toContain("/comment?startAt=0&maxResults=100");
     const marker = createHash("sha256").update("case-local-1", "utf8").digest("base64url");
-    expect(String(fetchMock.mock.calls[5][1]?.body)).toContain(`[itestflow:test-case:${marker}]`);
-    expect(String(fetchMock.mock.calls[5][1]?.body)).toContain("QA-9");
+    expect(String(fetchMock.mock.calls[4][1]?.body)).toContain(`[itestflow:test-case:${marker}]`);
+    expect(String(fetchMock.mock.calls[4][1]?.body)).toContain("QA-9");
   });
 
   it("does not duplicate the story backlink comment when recovering an existing Jira issue", async () => {
@@ -45,7 +39,6 @@ describe("PlainJiraArtifactBackend", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ fields: { project: { id: "10000", key: "QA" } } }))
       .mockResolvedValueOnce(json({ issues: [{ key: "QA-9" }] }))
-      .mockResolvedValueOnce(json({}))
       .mockResolvedValueOnce(json({ comments: [{ body: adf(marker) }], isLast: true }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -54,7 +47,7 @@ describe("PlainJiraArtifactBackend", () => {
       testCase: { localId, targetUserStoryId: "QA-7", title: "Checkout succeeds", steps: [] },
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST" && String(init.body).includes('"body"'))).toBe(false);
   });
 
@@ -79,7 +72,7 @@ describe("PlainJiraArtifactBackend", () => {
 
 function plainBackend() { return new PlainJiraArtifactBackend(settings(), scope()); }
 function settings(overrides = {}) {
-  return { cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", accessToken: "secret", appBaseUrl: "https://app.example", testCaseIssueTypeId: "test-case-type", localIdFieldId: "customfield_10100", ...overrides };
+  return { cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", accessToken: "secret", testCaseIssueTypeId: "test-case-type", localIdFieldId: "customfield_10100", ...overrides };
 }
 function scope() { return { jiraProjectId: "10000", jiraProjectKey: "QA", jiraProjectName: "Quality" }; }
 function json(value: unknown) { return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } }); }
