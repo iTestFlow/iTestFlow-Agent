@@ -174,9 +174,9 @@ export async function listActiveJiraSites(): Promise<JiraSiteOption[]> {
 }
 
 /**
- * Pre-OAuth site lookup for the /api/auth/jira/start `site` validation. Exact
- * match on the canonical URL: every writer stores the normalized form
- * (bootstrap seeding, OAuth adoption, and the site-URL uniqueness migration).
+ * Configured-site lookup for the Jira token login route. Exact match on the
+ * canonical URL: every writer stores the normalized form (bootstrap seeding,
+ * login adoption, and the site-URL uniqueness migration).
  */
 export async function findActiveJiraSiteByUrl(siteUrl: string): Promise<JiraSiteSelection | null> {
   const row = await sqlGet<JiraSiteSelectionRow>(

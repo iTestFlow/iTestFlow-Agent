@@ -86,7 +86,9 @@ export async function failJiraSyncOperation(input: {
     const retry = RETRYABLE_CODES.has(input.errorCode) && operation.attempts < 5;
     const now = nowIso();
     const backoffSeconds = Math.min(300, 2 ** Math.max(0, operation.attempts - 1));
-    const delaySeconds = Math.max(backoffSeconds, input.retryAfterSeconds ?? 0);
+    // The header is upstream-controlled: honor it, but never let one response
+    // park an operation beyond an hour.
+    const delaySeconds = Math.max(backoffSeconds, Math.min(input.retryAfterSeconds ?? 0, 3600));
     const runAfter = new Date(Date.parse(now) + delaySeconds * 1000).toISOString();
     await sqlRun(
       `UPDATE jira_sync_operations SET status = @status, error_code = @errorCode,

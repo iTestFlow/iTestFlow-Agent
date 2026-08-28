@@ -80,6 +80,12 @@ describe("getEnabledLoginProviders", () => {
     await expect(isLoginProviderEnabled("azure-devops")).resolves.toBe(false);
   });
 
+  it("fails closed as disabled when the provider list cannot be resolved at request time", async () => {
+    vi.stubEnv("BOOTSTRAP_ENABLED_PROVIDERS", "jira-cloud"); // no configured site anywhere → list resolution throws
+    await expect(isLoginProviderEnabled("jira-cloud")).resolves.toBe(false);
+    await expect(isLoginProviderEnabled("azure-devops")).resolves.toBe(false);
+  });
+
   it("validates the configuration shape without touching the database", () => {
     vi.stubEnv("BOOTSTRAP_ENABLED_PROVIDERS", "azure-devops,github");
     expect(() => validateEnabledProviderShape()).toThrow(/github/);

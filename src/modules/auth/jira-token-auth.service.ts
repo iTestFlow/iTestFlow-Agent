@@ -84,21 +84,25 @@ export async function authenticateJiraApiToken(input: {
   if (!email || !input.apiToken.trim()) throw new InvalidJiraTokenError();
   const auth = { email, apiToken: input.apiToken };
 
+  // Neither probe outcome short of success may terminate before the other ran:
+  // the gateway's rejection wording is Atlassian-controlled (a classic token's
+  // gateway 401 could mention scopes), so diagnosis happens only after both.
   const gateway = await probeMyself(
     `${jiraApiBase({ tokenKind: "scoped", cloudId: input.resource.cloudId, siteUrl: input.resource.siteUrl })}/myself`,
     auth,
   );
   if (gateway.outcome === "ok") return { identity: verifiedIdentity(gateway.user, email), tokenKind: "scoped" };
-  if (gateway.outcome === "scope") throw new JiraTokenScopeError();
-  if (gateway.outcome === "unavailable") throw new JiraTokenAuthError("Atlassian is unavailable. Try again later.");
 
   const site = await probeMyself(
     `${jiraApiBase({ tokenKind: "classic", cloudId: input.resource.cloudId, siteUrl: input.resource.siteUrl })}/myself`,
     auth,
   );
   if (site.outcome === "ok") return { identity: verifiedIdentity(site.user, email), tokenKind: "classic" };
-  if (site.outcome === "scope") throw new JiraTokenScopeError();
-  if (site.outcome === "unavailable") throw new JiraTokenAuthError("Atlassian is unavailable. Try again later.");
+
+  if (gateway.outcome === "scope" || site.outcome === "scope") throw new JiraTokenScopeError();
+  if (gateway.outcome === "unavailable" || site.outcome === "unavailable") {
+    throw new JiraTokenAuthError("Atlassian is unavailable. Try again later.");
+  }
   throw new InvalidJiraTokenError();
 }
 

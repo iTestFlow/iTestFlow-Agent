@@ -12,6 +12,14 @@ export type JiraLoginProvisioningResult = {
   role: "owner" | "admin" | "member";
 };
 
+/** An authenticated site with no configured workspace: fail closed, never lazily create. */
+export class JiraSiteNotConfiguredError extends Error {
+  constructor() {
+    super("This Jira site is not configured for iTestFlow.");
+    this.name = "JiraSiteNotConfiguredError";
+  }
+}
+
 type JiraWorkspaceCandidate = {
   id: string;
   provider_site_id: string | null;
@@ -108,7 +116,7 @@ async function resolveJiraWorkspace(
 ): Promise<string> {
   const candidates = await lockJiraWorkspaceCandidates(input.siteId, input.siteUrl, client);
   const existing = await resolveLockedJiraWorkspace(candidates, input, client);
-  if (!existing) throw new Error("This Jira site is not configured for iTestFlow.");
+  if (!existing) throw new JiraSiteNotConfiguredError();
   return existing;
 }
 

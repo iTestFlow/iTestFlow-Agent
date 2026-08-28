@@ -67,12 +67,22 @@ describe("authenticateJiraApiToken", () => {
       .rejects.toThrow(InvalidJiraTokenError);
   });
 
-  it("distinguishes a mis-scoped token from wrong credentials", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(
-      new Response(JSON.stringify({ message: "The request is missing required scopes: read:jira-user" }), { status: 401 }),
-    ));
+  it("distinguishes a mis-scoped token from wrong credentials after both probes fail", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: "The request is missing required scopes: read:jira-user" }), { status: 401 }))
+      .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 })));
     await expect(authenticateJiraApiToken({ resource, emailAddress: "quinn@example.test", apiToken: "tok" }))
       .rejects.toThrow(JiraTokenScopeError);
+  });
+
+  it("still detects a classic token when the gateway rejection happens to mention scopes", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: "missing required scope" }), { status: 401 }))
+      .mockResolvedValueOnce(json({ accountId: "acc-1", displayName: "Quinn", emailAddress: null }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(authenticateJiraApiToken({ resource, emailAddress: "quinn@example.test", apiToken: "tok" }))
+      .resolves.toMatchObject({ tokenKind: "classic" });
+    expect(String(fetchMock.mock.calls[1][0])).toBe(SITE);
   });
 
   it("fails closed when the profile email contradicts the typed email", async () => {

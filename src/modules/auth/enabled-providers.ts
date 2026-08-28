@@ -84,5 +84,12 @@ export async function getEnabledLoginProviders(): Promise<LoginProviderId[]> {
 }
 
 export async function isLoginProviderEnabled(id: LoginProviderId): Promise<boolean> {
-  return (await getEnabledLoginProviders()).includes(id);
+  try {
+    return (await getEnabledLoginProviders()).includes(id);
+  } catch {
+    // Startup already failed fast on configuration errors; a request-time
+    // failure here (database outage, enablement drift after boot) fails closed
+    // as "disabled" instead of turning a public pre-auth route into a 500.
+    return false;
+  }
 }

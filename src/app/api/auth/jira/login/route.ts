@@ -4,7 +4,7 @@ import { z } from "zod";
 import { isLoginProviderEnabled } from "@/modules/auth/enabled-providers";
 import { normalizeJiraSite } from "@/modules/auth/bootstrap.service";
 import { storeJiraConnection } from "@/modules/auth/jira-connection.service";
-import { provisionJiraLogin } from "@/modules/auth/jira-provisioning.service";
+import { provisionJiraLogin, JiraSiteNotConfiguredError } from "@/modules/auth/jira-provisioning.service";
 import {
   authenticateJiraApiToken,
   InvalidJiraTokenError,
@@ -113,7 +113,7 @@ export async function POST(request: Request) {
     if (error instanceof JiraTokenAuthError) {
       return routeErrorResponse(error, { domain: "auth", status: 503, fallback: error.message });
     }
-    if (error instanceof Error && error.message.includes("not configured")) {
+    if (error instanceof JiraSiteNotConfiguredError) {
       return NextResponse.json({ error: UNCONFIGURED_SITE_ERROR }, { status: 403 });
     }
     return NextResponse.json({ error: "Jira sign-in could not be completed. Try again later." }, { status: 500 });

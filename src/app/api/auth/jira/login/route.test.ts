@@ -19,7 +19,10 @@ vi.mock("@/modules/auth/jira-token-auth.service", async (importOriginal) => ({
   resolveJiraSiteResource: mocks.resolveResource,
   authenticateJiraApiToken: mocks.authenticate,
 }));
-vi.mock("@/modules/auth/jira-provisioning.service", () => ({ provisionJiraLogin: mocks.provision }));
+vi.mock("@/modules/auth/jira-provisioning.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/auth/jira-provisioning.service")>(),
+  provisionJiraLogin: mocks.provision,
+}));
 vi.mock("@/modules/auth/jira-connection.service", () => ({ storeJiraConnection: mocks.storeConnection }));
 vi.mock("@/modules/auth/session.service", () => ({ createSession: mocks.createSession }));
 vi.mock("@/modules/audit/audit.service", () => ({ writeAuditLog: mocks.writeAuditLog }));
@@ -170,7 +173,8 @@ describe("POST /api/auth/jira/login", () => {
   });
 
   it("maps a provisioning fail-closed rejection to 403 without a session", async () => {
-    mocks.provision.mockRejectedValue(new Error("This Jira site is not configured for iTestFlow."));
+    const { JiraSiteNotConfiguredError } = await import("@/modules/auth/jira-provisioning.service");
+    mocks.provision.mockRejectedValue(new JiraSiteNotConfiguredError());
     const response = await POST(request(validBody));
     expect(response.status).toBe(403);
     expect(mocks.createSession).not.toHaveBeenCalled();

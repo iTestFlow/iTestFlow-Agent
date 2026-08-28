@@ -20,6 +20,12 @@ export async function GET(request: Request) {
     );
   }
 
-  const providers = (await getEnabledLoginProviders()).map((id) => ({ id, label: LOGIN_PROVIDER_LABELS[id] }));
-  return NextResponse.json({ providers }, { headers: { "Cache-Control": "no-store" } });
+  try {
+    const providers = (await getEnabledLoginProviders()).map((id) => ({ id, label: LOGIN_PROVIDER_LABELS[id] }));
+    return NextResponse.json({ providers }, { headers: { "Cache-Control": "no-store" } });
+  } catch {
+    // Fail closed without turning the public picker into a 500 (database
+    // outage or enablement drift after a clean boot).
+    return NextResponse.json({ error: "Unable to load sign-in options. Try again later." }, { status: 503 });
+  }
 }
