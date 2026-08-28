@@ -62,6 +62,34 @@ describe("Jira project mapping", () => {
     expect(mocks.sqlGet).not.toHaveBeenCalled();
   });
 
+  it("rejects blank identifiers and unknown directions before touching the database", async () => {
+    const store = (jiraProjectMapping as unknown as { storeJiraProjectSyncConfig(input: unknown): Promise<void> }).storeJiraProjectSyncConfig;
+    const valid = {
+      fieldMappings: [{ localField: "title", jiraField: "summary" }],
+      statusMappings: [{ localStatus: "approved", jiraStatus: "Done" }],
+    };
+    await expect(store({ workspaceId: "ws-1", projectId: "project-1", actorUserId: "owner-1", direction: "sideways", ...valid }))
+      .rejects.toThrow("synchronization configuration is invalid");
+    await expect(store({ workspaceId: "   ", projectId: "project-1", actorUserId: "owner-1", direction: "two_way", ...valid }))
+      .rejects.toThrow("synchronization configuration is invalid");
+    expect(mocks.sqlGet).not.toHaveBeenCalled();
+  });
+
+  it("rejects blank, empty, and duplicate mapping values", async () => {
+    const store = (jiraProjectMapping as unknown as { storeJiraProjectSyncConfig(input: unknown): Promise<void> }).storeJiraProjectSyncConfig;
+    const base = { workspaceId: "ws-1", projectId: "project-1", actorUserId: "owner-1", direction: "two_way" };
+    const statusMappings = [{ localStatus: "approved", jiraStatus: "Done" }];
+    await expect(store({ ...base, fieldMappings: [{ localField: "title", jiraField: "   " }], statusMappings }))
+      .rejects.toThrow("field mapping is invalid");
+    await expect(store({ ...base, fieldMappings: [{ localField: "title", jiraField: "summary" }], statusMappings: [] }))
+      .rejects.toThrow("status mapping is invalid");
+    await expect(store({
+      ...base, fieldMappings: [{ localField: "title", jiraField: "summary" }],
+      statusMappings: [{ localStatus: "approved", jiraStatus: "Done" }, { localStatus: "Approved", jiraStatus: "Closed" }],
+    })).rejects.toThrow("duplicate");
+    expect(mocks.sqlGet).not.toHaveBeenCalled();
+  });
+
   it("returns a member-scoped, redacted Jira integration overview", async () => {
     expect(typeof (jiraProjectMapping as Record<string, unknown>).getJiraIntegrationOverview).toBe("function");
     mocks.sqlGet

@@ -124,6 +124,25 @@ describe("POST /api/auth/jira/login", () => {
     expect(mocks.findSite).not.toHaveBeenCalled();
   });
 
+  it("maps a malformed JSON body through the same schema validation", async () => {
+    const response = await POST(new Request("http://localhost/api/auth/jira/login", {
+      method: "POST", headers: { "Content-Type": "application/json", host: "localhost" }, body: "{",
+    }));
+    expect(response.status).toBe(400);
+    expect(mocks.findSite).not.toHaveBeenCalled();
+  });
+
+  it("maps an unexpected storage failure to a generic 500 without a session or leaked internals", async () => {
+    mocks.storeConnection.mockRejectedValue(new Error("relation jira_connections is on fire"));
+    const response = await POST(request(validBody));
+    expect(response.status).toBe(500);
+    const body = JSON.stringify(await response.json());
+    expect(body).not.toContain("relation");
+    expect(body).not.toContain("token-secret");
+    expect(mocks.createSession).not.toHaveBeenCalled();
+    expect(mocks.writeAuditLog).not.toHaveBeenCalled();
+  });
+
   it("rejects a non-Atlassian site before any lookup or outbound call", async () => {
     const response = await POST(request({ ...validBody, siteUrl: "https://evil.example.com" }));
     expect(response.status).toBe(400);
