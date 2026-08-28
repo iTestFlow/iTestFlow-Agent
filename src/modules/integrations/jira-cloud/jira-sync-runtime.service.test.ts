@@ -12,7 +12,8 @@ vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   createId: (prefix: string) => `${prefix}_fixed`, nowIso: () => "2026-08-13T10:00:00.000Z",
   sqlGet: mocks.sqlGet, sqlAll: mocks.sqlAll, sqlRun: mocks.sqlRun, withTransaction: mocks.withTransaction,
 }));
-vi.mock("@/modules/auth/jira-connection.service", () => ({
+vi.mock("@/modules/auth/jira-connection.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/auth/jira-connection.service")>(),
   resolveJiraSyncPrincipalCredentials: mocks.resolvePrincipal,
   markJiraConnectionInvalid: vi.fn(),
 }));
@@ -317,11 +318,35 @@ describe("runJiraProjectReconciliation", () => {
 
     await runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" });
 
-    expect(mocks.fail).toHaveBeenCalledWith({ operationId: "op-404", errorCode: "integration_not_found" });
+    expect(mocks.fail).toHaveBeenCalledWith({ operationId: "op-404", errorCode: "integration_not_found", retryAfterSeconds: undefined });
     expect(mocks.sqlRun).toHaveBeenCalledWith(
       expect.stringContaining("status = 'paused'"),
       expect.objectContaining({ mappingId: "mapping-1" }),
       expect.anything(),
     );
+  });
+
+  it("stops a long drain promptly when the sync principal is no longer active", async () => {
+    mocks.sqlAll.mockResolvedValueOnce([]); // deletion diff: no mappings
+    let claims = 0;
+    mocks.claim.mockImplementation(async () => ({
+      id: `op-${claims}`, mappingId: "mapping-1", field: "title", operation: "pull" as const, target: `T${claims++}`,
+    }));
+    mocks.sqlGet.mockReset().mockImplementation(async (sql: unknown) => {
+      const text = String(sql);
+      if (text.includes("FROM projects")) return projectConfig();
+      if (text.includes("jira_issue_key, local_entity_id FROM jira_sync_mappings")) {
+        return { jira_issue_key: "QA-7", local_entity_id: "local-1" };
+      }
+      if (text.includes("status FROM jira_connections")) return { status: "invalid" };
+      if (text.includes("INSERT INTO jira_sync_mappings")) return { id: "mapping-1", status: "paused" };
+      return { id: "local-1", title: "t", description: null, acceptance_criteria: null, state: null, priority: null, tags: null };
+    });
+
+    await expect(runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" }))
+      .rejects.toMatchObject({ code: "jira_sync_principal_invalid" });
+
+    // The re-check fired at the batch boundary instead of burning the full 1000-operation budget.
+    expect(claims).toBeLessThanOrEqual(101);
   });
 });

@@ -139,6 +139,22 @@ export async function getJiraIntegrationOverview(input: { workspaceId: string; a
   );
   if (!anchor) throw new Error("Jira Cloud is not available for this workspace.");
 
+  // Workspace-level sync-principal health, independent of the acting user, so
+  // settings can render an actionable owner/admin callout when polling is
+  // blocked. An invalid principal keeps its flag (replace-token restores it),
+  // so prefer the active row when both shapes exist.
+  const principal = await sqlGet<{ user_id: string; status: string }>(
+    `SELECT jc.user_id, jc.status
+     FROM jira_connections jc
+     JOIN workspace_members m ON m.workspace_id = jc.workspace_id AND m.user_id = jc.user_id
+       AND m.status = 'active' AND m.role IN ('owner', 'admin')
+     WHERE jc.workspace_id = @workspaceId AND jc.is_sync_principal = true
+       AND jc.status IN ('active', 'invalid')
+     ORDER BY CASE jc.status WHEN 'active' THEN 0 ELSE 1 END
+     LIMIT 1`,
+    { workspaceId },
+  );
+
   const projects = await sqlAll<OverviewProjectRow>(
     `SELECT p.id, p.provider_project_id, p.provider_project_key, p.provider_project_name,
             b.backend_type, b.status AS backend_status, b.region,
@@ -177,6 +193,9 @@ export async function getJiraIntegrationOverview(input: { workspaceId: string; a
     role: anchor.role,
     workspace: { id: anchor.workspace_id, name: anchor.workspace_name, siteName: anchor.provider_site_name, siteUrl: anchor.provider_site_url },
     connection: { status: anchor.connection_status },
+    syncPrincipal: principal
+      ? { exists: true as const, status: principal.status, userId: principal.user_id, isActor: principal.user_id === actorUserId }
+      : { exists: false as const, status: null, userId: null, isActor: false },
     projects: projects.map((project) => ({
       id: project.id, providerProjectId: project.provider_project_id, key: project.provider_project_key, name: project.provider_project_name,
       backend: project.backend_type ? { type: project.backend_type, status: project.backend_status, region: project.region } : null,

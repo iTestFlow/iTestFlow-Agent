@@ -2,7 +2,7 @@ import "server-only";
 
 import { writeAuditLogTransactional } from "@/modules/audit/audit.service";
 import { enqueueJob } from "@/modules/jobs/job-queue.service";
-import { markJiraConnectionInvalid, resolveJiraSyncPrincipalCredentials } from "@/modules/auth/jira-connection.service";
+import { JiraSyncPrincipalError, markJiraConnectionInvalid, resolveJiraSyncPrincipalCredentials } from "@/modules/auth/jira-connection.service";
 import { indexAzureWorkItemsAsProjectContext } from "@/modules/rag/project-context-store.service";
 import { createId, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import { IntegrationError, type IntegrationErrorCode } from "../core/integration-error";
@@ -22,6 +22,8 @@ type SyncDirection = "jira_to_itestflow" | "itestflow_to_jira" | "two_way";
 export const JIRA_SYNC_OPERATIONS = "jira_sync_operations";
 /** Page size of a full reconciliation fetch; a full page means the fetch may be truncated. */
 const FULL_FETCH_LIMIT = 1000;
+/** How many drained operations run between sync-principal status re-checks. */
+const PRINCIPAL_RECHECK_INTERVAL = 100;
 type ProjectConfig = {
   project_id: string; provider_project_id: string; provider_project_key: string; provider_project_name: string;
   provider_site_id: string; provider_site_url: string; direction: SyncDirection;
@@ -57,7 +59,7 @@ export async function runJiraProjectReconciliation(input: {
   if (input.operationId) {
     const operationCount = await drainOperations({
       workspaceId: input.workspaceId, projectId: input.projectId, operationId: input.operationId,
-      actor: input.actor, adapter, fieldMappings, statusMappings,
+      actor: input.actor, adapter, fieldMappings, statusMappings, principalUserId: principal.userId,
     });
     return { issueCount: 0, operationCount };
   }
@@ -146,7 +148,7 @@ export async function runJiraProjectReconciliation(input: {
   }
 
   const operationCount = await drainOperations({
-    workspaceId: input.workspaceId, projectId: input.projectId, operationId: input.operationId, actor: input.actor, adapter, fieldMappings, statusMappings,
+    workspaceId: input.workspaceId, projectId: input.projectId, operationId: input.operationId, actor: input.actor, adapter, fieldMappings, statusMappings, principalUserId: principal.userId,
   });
   if (input.indexContext) {
     const contextAdapter = {
@@ -266,10 +268,20 @@ async function findOrCreateLocalIssue(project: ProjectConfig, remote: Requiremen
 
 async function drainOperations(input: {
   workspaceId: string; projectId: string; operationId?: string; actor: string; adapter: JiraCloudAdapter;
-  fieldMappings: FieldMapping[]; statusMappings: StatusMapping[];
+  fieldMappings: FieldMapping[]; statusMappings: StatusMapping[]; principalUserId: string;
 }): Promise<number> {
   let completed = 0;
   for (let index = 0; index < 1000; index += 1) {
+    // A drain holds one credential for up to 1000 operations: re-check the
+    // principal between batches so a mid-run revocation or 401 invalidation
+    // stops promptly instead of burning failed requests.
+    if (index > 0 && index % PRINCIPAL_RECHECK_INTERVAL === 0) {
+      const principal = await sqlGet<{ status: string }>(
+        `SELECT status FROM jira_connections WHERE workspace_id = @workspaceId AND user_id = @userId`,
+        { workspaceId: input.workspaceId, userId: input.principalUserId },
+      );
+      if (principal?.status !== "active") throw new JiraSyncPrincipalError("jira_sync_principal_invalid");
+    }
     const operation = await claimNextJiraSyncOperation(input.workspaceId, input.projectId, input.operationId);
     if (!operation) return completed;
     try {

@@ -215,7 +215,11 @@ async function executeJob(handler: JobHandler, entry: ActiveJob): Promise<void> 
       return;
     }
     const message = error instanceof Error ? error.message : "Job handler failed.";
-    const failed = await failJob(job.id, message, WORKER_ID);
+    // Errors carrying a stable string `code` (JiraSyncPrincipalError,
+    // IntegrationError) surface it through jobs.error_code for actionable UI.
+    const rawCode = (error as { code?: unknown } | null)?.code;
+    const errorCode = typeof rawCode === "string" && rawCode.length <= 100 ? rawCode : null;
+    const failed = await failJob(job.id, message, WORKER_ID, errorCode);
     if (!failed) {
       console.warn(`[worker] skipped failure update for ${job.jobType} ${job.id}; lock is no longer owned by ${WORKER_ID}`);
     }

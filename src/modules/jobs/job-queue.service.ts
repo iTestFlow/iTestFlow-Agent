@@ -22,6 +22,7 @@ export type Job = {
   lockedAt: string | null;
   runAfter: string;
   errorMessage: string | null;
+  errorCode?: string | null;
   cancelRequestedAt?: string | null;
   createdByUserId: string | null;
   createdAt: string;
@@ -45,6 +46,7 @@ type JobRow = {
   locked_at: string | null;
   run_after: string;
   error_message: string | null;
+  error_code: string | null;
   cancel_requested_at: string | null;
   created_by_user_id: string | null;
   created_at: string;
@@ -78,6 +80,7 @@ function mapJob(row: JobRow): Job {
     lockedAt: row.locked_at,
     runAfter: row.run_after,
     errorMessage: row.error_message,
+    errorCode: row.error_code,
     cancelRequestedAt: row.cancel_requested_at,
     createdByUserId: row.created_by_user_id,
     createdAt: row.created_at,
@@ -315,8 +318,10 @@ export async function completeJob(
 /**
  * Fail a job. Retries with exponential backoff until max_attempts is reached,
  * then marks it permanently failed. (attempts was already incremented at claim.)
+ * `errorCode` is an optional stable machine-readable code (e.g.
+ * jira_sync_principal_invalid) surfaced by the workspace jobs API.
  */
-export async function failJob(id: string, errorMessage: string, workerId: string): Promise<boolean> {
+export async function failJob(id: string, errorMessage: string, workerId: string, errorCode?: string | null): Promise<boolean> {
   const row = await sqlGet<{ attempts: number; max_attempts: number }>(
     `SELECT attempts, max_attempts
      FROM jobs
@@ -326,14 +331,15 @@ export async function failJob(id: string, errorMessage: string, workerId: string
   if (!row) return false;
   const now = nowIso();
   const message = errorMessage.slice(0, 2000);
+  const code = errorCode?.slice(0, 100) ?? null;
 
   if (row.attempts >= row.max_attempts) {
     const changed = await sqlRun(
       `UPDATE jobs
-       SET status = 'failed', finished_at = @now, error_message = @message,
+       SET status = 'failed', finished_at = @now, error_message = @message, error_code = @code,
            locked_by = NULL, locked_at = NULL, updated_at = @now
        WHERE id = @id AND locked_by = @workerId AND status = 'running'`,
-      { id, workerId, now, message },
+      { id, workerId, now, message, code },
     );
     return changed > 0;
   }
@@ -341,10 +347,10 @@ export async function failJob(id: string, errorMessage: string, workerId: string
   const backoffMs = Math.min(2 ** row.attempts * 1000, MAX_BACKOFF_MS);
   const runAfter = new Date(Date.now() + backoffMs).toISOString();
   const changed = await sqlRun(
-    `UPDATE jobs SET status = 'pending', run_after = @runAfter, error_message = @message,
+    `UPDATE jobs SET status = 'pending', run_after = @runAfter, error_message = @message, error_code = @code,
        locked_by = NULL, locked_at = NULL, updated_at = @now
      WHERE id = @id AND locked_by = @workerId AND status = 'running'`,
-    { id, workerId, runAfter, message, now },
+    { id, workerId, runAfter, message, code, now },
   );
   return changed > 0;
 }

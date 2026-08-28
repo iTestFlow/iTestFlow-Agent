@@ -64,10 +64,12 @@ describe("Jira project mapping", () => {
 
   it("returns a member-scoped, redacted Jira integration overview", async () => {
     expect(typeof (jiraProjectMapping as Record<string, unknown>).getJiraIntegrationOverview).toBe("function");
-    mocks.sqlGet.mockResolvedValue({
-      workspace_id: "ws-1", workspace_name: "Quality Cloud", provider_site_name: "Quality Jira",
-      provider_site_url: "https://quality.atlassian.net", role: "member", connection_status: "active",
-    });
+    mocks.sqlGet
+      .mockResolvedValueOnce({
+        workspace_id: "ws-1", workspace_name: "Quality Cloud", provider_site_name: "Quality Jira",
+        provider_site_url: "https://quality.atlassian.net", role: "member", connection_status: "active",
+      })
+      .mockResolvedValueOnce({ user_id: "sync-user", status: "invalid" });
     mocks.sqlAll
       .mockResolvedValueOnce([{ id: "project-1", provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality", backend_type: "xray_cloud", backend_status: "active", config_json: '{"clientId":"client-public","localIdFieldId":"customfield_10001"}', direction: "two_way", field_mapping_json: '[{"localField":"title","jiraField":"summary"}]', status_mapping_json: '[{"localStatus":"approved","jiraStatus":"Done"}]' }])
       .mockResolvedValueOnce([{ id: "mapping-1", project_id: "project-1", jira_issue_key: "QA-7", local_entity_type: "requirement", local_entity_id: "req-1", direction: "two_way", status: "conflict", last_synced_at: null, updated_at: "2026-08-13T09:00:00.000Z" }])
@@ -77,7 +79,16 @@ describe("Jira project mapping", () => {
 
     const overview = await getOverview({ workspaceId: "ws-1", actorUserId: "user-1" });
 
-    expect(overview).toMatchObject({ providerId: "jira-cloud", role: "member", connection: { status: "active" } });
+    expect(overview).toMatchObject({
+      providerId: "jira-cloud", role: "member", connection: { status: "active" },
+      // Workspace-level principal health, independent of the acting member —
+      // the settings surface renders its actionable callout from this block.
+      syncPrincipal: { exists: true, status: "invalid", userId: "sync-user", isActor: false },
+    });
+    const principalSql = String(mocks.sqlGet.mock.calls[1][0]);
+    expect(principalSql).toContain("is_sync_principal = true");
+    expect(principalSql).toContain("m.role IN ('owner', 'admin')");
+    expect(principalSql).toContain("CASE jc.status WHEN 'active' THEN 0");
     expect(JSON.stringify(overview)).not.toContain("encrypted_secret");
     expect(JSON.stringify(overview)).not.toContain("client-public");
     expect(mocks.sqlGet.mock.calls[0][0]).toContain("JOIN workspace_members");
