@@ -1,4 +1,4 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
@@ -194,7 +194,7 @@ describe("LoginPage", () => {
     expect(screen.queryByRole("button", { name: "Sign In" })).not.toBeInTheDocument()
   })
 
-  it("surfaces a callback error code inline on the Jira pane and preselects the named site", async () => {
+  it("surfaces a callback error code inline and preselects the site once it checks out as configured", async () => {
     window.history.replaceState({}, "", `/login?error=jira_site_access&site=${encodeURIComponent("https://platform.atlassian.net")}`)
     try {
       mockApi({
@@ -204,11 +204,32 @@ describe("LoginPage", () => {
 
       renderLoginPage()
 
-      // The callback's error surface: pane auto-switched, persistent alert.
-      expect(await screen.findByText(/does not have access to/)).toBeInTheDocument()
-      expect(screen.getByText(/platform\.atlassian\.net/)).toBeInTheDocument()
+      // The callback's error surface: pane auto-switched, persistent alert,
+      // static message (the raw site param is never echoed into the alert).
+      expect(await screen.findByText(/does not have access to the selected Jira site/)).toBeInTheDocument()
+      // Multi-site preselection: the configured site from the error comes back
+      // selected, so the Atlassian retry link is live and carries it.
+      const retryLink = await screen.findByRole("link", { name: /Continue with Atlassian/ })
+      expect(String(retryLink.getAttribute("href"))).toContain(encodeURIComponent("https://platform.atlassian.net"))
+      expect(screen.getAllByText("Platform").length).toBeGreaterThan(0)
     } finally {
       window.history.replaceState({}, "", "/login")
+    }
+  })
+
+  it("ignores unknown and prototype-key error codes from crafted links", async () => {
+    for (const code of ["bogus", "__proto__", "constructor", "toString"]) {
+      window.history.replaceState({}, "", `/login?error=${code}&site=evil`)
+      try {
+        mockApi()
+        renderLoginPage()
+        // The page mounts normally on the default pane with no alert.
+        expect(await screen.findByRole("group", { name: "Sign-in provider" })).toBeInTheDocument()
+        expect(screen.queryByText("Jira sign-in failed.")).not.toBeInTheDocument()
+      } finally {
+        window.history.replaceState({}, "", "/login")
+        cleanup()
+      }
     }
   })
 

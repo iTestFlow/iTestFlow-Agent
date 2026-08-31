@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Image from "next/image"
 import { useRouter } from "next/navigation"
 import {
@@ -59,12 +59,14 @@ type ProviderListResponse = {
 
 // The OAuth callback lands failures here as typed codes; the messages must be
 // actionable and persistent (role=alert), matching the token-login taxonomy.
-const jiraOAuthErrorMessages: Record<string, (site: string | null) => string> = {
-  jira_oauth_state: () => "This Atlassian sign-in link expired or was already used. Start the sign-in again.",
-  jira_site_access: (site) =>
-    `Your Atlassian account does not have access to ${site ?? "the selected Jira site"}. Sign in with an Atlassian account that can access it.`,
-  jira_oauth_unavailable: () => "Atlassian sign-in is temporarily unavailable. Try again in a moment.",
-  jira_oauth_failed: () => "Jira sign-in could not be completed. Try again.",
+// Static strings only — the site query param is never echoed (a crafted link
+// would otherwise paint attacker text inside a trusted alert); the retry
+// context comes from preselecting the site when it matches a configured one.
+const jiraOAuthErrorMessages: Record<string, string> = {
+  jira_oauth_state: "This Atlassian sign-in link expired or was already used. Start the sign-in again.",
+  jira_site_access: "Your Atlassian account does not have access to the selected Jira site. Sign in with an Atlassian account that can access it.",
+  jira_oauth_unavailable: "Atlassian sign-in is temporarily unavailable. Try again in a moment.",
+  jira_oauth_failed: "Jira sign-in could not be completed. Try again.",
 }
 
 type OrganizationListResponse = {
@@ -215,6 +217,9 @@ export default function LoginPage() {
   const [providerLoadError, setProviderLoadError] = useState("")
   const [activeProvider, setActiveProvider] = useState<LoginProviderId | null>(null)
   const [nextPath, setNextPath] = useState<string | null>(null)
+  // Site the OAuth callback asked to preselect; honored by loadJiraSites only
+  // when it matches a configured option.
+  const requestedSiteRef = useRef<string | null>(null)
 
   const [organization, setOrganization] = useState("")
   const [personalAccessToken, setPersonalAccessToken] = useState("")
@@ -317,8 +322,17 @@ export default function LoginPage() {
       const list = data.sites
       setSites(list)
       // Mirror the Azure org behavior: a single configured site is selected
-      // automatically; the sign-in request carries its canonical URL.
-      setSelectedSite(list.length === 1 ? list[0].siteUrl : "")
+      // automatically. A site the OAuth callback asked to preselect is honored
+      // ONLY when it matches a configured option — an arbitrary ?site= from a
+      // crafted link must never become the selection.
+      const requested = requestedSiteRef.current
+      setSelectedSite(
+        list.length === 1
+          ? list[0].siteUrl
+          : requested && list.some((site) => site.siteUrl === requested)
+            ? requested
+            : "",
+      )
       setSiteLoadState("ready")
     } catch (error) {
       if (signal?.aborted) return
@@ -332,14 +346,15 @@ export default function LoginPage() {
     setNextPath(params.get("next"))
     // The OAuth callback returns to /login with a typed error code and the
     // site it was about, so the failure lands on the Jira pane, inline, with
-    // the site preselected for a retry.
+    // the site preselected for a retry (once it checks out as configured).
+    // Object.hasOwn keeps prototype keys (__proto__, constructor, …) from a
+    // crafted link out of the lookup.
     const oauthError = params.get("error")
-    const site = params.get("site")
-    if (oauthError && jiraOAuthErrorMessages[oauthError]) {
+    if (oauthError && Object.hasOwn(jiraOAuthErrorMessages, oauthError)) {
       setActiveProvider("jira-cloud")
-      setJiraError(jiraOAuthErrorMessages[oauthError](site))
+      setJiraError(jiraOAuthErrorMessages[oauthError])
     }
-    if (site) setSelectedSite(site)
+    requestedSiteRef.current = params.get("site")
   }, [])
 
   useEffect(() => {

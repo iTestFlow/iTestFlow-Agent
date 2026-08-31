@@ -141,7 +141,7 @@ export function JiraIntegrationSection() {
 
     <SectionCard
       title="Jira Cloud Connection"
-      description="Your Atlassian API token is encrypted per user. Shared project, mapping, and artifact settings are restricted to workspace owners and admins."
+      description="Your Jira credential is encrypted per user. Shared project, mapping, and artifact settings are restricted to workspace owners and admins."
       action={<StatusBadge tone={badge.tone} label={badge.label} />}
     >
       <div className="grid gap-3 sm:grid-cols-2">
@@ -157,7 +157,14 @@ export function JiraIntegrationSection() {
       <a className="inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={overview.workspace.siteUrl} target="_blank" rel="noreferrer">Open Jira site <ExternalLink className="size-3.5" aria-hidden="true" /></a>
       {reauthRequired ? (
         <Callout tone="error" role="alert" title="Your Atlassian authorization expired.">
-          Jira stopped accepting this connection. Reconnect with Atlassian to approve it again{tokenEnabled ? ", or connect with an API token below" : ""}.
+          Jira stopped accepting this connection.{" "}
+          {oauthEnabled && tokenEnabled
+            ? "Reconnect with Atlassian to approve it again, or connect with an API token below."
+            : oauthEnabled
+              ? "Reconnect with Atlassian to approve it again."
+              : tokenEnabled
+                ? "Connect with an API token below, or ask your administrator to enable Atlassian sign-in."
+                : "Ask your iTestFlow administrator to re-enable a Jira sign-in method for this deployment."}
         </Callout>
       ) : null}
       {oauthEnabled && !connected ? (

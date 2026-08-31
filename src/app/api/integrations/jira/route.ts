@@ -111,7 +111,7 @@ export async function DELETE() {
       action: "JIRA_CONNECTION_REVOKED",
       status: "Success",
       actor: context.userId,
-      message: "Revoked the stored Jira API token connection.",
+      message: "Revoked the stored Jira connection.",
     });
     return NextResponse.json({ ok: true });
   } catch (error) {
