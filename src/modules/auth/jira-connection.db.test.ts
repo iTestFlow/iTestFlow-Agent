@@ -1,4 +1,10 @@
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
+
+const oauthMocks = vi.hoisted(() => ({ refresh: vi.fn() }));
+vi.mock("./jira-oauth", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./jira-oauth")>(),
+  refreshAtlassianOAuthTokens: oauthMocks.refresh,
+}));
 
 import {
   getPool,
@@ -8,9 +14,13 @@ import {
   sqlGet,
   sqlRun,
 } from "@/modules/shared/infrastructure/database/db";
+import { decryptSecret } from "@/modules/security/encryption.service";
+import { JiraBearerAuthError } from "@/modules/integrations/jira-cloud/jira-http";
 import { cleanupFixtures, describeDb, seedMembership, seedUser, uniqueTestId } from "@/test/db";
+import { AtlassianOAuthError, AtlassianReauthorizationRequiredError } from "./jira-oauth";
 import {
   markJiraConnectionInvalid,
+  resolveJiraCredentials,
   resolveJiraSyncPrincipalCredentials,
   storeJiraConnection,
 } from "./jira-connection.service";
@@ -152,5 +162,164 @@ describeDb("Jira connection principal lifecycle (DB-backed)", () => {
        WHERE workspace_id = @workspaceId AND user_id = @userId AND status = 'active'`,
       { workspaceId: WORKSPACE_ID, userId: USER_A },
     )).rejects.toThrow();
+  });
+});
+
+const WS_DUAL = uniqueTestId("ws_jira_dual_kind");
+const USER_DUAL = uniqueTestId("user_jira_dual_kind");
+const CLOUD_DUAL = uniqueTestId("cloud-jira-dual-kind");
+
+describeDb("Jira dual-kind credential lifecycle (DB-backed)", () => {
+  const savedEncryptionKey = process.env.APP_ENCRYPTION_KEY;
+
+  beforeAll(async () => {
+    process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 23).toString("base64");
+    const now = nowIso();
+    await sqlRun(
+      `INSERT INTO workspaces (
+         id, name, azure_org_name, azure_org_url, provider_id,
+         provider_site_id, provider_site_name, provider_site_url, status, created_at, updated_at
+       ) VALUES (
+         @id, 'Jira dual kind', NULL, NULL, 'jira-cloud',
+         @cloudId, 'Jira dual kind', @siteUrl, 'active', @now, @now
+       )`,
+      { id: WS_DUAL, cloudId: CLOUD_DUAL, siteUrl: `https://${WS_DUAL.replaceAll("_", "-")}.atlassian.net`, now },
+    );
+    await seedUser({ id: USER_DUAL, email: `${USER_DUAL}@itestflow.test` });
+    await seedMembership({ workspaceId: WS_DUAL, userId: USER_DUAL, role: "owner" });
+  });
+
+  afterAll(async () => {
+    await cleanupFixtures({ workspaceIds: [WS_DUAL], userIds: [USER_DUAL] });
+    if (savedEncryptionKey === undefined) delete process.env.APP_ENCRYPTION_KEY;
+    else process.env.APP_ENCRYPTION_KEY = savedEncryptionKey;
+    await resetDatabaseForTests();
+  });
+
+  beforeEach(() => {
+    oauthMocks.refresh.mockReset();
+  });
+
+  function storeToken(token: string) {
+    return storeJiraConnection({
+      workspaceId: WS_DUAL, userId: USER_DUAL, cloudId: CLOUD_DUAL,
+      email: `${USER_DUAL}@itestflow.test`, apiToken: token, tokenKind: "scoped", isSyncPrincipal: true,
+    });
+  }
+
+  function storeOAuth(input: { access: string; refresh: string; expiresInSeconds?: number }) {
+    return storeJiraConnection({
+      credentialKind: "oauth", workspaceId: WS_DUAL, userId: USER_DUAL, cloudId: CLOUD_DUAL,
+      email: `${USER_DUAL}@itestflow.test`, accessToken: input.access, refreshToken: input.refresh,
+      expiresInSeconds: input.expiresInSeconds ?? 3600, isSyncPrincipal: true,
+    });
+  }
+
+  async function connectionRow() {
+    const row = await sqlGet<Record<string, unknown>>(
+      `SELECT credential_kind, status, is_sync_principal, token_kind,
+              encrypted_api_token, encrypted_access_token, encrypted_refresh_token,
+              refresh_token_iv, refresh_token_tag, key_version, access_expires_at
+       FROM jira_connections WHERE workspace_id = @ws AND user_id = @user`,
+      { ws: WS_DUAL, user: USER_DUAL },
+    );
+    if (!row) throw new Error("connection row missing");
+    return row;
+  }
+
+  it("latest login wins across kinds, NULLing the other kind's secrets", async () => {
+    await storeToken("token-1");
+    expect(await connectionRow()).toMatchObject({ credential_kind: "api_token", encrypted_access_token: null });
+
+    await storeOAuth({ access: "access-1", refresh: "refresh-1" });
+    const asOAuth = await connectionRow();
+    expect(asOAuth).toMatchObject({ credential_kind: "oauth", token_kind: null, encrypted_api_token: null, status: "active" });
+    expect(asOAuth.encrypted_access_token).toBeTruthy();
+
+    const credential = await resolveJiraCredentials({ workspaceId: WS_DUAL, userId: USER_DUAL });
+    expect(credential.kind).toBe("oauth");
+
+    await storeToken("token-2");
+    expect(await connectionRow()).toMatchObject({
+      credential_kind: "api_token", token_kind: "scoped",
+      encrypted_access_token: null, encrypted_refresh_token: null, access_expires_at: null,
+    });
+  });
+
+  it("collapses a concurrent expiring-token refresh to exactly one rotation", async () => {
+    await storeOAuth({ access: "stale-access", refresh: "stale-refresh", expiresInSeconds: 30 });
+    oauthMocks.refresh.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return { accessToken: "rotated-access", refreshToken: "rotated-refresh", expiresInSeconds: 3600, scope: "", tokenType: "Bearer" };
+    });
+
+    const first = await resolveJiraCredentials({ workspaceId: WS_DUAL, userId: USER_DUAL });
+    const second = await resolveJiraCredentials({ workspaceId: WS_DUAL, userId: USER_DUAL });
+    if (first.kind !== "oauth" || second.kind !== "oauth") throw new Error("expected oauth credentials");
+
+    const [tokenA, tokenB] = await Promise.all([first.getAccessToken(), second.getAccessToken()]);
+    expect(tokenA).toBe("rotated-access");
+    expect(tokenB).toBe("rotated-access");
+    expect(oauthMocks.refresh).toHaveBeenCalledTimes(1);
+
+    // The rotated refresh token is the one persisted — losing it would kill
+    // the grant at the next refresh.
+    const row = await connectionRow();
+    expect(decryptSecret({
+      ciphertext: String(row.encrypted_refresh_token),
+      iv: String(row.refresh_token_iv),
+      tag: String(row.refresh_token_tag),
+      keyVersion: Number(row.key_version),
+    })).toBe("rotated-refresh");
+  });
+
+  it("flips to reauthorization_required on a terminal refresh, keeps everything, and recovers via reconnect", async () => {
+    await storeOAuth({ access: "dying-access", refresh: "dying-refresh", expiresInSeconds: 30 });
+    oauthMocks.refresh.mockRejectedValue(new AtlassianReauthorizationRequiredError());
+
+    const credential = await resolveJiraCredentials({ workspaceId: WS_DUAL, userId: USER_DUAL });
+    if (credential.kind !== "oauth") throw new Error("expected an oauth credential");
+    const error = await credential.getAccessToken().catch((caught) => caught as JiraBearerAuthError);
+    expect(error).toBeInstanceOf(JiraBearerAuthError);
+    expect((error as JiraBearerAuthError).reason).toBe("reauthorization_required");
+
+    const flipped = await connectionRow();
+    expect(flipped).toMatchObject({ status: "reauthorization_required", is_sync_principal: true });
+    expect(flipped.encrypted_refresh_token).toBeTruthy();
+
+    await expect(resolveJiraSyncPrincipalCredentials(WS_DUAL)).rejects.toMatchObject({
+      code: "jira_sync_principal_reauthorization_required",
+    });
+
+    // A fresh consent through the same upsert restores polling in place.
+    await storeOAuth({ access: "renewed-access", refresh: "renewed-refresh" });
+    const restored = await resolveJiraSyncPrincipalCredentials(WS_DUAL);
+    expect(restored).toMatchObject({ userId: USER_DUAL, kind: "oauth" });
+    expect(await connectionRow()).toMatchObject({ status: "active", is_sync_principal: true });
+  });
+
+  it("leaves the row fully intact on a transient refresh failure", async () => {
+    await storeOAuth({ access: "held-access", refresh: "held-refresh", expiresInSeconds: 30 });
+    const before = await connectionRow();
+    oauthMocks.refresh.mockRejectedValue(new AtlassianOAuthError("Atlassian authorization is unavailable. Try again later."));
+
+    const credential = await resolveJiraCredentials({ workspaceId: WS_DUAL, userId: USER_DUAL });
+    if (credential.kind !== "oauth") throw new Error("expected an oauth credential");
+    const error = await credential.getAccessToken().catch((caught) => caught as JiraBearerAuthError);
+    expect((error as JiraBearerAuthError).reason).toBe("unavailable");
+
+    const after = await connectionRow();
+    expect(after).toMatchObject({
+      status: "active",
+      encrypted_access_token: before.encrypted_access_token,
+      encrypted_refresh_token: before.encrypted_refresh_token,
+      access_expires_at: before.access_expires_at,
+    });
+  });
+
+  it("marks invalid only api_token rows — an oauth row is untouched by the token hook", async () => {
+    await storeOAuth({ access: "guard-access", refresh: "guard-refresh" });
+    await markJiraConnectionInvalid(WS_DUAL, USER_DUAL);
+    expect(await connectionRow()).toMatchObject({ status: "active", credential_kind: "oauth" });
   });
 });

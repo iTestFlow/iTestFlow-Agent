@@ -8,9 +8,11 @@ vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   createId: () => "link-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet, sqlRun: mocks.sqlRun,
   withTransaction: (work: (client: object) => unknown) => work({ tx: true }),
 }));
-vi.mock("@/modules/auth/jira-connection.service", () => ({
+vi.mock("@/modules/auth/jira-connection.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/auth/jira-connection.service")>(),
   resolveJiraCredentials: mocks.resolveAccess,
   markJiraConnectionInvalid: vi.fn(),
+  markJiraConnectionReauthorizationRequired: vi.fn(),
 }));
 vi.mock("./plain-jira-artifact-backend", () => ({ PlainJiraArtifactBackend: class { createTestCase = mocks.plainCreate; } }));
 vi.mock("./xray-cloud-backend", () => ({ XrayCloudBackend: class { createTestCase = mocks.xrayCreate; } }));

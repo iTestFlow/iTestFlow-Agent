@@ -3,23 +3,31 @@ import "server-only";
 import { createHash } from "node:crypto";
 import type { FinalApprovedTestCase } from "../core/integration-types";
 import type { JiraCloudProjectScope, JiraCloudHooks } from "./jira-cloud-adapter";
-import { jiraApiBase, jiraFetch, type JiraTokenKind } from "./jira-http";
+import { jiraApiBase, jiraFetch, type JiraAuth, type JiraTokenKind } from "./jira-http";
 
+/** Credential arms mirror JiraCloudSettings: the historical api_token layout, or an async bearer getter. */
 export type PlainJiraArtifactSettings = {
-  cloudId: string; siteUrl: string; email: string; apiToken: string; tokenKind: JiraTokenKind;
+  cloudId: string; siteUrl: string;
   testCaseIssueTypeId: string; localIdFieldId: string;
-};
+} & (
+  | { credentialKind?: "api_token"; email: string; apiToken: string; tokenKind: JiraTokenKind }
+  | { credentialKind: "oauth"; getAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string> }
+);
 
 const RESERVED = new Set(["project", "issuetype", "summary", "description", "labels", "parent"]);
 
 export class PlainJiraArtifactBackend {
   private readonly baseUrl: string;
+  private readonly auth: JiraAuth;
   constructor(
     private readonly settings: PlainJiraArtifactSettings,
     private readonly scope: JiraCloudProjectScope,
     private readonly hooks?: JiraCloudHooks,
   ) {
     this.baseUrl = jiraApiBase(settings);
+    this.auth = settings.credentialKind === "oauth"
+      ? { kind: "bearer", getToken: settings.getAccessToken }
+      : { kind: "basic", email: settings.email, apiToken: settings.apiToken };
   }
 
   async createTestCase(input: { projectId: string; testCase: FinalApprovedTestCase }) {
@@ -91,7 +99,7 @@ export class PlainJiraArtifactBackend {
     const response = await jiraFetch(
       `${this.baseUrl}${path}`,
       init,
-      { kind: "basic", email: this.settings.email, apiToken: this.settings.apiToken },
+      this.auth,
       this.hooks,
     );
     try { return await response.json() as T; } catch { throw new Error("Plain Jira returned an invalid response."); }

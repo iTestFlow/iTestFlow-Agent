@@ -2,7 +2,7 @@ import "server-only";
 
 import { writeAuditLogTransactional } from "@/modules/audit/audit.service";
 import { enqueueJob } from "@/modules/jobs/job-queue.service";
-import { JiraSyncPrincipalError, markJiraConnectionInvalid, resolveJiraSyncPrincipalCredentials } from "@/modules/auth/jira-connection.service";
+import { JiraSyncPrincipalError, jiraCredentialSettings, jiraOnUnauthorized, resolveJiraSyncPrincipalCredentials } from "@/modules/auth/jira-connection.service";
 import { indexAzureWorkItemsAsProjectContext } from "@/modules/rag/project-context-store.service";
 import { createId, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import { IntegrationError, type IntegrationErrorCode } from "../core/integration-error";
@@ -43,7 +43,7 @@ export async function runJiraProjectReconciliation(input: {
   const principal = await resolveJiraSyncPrincipalCredentials(input.workspaceId);
   const adapter = new JiraCloudAdapter({
     cloudId: project.provider_site_id, siteUrl: project.provider_site_url,
-    email: principal.email, apiToken: principal.apiToken, tokenKind: principal.tokenKind,
+    ...jiraCredentialSettings(principal),
     fieldMapping: {
       acceptanceCriteriaFieldId: fieldMappings.find((item) => item.localField === "acceptanceCriteria")?.jiraField,
     },
@@ -51,11 +51,7 @@ export async function runJiraProjectReconciliation(input: {
     jiraProjectId: project.provider_project_id,
     jiraProjectKey: project.provider_project_key,
     jiraProjectName: project.provider_project_name,
-  }, {
-    onUnauthorized: () => {
-      void markJiraConnectionInvalid(input.workspaceId, principal.userId).catch(() => {});
-    },
-  });
+  }, jiraOnUnauthorized(principal, input.workspaceId, principal.userId));
   if (input.operationId) {
     const operationCount = await drainOperations({
       workspaceId: input.workspaceId, projectId: input.projectId, operationId: input.operationId,
@@ -281,7 +277,11 @@ async function drainOperations(input: {
         { workspaceId: input.workspaceId, userId: input.principalUserId },
       );
       if (principal?.status !== "active") {
-        throw new JiraSyncPrincipalError(principal ? "jira_sync_principal_invalid" : "jira_sync_principal_missing");
+        throw new JiraSyncPrincipalError(
+          !principal ? "jira_sync_principal_missing"
+            : principal.status === "reauthorization_required" ? "jira_sync_principal_reauthorization_required"
+            : "jira_sync_principal_invalid",
+        );
       }
     }
     const operation = await claimNextJiraSyncOperation(input.workspaceId, input.projectId, input.operationId);

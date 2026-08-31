@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const authMocks = vi.hoisted(() => ({ resolveJiraCredentials: vi.fn() }));
-vi.mock("@/modules/auth/jira-connection.service", () => ({
+vi.mock("@/modules/auth/jira-connection.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/auth/jira-connection.service")>(),
   resolveJiraCredentials: authMocks.resolveJiraCredentials,
   markJiraConnectionInvalid: vi.fn(),
+  markJiraConnectionReauthorizationRequired: vi.fn(),
 }));
 
 import { resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";

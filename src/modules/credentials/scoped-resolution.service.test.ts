@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   resolveUserAzurePat: vi.fn(),
   resolveJiraCredentials: vi.fn(),
   markJiraConnectionInvalid: vi.fn(),
+  jiraOnUnauthorized: vi.fn(),
   resolveUserLlmConfig: vi.fn(),
   markUserAzurePatExpired: vi.fn(),
   createLLMProvider: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock("@/modules/auth/jira-connection.service", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/modules/auth/jira-connection.service")>(),
   resolveJiraCredentials: mocks.resolveJiraCredentials,
   markJiraConnectionInvalid: mocks.markJiraConnectionInvalid,
+  jiraOnUnauthorized: mocks.jiraOnUnauthorized,
 }));
 vi.mock("@/modules/llm/llm-provider.factory", () => ({
   createLLMProvider: mocks.createLLMProvider,
@@ -107,8 +109,9 @@ beforeEach(() => {
   mocks.getWorkspaceSettings.mockResolvedValue(null);
   mocks.resolveUserAzurePat.mockResolvedValue("pat-secret");
   mocks.resolveJiraCredentials.mockResolvedValue({
-    email: "user@example.test", apiToken: "jira-token-secret", tokenKind: "scoped", cloudId: "cloud-a",
+    kind: "api_token", email: "user@example.test", apiToken: "jira-token-secret", tokenKind: "scoped", cloudId: "cloud-a",
   });
+  mocks.jiraOnUnauthorized.mockReturnValue({ onUnauthorized: vi.fn() });
   mocks.resolveUserLlmConfig.mockResolvedValue({
     provider: "openai",
     model: "gpt-test",
@@ -285,7 +288,7 @@ describe("provider-neutral work-management resolution", () => {
     });
   });
 
-  it("marks the Jira token invalid through the 401 hook, mirroring the Azure PAT expiry hook", async () => {
+  it("wires the kind-aware 401 hook, mirroring the Azure PAT expiry hook", async () => {
     const jiraContext: WorkflowContext = {
       userId: "user-1",
       workspace: {
@@ -295,17 +298,21 @@ describe("provider-neutral work-management resolution", () => {
       },
     };
     mocks.resolveWorkspaceProviderId.mockReturnValue("jira-cloud");
-    mocks.markJiraConnectionInvalid.mockResolvedValue(undefined);
+    const hook = { onUnauthorized: vi.fn() };
+    mocks.jiraOnUnauthorized.mockReturnValue(hook);
 
     await getUserWorkManagementProvider(jiraContext, {
       ...projectScope(), azureProjectId: "10000", azureProjectName: "Quality",
       providerProjectId: "10000", providerProjectKey: "QA", providerProjectName: "Quality",
     });
 
+    // The connection service owns kind routing (invalid vs reauthorization);
+    // this seam's job is handing it the resolved credential and identity.
+    expect(mocks.jiraOnUnauthorized).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "api_token" }), "ws-jira", "user-1",
+    );
     const { hooks } = mocks.createIntegrationProvider.mock.calls.at(-1)![0];
-    expect(() => hooks.onUnauthorized()).not.toThrow();
-    await Promise.resolve();
-    expect(mocks.markJiraConnectionInvalid).toHaveBeenCalledWith("ws-jira", "user-1");
+    expect(hooks).toBe(hook);
   });
 });
 

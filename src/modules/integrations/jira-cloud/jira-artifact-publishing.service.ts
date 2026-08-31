@@ -3,7 +3,7 @@ import "server-only";
 import type { PoolClient } from "pg";
 import type { FinalApprovedTestCase } from "../core/integration-types";
 import { createId, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
-import { markJiraConnectionInvalid, resolveJiraCredentials, type JiraCredentials } from "@/modules/auth/jira-connection.service";
+import { jiraCredentialSettings, jiraOnUnauthorized, resolveJiraCredentials, type JiraCredential } from "@/modules/auth/jira-connection.service";
 import { JiraCloudAdapter } from "./jira-cloud-adapter";
 import { PlainJiraArtifactBackend } from "./plain-jira-artifact-backend";
 import { XrayCloudBackend } from "./xray-cloud-backend";
@@ -200,7 +200,7 @@ async function failOwnedClaim(
 
 async function resolveConfiguredBackend(
   input: { workspaceId: string; projectId: string; actorUserId: string },
-  credentials: JiraCredentials,
+  credentials: JiraCredential,
   client: PoolClient,
 ): Promise<ResolvedBackend> {
   const anchor = await sqlGet<BackendAnchor>(
@@ -219,15 +219,11 @@ async function resolveConfiguredBackend(
   if (anchor.backend_type === "xray_cloud") {
     return { backend: new XrayCloudBackend(resolveXrayCloudConfigRow(anchor)), backendType: anchor.backend_type, siteUrl: anchor.provider_site_url };
   }
-  const invalidateOnUnauthorized = {
-    onUnauthorized: () => {
-      void markJiraConnectionInvalid(input.workspaceId, input.actorUserId).catch(() => {});
-    },
-  };
+  const invalidateOnUnauthorized = jiraOnUnauthorized(credentials, input.workspaceId, input.actorUserId);
   if (anchor.backend_type === "zephyr_scale") {
     const jira = new JiraCloudAdapter({
       cloudId: anchor.provider_site_id, siteUrl: anchor.provider_site_url,
-      email: credentials.email, apiToken: credentials.apiToken, tokenKind: credentials.tokenKind,
+      ...jiraCredentialSettings(credentials),
     }, {
       jiraProjectId: anchor.provider_project_id, jiraProjectKey: anchor.provider_project_key, jiraProjectName: anchor.provider_project_name,
     }, invalidateOnUnauthorized);
@@ -255,7 +251,7 @@ async function resolveConfiguredBackend(
   return {
     backend: new PlainJiraArtifactBackend({
       cloudId: anchor.provider_site_id, siteUrl: anchor.provider_site_url,
-      email: credentials.email, apiToken: credentials.apiToken, tokenKind: credentials.tokenKind,
+      ...jiraCredentialSettings(credentials),
       testCaseIssueTypeId: config.testCaseIssueTypeId, localIdFieldId: config.localIdFieldId,
     }, {
       jiraProjectId: anchor.provider_project_id, jiraProjectKey: anchor.provider_project_key, jiraProjectName: anchor.provider_project_name,
