@@ -125,6 +125,33 @@ describeDb("jira_connections dual-kind constraints (1710000048000)", () => {
     await sqlRun(`DELETE FROM jira_connections WHERE id = @id`, { id });
   });
 
+  it("rejects an api_token row without token_kind at any status (kind hygiene)", async () => {
+    // Non-active, all secrets cleared: only the hygiene constraint stands
+    // between this row and bricking down()'s SET NOT NULL.
+    await expect(
+      insertConnection({
+        userId: scratchUserId,
+        overrides: { status: "revoked", token_kind: null },
+      }),
+    ).rejects.toThrow(/chk_jira_connections_kind_hygiene/);
+    // Active without token_kind trips hygiene and the per-kind secret CHECK.
+    await expect(
+      insertConnection({
+        userId: scratchUserId,
+        overrides: { ...TOKEN_SECRETS, token_kind: null },
+      }),
+    ).rejects.toThrow(/chk_jira_connections_(kind_hygiene|active_secrets)/);
+  });
+
+  it("rejects 'invalid' on an oauth row — invalid is the api_token failure state", async () => {
+    await expect(
+      insertConnection({
+        userId: scratchUserId,
+        overrides: { credential_kind: "oauth", status: "invalid", ...OAUTH_SECRETS },
+      }),
+    ).rejects.toThrow(/chk_jira_connections_invalid_kind/);
+  });
+
   it("rejects rows carrying the other kind's secrets (kind hygiene)", async () => {
     await expect(
       insertConnection({

@@ -15,10 +15,16 @@
  *   - status gains 'reauthorization_required', an OAuth-only state (a terminal
  *     refresh failure; recovery is a fresh Atlassian consent, not a token
  *     replacement) — enforced OAuth-only by chk_jira_connections_reauth_kind.
+ *     Symmetrically, 'invalid' stays api_token-only
+ *     (chk_jira_connections_invalid_kind): the failure states are
+ *     kind-exclusive, so the token-replacement UX never addresses an OAuth
+ *     row and the reconnect UX never addresses a token row.
  *   - the active-row secret CHECK becomes per-kind: an active row carries the
  *     complete encrypted set for its own kind and (kind hygiene) never the
- *     other kind's secrets. Secrets stay nullable so revocation genuinely
- *     clears them.
+ *     other kind's secrets. An api_token row keeps token_kind NOT NULL at
+ *     every status — that restores the 47000 column invariant and keeps
+ *     down()'s SET NOT NULL from bricking on rows revocation touched.
+ *     Secrets stay nullable so revocation genuinely clears them.
  *
  * jira_oauth_states returns for the login flow's CSRF state, in its final
  * workspace-bound shape (site-before-OAuth): each state row pins the
@@ -59,6 +65,7 @@ exports.up = (pgm) => {
       ADD CONSTRAINT chk_jira_connections_credential_kind CHECK (credential_kind IN ('api_token', 'oauth')),
       ADD CONSTRAINT chk_jira_connections_status CHECK (status IN ('active', 'invalid', 'reauthorization_required', 'revoked')),
       ADD CONSTRAINT chk_jira_connections_reauth_kind CHECK (status <> 'reauthorization_required' OR credential_kind = 'oauth'),
+      ADD CONSTRAINT chk_jira_connections_invalid_kind CHECK (status <> 'invalid' OR credential_kind = 'api_token'),
       ADD CONSTRAINT chk_jira_connections_active_secrets CHECK (
         status <> 'active'
         OR (
@@ -84,6 +91,7 @@ exports.up = (pgm) => {
       ADD CONSTRAINT chk_jira_connections_kind_hygiene CHECK (
         (
           credential_kind = 'api_token'
+          AND token_kind IS NOT NULL
           AND encrypted_access_token IS NULL
           AND access_token_iv IS NULL
           AND access_token_tag IS NULL
@@ -123,11 +131,12 @@ exports.down = (pgm) => {
     DELETE FROM jira_connections WHERE credential_kind = 'oauth';
 
     ALTER TABLE jira_connections
-      DROP CONSTRAINT chk_jira_connections_credential_kind,
-      DROP CONSTRAINT chk_jira_connections_status,
-      DROP CONSTRAINT chk_jira_connections_reauth_kind,
-      DROP CONSTRAINT chk_jira_connections_active_secrets,
-      DROP CONSTRAINT chk_jira_connections_kind_hygiene;
+      DROP CONSTRAINT IF EXISTS chk_jira_connections_credential_kind,
+      DROP CONSTRAINT IF EXISTS chk_jira_connections_status,
+      DROP CONSTRAINT IF EXISTS chk_jira_connections_reauth_kind,
+      DROP CONSTRAINT IF EXISTS chk_jira_connections_invalid_kind,
+      DROP CONSTRAINT IF EXISTS chk_jira_connections_active_secrets,
+      DROP CONSTRAINT IF EXISTS chk_jira_connections_kind_hygiene;
 
     ALTER TABLE jira_connections
       DROP COLUMN credential_kind,
