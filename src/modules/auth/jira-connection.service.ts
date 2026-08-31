@@ -2,8 +2,7 @@ import "server-only";
 
 import { createId, nowIso, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import { decryptSecret, encryptSecret } from "@/modules/security/encryption.service";
-import { JiraBearerAuthError, type JiraAuth, type JiraTokenKind } from "@/modules/integrations/jira-cloud/jira-http";
-import { AtlassianOAuthError, AtlassianReauthorizationRequiredError, refreshAtlassianOAuthTokens } from "./jira-oauth";
+import { JiraBearerAuthError, type JiraTokenKind } from "@/modules/integrations/jira-cloud/jira-http";import { AtlassianOAuthError, AtlassianReauthorizationRequiredError, refreshAtlassianOAuthTokens } from "./jira-oauth";
 
 /**
  * Dual-kind Jira credential storage and resolution. A connection row is either

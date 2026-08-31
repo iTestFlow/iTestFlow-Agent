@@ -81,7 +81,8 @@ describeDb("jira_connections dual-kind constraints (1710000048000)", () => {
   });
 
   it("rejects an active oauth row missing any part of the OAuth secret set", async () => {
-    const { encrypted_refresh_token: _refresh, ...missingRefresh } = OAUTH_SECRETS;
+    const missingRefresh: ConnectionOverrides = { ...OAUTH_SECRETS };
+    delete missingRefresh.encrypted_refresh_token;
     await expect(
       insertConnection({
         userId: scratchUserId,
@@ -89,7 +90,8 @@ describeDb("jira_connections dual-kind constraints (1710000048000)", () => {
       }),
     ).rejects.toThrow(/chk_jira_connections_active_secrets/);
 
-    const { access_expires_at: _expiry, ...missingExpiry } = OAUTH_SECRETS;
+    const missingExpiry: ConnectionOverrides = { ...OAUTH_SECRETS };
+    delete missingExpiry.access_expires_at;
     await expect(
       insertConnection({
         userId: scratchUserId,
