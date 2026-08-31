@@ -3,6 +3,8 @@
   "ungated": [
     "scripts/render-vitest-summary.ts",
     "src/app/api/activity-log/route.ts",
+    "src/app/api/auth/jira/callback/route.ts",
+    "src/app/api/auth/jira/start/route.ts",
     "src/app/api/auth/login/route.ts",
     "src/app/api/auth/logout/route.ts",
     "src/app/api/auth/organizations/route.ts",
@@ -107,6 +109,8 @@
     "src/modules/audit/audit.service.ts",
     "src/modules/audit/generation-failure-audit.ts",
     "src/modules/auth/auth-provider.ts",
+    "src/modules/auth/jira-oauth-cookie.ts",
+    "src/modules/auth/jira-oauth-state.ts",
     "src/modules/auth/jira-oauth.ts",
     "src/modules/auth/session-cookie.ts",
     "src/modules/auth/user.service.ts",
