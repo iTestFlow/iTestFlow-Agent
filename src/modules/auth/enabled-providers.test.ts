@@ -14,6 +14,12 @@ describe("getEnabledLoginProviders", () => {
     vi.stubEnv("BOOTSTRAP_JIRA_SITES", "");
     vi.stubEnv("BOOTSTRAP_OWNER_JIRA_SITE", "");
     vi.stubEnv("BOOTSTRAP_OWNER_EMAIL", "");
+    // validateEnabledProviderShape now reads the method-layer env; keep
+    // ambient dev-box values out of this suite.
+    vi.stubEnv("JIRA_LOGIN_METHODS", "");
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_SECRET", "");
+    vi.stubEnv("ATLASSIAN_OAUTH_REDIRECT_URI", "");
   });
 
   it("offers Azure only when no Jira site is configured", async () => {
@@ -140,6 +146,14 @@ describe("getEnabledJiraLoginMethods", () => {
     stubFullOAuthEnv();
     vi.stubEnv("JIRA_LOGIN_METHODS", "oauth, api_token, oauth");
     await expect(getEnabledJiraLoginMethods()).resolves.toEqual(["oauth", "api_token"]);
+  });
+
+  it("lets an explicit api_token list hide a fully configured OAuth client", async () => {
+    stubFullOAuthEnv();
+    vi.stubEnv("JIRA_LOGIN_METHODS", "api_token");
+    expect(() => validateEnabledProviderShape()).not.toThrow();
+    await expect(getEnabledJiraLoginMethods()).resolves.toEqual(["api_token"]);
+    await expect(isJiraLoginMethodEnabled("oauth")).resolves.toBe(false);
   });
 
   it("supports OAuth-only mode: token sign-in is off for the deployment", async () => {

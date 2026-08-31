@@ -49,6 +49,12 @@ describe("POST /api/auth/jira/login", () => {
     vi.stubEnv("DATABASE_URL", "");
     vi.stubEnv("BOOTSTRAP_ENABLED_PROVIDERS", "");
     vi.stubEnv("BOOTSTRAP_JIRA_SITES", "quality|owner@example.test");
+    // The method layer reads these transitively; a dev box exporting any of
+    // them must not flip the gates under this suite.
+    vi.stubEnv("JIRA_LOGIN_METHODS", "");
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_SECRET", "");
+    vi.stubEnv("ATLASSIAN_OAUTH_REDIRECT_URI", "");
     mocks.checkRateLimit.mockResolvedValue({ allowed: true });
     mocks.clientIp.mockReturnValue("10.0.0.1");
     mocks.findSite.mockResolvedValue({ workspaceId: "ws-1", cloudId: null, name: "quality", siteUrl: "https://quality.atlassian.net" });
@@ -62,13 +68,15 @@ describe("POST /api/auth/jira/login", () => {
     mocks.createSession.mockResolvedValue(undefined);
   });
 
-  it("rejects token sign-in in OAuth-only mode before any credential leaves the server", async () => {
+  it("rejects sign-in in OAuth-only mode before the body is even parsed", async () => {
     vi.stubEnv("JIRA_LOGIN_METHODS", "oauth");
     vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_ID", "client-id");
     vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_SECRET", "client-secret");
     vi.stubEnv("ATLASSIAN_OAUTH_REDIRECT_URI", "https://itestflow.example/api/auth/jira/callback");
 
-    const response = await POST(request(validBody));
+    // An invalid body pins the gate ordering: 403 (method gate), never 400
+    // (schema parse).
+    const response = await POST(request({}));
     expect(response.status).toBe(403);
     expect((await response.json()).error).toContain("disabled");
     expect(mocks.findSite).not.toHaveBeenCalled();

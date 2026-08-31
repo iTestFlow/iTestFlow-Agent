@@ -26,7 +26,7 @@ export async function GET(request: Request) {
     // The Jira pane branches on its enabled sign-in methods; the field is
     // absent when Jira itself is off, keeping the payload byte-compatible.
     const body = enabled.includes("jira-cloud")
-      ? { providers, jiraLoginMethods: await getEnabledJiraLoginMethods() }
+      ? { providers, jiraLoginMethods: await getEnabledJiraLoginMethods(enabled) }
       : { providers };
     return NextResponse.json(body, { headers: { "Cache-Control": "no-store" } });
   } catch {

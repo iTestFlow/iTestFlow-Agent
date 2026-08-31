@@ -109,13 +109,16 @@ function configuredJiraLoginMethodList(): JiraLoginMethod[] {
 
 /**
  * Enabled Jira sign-in methods in display order, [] when the jira-cloud
- * provider itself is disabled. Fails closed to [] on request-time resolution
- * errors — startup already failed fast on configuration mistakes, and a
- * public route hitting post-boot drift must see "disabled", never a 500.
+ * provider itself is disabled. Callers that already resolved the provider
+ * list pass it in, so provider and method state come from one snapshot.
+ * Fails closed to [] on request-time resolution errors — startup already
+ * failed fast on configuration mistakes, and a public route hitting
+ * post-boot drift must see "disabled", never a 500.
  */
-export async function getEnabledJiraLoginMethods(): Promise<JiraLoginMethod[]> {
+export async function getEnabledJiraLoginMethods(enabledProviders?: readonly LoginProviderId[]): Promise<JiraLoginMethod[]> {
   try {
-    if (!(await getEnabledLoginProviders()).includes("jira-cloud")) return [];
+    const providers = enabledProviders ?? await getEnabledLoginProviders();
+    if (!providers.includes("jira-cloud")) return [];
     return configuredJiraLoginMethodList();
   } catch {
     return [];

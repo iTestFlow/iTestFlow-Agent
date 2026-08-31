@@ -56,8 +56,8 @@ export async function POST(request: Request) {
   }
 
   if (!await isJiraLoginMethodEnabled("api_token")) {
-    // OAuth-only mode: the deployment's org blocks API tokens, so the token
-    // pair must never leave the browser toward this route.
+    // OAuth-only mode: the deployment's org blocks API tokens, so a posted
+    // token pair is never parsed or forwarded upstream.
     return NextResponse.json({ error: "Jira API-token sign-in is disabled for this deployment." }, { status: 403 });
   }
 
