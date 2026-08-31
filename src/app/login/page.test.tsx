@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+﻿// @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
@@ -145,6 +145,71 @@ describe("LoginPage", () => {
     await user.click(screen.getByRole("button", { name: "Jira Cloud" }))
     expect(await screen.findByLabelText("Atlassian account email")).toHaveValue("owner@example.test")
     expect(screen.getByLabelText("Atlassian API token")).toHaveValue("jira-token")
+  })
+
+  it("offers Continue with Atlassian as the secondary action beside the default token form", async () => {
+    const user = userEvent.setup()
+    mockApi({
+      providers: jsonResponse({ providers: bothProviders, jiraLoginMethods: ["api_token", "oauth"] }),
+      sites: jsonResponse({ sites: [jiraSites[0]] }),
+    })
+
+    renderLoginPage()
+    await user.click(await screen.findByRole("button", { name: "Jira Cloud" }))
+
+    // Token form stays the default, with the Atlassian hand-off as a
+    // secondary link carrying the selected site and validated return
+    // destination into the start route.
+    await screen.findByLabelText("Atlassian API token")
+    const continueLink = await screen.findByRole("link", { name: /Continue with Atlassian/ })
+    const href = String(continueLink.getAttribute("href"))
+    expect(href).toContain(`/api/auth/jira/start?site=${encodeURIComponent("https://quality.atlassian.net")}`)
+    expect(href).toContain(`returnTo=${encodeURIComponent("/dashboards")}`)
+  })
+
+  it("renders no Atlassian action when the deployment is token-only", async () => {
+    const user = userEvent.setup()
+    mockApi({ sites: jsonResponse({ sites: [jiraSites[0]] }) })
+
+    renderLoginPage()
+    await user.click(await screen.findByRole("button", { name: "Jira Cloud" }))
+
+    await screen.findByLabelText("Atlassian API token")
+    expect(screen.queryByText(/Continue with Atlassian/)).not.toBeInTheDocument()
+  })
+
+  it("renders OAuth-only mode: Atlassian is the primary action and no token field exists", async () => {
+    const user = userEvent.setup()
+    mockApi({
+      providers: jsonResponse({ providers: bothProviders, jiraLoginMethods: ["oauth"] }),
+      sites: jsonResponse({ sites: [jiraSites[0]] }),
+    })
+
+    renderLoginPage()
+    await user.click(await screen.findByRole("button", { name: "Jira Cloud" }))
+
+    await screen.findByRole("link", { name: /Continue with Atlassian/ })
+    expect(screen.queryByLabelText("Atlassian API token")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Atlassian account email")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Sign In" })).not.toBeInTheDocument()
+  })
+
+  it("surfaces a callback error code inline on the Jira pane and preselects the named site", async () => {
+    window.history.replaceState({}, "", `/login?error=jira_site_access&site=${encodeURIComponent("https://platform.atlassian.net")}`)
+    try {
+      mockApi({
+        providers: jsonResponse({ providers: bothProviders, jiraLoginMethods: ["api_token", "oauth"] }),
+        sites: jsonResponse({ sites: jiraSites }),
+      })
+
+      renderLoginPage()
+
+      // The callback's error surface: pane auto-switched, persistent alert.
+      expect(await screen.findByText(/does not have access to/)).toBeInTheDocument()
+      expect(screen.getByText(/platform\.atlassian\.net/)).toBeInTheDocument()
+    } finally {
+      window.history.replaceState({}, "", "/login")
+    }
   })
 
   it("skips the chooser and renders the Azure form directly when only Azure DevOps is enabled", async () => {

@@ -54,6 +54,17 @@ type LoadState = "loading" | "ready" | "error"
 
 type ProviderListResponse = {
   providers?: ProviderOption[]
+  jiraLoginMethods?: Array<"api_token" | "oauth">
+}
+
+// The OAuth callback lands failures here as typed codes; the messages must be
+// actionable and persistent (role=alert), matching the token-login taxonomy.
+const jiraOAuthErrorMessages: Record<string, (site: string | null) => string> = {
+  jira_oauth_state: () => "This Atlassian sign-in link expired or was already used. Start the sign-in again.",
+  jira_site_access: (site) =>
+    `Your Atlassian account does not have access to ${site ?? "the selected Jira site"}. Sign in with an Atlassian account that can access it.`,
+  jira_oauth_unavailable: () => "Atlassian sign-in is temporarily unavailable. Try again in a moment.",
+  jira_oauth_failed: () => "Jira sign-in could not be completed. Try again.",
 }
 
 type OrganizationListResponse = {
@@ -199,6 +210,7 @@ function JiraSiteConfigurationHelp() {
 export default function LoginPage() {
   const router = useRouter()
   const [providers, setProviders] = useState<ProviderOption[]>([])
+  const [jiraLoginMethods, setJiraLoginMethods] = useState<Array<"api_token" | "oauth">>(["api_token"])
   const [providerLoadState, setProviderLoadState] = useState<LoadState>("loading")
   const [providerLoadError, setProviderLoadError] = useState("")
   const [activeProvider, setActiveProvider] = useState<LoginProviderId | null>(null)
@@ -240,6 +252,11 @@ export default function LoginPage() {
       }
 
       setProviders(data.providers)
+      setJiraLoginMethods(
+        Array.isArray(data.jiraLoginMethods) && data.jiraLoginMethods.length > 0
+          ? data.jiraLoginMethods
+          : ["api_token"],
+      )
       setProviderLoadState("ready")
     } catch (error) {
       if (signal?.aborted) return
@@ -313,6 +330,16 @@ export default function LoginPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     setNextPath(params.get("next"))
+    // The OAuth callback returns to /login with a typed error code and the
+    // site it was about, so the failure lands on the Jira pane, inline, with
+    // the site preselected for a retry.
+    const oauthError = params.get("error")
+    const site = params.get("site")
+    if (oauthError && jiraOAuthErrorMessages[oauthError]) {
+      setActiveProvider("jira-cloud")
+      setJiraError(jiraOAuthErrorMessages[oauthError](site))
+    }
+    if (site) setSelectedSite(site)
   }, [])
 
   useEffect(() => {
@@ -359,6 +386,9 @@ export default function LoginPage() {
     submitting || organizationLoadState !== "ready" || organizations.length === 0 || !organization.trim()
 
   const singleSite = siteLoadState === "ready" && sites.length === 1 ? sites[0] : null
+  const jiraTokenEnabled = jiraLoginMethods.includes("api_token")
+  const jiraOauthEnabled = jiraLoginMethods.includes("oauth")
+  const atlassianStartHref = `/api/auth/jira/start?site=${encodeURIComponent(selectedSite)}&returnTo=${encodeURIComponent(resolveLoginDestination(nextPath))}`
   const jiraSignInDisabled =
     jiraSubmitting || siteLoadState !== "ready" || sites.length === 0
     || !selectedSite.trim() || !jiraEmail.trim() || !jiraApiToken.trim()
@@ -762,6 +792,8 @@ export default function LoginPage() {
                       )}
                     </div>
 
+                    {jiraTokenEnabled ? (
+                    <>
                     <div className="space-y-2">
                       <Label htmlFor="jira-email">Atlassian account email</Label>
                       <Input
@@ -826,6 +858,8 @@ export default function LoginPage() {
                         <ExternalLink className="size-3.5" aria-hidden="true" />
                       </a>
                     </div>
+                    </>
+                    ) : null}
 
                     {jiraError ? (
                       <Callout tone="error" role="alert" title="Jira sign-in failed.">
@@ -833,11 +867,39 @@ export default function LoginPage() {
                       </Callout>
                     ) : null}
 
+                    {jiraTokenEnabled ? (
                     <div className="pt-1">
                       <Button type="submit" size="lg" className="h-10 w-full font-semibold" disabled={jiraSignInDisabled}>
                         {jiraSubmitting ? "Signing in..." : "Sign In"}
                       </Button>
                     </div>
+                    ) : null}
+
+                    {jiraOauthEnabled ? (
+                      <div className="space-y-3 pt-1">
+                        {jiraTokenEnabled ? (
+                          <div className="flex items-center gap-3" aria-hidden="true">
+                            <div className="h-px flex-1 bg-border" />
+                            <span className="text-xs font-medium uppercase text-muted-foreground">or</span>
+                            <div className="h-px flex-1 bg-border" />
+                          </div>
+                        ) : null}
+                        {selectedSite.trim() && siteLoadState === "ready" ? (
+                          <Button asChild size="lg" variant={jiraTokenEnabled ? "outline" : "default"} className="h-10 w-full font-semibold">
+                            <a href={atlassianStartHref}>Continue with Atlassian</a>
+                          </Button>
+                        ) : (
+                          <Button type="button" size="lg" variant={jiraTokenEnabled ? "outline" : "default"} className="h-10 w-full font-semibold" disabled>
+                            Continue with Atlassian
+                          </Button>
+                        )}
+                        <p className="text-xs leading-5 text-muted-foreground">
+                          {selectedSite.trim()
+                            ? "You will approve access on Atlassian and return here — no token to create or paste."
+                            : "Select your Jira site to continue with Atlassian."}
+                        </p>
+                      </div>
+                    ) : null}
                   </form>
                 ) : null}
               </>
