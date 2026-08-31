@@ -89,16 +89,24 @@ describe("jiraFetch (bearer)", () => {
     const getToken = vi.fn()
       .mockResolvedValueOnce("stale-token")
       .mockResolvedValueOnce("fresh-token");
+    const firstResponse = new Response("expired", { status: 401 });
+    const cancelSpy = vi.spyOn(firstResponse.body!, "cancel");
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response("expired", { status: 401 }))
+      .mockResolvedValueOnce(firstResponse)
       .mockResolvedValueOnce(new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const onUnauthorized = vi.fn();
-    const response = await jiraFetch("https://api.atlassian.com/x", {}, bearerAuth(getToken), { onUnauthorized });
+    const init = { method: "POST", body: JSON.stringify({ fields: { summary: "x" } }) };
+    const response = await jiraFetch("https://api.atlassian.com/x", init, bearerAuth(getToken), { onUnauthorized });
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({ Authorization: "Bearer stale-token" });
     expect(fetchMock.mock.calls[1][1]?.headers).toMatchObject({ Authorization: "Bearer fresh-token" });
+    // The retry re-sends the request itself, not just the new header.
+    expect(fetchMock.mock.calls[1][1]?.method).toBe("POST");
+    expect(fetchMock.mock.calls[1][1]?.body).toBe(init.body);
+    // The abandoned 401 response frees its pooled connection.
+    expect(cancelSpy).toHaveBeenCalled();
     expect(getToken).toHaveBeenNthCalledWith(2, { forceRefresh: true });
     expect(onUnauthorized).not.toHaveBeenCalled();
   });
@@ -142,6 +150,21 @@ describe("jiraFetch (bearer)", () => {
       .catch((caught) => caught as IntegrationError);
     expect((error as IntegrationError).code).toBe("integration_auth_failed");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("maps a terminal supplier failure on the initial token supply the same way", async () => {
+    // A refactor that guarded only the forceRefresh path would leak the raw
+    // supplier error to the job queue as integration_unknown and retry a
+    // terminally-flipped row five times.
+    const getToken = vi.fn().mockRejectedValue(new JiraBearerAuthError("reauthorization_required"));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const onUnauthorized = vi.fn();
+    const error = await jiraFetch("https://api.atlassian.com/x", {}, bearerAuth(getToken), { onUnauthorized })
+      .catch((caught) => caught as IntegrationError);
+    expect((error as IntegrationError).code).toBe("integration_auth_failed");
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(onUnauthorized).not.toHaveBeenCalled();
   });
 

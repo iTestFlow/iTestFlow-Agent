@@ -84,6 +84,8 @@ export async function jiraFetch(
 ): Promise<Response> {
   let response = await requestOnce(url, init, auth, false);
   if (response.status === 401 && auth.kind === "bearer") {
+    // Free the pooled connection before issuing the retry's new traffic.
+    void response.body?.cancel();
     response = await requestOnce(url, init, auth, true);
   }
   if (!response.ok) {
@@ -132,7 +134,10 @@ async function resolveBearerToken(
     if (error instanceof JiraBearerAuthError) {
       throw new IntegrationError({ providerId: "jira-cloud", code: "integration_auth_failed", message: "Jira Cloud request failed.", statusCode: 401 });
     }
-    throw new IntegrationError({ providerId: "jira-cloud", code: "integration_unknown", message: "Jira Cloud request failed." });
+    // A supplier failure outside the legal vocabulary is a supplier bug:
+    // classify unknown (retryable, capped by the job queue) and carry the
+    // original as cause for forensics — never in the outward message.
+    throw new IntegrationError({ providerId: "jira-cloud", code: "integration_unknown", message: "Jira Cloud request failed.", cause: error });
   }
 }
 
