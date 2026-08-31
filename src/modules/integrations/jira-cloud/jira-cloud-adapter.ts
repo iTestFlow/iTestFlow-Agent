@@ -8,7 +8,7 @@ import type {
   Requirement, WorkItemRevision, WorkItemTypeField,
 } from "../core/integration-types";
 import { IntegrationError } from "../core/integration-error";
-import { jiraApiBase, jiraFetch, type JiraBasicAuth, type JiraTokenKind } from "./jira-http";
+import { jiraApiBase, jiraFetch, type JiraAuth, type JiraTokenKind } from "./jira-http";
 
 type Json = Record<string, unknown>;
 
@@ -21,14 +21,21 @@ export type JiraCloudFieldMapping = {
   storyPointsFieldId?: string;
 };
 
+/**
+ * Credential shape mirrors jira_connections' discriminator: the api_token arm
+ * keeps its historical field layout (credentialKind optional so existing
+ * construction sites read unchanged); the oauth arm supplies an async bearer
+ * getter owned by the connection service, so a token refreshed mid-run is
+ * picked up per request.
+ */
 export type JiraCloudSettings = {
   cloudId: string;
   siteUrl: string;
-  email: string;
-  apiToken: string;
-  tokenKind: JiraTokenKind;
   fieldMapping?: JiraCloudFieldMapping;
-};
+} & (
+  | { credentialKind?: "api_token"; email: string; apiToken: string; tokenKind: JiraTokenKind }
+  | { credentialKind: "oauth"; getAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string> }
+);
 
 export type JiraCloudHooks = { onUnauthorized?: () => void };
 
@@ -47,7 +54,7 @@ const RESERVED_CREATE_FIELDS = new Set(["project", "issuetype", "summary", "desc
 export class JiraCloudAdapter implements WorkManagementProvider, TestManagementProvider {
   private readonly baseUrl: string;
   private readonly siteUrl: string;
-  private readonly auth: JiraBasicAuth;
+  private readonly auth: JiraAuth;
   private readonly hooks?: JiraCloudHooks;
   private readonly scope?: JiraCloudProjectScope;
   private readonly mapping: JiraCloudFieldMapping;
@@ -55,7 +62,9 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
   constructor(settings: JiraCloudSettings, scope?: JiraCloudProjectScope, hooks?: JiraCloudHooks) {
     this.baseUrl = jiraApiBase(settings);
     this.siteUrl = settings.siteUrl.replace(/\/+$/, "");
-    this.auth = { email: settings.email, apiToken: settings.apiToken };
+    this.auth = settings.credentialKind === "oauth"
+      ? { kind: "bearer", getToken: settings.getAccessToken }
+      : { kind: "basic", email: settings.email, apiToken: settings.apiToken };
     this.hooks = hooks;
     this.scope = scope;
     this.mapping = settings.fieldMapping ?? {};

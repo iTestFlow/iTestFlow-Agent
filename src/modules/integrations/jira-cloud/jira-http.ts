@@ -12,9 +12,41 @@ export type JiraTokenKind = "scoped" | "classic";
 
 export type JiraBasicAuth = { email: string; apiToken: string };
 
-/** The single base-URL seam every Jira client derives its requests from. */
-export function jiraApiBase(input: { tokenKind: JiraTokenKind; cloudId: string; siteUrl: string }): string {
-  return input.tokenKind === "scoped"
+/**
+ * How a request authenticates: the stored email+token pair (Basic), or an
+ * OAuth bearer supplier owned by the connection service. The supplier is
+ * async and consulted per request, so an access token refreshed mid-run is
+ * picked up without rebuilding the client; forceRefresh is the 401 retry
+ * path, and the supplier must serialize concurrent refreshes itself.
+ */
+export type JiraAuth =
+  | ({ kind: "basic" } & JiraBasicAuth)
+  | { kind: "bearer"; getToken: (options?: { forceRefresh?: boolean }) => Promise<string> };
+
+/**
+ * The bearer supplier's only legal failure vocabulary. reauthorization_required
+ * means the supplier already flipped the connection row terminally — jiraFetch
+ * maps it to an auth failure WITHOUT firing the 401 hook, which would write a
+ * second, conflicting status on top. unavailable is transient (token-endpoint
+ * outage) and must not invalidate anything. Anything else a supplier throws is
+ * classified unknown and its message never surfaces.
+ */
+export class JiraBearerAuthError extends Error {
+  readonly reason: "reauthorization_required" | "unavailable";
+  constructor(reason: "reauthorization_required" | "unavailable") {
+    super(reason === "unavailable"
+      ? "The Jira OAuth credential is temporarily unavailable."
+      : "The Jira OAuth credential is no longer authorized.");
+    this.name = "JiraBearerAuthError";
+    this.reason = reason;
+  }
+}
+
+/** The single base-URL seam every Jira client derives its requests from. OAuth always calls the gateway — the same URL shape as scoped tokens. */
+export function jiraApiBase(
+  input: { cloudId: string; siteUrl: string } & ({ credentialKind?: "api_token"; tokenKind: JiraTokenKind } | { credentialKind: "oauth" }),
+): string {
+  return input.credentialKind === "oauth" || input.tokenKind === "scoped"
     ? `https://api.atlassian.com/ex/jira/${encodeURIComponent(input.cloudId.trim())}/rest/api/3`
     : `${input.siteUrl.trim().replace(/\/+$/, "")}/rest/api/3`;
 }
@@ -33,32 +65,26 @@ export function jiraStatusErrorCode(status: number): IntegrationErrorCode {
 }
 
 /**
- * The shared Jira HTTP request: Basic auth, status-preserving error
- * classification, Retry-After surfaced on the error for retry scheduling, and
- * the 401 invalidation hook. Error messages never carry the credential pair or
- * upstream response bodies. 403/429/5xx must never invalidate a credential —
- * only a plain 401 fires the hook.
+ * The shared Jira HTTP request: per-kind authorization, status-preserving
+ * error classification, Retry-After surfaced on the error for retry
+ * scheduling, and the 401 invalidation hook. Error messages never carry
+ * credentials or upstream response bodies. 403/429/5xx must never invalidate
+ * a credential or trigger a refresh.
+ *
+ * 401 semantics diverge by kind: a Basic 401 means the stored token is dead —
+ * fire the hook, no retry. A bearer 401 is routinely a lapsed ~1h access
+ * token — force one refresh and retry once (bodies are strings or FormData,
+ * both re-sendable); only a 401 that survives a fresh token fires the hook.
  */
 export async function jiraFetch(
   url: string,
   init: RequestInit,
-  auth: JiraBasicAuth,
+  auth: JiraAuth,
   hooks?: { onUnauthorized?: () => void },
 ): Promise<Response> {
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      ...init,
-      cache: "no-store",
-      headers: {
-        Authorization: jiraBasicAuthorization(auth),
-        Accept: "application/json",
-        ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-        ...(init.headers ?? {}),
-      },
-    });
-  } catch {
-    throw new IntegrationError({ providerId: "jira-cloud", code: "integration_unavailable", message: "Jira Cloud is unavailable." });
+  let response = await requestOnce(url, init, auth, false);
+  if (response.status === 401 && auth.kind === "bearer") {
+    response = await requestOnce(url, init, auth, true);
   }
   if (!response.ok) {
     if (response.status === 401) hooks?.onUnauthorized?.();
@@ -71,6 +97,43 @@ export async function jiraFetch(
     });
   }
   return response;
+}
+
+async function requestOnce(url: string, init: RequestInit, auth: JiraAuth, forceRefresh: boolean): Promise<Response> {
+  const authorization = auth.kind === "basic"
+    ? jiraBasicAuthorization(auth)
+    : `Bearer ${await resolveBearerToken(auth, forceRefresh)}`;
+  try {
+    return await fetch(url, {
+      ...init,
+      cache: "no-store",
+      headers: {
+        Authorization: authorization,
+        Accept: "application/json",
+        ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+        ...(init.headers ?? {}),
+      },
+    });
+  } catch {
+    throw new IntegrationError({ providerId: "jira-cloud", code: "integration_unavailable", message: "Jira Cloud is unavailable." });
+  }
+}
+
+async function resolveBearerToken(
+  auth: Extract<JiraAuth, { kind: "bearer" }>,
+  forceRefresh: boolean,
+): Promise<string> {
+  try {
+    return await auth.getToken(forceRefresh ? { forceRefresh: true } : undefined);
+  } catch (error) {
+    if (error instanceof JiraBearerAuthError && error.reason === "unavailable") {
+      throw new IntegrationError({ providerId: "jira-cloud", code: "integration_unavailable", message: "Jira Cloud is unavailable." });
+    }
+    if (error instanceof JiraBearerAuthError) {
+      throw new IntegrationError({ providerId: "jira-cloud", code: "integration_auth_failed", message: "Jira Cloud request failed.", statusCode: 401 });
+    }
+    throw new IntegrationError({ providerId: "jira-cloud", code: "integration_unknown", message: "Jira Cloud request failed." });
+  }
 }
 
 function parseRetryAfterSeconds(header: string | null): number | undefined {

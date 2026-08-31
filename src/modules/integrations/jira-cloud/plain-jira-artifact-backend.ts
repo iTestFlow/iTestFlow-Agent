@@ -91,7 +91,7 @@ export class PlainJiraArtifactBackend {
     const response = await jiraFetch(
       `${this.baseUrl}${path}`,
       init,
-      { email: this.settings.email, apiToken: this.settings.apiToken },
+      { kind: "basic", email: this.settings.email, apiToken: this.settings.apiToken },
       this.hooks,
     );
     try { return await response.json() as T; } catch { throw new Error("Plain Jira returned an invalid response."); }
