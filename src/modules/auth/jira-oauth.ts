@@ -11,13 +11,18 @@ import { z } from "zod";
  *     operator-configured sites, exactly like token login, so
  *     accessible-resources returns unfiltered and the callback verifies the
  *     grant against the state's pinned site.
- *   - refresh-failure classification is explicit: only a dead grant (401/403,
- *     or 400 invalid_grant) is AtlassianReauthorizationRequiredError, the
- *     terminal state that flips a connection to reauthorization_required.
- *     Outages, malformed responses, and a 200 missing its rotated refresh
- *     token stay plain AtlassianOAuthError — transient, the stored row must
- *     not be touched (a missing rotation may still be inside Atlassian's
- *     reuse leeway; the next refresh classifies terminally if not).
+ *   - refresh-failure classification is explicit: only a dead grant raises
+ *     AtlassianReauthorizationRequiredError — identified by the token
+ *     endpoint SAYING invalid_grant in its body (RFC 6749 §5.2; Atlassian
+ *     returns it on 403, the RFC shape is 400), never by HTTP status alone.
+ *     A bare 401/403 is invalid_client (a rotated app secret) or an edge/WAF
+ *     page, and 429/5xx/network are outages: operator or infrastructure
+ *     trouble that re-consent cannot fix, so flipping rows terminal on them
+ *     would kill every OAuth connection over a config skew. Those, malformed
+ *     responses, and a 200 missing its rotated refresh token all stay plain
+ *     AtlassianOAuthError — transient, the stored row must not be touched (a
+ *     missing rotation may still be inside Atlassian's reuse leeway; the next
+ *     refresh classifies terminally if not).
  *
  * Env reads stay lazy (requireEnv) as defense in depth; whether OAuth is
  * offered at all is the enablement layer's decision.
@@ -51,7 +56,7 @@ const AccessibleResourcesSchema = z.array(z.object({
 const UserIdentitySchema = z.object({
   account_id: z.string().min(1),
   name: z.string().min(1),
-  email: z.string().email(),
+  email: z.string().email().nullish(),
 });
 
 export type AtlassianOAuthTokens = {
@@ -147,11 +152,12 @@ async function requestTokens(payload: Record<string, string>, refreshPath = fals
     if (refreshPath && await isDeadGrant(response)) {
       throw new AtlassianReauthorizationRequiredError();
     }
-    throw new AtlassianOAuthError(
-      response.status === 401 || response.status === 403
-        ? "Atlassian rejected the authorization grant. Start the Jira connection again."
-        : "Atlassian authorization failed. Try again later.",
-    );
+    if (!refreshPath && response.status >= 400 && response.status < 500 && response.status !== 429) {
+      // A rejected or burnt authorization code is not cured by waiting; the
+      // remedy is a fresh consent flow.
+      throw new AtlassianOAuthError("Atlassian rejected the authorization grant. Start the Jira connection again.");
+    }
+    throw new AtlassianOAuthError("Atlassian authorization failed. Try again later.");
   }
   const parsed = TokenResponseSchema.safeParse(await response.json().catch(() => null));
   if (!parsed.success) {
@@ -173,10 +179,16 @@ async function requestTokens(payload: Record<string, string>, refreshPath = fals
   };
 }
 
-/** 401/403 from the token endpoint means the grant is gone; a 400 means it only when the body says invalid_grant (RFC 6749 §5.2). */
+/**
+ * A grant is dead only when the token endpoint SAYS so: body error =
+ * invalid_grant (RFC 6749 §5.2) — Atlassian returns it on 403, the RFC shape
+ * is 400, and 401 is accepted defensively. HTTP status alone never decides:
+ * a bare 401 is invalid_client (a rotated app secret) and a body-less 403 is
+ * an edge/WAF page — both must stay transient or a config skew terminally
+ * flips every OAuth row in the deployment.
+ */
 async function isDeadGrant(response: Response): Promise<boolean> {
-  if (response.status === 401 || response.status === 403) return true;
-  if (response.status !== 400) return false;
+  if (response.status !== 400 && response.status !== 401 && response.status !== 403) return false;
   const body = await response.json().catch(() => null) as { error?: unknown } | null;
   return body?.error === "invalid_grant";
 }
@@ -209,6 +221,12 @@ export async function getAtlassianUserIdentity(accessToken: string): Promise<Atl
     accessToken,
     UserIdentitySchema,
   );
+  if (!identity.email) {
+    // Provisioning matches seeded owners by email and jira_connections.email
+    // is NOT NULL — name the user-actionable condition instead of letting it
+    // read like an Atlassian outage.
+    throw new AtlassianOAuthError("The Atlassian account does not expose an email address, which iTestFlow requires. Add an email to the Atlassian profile and try again.");
+  }
   return {
     accountId: identity.account_id,
     displayName: identity.name,

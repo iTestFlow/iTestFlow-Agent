@@ -65,6 +65,7 @@ describe("Jira Cloud OAuth client", () => {
       expiresInSeconds: 3600,
     });
     const request = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(String(fetchMock.mock.calls[0][0])).toBe("https://auth.atlassian.com/oauth/token");
     expect(request).toMatchObject({
       grant_type: "authorization_code",
       client_id: "client-id",
@@ -77,10 +78,17 @@ describe("Jira Cloud OAuth client", () => {
     const error = await exchangeAtlassianAuthorizationCode("bad-code").catch((caught) => caught as Error);
     expect(error).toBeInstanceOf(AtlassianOAuthError);
     // A rejected exchange restarts the login flow; it is not the terminal
-    // reauthorization state a dead refresh grant produces.
+    // reauthorization state a dead refresh grant produces — and a burnt code
+    // is not cured by waiting, so the message says to start again.
     expect(error).not.toBeInstanceOf(AtlassianReauthorizationRequiredError);
+    expect(String(error)).toContain("Start the Jira connection again");
     expect(String(error)).not.toContain("upstream secret body");
     expect(String(error)).not.toContain("client-secret");
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400, headers: { "content-type": "application/json" } }));
+    const burntCode = await exchangeAtlassianAuthorizationCode("burnt-code").catch((caught) => caught as Error);
+    expect(burntCode).not.toBeInstanceOf(AtlassianReauthorizationRequiredError);
+    expect(String(burntCode)).toContain("Start the Jira connection again");
   });
 
   it("requires the rotated refresh token on every refresh", async () => {
@@ -94,29 +102,34 @@ describe("Jira Cloud OAuth client", () => {
     expect(error).not.toBeInstanceOf(AtlassianReauthorizationRequiredError);
   });
 
-  it("classifies refresh failures: 401/403 and invalid_grant are terminal, outages are not", async () => {
-    for (const status of [401, 403] as const) {
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("denied", { status })));
+  it("classifies refresh failures: only an invalid_grant body is terminal", async () => {
+    // Atlassian's real dead-grant response (403 + invalid_grant) and the RFC
+    // 6749 §5.2 shape (400 + invalid_grant) flip terminally, whatever the status.
+    for (const status of [400, 401, 403] as const) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+        JSON.stringify({ error: "invalid_grant", error_description: "Unknown or invalid refresh token." }),
+        { status, headers: { "content-type": "application/json" } },
+      )));
       await expect(refreshAtlassianOAuthTokens("refresh-old")).rejects.toBeInstanceOf(AtlassianReauthorizationRequiredError);
     }
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
-      JSON.stringify({ error: "invalid_grant", error_description: "Unknown or invalid refresh token." }),
-      { status: 400, headers: { "content-type": "application/json" } },
-    )));
-    await expect(refreshAtlassianOAuthTokens("refresh-old")).rejects.toBeInstanceOf(AtlassianReauthorizationRequiredError);
-
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
-      JSON.stringify({ error: "invalid_request" }),
-      { status: 400, headers: { "content-type": "application/json" } },
-    )));
-    const badRequest = await refreshAtlassianOAuthTokens("refresh-old").catch((caught) => caught as Error);
-    expect(badRequest).toBeInstanceOf(AtlassianOAuthError);
-    expect(badRequest).not.toBeInstanceOf(AtlassianReauthorizationRequiredError);
-
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("outage", { status: 503 })));
-    const outage = await refreshAtlassianOAuthTokens("refresh-old").catch((caught) => caught as Error);
-    expect(outage).toBeInstanceOf(AtlassianOAuthError);
-    expect(outage).not.toBeInstanceOf(AtlassianReauthorizationRequiredError);
+    // A bare 401/403 is invalid_client (a rotated app secret) or an edge/WAF
+    // page; 400 invalid_request is a protocol bug; 429 is Auth0 rate limiting
+    // hitting exactly when refresh jobs storm; 5xx/network are outages.
+    // Re-consent fixes none of those — flipping rows terminal on them would
+    // kill the fleet on a 30-minute config skew, so all stay transient.
+    const transientCases: Array<[number, string]> = [
+      [401, JSON.stringify({ error: "access_denied", error_description: "Unauthorized" })],
+      [403, "<html>blocked by edge</html>"],
+      [400, JSON.stringify({ error: "invalid_request" })],
+      [429, "rate limited"],
+      [503, "outage"],
+    ];
+    for (const [status, body] of transientCases) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status })));
+      const error = await refreshAtlassianOAuthTokens("refresh-old").catch((caught) => caught as Error);
+      expect(error, `status ${status}`).toBeInstanceOf(AtlassianOAuthError);
+      expect(error, `status ${status}`).not.toBeInstanceOf(AtlassianReauthorizationRequiredError);
+    }
 
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("socket reset refresh-old")));
     const network = await refreshAtlassianOAuthTokens("refresh-old").catch((caught) => caught as Error);
@@ -146,6 +159,17 @@ describe("Jira Cloud OAuth client", () => {
     });
     expect(String(fetchMock.mock.calls[0][0])).toBe("https://api.atlassian.com/me");
     expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({ Authorization: "Bearer access-token" });
+  });
+
+  it("names the missing-email condition instead of reading like an outage", async () => {
+    // jira_connections.email is NOT NULL and seeded owners match by email, so
+    // the user-actionable condition deserves its own message.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      account_id: "acct-1", name: "Dana Developer",
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+    const error = await getAtlassianUserIdentity("access-token").catch((caught) => caught as Error);
+    expect(error).toBeInstanceOf(AtlassianOAuthError);
+    expect(String(error)).toContain("email");
   });
 
   it("carries no retired-era references", () => {
