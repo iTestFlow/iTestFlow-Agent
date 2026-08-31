@@ -22,8 +22,9 @@ type JiraProject = {
 type Overview = {
   providerId: "jira-cloud"; role: "owner" | "admin" | "member";
   workspace: { id: string; name: string; siteName: string; siteUrl: string };
-  connection: { status: string };
+  connection: { status: string; credentialKind?: "api_token" | "oauth" | null };
   syncPrincipal?: { exists: boolean; status: string | null; userId: string | null; isActor: boolean };
+  loginMethods?: Array<"api_token" | "oauth">;
   availableProjects: Array<{ id: string; key?: string; name: string }>;
   projects: JiraProject[];
   mappings: Array<{ id: string; projectId: string; jiraIssueKey: string; localEntityType: string; localEntityId: string; direction: string; status: string; lastSyncedAt: string | null; updatedAt: string }>;
@@ -104,11 +105,19 @@ export function JiraIntegrationSection() {
   const canConfigure = overview.role === "owner" || overview.role === "admin";
   const connected = overview.connection.status === "active";
   const invalid = overview.connection.status === "invalid";
+  const reauthRequired = overview.connection.status === "reauthorization_required";
+  // Method availability is deployment policy; absent field = token-only era payloads.
+  const loginMethods = overview.loginMethods ?? ["api_token"];
+  const tokenEnabled = loginMethods.includes("api_token");
+  const oauthEnabled = loginMethods.includes("oauth");
+  const atlassianStartHref = `/api/auth/jira/start?site=${encodeURIComponent(overview.workspace.siteUrl)}&returnTo=${encodeURIComponent("/settings")}`;
   const badge = connected
     ? { tone: "success" as const, label: "Connected" }
     : invalid
       ? { tone: "destructive" as const, label: "Invalid token" }
-      : { tone: "muted" as const, label: "Not connected" };
+      : reauthRequired
+        ? { tone: "destructive" as const, label: "Reconnect needed" }
+        : { tone: "muted" as const, label: "Not connected" };
   const syncPrincipal = overview.syncPrincipal ?? { exists: true, status: null, userId: null, isActor: false };
 
   return <div className="space-y-4">
@@ -118,9 +127,15 @@ export function JiraIntegrationSection() {
           ? "Your API token is the workspace sync token and it is invalid. Replace it below to restore scheduled sync."
           : "The sync owner's API token is invalid. That owner or admin must replace their Jira API token in Settings to restore scheduled sync."}
       </Callout>
+    ) : syncPrincipal.status === "reauthorization_required" ? (
+      <Callout tone="error" role="alert" title="Scheduled Jira sync is blocked.">
+        {syncPrincipal.isActor
+          ? "Your Atlassian authorization is the workspace sync credential and it expired. Reconnect with Atlassian below to restore scheduled sync."
+          : "The sync owner's Atlassian authorization expired. That owner or admin must reconnect with Atlassian in Settings to restore scheduled sync."}
+      </Callout>
     ) : !syncPrincipal.exists ? (
       <Callout tone="warning" role="status" title="No sync owner is connected yet.">
-        Scheduled Jira sync starts once a workspace owner connects an API token; the first owner to connect becomes the workspace sync owner.
+        Scheduled Jira sync starts once a workspace owner connects; the first owner to connect becomes the workspace sync owner.
       </Callout>
     ) : null}
 
@@ -132,15 +147,36 @@ export function JiraIntegrationSection() {
       <div className="grid gap-3 sm:grid-cols-2">
         <div><div className="text-xs text-muted-foreground">Site</div><div className="font-medium">{overview.workspace.siteName}</div></div>
         <div><div className="text-xs text-muted-foreground">Workspace role</div><div className="font-medium capitalize">{overview.role}</div></div>
+        {(connected || invalid || reauthRequired) && overview.connection.credentialKind ? (
+          <div>
+            <div className="text-xs text-muted-foreground">Sign-in method</div>
+            <div className="font-medium">{overview.connection.credentialKind === "oauth" ? "Atlassian account (OAuth)" : "API token"}</div>
+          </div>
+        ) : null}
       </div>
       <a className="inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={overview.workspace.siteUrl} target="_blank" rel="noreferrer">Open Jira site <ExternalLink className="size-3.5" aria-hidden="true" /></a>
-      <ConnectTokenForm
-        connectionStatus={overview.connection.status}
-        busy={Boolean(busy)}
-        error={connectError}
-        onConnect={connectToken}
-      />
-      {connected || invalid ? (confirmDisconnect ? (
+      {reauthRequired ? (
+        <Callout tone="error" role="alert" title="Your Atlassian authorization expired.">
+          Jira stopped accepting this connection. Reconnect with Atlassian to approve it again{tokenEnabled ? ", or connect with an API token below" : ""}.
+        </Callout>
+      ) : null}
+      {oauthEnabled && !connected ? (
+        <a
+          className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-input bg-background px-4 text-sm font-medium shadow-sm hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          href={atlassianStartHref}
+        >
+          {reauthRequired ? "Reconnect with Atlassian" : "Continue with Atlassian"}
+        </a>
+      ) : null}
+      {tokenEnabled ? (
+        <ConnectTokenForm
+          connectionStatus={overview.connection.status}
+          busy={Boolean(busy)}
+          error={connectError}
+          onConnect={connectToken}
+        />
+      ) : null}
+      {connected || invalid || reauthRequired ? (confirmDisconnect ? (
         <div className="flex flex-wrap items-center gap-2" role="status" aria-live="polite">
           <span className="text-sm text-destructive">Disconnect this Jira account? Shared history remains.</span>
           <Button type="button" variant="destructive" aria-label="Confirm Jira Cloud disconnect" disabled={Boolean(busy)} onClick={() => void mutate("Jira Cloud disconnected.", undefined, "DELETE")}>Confirm disconnect</Button>

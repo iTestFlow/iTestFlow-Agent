@@ -57,7 +57,7 @@ type CredentialSummary = {
 }
 
 type JiraConnectionSummary = {
-  status: "active" | "invalid" | "revoked" | "not_connected"
+  status: "active" | "invalid" | "reauthorization_required" | "revoked" | "not_connected"
   lastValidatedAt?: string | null
   isStale?: boolean
 }
@@ -334,9 +334,11 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
     : workspaceProviderId === "jira-cloud"
       ? (jiraConnection?.status === "invalid"
           ? { label: "Jira Token Invalid", detail: "Atlassian rejected your Jira API token. Replace it in Settings → Connections." }
-          : jiraConnection?.status === "active" && jiraConnection.isStale
-            ? { label: "Check Jira Token", detail: "Your Jira API token hasn't been validated in a while. Replace it in Settings → Connections." }
-            : null)
+          : jiraConnection?.status === "reauthorization_required"
+            ? { label: "Reconnect Jira", detail: "Your Atlassian authorization expired. Reconnect with Atlassian in Settings → Connections." }
+            : jiraConnection?.status === "active" && jiraConnection.isStale
+              ? { label: "Check Jira Token", detail: "Your Jira API token hasn't been validated in a while. Replace it in Settings → Connections." }
+              : null)
       : null
 
   return (

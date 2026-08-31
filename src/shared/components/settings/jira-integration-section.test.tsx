@@ -38,6 +38,55 @@ describe("JiraIntegrationSection", () => {
     vi.unstubAllGlobals();
   });
 
+  it("renders the reauthorization state: Reconnect link plus the token form as recovery", async () => {
+    fetchMock.mockResolvedValue(json(overview({
+      connection: { status: "reauthorization_required", credentialKind: "oauth" },
+      syncPrincipal: { exists: true, status: "reauthorization_required", userId: "me", isActor: true },
+      loginMethods: ["api_token", "oauth"],
+    })));
+
+    render(<JiraIntegrationSection />);
+
+    expect(await screen.findByText("Reconnect needed")).toBeInTheDocument();
+    const reconnect = screen.getByRole("link", { name: /Reconnect with Atlassian/ });
+    const href = String(reconnect.getAttribute("href"));
+    expect(href).toContain("/api/auth/jira/start?site=");
+    expect(href).toContain(encodeURIComponent("https://quality.atlassian.net"));
+    expect(href).toContain(`returnTo=${encodeURIComponent("/settings")}`);
+    // The sync-principal callout speaks reconsent, never token replacement.
+    expect(screen.getByText("Scheduled Jira sync is blocked.")).toBeInTheDocument();
+    expect(screen.getAllByText(/Reconnect with Atlassian/i).length).toBeGreaterThan(1);
+    // Latest-wins: a pasted token is the other legal recovery when enabled.
+    expect(screen.getByLabelText("Atlassian API token")).toBeInTheDocument();
+  });
+
+  it("hides the token form in OAuth-only mode and names the sign-in method", async () => {
+    fetchMock.mockResolvedValue(json(overview({
+      connection: { status: "active", credentialKind: "oauth" },
+      loginMethods: ["oauth"],
+    })));
+
+    render(<JiraIntegrationSection />);
+
+    await screen.findByText("Quality Jira");
+    expect(screen.queryByRole("button", { name: "Replace API token" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Atlassian API token")).not.toBeInTheDocument();
+    expect(screen.getByText("Atlassian account (OAuth)")).toBeInTheDocument();
+  });
+
+  it("offers Continue with Atlassian beside the token form when both methods are enabled and nothing is connected", async () => {
+    fetchMock.mockResolvedValue(json(overview({
+      connection: { status: "not_connected", credentialKind: null },
+      syncPrincipal: { exists: false, status: null, userId: null, isActor: false },
+      loginMethods: ["api_token", "oauth"],
+    })));
+
+    render(<JiraIntegrationSection />);
+
+    expect(await screen.findByRole("link", { name: /Continue with Atlassian/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("Atlassian API token")).toBeInTheDocument();
+  });
+
   it("opens the token form for an invalid connection and replaces it through the connect action", async () => {
     fetchMock.mockResolvedValue(json(overview({ connection: { status: "invalid" } })));
 

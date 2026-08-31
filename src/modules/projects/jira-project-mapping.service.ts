@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createId, nowIso, sqlAll, sqlGet } from "@/modules/shared/infrastructure/database/db";
+import { getEnabledJiraLoginMethods } from "@/modules/auth/enabled-providers";
 
 export async function upsertJiraProjectMapping(input: {
   workspaceId: string;
@@ -127,10 +128,11 @@ export async function getJiraIntegrationOverview(input: { workspaceId: string; a
   if (!workspaceId || !actorUserId) throw new Error("Jira integration access is invalid.");
   const anchor = await sqlGet<{
     workspace_id: string; workspace_name: string; provider_site_name: string; provider_site_url: string;
-    role: "owner" | "admin" | "member"; connection_status: string;
+    role: "owner" | "admin" | "member"; connection_status: string; connection_credential_kind: "api_token" | "oauth" | null;
   }>(
     `SELECT w.id AS workspace_id, w.name AS workspace_name, w.provider_site_name, w.provider_site_url,
-            wm.role, COALESCE(jc.status, 'not_connected') AS connection_status
+            wm.role, COALESCE(jc.status, 'not_connected') AS connection_status,
+            jc.credential_kind AS connection_credential_kind
      FROM workspaces w
      JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = @actorUserId AND wm.status = 'active'
      LEFT JOIN jira_connections jc ON jc.workspace_id = w.id AND jc.user_id = @actorUserId
@@ -141,15 +143,16 @@ export async function getJiraIntegrationOverview(input: { workspaceId: string; a
 
   // Workspace-level sync-principal health, independent of the acting user, so
   // settings can render an actionable owner/admin callout when polling is
-  // blocked. An invalid principal keeps its flag (replace-token restores it),
-  // so prefer the active row when both shapes exist.
+  // blocked. A dead principal (invalid token, or an OAuth grant needing a
+  // fresh consent) keeps its flag — recovery restores it in place — so prefer
+  // the active row when both shapes exist.
   const principal = await sqlGet<{ user_id: string; status: string }>(
     `SELECT jc.user_id, jc.status
      FROM jira_connections jc
      JOIN workspace_members m ON m.workspace_id = jc.workspace_id AND m.user_id = jc.user_id
        AND m.status = 'active' AND m.role IN ('owner', 'admin')
      WHERE jc.workspace_id = @workspaceId AND jc.is_sync_principal = true
-       AND jc.status IN ('active', 'invalid')
+       AND jc.status IN ('active', 'invalid', 'reauthorization_required')
      ORDER BY CASE jc.status WHEN 'active' THEN 0 ELSE 1 END
      LIMIT 1`,
     { workspaceId },
@@ -192,7 +195,11 @@ export async function getJiraIntegrationOverview(input: { workspaceId: string; a
     providerId: "jira-cloud" as const,
     role: anchor.role,
     workspace: { id: anchor.workspace_id, name: anchor.workspace_name, siteName: anchor.provider_site_name, siteUrl: anchor.provider_site_url },
-    connection: { status: anchor.connection_status },
+    connection: { status: anchor.connection_status, credentialKind: anchor.connection_credential_kind ?? null },
+    // Deployment policy for the connect affordances (token form vs the
+    // Atlassian button); resolved server-side so the client renders no dead
+    // actions.
+    loginMethods: await getEnabledJiraLoginMethods(),
     syncPrincipal: principal
       ? { exists: true as const, status: principal.status, userId: principal.user_id, isActor: principal.user_id === actorUserId }
       : { exists: false as const, status: null, userId: null, isActor: false },

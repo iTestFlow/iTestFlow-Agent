@@ -23,7 +23,7 @@ export type CredentialSummary = {
 };
 
 export type JiraConnectionSummary = {
-  status: "active" | "invalid" | "revoked" | "not_connected";
+  status: "active" | "invalid" | "reauthorization_required" | "revoked" | "not_connected";
   lastValidatedAt?: string | null;
   isStale?: boolean;
 };
