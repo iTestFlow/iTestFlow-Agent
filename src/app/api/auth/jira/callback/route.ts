@@ -15,6 +15,7 @@ import { JIRA_OAUTH_BINDING_COOKIE } from "@/modules/auth/jira-oauth-cookie";
 import { isJiraLoginMethodEnabled } from "@/modules/auth/enabled-providers";
 import { provisionJiraLogin } from "@/modules/auth/jira-provisioning.service";
 import { createSession } from "@/modules/auth/session.service";
+import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
 import { findActiveJiraSiteById } from "@/modules/workspace/workspace.service";
 
 export const runtime = "nodejs";
@@ -31,6 +32,15 @@ export const runtime = "nodejs";
  * Errors never echo the authorization code, tokens, or an unlisted site.
  */
 export async function GET(request: Request): Promise<Response> {
+  // Unauthenticated and DB-touching (method gate + state DELETE): cap it like
+  // the start route so garbage-state hammering stays cheap.
+  const rate = await checkRateLimit(`jira-oauth-callback:${clientIp(request)}`, 20, 5 * 60 * 1000);
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "Too many Jira sign-in attempts. Please wait and try again." },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } },
+    );
+  }
   // Persisted OAuth state survives a restart, so disablement must also close
   // the callback: without this, an in-flight sign-in could still complete for
   // up to the state TTL after the operator disabled the method.
@@ -38,7 +48,11 @@ export async function GET(request: Request): Promise<Response> {
     return NextResponse.json({ error: "Jira sign-in with Atlassian is disabled for this deployment." }, { status: 403 });
   }
   const url = new URL(request.url);
+  const cookieStore = await cookies();
   const loginError = (code: "jira_oauth_state" | "jira_site_access" | "jira_oauth_unavailable" | "jira_oauth_failed", site?: string) => {
+    // The binding cookie is inert without an un-consumed state row, but a
+    // failed flow should not leave it lingering for its 10-minute maxAge.
+    cookieStore.delete(JIRA_OAUTH_BINDING_COOKIE);
     const redirect = new URL("/login", url.origin);
     redirect.searchParams.set("error", code);
     if (site) redirect.searchParams.set("site", site);
@@ -50,12 +64,19 @@ export async function GET(request: Request): Promise<Response> {
   if (!state || !code) return loginError("jira_oauth_state");
 
   try {
-    const cookieStore = await cookies();
     const browserBinding = cookieStore.get(JIRA_OAUTH_BINDING_COOKIE)?.value ?? "";
     const consumed = await consumeJiraOAuthState(state, browserBinding);
 
     const site = await findActiveJiraSiteById(consumed.selectedWorkspaceId);
     if (!site) return loginError("jira_site_access", consumed.selectedSiteUrl);
+    // The consent anchors captured at start must still hold: a re-pinned
+    // workspace or a renamed seeded site is no longer what the user approved.
+    if (site.cloudId && consumed.selectedCloudId && site.cloudId !== consumed.selectedCloudId) {
+      return loginError("jira_site_access", consumed.selectedSiteUrl);
+    }
+    if (!site.cloudId && site.siteUrl !== consumed.selectedSiteUrl) {
+      return loginError("jira_site_access", consumed.selectedSiteUrl);
+    }
 
     const tokens = await exchangeAtlassianAuthorizationCode(code);
     const resources = await listAtlassianAccessibleResources(tokens.accessToken);

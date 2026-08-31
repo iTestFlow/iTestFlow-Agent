@@ -43,7 +43,12 @@ describe("Jira OAuth state", () => {
   });
 
   it("rejects every open-redirect shape for returnTo", async () => {
-    for (const returnTo of ["//evil.example", "/\\evil", "https://evil.example/x", "/a/%2f..", "/a/%5C..", "relative"]) {
+    for (const returnTo of [
+      "//evil.example", "/\\evil", "https://evil.example/x", "/a/%2f..", "/a/%5C..", "relative",
+      // WHATWG parsers strip tabs/newlines, turning these into
+      // protocol-relative URLs; the origin-equality backstop must hold.
+      "/\t/evil.example", "/\n/evil.example",
+    ]) {
       await expect(createJiraOAuthState(returnTo, "binding", selection)).rejects.toBeInstanceOf(JiraOAuthStateError);
     }
     expect(mocks.sqlRun).not.toHaveBeenCalled();

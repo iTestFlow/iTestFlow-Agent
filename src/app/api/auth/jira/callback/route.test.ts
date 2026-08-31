@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  checkRateLimit: vi.fn(),
+  clientIp: vi.fn(),
   consumeState: vi.fn(),
   exchange: vi.fn(),
   listResources: vi.fn(),
@@ -14,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   cookieDelete: vi.fn(),
 }));
 
+vi.mock("@/modules/security/rate-limit", () => ({ checkRateLimit: mocks.checkRateLimit, clientIp: mocks.clientIp }));
 vi.mock("@/modules/auth/jira-oauth-state", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/modules/auth/jira-oauth-state")>(),
   consumeJiraOAuthState: mocks.consumeState,
@@ -77,6 +80,8 @@ describe("GET /api/auth/jira/callback", () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     stubEnablement();
+    mocks.checkRateLimit.mockResolvedValue({ allowed: true });
+    mocks.clientIp.mockReturnValue("10.0.0.1");
     mocks.cookieGet.mockReturnValue({ value: "binding-cookie" });
     mocks.consumeState.mockResolvedValue({ ...consumedState });
     mocks.exchange.mockResolvedValue({
@@ -137,6 +142,37 @@ describe("GET /api/auth/jira/callback", () => {
     expect(response.status).toBe(403);
     expect(mocks.consumeState).not.toHaveBeenCalled();
     expect(mocks.exchange).not.toHaveBeenCalled();
+  });
+
+  it("rate-limits with 429 and Retry-After before any state work", async () => {
+    mocks.checkRateLimit.mockResolvedValue({ allowed: false, retryAfterSeconds: 30 });
+    const response = await GET(request());
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("30");
+    expect(mocks.consumeState).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the consent anchors moved: a re-pinned workspace or a renamed seeded site", async () => {
+    // The workspace's pin no longer matches the one captured at start.
+    mocks.findSiteById.mockResolvedValue({
+      workspaceId: "ws-1", cloudId: "cloud-repinned", name: "quality", siteUrl: "https://quality.atlassian.net",
+    });
+    expectLoginErrorRedirect(await GET(request()), "jira_site_access");
+    expect(mocks.exchange).not.toHaveBeenCalled();
+
+    // A seeded workspace's current URL diverged from the consented URL.
+    mocks.consumeState.mockResolvedValue({ ...consumedState, selectedCloudId: null });
+    mocks.findSiteById.mockResolvedValue({
+      workspaceId: "ws-1", cloudId: null, name: "quality", siteUrl: "https://renamed.atlassian.net",
+    });
+    expectLoginErrorRedirect(await GET(request()), "jira_site_access");
+    expect(mocks.exchange).not.toHaveBeenCalled();
+  });
+
+  it("clears the binding cookie on error paths, not only on success", async () => {
+    mocks.consumeState.mockRejectedValue(new JiraOAuthStateError("used"));
+    expectLoginErrorRedirect(await GET(request()), "jira_oauth_state");
+    expect(mocks.cookieDelete).toHaveBeenCalledWith("itf_jira_oauth");
   });
 
   it("redirects to the login error surface for a missing, replayed, or unbound state", async () => {
