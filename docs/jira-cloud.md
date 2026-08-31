@@ -4,7 +4,7 @@ This runbook covers Jira Cloud as the work-management provider and Plain Jira, X
 
 ## Atlassian API Token Setup
 
-Jira sign-in mirrors the Azure PAT flow: each user signs in with their Atlassian account email and a personal API token created at `https://id.atlassian.com/manage-profile/security/api-tokens`. No OAuth app registration, callback URL, webhook ingress, or public HTTPS origin is required — the deployment only makes outbound calls to Atlassian, which suits local and private self-hosted installations.
+Jira sign-in mirrors the Azure PAT flow: each user signs in with their Atlassian account email and a personal API token created at `https://id.atlassian.com/manage-profile/security/api-tokens`. No OAuth app registration, callback URL, webhook ingress, or public HTTPS origin is required for token sign-in — the deployment only makes outbound calls to Atlassian, which suits local and private self-hosted installations. Atlassian OAuth is an optional second sign-in method; see **Atlassian OAuth Sign-In** below.
 
 Both Atlassian API token kinds work, and the kind is detected automatically at sign-in:
 
@@ -47,10 +47,31 @@ Operational notes:
 
 Until the operator completes this procedure, sign-ins against the old URL fail closed — the stale window is operator-owned, which is the deliberate trade for having no OAuth-discovered rename detection.
 
+## Atlassian OAuth Sign-In
+
+Atlassian OAuth 2.0 (3LO) is an optional second sign-in method beside API tokens — the path for organizations whose Atlassian authentication policy blocks API tokens. It is inert until configured: with none of the variables below set, a deployment behaves exactly as the token-only era.
+
+1. Register an app in the Atlassian developer console (`https://developer.atlassian.com/console/myapps`) with the callback URL `https://<your-host>/api/auth/jira/callback` and grant it the `offline_access`, `read:me`, `read:jira-work`, `write:jira-work`, and `read:jira-user` scopes.
+2. Set all three variables or none — a partial set refuses to start the web and worker processes:
+   - `ATLASSIAN_OAUTH_CLIENT_ID=<from the developer console>`
+   - `ATLASSIAN_OAUTH_CLIENT_SECRET=<from the developer console>`
+   - `ATLASSIAN_OAUTH_REDIRECT_URI=<the exact registered callback URL>`
+3. Optionally set `JIRA_LOGIN_METHODS` to control what the login page offers: unset keeps the API token form as the default and adds a **Continue with Atlassian** action once the client is configured; `JIRA_LOGIN_METHODS=oauth` is the OAuth-only mode that removes token sign-in from the deployment entirely (the token login route refuses before parsing anything).
+
+The redirect URI only needs to be reachable by the user's browser — `http://localhost:3000/api/auth/jira/callback` works for local development; no public inbound origin is required.
+
+OAuth sign-in starts from the same configured-site trust boundary as token sign-in: the user picks a `BOOTSTRAP_JIRA_SITES` site, approves access on Atlassian, and the callback verifies the grant covers exactly that site before provisioning — it never silently switches to another site the account can access. The latest successful sign-in with either method becomes the user's single stored credential.
+
+Operational notes:
+
+- Atlassian rotates the refresh token on every refresh and expires an unused one after 90 days; background sync keeps its own grant fresh, but an idle user's connection can lapse. Atlassian tolerates the immediately previous refresh token for a 10-minute leeway window, which also covers a crash between a refresh and its persistence.
+- A dead grant — password change, app access revoked, or an expired refresh token — flips the connection to **Reconnect needed**. Recovery is **Reconnect with Atlassian** in **Settings → Connections**: a fresh consent restores scheduled sync in place, with no principal handover. Scheduled runs blocked this way carry the job code `jira_sync_principal_reauthorization_required`.
+- A rotated app client secret or an Atlassian outage is transient: connections are never terminally flipped by them. Fix the configuration and the next request recovers on its own.
+
 ## Connect-to-Disconnect Flow
 
-1. Select **Jira Cloud** on the login page, pick the Jira site (a single configured site is selected automatically), and sign in with your Atlassian account email and API token. The token is validated against Atlassian before anything is stored; only an opaque session cookie reaches the browser. Sign-in failures are announced inline and distinguish an invalid email/token pair, a token missing scopes, an unconfigured site, and an Atlassian outage — without echoing the token or unlisted site names.
-2. Open **Settings → Connections**. The page shows the connected site, current workspace role, and the connection's lifecycle state (Connected, Invalid token, Not connected) without returning tokens. **Replace API token** stores a new token in place after re-validating the site's pinned cloud ID.
+1. Select **Jira Cloud** on the login page, pick the Jira site (a single configured site is selected automatically), and sign in with your Atlassian account email and API token — or, when OAuth is enabled, with **Continue with Atlassian**. Tokens are validated against Atlassian before anything is stored; only an opaque session cookie reaches the browser. Sign-in failures are announced inline and distinguish an invalid email/token pair, a token missing scopes, an unconfigured site, an inaccessible site on an OAuth grant, and an Atlassian outage — without echoing the token or unlisted site names.
+2. Open **Settings → Connections**. The page shows the connected site, current workspace role, the sign-in method, and the connection's lifecycle state (Connected, Invalid token, Reconnect needed, Not connected) without returning tokens. **Replace API token** stores a new token in place after re-validating the site's pinned cloud ID; **Reconnect with Atlassian** renews an OAuth grant the same way.
 3. Add a visible Jira project. The server re-reads Jira project access and stores the site-local project identity — no webhook or public URL is involved.
 4. Owners or admins configure synchronization direction plus field and status mappings. Members can inspect state and resolve field conflicts but cannot alter shared configuration.
 5. Owners or admins select exactly one artifact backend for each Jira project.
@@ -79,11 +100,12 @@ Provide the Zephyr Scale API token, the approved US/EU/AU/DE region, and immutab
 
 Jira changes arrive by polling: the scheduled workspace sync (Settings → Automation) and the on-demand **Sync now** control both run a full reconciliation using the workspace sync principal's API token. There is no webhook ingress. Two-way reconciliation stores durable per-field baselines, queues pull or push operations before convergence, pauses unresolved conflicts, and advances baselines only after the selected effect succeeds. A complete reconciliation also detects issues deleted in Jira and retires their mappings; an issue observed again later revives its mapping in the same run. Transient provider failures are retried with a bounded attempt count and honor Atlassian's `Retry-After` on rate limits (clamped to one hour); terminal failures remain visible as `error` or `invalid`.
 
-The sync principal is the first owner's connection (an invalid principal keeps its designation so a replaced token resumes polling in place). Scheduled runs that fail because the principal token is missing or invalid carry the machine-readable job codes `jira_sync_principal_missing` / `jira_sync_principal_invalid`, and Settings → Connections shows an actionable callout naming who can fix it.
+The sync principal is the first owner's connection (a dead principal keeps its designation so a replaced token or a fresh Atlassian consent resumes polling in place). Scheduled runs that fail because the principal credential is missing, invalid, or awaiting reconsent carry the machine-readable job codes `jira_sync_principal_missing` / `jira_sync_principal_invalid` / `jira_sync_principal_reauthorization_required`, and Settings → Connections shows an actionable callout naming who can fix it.
 
 ## Recovery and Diagnostics
 
 - `Invalid token` (connection or sync principal): the token expired (Atlassian caps tokens at one year), was revoked, or was rejected at use time. Replace it in **Settings → Connections**; scheduled sync resumes without a principal handover.
+- `Reconnect needed` (OAuth connection or sync principal): the Atlassian grant is dead — password change, app access revoked, or an expired refresh token. **Reconnect with Atlassian** in **Settings → Connections**; a token can also be connected in its place when the method is enabled.
 - `conflict`: choose **Use iTestFlow** or **Use Jira**. The choice queues convergence; the conflict remains visible until the operation completes.
 - `error`: inspect the fixed error code and application audit event. Provider response bodies, tokens, client secrets, and API tokens are deliberately excluded.
 - missing trace link: retry publishing with the same immutable local artifact ID. Each backend searches or claims that identity before create.
@@ -94,4 +116,4 @@ For non-production verification, run focused Jira unit tests, `npm run typecheck
 
 ## Rollback
 
-Disable scheduled workers and capture a database backup before rollback. Revert the application to the last compatible release, then roll back only migrations introduced after that release using the project migration tooling. The Jira API-token migration's downgrade recreates the pre-release OAuth-era structures empty: stored API tokens, OAuth secrets, and webhook events are not recoverable — restore the backup if those records must be retained. Workspaces, external identities, projects, sync mappings, backend configuration, and trace links are preserved by the forward migration and only removed by rolling back further into the pre-Jira era. Azure DevOps workspace rows and credentials are not converted or deleted by Jira setup.
+Disable scheduled workers and capture a database backup before rollback. Revert the application to the last compatible release, then roll back only migrations introduced after that release using the project migration tooling. The dual-auth migration's downgrade deletes stored OAuth credential rows (their secrets are not recoverable) and keeps API-token rows intact; the Jira API-token migration's downgrade recreates the pre-release OAuth-era structures empty: stored API tokens, OAuth secrets, and webhook events are not recoverable — restore the backup if those records must be retained. Workspaces, external identities, projects, sync mappings, backend configuration, and trace links are preserved by the forward migrations and only removed by rolling back further into the pre-Jira era. Azure DevOps workspace rows and credentials are not converted or deleted by Jira setup.

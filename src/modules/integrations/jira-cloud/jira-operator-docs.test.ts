@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("Jira Cloud operator documentation", () => {
-  it("documents the complete API-token provider and backend lifecycle without example secrets", () => {
+  it("documents the complete dual-auth provider and backend lifecycle without example secrets", () => {
     const docPath = join(process.cwd(), "docs/jira-cloud.md");
     expect(existsSync(docPath)).toBe(true);
     const docs = readFileSync(docPath, "utf8");
@@ -11,7 +11,7 @@ describe("Jira Cloud operator documentation", () => {
     const readme = readFileSync(join(process.cwd(), "README.md"), "utf8");
     const env = readFileSync(join(process.cwd(), ".env.example"), "utf8");
 
-    for (const heading of ["# Jira Cloud Operations", "## Atlassian API Token Setup", "## Connect-to-Disconnect Flow", "## Artifact Backends", "## Polling and Synchronization", "## Recovery and Diagnostics", "## Rollback"]) {
+    for (const heading of ["# Jira Cloud Operations", "## Atlassian API Token Setup", "## Atlassian OAuth Sign-In", "## Connect-to-Disconnect Flow", "## Artifact Backends", "## Polling and Synchronization", "## Recovery and Diagnostics", "## Rollback"]) {
       expect(docs).toContain(heading);
     }
 
@@ -23,22 +23,37 @@ describe("Jira Cloud operator documentation", () => {
     for (const scope of ["read:jira-work", "write:jira-work", "read:jira-user"]) expect(docs).toContain(scope);
     expect(docs).toMatch(/one-year lifetime|caps every API token at a one-year/i);
 
-    for (const variable of ["APP_ENCRYPTION_KEY", "BOOTSTRAP_OWNER_JIRA_SITE", "BOOTSTRAP_JIRA_SITES", "BOOTSTRAP_ENABLED_PROVIDERS"]) {
+    for (const variable of [
+      "APP_ENCRYPTION_KEY", "BOOTSTRAP_OWNER_JIRA_SITE", "BOOTSTRAP_JIRA_SITES", "BOOTSTRAP_ENABLED_PROVIDERS",
+      // Dual-auth era: the OAuth client and method switch are CURRENT config.
+      "ATLASSIAN_OAUTH_CLIENT_ID", "ATLASSIAN_OAUTH_CLIENT_SECRET", "ATLASSIAN_OAUTH_REDIRECT_URI", "JIRA_LOGIN_METHODS",
+    ]) {
       expect(docs).toContain(variable);
       expect(env).toContain(`${variable}=`);
     }
 
-    // The OAuth/webhook era is gone from every operator surface. ("webhook"
-    // itself may appear only to say the deployment has none.)
-    for (const retired of [
-      "ATLASSIAN_OAUTH_CLIENT_ID", "ATLASSIAN_OAUTH_CLIENT_SECRET", "ATLASSIAN_OAUTH_REDIRECT_URI",
-      "ATLASSIAN_ALLOWED_CLOUD_IDS", "ITESTFLOW_PUBLIC_URL", "read:me", "manage:jira-webhook",
-      "offline_access", "User Identity API",
-    ]) {
+    // OAuth sign-in guidance: app registration with the exact scope set, the
+    // callback path, the all-or-none env rule, and the OAuth-only mode for
+    // orgs whose Atlassian policy blocks API tokens.
+    for (const scope of ["offline_access", "read:me"]) expect(docs).toContain(scope);
+    expect(docs).toContain("/api/auth/jira/callback");
+    expect(docs).toContain("Set all three variables or none");
+    expect(docs).toContain("JIRA_LOGIN_METHODS=oauth");
+    // Rotating refresh tokens: the lifecycle operators must plan for.
+    expect(docs).toMatch(/rotat/i);
+    expect(docs).toMatch(/90[- ]day/i);
+    expect(docs).toMatch(/10-minute (?:reuse )?leeway/i);
+    // Recovery is reconsent, in place, with its own job code.
+    expect(docs).toContain("Reconnect with Atlassian");
+    expect(docs).toContain("jira_sync_principal_reauthorization_required");
+
+    // The webhook era and its variables stay gone from every operator surface.
+    // ("webhook" itself may appear only to say the deployment has none.)
+    for (const retired of ["ATLASSIAN_ALLOWED_CLOUD_IDS", "ITESTFLOW_PUBLIC_URL", "manage:jira-webhook"]) {
       expect(docs).not.toContain(retired);
       expect(env).not.toContain(retired);
     }
-    for (const retired of ["ATLASSIAN_OAUTH", "ATLASSIAN_ALLOWED_CLOUD_IDS", "ITESTFLOW_PUBLIC_URL", "User Identity API"]) {
+    for (const retired of ["ATLASSIAN_ALLOWED_CLOUD_IDS", "ITESTFLOW_PUBLIC_URL"]) {
       expect(deployment).not.toContain(retired);
       expect(readme).not.toContain(retired);
     }
@@ -64,11 +79,16 @@ describe("Jira Cloud operator documentation", () => {
       .split(/\r?\n/)
       .find((line) => line.startsWith("- [ ]") && line.includes("BOOTSTRAP_JIRA_SITES"));
     expect(bootstrapChecklist).toMatch(/unless[^.]*upgrade[^.]*active jira-cloud workspace/i);
+    // The deployment checklist covers the OAuth client's all-or-none rule.
+    const oauthChecklist = deployment
+      .split(/\r?\n/)
+      .find((line) => line.startsWith("- [ ]") && line.includes("ATLASSIAN_OAUTH_CLIENT_ID"));
+    expect(oauthChecklist).toMatch(/all three|or none/i);
 
     // The ordered rename runbook: update env, restart, sign in.
     const renameSection = docs.slice(
       docs.indexOf("### Renaming a Jira Site URL"),
-      docs.indexOf("## Connect-to-Disconnect Flow"),
+      docs.indexOf("## Atlassian OAuth Sign-In"),
     );
     expect(renameSection.indexOf("Update `BOOTSTRAP_JIRA_SITES`")).toBeGreaterThan(-1);
     expect(renameSection.indexOf("Update `BOOTSTRAP_JIRA_SITES`")).toBeLessThan(renameSection.indexOf("Restart the application"));
@@ -86,11 +106,13 @@ describe("Jira Cloud operator documentation", () => {
     expect(docs).toMatch(/Origin[\s\S]{0,200}Host/);
     expect(docs).toContain("RATE_LIMIT_TRUSTED_PROXY_HOPS");
 
-    // Rollback states exactly what the destructive migration's down() restores.
+    // Rollback states exactly what the destructive migrations' down() restores.
     expect(docs).toMatch(/downgrade recreates[^.]*empty/i);
     expect(docs).toMatch(/not recoverable/i);
+    expect(docs).toMatch(/downgrade deletes[^.]*OAuth credential/i);
 
     // Never ship a literal example secret.
     expect(docs).not.toMatch(/(client_secret|api_token|access_token)\s*=\s*[^<\s]/i);
+    expect(env).not.toMatch(/(CLIENT_SECRET|API_TOKEN|ACCESS_TOKEN)=[^\s]/);
   });
 });

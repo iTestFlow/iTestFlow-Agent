@@ -110,8 +110,6 @@
     "src/modules/audit/generation-failure-audit.ts",
     "src/modules/auth/auth-provider.ts",
     "src/modules/auth/jira-oauth-cookie.ts",
-    "src/modules/auth/jira-oauth-state.ts",
-    "src/modules/auth/jira-oauth.ts",
     "src/modules/auth/session-cookie.ts",
     "src/modules/auth/user.service.ts",
     "src/modules/bug-reporting/bug-posting.service.ts",

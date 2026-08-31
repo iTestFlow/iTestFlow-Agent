@@ -45,6 +45,8 @@ Jira Cloud sign-in mirrors the Azure PAT flow: users sign in with their Atlassia
 | `BOOTSTRAP_OWNER_JIRA_SITE` | legacy | Single-site compatibility pair with `BOOTSTRAP_OWNER_EMAIL`; prefer `BOOTSTRAP_JIRA_SITES` |
 | `BOOTSTRAP_JIRA_SITES` | fresh Jira deployment | Comma-separated `siteUrl\|ownerEmail` entries (accepts `mysite` or `https://mysite.atlassian.net`). Seeds each site's workspace and declared owner at startup so the login site picker works and the declared owner — not the first visitor — owns the workspace |
 | `BOOTSTRAP_ENABLED_PROVIDERS` | optional | Which sign-in providers the login page offers (`azure-devops`, `jira-cloud`; first entry is the default pane). Unset auto-detects: Azure always, Jira when a bootstrap site resolves or an active jira-cloud workspace exists |
+| `ATLASSIAN_OAUTH_CLIENT_ID` / `ATLASSIAN_OAUTH_CLIENT_SECRET` / `ATLASSIAN_OAUTH_REDIRECT_URI` | optional | Atlassian OAuth sign-in beside API tokens. Set all three or none (a partial set refuses to start); the redirect URI is the app's registered `/api/auth/jira/callback` URL and needs only browser reachability |
+| `JIRA_LOGIN_METHODS` | optional | Jira sign-in methods the login page offers (`api_token`, `oauth`, comma-separated). Unset: `api_token`, plus `oauth` when the OAuth client is configured; `oauth` alone is the OAuth-only mode |
 
 ### Common Variables (Both Modes)
 
@@ -191,6 +193,7 @@ These operations are reversible and preserve all workspace data, user records, p
 - [ ] HTTPS is enabled.
 - [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, and bootstrap variables (`BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG` or `BOOTSTRAP_AZURE_ORGS`; plus `BOOTSTRAP_JIRA_SITES` for fresh Jira Cloud deployments with a declared owner per site, unless a qualifying upgrade's database already carries an active jira-cloud workspace) are set through secrets.
 - [ ] `npm run db:migrate` runs before the new application version receives traffic.
+- [ ] Optional Atlassian OAuth sign-in: `ATLASSIAN_OAUTH_CLIENT_ID`, `ATLASSIAN_OAUTH_CLIENT_SECRET`, and `ATLASSIAN_OAUTH_REDIRECT_URI` are set all three or none, and `JIRA_LOGIN_METHODS` matches the intended sign-in offering.
 - [ ] At least one supervised application process is running, or the advanced split topology has at least one web process and one capable background process.
 - [ ] PostgreSQL automated backups are enabled and restore has been tested.
 - [ ] Reverse proxy forwards client IP headers if rate limiting should key by real client IP.

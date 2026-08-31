@@ -92,10 +92,19 @@ describe("Jira project mapping", () => {
 
   it("returns a member-scoped, redacted Jira integration overview", async () => {
     expect(typeof (jiraProjectMapping as Record<string, unknown>).getJiraIntegrationOverview).toBe("function");
+    // The overview resolves the deployment's login methods env-side.
+    vi.stubEnv("DATABASE_URL", "");
+    vi.stubEnv("BOOTSTRAP_ENABLED_PROVIDERS", "");
+    vi.stubEnv("BOOTSTRAP_JIRA_SITES", "quality|owner@example.test");
+    vi.stubEnv("JIRA_LOGIN_METHODS", "");
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_SECRET", "");
+    vi.stubEnv("ATLASSIAN_OAUTH_REDIRECT_URI", "");
     mocks.sqlGet
       .mockResolvedValueOnce({
         workspace_id: "ws-1", workspace_name: "Quality Cloud", provider_site_name: "Quality Jira",
         provider_site_url: "https://quality.atlassian.net", role: "member", connection_status: "active",
+        connection_credential_kind: "api_token",
       })
       .mockResolvedValueOnce({ user_id: "sync-user", status: "invalid" });
     mocks.sqlAll
@@ -108,7 +117,9 @@ describe("Jira project mapping", () => {
     const overview = await getOverview({ workspaceId: "ws-1", actorUserId: "user-1" });
 
     expect(overview).toMatchObject({
-      providerId: "jira-cloud", role: "member", connection: { status: "active" },
+      providerId: "jira-cloud", role: "member", connection: { status: "active", credentialKind: "api_token" },
+      // Deployment policy for the connect affordances, resolved server-side.
+      loginMethods: ["api_token"],
       // Workspace-level principal health, independent of the acting member —
       // the settings surface renders its actionable callout from this block.
       syncPrincipal: { exists: true, status: "invalid", userId: "sync-user", isActor: false },
@@ -117,6 +128,9 @@ describe("Jira project mapping", () => {
     expect(principalSql).toContain("is_sync_principal = true");
     expect(principalSql).toContain("m.role IN ('owner', 'admin')");
     expect(principalSql).toContain("CASE jc.status WHEN 'active' THEN 0");
+    // The scan must include the flag-keeping OAuth dead state, or a
+    // reauthorization-required principal reads as "no sync owner yet".
+    expect(principalSql).toContain("'reauthorization_required'");
     expect(JSON.stringify(overview)).not.toContain("encrypted_secret");
     expect(JSON.stringify(overview)).not.toContain("client-public");
     expect(mocks.sqlGet.mock.calls[0][0]).toContain("JOIN workspace_members");
