@@ -49,6 +49,9 @@ describe("Jira Cloud operator documentation", () => {
 
     // The webhook era and its variables stay gone from every operator surface.
     // ("webhook" itself may appear only to say the deployment has none.)
+    // Deliberately un-retired alongside the OAuth vars: "User Identity API" —
+    // the OAuth flow genuinely calls Atlassian's /me identity endpoint, so
+    // documenting it is no longer an era violation.
     for (const retired of ["ATLASSIAN_ALLOWED_CLOUD_IDS", "ITESTFLOW_PUBLIC_URL", "manage:jira-webhook"]) {
       expect(docs).not.toContain(retired);
       expect(env).not.toContain(retired);

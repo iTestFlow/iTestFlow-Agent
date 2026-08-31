@@ -38,7 +38,7 @@ iTestFlow supports two bootstrap modes:
 
 ### Jira Cloud Sign-In (Optional Provider)
 
-Jira Cloud sign-in mirrors the Azure PAT flow: users sign in with their Atlassian account email and a personal API token, so no OAuth app, callback URL, webhook ingress, or public origin is configured. A fresh Jira Cloud deployment must set `BOOTSTRAP_JIRA_SITES` with an owner email before the provider works; bootstrap may be omitted only for an upgrade whose database already carries an active jira-cloud workspace from an earlier seed. See [jira-cloud.md](jira-cloud.md) for API-token guidance (both classic and scoped token kinds), the URL-rename procedure, and operational notes.
+Jira Cloud sign-in mirrors the Azure PAT flow: users sign in with their Atlassian account email and a personal API token, so no OAuth app, callback URL, webhook ingress, or public origin is required for token sign-in. Atlassian OAuth is an optional second sign-in method configured through the `ATLASSIAN_OAUTH_*` variables below. A fresh Jira Cloud deployment must set `BOOTSTRAP_JIRA_SITES` with an owner email before the provider works; bootstrap may be omitted only for an upgrade whose database already carries an active jira-cloud workspace from an earlier seed. See [jira-cloud.md](jira-cloud.md) for API-token guidance (both classic and scoped token kinds), OAuth setup, the URL-rename procedure, and operational notes.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
