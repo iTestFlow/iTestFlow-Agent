@@ -346,7 +346,11 @@ function createOAuthAccessTokenSupplier(key: { workspaceId: string; userId: stri
       lastServedExpiresAt = served.expiresAt;
       return served.accessToken;
     } catch (error) {
-      if (error instanceof JiraReauthorizationRequiredError || error instanceof AtlassianReauthorizationRequiredError) {
+      if (
+        error instanceof JiraReauthorizationRequiredError
+        || error instanceof AtlassianReauthorizationRequiredError
+        || error instanceof JiraOAuthConnectionGoneError
+      ) {
         throw new JiraBearerAuthError("reauthorization_required");
       }
       if (error instanceof AtlassianOAuthError) {
@@ -400,7 +404,7 @@ async function resolveOAuthAccessToken(
     if (access.keyVersion !== refresh.keyVersion) throw new Error("Jira OAuth token encryption key versions do not match.");
     const now = nowIso();
     const expiresAt = expiryIso(now, rotated.expiresInSeconds);
-    await sqlRun(
+    const updated = await sqlRun(
       `UPDATE jira_connections SET
          encrypted_access_token = @encryptedAccessToken,
          access_token_iv = @accessTokenIv,
@@ -426,6 +430,15 @@ async function resolveOAuthAccessToken(
       },
       client,
     );
+    // Unreachable while the FOR UPDATE lock holds and every status writer
+    // blocks on it — but if this ever matches 0 rows, the rotated pair would
+    // be silently discarded while the caller still got a working access
+    // token, and the grant would die once Atlassian's reuse leeway lapses.
+    // Fail loudly as a transient instead: the rollback keeps the old pair,
+    // which the leeway keeps usable for a retry.
+    if (updated !== 1) {
+      throw new AtlassianOAuthError("The rotated Jira OAuth tokens could not be persisted. Try again later.");
+    }
     return { accessToken: rotated.accessToken, expiresAt };
   });
   if ("reauthorizationRequired" in outcome) throw new JiraReauthorizationRequiredError();
@@ -454,8 +467,20 @@ async function readOAuthTokenRow(
   );
 }
 
+/** The connection stopped being an OAuth row mid-use (revoked, or replaced by an API token via latest-wins). */
+class JiraOAuthConnectionGoneError extends Error {
+  constructor() {
+    super("The Jira OAuth connection is no longer available in this shape.");
+    this.name = "JiraOAuthConnectionGoneError";
+  }
+}
+
 function usableOAuthRow(row: OAuthTokenRow | undefined): OAuthTokenRow {
-  if (!row) throw new Error("No active Jira connection is available for this user and workspace.");
+  // A held supplier can outlive its row's shape: latest-wins may have replaced
+  // it with an API token, or revoke cleared it. Terminal for THIS supplier —
+  // the next resolve returns the current credential — so it must not classify
+  // as a retryable unknown and burn bounded job retries.
+  if (!row) throw new JiraOAuthConnectionGoneError();
   if (row.status === "reauthorization_required") throw new JiraReauthorizationRequiredError();
   return row;
 }
@@ -537,8 +562,6 @@ export function jiraOnUnauthorized(credential: JiraCredential, workspaceId: stri
     },
   };
 }
-
-export type JiraAuthCredential = JiraAuth;
 
 export async function revokeJiraConnection(input: {
   workspaceId: string;

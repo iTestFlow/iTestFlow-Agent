@@ -437,6 +437,29 @@ describe("OAuth access-token supplier", () => {
     expect(mocks.sqlRun).not.toHaveBeenCalled();
   });
 
+  it("fails loudly as transient when the rotation persist matches no row — never silently drops the rotated pair", async () => {
+    const getToken = await supplier();
+    const expiring = { ...oauthRow, access_expires_at: "2026-08-13T10:00:30.000Z" };
+    mocks.sqlGet.mockResolvedValueOnce(expiring).mockResolvedValueOnce(expiring);
+    mocks.refreshTokens.mockResolvedValue({
+      accessToken: "new-access", refreshToken: "new-refresh", expiresInSeconds: 3600, scope: "", tokenType: "Bearer",
+    });
+    mocks.sqlRun.mockResolvedValueOnce(0);
+
+    const error = await getToken().catch((caught) => caught as JiraBearerAuthError);
+    expect(error).toBeInstanceOf(JiraBearerAuthError);
+    expect((error as JiraBearerAuthError).reason).toBe("unavailable");
+  });
+
+  it("reports a row that stopped being OAuth (revoked or replaced by a token) as terminal, not retryable-unknown", async () => {
+    const getToken = await supplier();
+    mocks.sqlGet.mockResolvedValueOnce(undefined);
+    const error = await getToken().catch((caught) => caught as JiraBearerAuthError);
+    expect(error).toBeInstanceOf(JiraBearerAuthError);
+    expect((error as JiraBearerAuthError).reason).toBe("reauthorization_required");
+    expect(mocks.refreshTokens).not.toHaveBeenCalled();
+  });
+
   it("reports reauthorization_required without a refresh attempt when the row is already flipped", async () => {
     const getToken = await supplier();
     mocks.sqlGet.mockResolvedValueOnce({ ...oauthRow, status: "reauthorization_required" });

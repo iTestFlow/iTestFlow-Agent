@@ -277,8 +277,10 @@ async function drainOperations(input: {
         { workspaceId: input.workspaceId, userId: input.principalUserId },
       );
       if (principal?.status !== "active") {
+        // revoked cleared the flag, so the next full run reports "missing" —
+        // tell the same story mid-drain instead of "replace the token".
         throw new JiraSyncPrincipalError(
-          !principal ? "jira_sync_principal_missing"
+          !principal || principal.status === "revoked" ? "jira_sync_principal_missing"
             : principal.status === "reauthorization_required" ? "jira_sync_principal_reauthorization_required"
             : "jira_sync_principal_invalid",
         );

@@ -30,6 +30,13 @@ import { z } from "zod";
 
 const AUTHORIZE_URL = "https://auth.atlassian.com/authorize";
 const TOKEN_URL = "https://auth.atlassian.com/oauth/token";
+/**
+ * Every Atlassian call is bounded: a refresh runs inside a row-lock
+ * transaction holding a pool client, so an unbounded hang could stall every
+ * same-workspace principal decision behind it. A timeout surfaces as the
+ * transient unavailable error.
+ */
+const ATLASSIAN_REQUEST_TIMEOUT_MS = 15_000;
 const JIRA_OAUTH_SCOPES = [
   "offline_access",
   "read:me",
@@ -144,6 +151,7 @@ async function requestTokens(payload: Record<string, string>, refreshPath = fals
         client_secret: clientSecret,
       }),
       cache: "no-store",
+      signal: AbortSignal.timeout(ATLASSIAN_REQUEST_TIMEOUT_MS),
     });
   } catch {
     throw new AtlassianOAuthError("Atlassian authorization is unavailable. Try again later.");
@@ -241,6 +249,7 @@ async function requestAtlassianJson<T>(url: string, accessToken: string, schema:
     response = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
       cache: "no-store",
+      signal: AbortSignal.timeout(ATLASSIAN_REQUEST_TIMEOUT_MS),
     });
   } catch {
     throw new AtlassianOAuthError("Atlassian is unavailable. Try again later.");
