@@ -56,7 +56,7 @@ const AccessibleResourcesSchema = z.array(z.object({
 const UserIdentitySchema = z.object({
   account_id: z.string().min(1),
   name: z.string().min(1),
-  email: z.string().email().nullish(),
+  email: z.string().email().or(z.literal("")).nullish(),
 });
 
 export type AtlassianOAuthTokens = {

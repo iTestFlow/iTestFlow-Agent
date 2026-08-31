@@ -163,13 +163,19 @@ describe("Jira Cloud OAuth client", () => {
 
   it("names the missing-email condition instead of reading like an outage", async () => {
     // jira_connections.email is NOT NULL and seeded owners match by email, so
-    // the user-actionable condition deserves its own message.
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      account_id: "acct-1", name: "Dana Developer",
-    }), { status: 200, headers: { "content-type": "application/json" } })));
-    const error = await getAtlassianUserIdentity("access-token").catch((caught) => caught as Error);
-    expect(error).toBeInstanceOf(AtlassianOAuthError);
-    expect(String(error)).toContain("email");
+    // the user-actionable condition deserves its own message — for an absent
+    // AND an empty-string email.
+    for (const body of [
+      { account_id: "acct-1", name: "Dana Developer" },
+      { account_id: "acct-1", name: "Dana Developer", email: "" },
+    ]) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(body), {
+        status: 200, headers: { "content-type": "application/json" },
+      })));
+      const error = await getAtlassianUserIdentity("access-token").catch((caught) => caught as Error);
+      expect(error).toBeInstanceOf(AtlassianOAuthError);
+      expect(String(error)).toContain("email");
+    }
   });
 
   it("carries no retired-era references", () => {
