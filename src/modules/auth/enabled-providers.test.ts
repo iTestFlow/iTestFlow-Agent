@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ sqlGet: vi.fn() }));
 vi.mock("@/modules/shared/infrastructure/database/db", () => ({ sqlGet: mocks.sqlGet }));
 
-import { getEnabledLoginProviders, isLoginProviderEnabled, validateEnabledProviderShape } from "@/modules/auth/enabled-providers";
+import { getEnabledJiraLoginMethods, getEnabledLoginProviders, isJiraLoginMethodEnabled, isLoginProviderEnabled, validateEnabledProviderShape } from "@/modules/auth/enabled-providers";
 
 describe("getEnabledLoginProviders", () => {
   beforeEach(() => {
@@ -93,5 +93,88 @@ describe("getEnabledLoginProviders", () => {
     vi.stubEnv("BOOTSTRAP_ENABLED_PROVIDERS", "jira-cloud");
     expect(() => validateEnabledProviderShape()).not.toThrow();
     expect(mocks.sqlGet).not.toHaveBeenCalled();
+  });
+});
+
+describe("getEnabledJiraLoginMethods", () => {
+  const OAUTH_ENV = {
+    ATLASSIAN_OAUTH_CLIENT_ID: "client-id",
+    ATLASSIAN_OAUTH_CLIENT_SECRET: "client-secret",
+    ATLASSIAN_OAUTH_REDIRECT_URI: "https://itestflow.example/api/auth/jira/callback",
+  } as const;
+  const stubFullOAuthEnv = () => {
+    for (const [key, value] of Object.entries(OAUTH_ENV)) vi.stubEnv(key, value);
+  };
+
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    vi.clearAllMocks();
+    vi.stubEnv("DATABASE_URL", "");
+    vi.stubEnv("BOOTSTRAP_ENABLED_PROVIDERS", "");
+    vi.stubEnv("BOOTSTRAP_JIRA_SITES", "quality|owner@example.test");
+    vi.stubEnv("BOOTSTRAP_OWNER_JIRA_SITE", "");
+    vi.stubEnv("BOOTSTRAP_OWNER_EMAIL", "");
+    vi.stubEnv("JIRA_LOGIN_METHODS", "");
+    for (const key of Object.keys(OAUTH_ENV)) vi.stubEnv(key, "");
+  });
+
+  it("offers the API token alone when the OAuth client is unconfigured — existing deployments unchanged", async () => {
+    await expect(getEnabledJiraLoginMethods()).resolves.toEqual(["api_token"]);
+    await expect(isJiraLoginMethodEnabled("api_token")).resolves.toBe(true);
+    await expect(isJiraLoginMethodEnabled("oauth")).resolves.toBe(false);
+  });
+
+  it("auto-offers OAuth after the token default once the client is fully configured", async () => {
+    stubFullOAuthEnv();
+    await expect(getEnabledJiraLoginMethods()).resolves.toEqual(["api_token", "oauth"]);
+    expect(() => validateEnabledProviderShape()).not.toThrow();
+  });
+
+  it("fails startup on a partial OAuth env, naming every missing variable", () => {
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_ID", "client-id");
+    expect(() => validateEnabledProviderShape()).toThrow(/ATLASSIAN_OAUTH_CLIENT_SECRET/);
+    expect(() => validateEnabledProviderShape()).toThrow(/ATLASSIAN_OAUTH_REDIRECT_URI/);
+  });
+
+  it("honors an explicit JIRA_LOGIN_METHODS order and deduplicates", async () => {
+    stubFullOAuthEnv();
+    vi.stubEnv("JIRA_LOGIN_METHODS", "oauth, api_token, oauth");
+    await expect(getEnabledJiraLoginMethods()).resolves.toEqual(["oauth", "api_token"]);
+  });
+
+  it("supports OAuth-only mode: token sign-in is off for the deployment", async () => {
+    stubFullOAuthEnv();
+    vi.stubEnv("JIRA_LOGIN_METHODS", "oauth");
+    await expect(getEnabledJiraLoginMethods()).resolves.toEqual(["oauth"]);
+    await expect(isJiraLoginMethodEnabled("api_token")).resolves.toBe(false);
+    await expect(isJiraLoginMethodEnabled("oauth")).resolves.toBe(true);
+  });
+
+  it("fails fast on an invalid JIRA_LOGIN_METHODS value", () => {
+    vi.stubEnv("JIRA_LOGIN_METHODS", "oauth");
+    expect(() => validateEnabledProviderShape()).toThrow(/ATLASSIAN_OAUTH_/);
+
+    vi.stubEnv("JIRA_LOGIN_METHODS", "github");
+    expect(() => validateEnabledProviderShape()).toThrow(/api_token, oauth/);
+
+    vi.stubEnv("JIRA_LOGIN_METHODS", " , ");
+    expect(() => validateEnabledProviderShape()).toThrow(/JIRA_LOGIN_METHODS/);
+  });
+
+  it("returns no methods when the jira-cloud provider itself is disabled", async () => {
+    vi.stubEnv("BOOTSTRAP_JIRA_SITES", "");
+    stubFullOAuthEnv();
+    await expect(getEnabledJiraLoginMethods()).resolves.toEqual([]);
+    await expect(isJiraLoginMethodEnabled("api_token")).resolves.toBe(false);
+    await expect(isJiraLoginMethodEnabled("oauth")).resolves.toBe(false);
+  });
+
+  it("fails closed to no methods when resolution throws at request time", async () => {
+    // OAuth-only mode with the client env gone after boot: startup would have
+    // refused, but a public route hitting this drift must see 'disabled',
+    // never a 500.
+    vi.stubEnv("JIRA_LOGIN_METHODS", "oauth");
+    await expect(getEnabledJiraLoginMethods()).resolves.toEqual([]);
+    await expect(isJiraLoginMethodEnabled("oauth")).resolves.toBe(false);
   });
 });

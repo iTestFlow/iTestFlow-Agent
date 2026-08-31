@@ -62,6 +62,19 @@ describe("POST /api/auth/jira/login", () => {
     mocks.createSession.mockResolvedValue(undefined);
   });
 
+  it("rejects token sign-in in OAuth-only mode before any credential leaves the server", async () => {
+    vi.stubEnv("JIRA_LOGIN_METHODS", "oauth");
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_ID", "client-id");
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_SECRET", "client-secret");
+    vi.stubEnv("ATLASSIAN_OAUTH_REDIRECT_URI", "https://itestflow.example/api/auth/jira/callback");
+
+    const response = await POST(request(validBody));
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toContain("disabled");
+    expect(mocks.findSite).not.toHaveBeenCalled();
+    expect(mocks.authenticate).not.toHaveBeenCalled();
+  });
+
   it("signs in with site, email, and API token, mirroring the Azure login contract", async () => {
     const response = await POST(request(validBody));
     expect(response.status).toBe(200);

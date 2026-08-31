@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { getEnabledLoginProviders, LOGIN_PROVIDER_LABELS } from "@/modules/auth/enabled-providers";
+import { getEnabledJiraLoginMethods, getEnabledLoginProviders, LOGIN_PROVIDER_LABELS } from "@/modules/auth/enabled-providers";
 import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
 
 export const runtime = "nodejs";
@@ -21,8 +21,14 @@ export async function GET(request: Request) {
   }
 
   try {
-    const providers = (await getEnabledLoginProviders()).map((id) => ({ id, label: LOGIN_PROVIDER_LABELS[id] }));
-    return NextResponse.json({ providers }, { headers: { "Cache-Control": "no-store" } });
+    const enabled = await getEnabledLoginProviders();
+    const providers = enabled.map((id) => ({ id, label: LOGIN_PROVIDER_LABELS[id] }));
+    // The Jira pane branches on its enabled sign-in methods; the field is
+    // absent when Jira itself is off, keeping the payload byte-compatible.
+    const body = enabled.includes("jira-cloud")
+      ? { providers, jiraLoginMethods: await getEnabledJiraLoginMethods() }
+      : { providers };
+    return NextResponse.json(body, { headers: { "Cache-Control": "no-store" } });
   } catch {
     // Fail closed without turning the public picker into a 500 (database
     // outage or enablement drift after a clean boot).

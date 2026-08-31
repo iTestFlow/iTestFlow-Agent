@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { isLoginProviderEnabled } from "@/modules/auth/enabled-providers";
+import { isJiraLoginMethodEnabled, isLoginProviderEnabled } from "@/modules/auth/enabled-providers";
 import { normalizeJiraSite } from "@/modules/auth/bootstrap.service";
 import { storeJiraConnection } from "@/modules/auth/jira-connection.service";
 import { provisionJiraLogin, JiraSiteNotConfiguredError } from "@/modules/auth/jira-provisioning.service";
@@ -53,6 +53,12 @@ export async function POST(request: Request) {
 
   if (!await isLoginProviderEnabled("jira-cloud")) {
     return NextResponse.json({ error: "Jira Cloud sign-in is disabled for this deployment." }, { status: 403 });
+  }
+
+  if (!await isJiraLoginMethodEnabled("api_token")) {
+    // OAuth-only mode: the deployment's org blocks API tokens, so the token
+    // pair must never leave the browser toward this route.
+    return NextResponse.json({ error: "Jira API-token sign-in is disabled for this deployment." }, { status: 403 });
   }
 
   const parsed = LoginSchema.safeParse(await request.json().catch(() => null));

@@ -50,6 +50,80 @@ function configuredProviderList(): LoginProviderId[] {
 export function validateEnabledProviderShape(): void {
   configuredProviderList();
   parseBootstrapJiraSites();
+  configuredJiraLoginMethodList();
+}
+
+export type JiraLoginMethod = "api_token" | "oauth";
+
+const KNOWN_JIRA_LOGIN_METHODS: readonly JiraLoginMethod[] = ["api_token", "oauth"];
+
+const OAUTH_ENV_KEYS = ["ATLASSIAN_OAUTH_CLIENT_ID", "ATLASSIAN_OAUTH_CLIENT_SECRET", "ATLASSIAN_OAUTH_REDIRECT_URI"] as const;
+
+function isKnownJiraLoginMethod(value: string): value is JiraLoginMethod {
+  return (KNOWN_JIRA_LOGIN_METHODS as readonly string[]).includes(value);
+}
+
+/** All-or-none: a partial ATLASSIAN_OAUTH_* set is a deployment mistake, named at startup rather than surfacing as broken sign-in buttons. */
+function oauthClientConfigured(): boolean {
+  const missing = OAUTH_ENV_KEYS.filter((key) => !process.env[key]?.trim());
+  if (missing.length === OAUTH_ENV_KEYS.length) return false;
+  if (missing.length > 0) {
+    throw new Error(
+      `The Atlassian OAuth client is partially configured; missing ${missing.join(", ")}. Set all of ${OAUTH_ENV_KEYS.join(", ")} or none.`,
+    );
+  }
+  return true;
+}
+
+/**
+ * Which Jira sign-in methods this deployment offers (before the provider-level
+ * gate). `JIRA_LOGIN_METHODS` is an explicit comma-separated list from
+ * {api_token, oauth}, order preserved (it drives the login pane's default);
+ * unset keeps the auto rule — api_token always, oauth exactly when the OAuth
+ * client is fully configured — so a deployment with no OAuth env is
+ * byte-identical to the token-only era. OAuth-only mode (`oauth` alone) is the
+ * escape hatch for orgs whose Atlassian policy blocks API tokens.
+ */
+function configuredJiraLoginMethodList(): JiraLoginMethod[] {
+  const oauthConfigured = oauthClientConfigured();
+  const raw = process.env.JIRA_LOGIN_METHODS?.trim();
+  if (!raw) return oauthConfigured ? ["api_token", "oauth"] : ["api_token"];
+  const entries = raw.split(",").map((value) => value.trim()).filter(Boolean);
+  if (entries.length === 0) {
+    throw new Error("JIRA_LOGIN_METHODS is set but lists no method. Allowed values: api_token, oauth.");
+  }
+  const result: JiraLoginMethod[] = [];
+  for (const value of entries) {
+    if (!isKnownJiraLoginMethod(value)) {
+      throw new Error(`JIRA_LOGIN_METHODS contains unknown method "${value}". Allowed values: api_token, oauth.`);
+    }
+    if (!result.includes(value)) result.push(value);
+  }
+  if (result.includes("oauth") && !oauthConfigured) {
+    throw new Error(
+      "JIRA_LOGIN_METHODS enables oauth, but the Atlassian OAuth client is not configured. Set ATLASSIAN_OAUTH_CLIENT_ID, ATLASSIAN_OAUTH_CLIENT_SECRET, and ATLASSIAN_OAUTH_REDIRECT_URI.",
+    );
+  }
+  return result;
+}
+
+/**
+ * Enabled Jira sign-in methods in display order, [] when the jira-cloud
+ * provider itself is disabled. Fails closed to [] on request-time resolution
+ * errors — startup already failed fast on configuration mistakes, and a
+ * public route hitting post-boot drift must see "disabled", never a 500.
+ */
+export async function getEnabledJiraLoginMethods(): Promise<JiraLoginMethod[]> {
+  try {
+    if (!(await getEnabledLoginProviders()).includes("jira-cloud")) return [];
+    return configuredJiraLoginMethodList();
+  } catch {
+    return [];
+  }
+}
+
+export async function isJiraLoginMethodEnabled(method: JiraLoginMethod): Promise<boolean> {
+  return (await getEnabledJiraLoginMethods()).includes(method);
 }
 
 async function jiraSitesConfigured(): Promise<boolean> {
