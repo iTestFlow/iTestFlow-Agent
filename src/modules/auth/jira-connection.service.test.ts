@@ -292,6 +292,28 @@ describe("Jira credential resolution", () => {
       .rejects.toThrow("No active Jira connection");
   });
 
+  it("uses policy-neutral Settings recovery messages without renaming error codes", () => {
+    const invalid = new InvalidJiraCredentialsError();
+    expect(invalid.message).toContain("Settings → Connections");
+    expect(invalid.message).toMatch(/saved Jira connection/i);
+    expect(invalid.message).not.toMatch(/API token|replace/i);
+
+    const reauthorization = new JiraReauthorizationRequiredError();
+    expect(reauthorization.message).toContain("Settings → Connections");
+    expect(reauthorization.message).not.toContain("Settings → Jira Cloud");
+
+    const invalidPrincipal = new JiraSyncPrincipalError("jira_sync_principal_invalid");
+    expect(invalidPrincipal.code).toBe("jira_sync_principal_invalid");
+    expect(invalidPrincipal.message).toContain("Settings → Connections");
+    expect(invalidPrincipal.message).toMatch(/sync owner must reconnect/i);
+    expect(invalidPrincipal.message).not.toMatch(/API token|replace/i);
+
+    const reauthorizationPrincipal = new JiraSyncPrincipalError("jira_sync_principal_reauthorization_required");
+    expect(reauthorizationPrincipal.code).toBe("jira_sync_principal_reauthorization_required");
+    expect(reauthorizationPrincipal.message).toContain("Settings → Connections");
+    expect(reauthorizationPrincipal.message).toMatch(/sync owner must reconnect/i);
+  });
+
   it("distinguishes a missing sync principal from an invalid or reauth-required one by error code", async () => {
     mocks.sqlGet.mockResolvedValueOnce(undefined);
     await expect(resolveJiraSyncPrincipalCredentials("ws-1")).rejects.toMatchObject({

@@ -71,7 +71,12 @@ export async function createJiraOAuthState(
   const now = nowIso();
   const expiresAt = new Date(Date.parse(now) + STATE_TTL_MS).toISOString();
   await sqlRun(
-    `INSERT INTO jira_oauth_states (
+    `WITH expired_states AS (
+       DELETE FROM jira_oauth_states
+       WHERE expires_at <= @now
+       RETURNING id
+     )
+     INSERT INTO jira_oauth_states (
        id, state_hash, browser_binding_hash, return_to,
        selected_workspace_id, selected_site_url, selected_cloud_id, created_at, expires_at
      ) VALUES (

@@ -250,7 +250,7 @@ export function AutomationSection() {
       description={
         isAzureWorkspace
           ? "How often the worker re-syncs this workspace's Azure DevOps context using the workspace sync credential. Times are in the server's local timezone. With no schedule, the workspace is only synced when someone clicks “Sync now”."
-          : "How often the worker re-syncs this workspace's Jira project context using the sync owner's API token. Times are in the server's local timezone. With no schedule, the workspace is only synced when someone clicks “Sync now”."
+          : "How often the worker re-syncs this workspace's Jira project context using the sync owner's Jira credential. Times are in the server's local timezone. With no schedule, the workspace is only synced when someone clicks “Sync now”."
       }
       action={forbidden ? undefined : <StatusBadge tone={badge.tone} label={badge.label} />}
     >

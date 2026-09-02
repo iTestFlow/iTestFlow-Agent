@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import * as jiraOAuth from "./jira-oauth";
+
 import {
   AtlassianOAuthError,
   AtlassianReauthorizationRequiredError,
@@ -11,6 +13,11 @@ import {
   listAtlassianAccessibleResources,
   refreshAtlassianOAuthTokens,
 } from "./jira-oauth";
+
+const oauthContract = jiraOAuth as typeof jiraOAuth & {
+  JIRA_REQUIRED_RESOURCE_SCOPES: readonly string[];
+  hasRequiredJiraResourceScopes(scopes: readonly string[]): boolean;
+};
 
 const tokenResponse = (overrides: Record<string, unknown> = {}) =>
   new Response(JSON.stringify({
@@ -48,6 +55,32 @@ describe("Jira Cloud OAuth client", () => {
     ]);
     expect(url.toString()).not.toContain("client-secret");
     expect(() => buildAtlassianAuthorizationUrl("  ")).toThrow(AtlassianOAuthError);
+  });
+
+  it("exports one shared Jira resource-scope contract and accepts order-independent supersets only", () => {
+    const requiredScopes = [
+      "read:jira-work",
+      "write:jira-work",
+      "read:jira-user",
+    ] as const;
+
+    expect(oauthContract.JIRA_REQUIRED_RESOURCE_SCOPES).toEqual(requiredScopes);
+    expect(typeof oauthContract.hasRequiredJiraResourceScopes).toBe("function");
+    expect(oauthContract.hasRequiredJiraResourceScopes([
+      "manage:jira-configuration",
+      "read:jira-user",
+      "read:jira-work",
+      "write:jira-work",
+    ])).toBe(true);
+
+    for (const missingScope of requiredScopes) {
+      expect(
+        oauthContract.hasRequiredJiraResourceScopes(
+          requiredScopes.filter((scope) => scope !== missingScope),
+        ),
+        `missing ${missingScope}`,
+      ).toBe(false);
+    }
   });
 
   it("fails fast when an OAuth variable is missing, naming it", () => {

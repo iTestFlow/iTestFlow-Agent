@@ -88,7 +88,10 @@ describe("JiraIntegrationSection", () => {
   });
 
   it("opens the token form for an invalid connection and replaces it through the connect action", async () => {
-    fetchMock.mockResolvedValue(json(overview({ connection: { status: "invalid" } })));
+    fetchMock.mockResolvedValue(json(overview({
+      connection: { status: "invalid", credentialKind: "api_token" },
+      loginMethods: ["api_token"],
+    })));
 
     render(<JiraIntegrationSection />);
 
@@ -149,16 +152,68 @@ describe("JiraIntegrationSection", () => {
     expect(screen.getByLabelText("Atlassian API token")).toHaveValue("new-token");
   });
 
-  it("raises an actionable alert when the workspace sync owner's token is invalid", async () => {
+  it("identifies the actual sync owner when the workspace sync owner's token is invalid", async () => {
     fetchMock.mockResolvedValue(json(overview({
       syncPrincipal: { exists: true, status: "invalid", userId: "sync-user", isActor: false },
+      loginMethods: ["api_token"],
     })));
 
     render(<JiraIntegrationSection />);
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Scheduled Jira sync is blocked.");
-    expect(alert).toHaveTextContent("owner or admin must replace their Jira API token");
+    expect(alert).toHaveTextContent("That sync owner must replace their Jira API token in Settings → Connections");
+    expect(alert).not.toHaveTextContent("owner or admin");
+  });
+
+  it("identifies the actual sync owner when a different user's Atlassian authorization expires", async () => {
+    fetchMock.mockResolvedValue(json(overview({
+      connection: { status: "active", credentialKind: "oauth" },
+      syncPrincipal: { exists: true, status: "reauthorization_required", userId: "sync-owner", isActor: false },
+      loginMethods: ["oauth"],
+    })));
+
+    render(<JiraIntegrationSection />);
+
+    await screen.findByText("Quality Jira");
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("The sync owner's Atlassian authorization expired.");
+    expect(alert).toHaveTextContent("That sync owner must reconnect with Atlassian in Settings → Connections");
+    expect(alert).not.toHaveTextContent("owner or admin");
+  });
+
+  it("recovers an actor's invalid legacy connection through Atlassian in OAuth-only mode", async () => {
+    fetchMock.mockResolvedValue(json(overview({
+      connection: { status: "invalid", credentialKind: "api_token" },
+      syncPrincipal: { exists: true, status: "invalid", userId: "me", isActor: true },
+      loginMethods: ["oauth"],
+    })));
+
+    render(<JiraIntegrationSection />);
+
+    expect(await screen.findByText("Reconnect needed")).toBeInTheDocument();
+    const reconnect = screen.getByRole("link", { name: "Reconnect with Atlassian" });
+    expect(String(reconnect.getAttribute("href"))).toContain(`/api/auth/jira/start?site=${encodeURIComponent("https://quality.atlassian.net")}`);
+    expect(String(reconnect.getAttribute("href"))).toContain(`returnTo=${encodeURIComponent("/settings")}`);
+    expect(screen.getAllByRole("alert").map((alert) => alert.textContent).join(" ")).toMatch(/Reconnect with Atlassian/i);
+    expect(screen.queryByLabelText("Atlassian API token")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /API token/i })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/Replace it below|Invalid token/i);
+  });
+
+  it("tells a different invalid sync owner to reconnect in OAuth-only mode", async () => {
+    fetchMock.mockResolvedValue(json(overview({
+      connection: { status: "active", credentialKind: "oauth" },
+      syncPrincipal: { exists: true, status: "invalid", userId: "sync-owner", isActor: false },
+      loginMethods: ["oauth"],
+    })));
+
+    render(<JiraIntegrationSection />);
+
+    await screen.findByText("Quality Jira");
+    expect(screen.getByRole("alert")).toHaveTextContent("The sync owner's Jira connection is invalid.");
+    expect(screen.getByRole("alert")).toHaveTextContent("That sync owner must reconnect with Atlassian");
+    expect(screen.queryByText(/owner or admin must replace/i)).not.toBeInTheDocument();
   });
 
   it("requires an explicit backend choice for an unconfigured project — Plain Jira is never a silent default", async () => {

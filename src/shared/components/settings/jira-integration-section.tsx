@@ -114,7 +114,7 @@ export function JiraIntegrationSection() {
   const badge = connected
     ? { tone: "success" as const, label: "Connected" }
     : invalid
-      ? { tone: "destructive" as const, label: "Invalid token" }
+      ? { tone: "destructive" as const, label: tokenEnabled ? "Invalid token" : "Reconnect needed" }
       : reauthRequired
         ? { tone: "destructive" as const, label: "Reconnect needed" }
         : { tone: "muted" as const, label: "Not connected" };
@@ -123,15 +123,21 @@ export function JiraIntegrationSection() {
   return <div className="space-y-4">
     {syncPrincipal.status === "invalid" ? (
       <Callout tone="error" role="alert" title="Scheduled Jira sync is blocked.">
-        {syncPrincipal.isActor
-          ? "Your API token is the workspace sync token and it is invalid. Replace it below to restore scheduled sync."
-          : "The sync owner's API token is invalid. That owner or admin must replace their Jira API token in Settings to restore scheduled sync."}
+        {tokenEnabled
+          ? syncPrincipal.isActor
+            ? "Your API token is the workspace sync token and it is invalid. Replace it below to restore scheduled sync."
+            : "The sync owner's API token is invalid. That sync owner must replace their Jira API token in Settings → Connections to restore scheduled sync."
+          : oauthEnabled
+            ? syncPrincipal.isActor
+              ? "Your Jira connection is the workspace sync credential and it is invalid. Reconnect with Atlassian below to restore scheduled sync."
+              : "The sync owner's Jira connection is invalid. That sync owner must reconnect with Atlassian in Settings → Connections to restore scheduled sync."
+            : "The sync owner's Jira connection is invalid. Ask your iTestFlow administrator to enable a Jira sign-in method."}
       </Callout>
     ) : syncPrincipal.status === "reauthorization_required" ? (
       <Callout tone="error" role="alert" title="Scheduled Jira sync is blocked.">
         {syncPrincipal.isActor
           ? "Your Atlassian authorization is the workspace sync credential and it expired. Reconnect with Atlassian below to restore scheduled sync."
-          : "The sync owner's Atlassian authorization expired. That owner or admin must reconnect with Atlassian in Settings to restore scheduled sync."}
+          : "The sync owner's Atlassian authorization expired. That sync owner must reconnect with Atlassian in Settings → Connections to restore scheduled sync."}
       </Callout>
     ) : !syncPrincipal.exists ? (
       <Callout tone="warning" role="status" title="No sync owner is connected yet.">
@@ -155,6 +161,13 @@ export function JiraIntegrationSection() {
         ) : null}
       </div>
       <a className="inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={overview.workspace.siteUrl} target="_blank" rel="noreferrer">Open Jira site <ExternalLink className="size-3.5" aria-hidden="true" /></a>
+      {invalid && !tokenEnabled ? (
+        <Callout tone="error" role="alert" title="Your Jira connection is invalid.">
+          {oauthEnabled
+            ? "Atlassian stopped accepting this connection. Reconnect with Atlassian to restore Jira access."
+            : "Ask your iTestFlow administrator to enable a Jira sign-in method for this deployment."}
+        </Callout>
+      ) : null}
       {reauthRequired ? (
         <Callout tone="error" role="alert" title="Your Atlassian authorization expired.">
           Jira stopped accepting this connection.{" "}
@@ -172,7 +185,7 @@ export function JiraIntegrationSection() {
           className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-input bg-background px-4 text-sm font-medium shadow-sm hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           href={atlassianStartHref}
         >
-          {reauthRequired ? "Reconnect with Atlassian" : "Continue with Atlassian"}
+          {reauthRequired || invalid ? "Reconnect with Atlassian" : "Continue with Atlassian"}
         </a>
       ) : null}
       {tokenEnabled ? (

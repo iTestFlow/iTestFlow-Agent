@@ -57,6 +57,24 @@ const consumedState = {
   selectedCloudId: "cloud-a",
 };
 
+const requiredJiraResourceScopes = [
+  "read:jira-work",
+  "write:jira-work",
+  "read:jira-user",
+] as const;
+
+const completeJiraResourceScopes = [
+  "manage:jira-configuration",
+  "read:jira-user",
+  "write:jira-work",
+  "read:jira-work",
+] as const;
+
+const incompleteResourceCases = requiredJiraResourceScopes.flatMap((missingScope) => [
+  { match: "pinned cloud ID", cloudId: "cloud-a" as string | null, missingScope },
+  { match: "canonical site URL", cloudId: null as string | null, missingScope },
+]);
+
 function stubEnablement() {
   vi.stubEnv("DATABASE_URL", "");
   vi.stubEnv("BOOTSTRAP_ENABLED_PROVIDERS", "");
@@ -88,8 +106,8 @@ describe("GET /api/auth/jira/callback", () => {
       accessToken: "access-secret", refreshToken: "refresh-secret", expiresInSeconds: 3600, scope: "read:jira-work", tokenType: "Bearer",
     });
     mocks.listResources.mockResolvedValue([
-      { id: "cloud-a", name: "Quality", url: "https://quality.atlassian.net", scopes: [] },
-      { id: "cloud-other", name: "Other", url: "https://other.atlassian.net", scopes: [] },
+      { id: "cloud-a", name: "Quality", url: "https://quality.atlassian.net", scopes: completeJiraResourceScopes },
+      { id: "cloud-other", name: "Other", url: "https://other.atlassian.net", scopes: requiredJiraResourceScopes },
     ]);
     mocks.getIdentity.mockResolvedValue({ accountId: "acct-1", displayName: "Owner", emailAddress: "owner@example.test" });
     mocks.findSiteById.mockResolvedValue({
@@ -100,7 +118,7 @@ describe("GET /api/auth/jira/callback", () => {
     mocks.createSession.mockResolvedValue(undefined);
   });
 
-  it("completes the site-verified sign-in: consume, exchange, verify grant, provision, store, session", async () => {
+  it("completes sign-in when the matching resource has every required scope in any order, with extras", async () => {
     const response = await GET(request());
     expect(response.status).toBeGreaterThanOrEqual(302);
     expect(String(response.headers.get("location"))).toBe("https://itestflow.example/dashboards");
@@ -135,6 +153,72 @@ describe("GET /api/auth/jira/callback", () => {
     expect(String(response.headers.get("location"))).toBe("https://itestflow.example/dashboards");
     expect(mocks.storeConnection).toHaveBeenCalledWith(expect.objectContaining({ cloudId: "cloud-a" }));
   });
+
+  it.each([
+    { match: "pinned cloud ID", cloudId: "cloud-a" as string | null },
+    { match: "canonical site URL", cloudId: null as string | null },
+  ])("skips an incomplete duplicate $match and selects a later complete candidate", async ({ cloudId }) => {
+    mocks.findSiteById.mockResolvedValue({
+      workspaceId: "ws-1",
+      cloudId,
+      name: "quality",
+      siteUrl: "https://quality.atlassian.net",
+    });
+    mocks.listResources.mockResolvedValue([
+      {
+        id: "cloud-a",
+        name: "Incomplete duplicate",
+        url: "https://quality.atlassian.net",
+        scopes: requiredJiraResourceScopes.filter((scope) => scope !== "write:jira-work"),
+      },
+      {
+        id: "cloud-a",
+        name: "Complete duplicate",
+        url: "https://quality.atlassian.net",
+        scopes: completeJiraResourceScopes,
+      },
+    ]);
+
+    const response = await GET(request());
+
+    expect(String(response.headers.get("location"))).toBe("https://itestflow.example/dashboards");
+    expect(mocks.provision).toHaveBeenCalledWith(expect.objectContaining({
+      resource: {
+        cloudId: "cloud-a",
+        siteName: "Complete duplicate",
+        siteUrl: "https://quality.atlassian.net",
+      },
+    }));
+    expect(mocks.storeConnection).toHaveBeenCalledWith(expect.objectContaining({ cloudId: "cloud-a" }));
+  });
+
+  it.each(incompleteResourceCases)(
+    "rejects a $match resource missing $missingScope before identity, provisioning, storage, or session",
+    async ({ cloudId, missingScope }) => {
+      mocks.findSiteById.mockResolvedValue({
+        workspaceId: "ws-1",
+        cloudId,
+        name: "quality",
+        siteUrl: "https://quality.atlassian.net",
+      });
+      mocks.listResources.mockResolvedValue([
+        {
+          id: "cloud-a",
+          name: "Quality",
+          url: "https://quality.atlassian.net",
+          scopes: completeJiraResourceScopes.filter((scope) => scope !== missingScope),
+        },
+      ]);
+
+      const response = await GET(request());
+
+      expect(mocks.getIdentity).not.toHaveBeenCalled();
+      expect(mocks.provision).not.toHaveBeenCalled();
+      expect(mocks.storeConnection).not.toHaveBeenCalled();
+      expect(mocks.createSession).not.toHaveBeenCalled();
+      expectLoginErrorRedirect(response, "jira_site_access");
+    },
+  );
 
   it("fails closed mid-flight when the oauth method was disabled after start", async () => {
     vi.stubEnv("JIRA_LOGIN_METHODS", "api_token");
@@ -185,7 +269,7 @@ describe("GET /api/auth/jira/callback", () => {
 
   it("never silently switches sites: a grant not covering the pinned cloud ID rejects with the site named", async () => {
     mocks.listResources.mockResolvedValue([
-      { id: "cloud-other", name: "Other", url: "https://other.atlassian.net", scopes: [] },
+      { id: "cloud-other", name: "Other", url: "https://other.atlassian.net", scopes: requiredJiraResourceScopes },
     ]);
     const location = expectLoginErrorRedirect(await GET(request()), "jira_site_access");
     expect(location.searchParams.get("site")).toBe("https://quality.atlassian.net");

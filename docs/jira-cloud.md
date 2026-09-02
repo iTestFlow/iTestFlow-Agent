@@ -11,7 +11,7 @@ Both Atlassian API token kinds work, and the kind is detected automatically at s
 - **API tokens with scopes** (recommended by Atlassian): create the token with the `read:jira-work`, `write:jira-work`, and `read:jira-user` scopes. Scoped tokens are validated and used through the `api.atlassian.com` gateway.
 - **Classic tokens without scopes**: carry the full permissions of the Atlassian account and are validated and used against the site URL directly. Atlassian has announced their deprecation in favor of scoped tokens.
 
-A token missing required scopes is reported distinctly from a wrong email/token pair, so a mis-scoped token is never diagnosed as a bad password. Atlassian caps every API token at a one-year lifetime; when a token expires or is revoked, the first rejected request marks the stored connection invalid and the user replaces the token in **Settings → Connections** — scheduled sync resumes in place, with no principal handover.
+A token missing required scopes is reported distinctly from a wrong email/token pair, so a mis-scoped token is never diagnosed as a bad password. Atlassian caps every API token at a one-year lifetime; when a token expires or is revoked, the first rejected request marks the stored connection invalid. When API-token connections are enabled, the user can replace the token in **Settings → Connections**; in OAuth-only mode, the sync owner instead reconnects with Atlassian — scheduled sync resumes in place, with no principal handover.
 
 Set these deployment variables:
 
@@ -57,6 +57,10 @@ Atlassian OAuth 2.0 (3LO) is an optional second sign-in method beside API tokens
    - `ATLASSIAN_OAUTH_CLIENT_SECRET=<from the developer console>`
    - `ATLASSIAN_OAUTH_REDIRECT_URI=<the exact registered callback URL>`
 3. Optionally set `JIRA_LOGIN_METHODS` to control what the login page offers: unset keeps the API token form as the default and adds a **Continue with Atlassian** action once the client is configured; `JIRA_LOGIN_METHODS=oauth` is the OAuth-only mode that removes token sign-in from the deployment entirely (the token login route refuses before parsing anything).
+
+`JIRA_LOGIN_METHODS` controls new sign-in and Settings connections only; it does not revoke stored API tokens or PATs. In OAuth-only mode, background sync continues using a healthy stored API token or PAT for the designated sync owner. An OAuth sign-in overwrites the credential row for the same user under latest-wins behavior. Once rejected at use time, the credential becomes invalid and the sync owner recovers with **Reconnect with Atlassian**. Token-specific validation guidance remains intentionally unchanged because only token sign-in and enabled token-connection flows can reach it.
+
+On a transient method-resolution failure, the empty method set suppresses only the advisory stale warning. The advisory warning self-heals on the next successful status read; authentication, authorization, invalid-state reporting, and reauthorization reporting are unaffected.
 
 The redirect URI only needs to be reachable by the user's browser — `http://localhost:3000/api/auth/jira/callback` works for local development; no public inbound origin is required.
 
@@ -104,7 +108,7 @@ The sync principal is the first owner's connection (a dead principal keeps its d
 
 ## Recovery and Diagnostics
 
-- `Invalid token` (connection or sync principal): the token expired (Atlassian caps tokens at one year), was revoked, or was rejected at use time. Replace it in **Settings → Connections**; scheduled sync resumes without a principal handover.
+- `Invalid token` (connection or sync principal): the token expired (Atlassian caps tokens at one year), was revoked, or was rejected at use time. Where API-token connections are enabled, replace the token in **Settings → Connections**. In OAuth-only mode, the sync owner uses **Reconnect with Atlassian**; either recovery resumes scheduled sync without a principal handover.
 - `Reconnect needed` (OAuth connection or sync principal): the Atlassian grant is dead — password change, app access revoked, or an expired refresh token. **Reconnect with Atlassian** in **Settings → Connections**; a token can also be connected in its place when the method is enabled.
 - `conflict`: choose **Use iTestFlow** or **Use Jira**. The choice queues convergence; the conflict remains visible until the operation completes.
 - `error`: inspect the fixed error code and application audit event. Provider response bodies, tokens, client secrets, and API tokens are deliberately excluded.

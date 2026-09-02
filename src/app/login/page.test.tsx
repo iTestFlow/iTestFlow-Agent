@@ -161,6 +161,7 @@ describe("LoginPage", () => {
     // secondary link carrying the selected site and validated return
     // destination into the start route.
     await screen.findByLabelText("Atlassian API token")
+    expect(screen.getByText(/email and API token, or continue with Atlassian/i)).toBeInTheDocument()
     const continueLink = await screen.findByRole("link", { name: /Continue with Atlassian/ })
     const href = String(continueLink.getAttribute("href"))
     expect(href).toContain(`/api/auth/jira/start?site=${encodeURIComponent("https://quality.atlassian.net")}`)
@@ -189,6 +190,8 @@ describe("LoginPage", () => {
     await user.click(await screen.findByRole("button", { name: "Jira Cloud" }))
 
     await screen.findByRole("link", { name: /Continue with Atlassian/ })
+    expect(screen.getByText(/by continuing with Atlassian/i)).toBeInTheDocument()
+    expect(screen.queryByText(/account email and API token/i)).not.toBeInTheDocument()
     expect(screen.queryByLabelText("Atlassian API token")).not.toBeInTheDocument()
     expect(screen.queryByLabelText("Atlassian account email")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Sign In" })).not.toBeInTheDocument()

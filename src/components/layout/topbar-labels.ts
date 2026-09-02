@@ -3,6 +3,33 @@
 
 export type Provider = "openai" | "gemini" | "anthropic"
 
+type JiraCredentialSummary = {
+  status: "active" | "invalid" | "reauthorization_required" | "revoked" | "not_connected"
+  isStale?: boolean
+}
+
+export function jiraCredentialWarning(summary?: JiraCredentialSummary) {
+  if (summary?.status === "invalid") {
+    return {
+      label: "Jira Connection Invalid",
+      detail: "Atlassian rejected your saved Jira connection. Reconnect it in Settings → Connections.",
+    }
+  }
+  if (summary?.status === "reauthorization_required") {
+    return {
+      label: "Reconnect Jira",
+      detail: "Your Atlassian authorization expired. Reconnect with Atlassian in Settings → Connections.",
+    }
+  }
+  if (summary?.status === "active" && summary.isStale) {
+    return {
+      label: "Check Jira Token",
+      detail: "Your Jira API token hasn't been validated in a while. Replace it in Settings → Connections.",
+    }
+  }
+  return null
+}
+
 export function workProviderDisplay(providerId?: string | null) {
   return providerId === "jira-cloud"
     ? { name: "Jira Cloud", short: "Jira" }

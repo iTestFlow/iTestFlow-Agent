@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { revokeJiraConnection, storeJiraConnection } from "@/modules/auth/jira-connection.service";
+import { isJiraLoginMethodEnabled } from "@/modules/auth/enabled-providers";
 import {
   authenticateJiraApiToken,
   InvalidJiraTokenError,
@@ -127,6 +128,12 @@ export async function DELETE() {
  * yields to any existing active principal.
  */
 async function connectJiraToken(context: WorkspaceRequestContext, emailAddress: string, apiToken: string): Promise<NextResponse> {
+  if (!await isJiraLoginMethodEnabled("api_token")) {
+    return NextResponse.json(
+      { error: "Jira API-token connections are disabled for this deployment." },
+      { status: 403 },
+    );
+  }
   const rate = await checkRateLimit(`jira-connect:${context.userId}`, 10, 5 * 60 * 1000);
   if (!rate.allowed) {
     return NextResponse.json(

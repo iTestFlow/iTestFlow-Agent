@@ -20,6 +20,7 @@ import {
 import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import { getPlaywrightMcpConfigSummary } from "@/modules/test-execution/playwright-mcp-config.service";
+import { getEnabledJiraLoginMethods } from "@/modules/auth/enabled-providers";
 
 export const runtime = "nodejs";
 
@@ -56,8 +57,9 @@ export async function GET() {
     return errorResponse(error);
   }
 
+  const jiraLoginMethods = await getEnabledJiraLoginMethods();
   const [status, playwrightMcp] = await Promise.all([
-    getUserCredentialStatus(context.workspace.id, context.userId),
+    getUserCredentialStatus(context.workspace.id, context.userId, jiraLoginMethods),
     getPlaywrightMcpConfigSummary(context.workspace.id),
   ]);
   return NextResponse.json(
@@ -159,7 +161,8 @@ export async function PUT(request: Request) {
     });
   }
 
-  const status = await getUserCredentialStatus(context.workspace.id, context.userId);
+  const jiraLoginMethods = await getEnabledJiraLoginMethods();
+  const status = await getUserCredentialStatus(context.workspace.id, context.userId, jiraLoginMethods);
   return NextResponse.json({ workspaceId: context.workspace.id, ...status });
 }
 
@@ -199,6 +202,7 @@ export async function PATCH(request: Request) {
     model: parsed.data.llm.model,
   });
 
-  const status = await getUserCredentialStatus(context.workspace.id, context.userId);
+  const jiraLoginMethods = await getEnabledJiraLoginMethods();
+  const status = await getUserCredentialStatus(context.workspace.id, context.userId, jiraLoginMethods);
   return NextResponse.json({ workspaceId: context.workspace.id, ...status });
 }

@@ -40,7 +40,7 @@ export type JiraCredential =
 /** Thrown when the stored token was marked invalid by a use-time 401. */
 export class InvalidJiraCredentialsError extends Error {
   constructor() {
-    super("The stored Jira API token is invalid. Replace it in Settings → Jira Cloud.");
+    super("The saved Jira connection is invalid. Reconnect it in Settings → Connections.");
     this.name = "InvalidJiraCredentialsError";
   }
 }
@@ -48,7 +48,7 @@ export class InvalidJiraCredentialsError extends Error {
 /** Thrown when the stored OAuth grant is dead; only a fresh Atlassian consent recovers it. */
 export class JiraReauthorizationRequiredError extends Error {
   constructor() {
-    super("The Jira connection needs to be renewed. Reconnect with Atlassian in Settings → Jira Cloud.");
+    super("The Jira connection needs to be renewed. Reconnect with Atlassian in Settings → Connections.");
     this.name = "JiraReauthorizationRequiredError";
   }
 }
@@ -64,8 +64,8 @@ export class JiraSyncPrincipalError extends Error {
     super(code === "jira_sync_principal_missing"
       ? "No active Jira sync principal is configured for this workspace."
       : code === "jira_sync_principal_invalid"
-        ? "The Jira sync principal's API token is invalid. The sync owner must replace it in Settings."
-        : "The Jira sync principal's Atlassian authorization expired. The sync owner must reconnect with Atlassian in Settings.");
+        ? "The Jira sync owner's saved connection is invalid. The sync owner must reconnect in Settings → Connections."
+        : "The Jira sync owner's Atlassian authorization expired. The sync owner must reconnect with Atlassian in Settings → Connections.");
     this.name = "JiraSyncPrincipalError";
     this.code = code;
   }

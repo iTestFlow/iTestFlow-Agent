@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   getProvider: vi.fn(), verifyProject: vi.fn(), storeSync: vi.fn(), storePlain: vi.fn(), storeXray: vi.fn(),
   storeZephyr: vi.fn(), resolveConflict: vi.fn(), revokeConnection: vi.fn(), storeConnection: vi.fn(),
   resolveResource: vi.fn(), authenticate: vi.fn(), checkRateLimit: vi.fn(), writeAuditLog: vi.fn(),
-  getWorkspaceMembership: vi.fn(),
+  getWorkspaceMembership: vi.fn(), isJiraLoginMethodEnabled: vi.fn(),
 }));
 vi.mock("@/modules/workspace/workspace-request", () => ({ resolveWorkspaceRequest: mocks.resolveWorkspaceRequest, workspaceRequestError: mocks.workspaceRequestError }));
 vi.mock("@/modules/projects/jira-project-mapping.service", () => ({ getJiraIntegrationOverview: mocks.getOverview, storeJiraProjectSyncConfig: mocks.storeSync }));
@@ -24,6 +24,7 @@ vi.mock("@/modules/auth/jira-token-auth.service", async (importOriginal) => ({
 vi.mock("@/modules/security/rate-limit", () => ({ checkRateLimit: mocks.checkRateLimit, clientIp: vi.fn(() => "10.0.0.1") }));
 vi.mock("@/modules/audit/audit.service", () => ({ writeAuditLog: mocks.writeAuditLog }));
 vi.mock("@/modules/workspace/workspace-access.service", () => ({ getWorkspaceMembership: mocks.getWorkspaceMembership }));
+vi.mock("@/modules/auth/enabled-providers", () => ({ isJiraLoginMethodEnabled: mocks.isJiraLoginMethodEnabled }));
 
 import { DELETE, GET, POST } from "./route";
 
@@ -44,6 +45,7 @@ describe("Jira integration settings API", () => {
     });
     mocks.getWorkspaceMembership.mockResolvedValue({ role: "owner", status: "active" });
     mocks.storeConnection.mockResolvedValue(undefined);
+    mocks.isJiraLoginMethodEnabled.mockResolvedValue(true);
   });
 
   it("returns server-authorized overview and available Jira projects without secrets", async () => {
@@ -155,6 +157,8 @@ describe("Jira integration settings API", () => {
   it("stores a replacement API token after re-validating the pinned cloud ID, with rate limiting and audit", async () => {
     const response = await POST(request({ action: "connect", emailAddress: "Owner@Example.Test", apiToken: "token-secret" }));
     expect(response.status).toBe(200);
+    expect(mocks.isJiraLoginMethodEnabled).toHaveBeenCalledOnce();
+    expect(mocks.isJiraLoginMethodEnabled).toHaveBeenCalledWith("api_token");
     expect(mocks.checkRateLimit).toHaveBeenCalledWith("jira-connect:user-1", 10, 5 * 60 * 1000);
     expect(mocks.resolveResource).toHaveBeenCalledWith("https://quality.atlassian.net");
     expect(mocks.storeConnection).toHaveBeenCalledWith({
@@ -164,6 +168,35 @@ describe("Jira integration settings API", () => {
     });
     expect(mocks.writeAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: "JIRA_CONNECTION_REPLACED" }));
     expect(JSON.stringify(await response.json())).not.toContain("token-secret");
+  });
+
+  it("rejects API-token connections before side effects when the method is disabled", async () => {
+    mocks.isJiraLoginMethodEnabled.mockResolvedValueOnce(false);
+
+    const response = await POST(request({ action: "connect", emailAddress: "owner@example.test", apiToken: "token-secret" }));
+
+    expect.soft(response.status).toBe(403);
+    expect.soft(await response.json()).toEqual({
+      error: "Jira API-token connections are disabled for this deployment.",
+    });
+    expect.soft(mocks.isJiraLoginMethodEnabled).toHaveBeenCalledOnce();
+    expect.soft(mocks.isJiraLoginMethodEnabled).toHaveBeenCalledWith("api_token");
+    expect.soft(mocks.checkRateLimit).not.toHaveBeenCalled();
+    expect.soft(mocks.resolveResource).not.toHaveBeenCalled();
+    expect.soft(mocks.authenticate).not.toHaveBeenCalled();
+    expect.soft(mocks.storeConnection).not.toHaveBeenCalled();
+    expect.soft(mocks.writeAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("leaves unrelated settings actions available when API-token connections are disabled", async () => {
+    mocks.isJiraLoginMethodEnabled.mockResolvedValue(false);
+    mocks.verifyProject.mockResolvedValue({ projectId: "project-1", providerProjectId: "10000", providerProjectKey: "QA" });
+
+    const response = await POST(request({ action: "select_project", providerProjectId: "10000" }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.verifyProject).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-1" }), "10000");
+    expect(mocks.isJiraLoginMethodEnabled).not.toHaveBeenCalled();
   });
 
   it("fails closed when the configured site no longer resolves to the pinned cloud ID", async () => {

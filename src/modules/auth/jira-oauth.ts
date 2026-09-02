@@ -37,13 +37,22 @@ const TOKEN_URL = "https://auth.atlassian.com/oauth/token";
  * transient unavailable error.
  */
 const ATLASSIAN_REQUEST_TIMEOUT_MS = 15_000;
-const JIRA_OAUTH_SCOPES = [
-  "offline_access",
-  "read:me",
+export const JIRA_REQUIRED_RESOURCE_SCOPES = [
   "read:jira-work",
   "write:jira-work",
   "read:jira-user",
 ] as const;
+
+const JIRA_OAUTH_SCOPES = [
+  "offline_access",
+  "read:me",
+  ...JIRA_REQUIRED_RESOURCE_SCOPES,
+] as const;
+
+export function hasRequiredJiraResourceScopes(scopes: readonly string[]): boolean {
+  const granted = new Set(scopes);
+  return JIRA_REQUIRED_RESOURCE_SCOPES.every((scope) => granted.has(scope));
+}
 
 const TokenResponseSchema = z.object({
   access_token: z.string().min(1),

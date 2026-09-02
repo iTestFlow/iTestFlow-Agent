@@ -8,6 +8,7 @@ import {
   AtlassianOAuthError,
   exchangeAtlassianAuthorizationCode,
   getAtlassianUserIdentity,
+  hasRequiredJiraResourceScopes,
   listAtlassianAccessibleResources,
 } from "@/modules/auth/jira-oauth";
 import { consumeJiraOAuthState, JiraOAuthStateError } from "@/modules/auth/jira-oauth-state";
@@ -83,9 +84,12 @@ export async function GET(request: Request): Promise<Response> {
     // The user chose this site before OAuth. Verify the authenticated account
     // can access exactly it — by the pinned cloud ID, or by canonical URL for
     // a seeded workspace that adopts its pin on this first login.
-    const resource = site.cloudId
-      ? resources.find((candidate) => candidate.id === site.cloudId)
-      : resources.find((candidate) => canonicalJiraSiteUrl(candidate.url) === consumed.selectedSiteUrl);
+    const resource = resources.find((candidate) => {
+      const matchesSelectedSite = site.cloudId
+        ? candidate.id === site.cloudId
+        : canonicalJiraSiteUrl(candidate.url) === consumed.selectedSiteUrl;
+      return matchesSelectedSite && hasRequiredJiraResourceScopes(candidate.scopes);
+    });
     if (!resource) return loginError("jira_site_access", consumed.selectedSiteUrl);
 
     const identity = await getAtlassianUserIdentity(tokens.accessToken);

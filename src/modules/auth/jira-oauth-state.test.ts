@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ sqlGet: vi.fn(), sqlRun: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  nowIso: vi.fn(() => "2026-08-13T10:00:00.000Z"),
+  sqlGet: vi.fn(),
+  sqlRun: vi.fn(),
+}));
 
 vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   createId: (prefix: string) => `${prefix}_fixed`,
-  nowIso: () => "2026-08-13T10:00:00.000Z",
+  nowIso: mocks.nowIso,
   sqlGet: mocks.sqlGet,
   sqlRun: mocks.sqlRun,
 }));
@@ -16,6 +20,7 @@ const selection = { workspaceId: "ws-1", siteUrl: "https://quality.atlassian.net
 describe("Jira OAuth state", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.nowIso.mockReturnValue("2026-08-13T10:00:00.000Z");
     mocks.sqlRun.mockResolvedValue(1);
   });
 
@@ -35,6 +40,27 @@ describe("Jira OAuth state", () => {
     expect(serialized).not.toContain(state);
     expect(serialized).not.toContain("binding-secret");
     expect(params.stateHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("prunes states expired at the same application timestamp in the state-insert statement", async () => {
+    await createJiraOAuthState("/dashboards", "binding-secret", selection);
+
+    expect(mocks.nowIso).toHaveBeenCalledTimes(1);
+    expect(mocks.sqlRun).toHaveBeenCalledTimes(1);
+    const [sql, params] = mocks.sqlRun.mock.calls[0];
+    const normalizedSql = String(sql).replace(/\s+/g, " ").trim();
+
+    expect(normalizedSql).toMatch(
+      /^WITH\s+[a-zA-Z_][a-zA-Z0-9_]*\s+AS\s*\(\s*DELETE FROM jira_oauth_states WHERE expires_at <= @now(?:\s+RETURNING\s+[^)]+)?\s*\)\s*INSERT INTO jira_oauth_states\b/i,
+    );
+    expect(normalizedSql.match(/DELETE FROM jira_oauth_states/gi)).toHaveLength(1);
+    expect(normalizedSql.match(/INSERT INTO jira_oauth_states/gi)).toHaveLength(1);
+    expect(normalizedSql.match(/@now\b/g)).toHaveLength(2);
+    expect(normalizedSql.replace(/;$/, "")).not.toContain(";");
+    expect(params).toMatchObject({
+      now: "2026-08-13T10:00:00.000Z",
+      expiresAt: "2026-08-13T10:10:00.000Z",
+    });
   });
 
   it("accepts a seeded workspace with no pinned cloud ID", async () => {

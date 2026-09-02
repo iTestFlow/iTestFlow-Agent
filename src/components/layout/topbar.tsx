@@ -38,7 +38,7 @@ import { ThemeToggle } from "@/components/theme/theme-toggle"
 import { HeaderProjectSelector } from "@/shared/components/live/project-status"
 import { cn } from "@/lib/utils"
 import { NavigationLink } from "@/components/navigation/navigation-link"
-import { isProvider, modelDisplayLabel, providerLabel, workProviderDisplay, type Provider } from "@/components/layout/topbar-labels"
+import { isProvider, jiraCredentialWarning, modelDisplayLabel, providerLabel, workProviderDisplay, type Provider } from "@/components/layout/topbar-labels"
 import { apiErrorMessage, caughtErrorMessage } from "@/shared/lib/api-error-message"
 
 type AzureProfile = {
@@ -332,13 +332,7 @@ export function Topbar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           ? { label: "Check PAT", detail: "Your Azure DevOps PAT hasn't been validated in a while. Re-enter it in Settings → My Credentials." }
           : null)
     : workspaceProviderId === "jira-cloud"
-      ? (jiraConnection?.status === "invalid"
-          ? { label: "Jira Token Invalid", detail: "Atlassian rejected your Jira API token. Replace it in Settings → Connections." }
-          : jiraConnection?.status === "reauthorization_required"
-            ? { label: "Reconnect Jira", detail: "Your Atlassian authorization expired. Reconnect with Atlassian in Settings → Connections." }
-            : jiraConnection?.status === "active" && jiraConnection.isStale
-              ? { label: "Check Jira Token", detail: "Your Jira API token hasn't been validated in a while. Replace it in Settings → Connections." }
-              : null)
+      ? jiraCredentialWarning(jiraConnection)
       : null
 
   return (

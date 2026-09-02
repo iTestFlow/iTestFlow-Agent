@@ -480,7 +480,13 @@ export default function LoginPage() {
             <CardTitle className="text-xl font-semibold leading-tight">Sign in to iTestFlow</CardTitle>
             <CardDescription className="max-w-[520px] leading-6">
               {activeProvider === "jira-cloud"
-                ? "Connect iTestFlow to your Jira Cloud site with your Atlassian account email and API token. The token is validated against Atlassian and stored encrypted in this private deployment."
+                ? jiraTokenEnabled && jiraOauthEnabled
+                  ? "Connect iTestFlow to your Jira Cloud site with your Atlassian account email and API token, or continue with Atlassian. Your credential is validated against Atlassian and stored encrypted in this private deployment."
+                  : jiraTokenEnabled
+                    ? "Connect iTestFlow to your Jira Cloud site with your Atlassian account email and API token. The token is validated against Atlassian and stored encrypted in this private deployment."
+                    : jiraOauthEnabled
+                      ? "Connect iTestFlow to your Jira Cloud site by continuing with Atlassian. You will approve access on Atlassian and return here."
+                      : "No Jira Cloud sign-in method is enabled for this deployment."
                 : "Connect iTestFlow to your Azure DevOps organization using a Personal Access Token. Your token is validated securely and stored encrypted in this private deployment."}
             </CardDescription>
           </CardHeader>

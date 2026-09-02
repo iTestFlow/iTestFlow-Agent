@@ -5,6 +5,48 @@ import * as labels from "./topbar-labels";
 const { humanizeModelId, isProvider, modelDisplayLabel, providerLabel } = labels;
 type Provider = labels.Provider;
 
+type JiraSummary = {
+  status: "active" | "invalid" | "reauthorization_required" | "revoked" | "not_connected";
+  isStale?: boolean;
+};
+
+function jiraWarning(summary?: JiraSummary) {
+  const warning = (labels as unknown as {
+    jiraCredentialWarning(value?: JiraSummary): { label: string; detail: string } | null;
+  }).jiraCredentialWarning;
+  expect(typeof warning).toBe("function");
+  return warning(summary);
+}
+
+describe("jiraCredentialWarning", () => {
+  it("uses policy-neutral invalid guidance that never points at a hidden token form", () => {
+    const warning = jiraWarning({ status: "invalid" });
+    expect(warning).toEqual({
+      label: "Jira Connection Invalid",
+      detail: "Atlassian rejected your saved Jira connection. Reconnect it in Settings → Connections.",
+    });
+    expect(JSON.stringify(warning)).not.toMatch(/replace.*token/i);
+  });
+
+  it("keeps OAuth reauthorization distinct from an actionable stale API token", () => {
+    expect(jiraWarning({ status: "reauthorization_required" })).toEqual({
+      label: "Reconnect Jira",
+      detail: "Your Atlassian authorization expired. Reconnect with Atlassian in Settings → Connections.",
+    });
+    expect(jiraWarning({ status: "active", isStale: true })).toEqual({
+      label: "Check Jira Token",
+      detail: "Your Jira API token hasn't been validated in a while. Replace it in Settings → Connections.",
+    });
+  });
+
+  it("returns no warning for healthy, absent, or revoked Jira connections", () => {
+    expect(jiraWarning({ status: "active", isStale: false })).toBeNull();
+    expect(jiraWarning({ status: "not_connected" })).toBeNull();
+    expect(jiraWarning({ status: "revoked" })).toBeNull();
+    expect(jiraWarning(undefined)).toBeNull();
+  });
+});
+
 describe("workProviderDisplay", () => {
   it("uses Jira Cloud or Azure DevOps labels from the workspace provider", () => {
     expect(typeof (labels as Record<string, unknown>).workProviderDisplay).toBe("function");

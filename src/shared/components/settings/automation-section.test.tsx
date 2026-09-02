@@ -71,6 +71,8 @@ describe("AutomationSection", () => {
     render(<AutomationSection />)
 
     await screen.findByText(/Jira project context/)
+    expect(screen.getByText(/sync owner's Jira credential/i)).toBeInTheDocument()
+    expect(screen.queryByText(/sync owner's API token/i)).not.toBeInTheDocument()
     expect(screen.queryByText("Work item types")).not.toBeInTheDocument()
     // The metadata hook never receives a scope, so no Azure metadata request can fire.
     for (const [scope] of hookMocks.useProjectWorkItemMetadata.mock.calls) expect(scope).toBeNull()

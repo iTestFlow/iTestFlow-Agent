@@ -47,6 +47,18 @@ describe("Jira Cloud operator documentation", () => {
     expect(docs).toContain("Reconnect with Atlassian");
     expect(docs).toContain("jira_sync_principal_reauthorization_required");
 
+    // Login-method policy controls new connections only. OAuth-only mode does
+    // not revoke a healthy stored PAT, including the sync principal's runtime
+    // credential, and a same-user OAuth login replaces that row latest-wins.
+    expect(docs).toMatch(/JIRA_LOGIN_METHODS[^.]*does not revoke[^.]*stored (?:API tokens|PATs)/i);
+    expect(docs).toMatch(/OAuth-only[^.]*background sync[^.]*stored (?:API token|PAT)/i);
+    expect(docs).toMatch(/OAuth sign-in[^.]*overwrites[^.]*same user[^.]*latest[- ]wins/i);
+    expect(docs).toMatch(/rejected[^.]*invalid[^.]*Reconnect with Atlassian/i);
+    // A transient resolver failure returns the closed method set. That is
+    // fail-open only for the advisory stale warning and self-heals on reread.
+    expect(docs).toMatch(/method-resolution[^.]*empty[^.]*suppresses[^.]*stale warning/i);
+    expect(docs).toMatch(/advisory[^.]*self-heal/i);
+
     // The webhook era and its variables stay gone from every operator surface.
     // ("webhook" itself may appear only to say the deployment has none.)
     // Deliberately un-retired alongside the OAuth vars: "User Identity API" —
