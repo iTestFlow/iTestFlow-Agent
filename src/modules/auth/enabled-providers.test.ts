@@ -27,6 +27,16 @@ describe("getEnabledLoginProviders", () => {
     expect(mocks.sqlGet).not.toHaveBeenCalled();
   });
 
+  it.each(["", "azure-devops"])("accepts the legacy callback-only environment with providers=%s", async (providers) => {
+    vi.stubEnv("BOOTSTRAP_ENABLED_PROVIDERS", providers);
+    vi.stubEnv("ATLASSIAN_OAUTH_REDIRECT_URI", "http://localhost:3000/api/auth/jira/callback");
+
+    expect(() => validateEnabledProviderShape()).not.toThrow();
+    await expect(getEnabledLoginProviders()).resolves.toEqual(["azure-devops"]);
+    await expect(getEnabledJiraLoginMethods()).resolves.toEqual([]);
+    expect(mocks.sqlGet).not.toHaveBeenCalled();
+  });
+
   it("auto-detects Jira from parsed bootstrap sites", async () => {
     vi.stubEnv("BOOTSTRAP_JIRA_SITES", "quality|owner@example.test");
     await expect(getEnabledLoginProviders()).resolves.toEqual(["azure-devops", "jira-cloud"]);
@@ -134,6 +144,30 @@ describe("getEnabledJiraLoginMethods", () => {
     stubFullOAuthEnv();
     await expect(getEnabledJiraLoginMethods()).resolves.toEqual(["api_token", "oauth"]);
     expect(() => validateEnabledProviderShape()).not.toThrow();
+  });
+
+  it("keeps a callback-only Jira deployment on API tokens unless OAuth is explicitly requested", async () => {
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_ID", " ");
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_SECRET", " ");
+    vi.stubEnv("ATLASSIAN_OAUTH_REDIRECT_URI", "http://localhost:3000/api/auth/jira/callback");
+
+    expect(() => validateEnabledProviderShape()).not.toThrow();
+    await expect(getEnabledJiraLoginMethods()).resolves.toEqual(["api_token"]);
+    vi.stubEnv("JIRA_LOGIN_METHODS", "oauth");
+    expect(() => validateEnabledProviderShape()).toThrow(/OAuth client is not configured/);
+    await expect(getEnabledJiraLoginMethods()).resolves.toEqual([]);
+  });
+
+  it.each(["ATLASSIAN_OAUTH_CLIENT_ID", "ATLASSIAN_OAUTH_CLIENT_SECRET"])("still rejects a callback plus only %s", (credentialKey) => {
+    vi.stubEnv("ATLASSIAN_OAUTH_REDIRECT_URI", OAUTH_ENV.ATLASSIAN_OAUTH_REDIRECT_URI);
+    vi.stubEnv(credentialKey, "configured");
+    expect(() => validateEnabledProviderShape()).toThrow(/partially configured/);
+  });
+
+  it("still requires a callback when both OAuth credentials are supplied", () => {
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_ID", OAUTH_ENV.ATLASSIAN_OAUTH_CLIENT_ID);
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_SECRET", OAUTH_ENV.ATLASSIAN_OAUTH_CLIENT_SECRET);
+    expect(() => validateEnabledProviderShape()).toThrow(/ATLASSIAN_OAUTH_REDIRECT_URI/);
   });
 
   it("fails startup on a partial OAuth env, naming every missing variable", () => {

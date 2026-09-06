@@ -52,7 +52,7 @@ Until the operator completes this procedure, sign-ins against the old URL fail c
 Atlassian OAuth 2.0 (3LO) is an optional second sign-in method beside API tokens — the path for organizations whose Atlassian authentication policy blocks API tokens. It is inert until configured: with none of the variables below set, a deployment behaves exactly as the token-only era.
 
 1. Register an app in the Atlassian developer console (`https://developer.atlassian.com/console/myapps`) with the callback URL `https://<your-host>/api/auth/jira/callback` and grant it the `offline_access`, `read:me`, `read:jira-work`, `write:jira-work`, and `read:jira-user` scopes.
-2. Set all three variables or none — a partial set refuses to start the web and worker processes:
+2. Set all three variables or none. A callback URL alone, with both client credentials absent, is ignored for compatibility with older Azure-only templates. Once either client credential is supplied, a partial set refuses to start the web and worker processes. Explicit OAuth sign-in still requires the complete set:
    - `ATLASSIAN_OAUTH_CLIENT_ID=<from the developer console>`
    - `ATLASSIAN_OAUTH_CLIENT_SECRET=<from the developer console>`
    - `ATLASSIAN_OAUTH_REDIRECT_URI=<the exact registered callback URL>`

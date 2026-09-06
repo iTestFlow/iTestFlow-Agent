@@ -63,10 +63,12 @@ function isKnownJiraLoginMethod(value: string): value is JiraLoginMethod {
   return (KNOWN_JIRA_LOGIN_METHODS as readonly string[]).includes(value);
 }
 
-/** All-or-none: a partial ATLASSIAN_OAUTH_* set is a deployment mistake, named at startup rather than surfacing as broken sign-in buttons. */
+/** A client credential opts into OAuth configuration; a leftover callback alone is inert. */
 function oauthClientConfigured(): boolean {
+  // Older Azure-only .env templates supplied a callback URL without an OAuth
+  // client. Keep those upgrades working without silently enabling OAuth.
+  if (!process.env.ATLASSIAN_OAUTH_CLIENT_ID?.trim() && !process.env.ATLASSIAN_OAUTH_CLIENT_SECRET?.trim()) return false;
   const missing = OAUTH_ENV_KEYS.filter((key) => !process.env[key]?.trim());
-  if (missing.length === OAUTH_ENV_KEYS.length) return false;
   if (missing.length > 0) {
     throw new Error(
       `The Atlassian OAuth client is partially configured; missing ${missing.join(", ")}. Set all of ${OAUTH_ENV_KEYS.join(", ")} or none.`,
