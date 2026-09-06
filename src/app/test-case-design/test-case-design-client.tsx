@@ -31,8 +31,8 @@ import {
   postJson,
   projectWarning,
   scrollToNextStep,
-  useActiveProject,
 } from "@/components/workflow/test-intelligence-shared";
+import { useActiveProject } from "@/shared/lib/use-active-project";
 import type {
   ApiState,
   GeneratedTestCase,
@@ -60,30 +60,54 @@ import {
 } from "./test-case-design-copy";
 
 export function TestCaseDesignClient() {
-  const scope = useActiveProject();
+  const activeProject = useActiveProject();
+  const scope = activeProject ?? null;
   const generatedCasesRef = useRef<HTMLDivElement | null>(null);
   const promptSectionRef = useRef<HTMLDivElement | null>(null);
   const [activeStep, setActiveStep] = useState<"generate" | "review">("generate");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
-  const [providerId, setProviderId] = useState<string | null>(null);
+  const workspaceId = scope?.workspaceId;
+  const scopeReady = activeProject !== undefined;
+  const [providerLookupVersion, setProviderLookupVersion] = useState(0);
+  const [providerLookup, setProviderLookup] = useState<{
+    workspaceId?: string;
+    status: "loading" | "resolved" | "error";
+    providerId: ReturnType<typeof normalizeTestCaseDesignProviderId>;
+  }>({ status: "loading", providerId: null });
 
   useEffect(() => {
+    if (!scopeReady) return;
     let active = true;
-    void fetch("/api/auth/session", { cache: "no-store" })
+    setProviderLookup({ workspaceId, status: "loading", providerId: null });
+    const sessionUrl = workspaceId
+      ? `/api/auth/session?workspaceId=${encodeURIComponent(workspaceId)}`
+      : "/api/auth/session";
+    void fetch(sessionUrl, { cache: "no-store" })
       .then((response) => {
         if (!response.ok) throw new Error("Session lookup failed.");
-        return response.json() as Promise<{ workspace?: { providerId?: string } | null }>;
+        return response.json() as Promise<{ workspace?: { id?: string; providerId?: string } | null }>;
       })
       .then((data) => {
-        if (active) setProviderId(normalizeTestCaseDesignProviderId(data.workspace?.providerId));
+        const providerId = normalizeTestCaseDesignProviderId(data.workspace?.providerId);
+        if (!providerId || (workspaceId !== undefined && data.workspace?.id !== workspaceId)) {
+          throw new Error("Workspace provider could not be verified.");
+        }
+        if (active) setProviderLookup({ workspaceId, status: "resolved", providerId });
       })
       .catch(() => {
-        if (active) setProviderId(null);
+        if (active) setProviderLookup({ workspaceId, status: "error", providerId: null });
       });
     return () => {
       active = false;
     };
-  }, []);
+  }, [scopeReady, workspaceId, providerLookupVersion]);
+
+  // A project switch must not render with the previous workspace's provider
+  // while the effect starts its next request. Retry only changes lookup state.
+  const currentProviderLookup = scopeReady && providerLookup.workspaceId === workspaceId
+    ? providerLookup
+    : { status: "loading", providerId: null };
+  const providerId = currentProviderLookup.providerId;
 
   const providerCopy = testCaseDesignProviderCopy(normalizeTestCaseDesignProviderId(providerId));
 
@@ -372,6 +396,17 @@ export function TestCaseDesignClient() {
 
   return (
     <div className="content-stack">
+      {currentProviderLookup.status === "error" ? (
+        <Callout
+          tone="warning"
+          role="alert"
+          action={<Button type="button" variant="outline" aria-label="Retry workspace lookup" onClick={() => setProviderLookupVersion((version) => version + 1)}>Retry</Button>}
+        >
+          Could not verify the workspace. Retry to enable publishing. Generated cases and edits are kept when you retry.
+        </Callout>
+      ) : currentProviderLookup.status === "loading" ? (
+        <Callout tone="info" role="status">Checking workspace connection…</Callout>
+      ) : null}
       {projectWarning(scope, providerId)}
       <WorkflowStepper
         steps={[
