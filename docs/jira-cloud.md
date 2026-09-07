@@ -13,6 +13,8 @@ Both Atlassian API token kinds work, and the kind is detected automatically at s
 
 A token missing required scopes is reported distinctly from a wrong email/token pair, so a mis-scoped token is never diagnosed as a bad password. Atlassian caps every API token at a one-year lifetime; when a token expires or is revoked, the first rejected request marks the stored connection invalid. When API-token connections are enabled, the user can replace the token in **Settings → Connections**; in OAuth-only mode, the sync owner instead reconnects with Atlassian — scheduled sync resumes in place, with no principal handover.
 
+Settings accepts replacement tokens only for Jira account IDs already linked to the signed-in iTestFlow user. Users without a linked Jira identity must first sign in through the Jira login flow. Matching email addresses alone do not authorize a Settings connection; a rejected replacement leaves the current credential and sync principal unchanged.
+
 Set these deployment variables:
 
 - `APP_ENCRYPTION_KEY`: base64-encoded 32-byte key used for API-token and backend secrets.

@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   getProvider: vi.fn(), verifyProject: vi.fn(), storeSync: vi.fn(), storePlain: vi.fn(), storeXray: vi.fn(),
   storeZephyr: vi.fn(), resolveConflict: vi.fn(), revokeConnection: vi.fn(), storeConnection: vi.fn(),
   resolveResource: vi.fn(), authenticate: vi.fn(), checkRateLimit: vi.fn(), writeAuditLog: vi.fn(),
-  getWorkspaceMembership: vi.fn(), isJiraLoginMethodEnabled: vi.fn(),
+  getWorkspaceMembership: vi.fn(), isJiraLoginMethodEnabled: vi.fn(), getJiraIdentityLinkStatus: vi.fn(),
 }));
 vi.mock("@/modules/workspace/workspace-request", () => ({ resolveWorkspaceRequest: mocks.resolveWorkspaceRequest, workspaceRequestError: mocks.workspaceRequestError }));
 vi.mock("@/modules/projects/jira-project-mapping.service", () => ({ getJiraIntegrationOverview: mocks.getOverview, storeJiraProjectSyncConfig: mocks.storeSync }));
@@ -25,6 +25,7 @@ vi.mock("@/modules/security/rate-limit", () => ({ checkRateLimit: mocks.checkRat
 vi.mock("@/modules/audit/audit.service", () => ({ writeAuditLog: mocks.writeAuditLog }));
 vi.mock("@/modules/workspace/workspace-access.service", () => ({ getWorkspaceMembership: mocks.getWorkspaceMembership }));
 vi.mock("@/modules/auth/enabled-providers", () => ({ isJiraLoginMethodEnabled: mocks.isJiraLoginMethodEnabled }));
+vi.mock("@/modules/auth/user.service", () => ({ getJiraIdentityLinkStatus: mocks.getJiraIdentityLinkStatus }));
 
 import { DELETE, GET, POST } from "./route";
 
@@ -46,6 +47,7 @@ describe("Jira integration settings API", () => {
     mocks.getWorkspaceMembership.mockResolvedValue({ role: "owner", status: "active" });
     mocks.storeConnection.mockResolvedValue(undefined);
     mocks.isJiraLoginMethodEnabled.mockResolvedValue(true);
+    mocks.getJiraIdentityLinkStatus.mockReset().mockResolvedValue("linked");
   });
 
   it("returns server-authorized overview and available Jira projects without secrets", async () => {
@@ -145,6 +147,32 @@ describe("Jira integration settings API", () => {
     const response = await POST(request({ action: "configure_sync", projectId: "project-1", direction: "sideways", fieldMappings: [], statusMappings: [] }));
     expect(response.status).toBe(400);
     expect(mocks.storeSync).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["unlinked", "Sign in to Jira"],
+    ["mismatch", "different Jira account"],
+  ])("rejects an %s Jira identity before replacing credentials or the sync principal", async (linkStatus, guidance) => {
+    mocks.getJiraIdentityLinkStatus.mockResolvedValue(linkStatus);
+    mocks.authenticate.mockResolvedValue({
+      identity: { accountId: "verified-other-account", displayName: "Other account", emailAddress: "other@example.test" },
+      tokenKind: "scoped",
+    });
+    const response = await POST(request({ action: "connect", emailAddress: "other@example.test", apiToken: "other-secret" }));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: expect.stringContaining(guidance) });
+    expect(mocks.getJiraIdentityLinkStatus).toHaveBeenCalledWith("user-1", "verified-other-account");
+    expect(mocks.storeConnection).not.toHaveBeenCalled();
+    expect(mocks.getWorkspaceMembership).not.toHaveBeenCalled();
+    expect(mocks.writeAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when Jira identity ownership cannot be read", async () => {
+    mocks.getJiraIdentityLinkStatus.mockRejectedValue(new Error("database unavailable"));
+    const response = await POST(request({ action: "connect", emailAddress: "owner@example.test", apiToken: "secret" }));
+    expect(response.status).toBe(503);
+    expect(mocks.storeConnection).not.toHaveBeenCalled();
+    expect(mocks.writeAuditLog).not.toHaveBeenCalled();
   });
 
   it("disconnects only the authenticated actor and audits the revocation", async () => {

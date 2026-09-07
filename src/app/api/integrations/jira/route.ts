@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { revokeJiraConnection, storeJiraConnection } from "@/modules/auth/jira-connection.service";
 import { isJiraLoginMethodEnabled } from "@/modules/auth/enabled-providers";
+import { getJiraIdentityLinkStatus } from "@/modules/auth/user.service";
 import {
   authenticateJiraApiToken,
   InvalidJiraTokenError,
@@ -153,6 +154,15 @@ async function connectJiraToken(context: WorkspaceRequestContext, emailAddress: 
       );
     }
     const { identity, tokenKind } = await authenticateJiraApiToken({ resource, emailAddress, apiToken });
+    const identityLink = await getJiraIdentityLinkStatus(context.userId, identity.accountId);
+    if (identityLink !== "linked") {
+      return NextResponse.json(
+        { error: identityLink === "unlinked"
+          ? "Sign in to Jira in iTestFlow once before replacing its API token in Settings."
+          : "This token belongs to a different Jira account. Use a token from a Jira account already linked to your signed-in user." },
+        { status: 403 },
+      );
+    }
     const membership = await getWorkspaceMembership(context.userId, context.workspace.id);
     await storeJiraConnection({
       workspaceId: context.workspace.id,

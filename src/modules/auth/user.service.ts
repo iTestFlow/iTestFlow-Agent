@@ -48,6 +48,21 @@ export async function getStoredUserIdentity(userId: string): Promise<StoredUserI
     : null;
 }
 
+/** Settings may replace credentials only for a Jira subject already linked by sign-in. */
+export async function getJiraIdentityLinkStatus(userId: string, accountId: string): Promise<"linked" | "unlinked" | "mismatch"> {
+  const row = await sqlGet<{ matches: boolean; has_jira_identity: boolean }>(
+    `SELECT
+       EXISTS (SELECT 1 FROM external_identities
+               WHERE user_id = @userId AND provider_id = 'jira-cloud'
+                 AND provider_subject = @accountId) AS matches,
+       EXISTS (SELECT 1 FROM external_identities
+               WHERE user_id = @userId AND provider_id = 'jira-cloud') AS has_jira_identity`,
+    { userId, accountId },
+  );
+  if (!row) throw new Error("Jira identity ownership is unavailable.");
+  return row.matches ? "linked" : row.has_jira_identity ? "mismatch" : "unlinked";
+}
+
 /**
  * User provisioning from an authenticated identity. Reconciles against both
  * unique keys (azure_identity_id and email_or_unique_name) so a bootstrapped
