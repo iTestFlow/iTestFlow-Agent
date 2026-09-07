@@ -1,8 +1,10 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { createId, nowIso, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import { decryptSecret, encryptSecret } from "@/modules/security/encryption.service";
-import { JiraBearerAuthError, type JiraTokenKind } from "@/modules/integrations/jira-cloud/jira-http";import { AtlassianOAuthError, AtlassianReauthorizationRequiredError, refreshAtlassianOAuthTokens } from "./jira-oauth";
+import { JiraBearerAuthError, type JiraAccessToken, type JiraAccessTokenSupplier, type JiraTokenKind, type JiraUnauthorizedHooks } from "@/modules/integrations/jira-cloud/jira-http";
+import { AtlassianOAuthError, AtlassianReauthorizationRequiredError, refreshAtlassianOAuthTokens } from "./jira-oauth";
 
 /**
  * Dual-kind Jira credential storage and resolution. A connection row is either
@@ -34,8 +36,8 @@ export type StoreJiraConnectionInput = {
  * outlive the ~1h access-token lifetime across a full sync drain.
  */
 export type JiraCredential =
-  | { kind: "api_token"; email: string; apiToken: string; tokenKind: JiraTokenKind; cloudId: string }
-  | { kind: "oauth"; email: string; cloudId: string; getAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string> };
+  | { kind: "api_token"; email: string; apiToken: string; tokenKind: JiraTokenKind; cloudId: string; revision: string }
+  | { kind: "oauth"; email: string; cloudId: string; getAccessToken: JiraAccessTokenSupplier };
 
 /** Thrown when the stored token was marked invalid by a use-time 401. */
 export class InvalidJiraCredentialsError extends Error {
@@ -207,6 +209,7 @@ export async function storeJiraConnection(input: StoreJiraConnectionInput): Prom
 }
 
 type JiraConnectionRow = {
+  id: string;
   user_id: string;
   email: string;
   credential_kind: "api_token" | "oauth";
@@ -219,7 +222,7 @@ type JiraConnectionRow = {
   key_version: number | null;
 };
 
-const RESOLVE_COLUMNS = `c.user_id, c.email, c.credential_kind, c.token_kind, c.cloud_id, c.status,
+const RESOLVE_COLUMNS = `c.id, c.user_id, c.email, c.credential_kind, c.token_kind, c.cloud_id, c.status,
             c.encrypted_api_token, c.api_token_iv, c.api_token_tag, c.key_version`;
 
 /**
@@ -295,6 +298,7 @@ function toCredential(row: JiraConnectionRow, workspaceId: string): JiraCredenti
     email: row.email,
     tokenKind: row.token_kind,
     cloudId: row.cloud_id,
+    revision: credentialRevision(row),
     apiToken: decryptSecret({
       ciphertext: row.encrypted_api_token,
       iv: row.api_token_iv,
@@ -309,6 +313,7 @@ const ACCESS_REFRESH_THRESHOLD_MS = 60_000;
 
 type OAuthTokenRow = {
   id: string;
+  credential_kind: "oauth";
   status: "active" | "invalid" | "reauthorization_required";
   encrypted_access_token: string | null;
   access_token_iv: string | null;
@@ -331,19 +336,15 @@ type OAuthTokenRow = {
  * reauthorization_required in the same transaction — keeping the
  * sync-principal flag and ciphertexts, mirroring the invalid lifecycle — via
  * a sentinel return, because throwing would roll the flip back. Transient
- * failures leave the row untouched. The supplier remembers the expiry it last
- * served: a forceRefresh whose stored expiry has already moved means another
- * flight rotated meanwhile, so the fresh stored token is served instead of
- * burning a second rotation. All failures leave as JiraBearerAuthError, the
+ * failures leave the row untouched. Each request carries its own rejected
+ * revision: if the encrypted credential changed, reuse that fresh stored token
+ * instead of burning a second rotation. All failures leave as JiraBearerAuthError, the
  * vocabulary jiraFetch classifies.
  */
-function createOAuthAccessTokenSupplier(key: { workspaceId: string; userId: string }): (options?: { forceRefresh?: boolean }) => Promise<string> {
-  let lastServedExpiresAt: string | null = null;
-  return async (options?: { forceRefresh?: boolean }): Promise<string> => {
+function createOAuthAccessTokenSupplier(key: { workspaceId: string; userId: string }): JiraAccessTokenSupplier {
+  return async (options): Promise<JiraAccessToken> => {
     try {
-      const served = await resolveOAuthAccessToken(key, options?.forceRefresh === true, lastServedExpiresAt);
-      lastServedExpiresAt = served.expiresAt;
-      return served.accessToken;
+      return await resolveOAuthAccessToken(key, options?.rejectedRevision);
     } catch (error) {
       if (
         error instanceof JiraReauthorizationRequiredError
@@ -362,14 +363,13 @@ function createOAuthAccessTokenSupplier(key: { workspaceId: string; userId: stri
 
 async function resolveOAuthAccessToken(
   key: { workspaceId: string; userId: string },
-  forceRefresh: boolean,
-  lastServedExpiresAt: string | null,
-): Promise<{ accessToken: string; expiresAt: string }> {
-  if (!forceRefresh) {
+  rejectedRevision?: string,
+): Promise<JiraAccessToken> {
+  if (rejectedRevision === undefined) {
     const row = await readOAuthTokenRow(key, undefined, false);
     const fresh = usableOAuthRow(row);
     if (msUntilExpiry(fresh) > ACCESS_REFRESH_THRESHOLD_MS) {
-      return { accessToken: decryptOAuthSecret(fresh, "access"), expiresAt: fresh.access_expires_at! };
+      return { accessToken: decryptOAuthSecret(fresh, "access"), revision: credentialRevision(fresh) };
     }
   }
   const outcome = await withTransaction(async (client) => {
@@ -377,11 +377,11 @@ async function resolveOAuthAccessToken(
     // Single-flight collapse inside the lock: the token is fresh AND (for a
     // forced refresh) is not the one this supplier served into the 401 —
     // another flight already rotated it.
-    const rotatedElsewhere = forceRefresh
-      ? row.access_expires_at !== lastServedExpiresAt && msUntilExpiry(row) > ACCESS_REFRESH_THRESHOLD_MS
-      : msUntilExpiry(row) > ACCESS_REFRESH_THRESHOLD_MS;
+    const revision = credentialRevision(row);
+    const rotatedElsewhere = msUntilExpiry(row) > ACCESS_REFRESH_THRESHOLD_MS
+      && (rejectedRevision === undefined || revision !== rejectedRevision);
     if (rotatedElsewhere) {
-      return { accessToken: decryptOAuthSecret(row, "access"), expiresAt: row.access_expires_at! };
+      return { accessToken: decryptOAuthSecret(row, "access"), revision };
     }
     let rotated;
     try {
@@ -438,7 +438,15 @@ async function resolveOAuthAccessToken(
     if (updated !== 1) {
       throw new AtlassianOAuthError("The rotated Jira OAuth tokens could not be persisted. Try again later.");
     }
-    return { accessToken: rotated.accessToken, expiresAt };
+    return {
+      accessToken: rotated.accessToken,
+      revision: credentialRevision({
+        ...row,
+        encrypted_access_token: access.ciphertext, access_token_iv: access.iv, access_token_tag: access.tag,
+        encrypted_refresh_token: refresh.ciphertext, refresh_token_iv: refresh.iv, refresh_token_tag: refresh.tag,
+        key_version: access.keyVersion,
+      }),
+    };
   });
   if ("reauthorizationRequired" in outcome) throw new JiraReauthorizationRequiredError();
   return outcome;
@@ -450,7 +458,7 @@ async function readOAuthTokenRow(
   forUpdate: boolean,
 ): Promise<OAuthTokenRow | undefined> {
   return await sqlGet<OAuthTokenRow>(
-    `SELECT c.id, c.status,
+    `SELECT c.id, c.credential_kind, c.status,
             c.encrypted_access_token, c.access_token_iv, c.access_token_tag,
             c.encrypted_refresh_token, c.refresh_token_iv, c.refresh_token_tag,
             c.key_version, c.access_expires_at
@@ -503,22 +511,73 @@ function expiryIso(now: string, expiresInSeconds: number): string {
   return new Date(Date.parse(now) + expiresInSeconds * 1000).toISOString();
 }
 
+type CredentialRevisionRow = {
+  id: string;
+  credential_kind: "api_token" | "oauth";
+  key_version: number | null;
+  encrypted_api_token?: string | null;
+  api_token_iv?: string | null;
+  api_token_tag?: string | null;
+  encrypted_access_token?: string | null;
+  access_token_iv?: string | null;
+  access_token_tag?: string | null;
+  encrypted_refresh_token?: string | null;
+  refresh_token_iv?: string | null;
+  refresh_token_tag?: string | null;
+};
+
+/** Encryption randomness identifies replacements even when plaintext and expiry match. */
+function credentialRevision(row: CredentialRevisionRow): string {
+  const encrypted = row.credential_kind === "api_token"
+    ? [row.encrypted_api_token, row.api_token_iv, row.api_token_tag]
+    : [row.encrypted_access_token, row.access_token_iv, row.access_token_tag,
+      row.encrypted_refresh_token, row.refresh_token_iv, row.refresh_token_tag];
+  return createHash("sha256").update(JSON.stringify([row.id, row.credential_kind, row.key_version, ...encrypted])).digest("hex");
+}
+
+async function markRejectedCredential(
+  workspaceId: string,
+  userId: string,
+  credentialKind: CredentialRevisionRow["credential_kind"],
+  rejectedRevision: string,
+): Promise<void> {
+  await withTransaction(async (client) => {
+    const row = await sqlGet<CredentialRevisionRow>(
+      `SELECT id, credential_kind, key_version,
+              encrypted_api_token, api_token_iv, api_token_tag,
+              encrypted_access_token, access_token_iv, access_token_tag,
+              encrypted_refresh_token, refresh_token_iv, refresh_token_tag
+       FROM jira_connections
+       WHERE workspace_id = @workspaceId AND user_id = @userId
+         AND credential_kind = @credentialKind AND status = 'active'
+       FOR UPDATE`,
+      { workspaceId, userId, credentialKind },
+      client,
+    );
+    if (!row || row.credential_kind !== credentialKind || credentialRevision(row) !== rejectedRevision) return;
+    await sqlRun(
+      `UPDATE jira_connections SET status = @status, updated_at = @now
+       WHERE id = @id AND credential_kind = @credentialKind AND status = 'active'`,
+      {
+        id: row.id, credentialKind, now: nowIso(),
+        status: credentialKind === "api_token" ? "invalid" : "reauthorization_required",
+      },
+      client,
+    );
+  });
+}
+
 /**
  * Use-time invalidation (mirrors the Azure PAT expiry hook): a plain 401 from
  * Atlassian flips an api_token connection to 'invalid'. The sync-principal
  * flag and the encrypted token are KEPT so a replaced token restores polling
  * in place; only revocation clears them. Kind-guarded: the schema forbids
  * 'invalid' on oauth rows, whose 401s route through the refresh path and
- * {@link markJiraConnectionReauthorizationRequired}. Idempotent and safe to
- * fire-and-forget.
+ * {@link markJiraConnectionReauthorizationRequired}. A revision comparison
+ * under lock prevents a delayed failure from invalidating a replacement.
  */
-export async function markJiraConnectionInvalid(workspaceId: string, userId: string): Promise<void> {
-  await sqlRun(
-    `UPDATE jira_connections SET status = 'invalid', updated_at = @now
-     WHERE workspace_id = @workspaceId AND user_id = @userId
-       AND credential_kind = 'api_token' AND status = 'active'`,
-    { workspaceId, userId, now: nowIso() },
-  );
+export async function markJiraConnectionInvalid(workspaceId: string, userId: string, rejectedRevision: string): Promise<void> {
+  await markRejectedCredential(workspaceId, userId, "api_token", rejectedRevision);
 }
 
 /**
@@ -527,13 +586,8 @@ export async function markJiraConnectionInvalid(workspaceId: string, userId: str
  * KEPT — a fresh Atlassian consent through the same upsert restores polling
  * without a principal handover.
  */
-export async function markJiraConnectionReauthorizationRequired(workspaceId: string, userId: string): Promise<void> {
-  await sqlRun(
-    `UPDATE jira_connections SET status = 'reauthorization_required', updated_at = @now
-     WHERE workspace_id = @workspaceId AND user_id = @userId
-       AND credential_kind = 'oauth' AND status = 'active'`,
-    { workspaceId, userId, now: nowIso() },
-  );
+export async function markJiraConnectionReauthorizationRequired(workspaceId: string, userId: string, rejectedRevision: string): Promise<void> {
+  await markRejectedCredential(workspaceId, userId, "oauth", rejectedRevision);
 }
 
 /**
@@ -542,7 +596,7 @@ export async function markJiraConnectionReauthorizationRequired(workspaceId: str
  */
 export function jiraCredentialSettings(credential: JiraCredential):
   | { credentialKind?: "api_token"; email: string; apiToken: string; tokenKind: JiraTokenKind }
-  | { credentialKind: "oauth"; getAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string> } {
+  | { credentialKind: "oauth"; getAccessToken: JiraAccessTokenSupplier } {
   return credential.kind === "oauth"
     ? { credentialKind: "oauth", getAccessToken: credential.getAccessToken }
     : { email: credential.email, apiToken: credential.apiToken, tokenKind: credential.tokenKind };
@@ -553,11 +607,13 @@ export function jiraCredentialSettings(credential: JiraCredential):
  * survived a forced refresh mark reauthorization required. Fire-and-forget —
  * never blocks or fails the in-flight request.
  */
-export function jiraOnUnauthorized(credential: JiraCredential, workspaceId: string, userId: string): { onUnauthorized: () => void } {
+export function jiraOnUnauthorized(credential: JiraCredential, workspaceId: string, userId: string): JiraUnauthorizedHooks {
   return {
-    onUnauthorized: () => {
+    onUnauthorized: (rejectedRevision) => {
       const flip = credential.kind === "oauth" ? markJiraConnectionReauthorizationRequired : markJiraConnectionInvalid;
-      void flip(workspaceId, userId).catch(() => {});
+      const revision = credential.kind === "oauth" ? rejectedRevision : credential.revision;
+      if (revision === undefined) return;
+      void flip(workspaceId, userId, revision).catch(() => {});
     },
   };
 }

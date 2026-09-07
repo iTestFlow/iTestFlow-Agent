@@ -110,6 +110,7 @@ beforeEach(() => {
   mocks.resolveUserAzurePat.mockResolvedValue("pat-secret");
   mocks.resolveJiraCredentials.mockResolvedValue({
     kind: "api_token", email: "user@example.test", apiToken: "jira-token-secret", tokenKind: "scoped", cloudId: "cloud-a",
+    revision: "stored-api-token-revision",
   });
   mocks.jiraOnUnauthorized.mockReturnValue({ onUnauthorized: vi.fn() });
   mocks.resolveUserLlmConfig.mockResolvedValue({

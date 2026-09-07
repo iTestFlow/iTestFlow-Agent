@@ -12,6 +12,11 @@ export type JiraTokenKind = "scoped" | "classic";
 
 export type JiraBasicAuth = { email: string; apiToken: string };
 
+/** Server-only identity of the exact stored credential used for one request. */
+export type JiraAccessToken = { accessToken: string; revision: string };
+export type JiraAccessTokenSupplier = (options?: { forceRefresh: true; rejectedRevision: string }) => Promise<JiraAccessToken>;
+export type JiraUnauthorizedHooks = { onUnauthorized?: (rejectedRevision?: string) => void };
+
 /**
  * How a request authenticates: the stored email+token pair (Basic), or an
  * OAuth bearer supplier owned by the connection service. The supplier is
@@ -21,7 +26,7 @@ export type JiraBasicAuth = { email: string; apiToken: string };
  */
 export type JiraAuth =
   | ({ kind: "basic" } & JiraBasicAuth)
-  | { kind: "bearer"; getToken: (options?: { forceRefresh?: boolean }) => Promise<string> };
+  | { kind: "bearer"; getToken: JiraAccessTokenSupplier };
 
 /**
  * The bearer supplier's only legal failure vocabulary. reauthorization_required
@@ -80,16 +85,17 @@ export async function jiraFetch(
   url: string,
   init: RequestInit,
   auth: JiraAuth,
-  hooks?: { onUnauthorized?: () => void },
+  hooks?: JiraUnauthorizedHooks,
 ): Promise<Response> {
-  let response = await requestOnce(url, init, auth, false);
-  if (response.status === 401 && auth.kind === "bearer") {
+  let attempt = await requestOnce(url, init, auth);
+  if (attempt.response.status === 401 && auth.kind === "bearer") {
     // Free the pooled connection before issuing the retry's new traffic.
-    void response.body?.cancel();
-    response = await requestOnce(url, init, auth, true);
+    void attempt.response.body?.cancel();
+    attempt = await requestOnce(url, init, auth, attempt.revision);
   }
+  const { response, revision } = attempt;
   if (!response.ok) {
-    if (response.status === 401) hooks?.onUnauthorized?.();
+    if (response.status === 401) hooks?.onUnauthorized?.(revision);
     throw new IntegrationError({
       providerId: "jira-cloud",
       code: jiraStatusErrorCode(response.status),
@@ -101,12 +107,13 @@ export async function jiraFetch(
   return response;
 }
 
-async function requestOnce(url: string, init: RequestInit, auth: JiraAuth, forceRefresh: boolean): Promise<Response> {
+async function requestOnce(url: string, init: RequestInit, auth: JiraAuth, rejectedRevision?: string): Promise<{ response: Response; revision?: string }> {
+  const token = auth.kind === "bearer" ? await resolveBearerToken(auth, rejectedRevision) : undefined;
   const authorization = auth.kind === "basic"
     ? jiraBasicAuthorization(auth)
-    : `Bearer ${await resolveBearerToken(auth, forceRefresh)}`;
+    : `Bearer ${token!.accessToken}`;
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       ...init,
       cache: "no-store",
       headers: {
@@ -116,6 +123,7 @@ async function requestOnce(url: string, init: RequestInit, auth: JiraAuth, force
         ...(init.headers ?? {}),
       },
     });
+    return { response, revision: token?.revision };
   } catch {
     throw new IntegrationError({ providerId: "jira-cloud", code: "integration_unavailable", message: "Jira Cloud is unavailable." });
   }
@@ -123,10 +131,10 @@ async function requestOnce(url: string, init: RequestInit, auth: JiraAuth, force
 
 async function resolveBearerToken(
   auth: Extract<JiraAuth, { kind: "bearer" }>,
-  forceRefresh: boolean,
-): Promise<string> {
+  rejectedRevision?: string,
+): Promise<JiraAccessToken> {
   try {
-    return await auth.getToken(forceRefresh ? { forceRefresh: true } : undefined);
+    return await auth.getToken(rejectedRevision === undefined ? undefined : { forceRefresh: true, rejectedRevision });
   } catch (error) {
     if (error instanceof JiraBearerAuthError && error.reason === "unavailable") {
       throw new IntegrationError({ providerId: "jira-cloud", code: "integration_unavailable", message: "Jira Cloud is unavailable." });

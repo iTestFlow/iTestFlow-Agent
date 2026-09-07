@@ -5,6 +5,22 @@ import { JiraCloudAdapter } from "./jira-cloud-adapter";
 describe("JiraCloudAdapter", () => {
   beforeEach(() => vi.unstubAllGlobals());
 
+  it("carries OAuth snapshots through refresh and final-401 invalidation", async () => {
+    const getAccessToken = vi.fn()
+      .mockResolvedValueOnce({ accessToken: "old-access", revision: "old-revision" })
+      .mockResolvedValueOnce({ accessToken: "new-access", revision: "new-revision" });
+    const fetchMock = vi.fn().mockImplementation(async () => new Response("denied", { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onUnauthorized = vi.fn();
+    const adapter = new JiraCloudAdapter({
+      credentialKind: "oauth", cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", getAccessToken,
+    }, undefined, { onUnauthorized });
+    await expect(adapter.fetchAuthenticatedUser()).rejects.toMatchObject({ code: "integration_auth_failed" });
+    expect(getAccessToken).toHaveBeenNthCalledWith(2, { forceRefresh: true, rejectedRevision: "old-revision" });
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe("Bearer new-access");
+    expect(onUnauthorized).toHaveBeenCalledExactlyOnceWith("new-revision");
+  });
+
   it("uses the scoped-token gateway API with Basic auth and maps projects and the authenticated user", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ values: [{ id: "10000", key: "QA", name: "Quality", projectTypeKey: "software" }] }))

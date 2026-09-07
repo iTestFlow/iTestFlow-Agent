@@ -14,15 +14,17 @@ import {
   sqlGet,
   sqlRun,
 } from "@/modules/shared/infrastructure/database/db";
-import { decryptSecret } from "@/modules/security/encryption.service";
+import { decryptSecret, encryptSecret } from "@/modules/security/encryption.service";
 import { JiraBearerAuthError } from "@/modules/integrations/jira-cloud/jira-http";
 import { cleanupFixtures, describeDb, seedMembership, seedUser, uniqueTestId } from "@/test/db";
 import { AtlassianOAuthError, AtlassianReauthorizationRequiredError } from "./jira-oauth";
 import {
   markJiraConnectionInvalid,
+  markJiraConnectionReauthorizationRequired,
   resolveJiraCredentials,
   resolveJiraSyncPrincipalCredentials,
   storeJiraConnection,
+  revokeJiraConnection,
 } from "./jira-connection.service";
 
 const WORKSPACE_ID = uniqueTestId("ws_jira_connection_race");
@@ -71,6 +73,12 @@ describeDb("Jira connection principal lifecycle (DB-backed)", () => {
       tokenKind: "scoped",
       isSyncPrincipal,
     });
+  }
+
+  async function invalidateCurrentToken(userId: string) {
+    const credential = await resolveJiraCredentials({ workspaceId: WORKSPACE_ID, userId });
+    if (credential.kind !== "api_token") throw new Error("expected an API token");
+    await markJiraConnectionInvalid(WORKSPACE_ID, userId, credential.revision);
   }
 
   it("blocks concurrent owner stores on the workspace and commits exactly one sync principal", async () => {
@@ -124,7 +132,7 @@ describeDb("Jira connection principal lifecycle (DB-backed)", () => {
 
     // A use-time 401 invalidates A's token but KEEPS the principal flag, so a
     // plain token replacement restores polling without a handover.
-    await markJiraConnectionInvalid(WORKSPACE_ID, USER_A);
+    await invalidateCurrentToken(USER_A);
     const invalid = await sqlGet<{ is_sync_principal: boolean; status: string }>(
       `SELECT is_sync_principal, status FROM jira_connections WHERE workspace_id = @workspaceId AND user_id = @userId`,
       { workspaceId: WORKSPACE_ID, userId: USER_A },
@@ -141,7 +149,7 @@ describeDb("Jira connection principal lifecycle (DB-backed)", () => {
     });
 
     // A goes invalid again and B claims principal in the meantime.
-    await markJiraConnectionInvalid(WORKSPACE_ID, USER_A);
+    await invalidateCurrentToken(USER_A);
     await store(USER_B, "token-b-2");
     await expect(resolveJiraSyncPrincipalCredentials(WORKSPACE_ID)).resolves.toMatchObject({ userId: USER_B });
 
@@ -246,6 +254,85 @@ describeDb("Jira dual-kind credential lifecycle (DB-backed)", () => {
     });
   });
 
+  it.each(["replacement-token", "original-token"])("a late API-token failure leaves the replacement active (%s)", async (replacement) => {
+    await storeToken("original-token");
+    const rejected = await resolveJiraCredentials({ workspaceId: WS_DUAL, userId: USER_DUAL });
+    if (rejected.kind !== "api_token") throw new Error("expected an API token");
+    await storeToken(replacement);
+    await markJiraConnectionInvalid(WS_DUAL, USER_DUAL, rejected.revision);
+    expect(await connectionRow()).toMatchObject({ status: "active", is_sync_principal: true });
+    await expect(resolveJiraSyncPrincipalCredentials(WS_DUAL)).resolves.toMatchObject({ apiToken: replacement });
+  });
+
+  it("a late final OAuth 401 leaves a reconnected grant active", async () => {
+    await storeOAuth({ access: "original-access", refresh: "original-refresh" });
+    const credential = await resolveJiraCredentials({ workspaceId: WS_DUAL, userId: USER_DUAL });
+    if (credential.kind !== "oauth") throw new Error("expected OAuth");
+    const rejected = await credential.getAccessToken();
+    await storeOAuth({ access: "replacement-access", refresh: "replacement-refresh" });
+    await markJiraConnectionReauthorizationRequired(WS_DUAL, USER_DUAL, rejected.revision);
+    expect(await connectionRow()).toMatchObject({ status: "active", is_sync_principal: true });
+  });
+
+  it("a delayed forced refresh reuses a reconnect even after the supplier served its new token", async () => {
+    oauthMocks.refresh.mockResolvedValue({ accessToken: "unnecessary-rotation", refreshToken: "rotated-refresh", expiresInSeconds: 3600, scope: "", tokenType: "Bearer" });
+    await storeOAuth({ access: "old-access", refresh: "old-refresh" });
+    const credential = await resolveJiraCredentials({ workspaceId: WS_DUAL, userId: USER_DUAL });
+    if (credential.kind !== "oauth") throw new Error("expected OAuth");
+    const rejected = await credential.getAccessToken();
+    await storeOAuth({ access: "new-access", refresh: "new-refresh" });
+    const current = await credential.getAccessToken();
+    const retried = await credential.getAccessToken({ forceRefresh: true, rejectedRevision: rejected.revision });
+    expect(retried).toEqual(current);
+    expect(oauthMocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it("invalidation rechecks a replacement after waiting for its row lock", async () => {
+    await storeToken("original-token");
+    const rejected = await resolveJiraCredentials({ workspaceId: WS_DUAL, userId: USER_DUAL });
+    if (rejected.kind !== "api_token") throw new Error("expected an API token");
+    const locker = await getPool().connect();
+    let lockOpen = false;
+    let invalidation: Promise<void> | undefined;
+    try {
+      await locker.query("BEGIN");
+      lockOpen = true;
+      await locker.query("SELECT id FROM jira_connections WHERE workspace_id = $1 AND user_id = $2 FOR UPDATE", [WS_DUAL, USER_DUAL]);
+      let settled = false;
+      invalidation = markJiraConnectionInvalid(WS_DUAL, USER_DUAL, rejected.revision).finally(() => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(settled).toBe(false);
+      // Simulate a replacement committed while the old response waits. The
+      // encryption tuple changes even if the connection id stays the same.
+      const replacement = encryptSecret("replacement-token");
+      await locker.query("UPDATE jira_connections SET encrypted_api_token = $3, api_token_iv = $4, api_token_tag = $5, key_version = $6 WHERE workspace_id = $1 AND user_id = $2", [WS_DUAL, USER_DUAL, replacement.ciphertext, replacement.iv, replacement.tag, replacement.keyVersion]);
+      await locker.query("COMMIT");
+      lockOpen = false;
+      await invalidation;
+      expect(await connectionRow()).toMatchObject({ status: "active", is_sync_principal: true });
+      await expect(resolveJiraCredentials({ workspaceId: WS_DUAL, userId: USER_DUAL })).resolves.toMatchObject({ apiToken: "replacement-token" });
+    } finally {
+      if (lockOpen) await locker.query("ROLLBACK");
+      locker.release();
+      await invalidation;
+    }
+  });
+
+  it("a current OAuth rejection invalidates only that grant and cannot change a later API token or revoke", async () => {
+    await storeOAuth({ access: "current-access", refresh: "current-refresh" });
+    const credential = await resolveJiraCredentials({ workspaceId: WS_DUAL, userId: USER_DUAL });
+    if (credential.kind !== "oauth") throw new Error("expected OAuth");
+    const rejected = await credential.getAccessToken();
+    await markJiraConnectionReauthorizationRequired(WS_DUAL, USER_DUAL, rejected.revision);
+    expect(await connectionRow()).toMatchObject({ status: "reauthorization_required", is_sync_principal: true });
+    await storeToken("other-kind");
+    await markJiraConnectionReauthorizationRequired(WS_DUAL, USER_DUAL, rejected.revision);
+    expect(await connectionRow()).toMatchObject({ status: "active", credential_kind: "api_token" });
+    await revokeJiraConnection({ workspaceId: WS_DUAL, actorUserId: USER_DUAL });
+    await markJiraConnectionReauthorizationRequired(WS_DUAL, USER_DUAL, rejected.revision);
+    expect(await connectionRow()).toMatchObject({ status: "revoked", is_sync_principal: false });
+  });
+
   it("collapses a concurrent expiring-token refresh to exactly one rotation", async () => {
     await storeOAuth({ access: "stale-access", refresh: "stale-refresh", expiresInSeconds: 30 });
     oauthMocks.refresh.mockImplementation(async () => {
@@ -258,8 +345,8 @@ describeDb("Jira dual-kind credential lifecycle (DB-backed)", () => {
     if (first.kind !== "oauth" || second.kind !== "oauth") throw new Error("expected oauth credentials");
 
     const [tokenA, tokenB] = await Promise.all([first.getAccessToken(), second.getAccessToken()]);
-    expect(tokenA).toBe("rotated-access");
-    expect(tokenB).toBe("rotated-access");
+    expect(tokenA).toEqual({ accessToken: "rotated-access", revision: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(tokenB).toEqual(tokenA);
     expect(oauthMocks.refresh).toHaveBeenCalledTimes(1);
 
     // The rotated refresh token is the one persisted — losing it would kill
@@ -318,8 +405,11 @@ describeDb("Jira dual-kind credential lifecycle (DB-backed)", () => {
   });
 
   it("marks invalid only api_token rows — an oauth row is untouched by the token hook", async () => {
+    await storeToken("previous-api-token");
+    const previous = await resolveJiraCredentials({ workspaceId: WS_DUAL, userId: USER_DUAL });
+    if (previous.kind !== "api_token") throw new Error("expected an API token");
     await storeOAuth({ access: "guard-access", refresh: "guard-refresh" });
-    await markJiraConnectionInvalid(WS_DUAL, USER_DUAL);
+    await markJiraConnectionInvalid(WS_DUAL, USER_DUAL, previous.revision);
     expect(await connectionRow()).toMatchObject({ status: "active", credential_kind: "oauth" });
   });
 });

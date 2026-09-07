@@ -5,6 +5,24 @@ import { PlainJiraArtifactBackend } from "./plain-jira-artifact-backend";
 describe("PlainJiraArtifactBackend", () => {
   beforeEach(() => vi.unstubAllGlobals());
 
+  it("carries OAuth snapshots through artifact requests and final-401 invalidation", async () => {
+    const getAccessToken = vi.fn()
+      .mockResolvedValueOnce({ accessToken: "old-access", revision: "old-revision" })
+      .mockResolvedValueOnce({ accessToken: "new-access", revision: "new-revision" });
+    const fetchMock = vi.fn().mockImplementation(async () => new Response("denied", { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onUnauthorized = vi.fn();
+    const backend = new PlainJiraArtifactBackend({
+      ...settings(), credentialKind: "oauth", getAccessToken,
+    }, scope(), { onUnauthorized });
+    await expect(backend.createTestCase({
+      projectId: "10000", testCase: { localId: "case-1", targetUserStoryId: "QA-7", title: "Title", steps: [] },
+    })).rejects.toMatchObject({ code: "integration_auth_failed" });
+    expect(getAccessToken).toHaveBeenNthCalledWith(2, { forceRefresh: true, rejectedRevision: "old-revision" });
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe("Bearer new-access");
+    expect(onUnauthorized).toHaveBeenCalledExactlyOnceWith("new-revision");
+  });
+
   it("publishes a test case with immutable local identity and deterministic backlink", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ id: "10007", key: "QA-7", fields: { project: { id: "10000", key: "QA" }, summary: "Story", issuetype: { name: "Story" } } }))

@@ -30,6 +30,7 @@ import {
   InvalidJiraCredentialsError,
   JiraReauthorizationRequiredError,
   JiraSyncPrincipalError,
+  jiraOnUnauthorized,
   markJiraConnectionInvalid,
   markJiraConnectionReauthorizationRequired,
   resolveJiraCredentials,
@@ -41,6 +42,7 @@ import { AtlassianReauthorizationRequiredError, AtlassianOAuthError } from "./ji
 import { JiraBearerAuthError } from "@/modules/integrations/jira-cloud/jira-http";
 
 const activeRow = {
+  id: "jiraconn_row",
   user_id: "user-1", email: "user@example.test", credential_kind: "api_token", token_kind: "scoped", cloud_id: "cloud-a", status: "active",
   encrypted_api_token: "enc-token", api_token_iv: "iv-t", api_token_tag: "tag-t", key_version: 1,
 };
@@ -258,6 +260,7 @@ describe("Jira credential resolution", () => {
 
     await expect(resolveJiraCredentials({ workspaceId: "ws-1", userId: "user-1" })).resolves.toEqual({
       kind: "api_token", email: "user@example.test", apiToken: "plain-token", tokenKind: "scoped", cloudId: "cloud-a",
+      revision: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     const [sql] = mocks.sqlGet.mock.calls[0];
     expect(sql).not.toContain("FOR UPDATE");
@@ -337,6 +340,7 @@ describe("Jira credential resolution", () => {
     mocks.sqlGet.mockResolvedValueOnce(activeRow);
     await expect(resolveJiraSyncPrincipalCredentials("ws-1")).resolves.toEqual({
       userId: "user-1", kind: "api_token", email: "user@example.test", apiToken: "plain-token", tokenKind: "scoped", cloudId: "cloud-a",
+      revision: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     const [sql] = mocks.sqlGet.mock.calls[0];
     expect(sql).toContain("c.is_sync_principal = true");
@@ -371,7 +375,7 @@ describe("OAuth access-token supplier", () => {
   it("serves a fresh stored token from the lock-free fast path", async () => {
     const getToken = await supplier();
     mocks.sqlGet.mockResolvedValueOnce(oauthRow); // fast-path read; expiry 11:00 vs now 10:00
-    await expect(getToken()).resolves.toBe("plain-access");
+    await expect(getToken()).resolves.toEqual({ accessToken: "plain-access", revision: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect(mocks.withTransaction).not.toHaveBeenCalled();
     expect(mocks.refreshTokens).not.toHaveBeenCalled();
   });
@@ -386,7 +390,7 @@ describe("OAuth access-token supplier", () => {
       accessToken: "new-access", refreshToken: "new-refresh", expiresInSeconds: 3600, scope: "", tokenType: "Bearer",
     });
 
-    await expect(getToken()).resolves.toBe("new-access");
+    await expect(getToken()).resolves.toEqual({ accessToken: "new-access", revision: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect(mocks.refreshTokens).toHaveBeenCalledWith("plain-refresh");
     // sqlGet calls: [0] resolve, [1] fast-path read, [2] in-lock read.
     const lockedRead = mocks.sqlGet.mock.calls[2];
@@ -407,27 +411,33 @@ describe("OAuth access-token supplier", () => {
 
   it("collapses to the stored token when another flight already rotated it", async () => {
     const getToken = await supplier();
-    // This supplier served the 11:00-expiry token, got a 401, and forces a
-    // refresh — but in-lock the row shows a DIFFERENT, fresh expiry: another
+    // This supplier served a token, got a 401, and forces a refresh — but
+    // in-lock the row shows a different encrypted credential: another
     // flight rotated meanwhile. Reuse it; never burn a second rotation.
     mocks.sqlGet
-      .mockResolvedValueOnce(oauthRow) // plain serve (records 11:00)
-      .mockResolvedValueOnce({ ...oauthRow, access_expires_at: "2026-08-13T10:59:00.000Z", encrypted_access_token: "enc-access" });
-    await expect(getToken()).resolves.toBe("plain-access");
-    await expect(getToken({ forceRefresh: true })).resolves.toBe("plain-access");
+      .mockResolvedValueOnce(oauthRow)
+      .mockResolvedValueOnce({ ...oauthRow, access_token_iv: "rotated-iv" });
+    const rejected = await getToken();
+    const reused = await getToken({ forceRefresh: true, rejectedRevision: rejected.revision });
+    expect(rejected.accessToken).toBe("plain-access");
+    expect(reused.accessToken).toBe("plain-access");
+    expect(reused.revision).not.toBe(rejected.revision);
     expect(mocks.refreshTokens).not.toHaveBeenCalled();
   });
 
   it("force-refreshes when the stored token is the one that just 401ed", async () => {
     const getToken = await supplier();
     mocks.sqlGet
-      .mockResolvedValueOnce(oauthRow)  // plain serve (records 11:00)
-      .mockResolvedValueOnce(oauthRow); // in-lock: same expiry → genuinely refresh
+      .mockResolvedValueOnce(oauthRow)
+      .mockResolvedValueOnce(oauthRow); // in-lock: same credential requires refresh
     mocks.refreshTokens.mockResolvedValue({
       accessToken: "new-access", refreshToken: "new-refresh", expiresInSeconds: 3600, scope: "", tokenType: "Bearer",
     });
-    await expect(getToken()).resolves.toBe("plain-access");
-    await expect(getToken({ forceRefresh: true })).resolves.toBe("new-access");
+    const rejected = await getToken();
+    expect(rejected.accessToken).toBe("plain-access");
+    await expect(getToken({ forceRefresh: true, rejectedRevision: rejected.revision })).resolves.toEqual({
+      accessToken: "new-access", revision: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
     expect(mocks.refreshTokens).toHaveBeenCalledTimes(1);
   });
 
@@ -495,35 +505,60 @@ describe("OAuth access-token supplier", () => {
 describe("Jira connection lifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.sqlGet.mockReset().mockResolvedValue(activeRow);
     mocks.sqlRun.mockReset().mockResolvedValue(1);
+    mocks.withTransaction.mockReset().mockImplementation(async (fn) => fn({ query: vi.fn() }));
   });
 
+  async function currentRevision(kind: "api_token" | "oauth") {
+    mocks.sqlGet.mockResolvedValue(kind === "api_token" ? activeRow : oauthRow);
+    const credential = await resolveJiraCredentials({ workspaceId: "ws-1", userId: "user-1" });
+    return credential.kind === "api_token" ? credential.revision : (await credential.getAccessToken()).revision;
+  }
+
   it("marks a connection invalid on use-time 401 while KEEPING the principal flag and token", async () => {
-    await markJiraConnectionInvalid("ws-1", "user-1");
+    await markJiraConnectionInvalid("ws-1", "user-1", await currentRevision("api_token"));
     const [sql, params] = mocks.sqlRun.mock.calls[0];
-    expect(sql).toContain("status = 'invalid'");
+    expect(sql).toContain("status = @status");
     expect(sql).toContain("AND status = 'active'");
     // invalid is the api_token failure state; the schema rejects it on oauth rows.
-    expect(sql).toContain("credential_kind = 'api_token'");
+    expect(sql).toContain("credential_kind = @credentialKind");
     expect(sql).not.toContain("is_sync_principal");
     expect(sql).not.toContain("encrypted_api_token");
-    expect(params).toMatchObject({ workspaceId: "ws-1", userId: "user-1" });
+    expect(params).toMatchObject({ id: activeRow.id, credentialKind: "api_token", status: "invalid" });
+    expect(mocks.sqlGet.mock.calls.at(-1)).toEqual([
+      expect.stringContaining("FOR UPDATE"),
+      { workspaceId: "ws-1", userId: "user-1", credentialKind: "api_token" },
+      expect.anything(),
+    ]);
   });
 
   it("marks an OAuth connection reauthorization-required, mirroring the invalid lifecycle", async () => {
-    await markJiraConnectionReauthorizationRequired("ws-1", "user-1");
+    await markJiraConnectionReauthorizationRequired("ws-1", "user-1", await currentRevision("oauth"));
     const [sql, params] = mocks.sqlRun.mock.calls[0];
-    expect(sql).toContain("status = 'reauthorization_required'");
-    expect(sql).toContain("credential_kind = 'oauth'");
+    expect(sql).toContain("status = @status");
+    expect(sql).toContain("credential_kind = @credentialKind");
     expect(sql).toContain("AND status = 'active'");
     expect(sql).not.toContain("is_sync_principal");
     expect(sql).not.toContain("encrypted_");
-    expect(params).toMatchObject({ workspaceId: "ws-1", userId: "user-1" });
+    expect(params).toMatchObject({ id: oauthRow.id, credentialKind: "oauth", status: "reauthorization_required" });
   });
 
   it("is idempotent when the connection is already invalid or revoked", async () => {
-    mocks.sqlRun.mockResolvedValueOnce(0);
-    await expect(markJiraConnectionInvalid("ws-1", "user-1")).resolves.toBeUndefined();
+    mocks.sqlGet.mockResolvedValueOnce(undefined);
+    await expect(markJiraConnectionInvalid("ws-1", "user-1", "old-revision")).resolves.toBeUndefined();
+    expect(mocks.sqlRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["api_token", "oauth"] as const)("the %s HTTP hook invalidates its exact current credential", async (kind) => {
+    mocks.sqlGet.mockResolvedValue(kind === "api_token" ? activeRow : oauthRow);
+    const credential = await resolveJiraCredentials({ workspaceId: "ws-1", userId: "user-1" });
+    const revision = credential.kind === "oauth" ? (await credential.getAccessToken()).revision : undefined;
+    jiraOnUnauthorized(credential, "ws-1", "user-1").onUnauthorized!(revision);
+    await vi.waitFor(() => expect(mocks.sqlRun).toHaveBeenCalledTimes(1));
+    expect(mocks.sqlRun.mock.calls[0][1]).toMatchObject({
+      credentialKind: kind, status: kind === "api_token" ? "invalid" : "reauthorization_required",
+    });
   });
 
   it("revokes a connection, clears sync-principal ownership, and genuinely NULLs both kinds' secrets", async () => {

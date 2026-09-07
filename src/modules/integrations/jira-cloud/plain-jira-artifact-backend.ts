@@ -3,7 +3,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import type { FinalApprovedTestCase } from "../core/integration-types";
 import type { JiraCloudProjectScope, JiraCloudHooks } from "./jira-cloud-adapter";
-import { jiraApiBase, jiraFetch, type JiraAuth, type JiraTokenKind } from "./jira-http";
+import { jiraApiBase, jiraFetch, type JiraAccessTokenSupplier, type JiraAuth, type JiraTokenKind } from "./jira-http";
 
 /** Credential arms mirror JiraCloudSettings: the historical api_token layout, or an async bearer getter. */
 export type PlainJiraArtifactSettings = {
@@ -11,7 +11,7 @@ export type PlainJiraArtifactSettings = {
   testCaseIssueTypeId: string; localIdFieldId: string;
 } & (
   | { credentialKind?: "api_token"; email: string; apiToken: string; tokenKind: JiraTokenKind }
-  | { credentialKind: "oauth"; getAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string> }
+  | { credentialKind: "oauth"; getAccessToken: JiraAccessTokenSupplier }
 );
 
 const RESERVED = new Set(["project", "issuetype", "summary", "description", "labels", "parent"]);

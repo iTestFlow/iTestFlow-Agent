@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IntegrationError } from "../core/integration-error";
-import { JiraBearerAuthError, jiraApiBase, jiraBasicAuthorization, jiraFetch, type JiraAuth } from "./jira-http";
+import { JiraBearerAuthError, jiraApiBase, jiraBasicAuthorization, jiraFetch, type JiraAccessTokenSupplier, type JiraAuth } from "./jira-http";
 
 describe("jiraApiBase", () => {
   it("routes scoped tokens through the api.atlassian.com gateway", () => {
@@ -72,11 +72,37 @@ describe("jiraFetch (basic)", () => {
 describe("jiraFetch (bearer)", () => {
   beforeEach(() => vi.unstubAllGlobals());
 
-  const bearerAuth = (getToken: (options?: { forceRefresh?: boolean }) => Promise<string>): JiraAuth =>
+  const bearerAuth = (getToken: JiraAccessTokenSupplier): JiraAuth =>
     ({ kind: "bearer", getToken });
 
+  it("pairs each concurrent 401 and final invalidation with its own credential revision", async () => {
+    const getToken = vi.fn()
+      .mockResolvedValueOnce({ accessToken: "first", revision: "first-revision" })
+      .mockResolvedValueOnce({ accessToken: "second", revision: "second-revision" })
+      .mockResolvedValueOnce({ accessToken: "second-retry", revision: "second-retry-revision" })
+      .mockResolvedValueOnce({ accessToken: "first-retry", revision: "first-retry-revision" });
+    let releaseFirst!: (response: Response) => void;
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { releaseFirst = resolve; }))
+      .mockResolvedValueOnce(new Response("expired", { status: 401 }))
+      .mockResolvedValueOnce(new Response("denied", { status: 401 }))
+      .mockResolvedValueOnce(new Response("denied", { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const firstHook = vi.fn();
+    const secondHook = vi.fn();
+    const first = jiraFetch("https://api.atlassian.com/first", {}, bearerAuth(getToken), { onUnauthorized: firstHook }).catch((error) => error);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await expect(jiraFetch("https://api.atlassian.com/second", {}, bearerAuth(getToken), { onUnauthorized: secondHook })).rejects.toBeInstanceOf(IntegrationError);
+    releaseFirst(new Response("expired", { status: 401 }));
+    await expect(first).resolves.toBeInstanceOf(IntegrationError);
+    expect(getToken).toHaveBeenNthCalledWith(3, { forceRefresh: true, rejectedRevision: "second-revision" });
+    expect(getToken).toHaveBeenNthCalledWith(4, { forceRefresh: true, rejectedRevision: "first-revision" });
+    expect(secondHook).toHaveBeenCalledWith("second-retry-revision");
+    expect(firstHook).toHaveBeenCalledWith("first-retry-revision");
+  });
+
   it("sends the supplied bearer token without forcing a refresh", async () => {
-    const getToken = vi.fn().mockResolvedValue("access-1");
+    const getToken = vi.fn().mockResolvedValue({ accessToken: "access-1", revision: "access-1-revision" });
     const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     await jiraFetch("https://api.atlassian.com/ex/jira/c/rest/api/3/myself", {}, bearerAuth(getToken));
@@ -87,8 +113,8 @@ describe("jiraFetch (bearer)", () => {
 
   it("refreshes once and retries once on a plain 401, without firing the hook", async () => {
     const getToken = vi.fn()
-      .mockResolvedValueOnce("stale-token")
-      .mockResolvedValueOnce("fresh-token");
+      .mockResolvedValueOnce({ accessToken: "stale-token", revision: "stale-token-revision" })
+      .mockResolvedValueOnce({ accessToken: "fresh-token", revision: "fresh-token-revision" });
     const firstResponse = new Response("expired", { status: 401 });
     const cancelSpy = vi.spyOn(firstResponse.body!, "cancel");
     const fetchMock = vi.fn()
@@ -107,12 +133,12 @@ describe("jiraFetch (bearer)", () => {
     expect(fetchMock.mock.calls[1][1]?.body).toBe(init.body);
     // The abandoned 401 response frees its pooled connection.
     expect(cancelSpy).toHaveBeenCalled();
-    expect(getToken).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(getToken).toHaveBeenNthCalledWith(2, { forceRefresh: true, rejectedRevision: "stale-token-revision" });
     expect(onUnauthorized).not.toHaveBeenCalled();
   });
 
   it("fires the hook exactly once when the retry also 401s", async () => {
-    const getToken = vi.fn().mockResolvedValue("token");
+    const getToken = vi.fn().mockResolvedValue({ accessToken: "token", revision: "token-revision" });
     const fetchMock = vi.fn().mockResolvedValue(new Response("denied", { status: 401 }));
     vi.stubGlobal("fetch", fetchMock);
     const onUnauthorized = vi.fn();
@@ -125,7 +151,7 @@ describe("jiraFetch (bearer)", () => {
 
   it("never refreshes or retries on 403/429/5xx", async () => {
     for (const status of [403, 429, 500] as const) {
-      const getToken = vi.fn().mockResolvedValue("token");
+      const getToken = vi.fn().mockResolvedValue({ accessToken: "token", revision: "token-revision" });
       const fetchMock = vi.fn().mockResolvedValue(new Response("nope", { status, headers: status === 429 ? { "Retry-After": "11" } : {} }));
       vi.stubGlobal("fetch", fetchMock);
       const error = await jiraFetch("https://api.atlassian.com/x", {}, bearerAuth(getToken))
@@ -141,7 +167,7 @@ describe("jiraFetch (bearer)", () => {
     // The supplier already flipped the connection row; the hook would write a
     // second, conflicting status on top.
     const getToken = vi.fn()
-      .mockResolvedValueOnce("stale-token")
+      .mockResolvedValueOnce({ accessToken: "stale-token", revision: "stale-token-revision" })
       .mockRejectedValueOnce(new JiraBearerAuthError("reauthorization_required"));
     const fetchMock = vi.fn().mockResolvedValue(new Response("expired", { status: 401 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -189,7 +215,7 @@ describe("jiraFetch (bearer)", () => {
   });
 
   it("never leaks the bearer token in error messages", async () => {
-    const getToken = vi.fn().mockResolvedValue("bearer-secret-token");
+    const getToken = vi.fn().mockResolvedValue({ accessToken: "bearer-secret-token", revision: "bearer-secret-token-revision" });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("body bearer-secret-token", { status: 500 })));
     const error = await jiraFetch("https://api.atlassian.com/x", {}, bearerAuth(getToken))
       .catch((caught) => caught as Error);

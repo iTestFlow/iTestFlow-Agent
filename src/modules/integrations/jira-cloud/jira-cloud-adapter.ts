@@ -8,7 +8,7 @@ import type {
   Requirement, WorkItemRevision, WorkItemTypeField,
 } from "../core/integration-types";
 import { IntegrationError } from "../core/integration-error";
-import { jiraApiBase, jiraFetch, type JiraAuth, type JiraTokenKind } from "./jira-http";
+import { jiraApiBase, jiraFetch, type JiraAccessTokenSupplier, type JiraAuth, type JiraTokenKind, type JiraUnauthorizedHooks } from "./jira-http";
 
 type Json = Record<string, unknown>;
 
@@ -34,10 +34,10 @@ export type JiraCloudSettings = {
   fieldMapping?: JiraCloudFieldMapping;
 } & (
   | { credentialKind?: "api_token"; email: string; apiToken: string; tokenKind: JiraTokenKind }
-  | { credentialKind: "oauth"; getAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string> }
+  | { credentialKind: "oauth"; getAccessToken: JiraAccessTokenSupplier }
 );
 
-export type JiraCloudHooks = { onUnauthorized?: () => void };
+export type JiraCloudHooks = JiraUnauthorizedHooks;
 
 export type JiraCloudProjectScope = {
   jiraProjectId: string;
