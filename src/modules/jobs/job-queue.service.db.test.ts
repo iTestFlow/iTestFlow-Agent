@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 
 import { describeDb } from "@/test/db";
 import { getPool, resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
@@ -6,6 +6,7 @@ import {
   claimNextJob,
   completeJob,
   completeJobBatch,
+  deferOwnedJob,
   enqueueJob,
   failJob,
   getRequestedJobCancellations,
@@ -32,6 +33,76 @@ describeDb("job queue (DB-backed)", () => {
 
   beforeEach(async () => {
     await sqlRun(`DELETE FROM jobs WHERE job_type = @t`, { t: TYPE });
+  });
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  it.each([undefined, "2030-01-01T00:00:01.000Z", "2030-01-01T00:01:00.000Z"])("uses the later of normal backoff and retry deadline %s", async (deadline) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2030-01-01T00:00:00.000Z"));
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS });
+    await claimNextJob("owner", [TYPE]);
+    await expect(failJob(id!, "safe failure", "owner", "integration_rate_limited", deadline)).resolves.toBe(true);
+    expect(await sqlGet("SELECT status, attempts, run_after, locked_by FROM jobs WHERE id = @id", { id })).toEqual({
+      status: "pending", attempts: 1, locked_by: null,
+      run_after: deadline?.includes("00:01:") ? deadline : "2030-01-01T00:00:02.000Z",
+    });
+  });
+
+  it("rejects malformed retry/defer deadlines without changing the owned job", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS });
+    await claimNextJob("owner", [TYPE]);
+    await expect(failJob(id!, "retry", "owner", null, "invalid")).rejects.toThrow(RangeError);
+    await expect(deferOwnedJob(id!, "owner", "invalid")).rejects.toThrow(RangeError);
+    expect(await sqlGet("SELECT status, attempts, locked_by FROM jobs WHERE id = @id", { id })).toEqual({ status: "running", attempts: 1, locked_by: "owner" });
+  });
+
+  it("keeps the existing five-minute exponential backoff cap", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2030-01-01T00:00:00.000Z"));
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS, maxAttempts: 20 });
+    await sqlRun("UPDATE jobs SET attempts = 9 WHERE id = @id", { id });
+    await claimNextJob("owner", [TYPE]);
+    await failJob(id!, "retry", "owner");
+    expect(await sqlGet("SELECT attempts, run_after FROM jobs WHERE id = @id", { id })).toEqual({ attempts: 10, run_after: "2030-01-01T00:05:00.000Z" });
+  });
+
+  it("defers only the owned claim and preserves its identity, dedupe, diagnostics, and single-attempt budget", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS, maxAttempts: 1, dedupeKey: "deferred", payload: { operationId: "operation" }, progress: { percent: 25 } });
+    await sqlRun("UPDATE jobs SET error_message = 'earlier failure', error_code = 'integration_rate_limited' WHERE id = @id", { id });
+    await claimNextJob("owner", [TYPE]);
+    const deadline = "2030-01-01T00:01:00.000Z";
+    await expect(deferOwnedJob(id!, "other", deadline)).resolves.toBe(false);
+    expect(await sqlGet("SELECT status, attempts, locked_by FROM jobs WHERE id = @id", { id })).toEqual({ status: "running", attempts: 1, locked_by: "owner" });
+    await expect(deferOwnedJob(id!, "owner", deadline)).resolves.toBe(true);
+    const row = await sqlGet("SELECT id, status, attempts, run_after, locked_by, locked_at, finished_at, payload_json, progress_json, dedupe_key, error_message, error_code FROM jobs WHERE id = @id", { id });
+    expect(row).toEqual({ id, status: "pending", attempts: 0, run_after: deadline, locked_by: null, locked_at: null, finished_at: null, payload_json: '{"operationId":"operation"}', progress_json: { percent: 25 }, dedupe_key: "deferred", error_message: "earlier failure", error_code: "integration_rate_limited" });
+    await expect(deferOwnedJob(id!, "owner", deadline)).resolves.toBe(false);
+    await expect(enqueueJob({ jobType: TYPE, workspaceId: WS, dedupeKey: "deferred" })).resolves.toBeNull();
+  });
+
+  it("lets a cancellation committed while deferral waits for the row lock win atomically", async () => {
+    const id = await enqueueJob({ jobType: TYPE, workspaceId: WS, maxAttempts: 1 });
+    await claimNextJob("owner", [TYPE]);
+    const client = await getPool().connect();
+    let deferred: Promise<boolean> | undefined;
+    try {
+      await client.query("BEGIN");
+      await client.query("UPDATE jobs SET cancel_requested_at = $1 WHERE id = $2", [new Date().toISOString(), id]);
+      deferred = deferOwnedJob(id!, "owner", "2030-01-01T00:01:00.000Z");
+      // Observe PostgreSQL waiting on this transaction before committing cancellation.
+      await expect.poll(async () => {
+        const result = await client.query<{ blocked: boolean }>("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE NOT granted AND pg_backend_pid() = ANY(pg_blocking_pids(pid))) AS blocked");
+        return result.rows[0].blocked;
+      }).toBe(true);
+      await client.query("COMMIT");
+      await expect(deferred).resolves.toBe(true);
+      expect(await sqlGet("SELECT status, attempts, locked_by, locked_at, finished_at FROM jobs WHERE id = @id", { id })).toMatchObject({ status: "cancelled", attempts: 0, locked_by: null, locked_at: null, finished_at: expect.any(String) });
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+      await deferred;
+    }
   });
 
   afterAll(async () => {

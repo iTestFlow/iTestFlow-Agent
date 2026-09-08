@@ -15,6 +15,8 @@ A token missing required scopes is reported distinctly from a wrong email/token 
 
 Settings accepts replacement tokens only for Jira account IDs already linked to the signed-in iTestFlow user. Users without a linked Jira identity must first sign in through the Jira login flow. Matching email addresses alone do not authorize a Settings connection; a rejected replacement leaves the current credential and sync principal unchanged.
 
+Credential rejection applies only to the stored credential revision used by that request. An older request finishing after token replacement, OAuth refresh, or a sign-in method switch cannot invalidate the newer credential.
+
 Set these deployment variables:
 
 - `APP_ENCRYPTION_KEY`: base64-encoded 32-byte key used for API-token and backend secrets.
@@ -105,6 +107,8 @@ Provide the Zephyr Scale API token, the approved US/EU/AU/DE region, and immutab
 ## Polling and Synchronization
 
 Jira changes arrive by polling: the scheduled workspace sync (Settings → Automation) and the on-demand **Sync now** control both run a full reconciliation using the workspace sync principal's credential (API token or OAuth grant). There is no webhook ingress. Two-way reconciliation stores durable per-field baselines, queues pull or push operations before convergence, pauses unresolved conflicts, and advances baselines only after the selected effect succeeds. A complete reconciliation also detects issues deleted in Jira and retires their mappings; an issue observed again later revives its mapping in the same run. Transient provider failures are retried with a bounded attempt count and honor Atlassian's `Retry-After` on rate limits (clamped to one hour); terminal failures remain visible as `error` or `invalid`.
+
+An operation retry waits until both the job backoff and the saved operation deadline have elapsed. If a job arrives before its operation is ready, it is deferred without consuming a retry attempt. Operations already being processed become eligible for crash recovery after five minutes. Deferral keeps the same job and its deduplication key, and cancellation still takes precedence.
 
 The sync principal is the first owner's connection (a dead principal keeps its designation so a replaced token or a fresh Atlassian consent resumes polling in place). Scheduled runs that fail because the principal credential is missing, invalid, or awaiting reconsent carry the machine-readable job codes `jira_sync_principal_missing` / `jira_sync_principal_invalid` / `jira_sync_principal_reauthorization_required`, and Settings → Connections shows an actionable callout naming who can fix it.
 

@@ -13,13 +13,15 @@ export type ClaimedJiraSyncOperation = {
   id: string; mappingId: string; field: string; operation: "pull" | "push"; target: unknown;
 };
 
+export const JIRA_SYNC_OPERATION_STALE_MS = 5 * 60 * 1000;
+
 export async function claimNextJiraSyncOperation(workspaceId: string, projectId?: string, operationId?: string): Promise<ClaimedJiraSyncOperation | null> {
   return withTransaction(async (client) => {
-    const staleCutoff = new Date(Date.parse(nowIso()) - 5 * 60 * 1000).toISOString();
+    const staleCutoff = new Date(Date.parse(nowIso()) - JIRA_SYNC_OPERATION_STALE_MS).toISOString();
     await sqlRun(
       `UPDATE jira_sync_operations SET status = 'pending', processing_started_at = NULL,
          run_after = @now, updated_at = @now
-       WHERE status = 'processing' AND processing_started_at < @staleCutoff AND attempts < 5
+       WHERE status = 'processing' AND processing_started_at <= @staleCutoff AND attempts < 5
          AND mapping_id IN (SELECT id FROM jira_sync_mappings WHERE workspace_id = @workspaceId)`,
       { workspaceId, staleCutoff, now: nowIso() }, client,
     );
@@ -28,7 +30,7 @@ export async function claimNextJiraSyncOperation(workspaceId: string, projectId?
          processing_started_at = NULL, updated_at = @now
        FROM jira_sync_mappings m
        WHERE o.mapping_id = m.id AND m.workspace_id = @workspaceId
-         AND o.status = 'processing' AND o.processing_started_at < @staleCutoff AND o.attempts >= 5
+         AND o.status = 'processing' AND o.processing_started_at <= @staleCutoff AND o.attempts >= 5
        RETURNING o.mapping_id, o.field_name`,
       { workspaceId, staleCutoff, now: nowIso() }, client,
     );

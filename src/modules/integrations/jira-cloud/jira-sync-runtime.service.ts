@@ -2,6 +2,7 @@ import "server-only";
 
 import { writeAuditLogTransactional } from "@/modules/audit/audit.service";
 import { enqueueJob } from "@/modules/jobs/job-queue.service";
+import { JobDeferredError, JobRetryError } from "@/modules/jobs/job-scheduling";
 import { JiraSyncPrincipalError, jiraCredentialSettings, jiraOnUnauthorized, resolveJiraSyncPrincipalCredentials } from "@/modules/auth/jira-connection.service";
 import { indexAzureWorkItemsAsProjectContext } from "@/modules/rag/project-context-store.service";
 import { createId, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
@@ -12,6 +13,7 @@ import type { JiraSyncFields, JiraSyncValue } from "./jira-sync-conflict";
 import { reconcileJiraMapping } from "./jira-reconciliation.service";
 import {
   claimNextJiraSyncOperation, completeJiraSyncOperation, failJiraSyncOperation,
+  JIRA_SYNC_OPERATION_STALE_MS,
   type ClaimedJiraSyncOperation,
 } from "./jira-sync-operation.service";
 
@@ -287,7 +289,10 @@ async function drainOperations(input: {
       }
     }
     const operation = await claimNextJiraSyncOperation(input.workspaceId, input.projectId, input.operationId);
-    if (!operation) return completed;
+    if (!operation) {
+      if (input.operationId) await deferUnclaimedExactOperation(input.workspaceId, input.projectId, input.operationId);
+      return completed;
+    }
     try {
       const context = await sqlGet<{ jira_issue_key: string; local_entity_id: string }>(
         `SELECT jira_issue_key, local_entity_id FROM jira_sync_mappings
@@ -311,7 +316,7 @@ async function drainOperations(input: {
         retryAfterSeconds: error instanceof IntegrationError ? error.retryAfterSeconds : undefined,
       });
       if (failure.retry) {
-        if (input.operationId) throw new Error("The exact Jira sync operation remains pending for retry.");
+        if (input.operationId) throw new JobRetryError("The exact Jira sync operation remains pending for retry.", code, failure.runAfter);
         await enqueueJob({
           jobType: JIRA_SYNC_OPERATIONS, workspaceId: input.workspaceId, projectId: input.projectId,
           payload: { projectId: input.projectId, operationId: operation.id }, dedupeKey: `${JIRA_SYNC_OPERATIONS}:${operation.id}`,
@@ -332,8 +337,32 @@ async function drainOperations(input: {
         }
       }
     }
+    if (input.operationId) return completed;
   }
   throw new Error("Jira synchronization exceeded the safe operation limit.");
+}
+
+async function deferUnclaimedExactOperation(workspaceId: string, projectId: string, operationId: string): Promise<void> {
+  const operation = await sqlGet<{
+    status: string; mapping_status: string; run_after: string; processing_started_at: string | null;
+  }>(
+    `SELECT o.status, m.status AS mapping_status, o.run_after, o.processing_started_at
+     FROM jira_sync_operations o JOIN jira_sync_mappings m ON m.id = o.mapping_id
+     WHERE o.id = @operationId AND m.workspace_id = @workspaceId AND m.project_id = @projectId`,
+    { workspaceId, projectId, operationId },
+  );
+  if (operation?.status === "completed" || operation?.status === "failed") return;
+  if (operation && (operation.mapping_status === "syncing" || operation.mapping_status === "conflict")) {
+    const deadline = operation.status === "pending" ? Date.parse(operation.run_after)
+      : operation.status === "processing" && operation.processing_started_at
+        ? Date.parse(operation.processing_started_at) + JIRA_SYNC_OPERATION_STALE_MS : NaN;
+    if (Number.isFinite(deadline) && deadline > Date.parse(nowIso())) {
+      throw new JobDeferredError(new Date(deadline).toISOString());
+    }
+  }
+  // Missing, blocked, or concurrently unavailable work needs a bounded retry;
+  // it must never be reported as successfully completed.
+  throw new Error("The exact Jira sync operation is unavailable for processing.");
 }
 
 async function applyLocalPull(localId: string, field: LocalField, target: unknown) {

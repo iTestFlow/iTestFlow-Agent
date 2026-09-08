@@ -20,6 +20,7 @@ vi.mock("@/modules/auth/jira-connection.service", async (importOriginal) => ({
 vi.mock("./jira-reconciliation.service", () => ({ reconcileJiraMapping: mocks.reconcile }));
 vi.mock("./jira-sync-operation.service", () => ({
   claimNextJiraSyncOperation: mocks.claim, completeJiraSyncOperation: mocks.complete, failJiraSyncOperation: mocks.fail,
+  JIRA_SYNC_OPERATION_STALE_MS: 5 * 60 * 1000,
 }));
 vi.mock("./jira-cloud-adapter", () => ({
   JiraCloudAdapter: class {
@@ -33,6 +34,7 @@ vi.mock("@/modules/rag/project-context-store.service", () => ({ indexAzureWorkIt
 vi.mock("@/modules/jobs/job-queue.service", () => ({ enqueueJob: mocks.enqueueJob }));
 
 import { IntegrationError } from "../core/integration-error";
+import { JobDeferredError } from "@/modules/jobs/job-scheduling";
 import { retireJiraIssueMapping, runJiraProjectReconciliation } from "./jira-sync-runtime.service";
 
 const remote = {
@@ -71,6 +73,38 @@ describe("runJiraProjectReconciliation", () => {
     mocks.fetchWorkItemsByIds.mockResolvedValue([remote]);
     mocks.reconcile.mockResolvedValue({ blocked: false });
     mocks.claim.mockResolvedValue(null);
+  });
+
+  it.each([
+    { status: "pending", run_after: "2026-08-13T10:01:00.000Z", processing_started_at: null, deadline: "2026-08-13T10:01:00.000Z" },
+    { status: "processing", run_after: "2026-08-13T09:00:00.000Z", processing_started_at: "2026-08-13T09:59:00.000Z", deadline: "2026-08-13T10:04:00.000Z" },
+  ])("defers an unclaimed $status exact operation using its persisted deadline", async (state) => {
+    mocks.sqlGet.mockReset().mockResolvedValueOnce(projectConfig()).mockResolvedValueOnce({ ...state, mapping_status: "syncing" });
+    const result = runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", operationId: "op-1", actor: "system:worker" });
+    await expect(result).rejects.toBeInstanceOf(JobDeferredError);
+    await expect(result).rejects.toMatchObject({ runAfter: state.deadline });
+    expect(mocks.sqlGet).toHaveBeenLastCalledWith(expect.stringContaining("m.project_id = @projectId"), { workspaceId: "ws-1", projectId: "project-1", operationId: "op-1" });
+    expect(mocks.fetchWorkItems).not.toHaveBeenCalled();
+    expect(mocks.enqueueJob).not.toHaveBeenCalled();
+  });
+
+  it.each(["completed", "failed"])("preserves terminal %s exact operation outcomes", async (status) => {
+    mocks.sqlGet.mockReset().mockResolvedValueOnce(projectConfig()).mockResolvedValueOnce({ status, mapping_status: "error" });
+    await expect(runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", operationId: "op-1", actor: "system:worker" })).resolves.toEqual({ issueCount: 0, operationCount: 0 });
+    expect(mocks.updateIssueFields).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    null,
+    { status: "pending", mapping_status: "paused", run_after: "2026-08-13T10:01:00.000Z" },
+    { status: "pending", mapping_status: "syncing", run_after: "2026-08-13T09:00:00.000Z" },
+    { status: "pending", mapping_status: "syncing", run_after: "invalid" },
+    { status: "processing", mapping_status: "syncing", processing_started_at: null },
+    { status: "processing", mapping_status: "syncing", processing_started_at: "2026-08-13T09:00:00.000Z" },
+  ])("fails an unavailable nonterminal exact operation instead of silently completing", async (state) => {
+    mocks.sqlGet.mockReset().mockResolvedValueOnce(projectConfig()).mockResolvedValueOnce(state);
+    await expect(runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", operationId: "op-1", actor: "system:worker" })).rejects.toThrow("The exact Jira sync operation is unavailable for processing.");
+    expect(mocks.enqueueJob).not.toHaveBeenCalled();
   });
 
   it("loads trusted project configuration and invokes durable reconciliation for scheduled sync", async () => {

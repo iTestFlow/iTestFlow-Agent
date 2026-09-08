@@ -69,6 +69,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/integrations/provider-registry.ts",
   "src/modules/jobs/project-knowledge-jobs.service.ts",
   "src/modules/jobs/jira-sync-operations.handler.ts",
+  "src/modules/jobs/job-scheduling.ts",
   "src/modules/jobs/project-knowledge-operation-gate.ts",
   "src/modules/jobs/project-knowledge.handler.ts",
   "src/modules/jobs/worker-registry.service.ts",
@@ -201,6 +202,7 @@ export const GATED_INCLUDE: string[] = [
  * boundaries cannot hide behind the aggregate percentage.
  */
 export const HIGH_RISK_GATED_INCLUDE: string[] = [
+  "src/modules/jobs/job-scheduling.ts",
   "src/modules/jobs/jira-sync-operations.handler.ts",
   "src/modules/jobs/project-knowledge-jobs.service.ts",
   "src/modules/jobs/project-knowledge-operation-gate.ts",

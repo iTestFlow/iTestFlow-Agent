@@ -2,6 +2,7 @@ import "server-only";
 
 import { createId, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import type { PoolClient } from "pg";
+import { normalizeJobRunAfter } from "./job-scheduling";
 
 export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -321,7 +322,8 @@ export async function completeJob(
  * `errorCode` is an optional stable machine-readable code (e.g.
  * jira_sync_principal_invalid) surfaced by the workspace jobs API.
  */
-export async function failJob(id: string, errorMessage: string, workerId: string, errorCode?: string | null): Promise<boolean> {
+export async function failJob(id: string, errorMessage: string, workerId: string, errorCode?: string | null, retryNotBefore?: string): Promise<boolean> {
+  const deadline = retryNotBefore === undefined ? 0 : Date.parse(normalizeJobRunAfter(retryNotBefore));
   const row = await sqlGet<{ attempts: number; max_attempts: number }>(
     `SELECT attempts, max_attempts
      FROM jobs
@@ -345,7 +347,7 @@ export async function failJob(id: string, errorMessage: string, workerId: string
   }
 
   const backoffMs = Math.min(2 ** row.attempts * 1000, MAX_BACKOFF_MS);
-  const runAfter = new Date(Date.now() + backoffMs).toISOString();
+  const runAfter = new Date(Math.max(Date.now() + backoffMs, deadline)).toISOString();
   const changed = await sqlRun(
     `UPDATE jobs SET status = 'pending', run_after = @runAfter, error_message = @message, error_code = @code,
        locked_by = NULL, locked_at = NULL, updated_at = @now
@@ -353,6 +355,22 @@ export async function failJob(id: string, errorMessage: string, workerId: string
     { id, workerId, runAfter, message, code, now },
   );
   return changed > 0;
+}
+
+/** Release a no-work claim atomically; an already requested cancellation wins. */
+export async function deferOwnedJob(id: string, workerId: string, runAfter: string): Promise<boolean> {
+  const deadline = normalizeJobRunAfter(runAfter);
+  const now = nowIso();
+  return (await sqlRun(
+    `UPDATE jobs
+     SET status = CASE WHEN cancel_requested_at IS NULL THEN 'pending' ELSE 'cancelled' END,
+         attempts = GREATEST(attempts - 1, 0), run_after = @runAfter,
+         locked_by = NULL, locked_at = NULL,
+         finished_at = CASE WHEN cancel_requested_at IS NULL THEN NULL ELSE @now END,
+         updated_at = @now
+     WHERE id = @id AND locked_by = @workerId AND status = 'running'`,
+    { id, workerId, runAfter: deadline, now },
+  )) > 0;
 }
 
 export async function listJobs(workspaceId: string, limit = 50): Promise<Job[]> {
