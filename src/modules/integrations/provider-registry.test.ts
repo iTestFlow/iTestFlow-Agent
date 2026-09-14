@@ -66,10 +66,14 @@ describe("provider registry", () => {
   });
 
   it("constructs every registered Jira provider descriptor", () => {
-    const settings = { cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net", accessToken: "access" };
+    const hooks = { onUnauthorized: vi.fn() };
+    const settings = {
+      cloudId: "cloud-a", siteUrl: "https://quality.atlassian.net",
+      email: "user@example.test", apiToken: "token", tokenKind: "scoped" as const,
+    };
     const projectScope = { jiraProjectId: "10000", jiraProjectKey: "QA", jiraProjectName: "Quality" };
-    const provider = createIntegrationProvider({ providerId: "jira-cloud", settings, projectScope });
-    expect(jira.JiraCloudAdapter).toHaveBeenCalledWith(settings, projectScope);
+    const provider = createIntegrationProvider({ providerId: "jira-cloud", settings, projectScope, hooks });
+    expect(jira.JiraCloudAdapter).toHaveBeenCalledWith(settings, projectScope, hooks);
     expect(provider).toBe(jira.JiraCloudAdapter.mock.instances[0]);
   });
 

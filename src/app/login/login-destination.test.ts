@@ -21,6 +21,14 @@ describe("resolveLoginDestination", () => {
     expect(resolveLoginDestination("//example.com")).toBe("/dashboards")
   })
 
+  it("rejects backslash and encoded-separator variants that browsers resolve off-origin", () => {
+    // WHATWG URL resolution treats /\ like //, so these are open redirects.
+    expect(resolveLoginDestination("/\\evil.com")).toBe("/dashboards")
+    expect(resolveLoginDestination("/settings\\..\\x")).toBe("/dashboards")
+    expect(resolveLoginDestination("/%5cevil.com")).toBe("/dashboards")
+    expect(resolveLoginDestination("/%2f%2fevil.com")).toBe("/dashboards")
+  })
+
   it("never redirects back to the login route", () => {
     expect(resolveLoginDestination("/login")).toBe("/dashboards")
     expect(resolveLoginDestination("/login?next=/settings")).toBe("/dashboards")

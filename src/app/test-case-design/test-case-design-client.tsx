@@ -31,8 +31,8 @@ import {
   postJson,
   projectWarning,
   scrollToNextStep,
-  useActiveProject,
 } from "@/components/workflow/test-intelligence-shared";
+import { useActiveProject } from "@/shared/lib/use-active-project";
 import type {
   ApiState,
   GeneratedTestCase,
@@ -54,13 +54,63 @@ import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/mod
 import { cn } from "@/lib/utils";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
+import {
+  normalizeTestCaseDesignProviderId,
+  testCaseDesignProviderCopy,
+} from "./test-case-design-copy";
 
 export function TestCaseDesignClient() {
-  const scope = useActiveProject();
+  const activeProject = useActiveProject();
+  const scope = activeProject ?? null;
   const generatedCasesRef = useRef<HTMLDivElement | null>(null);
   const promptSectionRef = useRef<HTMLDivElement | null>(null);
   const [activeStep, setActiveStep] = useState<"generate" | "review">("generate");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
+  const workspaceId = scope?.workspaceId;
+  const scopeReady = activeProject !== undefined;
+  const [providerLookupVersion, setProviderLookupVersion] = useState(0);
+  const [providerLookup, setProviderLookup] = useState<{
+    workspaceId?: string;
+    status: "loading" | "resolved" | "error";
+    providerId: ReturnType<typeof normalizeTestCaseDesignProviderId>;
+  }>({ status: "loading", providerId: null });
+
+  useEffect(() => {
+    if (!scopeReady) return;
+    let active = true;
+    setProviderLookup({ workspaceId, status: "loading", providerId: null });
+    const sessionUrl = workspaceId
+      ? `/api/auth/session?workspaceId=${encodeURIComponent(workspaceId)}`
+      : "/api/auth/session";
+    void fetch(sessionUrl, { cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error("Session lookup failed.");
+        return response.json() as Promise<{ workspace?: { id?: string; providerId?: string } | null }>;
+      })
+      .then((data) => {
+        const providerId = normalizeTestCaseDesignProviderId(data.workspace?.providerId);
+        if (!providerId || (workspaceId !== undefined && data.workspace?.id !== workspaceId)) {
+          throw new Error("Workspace provider could not be verified.");
+        }
+        if (active) setProviderLookup({ workspaceId, status: "resolved", providerId });
+      })
+      .catch(() => {
+        if (active) setProviderLookup({ workspaceId, status: "error", providerId: null });
+      });
+    return () => {
+      active = false;
+    };
+  }, [scopeReady, workspaceId, providerLookupVersion]);
+
+  // A project switch must not render with the previous workspace's provider
+  // while the effect starts its next request. Retry only changes lookup state.
+  const currentProviderLookup = scopeReady && providerLookup.workspaceId === workspaceId
+    ? providerLookup
+    : { status: "loading", providerId: null };
+  const providerId = currentProviderLookup.providerId;
+
+  const providerCopy = testCaseDesignProviderCopy(normalizeTestCaseDesignProviderId(providerId));
+
   const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const externalLlmAvailability = useExternalLlmAvailability(scope?.workspaceId);
@@ -346,7 +396,18 @@ export function TestCaseDesignClient() {
 
   return (
     <div className="content-stack">
-      {projectWarning(scope)}
+      {currentProviderLookup.status === "error" ? (
+        <Callout
+          tone="warning"
+          role="alert"
+          action={<Button type="button" variant="outline" aria-label="Retry workspace lookup" onClick={() => setProviderLookupVersion((version) => version + 1)}>Retry</Button>}
+        >
+          Could not verify the workspace. Retry to enable publishing. Generated cases and edits are kept when you retry.
+        </Callout>
+      ) : currentProviderLookup.status === "loading" ? (
+        <Callout tone="info" role="status">Checking workspace connection…</Callout>
+      ) : null}
+      {projectWarning(scope, providerId)}
       <WorkflowStepper
         steps={[
           {
@@ -372,7 +433,7 @@ export function TestCaseDesignClient() {
       {activeStep === "generate" ? (
         <div className="content-stack">
           <SectionCard
-            title="Generate Test Cases from Azure DevOps Requirement"
+            title={providerCopy.generationTitle}
             description="Project context is selected automatically for this run."
             action={
               <GenerationModeToggle
@@ -536,6 +597,7 @@ export function TestCaseDesignClient() {
                 analyticsRunId={state.data.analyticsRunId}
                 itemsGenerated={state.data.testCases.length}
                 itemsEdited={editedSelectedCaseCount}
+                providerId={providerId}
               />
             </>
           ) : (

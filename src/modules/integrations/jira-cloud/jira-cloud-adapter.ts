@@ -8,6 +8,7 @@ import type {
   Requirement, WorkItemRevision, WorkItemTypeField,
 } from "../core/integration-types";
 import { IntegrationError } from "../core/integration-error";
+import { jiraApiBase, jiraFetch, type JiraAccessTokenSupplier, type JiraAuth, type JiraTokenKind, type JiraUnauthorizedHooks } from "./jira-http";
 
 type Json = Record<string, unknown>;
 
@@ -20,12 +21,23 @@ export type JiraCloudFieldMapping = {
   storyPointsFieldId?: string;
 };
 
+/**
+ * Credential shape mirrors jira_connections' discriminator: the api_token arm
+ * keeps its historical field layout (credentialKind optional so existing
+ * construction sites read unchanged); the oauth arm supplies an async bearer
+ * getter owned by the connection service, so a token refreshed mid-run is
+ * picked up per request.
+ */
 export type JiraCloudSettings = {
   cloudId: string;
   siteUrl: string;
-  accessToken: string;
   fieldMapping?: JiraCloudFieldMapping;
-};
+} & (
+  | { credentialKind?: "api_token"; email: string; apiToken: string; tokenKind: JiraTokenKind }
+  | { credentialKind: "oauth"; getAccessToken: JiraAccessTokenSupplier }
+);
+
+export type JiraCloudHooks = JiraUnauthorizedHooks;
 
 export type JiraCloudProjectScope = {
   jiraProjectId: string;
@@ -42,14 +54,18 @@ const RESERVED_CREATE_FIELDS = new Set(["project", "issuetype", "summary", "desc
 export class JiraCloudAdapter implements WorkManagementProvider, TestManagementProvider {
   private readonly baseUrl: string;
   private readonly siteUrl: string;
-  private readonly accessToken: string;
+  private readonly auth: JiraAuth;
+  private readonly hooks?: JiraCloudHooks;
   private readonly scope?: JiraCloudProjectScope;
   private readonly mapping: JiraCloudFieldMapping;
 
-  constructor(settings: JiraCloudSettings, scope?: JiraCloudProjectScope) {
-    this.baseUrl = `https://api.atlassian.com/ex/jira/${encodeURIComponent(settings.cloudId.trim())}/rest/api/3`;
+  constructor(settings: JiraCloudSettings, scope?: JiraCloudProjectScope, hooks?: JiraCloudHooks) {
+    this.baseUrl = jiraApiBase(settings);
     this.siteUrl = settings.siteUrl.replace(/\/+$/, "");
-    this.accessToken = settings.accessToken;
+    this.auth = settings.credentialKind === "oauth"
+      ? { kind: "bearer", getToken: settings.getAccessToken }
+      : { kind: "basic", email: settings.email, apiToken: settings.apiToken };
+    this.hooks = hooks;
     this.scope = scope;
     this.mapping = settings.fieldMapping ?? {};
   }
@@ -58,6 +74,7 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
     try { await this.fetchAuthenticatedUser(); return true; } catch { return false; }
   }
 
+  /** Classic tokens with restricted profile visibility may omit the email; consumers must tolerate an absent uniqueName/emailAddress. */
   async fetchAuthenticatedUser(): Promise<ProviderAuthenticatedUser> {
     const user = await this.requestJson<Json>("/myself");
     return {
@@ -320,7 +337,7 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
     return Promise.reject(new IntegrationError({
       providerId: "jira-cloud",
       code: "integration_unsupported_capability",
-      message: "Jira Cloud test management requires a configured plain Jira, Xray, or Zephyr backend.",
+      message: "This test management operation requires a configured backend and is not yet available for Jira Cloud projects. A workspace owner or admin can choose Plain Jira, Xray, or Zephyr Scale in Settings → Connections.",
     }));
   }
 
@@ -370,19 +387,7 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
   }
 
   private async requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
-    let response: Response;
-    try {
-      response = await fetch(`${this.baseUrl}${path}`, {
-        ...init, cache: "no-store",
-        headers: { Authorization: `Bearer ${this.accessToken}`, Accept: "application/json", ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...(init.headers ?? {}) },
-      });
-    } catch {
-      throw new IntegrationError({ providerId: "jira-cloud", code: "integration_unavailable", message: "Jira Cloud is unavailable." });
-    }
-    if (!response.ok) {
-      const code = response.status === 401 ? "integration_auth_failed" : response.status === 403 ? "integration_permission_denied" : response.status === 404 ? "integration_not_found" : response.status === 429 ? "integration_rate_limited" : response.status >= 500 ? "integration_unavailable" : "integration_unknown";
-      throw new IntegrationError({ providerId: "jira-cloud", code, message: "Jira Cloud request failed.", statusCode: response.status });
-    }
+    const response = await jiraFetch(`${this.baseUrl}${path}`, init, this.auth, this.hooks);
     if (response.status === 204) return undefined as T;
     return response.json() as Promise<T>;
   }

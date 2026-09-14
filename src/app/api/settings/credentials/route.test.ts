@@ -13,6 +13,7 @@ const storeUserLlmApiKey = vi.fn();
 const updateUserLlmModel = vi.fn();
 const checkRateLimit = vi.fn();
 const getPlaywrightMcpConfigSummary = vi.fn();
+const getEnabledJiraLoginMethods = vi.fn();
 
 vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   nowIso: () => "2026-07-06T12:00:00.000Z",
@@ -30,6 +31,10 @@ vi.mock("@/modules/auth/user.service", () => ({
 
 vi.mock("@/modules/workspace/workspace.service", () => ({
   resolveActiveWorkspaceForUser: (...args: unknown[]) => resolveActiveWorkspaceForUser(...args),
+}));
+
+vi.mock("@/modules/auth/enabled-providers", () => ({
+  getEnabledJiraLoginMethods: (...args: unknown[]) => getEnabledJiraLoginMethods(...args),
 }));
 
 vi.mock("@/modules/auth/pat-auth-provider", () => ({
@@ -71,6 +76,11 @@ const maskedStatus = {
     lastValidatedAt: "2026-07-01T00:00:00.000Z",
     isStale: false,
   },
+  jira: {
+    status: "active",
+    lastValidatedAt: "2026-07-01T00:00:00.000Z",
+    isStale: false,
+  },
 };
 
 function jsonRequest(method: "PUT" | "PATCH", body: unknown) {
@@ -96,6 +106,7 @@ beforeEach(() => {
     updateUserLlmModel,
     checkRateLimit,
     getPlaywrightMcpConfigSummary,
+    getEnabledJiraLoginMethods,
   ]) {
     mock.mockReset();
   }
@@ -103,6 +114,7 @@ beforeEach(() => {
   requireSession.mockResolvedValue({ userId: "user_1", activeWorkspaceId: null });
   resolveActiveWorkspaceForUser.mockResolvedValue({ id: "ws_1", azureOrgUrl: "https://dev.azure.com/org-a" });
   getUserCredentialStatus.mockResolvedValue(maskedStatus);
+  getEnabledJiraLoginMethods.mockResolvedValue(["oauth"]);
   getPlaywrightMcpConfigSummary.mockResolvedValue({
     status: "not_configured",
     transport: null,
@@ -164,6 +176,9 @@ describe("PUT /api/settings/credentials", () => {
       status: "configured",
       lastValidatedAt: "2026-07-06T12:00:00.000Z",
     });
+    expect(getEnabledJiraLoginMethods).toHaveBeenCalledTimes(1);
+    expect(getUserCredentialStatus).toHaveBeenCalledWith("ws_1", "user_1", ["oauth"]);
+    expect(await response.json()).toEqual({ workspaceId: "ws_1", ...maskedStatus });
   });
 
   it("skips the PAT path entirely for an LLM-only body", async () => {
@@ -255,6 +270,9 @@ describe("PATCH /api/settings/credentials", () => {
       provider: "openai",
       model: "gpt-4.1-mini",
     });
+    expect(getEnabledJiraLoginMethods).toHaveBeenCalledTimes(1);
+    expect(getUserCredentialStatus).toHaveBeenCalledWith("ws_1", "user_1", ["oauth"]);
+    expect(await response.json()).toEqual({ workspaceId: "ws_1", ...maskedStatus });
   });
 
   it("rate-limits with 429 and Retry-After without reading or updating anything", async () => {
@@ -290,5 +308,7 @@ describe("GET /api/settings/credentials", () => {
     });
     // Masked previews only — nothing secret-shaped may pass through.
     expect(JSON.stringify(body)).not.toMatch(/apiKey|personalAccessToken|encrypted|cipher|"pat"/i);
+    expect(getEnabledJiraLoginMethods).toHaveBeenCalledTimes(1);
+    expect(getUserCredentialStatus).toHaveBeenCalledWith("ws_1", "user_1", ["oauth"]);
   });
 });

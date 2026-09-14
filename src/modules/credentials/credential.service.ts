@@ -3,6 +3,10 @@ import "server-only";
 import { createId, nowIso, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { decryptSecret, encryptSecret, maskSecret } from "@/modules/security/encryption.service";
 import type { LLMProviderName } from "@/modules/llm/llm-types";
+import {
+  getEnabledJiraLoginMethods,
+  type JiraLoginMethod,
+} from "@/modules/auth/enabled-providers";
 
 /**
  * Scoped, encrypted credential storage (ADR target: per-user secrets, never
@@ -22,9 +26,16 @@ export type CredentialSummary = {
   isStale?: boolean;
 };
 
+export type JiraConnectionSummary = {
+  status: "active" | "invalid" | "reauthorization_required" | "revoked" | "not_connected";
+  lastValidatedAt?: string | null;
+  isStale?: boolean;
+};
+
 export type UserCredentialStatus = {
   azurePat: CredentialSummary;
   llm: CredentialSummary & { model?: string | null };
+  jira: JiraConnectionSummary;
 };
 
 /**
@@ -316,7 +327,12 @@ export async function resolveUserLlmConfig(workspaceId: string, userId: string):
 
 // ── Masked status (safe for the frontend) ───────────────────────────────────
 
-export async function getUserCredentialStatus(workspaceId: string, userId: string): Promise<UserCredentialStatus> {
+export async function getUserCredentialStatus(
+  workspaceId: string,
+  userId: string,
+  enabledJiraLoginMethods?: readonly JiraLoginMethod[],
+): Promise<UserCredentialStatus> {
+  const jiraLoginMethods = enabledJiraLoginMethods ?? await getEnabledJiraLoginMethods();
   const now = nowIso();
   const pat = await sqlGet<{ masked_preview: string | null; status: string; last_validated_at: string | null }>(
     `SELECT masked_preview, status, last_validated_at
@@ -342,6 +358,18 @@ export async function getUserCredentialStatus(workspaceId: string, userId: strin
     { workspaceId, userId },
   );
 
+  const jira = await sqlGet<{
+    status: string;
+    credential_kind: "api_token" | "oauth";
+    last_validated_at: string | null;
+  }>(
+    `SELECT status, credential_kind, last_validated_at
+     FROM jira_connections
+     WHERE workspace_id = @workspaceId AND user_id = @userId
+     LIMIT 1`,
+    { workspaceId, userId },
+  );
+
   return {
     azurePat: pat
       ? {
@@ -361,6 +389,16 @@ export async function getUserCredentialStatus(workspaceId: string, userId: strin
           isStale: llm.status === "configured" && isCredentialStale(llm.last_validated_at, now),
         }
       : { status: "not_configured", maskedPreview: null },
+    jira: jira
+      ? {
+          status: jira.status as JiraConnectionSummary["status"],
+          lastValidatedAt: jira.last_validated_at,
+          isStale: jira.status === "active"
+            && jira.credential_kind === "api_token"
+            && jiraLoginMethods.includes("api_token")
+            && isCredentialStale(jira.last_validated_at, now),
+        }
+      : { status: "not_connected" },
   };
 }
 

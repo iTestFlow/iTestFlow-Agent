@@ -6,6 +6,7 @@ import { toast } from "sonner"
 
 import { ContextFilterSelector } from "@/components/domain/context-filter-selector"
 import { Button } from "@/components/ui/button"
+import { Callout } from "@/components/qa/callout"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -54,6 +55,9 @@ export function AutomationSection() {
   const [forbidden, setForbidden] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [providerId, setProviderId] = useState<string | null>(null)
+  const [syncingNow, setSyncingNow] = useState(false)
+  const [syncNowError, setSyncNowError] = useState("")
 
   const [enabled, setEnabled] = useState(true)
   const [frequency, setFrequency] = useState<Frequency>("daily")
@@ -67,8 +71,21 @@ export function AutomationSection() {
   const [workItemTypes, setWorkItemTypes] = useState<string[]>(DEFAULT_CONTEXT_WORK_ITEM_TYPES)
   const [states, setStates] = useState<string[]>(DEFAULT_CONTEXT_STATES)
 
+  useEffect(() => {
+    let active = true
+    void fetch("/api/auth/session", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data: { workspace?: { providerId?: string } | null }) => { if (active) setProviderId(data.workspace?.providerId ?? "azure-devops") })
+      .catch(() => { if (active) setProviderId("azure-devops") })
+    return () => { active = false }
+  }, [])
+
+  // Work-item type/state filters are Azure vocabulary; Jira reconciliation
+  // ignores them, so its pane never renders them nor fetches their metadata.
+  const isAzureWorkspace = providerId === "azure-devops"
+
   const activeProject = useActiveProject()
-  const activeScope = activeProject ?? null
+  const activeScope = isAzureWorkspace ? (activeProject ?? null) : null
   const {
     metadata: workItemMetadata,
     loading: metadataLoading,
@@ -127,7 +144,7 @@ export function AutomationSection() {
   }, [frequency, time, dayOfWeek, dayOfMonth, customCron])
 
   const cronValid = isValidCronExpression(cronExpression)
-  const canSave = cronValid && workItemTypes.length > 0 && states.length > 0
+  const canSave = cronValid && (!isAzureWorkspace || (workItemTypes.length > 0 && states.length > 0))
 
   const workItemTypeOptions = useMemo(
     () => uniqueStrings([...(workItemMetadata?.workItemTypes ?? []), ...DEFAULT_CONTEXT_WORK_ITEM_TYPES, ...workItemTypes]),
@@ -143,7 +160,7 @@ export function AutomationSection() {
       toast.error("Enter a valid 5-field cron expression.")
       return
     }
-    if (!workItemTypes.length || !states.length) {
+    if (isAzureWorkspace && (!workItemTypes.length || !states.length)) {
       toast.error("Select at least one work item type and state.")
       return
     }
@@ -152,7 +169,12 @@ export function AutomationSection() {
       const response = await fetch("/api/workspace/sync-schedule", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cronExpression, enabled, workItemTypes, states }),
+        body: JSON.stringify({
+          cronExpression,
+          enabled,
+          workItemTypes: isAzureWorkspace ? workItemTypes : [],
+          states: isAzureWorkspace ? states : [],
+        }),
       })
       const data = (await response.json().catch(() => ({}))) as ScheduleResponse & { error?: string }
       if (!response.ok) {
@@ -192,6 +214,30 @@ export function AutomationSection() {
     }
   }
 
+  async function onSyncNow() {
+    setSyncingNow(true)
+    setSyncNowError("")
+    try {
+      const response = await fetch("/api/workspace/sync", { method: "POST" })
+      const data = (await response.json().catch(() => ({}))) as { error?: string; enqueued?: number }
+      if (!response.ok) {
+        const retryAfter = response.headers.get("Retry-After")
+        setSyncNowError(
+          response.status === 503
+            ? `No sync worker is available right now${retryAfter ? ` — retry in ${retryAfter}s` : ""}. Start the worker process, then try again.`
+            : apiErrorMessage(data, "Workspace sync could not be started."),
+        )
+        return
+      }
+      toast.success(`Workspace sync started for ${data.enqueued ?? 0} ${data.enqueued === 1 ? "project" : "projects"}.`)
+      window.dispatchEvent(new CustomEvent("itestflow:sync-schedule-changed"))
+    } catch {
+      setSyncNowError("Workspace sync could not be started. Check your connection and try again.")
+    } finally {
+      setSyncingNow(false)
+    }
+  }
+
   const badge = !hasSaved
     ? { tone: "muted" as const, label: "No schedule" }
     : enabled
@@ -201,7 +247,11 @@ export function AutomationSection() {
   return (
     <SectionCard
       title="Scheduled Knowledge Sync"
-      description="How often the worker re-syncs this workspace's Azure DevOps context using the workspace sync credential. Times are in the server's local timezone. With no schedule, the workspace is only synced when someone clicks “Sync now”."
+      description={
+        isAzureWorkspace
+          ? "How often the worker re-syncs this workspace's Azure DevOps context using the workspace sync credential. Times are in the server's local timezone. With no schedule, the workspace is only synced when someone clicks “Sync now”."
+          : "How often the worker re-syncs this workspace's Jira project context using the sync owner's Jira credential. Times are in the server's local timezone. With no schedule, the workspace is only synced when someone clicks “Sync now”."
+      }
       action={forbidden ? undefined : <StatusBadge tone={badge.tone} label={badge.label} />}
     >
       {forbidden ? (
@@ -216,34 +266,36 @@ export function AutomationSection() {
             <Checkbox checked={enabled} onCheckedChange={(checked) => setEnabled(checked === true)} disabled={loading} aria-label="Enable scheduled sync" />
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-2">
-            <ContextFilterSelector
-              title="Work item types"
-              description="Scheduled sync includes Azure DevOps work items with these types."
-              options={workItemTypeOptions}
-              selectedValues={workItemTypes}
-              loading={metadataLoading && Boolean(activeScope)}
-              error={activeScope ? metadataError : null}
-              disabled={!enabled}
-              searchPlaceholder="Search work item types"
-              emptyMessage="No work item types were returned for this project."
-              onRetry={retryMetadata}
-              onChange={setWorkItemTypes}
-            />
-            <ContextFilterSelector
-              title="States"
-              description="Scheduled sync includes source work items in these states."
-              options={stateOptions}
-              selectedValues={states}
-              loading={metadataLoading && Boolean(activeScope)}
-              error={activeScope ? metadataError : null}
-              disabled={!enabled}
-              searchPlaceholder="Search states"
-              emptyMessage="No work item states were returned for this project."
-              onRetry={retryMetadata}
-              onChange={setStates}
-            />
-          </div>
+          {isAzureWorkspace ? (
+            <div className="grid gap-3 lg:grid-cols-2">
+              <ContextFilterSelector
+                title="Work item types"
+                description="Scheduled sync includes Azure DevOps work items with these types."
+                options={workItemTypeOptions}
+                selectedValues={workItemTypes}
+                loading={metadataLoading && Boolean(activeScope)}
+                error={activeScope ? metadataError : null}
+                disabled={!enabled}
+                searchPlaceholder="Search work item types"
+                emptyMessage="No work item types were returned for this project."
+                onRetry={retryMetadata}
+                onChange={setWorkItemTypes}
+              />
+              <ContextFilterSelector
+                title="States"
+                description="Scheduled sync includes source work items in these states."
+                options={stateOptions}
+                selectedValues={states}
+                loading={metadataLoading && Boolean(activeScope)}
+                error={activeScope ? metadataError : null}
+                disabled={!enabled}
+                searchPlaceholder="Search states"
+                emptyMessage="No work item states were returned for this project."
+                onRetry={retryMetadata}
+                onChange={setStates}
+              />
+            </div>
+          ) : null}
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">
@@ -320,9 +372,11 @@ export function AutomationSection() {
             <p className={cronValid ? "text-foreground" : "text-destructive"}>
               {cronValid ? describeCron(cronExpression) : "Invalid cron expression."}
             </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Sync filters: {workItemTypes.length} work item {workItemTypes.length === 1 ? "type" : "types"}, {states.length} {states.length === 1 ? "state" : "states"}.
-            </p>
+            {isAzureWorkspace ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Sync filters: {workItemTypes.length} work item {workItemTypes.length === 1 ? "type" : "types"}, {states.length} {states.length === 1 ? "state" : "states"}.
+              </p>
+            ) : null}
             {enabled && nextRunAt ? (
               <p className="mt-1 text-xs text-muted-foreground">Next run: {new Date(nextRunAt).toLocaleString()}</p>
             ) : null}
@@ -330,6 +384,12 @@ export function AutomationSection() {
               <p className="mt-0.5 text-xs text-muted-foreground">Last enqueued: {new Date(lastEnqueuedAt).toLocaleString()}</p>
             ) : null}
           </div>
+
+          {syncNowError ? (
+            <Callout tone="error" role="alert" title="Workspace sync could not be started.">
+              {syncNowError}
+            </Callout>
+          ) : null}
 
           <div className="flex items-center gap-2">
             <Button type="button" onClick={() => void onSave()} disabled={saving || loading || !canSave}>
@@ -340,6 +400,16 @@ export function AutomationSection() {
                 </>
               ) : (
                 "Save schedule"
+              )}
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void onSyncNow()} disabled={syncingNow || loading}>
+              {syncingNow ? (
+                <>
+                  <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+                  Starting…
+                </>
+              ) : (
+                "Sync now"
               )}
             </Button>
             {hasSaved ? (

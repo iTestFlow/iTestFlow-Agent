@@ -1,58 +1,95 @@
+import fs from "node:fs";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import * as jiraOAuth from "./jira-oauth";
 
 import {
   AtlassianOAuthError,
+  AtlassianReauthorizationRequiredError,
   buildAtlassianAuthorizationUrl,
   exchangeAtlassianAuthorizationCode,
-  getAllowedAtlassianCloudIds,
   getAtlassianUserIdentity,
-  isAllowedAtlassianCloudId,
-  listAllowedAtlassianResources,
+  listAtlassianAccessibleResources,
   refreshAtlassianOAuthTokens,
 } from "./jira-oauth";
 
-describe("Jira Cloud OAuth", () => {
+const oauthContract = jiraOAuth as typeof jiraOAuth & {
+  JIRA_REQUIRED_RESOURCE_SCOPES: readonly string[];
+  hasRequiredJiraResourceScopes(scopes: readonly string[]): boolean;
+};
+
+const tokenResponse = (overrides: Record<string, unknown> = {}) =>
+  new Response(JSON.stringify({
+    access_token: "access-secret",
+    refresh_token: "refresh-secret",
+    expires_in: 3600,
+    scope: "read:jira-work offline_access",
+    token_type: "Bearer",
+    ...overrides,
+  }), { status: 200, headers: { "content-type": "application/json" } });
+
+describe("Jira Cloud OAuth client", () => {
   beforeEach(() => {
+    vi.unstubAllGlobals();
     vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_ID", "client-id");
     vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_SECRET", "client-secret");
     vi.stubEnv("ATLASSIAN_OAUTH_REDIRECT_URI", "https://itestflow.example/api/auth/jira/callback");
-    vi.stubEnv("ATLASSIAN_ALLOWED_CLOUD_IDS", " cloud-a,cloud-b, cloud-a ");
   });
 
-  it("builds a least-privilege authorization request with offline access and an opaque state", () => {
+  it("builds a least-privilege authorization request — five scopes, no webhook scope", () => {
     const url = new URL(buildAtlassianAuthorizationUrl("opaque-state"));
     expect(url.origin + url.pathname).toBe("https://auth.atlassian.com/authorize");
     expect(url.searchParams.get("client_id")).toBe("client-id");
     expect(url.searchParams.get("redirect_uri")).toBe("https://itestflow.example/api/auth/jira/callback");
     expect(url.searchParams.get("state")).toBe("opaque-state");
     expect(url.searchParams.get("audience")).toBe("api.atlassian.com");
+    expect(url.searchParams.get("response_type")).toBe("code");
     expect(url.searchParams.get("prompt")).toBe("consent");
     expect(url.searchParams.get("scope")?.split(" ")).toEqual([
       "offline_access",
+      "read:me",
       "read:jira-work",
       "write:jira-work",
       "read:jira-user",
-      "manage:jira-webhook",
     ]);
     expect(url.toString()).not.toContain("client-secret");
+    expect(() => buildAtlassianAuthorizationUrl("  ")).toThrow(AtlassianOAuthError);
   });
 
-  it("normalizes the deployment cloud-id allowlist and fails closed when it is empty", () => {
-    expect(getAllowedAtlassianCloudIds()).toEqual(["cloud-a", "cloud-b"]);
-    expect(isAllowedAtlassianCloudId("cloud-b")).toBe(true);
-    expect(isAllowedAtlassianCloudId("cloud-c")).toBe(false);
-    vi.stubEnv("ATLASSIAN_ALLOWED_CLOUD_IDS", "  ");
-    expect(() => getAllowedAtlassianCloudIds()).toThrow("ATLASSIAN_ALLOWED_CLOUD_IDS");
+  it("exports one shared Jira resource-scope contract and accepts order-independent supersets only", () => {
+    const requiredScopes = [
+      "read:jira-work",
+      "write:jira-work",
+      "read:jira-user",
+    ] as const;
+
+    expect(oauthContract.JIRA_REQUIRED_RESOURCE_SCOPES).toEqual(requiredScopes);
+    expect(typeof oauthContract.hasRequiredJiraResourceScopes).toBe("function");
+    expect(oauthContract.hasRequiredJiraResourceScopes([
+      "manage:jira-configuration",
+      "read:jira-user",
+      "read:jira-work",
+      "write:jira-work",
+    ])).toBe(true);
+
+    for (const missingScope of requiredScopes) {
+      expect(
+        oauthContract.hasRequiredJiraResourceScopes(
+          requiredScopes.filter((scope) => scope !== missingScope),
+        ),
+        `missing ${missingScope}`,
+      ).toBe(false);
+    }
+  });
+
+  it("fails fast when an OAuth variable is missing, naming it", () => {
+    vi.stubEnv("ATLASSIAN_OAUTH_CLIENT_ID", "");
+    expect(() => buildAtlassianAuthorizationUrl("state")).toThrow("ATLASSIAN_OAUTH_CLIENT_ID");
   });
 
   it("exchanges an authorization code without leaking upstream bodies or credentials", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      access_token: "access-secret",
-      refresh_token: "refresh-secret",
-      expires_in: 3600,
-      scope: "read:jira-work offline_access",
-      token_type: "Bearer",
-    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const fetchMock = vi.fn().mockResolvedValue(tokenResponse());
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(exchangeAtlassianAuthorizationCode("auth-code")).resolves.toMatchObject({
@@ -61,115 +98,122 @@ describe("Jira Cloud OAuth", () => {
       expiresInSeconds: 3600,
     });
     const request = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(String(fetchMock.mock.calls[0][0])).toBe("https://auth.atlassian.com/oauth/token");
     expect(request).toMatchObject({
       grant_type: "authorization_code",
       client_id: "client-id",
       client_secret: "client-secret",
       code: "auth-code",
+      redirect_uri: "https://itestflow.example/api/auth/jira/callback",
     });
 
     fetchMock.mockResolvedValueOnce(new Response("upstream secret body", { status: 403 }));
-    const error = await exchangeAtlassianAuthorizationCode("bad-code").catch((caught) => caught);
+    const error = await exchangeAtlassianAuthorizationCode("bad-code").catch((caught) => caught as Error);
     expect(error).toBeInstanceOf(AtlassianOAuthError);
+    // A rejected exchange restarts the login flow; it is not the terminal
+    // reauthorization state a dead refresh grant produces — and a burnt code
+    // is not cured by waiting, so the message says to start again.
+    expect(error).not.toBeInstanceOf(AtlassianReauthorizationRequiredError);
+    expect(String(error)).toContain("Start the Jira connection again");
     expect(String(error)).not.toContain("upstream secret body");
     expect(String(error)).not.toContain("client-secret");
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400, headers: { "content-type": "application/json" } }));
+    const burntCode = await exchangeAtlassianAuthorizationCode("burnt-code").catch((caught) => caught as Error);
+    expect(burntCode).not.toBeInstanceOf(AtlassianReauthorizationRequiredError);
+    expect(String(burntCode)).toContain("Start the Jira connection again");
   });
 
-  it("returns and requires the rotated refresh token", async () => {
-    vi.stubEnv("ATLASSIAN_OAUTH_REDIRECT_URI", "");
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      access_token: "new-access",
-      refresh_token: "new-refresh",
-      expires_in: 3600,
-      scope: "offline_access",
-      token_type: "Bearer",
-    }), { status: 200, headers: { "content-type": "application/json" } }));
+  it("requires the rotated refresh token on every refresh", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(tokenResponse({ refresh_token: undefined }));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(refreshAtlassianOAuthTokens("old-refresh")).resolves.toMatchObject({
-      accessToken: "new-access",
-      refreshToken: "new-refresh",
-    });
-    expect(fetchMock).toHaveBeenCalledWith("https://auth.atlassian.com/oauth/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        grant_type: "refresh_token",
-        refresh_token: "old-refresh",
-        client_id: "client-id",
-        client_secret: "client-secret",
-      }),
-      cache: "no-store",
-    });
-
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      access_token: "new-access",
-      expires_in: 3600,
-      scope: "offline_access",
-      token_type: "Bearer",
-    }), { status: 200, headers: { "content-type": "application/json" } })));
-    await expect(refreshAtlassianOAuthTokens("old-refresh")).rejects.toThrow("rotated refresh token");
+    const error = await refreshAtlassianOAuthTokens("refresh-old").catch((caught) => caught as Error);
+    // Missing rotation on a 200 is transient by design: the stored token may
+    // still be alive inside Atlassian's reuse leeway, and the next refresh
+    // will classify terminally if it is not.
+    expect(error).toBeInstanceOf(AtlassianOAuthError);
+    expect(error).not.toBeInstanceOf(AtlassianReauthorizationRequiredError);
   });
 
-  it("returns only allowlisted accessible Jira sites", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([
-      { id: "cloud-a", name: "Allowed", url: "https://allowed.atlassian.net", scopes: ["read:jira-work"] },
-      { id: "cloud-c", name: "Denied", url: "https://denied.atlassian.net", scopes: ["read:jira-work"] },
-    ]), { status: 200, headers: { "content-type": "application/json" } }));
-    vi.stubGlobal("fetch", fetchMock);
+  it("classifies refresh failures: only an invalid_grant body is terminal", async () => {
+    // Atlassian's real dead-grant response (403 + invalid_grant) and the RFC
+    // 6749 §5.2 shape (400 + invalid_grant) flip terminally, whatever the status.
+    for (const status of [400, 401, 403] as const) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+        JSON.stringify({ error: "invalid_grant", error_description: "Unknown or invalid refresh token." }),
+        { status, headers: { "content-type": "application/json" } },
+      )));
+      await expect(refreshAtlassianOAuthTokens("refresh-old")).rejects.toBeInstanceOf(AtlassianReauthorizationRequiredError);
+    }
+    // A bare 401/403 is invalid_client (a rotated app secret) or an edge/WAF
+    // page; 400 invalid_request is a protocol bug; 429 is Auth0 rate limiting
+    // hitting exactly when refresh jobs storm; 5xx/network are outages.
+    // Re-consent fixes none of those — flipping rows terminal on them would
+    // kill the fleet on a 30-minute config skew, so all stay transient.
+    const transientCases: Array<[number, string]> = [
+      [401, JSON.stringify({ error: "access_denied", error_description: "Unauthorized" })],
+      [403, "<html>blocked by edge</html>"],
+      [400, JSON.stringify({ error: "invalid_request" })],
+      [429, "rate limited"],
+      [503, "outage"],
+    ];
+    for (const [status, body] of transientCases) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status })));
+      const error = await refreshAtlassianOAuthTokens("refresh-old").catch((caught) => caught as Error);
+      expect(error, `status ${status}`).toBeInstanceOf(AtlassianOAuthError);
+      expect(error, `status ${status}`).not.toBeInstanceOf(AtlassianReauthorizationRequiredError);
+    }
 
-    await expect(listAllowedAtlassianResources("access-secret")).resolves.toEqual([
-      { id: "cloud-a", name: "Allowed", url: "https://allowed.atlassian.net", scopes: ["read:jira-work"] },
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("socket reset refresh-old")));
+    const network = await refreshAtlassianOAuthTokens("refresh-old").catch((caught) => caught as Error);
+    expect(network).toBeInstanceOf(AtlassianOAuthError);
+    expect(network).not.toBeInstanceOf(AtlassianReauthorizationRequiredError);
+    expect(String(network)).not.toContain("refresh-old");
+  });
+
+  it("lists accessible resources unfiltered — trust keys off configured sites, not an env allowlist", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify([
+      { id: "cloud-a", name: "Site A", url: "https://a.atlassian.net", scopes: ["read:jira-work"] },
+      { id: "cloud-b", name: "Site B", url: "https://b.atlassian.net", scopes: [] },
+    ]), { status: 200, headers: { "content-type": "application/json" } })));
+    await expect(listAtlassianAccessibleResources("access-token")).resolves.toEqual([
+      { id: "cloud-a", name: "Site A", url: "https://a.atlassian.net", scopes: ["read:jira-work"] },
+      { id: "cloud-b", name: "Site B", url: "https://b.atlassian.net", scopes: [] },
     ]);
-    expect(fetchMock).toHaveBeenCalledWith("https://api.atlassian.com/oauth/token/accessible-resources", {
-      headers: { Authorization: "Bearer access-secret", Accept: "application/json" },
-      cache: "no-store",
-    });
   });
 
-  it("loads the Atlassian account identity through the selected cloud site", async () => {
+  it("resolves the verified user identity from /me", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      accountId: "account-123",
-      displayName: "Jamie Jira",
-      emailAddress: "jamie@example.com",
+      account_id: "acct-1", name: "Dana Developer", email: "dana@example.com",
     }), { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
-
-    await expect(getAtlassianUserIdentity("access-secret", " cloud-a ")).resolves.toEqual({
-      accountId: "account-123",
-      displayName: "Jamie Jira",
-      emailAddress: "jamie@example.com",
+    await expect(getAtlassianUserIdentity("access-token")).resolves.toEqual({
+      accountId: "acct-1", displayName: "Dana Developer", emailAddress: "dana@example.com",
     });
-    expect(fetchMock).toHaveBeenCalledWith("https://api.atlassian.com/ex/jira/cloud-a/rest/api/3/myself", {
-      headers: { Authorization: "Bearer access-secret", Accept: "application/json" },
-      cache: "no-store",
-    });
-
-    fetchMock.mockClear();
-    await expect(getAtlassianUserIdentity("access-secret", "cloud-c")).rejects.toThrow("not approved");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(String(fetchMock.mock.calls[0][0])).toBe("https://api.atlassian.com/me");
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({ Authorization: "Bearer access-token" });
   });
 
-  it("fails closed for missing inputs, network failures, and malformed upstream JSON", async () => {
-    expect(() => buildAtlassianAuthorizationUrl(" ")).toThrow("state");
-    await expect(exchangeAtlassianAuthorizationCode(" ")).rejects.toThrow("code");
-    await expect(refreshAtlassianOAuthTokens(" ")).rejects.toThrow("refresh token");
-    await expect(getAtlassianUserIdentity("access", " ")).rejects.toThrow("site ID");
-    await expect(listAllowedAtlassianResources(" ")).rejects.toThrow("access token");
-
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network secret")));
-    await expect(exchangeAtlassianAuthorizationCode("code")).rejects.toThrow("unavailable");
-    await expect(listAllowedAtlassianResources("access")).rejects.toThrow("unavailable");
-
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{", { status: 200 })));
-    await expect(exchangeAtlassianAuthorizationCode("code")).rejects.toThrow("invalid OAuth");
-    await expect(listAllowedAtlassianResources("access")).rejects.toThrow("invalid response");
+  it("names the missing-email condition instead of reading like an outage", async () => {
+    // jira_connections.email is NOT NULL and seeded owners match by email, so
+    // the user-actionable condition deserves its own message — for an absent
+    // AND an empty-string email.
+    for (const body of [
+      { account_id: "acct-1", name: "Dana Developer" },
+      { account_id: "acct-1", name: "Dana Developer", email: "" },
+    ]) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(body), {
+        status: 200, headers: { "content-type": "application/json" },
+      })));
+      const error = await getAtlassianUserIdentity("access-token").catch((caught) => caught as Error);
+      expect(error).toBeInstanceOf(AtlassianOAuthError);
+      expect(String(error)).toContain("email");
+    }
   });
 
-  it("distinguishes terminal refresh rejection from transient token failure", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 401 })));
-    await expect(refreshAtlassianOAuthTokens("refresh")).rejects.toBeInstanceOf((await import("./jira-oauth")).AtlassianReauthorizationRequiredError);
-    await expect(exchangeAtlassianAuthorizationCode("code")).rejects.toThrow("rejected");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 500 })));
-    await expect(exchangeAtlassianAuthorizationCode("code")).rejects.toThrow("failed");
+  it("carries no retired-era references", () => {
+    const source = fs.readFileSync(path.join(process.cwd(), "src/modules/auth/jira-oauth.ts"), "utf8");
+    expect(source).not.toContain("ATLASSIAN_ALLOWED_CLOUD_IDS");
+    expect(source).not.toContain("manage:jira-webhook");
   });
 });

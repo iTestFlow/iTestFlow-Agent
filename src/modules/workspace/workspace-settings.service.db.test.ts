@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 
-import { cleanupFixtures, describeDb, seedWorkspace, uniqueTestId } from "@/test/db";
+import { cleanupFixtures, describeDb, seedWorkspace, suspendJiraBootstrapEnv, uniqueTestId } from "@/test/db";
 import { resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
 import {
@@ -28,8 +28,10 @@ describeDb("workspace settings (DB-backed)", () => {
   let workspaceId: string;
   const savedEmail = process.env.BOOTSTRAP_OWNER_EMAIL;
   const savedLegacyOrg = process.env.BOOTSTRAP_OWNER_AZURE_ORG;
+  let restoreJiraEnv = () => {};
 
   beforeAll(async () => {
+    restoreJiraEnv = suspendJiraBootstrapEnv();
     process.env.BOOTSTRAP_OWNER_EMAIL = TEST_EMAIL;
     process.env.BOOTSTRAP_OWNER_AZURE_ORG = TEST_ORG;
     await cleanup();
@@ -43,6 +45,7 @@ describeDb("workspace settings (DB-backed)", () => {
     else process.env.BOOTSTRAP_OWNER_EMAIL = savedEmail;
     if (savedLegacyOrg === undefined) delete process.env.BOOTSTRAP_OWNER_AZURE_ORG;
     else process.env.BOOTSTRAP_OWNER_AZURE_ORG = savedLegacyOrg;
+    restoreJiraEnv();
     await resetDatabaseForTests();
   });
 

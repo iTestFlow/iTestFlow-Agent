@@ -31,7 +31,7 @@ describe("completeJiraSyncOperation", () => {
     await expect(claimNextJiraSyncOperation("ws-1")).resolves.toEqual({ id: "op-1", mappingId: "mapping-1", field: "title", operation: "push", target: "New" });
     expect(String(mocks.sqlGet.mock.calls[0][0])).toContain("SKIP LOCKED");
     expect(mocks.sqlGet.mock.calls[0][1]).toMatchObject({ workspaceId: "ws-1", now: "2026-08-13T00:00:00.000Z" });
-    expect(String(mocks.sqlRun.mock.calls[0][0])).toContain("processing_started_at < @staleCutoff");
+    expect(String(mocks.sqlRun.mock.calls[0][0])).toContain("processing_started_at <= @staleCutoff");
   });
 
   it("restricts a worker claim to its trusted project when supplied", async () => {

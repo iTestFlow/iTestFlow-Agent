@@ -28,6 +28,7 @@ export async function GET() {
         maxAttempts: job.maxAttempts,
         runAfter: job.runAfter,
         errorMessage: job.errorMessage,
+        errorCode: job.errorCode,
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
       })),

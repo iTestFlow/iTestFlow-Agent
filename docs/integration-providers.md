@@ -6,9 +6,9 @@ This document describes the integration provider boundary for iTestFlow. Azure D
 
 - Existing Azure routes, stored scopes, PAT flows, and compatibility result fields remain in place.
 - Azure DevOps is the first implementation behind generic work-management and test-management ports.
-- Jira OAuth onboarding, trusted site/project selection, mappings, backend configuration, sync/conflict status, trace links, and disconnect are exposed through provider-aware login, header, and Settings surfaces.
+- Jira API-token onboarding, trusted site/project selection, mappings, backend configuration, sync/conflict status, trace links, and disconnect are exposed through provider-aware login, header, and Settings surfaces.
 - Provider identity is persisted on `workspaces.provider_id` and `projects.provider_id`, both defaulting to `azure-devops`.
-- Jira OAuth and backend secrets are encrypted; client responses expose status and redacted metadata only.
+- Jira API-token and backend secrets are encrypted; client responses expose status and redacted metadata only.
 
 ## Source Map
 

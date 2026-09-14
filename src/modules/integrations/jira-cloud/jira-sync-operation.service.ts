@@ -13,13 +13,15 @@ export type ClaimedJiraSyncOperation = {
   id: string; mappingId: string; field: string; operation: "pull" | "push"; target: unknown;
 };
 
+export const JIRA_SYNC_OPERATION_STALE_MS = 5 * 60 * 1000;
+
 export async function claimNextJiraSyncOperation(workspaceId: string, projectId?: string, operationId?: string): Promise<ClaimedJiraSyncOperation | null> {
   return withTransaction(async (client) => {
-    const staleCutoff = new Date(Date.parse(nowIso()) - 5 * 60 * 1000).toISOString();
+    const staleCutoff = new Date(Date.parse(nowIso()) - JIRA_SYNC_OPERATION_STALE_MS).toISOString();
     await sqlRun(
       `UPDATE jira_sync_operations SET status = 'pending', processing_started_at = NULL,
          run_after = @now, updated_at = @now
-       WHERE status = 'processing' AND processing_started_at < @staleCutoff AND attempts < 5
+       WHERE status = 'processing' AND processing_started_at <= @staleCutoff AND attempts < 5
          AND mapping_id IN (SELECT id FROM jira_sync_mappings WHERE workspace_id = @workspaceId)`,
       { workspaceId, staleCutoff, now: nowIso() }, client,
     );
@@ -28,7 +30,7 @@ export async function claimNextJiraSyncOperation(workspaceId: string, projectId?
          processing_started_at = NULL, updated_at = @now
        FROM jira_sync_mappings m
        WHERE o.mapping_id = m.id AND m.workspace_id = @workspaceId
-         AND o.status = 'processing' AND o.processing_started_at < @staleCutoff AND o.attempts >= 5
+         AND o.status = 'processing' AND o.processing_started_at <= @staleCutoff AND o.attempts >= 5
        RETURNING o.mapping_id, o.field_name`,
       { workspaceId, staleCutoff, now: nowIso() }, client,
     );
@@ -70,7 +72,12 @@ export async function claimNextJiraSyncOperation(workspaceId: string, projectId?
 }
 
 const RETRYABLE_CODES = new Set<IntegrationErrorCode>(["integration_rate_limited", "integration_unavailable", "integration_unknown"]);
-export async function failJiraSyncOperation(input: { operationId: string; errorCode: IntegrationErrorCode }): Promise<{ retry: boolean; runAfter: string }> {
+export async function failJiraSyncOperation(input: {
+  operationId: string;
+  errorCode: IntegrationErrorCode;
+  /** Upstream Retry-After (429): the retry never runs earlier than the server asked. */
+  retryAfterSeconds?: number;
+}): Promise<{ retry: boolean; runAfter: string }> {
   return withTransaction(async (client) => {
     const operation = await sqlGet<{ mapping_id: string; attempts: number }>(
       `SELECT mapping_id, attempts FROM jira_sync_operations
@@ -80,7 +87,11 @@ export async function failJiraSyncOperation(input: { operationId: string; errorC
     if (!operation) throw new Error("The Jira sync operation is not available for failure handling.");
     const retry = RETRYABLE_CODES.has(input.errorCode) && operation.attempts < 5;
     const now = nowIso();
-    const runAfter = new Date(Date.parse(now) + Math.min(300, 2 ** Math.max(0, operation.attempts - 1)) * 1000).toISOString();
+    const backoffSeconds = Math.min(300, 2 ** Math.max(0, operation.attempts - 1));
+    // The header is upstream-controlled: honor it, but never let one response
+    // park an operation beyond an hour.
+    const delaySeconds = Math.max(backoffSeconds, Math.min(input.retryAfterSeconds ?? 0, 3600));
+    const runAfter = new Date(Date.parse(now) + delaySeconds * 1000).toISOString();
     await sqlRun(
       `UPDATE jira_sync_operations SET status = @status, error_code = @errorCode,
          run_after = @runAfter, processing_started_at = NULL, updated_at = @now

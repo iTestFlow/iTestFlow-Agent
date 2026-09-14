@@ -7,13 +7,17 @@ const PUBLIC_ROUTES = new Set([
   "auth/login/route.ts",
   "auth/logout/route.ts",
   "auth/organizations/route.ts",
+  "auth/providers/route.ts",
   "auth/session/route.ts",
+  // Credential-accepting login: rate-limited, origin-checked, provider-gated,
+  // and fail-closed on unconfigured sites before any outbound call.
+  "auth/jira/login/route.ts",
+  // OAuth sign-in pair: pre-auth by nature, method-gated and rate-limited;
+  // the callback additionally consumes single-use CSRF state.
   "auth/jira/start/route.ts",
   "auth/jira/callback/route.ts",
-  "auth/jira/select/route.ts",
-  // Atlassian calls this without an app session; the route verifies JWT bearer
-  // authentication plus its unguessable registration binding before persistence.
-  "webhooks/jira/route.ts",
+  // Pre-auth login pickers: display fields only, rate-limited, provider-gated.
+  "auth/jira/sites/route.ts",
   "health/route.ts",
 ]);
 

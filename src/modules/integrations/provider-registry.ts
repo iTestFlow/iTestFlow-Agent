@@ -3,7 +3,7 @@ import "server-only";
 import { azureDevOpsDescriptor } from "./azure-devops/azure-devops-descriptor";
 import { AzureDevOpsRestAdapter, type AzureDevOpsProjectScope } from "./azure-devops/azure-devops-client";
 import type { AzureDevOpsSettings } from "./azure-devops/azure-devops-types";
-import { JiraCloudAdapter, type JiraCloudProjectScope, type JiraCloudSettings } from "./jira-cloud/jira-cloud-adapter";
+import { JiraCloudAdapter, type JiraCloudHooks, type JiraCloudProjectScope, type JiraCloudSettings } from "./jira-cloud/jira-cloud-adapter";
 import { jiraCloudDescriptor } from "./jira-cloud/jira-cloud-descriptor";
 import { providerConfigurationError, unsupportedProviderError } from "./core/capabilities";
 import type { ProviderDescriptor, ProviderId } from "./core/provider-types";
@@ -28,7 +28,7 @@ export type IntegrationProviderConfig =
       providerId: "jira-cloud";
       settings: JiraCloudSettings;
       projectScope?: JiraCloudProjectScope;
-      hooks?: never;
+      hooks?: JiraCloudHooks;
     };
 
 export function createIntegrationProvider(config: IntegrationProviderConfig): IntegrationProvider {
@@ -36,7 +36,7 @@ export function createIntegrationProvider(config: IntegrationProviderConfig): In
     case "azure-devops":
       return new AzureDevOpsRestAdapter(config.settings, config.projectScope, config.hooks);
     case "jira-cloud":
-      return new JiraCloudAdapter(config.settings, config.projectScope);
+      return new JiraCloudAdapter(config.settings, config.projectScope, config.hooks);
     default:
       throw unsupportedProviderError((config as { providerId: string }).providerId);
   }

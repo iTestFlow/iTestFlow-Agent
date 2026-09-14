@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createId, nowIso, resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
-import { describeDb } from "@/test/db";
+import { storeJiraConnection } from "@/modules/auth/jira-connection.service";
+import { cleanupFixtures, describeDb, seedMembership, seedUser, uniqueTestId } from "@/test/db";
 import {
   getUserCredentialStatus,
   isCredentialStale,
@@ -14,6 +15,26 @@ import {
 } from "@/modules/credentials/credential.service";
 
 const WS_URL = "https://dev.azure.com/cred-test-org";
+
+const JIRA_WORKSPACE_ID = uniqueTestId("ws_jira_credential_status");
+const JIRA_USER_ID = uniqueTestId("user_jira_credential_status");
+const JIRA_CLOUD_ID = uniqueTestId("cloud_jira_credential_status");
+const JIRA_SITE_URL = `https://${JIRA_WORKSPACE_ID.replaceAll("_", "-")}.atlassian.net`;
+const JIRA_USER_EMAIL = `${JIRA_USER_ID}@itestflow.test`;
+const STALE_JIRA_VALIDATED_AT = "2000-01-01T00:00:00.000Z";
+
+const JIRA_POLICY_ENV_KEYS = [
+  "BOOTSTRAP_ENABLED_PROVIDERS",
+  "BOOTSTRAP_OWNER_EMAIL",
+  "BOOTSTRAP_OWNER_AZURE_ORG",
+  "BOOTSTRAP_AZURE_ORGS",
+  "BOOTSTRAP_OWNER_JIRA_SITE",
+  "BOOTSTRAP_JIRA_SITES",
+  "JIRA_LOGIN_METHODS",
+  "ATLASSIAN_OAUTH_CLIENT_ID",
+  "ATLASSIAN_OAUTH_CLIENT_SECRET",
+  "ATLASSIAN_OAUTH_REDIRECT_URI",
+] as const;
 
 describe("isCredentialStale (pure)", () => {
   const now = "2026-06-22T00:00:00.000Z";
@@ -103,5 +124,109 @@ describeDb("credential service (DB-backed)", () => {
     await markUserAzurePatExpired(workspaceId, userId);
     await markUserAzurePatExpired(workspaceId, userId); // idempotent
     expect((await getUserCredentialStatus(workspaceId, userId)).azurePat.status).toBe("expired");
+  });
+});
+
+describeDb("Jira credential staleness policy (DB-backed)", () => {
+  const savedEncryptionKey = process.env.APP_ENCRYPTION_KEY;
+  const savedPolicyEnv = new Map(JIRA_POLICY_ENV_KEYS.map((key) => [key, process.env[key]]));
+
+  beforeAll(async () => {
+    process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 31).toString("base64");
+    process.env.BOOTSTRAP_ENABLED_PROVIDERS = "jira-cloud";
+    process.env.BOOTSTRAP_OWNER_EMAIL = JIRA_USER_EMAIL;
+    delete process.env.BOOTSTRAP_OWNER_AZURE_ORG;
+    delete process.env.BOOTSTRAP_AZURE_ORGS;
+    delete process.env.BOOTSTRAP_OWNER_JIRA_SITE;
+    process.env.BOOTSTRAP_JIRA_SITES = `${JIRA_SITE_URL}|${JIRA_USER_EMAIL}`;
+    process.env.JIRA_LOGIN_METHODS = "api_token";
+    process.env.ATLASSIAN_OAUTH_CLIENT_ID = "credential-policy-client";
+    process.env.ATLASSIAN_OAUTH_CLIENT_SECRET = "credential-policy-secret";
+    process.env.ATLASSIAN_OAUTH_REDIRECT_URI = "https://example.test/api/auth/jira/callback";
+
+    const now = nowIso();
+    await sqlRun(
+      `INSERT INTO workspaces (
+         id, name, azure_org_name, azure_org_url, provider_id,
+         provider_site_id, provider_site_name, provider_site_url, status, created_at, updated_at
+       ) VALUES (
+         @id, 'Jira credential status', NULL, NULL, 'jira-cloud',
+         @cloudId, 'Jira credential status', @siteUrl, 'active', @now, @now
+       )`,
+      { id: JIRA_WORKSPACE_ID, cloudId: JIRA_CLOUD_ID, siteUrl: JIRA_SITE_URL, now },
+    );
+    await seedUser({ id: JIRA_USER_ID, email: JIRA_USER_EMAIL });
+    await seedMembership({ workspaceId: JIRA_WORKSPACE_ID, userId: JIRA_USER_ID, role: "owner" });
+  });
+
+  afterAll(async () => {
+    try {
+      await sqlRun(`DELETE FROM jira_connections WHERE workspace_id = @workspaceId`, {
+        workspaceId: JIRA_WORKSPACE_ID,
+      });
+      await cleanupFixtures({ workspaceIds: [JIRA_WORKSPACE_ID], userIds: [JIRA_USER_ID] });
+      await resetDatabaseForTests();
+    } finally {
+      if (savedEncryptionKey === undefined) delete process.env.APP_ENCRYPTION_KEY;
+      else process.env.APP_ENCRYPTION_KEY = savedEncryptionKey;
+      for (const [key, value] of savedPolicyEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  beforeEach(async () => {
+    process.env.JIRA_LOGIN_METHODS = "api_token";
+    await storeJiraConnection({
+      workspaceId: JIRA_WORKSPACE_ID,
+      userId: JIRA_USER_ID,
+      cloudId: JIRA_CLOUD_ID,
+      email: JIRA_USER_EMAIL,
+      apiToken: "jira-credential-status-token",
+      tokenKind: "scoped",
+      isSyncPrincipal: true,
+    });
+    await sqlRun(
+      `UPDATE jira_connections SET last_validated_at = @staleAt
+       WHERE workspace_id = @workspaceId AND user_id = @userId`,
+      { staleAt: STALE_JIRA_VALIDATED_AT, workspaceId: JIRA_WORKSPACE_ID, userId: JIRA_USER_ID },
+    );
+  });
+
+  it("reports an old active API token as stale when API-token recovery is enabled", async () => {
+    expect((await getUserCredentialStatus(JIRA_WORKSPACE_ID, JIRA_USER_ID, ["api_token"])).jira.isStale).toBe(true);
+    expect((await getUserCredentialStatus(JIRA_WORKSPACE_ID, JIRA_USER_ID, ["oauth", "api_token"])).jira.isStale).toBe(true);
+  });
+
+  it("suppresses an old API-token warning when API-token recovery is unavailable", async () => {
+    expect((await getUserCredentialStatus(JIRA_WORKSPACE_ID, JIRA_USER_ID, ["oauth"])).jira.isStale).toBe(false);
+    expect((await getUserCredentialStatus(JIRA_WORKSPACE_ID, JIRA_USER_ID, [])).jira.isStale).toBe(false);
+  });
+
+  it("never reports an old OAuth connection as an API-token staleness warning", async () => {
+    await storeJiraConnection({
+      workspaceId: JIRA_WORKSPACE_ID,
+      userId: JIRA_USER_ID,
+      cloudId: JIRA_CLOUD_ID,
+      email: JIRA_USER_EMAIL,
+      credentialKind: "oauth",
+      accessToken: "jira-credential-status-access",
+      refreshToken: "jira-credential-status-refresh",
+      expiresInSeconds: 3600,
+      isSyncPrincipal: true,
+    });
+    await sqlRun(
+      `UPDATE jira_connections SET last_validated_at = @staleAt
+       WHERE workspace_id = @workspaceId AND user_id = @userId`,
+      { staleAt: STALE_JIRA_VALIDATED_AT, workspaceId: JIRA_WORKSPACE_ID, userId: JIRA_USER_ID },
+    );
+
+    expect((await getUserCredentialStatus(JIRA_WORKSPACE_ID, JIRA_USER_ID, ["api_token", "oauth"])).jira.isStale).toBe(false);
+  });
+
+  it("resolves the pinned OAuth-only policy when no method snapshot is provided", async () => {
+    process.env.JIRA_LOGIN_METHODS = "oauth";
+    expect((await getUserCredentialStatus(JIRA_WORKSPACE_ID, JIRA_USER_ID)).jira.isStale).toBe(false);
   });
 });

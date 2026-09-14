@@ -5,10 +5,12 @@ import { nowIso } from "@/modules/shared/infrastructure/database/db";
 import { PatAuthProvider } from "@/modules/auth/pat-auth-provider";
 import { ensureWorkspaceMembership, provisionUserFromIdentity } from "@/modules/auth/user.service";
 import { normalizeAzureOrg } from "@/modules/auth/bootstrap.service";
+import { isLoginProviderEnabled } from "@/modules/auth/enabled-providers";
 import { createSession } from "@/modules/auth/session.service";
 import { findWorkspaceByAzureOrgUrl } from "@/modules/workspace/workspace.service";
 import { storeUserAzurePat } from "@/modules/credentials/credential.service";
 import { checkRateLimit, clientIp } from "@/modules/security/rate-limit";
+import { isCrossOriginRequest } from "@/modules/security/origin";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
@@ -34,6 +36,14 @@ export async function POST(request: Request) {
       { error: "Too many sign-in attempts. Please wait and try again." },
       { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } },
     );
+  }
+
+  if (isCrossOriginRequest(request)) {
+    return NextResponse.json({ error: "Cross-origin sign-in requests are not allowed." }, { status: 403 });
+  }
+
+  if (!await isLoginProviderEnabled("azure-devops")) {
+    return NextResponse.json({ error: "Azure DevOps sign-in is disabled for this deployment." }, { status: 403 });
   }
 
   const parsed = LoginSchema.safeParse(await request.json().catch(() => null));

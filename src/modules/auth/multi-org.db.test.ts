@@ -10,7 +10,7 @@ import {
   resolveActiveWorkspaceForUser,
   setWorkspaceStatusByOrgUrl,
 } from "@/modules/workspace/workspace.service";
-import { describeDb, seedMembership, seedUser, seedWorkspace } from "@/test/db";
+import { describeDb, seedMembership, seedUser, seedWorkspace, suspendJiraBootstrapEnv } from "@/test/db";
 
 // DB-backed (ADR-9): requires a migrated PostgreSQL via DATABASE_URL.
 
@@ -30,6 +30,7 @@ describeDb("multi-org bootstrap & active-workspace resolution (DB-backed)", () =
   const savedOrgs = process.env.BOOTSTRAP_AZURE_ORGS;
   const savedEmail = process.env.BOOTSTRAP_OWNER_EMAIL;
   const savedLegacyOrg = process.env.BOOTSTRAP_OWNER_AZURE_ORG;
+  let restoreJiraEnv = () => {};
 
   async function cleanup() {
     for (const url of [ORG_A, ORG_B]) await sqlRun(`DELETE FROM workspaces WHERE azure_org_url = @url`, { url });
@@ -37,6 +38,7 @@ describeDb("multi-org bootstrap & active-workspace resolution (DB-backed)", () =
   }
 
   beforeAll(async () => {
+    restoreJiraEnv = suspendJiraBootstrapEnv();
     delete process.env.BOOTSTRAP_OWNER_EMAIL;
     delete process.env.BOOTSTRAP_OWNER_AZURE_ORG;
     process.env.BOOTSTRAP_AZURE_ORGS = `${ORG_A}|${OWNER_A}, ${ORG_B}|${OWNER_B}`;
@@ -51,6 +53,7 @@ describeDb("multi-org bootstrap & active-workspace resolution (DB-backed)", () =
     else process.env.BOOTSTRAP_OWNER_EMAIL = savedEmail;
     if (savedLegacyOrg === undefined) delete process.env.BOOTSTRAP_OWNER_AZURE_ORG;
     else process.env.BOOTSTRAP_OWNER_AZURE_ORG = savedLegacyOrg;
+    restoreJiraEnv();
     await resetDatabaseForTests();
   });
 

@@ -21,6 +21,8 @@ export type IntegrationErrorOptions = {
   code: IntegrationErrorCode;
   message: string;
   statusCode?: number;
+  /** Upstream Retry-After on 429, so retry scheduling can honor the server. */
+  retryAfterSeconds?: number;
   cause?: unknown;
 };
 
@@ -28,6 +30,7 @@ export class IntegrationError extends Error {
   readonly providerId?: ProviderId | string;
   readonly code: IntegrationErrorCode;
   readonly statusCode?: number;
+  readonly retryAfterSeconds?: number;
 
   constructor(options: IntegrationErrorOptions) {
     super(options.message);
@@ -35,6 +38,7 @@ export class IntegrationError extends Error {
     this.providerId = options.providerId;
     this.code = options.code;
     this.statusCode = options.statusCode;
+    this.retryAfterSeconds = options.retryAfterSeconds;
     if (options.cause !== undefined) {
       (this as Error & { cause?: unknown }).cause = options.cause;
     }

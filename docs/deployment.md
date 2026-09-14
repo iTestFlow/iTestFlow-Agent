@@ -36,6 +36,18 @@ iTestFlow supports two bootstrap modes:
 | --- | --- | --- |
 | `BOOTSTRAP_AZURE_ORGS` | yes | Comma-separated `orgUrl\|ownerEmail` entries. Each org has its own owner. Omit `\|email` to inherit `BOOTSTRAP_OWNER_EMAIL`. When set, takes precedence over `BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG`. |
 
+### Jira Cloud Sign-In (Optional Provider)
+
+Jira Cloud sign-in mirrors the Azure PAT flow: users sign in with their Atlassian account email and a personal API token, so no OAuth app, callback URL, webhook ingress, or public origin is required for token sign-in. Atlassian OAuth is an optional second sign-in method configured through the `ATLASSIAN_OAUTH_*` variables below. A fresh Jira Cloud deployment must set `BOOTSTRAP_JIRA_SITES` with an owner email before the provider works; bootstrap may be omitted only for an upgrade whose database already carries an active jira-cloud workspace from an earlier seed. See [jira-cloud.md](jira-cloud.md) for API-token guidance (both classic and scoped token kinds), OAuth setup, the URL-rename procedure, and operational notes.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `BOOTSTRAP_OWNER_JIRA_SITE` | legacy | Single-site compatibility pair with `BOOTSTRAP_OWNER_EMAIL`; prefer `BOOTSTRAP_JIRA_SITES` |
+| `BOOTSTRAP_JIRA_SITES` | fresh Jira deployment | Comma-separated `siteUrl\|ownerEmail` entries (accepts `mysite` or `https://mysite.atlassian.net`). Seeds each site's workspace and declared owner at startup so the login site picker works and the declared owner — not the first visitor — owns the workspace |
+| `BOOTSTRAP_ENABLED_PROVIDERS` | optional | Which sign-in providers the login page offers (`azure-devops`, `jira-cloud`; first entry is the default pane). Unset auto-detects: Azure always, Jira when a bootstrap site resolves or an active jira-cloud workspace exists |
+| `ATLASSIAN_OAUTH_CLIENT_ID` / `ATLASSIAN_OAUTH_CLIENT_SECRET` / `ATLASSIAN_OAUTH_REDIRECT_URI` | optional | Atlassian OAuth sign-in beside API tokens. Set all three or none. A callback URL alone is ignored for compatibility with older Azure-only templates; once either client credential is supplied, a partial set refuses to start. The redirect URI is the app's registered `/api/auth/jira/callback` URL and needs only browser reachability |
+| `JIRA_LOGIN_METHODS` | optional | Jira sign-in methods the login page offers (`api_token`, `oauth`, comma-separated). Unset: `api_token`, plus `oauth` when the OAuth client is configured; `oauth` alone is the OAuth-only mode |
+
 ### Common Variables (Both Modes)
 
 | Variable | Required | Purpose |
@@ -142,6 +154,16 @@ The app startup instrumentation also attempts pending migrations and bootstrap s
 
 The same startup-instrumentation note applies: keep the explicit `npm run db:migrate` step in the deploy pipeline so schema failures surface before serving traffic.
 
+### Jira Cloud Setup
+
+1. Set `APP_ENCRYPTION_KEY` and, for a fresh deployment, `BOOTSTRAP_JIRA_SITES` with a declared owner for every site. Do not rely on first-login site creation — the sign-in route rejects unconfigured sites.
+2. Run `npm run db:migrate`, then build and start the application.
+3. Confirm that configured sites appear in the login picker and that signing in to an unconfigured site is rejected.
+4. Have each declared owner sign in with their Atlassian account email and API token (classic or scoped; scoped tokens need `read:jira-work`, `write:jira-work`, and `read:jira-user`). Verify that the seeded owner identity and membership are reused and that the account becomes the site's sync principal.
+5. If a reverse proxy fronts the deployment, confirm it forwards the original `Host` header (the login routes compare it against the browser `Origin`) and set `RATE_LIMIT_TRUSTED_PROXY_HOPS`.
+
+When an Atlassian site URL changes but its cloud ID does not, follow the ordered rename procedure in [jira-cloud.md](jira-cloud.md): update `BOOTSTRAP_JIRA_SITES` before the restart, then sign in through the new picker entry so reconciliation can absorb the placeholder.
+
 ### Managing Organizations
 
 Once an org is seeded, it cannot be removed via environment variable changes. To temporarily disable an org without losing data:
@@ -169,8 +191,9 @@ These operations are reversible and preserve all workspace data, user records, p
 ## Production Checklist
 
 - [ ] HTTPS is enabled.
-- [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, and bootstrap variables (`BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG` or `BOOTSTRAP_AZURE_ORGS`) are set through secrets.
+- [ ] `DATABASE_URL`, `APP_ENCRYPTION_KEY`, and bootstrap variables (`BOOTSTRAP_OWNER_EMAIL`/`BOOTSTRAP_OWNER_AZURE_ORG` or `BOOTSTRAP_AZURE_ORGS`; plus `BOOTSTRAP_JIRA_SITES` for fresh Jira Cloud deployments with a declared owner per site, unless a qualifying upgrade's database already carries an active jira-cloud workspace) are set through secrets.
 - [ ] `npm run db:migrate` runs before the new application version receives traffic.
+- [ ] Optional Atlassian OAuth sign-in: `ATLASSIAN_OAUTH_CLIENT_ID`, `ATLASSIAN_OAUTH_CLIENT_SECRET`, and `ATLASSIAN_OAUTH_REDIRECT_URI` are set all three or none, and `JIRA_LOGIN_METHODS` matches the intended sign-in offering. A leftover callback alone is inert; explicitly enabling OAuth always requires the complete client.
 - [ ] At least one supervised application process is running, or the advanced split topology has at least one web process and one capable background process.
 - [ ] PostgreSQL automated backups are enabled and restore has been tested.
 - [ ] Reverse proxy forwards client IP headers if rate limiting should key by real client IP.

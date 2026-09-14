@@ -16,8 +16,8 @@ export const runtime = "nodejs";
 const Schema = z.object({
   cronExpression: z.string().trim().min(1, "Enter a cron expression.").max(100),
   enabled: z.boolean().default(true),
-  workItemTypes: z.array(z.string().trim().min(1).max(128)).min(1).max(100).default(DEFAULT_CONTEXT_WORK_ITEM_TYPES),
-  states: z.array(z.string().trim().min(1).max(128)).min(1).max(100).default(DEFAULT_CONTEXT_STATES),
+  workItemTypes: z.array(z.string().trim().min(1).max(128)).max(100).optional(),
+  states: z.array(z.string().trim().min(1).max(128)).max(100).optional(),
 });
 
 /**
@@ -57,13 +57,23 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid request." }, { status: 400 });
   }
 
+  // Work-item type/state filters are Azure vocabulary: Azure schedules require
+  // at least one of each, while Jira reconciliation ignores them entirely (the
+  // service stores its defaults for the ignored columns).
+  const isAzureWorkspace = context.workspace.providerId !== "jira-cloud";
+  const workItemTypes = parsed.data.workItemTypes ?? (isAzureWorkspace ? DEFAULT_CONTEXT_WORK_ITEM_TYPES : []);
+  const states = parsed.data.states ?? (isAzureWorkspace ? DEFAULT_CONTEXT_STATES : []);
+  if (isAzureWorkspace && (workItemTypes.length === 0 || states.length === 0)) {
+    return NextResponse.json({ error: "Select at least one work item type and state." }, { status: 400 });
+  }
+
   try {
     const schedule = await upsertWorkspaceSyncSchedule({
       workspaceId: context.workspace.id,
       cronExpression: parsed.data.cronExpression,
       enabled: parsed.data.enabled,
-      workItemTypes: parsed.data.workItemTypes,
-      states: parsed.data.states,
+      workItemTypes,
+      states,
       createdByUserId: context.userId,
     });
     return NextResponse.json({ workspaceId: context.workspace.id, schedule });

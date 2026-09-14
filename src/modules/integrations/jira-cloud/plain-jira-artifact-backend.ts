@@ -2,19 +2,32 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import type { FinalApprovedTestCase } from "../core/integration-types";
-import type { JiraCloudProjectScope } from "./jira-cloud-adapter";
+import type { JiraCloudProjectScope, JiraCloudHooks } from "./jira-cloud-adapter";
+import { jiraApiBase, jiraFetch, type JiraAccessTokenSupplier, type JiraAuth, type JiraTokenKind } from "./jira-http";
 
+/** Credential arms mirror JiraCloudSettings: the historical api_token layout, or an async bearer getter. */
 export type PlainJiraArtifactSettings = {
-  cloudId: string; siteUrl: string; accessToken: string; appBaseUrl: string;
+  cloudId: string; siteUrl: string;
   testCaseIssueTypeId: string; localIdFieldId: string;
-};
+} & (
+  | { credentialKind?: "api_token"; email: string; apiToken: string; tokenKind: JiraTokenKind }
+  | { credentialKind: "oauth"; getAccessToken: JiraAccessTokenSupplier }
+);
 
 const RESERVED = new Set(["project", "issuetype", "summary", "description", "labels", "parent"]);
 
 export class PlainJiraArtifactBackend {
   private readonly baseUrl: string;
-  constructor(private readonly settings: PlainJiraArtifactSettings, private readonly scope: JiraCloudProjectScope) {
-    this.baseUrl = `https://api.atlassian.com/ex/jira/${encodeURIComponent(settings.cloudId.trim())}/rest/api/3`;
+  private readonly auth: JiraAuth;
+  constructor(
+    private readonly settings: PlainJiraArtifactSettings,
+    private readonly scope: JiraCloudProjectScope,
+    private readonly hooks?: JiraCloudHooks,
+  ) {
+    this.baseUrl = jiraApiBase(settings);
+    this.auth = settings.credentialKind === "oauth"
+      ? { kind: "bearer", getToken: settings.getAccessToken }
+      : { kind: "basic", email: settings.email, apiToken: settings.apiToken };
   }
 
   async createTestCase(input: { projectId: string; testCase: FinalApprovedTestCase }) {
@@ -36,14 +49,6 @@ export class PlainJiraArtifactBackend {
     const created = existing ? undefined : await this.request<{ id?: string; key?: string }>("/issue", { method: "POST", body: JSON.stringify({ fields }) });
     const remoteId = existing ?? created?.key ?? created?.id;
     if (!remoteId) throw new Error("Jira returned an invalid test-case issue.");
-    await this.request(`/issue/${encodeURIComponent(remoteId)}/remotelink`, {
-      method: "POST", body: JSON.stringify({
-        globalId: `itestflow:test-case:${input.testCase.localId}`,
-        object: {
-        url: `${this.settings.appBaseUrl.replace(/\/+$/, "")}/test-cases/${encodeURIComponent(input.testCase.localId)}`,
-        title: `iTestFlow test case ${input.testCase.localId}`,
-      } }),
-    });
     const commentMarker = `[itestflow:test-case:${createHash("sha256").update(input.testCase.localId, "utf8").digest("base64url")}]`;
     if (!await this.hasBacklinkComment(input.testCase.targetUserStoryId, commentMarker)) {
       await this.request(`/issue/${encodeURIComponent(input.testCase.targetUserStoryId)}/comment`, {
@@ -91,11 +96,12 @@ export class PlainJiraArtifactBackend {
   }
 
   private async request<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
-    let response: Response;
-    try {
-      response = await fetch(`${this.baseUrl}${path}`, { ...init, cache: "no-store", headers: { Authorization: `Bearer ${this.settings.accessToken}`, Accept: "application/json", "Content-Type": "application/json" } });
-    } catch { throw new Error("Plain Jira artifact publishing is unavailable."); }
-    if (!response.ok) throw new Error("Plain Jira artifact publishing failed.");
+    const response = await jiraFetch(
+      `${this.baseUrl}${path}`,
+      init,
+      this.auth,
+      this.hooks,
+    );
     try { return await response.json() as T; } catch { throw new Error("Plain Jira returned an invalid response."); }
   }
 }

@@ -12,10 +12,15 @@ vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   createId: (prefix: string) => `${prefix}_fixed`, nowIso: () => "2026-08-13T10:00:00.000Z",
   sqlGet: mocks.sqlGet, sqlAll: mocks.sqlAll, sqlRun: mocks.sqlRun, withTransaction: mocks.withTransaction,
 }));
-vi.mock("@/modules/auth/jira-connection.service", () => ({ resolveJiraSyncPrincipalAccessToken: mocks.resolvePrincipal }));
+vi.mock("@/modules/auth/jira-connection.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/auth/jira-connection.service")>(),
+  resolveJiraSyncPrincipalCredentials: mocks.resolvePrincipal,
+  markJiraConnectionInvalid: vi.fn(),
+}));
 vi.mock("./jira-reconciliation.service", () => ({ reconcileJiraMapping: mocks.reconcile }));
 vi.mock("./jira-sync-operation.service", () => ({
   claimNextJiraSyncOperation: mocks.claim, completeJiraSyncOperation: mocks.complete, failJiraSyncOperation: mocks.fail,
+  JIRA_SYNC_OPERATION_STALE_MS: 5 * 60 * 1000,
 }));
 vi.mock("./jira-cloud-adapter", () => ({
   JiraCloudAdapter: class {
@@ -28,6 +33,8 @@ vi.mock("./jira-cloud-adapter", () => ({
 vi.mock("@/modules/rag/project-context-store.service", () => ({ indexAzureWorkItemsAsProjectContext: mocks.indexContext }));
 vi.mock("@/modules/jobs/job-queue.service", () => ({ enqueueJob: mocks.enqueueJob }));
 
+import { IntegrationError } from "../core/integration-error";
+import { JobDeferredError } from "@/modules/jobs/job-scheduling";
 import { retireJiraIssueMapping, runJiraProjectReconciliation } from "./jira-sync-runtime.service";
 
 const remote = {
@@ -36,30 +43,68 @@ const remote = {
   raw: { id: "10007", key: "QA-7", fields: { summary: "Remote title", status: { name: "In Progress" }, labels: ["api"] } },
 };
 
+const projectConfig = () => ({
+  project_id: "project-1", provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
+  provider_site_id: "cloud-a", provider_site_url: "https://quality.atlassian.net", direction: "two_way",
+  field_mapping_json: JSON.stringify([{ localField: "title", jiraField: "summary" }, { localField: "state", jiraField: "status" }]),
+  status_mapping_json: JSON.stringify([{ localStatus: "Active", jiraStatus: "In Progress" }]),
+});
+
 describe("runJiraProjectReconciliation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.sqlRun.mockResolvedValue(1);
     mocks.withTransaction.mockImplementation(async (fn) => fn({ query: vi.fn() }));
     mocks.enqueueJob.mockResolvedValue("retry-job");
-    mocks.resolvePrincipal.mockResolvedValue({ userId: "sync-user", accessToken: "access" });
+    mocks.resolvePrincipal.mockResolvedValue({
+      userId: "sync-user", email: "sync@example.test", apiToken: "token", tokenKind: "scoped", cloudId: "cloud-a",
+    });
     mocks.sqlGet
-      .mockResolvedValueOnce({
-        project_id: "project-1", provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
-        provider_site_id: "cloud-a", provider_site_url: "https://quality.atlassian.net", direction: "two_way",
-        field_mapping_json: JSON.stringify([{ localField: "title", jiraField: "summary" }, { localField: "state", jiraField: "status" }]),
-        status_mapping_json: JSON.stringify([{ localStatus: "Active", jiraStatus: "In Progress" }]),
-      })
+      .mockResolvedValueOnce(projectConfig())
       .mockResolvedValueOnce({ id: "local-1", title: "Local title", description: null, acceptance_criteria: null, state: "Active", priority: null, tags: null })
       .mockResolvedValueOnce({ id: "mapping-1", status: "active" });
-    mocks.sqlAll.mockResolvedValue([
-      { field_name: "title", baseline_json: JSON.stringify("Old title") },
-      { field_name: "state", baseline_json: JSON.stringify("Active") },
-    ]);
+    mocks.sqlAll.mockImplementation(async (sql: unknown) => String(sql).includes("FROM jira_sync_field_states")
+      ? [
+        { field_name: "title", baseline_json: JSON.stringify("Old title") },
+        { field_name: "state", baseline_json: JSON.stringify("Active") },
+      ]
+      : []);
     mocks.fetchWorkItems.mockResolvedValue([remote]);
     mocks.fetchWorkItemsByIds.mockResolvedValue([remote]);
     mocks.reconcile.mockResolvedValue({ blocked: false });
     mocks.claim.mockResolvedValue(null);
+  });
+
+  it.each([
+    { status: "pending", run_after: "2026-08-13T10:01:00.000Z", processing_started_at: null, deadline: "2026-08-13T10:01:00.000Z" },
+    { status: "processing", run_after: "2026-08-13T09:00:00.000Z", processing_started_at: "2026-08-13T09:59:00.000Z", deadline: "2026-08-13T10:04:00.000Z" },
+  ])("defers an unclaimed $status exact operation using its persisted deadline", async (state) => {
+    mocks.sqlGet.mockReset().mockResolvedValueOnce(projectConfig()).mockResolvedValueOnce({ ...state, mapping_status: "syncing" });
+    const result = runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", operationId: "op-1", actor: "system:worker" });
+    await expect(result).rejects.toBeInstanceOf(JobDeferredError);
+    await expect(result).rejects.toMatchObject({ runAfter: state.deadline });
+    expect(mocks.sqlGet).toHaveBeenLastCalledWith(expect.stringContaining("m.project_id = @projectId"), { workspaceId: "ws-1", projectId: "project-1", operationId: "op-1" });
+    expect(mocks.fetchWorkItems).not.toHaveBeenCalled();
+    expect(mocks.enqueueJob).not.toHaveBeenCalled();
+  });
+
+  it.each(["completed", "failed"])("preserves terminal %s exact operation outcomes", async (status) => {
+    mocks.sqlGet.mockReset().mockResolvedValueOnce(projectConfig()).mockResolvedValueOnce({ status, mapping_status: "error" });
+    await expect(runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", operationId: "op-1", actor: "system:worker" })).resolves.toEqual({ issueCount: 0, operationCount: 0 });
+    expect(mocks.updateIssueFields).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    null,
+    { status: "pending", mapping_status: "paused", run_after: "2026-08-13T10:01:00.000Z" },
+    { status: "pending", mapping_status: "syncing", run_after: "2026-08-13T09:00:00.000Z" },
+    { status: "pending", mapping_status: "syncing", run_after: "invalid" },
+    { status: "processing", mapping_status: "syncing", processing_started_at: null },
+    { status: "processing", mapping_status: "syncing", processing_started_at: "2026-08-13T09:00:00.000Z" },
+  ])("fails an unavailable nonterminal exact operation instead of silently completing", async (state) => {
+    mocks.sqlGet.mockReset().mockResolvedValueOnce(projectConfig()).mockResolvedValueOnce(state);
+    await expect(runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", operationId: "op-1", actor: "system:worker" })).rejects.toThrow("The exact Jira sync operation is unavailable for processing.");
+    expect(mocks.enqueueJob).not.toHaveBeenCalled();
   });
 
   it("loads trusted project configuration and invokes durable reconciliation for scheduled sync", async () => {
@@ -81,13 +126,14 @@ describe("runJiraProjectReconciliation", () => {
     ]);
   });
 
-  it("limits a webhook reconciliation to the event issue and records completion", async () => {
+  it("limits an issue-scoped reconciliation to the given issues without deletion detection", async () => {
     await runJiraProjectReconciliation({
-      workspaceId: "ws-1", projectId: "project-1", actor: "system:webhook", issueKeys: ["QA-7"], indexContext: false,
+      workspaceId: "ws-1", projectId: "project-1", actor: "system:worker", issueKeys: ["QA-7"], indexContext: false,
     });
     expect(mocks.fetchWorkItemsByIds).toHaveBeenCalledWith({ projectId: "10000", workItemIds: ["QA-7"] });
     expect(mocks.fetchWorkItems).not.toHaveBeenCalled();
     expect(mocks.indexContext).not.toHaveBeenCalled();
+    expect(mocks.sqlAll.mock.calls.some(([sql]) => String(sql).includes("FROM jira_sync_mappings"))).toBe(false);
   });
 
   it("applies and completes a durable Jira push operation", async () => {
@@ -114,7 +160,7 @@ describe("runJiraProjectReconciliation", () => {
 
   it("atomically pauses a deleted mapping and retires its local mirror", async () => {
     mocks.sqlGet.mockReset().mockResolvedValue({ id: "mapping-1", local_entity_id: "local-1" });
-    await retireJiraIssueMapping({ workspaceId: "ws-1", projectId: "project-1", issueKey: "QA-7", actor: "system:webhook" });
+    await retireJiraIssueMapping({ workspaceId: "ws-1", projectId: "project-1", issueKey: "QA-7", actor: "system:worker" });
     expect(mocks.sqlRun).toHaveBeenCalledWith(expect.stringContaining("sync_status = 'inactive'"), expect.objectContaining({ localId: "local-1" }), expect.anything());
     expect(mocks.sqlRun).toHaveBeenCalledWith(expect.stringContaining("status = 'paused'"), expect.objectContaining({ mappingId: "mapping-1" }), expect.anything());
   });
@@ -124,7 +170,7 @@ describe("runJiraProjectReconciliation", () => {
     mocks.claim.mockResolvedValueOnce({ id: "op-3", mappingId: "mapping-1", field: "title", operation: "push", target: "Title" });
     mocks.updateIssueFields.mockRejectedValueOnce(new Error("transient"));
     mocks.fail.mockResolvedValueOnce({ retry: true, runAfter: "2026-08-13T10:00:02.000Z" });
-    await expect(runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:webhook" }))
+    await expect(runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" }))
       .resolves.toEqual({ issueCount: 1, operationCount: 0 });
     expect(mocks.enqueueJob).toHaveBeenCalledWith({
       jobType: "jira_sync_operations", workspaceId: "ws-1", projectId: "project-1",
@@ -202,7 +248,7 @@ describe("runJiraProjectReconciliation", () => {
         acceptance_criteria: "Approved", state: null, priority: 2, tags: "api; smoke",
       })
       .mockResolvedValueOnce({ id: "mapping-new", status: "active" });
-    mocks.sqlAll.mockResolvedValueOnce([]);
+    mocks.sqlAll.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
     mocks.fetchWorkItems.mockResolvedValueOnce([{
       ...remote,
       acceptanceCriteria: undefined,
@@ -225,8 +271,163 @@ describe("runJiraProjectReconciliation", () => {
   it("does nothing when a deleted Jira issue has no local mapping", async () => {
     mocks.sqlGet.mockReset().mockResolvedValueOnce(undefined);
 
-    await retireJiraIssueMapping({ workspaceId: "ws-1", projectId: "project-1", issueKey: "QA-404", actor: "system:webhook" });
+    await retireJiraIssueMapping({ workspaceId: "ws-1", projectId: "project-1", issueKey: "QA-404", actor: "system:worker" });
 
     expect(mocks.sqlRun).not.toHaveBeenCalled();
+  });
+
+  it("retires mappings for issues deleted in Jira during a full reconciliation", async () => {
+    mocks.sqlGet.mockReset()
+      .mockResolvedValueOnce(projectConfig())
+      .mockResolvedValueOnce({ id: "mapping-gone", local_entity_id: "local-gone" })
+      .mockResolvedValueOnce({ id: "local-1", title: "Local title", description: null, acceptance_criteria: null, state: "Active", priority: null, tags: null })
+      .mockResolvedValueOnce({ id: "mapping-1", status: "active" });
+    mocks.sqlAll.mockResolvedValueOnce([
+      { id: "mapping-1", jira_issue_id: "10007", jira_issue_key: "QA-7", status: "active", local_entity_id: "local-1" },
+      { id: "mapping-gone", jira_issue_id: "10099", jira_issue_key: "QA-9", status: "active", local_entity_id: "local-gone" },
+    ]);
+
+    await runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" });
+
+    expect(mocks.sqlRun).toHaveBeenCalledWith(
+      expect.stringContaining("sync_status = 'inactive'"),
+      expect.objectContaining({ localId: "local-gone" }),
+      expect.anything(),
+    );
+    const paused = mocks.sqlRun.mock.calls.filter(([sql]) => String(sql).includes("status = 'paused'"));
+    expect(paused).toHaveLength(1);
+    expect(paused[0][1]).toMatchObject({ mappingId: "mapping-gone" });
+  });
+
+  it("revives a retired mapping when its Jira issue is observed again", async () => {
+    mocks.sqlAll.mockResolvedValueOnce([
+      { id: "mapping-1", jira_issue_id: "10007", jira_issue_key: "QA-7", status: "paused", local_entity_id: "local-1" },
+    ]);
+
+    await runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" });
+
+    expect(mocks.sqlRun).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = 'active'"),
+      expect.objectContaining({ mappingId: "mapping-1" }),
+    );
+    expect(mocks.sqlRun).toHaveBeenCalledWith(
+      expect.stringContaining("sync_status = 'active'"),
+      expect.objectContaining({ localId: "local-1" }),
+    );
+    expect(mocks.reconcile).toHaveBeenCalledWith(expect.objectContaining({ mappingId: "mapping-1" }));
+    expect(mocks.sqlRun.mock.calls.some(([sql]) => String(sql).includes("SET status = 'paused'"))).toBe(false);
+  });
+
+  it("does not retire mappings when the full fetch may be truncated", async () => {
+    mocks.sqlGet.mockReset()
+      .mockResolvedValueOnce({
+        project_id: "project-1", provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
+        provider_site_id: "cloud-a", provider_site_url: "https://quality.atlassian.net", direction: "two_way",
+        field_mapping_json: JSON.stringify([{ localField: "title", jiraField: "summary" }]), status_mapping_json: "[]",
+      })
+      .mockResolvedValue({ id: "local-x", status: "paused", title: "t", description: null, acceptance_criteria: null, state: null, priority: null, tags: null });
+    mocks.fetchWorkItems.mockResolvedValueOnce(Array.from({ length: 1000 }, (_, index) => ({
+      ...remote, id: `QA-${index + 1}`, raw: { id: String(20000 + index) },
+    })));
+
+    await runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" });
+
+    expect(mocks.sqlAll.mock.calls.some(([sql]) => String(sql).includes("FROM jira_sync_mappings"))).toBe(false);
+    expect(mocks.sqlRun.mock.calls.some(([sql]) => String(sql).includes("SET status = 'paused'"))).toBe(false);
+  });
+
+  it("retires the mapping when a push fails because the Jira issue no longer exists", async () => {
+    mocks.sqlAll.mockResolvedValueOnce([
+      { id: "mapping-1", jira_issue_id: "10007", jira_issue_key: "QA-7", status: "active", local_entity_id: "local-1" },
+    ]);
+    mocks.sqlGet
+      .mockResolvedValueOnce({ jira_issue_key: "QA-7", local_entity_id: "local-1" })
+      .mockResolvedValueOnce({ jira_issue_key: "QA-7" })
+      .mockResolvedValueOnce({ id: "mapping-1", local_entity_id: "local-1" });
+    mocks.claim
+      .mockResolvedValueOnce({ id: "op-404", mappingId: "mapping-1", field: "title", operation: "push", target: "Title" })
+      .mockResolvedValueOnce(null);
+    mocks.updateIssueFields.mockRejectedValueOnce(new IntegrationError({ code: "integration_not_found", message: "The Jira issue no longer exists." }));
+    mocks.fail.mockResolvedValueOnce({ retry: false, runAfter: "2026-08-13T10:00:02.000Z" });
+
+    await runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" });
+
+    expect(mocks.fail).toHaveBeenCalledWith({ operationId: "op-404", errorCode: "integration_not_found", retryAfterSeconds: undefined });
+    expect(mocks.sqlRun).toHaveBeenCalledWith(
+      expect.stringContaining("status = 'paused'"),
+      expect.objectContaining({ mappingId: "mapping-1" }),
+      expect.anything(),
+    );
+  });
+
+  it("stops a long drain promptly when the sync principal is no longer active", async () => {
+    mocks.sqlAll.mockResolvedValueOnce([]); // deletion diff: no mappings
+    let claims = 0;
+    mocks.claim.mockImplementation(async () => ({
+      id: `op-${claims}`, mappingId: "mapping-1", field: "title", operation: "pull" as const, target: `T${claims++}`,
+    }));
+    mocks.sqlGet.mockReset().mockImplementation(async (sql: unknown) => {
+      const text = String(sql);
+      if (text.includes("FROM projects")) return projectConfig();
+      if (text.includes("jira_issue_key, local_entity_id FROM jira_sync_mappings")) {
+        return { jira_issue_key: "QA-7", local_entity_id: "local-1" };
+      }
+      if (text.includes("status FROM jira_connections")) return { status: "invalid" };
+      if (text.includes("INSERT INTO jira_sync_mappings")) return { id: "mapping-1", status: "paused" };
+      return { id: "local-1", title: "t", description: null, acceptance_criteria: null, state: null, priority: null, tags: null };
+    });
+
+    await expect(runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" }))
+      .rejects.toMatchObject({ code: "jira_sync_principal_invalid" });
+
+    // The re-check fired at the batch boundary instead of burning the full 1000-operation budget.
+    expect(claims).toBeLessThanOrEqual(101);
+  });
+
+  it("reports a deleted principal row as missing, not invalid, during the drain re-check", async () => {
+    mocks.sqlAll.mockResolvedValueOnce([]); // deletion diff: no mappings
+    mocks.claim.mockImplementation(async () => ({
+      id: "op-x", mappingId: "mapping-1", field: "title", operation: "pull" as const, target: "T",
+    }));
+    mocks.sqlGet.mockReset().mockImplementation(async (sql: unknown) => {
+      const text = String(sql);
+      if (text.includes("FROM projects")) return projectConfig();
+      if (text.includes("jira_issue_key, local_entity_id FROM jira_sync_mappings")) {
+        return { jira_issue_key: "QA-7", local_entity_id: "local-1" };
+      }
+      if (text.includes("status FROM jira_connections")) return undefined;
+      if (text.includes("INSERT INTO jira_sync_mappings")) return { id: "mapping-1", status: "paused" };
+      return { id: "local-1", title: "t", description: null, acceptance_criteria: null, state: null, priority: null, tags: null };
+    });
+
+    await expect(runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" }))
+      .rejects.toMatchObject({ code: "jira_sync_principal_missing" });
+  });
+
+  it("maps each dead-principal state to its own code during the drain re-check", async () => {
+    for (const [status, code] of [
+      ["reauthorization_required", "jira_sync_principal_reauthorization_required"],
+      // revoke clears the flag, so the next full run reports missing — the
+      // mid-drain story must match, never "replace the token".
+      ["revoked", "jira_sync_principal_missing"],
+    ] as const) {
+      mocks.sqlAll.mockResolvedValueOnce([]); // deletion diff: no mappings
+      mocks.claim.mockImplementation(async () => ({
+        id: "op-y", mappingId: "mapping-1", field: "title", operation: "pull" as const, target: "T",
+      }));
+      mocks.sqlGet.mockReset().mockImplementation(async (sql: unknown) => {
+        const text = String(sql);
+        if (text.includes("FROM projects")) return projectConfig();
+        if (text.includes("jira_issue_key, local_entity_id FROM jira_sync_mappings")) {
+          return { jira_issue_key: "QA-7", local_entity_id: "local-1" };
+        }
+        if (text.includes("status FROM jira_connections")) return { status };
+        if (text.includes("INSERT INTO jira_sync_mappings")) return { id: "mapping-1", status: "paused" };
+        return { id: "local-1", title: "t", description: null, acceptance_criteria: null, state: null, priority: null, tags: null };
+      });
+
+      await expect(runJiraProjectReconciliation({ workspaceId: "ws-1", projectId: "project-1", actor: "system:worker" }))
+        .rejects.toMatchObject({ code });
+    }
   });
 });

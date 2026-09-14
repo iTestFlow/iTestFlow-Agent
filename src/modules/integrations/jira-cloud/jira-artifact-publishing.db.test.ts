@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const authMocks = vi.hoisted(() => ({ resolveJiraAccessToken: vi.fn() }));
-vi.mock("@/modules/auth/jira-connection.service", () => ({ resolveJiraAccessToken: authMocks.resolveJiraAccessToken }));
+const authMocks = vi.hoisted(() => ({ resolveJiraCredentials: vi.fn() }));
+vi.mock("@/modules/auth/jira-connection.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/auth/jira-connection.service")>(),
+  resolveJiraCredentials: authMocks.resolveJiraCredentials,
+  markJiraConnectionInvalid: vi.fn(),
+  markJiraConnectionReauthorizationRequired: vi.fn(),
+}));
 
 import { resetDatabaseForTests, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { cleanupFixtures, describeDb, seedMembership, seedProject, seedUser, seedWorkspace, uniqueTestId } from "@/test/db";
@@ -19,8 +24,7 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
     projectId = uniqueTestId("project_jira_publish");
     ownerId = uniqueTestId("owner_jira_publish");
     providerProjectId = uniqueTestId("jira_numeric");
-    authMocks.resolveJiraAccessToken.mockResolvedValue("access-token");
-    vi.stubEnv("ITESTFLOW_PUBLIC_URL", "https://itestflow.example");
+    authMocks.resolveJiraCredentials.mockResolvedValue({ email: "owner@example.test", apiToken: "access-token", tokenKind: "scoped", cloudId: "cloud-a" });
     const siteUrl = `https://${workspaceId}.atlassian.net`;
     await seedWorkspace({ id: workspaceId, orgUrl: siteUrl });
     await seedUser({ id: ownerId, email: `${ownerId}@itestflow.test` });
@@ -140,7 +144,6 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
         createdFields = (JSON.parse(String(init.body)) as { fields: Record<string, unknown> }).fields;
         return json({ key: "QA-12" });
       }
-      if (url.endsWith("/remotelink")) return json({});
       if (url.includes("/comment?")) return json({ comments: [], isLast: true });
       if (url.endsWith("/comment") && init?.method === "POST") return json({});
       throw new Error(`Unexpected Jira request: ${url}`);
@@ -169,9 +172,12 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
   });
 
   it("completes a full pool of configured publishers without nested connection acquisition", async () => {
-    authMocks.resolveJiraAccessToken.mockImplementation(async () => (
-      await sqlGet<{ token: string }>(`SELECT 'access-token'::text AS token`)
-    )?.token ?? "");
+    authMocks.resolveJiraCredentials.mockImplementation(async () => ({
+      email: "owner@example.test",
+      apiToken: (await sqlGet<{ token: string }>(`SELECT 'access-token'::text AS token`))?.token ?? "",
+      tokenKind: "scoped" as const,
+      cloudId: "cloud-a",
+    }));
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
       if (url.includes("/issue/QA-7?")) return json({ fields: { project: { id: providerProjectId, key: "QA" } } });
       if (url.endsWith("/search/jql")) return json({ issues: [] });
@@ -180,7 +186,6 @@ describeDb("Jira artifact publication/configuration fence (PostgreSQL)", () => {
         const localId = String(fields.customfield_10002);
         return json({ key: `QA-${localId.replace(/\D/g, "")}` });
       }
-      if (url.endsWith("/remotelink")) return json({});
       if (url.includes("/comment?")) return json({ comments: [], isLast: true });
       if (url.endsWith("/comment") && init?.method === "POST") return json({});
       throw new Error(`Unexpected Jira request: ${url}`);

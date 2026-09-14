@@ -15,6 +15,7 @@ function scrubSecretValues(value: string, secrets: readonly string[]): string {
 function sanitizeString(value: string, secrets: readonly string[]): string {
   let sanitized = scrubSecretValues(value, secrets)
     .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [REDACTED]")
+    .replace(/Basic\s+[A-Za-z0-9+\/=]{8,}/gi, "Basic [REDACTED]")
     .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/g, "[REDACTED]");
   if (/^https?:\/\//i.test(sanitized)) {
     try {

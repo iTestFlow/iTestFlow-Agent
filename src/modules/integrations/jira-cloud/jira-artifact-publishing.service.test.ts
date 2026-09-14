@@ -8,7 +8,12 @@ vi.mock("@/modules/shared/infrastructure/database/db", () => ({
   createId: () => "link-1", nowIso: () => "2026-08-13T00:00:00.000Z", sqlGet: mocks.sqlGet, sqlRun: mocks.sqlRun,
   withTransaction: (work: (client: object) => unknown) => work({ tx: true }),
 }));
-vi.mock("@/modules/auth/jira-connection.service", () => ({ resolveJiraAccessToken: mocks.resolveAccess }));
+vi.mock("@/modules/auth/jira-connection.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/auth/jira-connection.service")>(),
+  resolveJiraCredentials: mocks.resolveAccess,
+  markJiraConnectionInvalid: vi.fn(),
+  markJiraConnectionReauthorizationRequired: vi.fn(),
+}));
 vi.mock("./plain-jira-artifact-backend", () => ({ PlainJiraArtifactBackend: class { createTestCase = mocks.plainCreate; } }));
 vi.mock("./xray-cloud-backend", () => ({ XrayCloudBackend: class { createTestCase = mocks.xrayCreate; } }));
 vi.mock("./zephyr-scale-backend", () => ({ ZephyrScaleBackend: class { createTestCase = mocks.zephyrCreate; } }));
@@ -21,9 +26,8 @@ const { publishPlainJiraTestCase } = plainJiraPublishing;
 describe("publishPlainJiraTestCase", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv("ITESTFLOW_PUBLIC_URL", "https://itestflow.example");
     mocks.sqlRun.mockResolvedValue(0);
-    mocks.resolveAccess.mockResolvedValue("access");
+    mocks.resolveAccess.mockResolvedValue({ email: "user@example.test", apiToken: "token", tokenKind: "scoped", cloudId: "cloud-a" });
   });
   const input = {
     workspaceId: "ws-1", projectId: "project-1", actorUserId: "user-1",
@@ -114,6 +118,21 @@ describe("publishPlainJiraTestCase", () => {
     expect(mocks.resolveAccess).toHaveBeenCalledTimes(2);
     expect(mocks.sqlGet.mock.calls[0][2]).toEqual({ tx: true });
     expect(mocks.sqlGet.mock.calls[3][2]).toEqual({ tx: true });
+  });
+
+  it("fails the case instead of silently falling back to Plain Jira for an unknown backend type", async () => {
+    mocks.sqlGet.mockResolvedValueOnce({
+      backend_type: "banana", config_json: "{}",
+      provider_project_id: "10000", provider_project_key: "QA", provider_project_name: "Quality",
+      provider_site_id: "cloud-a", provider_site_url: "https://quality.atlassian.net",
+    });
+
+    await expect(plainJiraPublishing.publishConfiguredJiraTestCases({ ...input, testCases: [input.testCase] }))
+      .resolves.toMatchObject({
+        results: [{ localId: "case-1", success: false, create: { success: false, error: expect.stringContaining("not supported") } }],
+      });
+
+    expect(mocks.plainCreate).not.toHaveBeenCalled();
   });
 
   it("passes the Jira project key to the configured Zephyr backend", async () => {

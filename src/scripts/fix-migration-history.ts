@@ -61,6 +61,9 @@ const RENAMES: Array<{ from: string; to: string }> = [
 const REMOVED = [
   "1710000025000_workspace_settings_embeddings",
   "1710000026000_drop_workspace_settings_embeddings",
+  // Deleted with the Jira OAuth flow while still unmerged; branch dev databases
+  // may hold its record (the columns it added died with jira_oauth_states).
+  "1710000046000_jira_oauth_state_selected_site",
 ];
 
 const WORKSPACE_MIGRATIONS = [

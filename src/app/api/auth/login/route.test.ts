@@ -124,6 +124,28 @@ describe("POST /api/auth/login", () => {
     expect(mocks.patConstructed).not.toHaveBeenCalled();
   });
 
+  it("fails closed with 403 when Azure DevOps sign-in is disabled for the deployment", async () => {
+    const saved = {
+      providers: process.env.BOOTSTRAP_ENABLED_PROVIDERS,
+      sites: process.env.BOOTSTRAP_JIRA_SITES,
+    };
+    process.env.BOOTSTRAP_ENABLED_PROVIDERS = "jira-cloud";
+    process.env.BOOTSTRAP_JIRA_SITES = "quality|owner@example.test";
+    try {
+      const response = await POST(loginRequest({ organization: "contoso", personalAccessToken: "pat" }));
+
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: "Azure DevOps sign-in is disabled for this deployment." });
+      expect(mocks.findWorkspaceByAzureOrgUrl).not.toHaveBeenCalled();
+      expect(mocks.patConstructed).not.toHaveBeenCalled();
+    } finally {
+      if (saved.providers === undefined) delete process.env.BOOTSTRAP_ENABLED_PROVIDERS;
+      else process.env.BOOTSTRAP_ENABLED_PROVIDERS = saved.providers;
+      if (saved.sites === undefined) delete process.env.BOOTSTRAP_JIRA_SITES;
+      else process.env.BOOTSTRAP_JIRA_SITES = saved.sites;
+    }
+  });
+
   it("rejects a blank organization with the schema's message", async () => {
     const response = await POST(loginRequest({ organization: "  ", personalAccessToken: "pat" }));
 

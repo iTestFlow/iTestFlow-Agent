@@ -4,6 +4,7 @@ const jobQueue = vi.hoisted(() => ({
   cancelRunningJob: vi.fn(),
   claimNextJob: vi.fn(),
   completeJob: vi.fn(),
+  deferOwnedJob: vi.fn(),
   failJob: vi.fn(),
   getRequestedJobCancellations: vi.fn(),
   heartbeatJob: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock("@/modules/jobs/sync-schedule.service", () => schedule);
 vi.mock("@/modules/jobs/worker-registry.service", () => workerRegistry);
 
 import type { Job } from "@/modules/jobs/job-queue.service";
+import { JobDeferredError, JobRetryError } from "@/modules/jobs/job-scheduling";
 import {
   attachSupervisorShutdownChannel,
   dispatchReadyDocumentIngestJobs,
@@ -101,6 +103,7 @@ beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   jobQueue.completeJob.mockResolvedValue(true);
+  jobQueue.deferOwnedJob.mockResolvedValue(true);
   jobQueue.cancelRunningJob.mockResolvedValue(true);
   jobQueue.failJob.mockResolvedValue(true);
   jobQueue.getRequestedJobCancellations.mockResolvedValue([]);
@@ -113,6 +116,37 @@ beforeEach(() => {
 });
 
 describe("processNextJob (serial lane)", () => {
+  it("passes explicit retry deadlines to failure handling without completing or deferring attempted work", async () => {
+    const error = new JobRetryError("The Jira sync operation remains pending for retry.", "integration_rate_limited", "2030-01-01T00:01:00.000Z");
+    registry.getJobHandler.mockReturnValue(vi.fn().mockRejectedValue(error));
+    jobQueue.claimNextJob.mockResolvedValue(makeJob());
+    await processNextJob();
+    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", error.message, WORKER_ID, error.code, error.retryNotBefore);
+    expect(jobQueue.completeJob).not.toHaveBeenCalled();
+    expect(jobQueue.deferOwnedJob).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("defers a no-work claim without recording completion or failure (owned=%s)", async (owned) => {
+    const error = new JobDeferredError("2030-01-01T00:01:00.000Z");
+    registry.getJobHandler.mockReturnValue(vi.fn().mockRejectedValue(error));
+    jobQueue.claimNextJob.mockResolvedValue(makeJob({ maxAttempts: 1 }));
+    jobQueue.deferOwnedJob.mockResolvedValue(owned);
+    await processNextJob();
+    expect(jobQueue.deferOwnedJob).toHaveBeenCalledWith("job-1", WORKER_ID, error.runAfter);
+    expect(jobQueue.completeJob).not.toHaveBeenCalled();
+    expect(jobQueue.failJob).not.toHaveBeenCalled();
+  });
+
+  it("cancels a no-work claim when cancellation is already visible", async () => {
+    registry.getJobHandler.mockReturnValue(vi.fn().mockRejectedValue(new JobDeferredError("2030-01-01T00:01:00.000Z")));
+    jobQueue.claimNextJob.mockResolvedValue(makeJob());
+    jobQueue.isJobCancellationRequested.mockResolvedValue(true);
+    await processNextJob();
+    expect(jobQueue.cancelRunningJob).toHaveBeenCalledWith("job-1", WORKER_ID);
+    expect(jobQueue.deferOwnedJob).not.toHaveBeenCalled();
+    expect(jobQueue.failJob).not.toHaveBeenCalled();
+  });
+
   it("importing the module does not start the worker loops", () => {
     // The auto-start is guarded on being the process entrypoint; under vitest the
     // entrypoint is the test runner, so nothing may have been claimed or registered.
@@ -188,7 +222,7 @@ describe("processNextJob (serial lane)", () => {
     jobQueue.claimNextJob.mockResolvedValue(makeJob());
 
     await expect(processNextJob()).resolves.toBe(true);
-    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", "boom", WORKER_ID);
+    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", "boom", WORKER_ID, null);
     expect(jobQueue.completeJob).not.toHaveBeenCalled();
 
     // The finally block cleared the interval: advancing well past the cadence fires nothing.
@@ -200,7 +234,24 @@ describe("processNextJob (serial lane)", () => {
     registry.getJobHandler.mockReturnValue(vi.fn().mockRejectedValue("string reason"));
     jobQueue.claimNextJob.mockResolvedValue(makeJob());
     await expect(processNextJob()).resolves.toBe(true);
-    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", "Job handler failed.", WORKER_ID);
+    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", "Job handler failed.", WORKER_ID, null);
+  });
+
+  it("persists only allowlisted application error codes through failJob", async () => {
+    registry.getJobHandler.mockReturnValue(vi.fn().mockRejectedValue(
+      Object.assign(new Error("sync owner token is invalid"), { code: "jira_sync_principal_invalid" }),
+    ));
+    jobQueue.claimNextJob.mockResolvedValue(makeJob());
+    await expect(processNextJob()).resolves.toBe(true);
+    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", "sync owner token is invalid", WORKER_ID, "jira_sync_principal_invalid");
+
+    // Incidental infra codes (errno, SQLSTATE) never reach jobs.error_code.
+    jobQueue.failJob.mockClear();
+    registry.getJobHandler.mockReturnValue(vi.fn().mockRejectedValue(
+      Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+    ));
+    await expect(processNextJob()).resolves.toBe(true);
+    expect(jobQueue.failJob).toHaveBeenCalledWith("job-1", "connect ECONNREFUSED", WORKER_ID, null);
   });
 });
 
@@ -301,7 +352,7 @@ describe("dispatchReadyKnowledgeJobs", () => {
     finish("job-b");
     await expect(waitForActiveJobs(1000)).resolves.toBe(true);
 
-    expect(jobQueue.failJob).toHaveBeenCalledWith("job-a", "extraction exploded", WORKER_ID);
+    expect(jobQueue.failJob).toHaveBeenCalledWith("job-a", "extraction exploded", WORKER_ID, null);
     expect(jobQueue.completeJob).toHaveBeenCalledWith("job-b", WORKER_ID, null);
     expect(jobQueue.completeJob).not.toHaveBeenCalledWith("job-a", expect.anything(), expect.anything());
   });

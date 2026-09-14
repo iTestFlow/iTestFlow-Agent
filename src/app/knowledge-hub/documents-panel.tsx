@@ -453,7 +453,7 @@ export function DocumentsPanel({
     return (
       <EmptyState
         title="Select a project to view documents"
-        description="Uploaded documents are scoped to the active Azure DevOps project."
+        description="Uploaded documents are scoped to the active project."
         icon={FolderOpen}
       />
     )

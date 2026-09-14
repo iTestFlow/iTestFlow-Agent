@@ -204,14 +204,14 @@ describe("useProjectWorkItemMetadata", () => {
     const withoutDetail = renderMetadataHook(projectScope({ azureProjectId: "metadata-error-shape" }));
     await settle(() => requests[0].resolve(jsonResponse({}, 500)));
     expect(withoutDetail.result.current.error).toBe(
-      "Azure DevOps work item metadata fetch failed.",
+      "Work item metadata could not be loaded.",
     );
     expect(withoutDetail.result.current.loading).toBe(false);
 
     // Non-Error rejections (fetch can technically reject with anything) get the same fallback.
     const nonError = renderMetadataHook(projectScope({ azureProjectId: "metadata-error-reject" }));
     await settle(() => requests[1].reject("boom"));
-    expect(nonError.result.current.error).toBe("Azure DevOps work item metadata fetch failed.");
+    expect(nonError.result.current.error).toBe("Work item metadata could not be loaded.");
     expect(nonError.result.current.loading).toBe(false);
   });
 

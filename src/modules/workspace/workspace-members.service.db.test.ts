@@ -8,7 +8,7 @@ import {
   removeMember,
   updateMemberRole,
 } from "@/modules/workspace/workspace-members.service";
-import { describeDb } from "@/test/db";
+import { describeDb, suspendJiraBootstrapEnv } from "@/test/db";
 
 const TEST_EMAIL = "owner-members@itestflow.test";
 const TEST_ORG = "itestflow-members-test-org";
@@ -55,8 +55,10 @@ describeDb("workspace member management (DB-backed)", () => {
   let ownerUserId: string;
   const savedOwnerEmail = process.env.BOOTSTRAP_OWNER_EMAIL;
   const savedOwnerAzureOrg = process.env.BOOTSTRAP_OWNER_AZURE_ORG;
+  let restoreJiraEnv = () => {};
 
   beforeAll(async () => {
+    restoreJiraEnv = suspendJiraBootstrapEnv();
     process.env.BOOTSTRAP_OWNER_EMAIL = TEST_EMAIL;
     process.env.BOOTSTRAP_OWNER_AZURE_ORG = TEST_ORG;
     await cleanup();
@@ -71,6 +73,7 @@ describeDb("workspace member management (DB-backed)", () => {
     else process.env.BOOTSTRAP_OWNER_EMAIL = savedOwnerEmail;
     if (savedOwnerAzureOrg === undefined) delete process.env.BOOTSTRAP_OWNER_AZURE_ORG;
     else process.env.BOOTSTRAP_OWNER_AZURE_ORG = savedOwnerAzureOrg;
+    restoreJiraEnv();
     await resetDatabaseForTests();
   });
 

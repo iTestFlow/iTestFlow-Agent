@@ -104,6 +104,20 @@ describe("toFriendlyErrorResponse", () => {
     expect(response.body.technicalDetails?.length).toBeLessThanOrEqual(1235);
   });
 
+  it("redacts Basic-auth pairs and API tokens from upstream bodies", () => {
+    const basicPair = Buffer.from("user@example.test:token-secret", "utf8").toString("base64");
+    const raw = `Jira rejected the request. Authorization: Basic ${basicPair} apiToken: "atlassian-token-secret" details follow`;
+
+    const response = toFriendlyErrorResponse(new Error(raw), {
+      domain: "auth",
+      status: 401,
+    });
+
+    expect(JSON.stringify(response.body)).not.toContain(basicPair);
+    expect(JSON.stringify(response.body)).not.toContain("atlassian-token-secret");
+    expect(response.body.technicalDetails ?? "").toContain("[redacted]");
+  });
+
   it("turns HTML gateway pages into a stable friendly message", () => {
     const response = toFriendlyErrorResponse(
       new Error("<!doctype html><html><body>502 Bad Gateway</body></html>"),
@@ -279,7 +293,9 @@ describe("error statuses", () => {
     ["integration_validation", 422],
     ["integration_invalid_response", 502],
     ["integration_unavailable", 503],
-    ["integration_unsupported_capability", 500],
+    // A missing/unsupported test-management backend is an actionable
+    // configuration conflict, not a server fault.
+    ["integration_unsupported_capability", 409],
     ["integration_unsupported_provider", 500],
     ["integration_configuration", 500],
     ["integration_unknown", 500],
@@ -289,6 +305,25 @@ describe("error statuses", () => {
     expect(statusForIntegrationErrorCode(code)).toBe(expectedStatus);
     expect(statusForServerError(error, { status: 503 })).toBe(expectedStatus);
     expect(toFriendlyErrorResponse(error, { status: 503 }).status).toBe(expectedStatus);
+  });
+
+  it("returns unsupported-capability guidance verbatim, ignoring the route's provider-branded fallback", () => {
+    const guidance =
+      "This test management operation requires a configured backend and is not yet available for Jira Cloud projects. A workspace owner or admin can choose Plain Jira, Xray, or Zephyr Scale in Settings → Connections.";
+    const error = new IntegrationError({
+      providerId: "jira-cloud",
+      code: "integration_unsupported_capability",
+      message: guidance,
+    });
+
+    const response = toFriendlyErrorResponse(error, {
+      domain: "azure",
+      status: 503,
+      fallback: "Azure Test Plan fetch failed.",
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body.error).toBe(guidance);
   });
 
   it("uses 422 for manual parse and schema validation errors", () => {

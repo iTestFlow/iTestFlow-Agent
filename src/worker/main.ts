@@ -40,6 +40,7 @@ import {
   cancelRunningJob,
   claimNextJob,
   completeJob,
+  deferOwnedJob,
   failJob,
   getRequestedJobCancellations,
   heartbeatJobs,
@@ -49,9 +50,11 @@ import {
   type Job,
 } from "@/modules/jobs/job-queue.service";
 import { getJobHandler, registeredJobTypes, type JobHandler } from "@/modules/jobs/job-handlers";
+import { JobDeferredError, JobRetryError } from "@/modules/jobs/job-scheduling";
 import { PROJECT_KNOWLEDGE_JOB } from "@/modules/jobs/project-knowledge-jobs.service";
 import { UPLOADED_DOCUMENT_INGEST } from "@/modules/jobs/uploaded-document-jobs.service";
 import { registerAllJobHandlers } from "@/modules/jobs/register-handlers";
+import { validateEnabledProviderShape } from "@/modules/auth/enabled-providers";
 import { enqueueDueScheduledSyncs } from "@/modules/jobs/sync-schedule.service";
 import {
   heartbeatWorkerInstance,
@@ -213,8 +216,22 @@ async function executeJob(handler: JobHandler, entry: ActiveJob): Promise<void> 
       console.log(`[worker] cancelled ${job.jobType} ${job.id}`);
       return;
     }
+    if (error instanceof JobDeferredError) {
+      const deferred = await deferOwnedJob(job.id, WORKER_ID, error.runAfter);
+      if (!deferred) console.warn(`[worker] skipped deferral for ${job.jobType} ${job.id}; lock is no longer owned by ${WORKER_ID}`);
+      return;
+    }
     const message = error instanceof Error ? error.message : "Job handler failed.";
-    const failed = await failJob(job.id, message, WORKER_ID);
+    // Only stable application codes reach jobs.error_code (JiraSyncPrincipalError,
+    // IntegrationError); incidental infra codes (errno, SQLSTATE) never leak in
+    // as if they were part of the taxonomy.
+    const rawCode = (error as { code?: unknown } | null)?.code;
+    const errorCode = typeof rawCode === "string" && /^(jira_sync_principal_|integration_)[a-z_]{1,80}$/.test(rawCode)
+      ? rawCode
+      : null;
+    const failed = error instanceof JobRetryError
+      ? await failJob(job.id, message, WORKER_ID, errorCode, error.retryNotBefore)
+      : await failJob(job.id, message, WORKER_ID, errorCode);
     if (!failed) {
       console.warn(`[worker] skipped failure update for ${job.jobType} ${job.id}; lock is no longer owned by ${WORKER_ID}`);
     }
@@ -435,6 +452,9 @@ async function main() {
     console.error("[worker] DATABASE_URL is not set. See .env.example.");
     process.exit(1);
   }
+  // Same fail-fast contract as the web startup: a misconfigured provider
+  // enablement must refuse to boot instead of failing every Jira sync job.
+  validateEnabledProviderShape();
   registerAllJobHandlers();
   const capabilities = registeredJobTypes();
   await registerWorkerInstanceWithRetry(capabilities);

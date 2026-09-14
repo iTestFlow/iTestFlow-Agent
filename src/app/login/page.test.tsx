@@ -24,6 +24,16 @@ const organizations = [
   { name: "Fabrikam", azureOrgName: "fabrikam", azureOrgUrl: "https://dev.azure.com/fabrikam" },
 ]
 
+const jiraSites = [
+  { name: "Quality", siteUrl: "https://quality.atlassian.net" },
+  { name: "Platform", siteUrl: "https://platform.atlassian.net" },
+]
+
+const bothProviders = [
+  { id: "azure-devops", label: "Azure DevOps" },
+  { id: "jira-cloud", label: "Jira Cloud" },
+]
+
 const fetchMock = vi.fn()
 
 class ResizeObserverMock {
@@ -32,11 +42,38 @@ class ResizeObserverMock {
   disconnect() {}
 }
 
-function organizationResponse(list: typeof organizations, status = 200) {
-  return new Response(JSON.stringify({ organizations: list }), {
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json" },
   })
+}
+
+type EndpointResult = Response | Promise<Response>
+type Endpoint = EndpointResult | (() => EndpointResult)
+
+// Routes fetches by URL so specs configure each endpoint independently; a
+// function value is invoked per call (for failures followed by retries).
+function mockApi(overrides: Partial<Record<"providers" | "organizations" | "sites" | "login" | "jiraLogin", Endpoint>> = {}) {
+  const endpoints: Record<string, Endpoint> = {
+    "/api/auth/providers": overrides.providers ?? jsonResponse({ providers: bothProviders }),
+    "/api/auth/organizations": overrides.organizations ?? jsonResponse({ organizations }),
+    "/api/auth/jira/sites": overrides.sites ?? jsonResponse({ sites: [] }),
+    "/api/auth/login": overrides.login ?? jsonResponse({ ok: true }),
+    "/api/auth/jira/login": overrides.jiraLogin ?? jsonResponse({ ok: true }),
+  }
+  fetchMock.mockImplementation(async (url: string) => {
+    const endpoint = endpoints[url]
+    if (!endpoint) throw new Error(`Unexpected fetch: ${url}`)
+    // Responses are single-use; clone per call so repeated loads can re-read the body.
+    const result = typeof endpoint === "function" ? endpoint() : endpoint
+    const response = await result
+    return response.clone()
+  })
+}
+
+function callsTo(url: string) {
+  return fetchMock.mock.calls.filter(([calledUrl]) => calledUrl === url)
 }
 
 function deferred<T>() {
@@ -60,7 +97,7 @@ function renderLoginPage() {
 describe("LoginPage", () => {
   beforeEach(() => {
     fetchMock.mockReset()
-    fetchMock.mockResolvedValue(organizationResponse(organizations))
+    mockApi()
     vi.stubGlobal("ResizeObserver", ResizeObserverMock)
     vi.stubGlobal("fetch", fetchMock)
   })
@@ -68,29 +105,194 @@ describe("LoginPage", () => {
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+    window.history.replaceState(null, "", "/login")
   })
 
-  it("offers the browser-bound Jira Cloud OAuth flow", () => {
+  it("renders a provider chooser defaulting to Azure DevOps when both providers are enabled", async () => {
     renderLoginPage()
-    expect(screen.getByRole("link", { name: "Continue with Jira Cloud" })).toHaveAttribute(
-      "href",
-      "/api/auth/jira/start?returnTo=%2Fdashboards",
+
+    const chooser = await screen.findByRole("group", { name: "Sign-in provider" })
+    expect(chooser).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Azure DevOps" })).toHaveAttribute("aria-pressed", "true"),
     )
+    expect(screen.getByRole("button", { name: "Jira Cloud" })).toHaveAttribute("aria-pressed", "false")
+
+    // Azure pane is active: PAT form present, no Jira credential form.
+    await screen.findByLabelText("Personal Access Token")
+    expect(screen.queryByLabelText("Atlassian API token")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Atlassian account email")).not.toBeInTheDocument()
+  })
+
+  it("switches panes and preserves both panes' entered credentials across switches", async () => {
+    const user = userEvent.setup()
+    mockApi({ sites: jsonResponse({ sites: [jiraSites[0]] }) })
+
+    renderLoginPage()
+
+    const patInput = await screen.findByLabelText("Personal Access Token")
+    await user.type(patInput, "pat-secret")
+
+    await user.click(screen.getByRole("button", { name: "Jira Cloud" }))
+    expect(screen.queryByLabelText("Personal Access Token")).not.toBeInTheDocument()
+    await screen.findByDisplayValue("Quality")
+    await user.type(screen.getByLabelText("Atlassian account email"), "owner@example.test")
+    await user.type(screen.getByLabelText("Atlassian API token"), "jira-token")
+
+    await user.click(screen.getByRole("button", { name: "Azure DevOps" }))
+    expect(await screen.findByLabelText("Personal Access Token")).toHaveValue("pat-secret")
+
+    await user.click(screen.getByRole("button", { name: "Jira Cloud" }))
+    expect(await screen.findByLabelText("Atlassian account email")).toHaveValue("owner@example.test")
+    expect(screen.getByLabelText("Atlassian API token")).toHaveValue("jira-token")
+  })
+
+  it("offers Continue with Atlassian as the secondary action beside the default token form", async () => {
+    const user = userEvent.setup()
+    mockApi({
+      providers: jsonResponse({ providers: bothProviders, jiraLoginMethods: ["api_token", "oauth"] }),
+      sites: jsonResponse({ sites: [jiraSites[0]] }),
+    })
+
+    renderLoginPage()
+    await user.click(await screen.findByRole("button", { name: "Jira Cloud" }))
+
+    // Token form stays the default, with the Atlassian hand-off as a
+    // secondary link carrying the selected site and validated return
+    // destination into the start route.
+    await screen.findByLabelText("Atlassian API token")
+    expect(screen.getByText(/email and API token, or continue with Atlassian/i)).toBeInTheDocument()
+    const continueLink = await screen.findByRole("link", { name: /Continue with Atlassian/ })
+    const href = String(continueLink.getAttribute("href"))
+    expect(href).toContain(`/api/auth/jira/start?site=${encodeURIComponent("https://quality.atlassian.net")}`)
+    expect(href).toContain(`returnTo=${encodeURIComponent("/dashboards")}`)
+  })
+
+  it("renders no Atlassian action when the deployment is token-only", async () => {
+    const user = userEvent.setup()
+    mockApi({ sites: jsonResponse({ sites: [jiraSites[0]] }) })
+
+    renderLoginPage()
+    await user.click(await screen.findByRole("button", { name: "Jira Cloud" }))
+
+    await screen.findByLabelText("Atlassian API token")
+    expect(screen.queryByText(/Continue with Atlassian/)).not.toBeInTheDocument()
+  })
+
+  it("renders OAuth-only mode: Atlassian is the primary action and no token field exists", async () => {
+    const user = userEvent.setup()
+    mockApi({
+      providers: jsonResponse({ providers: bothProviders, jiraLoginMethods: ["oauth"] }),
+      sites: jsonResponse({ sites: [jiraSites[0]] }),
+    })
+
+    renderLoginPage()
+    await user.click(await screen.findByRole("button", { name: "Jira Cloud" }))
+
+    await screen.findByRole("link", { name: /Continue with Atlassian/ })
+    expect(screen.getByText(/by continuing with Atlassian/i)).toBeInTheDocument()
+    expect(screen.queryByText(/account email and API token/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Atlassian API token")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Atlassian account email")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Sign In" })).not.toBeInTheDocument()
+  })
+
+  it("surfaces a callback error code inline and preselects the site once it checks out as configured", async () => {
+    window.history.replaceState({}, "", `/login?error=jira_site_access&site=${encodeURIComponent("https://platform.atlassian.net")}`)
+    try {
+      mockApi({
+        providers: jsonResponse({ providers: bothProviders, jiraLoginMethods: ["api_token", "oauth"] }),
+        sites: jsonResponse({ sites: jiraSites }),
+      })
+
+      renderLoginPage()
+
+      // The callback's error surface: pane auto-switched, persistent alert,
+      // static message (the raw site param is never echoed into the alert).
+      expect(await screen.findByText(/does not have access to the selected Jira site/)).toBeInTheDocument()
+      // Multi-site preselection: the configured site from the error comes back
+      // selected, so the Atlassian retry link is live and carries it.
+      const retryLink = await screen.findByRole("link", { name: /Continue with Atlassian/ })
+      expect(String(retryLink.getAttribute("href"))).toContain(encodeURIComponent("https://platform.atlassian.net"))
+      expect(screen.getAllByText("Platform").length).toBeGreaterThan(0)
+    } finally {
+      window.history.replaceState({}, "", "/login")
+    }
+  })
+
+  it("ignores unknown and prototype-key error codes from crafted links", async () => {
+    for (const code of ["bogus", "__proto__", "constructor", "toString"]) {
+      window.history.replaceState({}, "", `/login?error=${code}&site=evil`)
+      try {
+        mockApi()
+        renderLoginPage()
+        // The page mounts normally on the default pane with no alert.
+        expect(await screen.findByRole("group", { name: "Sign-in provider" })).toBeInTheDocument()
+        expect(screen.queryByText("Jira sign-in failed.")).not.toBeInTheDocument()
+      } finally {
+        window.history.replaceState({}, "", "/login")
+        cleanup()
+      }
+    }
+  })
+
+  it("skips the chooser and renders the Azure form directly when only Azure DevOps is enabled", async () => {
+    mockApi({ providers: jsonResponse({ providers: [bothProviders[0]] }) })
+
+    renderLoginPage()
+
+    await screen.findByLabelText("Personal Access Token")
+    expect(screen.queryByRole("group", { name: "Sign-in provider" })).not.toBeInTheDocument()
+    expect(callsTo("/api/auth/jira/sites")).toHaveLength(0)
+  })
+
+  it("skips the chooser and renders the Jira pane directly when only Jira Cloud is enabled", async () => {
+    mockApi({
+      providers: jsonResponse({ providers: [bothProviders[1]] }),
+      sites: jsonResponse({ sites: [jiraSites[0]] }),
+    })
+
+    renderLoginPage()
+
+    await screen.findByDisplayValue("Quality")
+    expect(screen.queryByRole("group", { name: "Sign-in provider" })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Personal Access Token")).not.toBeInTheDocument()
+    expect(callsTo("/api/auth/organizations")).toHaveLength(0)
+  })
+
+  it("shows a retryable error when sign-in options cannot be loaded", async () => {
+    const user = userEvent.setup()
+    let providerCalls = 0
+    mockApi({
+      providers: () => {
+        providerCalls += 1
+        return providerCalls === 1
+          ? jsonResponse({ error: "Provider service unavailable." }, 503)
+          : jsonResponse({ providers: bothProviders })
+      },
+    })
+
+    renderLoginPage()
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Provider service unavailable.")
+    expect(screen.queryByRole("button", { name: "Sign In" })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+    await screen.findByRole("group", { name: "Sign-in provider" })
   })
 
   it("shows a non-interactive loading state without a dropdown", async () => {
     const pending = deferred<Response>()
-    fetchMock.mockReset()
-    fetchMock.mockReturnValueOnce(pending.promise)
+    mockApi({ organizations: pending.promise })
 
     renderLoginPage()
 
-    expect(screen.getByRole("status")).toHaveTextContent("Loading configured organizations")
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Loading configured organizations"))
     expect(screen.queryByRole("combobox", { name: "Azure DevOps organization" })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Sign In" })).toBeDisabled()
 
     await act(async () => {
-      pending.resolve(organizationResponse(organizations))
+      pending.resolve(jsonResponse({ organizations }))
     })
     await screen.findByRole("combobox", { name: "Azure DevOps organization" })
   })
@@ -98,10 +300,7 @@ describe("LoginPage", () => {
   it("displays and submits the only configured organization without a selection", async () => {
     const user = userEvent.setup()
     const [organization] = organizations
-    fetchMock.mockReset()
-    fetchMock
-      .mockResolvedValueOnce(organizationResponse([organization]))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } }))
+    mockApi({ organizations: jsonResponse({ organizations: [organization] }) })
 
     renderLoginPage()
 
@@ -113,9 +312,8 @@ describe("LoginPage", () => {
     await user.type(screen.getByLabelText("Personal Access Token"), "pat-secret")
     await user.click(screen.getByRole("button", { name: "Sign In" }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    const [, request] = fetchMock.mock.calls[1]
-    expect(fetchMock.mock.calls[1][0]).toBe("/api/auth/login")
+    await waitFor(() => expect(callsTo("/api/auth/login")).toHaveLength(1))
+    const [, request] = callsTo("/api/auth/login")[0]
     expect(JSON.parse((request as RequestInit).body as string)).toEqual({
       organization: "https://dev.azure.com/contoso",
       personalAccessToken: "pat-secret",
@@ -135,8 +333,7 @@ describe("LoginPage", () => {
   })
 
   it("shows administrator guidance instead of an organization input when none are configured", async () => {
-    fetchMock.mockReset()
-    fetchMock.mockResolvedValueOnce(organizationResponse([]))
+    mockApi({ organizations: jsonResponse({ organizations: [] }) })
 
     renderLoginPage()
 
@@ -151,15 +348,15 @@ describe("LoginPage", () => {
     const user = userEvent.setup()
     const pending = deferred<Response>()
     const [organization] = organizations
-    fetchMock.mockReset()
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ error: "Organization service is temporarily unavailable." }), {
-          status: 503,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      .mockReturnValueOnce(pending.promise)
+    let organizationCalls = 0
+    mockApi({
+      organizations: () => {
+        organizationCalls += 1
+        return organizationCalls === 1
+          ? jsonResponse({ error: "Organization service is temporarily unavailable." }, 503)
+          : pending.promise
+      },
+    })
 
     renderLoginPage()
 
@@ -175,12 +372,13 @@ describe("LoginPage", () => {
     expect(screen.getByRole("button", { name: "Sign In" })).toBeDisabled()
 
     await act(async () => {
-      pending.resolve(organizationResponse([organization]))
+      pending.resolve(jsonResponse({ organizations: [organization] }))
     })
     await screen.findByDisplayValue("Contoso")
 
     expect(patInput).toHaveValue("pat-secret")
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(callsTo("/api/auth/organizations")).toHaveLength(2)
+    expect(callsTo("/api/auth/providers")).toHaveLength(1)
   })
 
   it("explains how to configure an organization from the organization field", async () => {
@@ -196,5 +394,115 @@ describe("LoginPage", () => {
     expect(screen.getAllByText("BOOTSTRAP_AZURE_ORGS").length).toBeGreaterThan(0)
     expect(screen.getAllByText(".env").length).toBeGreaterThan(0)
     expect(screen.getAllByText("orgUrl|ownerEmail").length).toBeGreaterThan(0)
+  })
+
+  it("shows the Jira loading state, then guidance naming BOOTSTRAP_JIRA_SITES when no sites are configured", async () => {
+    const user = userEvent.setup()
+    const pending = deferred<Response>()
+    mockApi({ sites: pending.promise })
+
+    renderLoginPage()
+
+    await screen.findByRole("group", { name: "Sign-in provider" })
+    await user.click(screen.getByRole("button", { name: "Jira Cloud" }))
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loading configured Jira sites")
+    expect(screen.getByRole("button", { name: "Sign In" })).toBeDisabled()
+
+    await act(async () => {
+      pending.resolve(jsonResponse({ sites: [] }))
+    })
+    await screen.findByText("No Jira Cloud site is configured.")
+    expect(screen.getByRole("button", { name: "Sign In" })).toBeDisabled()
+    expect(screen.getByText("BOOTSTRAP_JIRA_SITES")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "How to add a Jira Cloud site" })).toBeInTheDocument()
+  })
+
+  it("retries a failed Jira site request without refetching providers", async () => {
+    const user = userEvent.setup()
+    let siteCalls = 0
+    mockApi({
+      providers: jsonResponse({ providers: [bothProviders[1]] }),
+      sites: () => {
+        siteCalls += 1
+        return siteCalls === 1
+          ? jsonResponse({ error: "Site service unavailable." }, 503)
+          : jsonResponse({ sites: [jiraSites[0]] })
+      },
+    })
+
+    renderLoginPage()
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Site service unavailable.")
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+
+    await screen.findByDisplayValue("Quality")
+    expect(callsTo("/api/auth/jira/sites")).toHaveLength(2)
+    expect(callsTo("/api/auth/providers")).toHaveLength(1)
+  })
+
+  it("auto-selects a single Jira site and signs in with the typed email and API token", async () => {
+    const user = userEvent.setup()
+    mockApi({
+      providers: jsonResponse({ providers: [bothProviders[1]] }),
+      sites: jsonResponse({ sites: [jiraSites[0]] }),
+    })
+
+    renderLoginPage()
+
+    const siteInput = await screen.findByDisplayValue("Quality")
+    expect(siteInput).toHaveAttribute("readonly")
+    expect(screen.getByLabelText("Jira Cloud site")).toBe(siteInput)
+
+    await user.type(screen.getByLabelText("Atlassian account email"), "owner@example.test")
+    await user.type(screen.getByLabelText("Atlassian API token"), "token-secret")
+    await user.click(screen.getByRole("button", { name: "Sign In" }))
+
+    await waitFor(() => expect(callsTo("/api/auth/jira/login")).toHaveLength(1))
+    const [, request] = callsTo("/api/auth/jira/login")[0]
+    expect(JSON.parse((request as RequestInit).body as string)).toEqual({
+      siteUrl: "https://quality.atlassian.net",
+      emailAddress: "owner@example.test",
+      apiToken: "token-secret",
+    })
+  })
+
+  it("renders a site dropdown for multiple Jira sites and disables Sign In until everything is entered", async () => {
+    const user = userEvent.setup()
+    mockApi({
+      providers: jsonResponse({ providers: [bothProviders[1]] }),
+      sites: jsonResponse({ sites: jiraSites }),
+    })
+
+    renderLoginPage()
+
+    await screen.findByRole("combobox", { name: "Jira Cloud site" })
+    expect(screen.getByRole("button", { name: "Sign In" })).toBeDisabled()
+
+    await user.type(screen.getByLabelText("Atlassian account email"), "owner@example.test")
+    await user.type(screen.getByLabelText("Atlassian API token"), "token-secret")
+    // The site is still unselected, so submission stays blocked.
+    expect(screen.getByRole("button", { name: "Sign In" })).toBeDisabled()
+  })
+
+  it("shows Jira sign-in failures inline as a persistent alert without echoing the token", async () => {
+    const user = userEvent.setup()
+    mockApi({
+      providers: jsonResponse({ providers: [bothProviders[1]] }),
+      sites: jsonResponse({ sites: [jiraSites[0]] }),
+      jiraLogin: jsonResponse({ error: "Atlassian rejected this email and API token. Check both and try again." }, 401),
+    })
+
+    renderLoginPage()
+
+    await screen.findByDisplayValue("Quality")
+    await user.type(screen.getByLabelText("Atlassian account email"), "owner@example.test")
+    await user.type(screen.getByLabelText("Atlassian API token"), "wrong-token")
+    await user.click(screen.getByRole("button", { name: "Sign In" }))
+
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("Jira sign-in failed.")
+    expect(alert).toHaveTextContent("Atlassian rejected this email and API token.")
+    expect(alert).not.toHaveTextContent("wrong-token")
   })
 })

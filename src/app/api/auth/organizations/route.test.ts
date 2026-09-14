@@ -58,4 +58,24 @@ describe("GET /api/auth/organizations", () => {
     expect(response.headers.get("Retry-After")).toBe("30");
     expect(listActiveWorkspaces).not.toHaveBeenCalled();
   });
+
+  it("fails closed with 403 when Azure DevOps sign-in is disabled for the deployment", async () => {
+    checkRateLimit.mockResolvedValueOnce({ allowed: true });
+    const saved = {
+      providers: process.env.BOOTSTRAP_ENABLED_PROVIDERS,
+      sites: process.env.BOOTSTRAP_JIRA_SITES,
+    };
+    process.env.BOOTSTRAP_ENABLED_PROVIDERS = "jira-cloud";
+    process.env.BOOTSTRAP_JIRA_SITES = "quality|owner@example.test";
+    try {
+      const response = await GET(request());
+      expect(response.status).toBe(403);
+      expect(listActiveWorkspaces).not.toHaveBeenCalled();
+    } finally {
+      if (saved.providers === undefined) delete process.env.BOOTSTRAP_ENABLED_PROVIDERS;
+      else process.env.BOOTSTRAP_ENABLED_PROVIDERS = saved.providers;
+      if (saved.sites === undefined) delete process.env.BOOTSTRAP_JIRA_SITES;
+      else process.env.BOOTSTRAP_JIRA_SITES = saved.sites;
+    }
+  });
 });

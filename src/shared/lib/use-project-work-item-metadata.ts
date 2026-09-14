@@ -54,7 +54,7 @@ export function useProjectWorkItemMetadata(scope: ActiveProjectScope | null) {
     })
       .then(async (response) => {
         const json = await response.json();
-        if (!response.ok) throw new Error(apiErrorMessage(json, "Azure DevOps work item metadata fetch failed."));
+        if (!response.ok) throw new Error(apiErrorMessage(json, "Work item metadata could not be loaded."));
         return json as ProjectWorkItemMetadata;
       })
       .then((nextMetadata) => {
@@ -64,7 +64,7 @@ export function useProjectWorkItemMetadata(scope: ActiveProjectScope | null) {
       .catch((requestError) => {
         if (controller.signal.aborted) return;
         setError(
-          caughtErrorMessage(requestError, "Azure DevOps work item metadata fetch failed."),
+          caughtErrorMessage(requestError, "Work item metadata could not be loaded."),
         );
       })
       .finally(() => {

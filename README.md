@@ -88,6 +88,8 @@ npm run dev -- --hostname 127.0.0.1 --port 3000
 BOOTSTRAP_AZURE_ORGS=https://dev.azure.com/org-a|admin@company.com, https://dev.azure.com/org-b|owner-b@company.com
 ```
 
+**Jira Cloud sign-in** (optional provider): users sign in with their Atlassian account email and API token — no OAuth app or public origin is needed for token sign-in, and Atlassian OAuth is available as an optional second method. A fresh Jira Cloud deployment must set `BOOTSTRAP_JIRA_SITES` with an owner email (comma-separated `siteUrl|ownerEmail`, e.g. `mysite|admin@company.com`) so seeded sites appear in the login picker with their declared owners; only an upgrade whose database already carries an active jira-cloud workspace may omit bootstrap. `BOOTSTRAP_ENABLED_PROVIDERS` controls which providers the login page offers (unset auto-detects). See [docs/jira-cloud.md](docs/jira-cloud.md).
+
 After starting:
 1. Visit [Login](http://127.0.0.1:3000/login) and select an organization (or enter one by URL).
 2. Sign in with a PAT for that organization.
@@ -344,7 +346,7 @@ the path-based rooms in `mempalace.yaml`.
 
 - [Project Architecture](PROJECT_ARCHITECTURE.md) - routes, modules, integrations, storage, and architecture decisions
 - [Integration Providers](docs/integration-providers.md) - provider contracts, capabilities, and Azure DevOps/Jira Cloud composition
-- [Jira Cloud Operations](docs/jira-cloud.md) - OAuth, project onboarding, synchronization, artifact backends, recovery, and rollback
+- [Jira Cloud Operations](docs/jira-cloud.md) - API-token sign-in, project onboarding, polling synchronization, artifact backends, recovery, and rollback
 - [Deployment Guide](docs/deployment.md) - private hosted runtime, environment, workers, backups, and migrations
 - [Knowledge Wiki and RAG Enhancement](docs/knowledge-wiki-rag-enhancement.md) - compiled knowledge and wiki design
 - [Environment Variable Template](.env.example) - supported bootstrap configuration

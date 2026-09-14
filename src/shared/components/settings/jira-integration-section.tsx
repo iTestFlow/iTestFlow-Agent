@@ -22,7 +22,9 @@ type JiraProject = {
 type Overview = {
   providerId: "jira-cloud"; role: "owner" | "admin" | "member";
   workspace: { id: string; name: string; siteName: string; siteUrl: string };
-  connection: { status: string };
+  connection: { status: string; credentialKind?: "api_token" | "oauth" | null };
+  syncPrincipal?: { exists: boolean; status: string | null; userId: string | null; isActor: boolean };
+  loginMethods?: Array<"api_token" | "oauth">;
   availableProjects: Array<{ id: string; key?: string; name: string }>;
   projects: JiraProject[];
   mappings: Array<{ id: string; projectId: string; jiraIssueKey: string; localEntityType: string; localEntityId: string; direction: string; status: string; lastSyncedAt: string | null; updatedAt: string }>;
@@ -36,6 +38,7 @@ export function JiraIntegrationSection() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [connectError, setConnectError] = useState("");
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   const load = useCallback(async () => {
@@ -69,31 +72,137 @@ export function JiraIntegrationSection() {
     } finally { setBusy(""); }
   }
 
+  /** Connect/replace-token failures stay inline (role=alert) like the login
+   * pane's — the invalid/scope/pinned-site/429 taxonomy must outlive a toast. */
+  async function connectToken(emailAddress: string, apiToken: string): Promise<boolean> {
+    setBusy("connect");
+    setConnectError("");
+    try {
+      const response = await fetch("/api/integrations/jira", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "connect", emailAddress, apiToken }),
+      });
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) {
+        const retryAfter = response.headers.get("Retry-After");
+        const retryNote = response.status === 429 && retryAfter && /^\d+$/.test(retryAfter) ? ` Retry in ${retryAfter}s.` : "";
+        setConnectError(`${apiErrorMessage(data, "The Jira connection could not be stored.")}${retryNote}`);
+        return false;
+      }
+      toast.success(overview?.connection.status === "active" ? "Jira API token replaced." : "Jira Cloud connected.");
+      await load();
+      return true;
+    } catch {
+      setConnectError("The Jira connection could not be stored. Check your connection and try again.");
+      return false;
+    } finally { setBusy(""); }
+  }
+
   if (loading && !overview) return <div role="status" aria-live="polite" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" aria-hidden="true" />Loading Jira Cloud settings…</div>;
   if (error && !overview) return <Callout tone="error" role="alert" title="Jira Cloud settings unavailable" action={<Button type="button" variant="outline" onClick={() => void load()}>Retry</Button>}>{error}</Callout>;
   if (!overview) return null;
   const canConfigure = overview.role === "owner" || overview.role === "admin";
   const connected = overview.connection.status === "active";
+  const invalid = overview.connection.status === "invalid";
+  const reauthRequired = overview.connection.status === "reauthorization_required";
+  // Method availability is deployment policy; absent field = token-only era payloads.
+  const loginMethods = overview.loginMethods ?? ["api_token"];
+  const tokenEnabled = loginMethods.includes("api_token");
+  const oauthEnabled = loginMethods.includes("oauth");
+  const atlassianStartHref = `/api/auth/jira/start?site=${encodeURIComponent(overview.workspace.siteUrl)}&returnTo=${encodeURIComponent("/settings")}`;
+  const badge = connected
+    ? { tone: "success" as const, label: "Connected" }
+    : invalid
+      ? { tone: "destructive" as const, label: tokenEnabled ? "Invalid token" : "Reconnect needed" }
+      : reauthRequired
+        ? { tone: "destructive" as const, label: "Reconnect needed" }
+        : { tone: "muted" as const, label: "Not connected" };
+  const syncPrincipal = overview.syncPrincipal ?? { exists: true, status: null, userId: null, isActor: false };
 
   return <div className="space-y-4">
+    {syncPrincipal.status === "invalid" ? (
+      <Callout tone="error" role="alert" title="Scheduled Jira sync is blocked.">
+        {tokenEnabled
+          ? syncPrincipal.isActor
+            ? "Your API token is the workspace sync token and it is invalid. Replace it below to restore scheduled sync."
+            : "The sync owner's API token is invalid. That sync owner must replace their Jira API token in Settings → Connections to restore scheduled sync."
+          : oauthEnabled
+            ? syncPrincipal.isActor
+              ? "Your Jira connection is the workspace sync credential and it is invalid. Reconnect with Atlassian below to restore scheduled sync."
+              : "The sync owner's Jira connection is invalid. That sync owner must reconnect with Atlassian in Settings → Connections to restore scheduled sync."
+            : "The sync owner's Jira connection is invalid. Ask your iTestFlow administrator to enable a Jira sign-in method."}
+      </Callout>
+    ) : syncPrincipal.status === "reauthorization_required" ? (
+      <Callout tone="error" role="alert" title="Scheduled Jira sync is blocked.">
+        {syncPrincipal.isActor
+          ? "Your Atlassian authorization is the workspace sync credential and it expired. Reconnect with Atlassian below to restore scheduled sync."
+          : "The sync owner's Atlassian authorization expired. That sync owner must reconnect with Atlassian in Settings → Connections to restore scheduled sync."}
+      </Callout>
+    ) : !syncPrincipal.exists ? (
+      <Callout tone="warning" role="status" title="No sync owner is connected yet.">
+        Scheduled Jira sync starts once a workspace owner connects; the first owner to connect becomes the workspace sync owner.
+      </Callout>
+    ) : null}
+
     <SectionCard
       title="Jira Cloud Connection"
-      description="OAuth credentials are encrypted per user. Shared project, mapping, and artifact settings are restricted to workspace owners and admins."
-      action={<StatusBadge tone={connected ? "success" : "warning"} label={connected ? "Connected" : "Reconnect required"} />}
+      description="Your Jira credential is encrypted per user. Shared project, mapping, and artifact settings are restricted to workspace owners and admins."
+      action={<StatusBadge tone={badge.tone} label={badge.label} />}
     >
       <div className="grid gap-3 sm:grid-cols-2">
         <div><div className="text-xs text-muted-foreground">Site</div><div className="font-medium">{overview.workspace.siteName}</div></div>
         <div><div className="text-xs text-muted-foreground">Workspace role</div><div className="font-medium capitalize">{overview.role}</div></div>
+        {(connected || invalid || reauthRequired) && overview.connection.credentialKind ? (
+          <div>
+            <div className="text-xs text-muted-foreground">Sign-in method</div>
+            <div className="font-medium">{overview.connection.credentialKind === "oauth" ? "Atlassian account (OAuth)" : "API token"}</div>
+          </div>
+        ) : null}
       </div>
       <a className="inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={overview.workspace.siteUrl} target="_blank" rel="noreferrer">Open Jira site <ExternalLink className="size-3.5" aria-hidden="true" /></a>
-      {!connected ? <Button asChild><a href="/api/auth/jira/start?returnTo=%2Fsettings">Reconnect Jira Cloud</a></Button> : null}
-      {confirmDisconnect ? (
+      {invalid && !tokenEnabled ? (
+        <Callout tone="error" role="alert" title="Your Jira connection is invalid.">
+          {oauthEnabled
+            ? "Atlassian stopped accepting this connection. Reconnect with Atlassian to restore Jira access."
+            : "Ask your iTestFlow administrator to enable a Jira sign-in method for this deployment."}
+        </Callout>
+      ) : null}
+      {reauthRequired ? (
+        <Callout tone="error" role="alert" title="Your Atlassian authorization expired.">
+          Jira stopped accepting this connection.{" "}
+          {oauthEnabled && tokenEnabled
+            ? "Reconnect with Atlassian to approve it again, or connect with an API token below."
+            : oauthEnabled
+              ? "Reconnect with Atlassian to approve it again."
+              : tokenEnabled
+                ? "Connect with an API token below, or ask your administrator to enable Atlassian sign-in."
+                : "Ask your iTestFlow administrator to re-enable a Jira sign-in method for this deployment."}
+        </Callout>
+      ) : null}
+      {oauthEnabled && !connected ? (
+        <a
+          className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-input bg-background px-4 text-sm font-medium shadow-sm hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          href={atlassianStartHref}
+        >
+          {reauthRequired || invalid ? "Reconnect with Atlassian" : "Continue with Atlassian"}
+        </a>
+      ) : null}
+      {tokenEnabled ? (
+        <ConnectTokenForm
+          connectionStatus={overview.connection.status}
+          busy={Boolean(busy)}
+          error={connectError}
+          onConnect={connectToken}
+        />
+      ) : null}
+      {connected || invalid || reauthRequired ? (confirmDisconnect ? (
         <div className="flex flex-wrap items-center gap-2" role="status" aria-live="polite">
           <span className="text-sm text-destructive">Disconnect this Jira account? Shared history remains.</span>
           <Button type="button" variant="destructive" aria-label="Confirm Jira Cloud disconnect" disabled={Boolean(busy)} onClick={() => void mutate("Jira Cloud disconnected.", undefined, "DELETE")}>Confirm disconnect</Button>
           <Button type="button" variant="outline" onClick={() => setConfirmDisconnect(false)}>Cancel</Button>
         </div>
-      ) : <Button type="button" variant="outline" aria-label="Disconnect Jira Cloud" onClick={() => setConfirmDisconnect(true)}>Disconnect Jira Cloud</Button>}
+      ) : <Button type="button" variant="outline" aria-label="Disconnect Jira Cloud" onClick={() => setConfirmDisconnect(true)}>Disconnect Jira Cloud</Button>) : null}
     </SectionCard>
 
     {connected && canConfigure ? <SectionCard title="Jira Projects" description="Only projects visible to the connected Jira account can be added.">
@@ -130,6 +239,47 @@ export function JiraIntegrationSection() {
   </div>;
 }
 
+function ConnectTokenForm({ connectionStatus, busy, error, onConnect }: {
+  connectionStatus: string; busy: boolean; error: string; onConnect(emailAddress: string, apiToken: string): Promise<boolean>;
+}) {
+  const connected = connectionStatus === "active";
+  const [open, setOpen] = useState(!connected);
+  const [emailAddress, setEmailAddress] = useState("");
+  const [apiToken, setApiToken] = useState("");
+
+  useEffect(() => { setOpen(connectionStatus !== "active"); }, [connectionStatus]);
+
+  if (!open) {
+    return <Button type="button" variant="outline" onClick={() => setOpen(true)}>Replace API token</Button>;
+  }
+  return <form
+    className="space-y-3 rounded-lg border p-3"
+    onSubmit={(event) => {
+      event.preventDefault();
+      if (busy || !emailAddress.trim() || !apiToken.trim()) return;
+      void onConnect(emailAddress, apiToken).then((stored) => { if (stored) setApiToken(""); });
+    }}
+  >
+    <div className="px-1 font-medium">{connected ? "Replace API token" : "Connect with an Atlassian API token"}</div>
+    <LabeledInput id="jira-connect-email" label="Atlassian account email" value={emailAddress} onChange={setEmailAddress} placeholder="you@company.com" />
+    <LabeledInput id="jira-connect-token" label="Atlassian API token" value={apiToken} onChange={setApiToken} secret />
+    <p className="text-xs text-muted-foreground">
+      Classic and scoped tokens both work. A scoped token needs the read:jira-work, write:jira-work, and read:jira-user scopes.
+    </p>
+    {error ? (
+      <Callout tone="error" role="alert" title="The Jira connection could not be stored.">
+        {error}
+      </Callout>
+    ) : null}
+    <div className="flex flex-wrap gap-2">
+      <Button type="submit" disabled={busy || !emailAddress.trim() || !apiToken.trim()}>
+        {connected ? "Replace token" : "Connect"}
+      </Button>
+      {connected ? <Button type="button" variant="ghost" onClick={() => { setOpen(false); setApiToken(""); }}>Keep saved token</Button> : null}
+    </div>
+  </form>;
+}
+
 function SyncConfigForm({ project, busy, onSave }: { project: JiraProject; busy: boolean; onSave(body: Record<string, unknown>): void }) {
   const [direction, setDirection] = useState(project.sync?.direction ?? "two_way");
   const [fields, setFields] = useState(formatPairs(project.sync?.fieldMappings ?? [{ localField: "title", jiraField: "summary" }], "localField", "jiraField"));
@@ -147,14 +297,15 @@ function SyncConfigForm({ project, busy, onSave }: { project: JiraProject; busy:
 }
 
 function BackendConfigForm({ project, busy, onSave }: { project: JiraProject; busy: boolean; onSave(body: Record<string, unknown>): void }) {
-  const [type, setType] = useState(project.backend?.type ?? "plain_jira");
+  // No silent Plain Jira default: an unconfigured project requires an explicit choice.
+  const [type, setType] = useState<"" | "plain_jira" | "xray_cloud" | "zephyr_scale">(project.backend?.type ?? "");
   const [first, setFirst] = useState(""); const [secret, setSecret] = useState(""); const [field, setField] = useState(""); const [region, setRegion] = useState("us");
   return <fieldset className="space-y-3 rounded-lg border p-3"><legend className="px-1 font-medium">Artifact backend</legend>
-    <div><Label htmlFor={`backend-${project.id}`}>Artifact backend</Label><select id={`backend-${project.id}`} className="mt-2 h-9 w-full rounded-lg border bg-background px-3 text-sm" value={type} onChange={(event) => { setType(event.target.value as typeof type); setFirst(""); setSecret(""); setField(""); }}><option value="plain_jira">Plain Jira</option><option value="xray_cloud">Xray Cloud</option><option value="zephyr_scale">Zephyr Scale Cloud</option></select></div>
+    <div><Label htmlFor={`backend-${project.id}`}>Artifact backend</Label><select id={`backend-${project.id}`} className="mt-2 h-9 w-full rounded-lg border bg-background px-3 text-sm" value={type} onChange={(event) => { setType(event.target.value as typeof type); setFirst(""); setSecret(""); setField(""); }}><option value="" disabled>Select a backend</option><option value="plain_jira">Plain Jira</option><option value="xray_cloud">Xray Cloud</option><option value="zephyr_scale">Zephyr Scale Cloud</option></select></div>
     {type === "plain_jira" ? <><LabeledInput id={`issue-type-${project.id}`} label="Jira Test Case issue type ID" value={first} onChange={setFirst} /><LabeledInput id={`local-field-${project.id}`} label="Immutable local ID custom field" value={field} onChange={setField} placeholder="customfield_10001" /></> : null}
     {type === "xray_cloud" ? <><LabeledInput id={`xray-client-${project.id}`} label="Xray client ID" value={first} onChange={setFirst} /><LabeledInput id={`xray-secret-${project.id}`} label="Xray client secret" value={secret} onChange={setSecret} secret /><LabeledInput id={`xray-field-${project.id}`} label="Immutable local ID custom field" value={field} onChange={setField} placeholder="customfield_10001" /></> : null}
     {type === "zephyr_scale" ? <><LabeledInput id={`zephyr-token-${project.id}`} label="Zephyr Scale API token" value={secret} onChange={setSecret} secret /><div><Label htmlFor={`zephyr-region-${project.id}`}>Zephyr Scale region</Label><select id={`zephyr-region-${project.id}`} className="mt-2 h-9 w-full rounded-lg border bg-background px-3 text-sm" value={region} onChange={(event) => setRegion(event.target.value)}><option value="us">United States</option><option value="eu">Europe</option><option value="au">Australia</option><option value="de">Germany</option></select></div><LabeledInput id={`zephyr-field-${project.id}`} label="Immutable local ID field name" value={field} onChange={setField} /></> : null}
-    <Button type="button" disabled={busy} onClick={() => {
+    <Button type="button" disabled={busy || !type} onClick={() => {
       if (type === "plain_jira") onSave({ action: "configure_backend", projectId: project.id, backendType: type, testCaseIssueTypeId: first, localIdFieldId: field });
       if (type === "xray_cloud") onSave({ action: "configure_backend", projectId: project.id, backendType: type, clientId: first, clientSecret: secret, localIdFieldId: field });
       if (type === "zephyr_scale") onSave({ action: "configure_backend", projectId: project.id, backendType: type, apiToken: secret, region, localIdFieldName: field });
