@@ -1,5 +1,8 @@
 # Context economy
 
+Owner-selectable budgets: [token budget modes](token-budget-modes.md) (`ultra-lean` | `balanced` | `deep`).
+Wire-level compression: [Headroom](headroom.md) (`agent-90` under ultra-lean).
+
 Load this when a task will make many tool calls, return large outputs, or run
 long enough that context rot becomes the next failure mode. Host compaction is
 the host's job. This page teaches the agent how to stay under it.
@@ -35,7 +38,7 @@ transcript unless the user asked for the raw body.
 - A subagent returns a distillate: what changed, what was proved, what remains.
   It does not return its transcript.
 - Structured notes belong at session end or after repeated failure, through the
-  existing learning loop. They are not a running diary.
+  existing learning session. They are not a running diary.
 - On failure, change the premise or the discriminating observation. Do not
   repeat the same action with different wording.
 

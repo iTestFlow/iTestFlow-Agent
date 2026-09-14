@@ -1,5 +1,7 @@
 # Research receipt
 
+Phase-gate map: [delivery-phase-gates.md](delivery-phase-gates.md).
+
 Load this before the first implementation mutation, except mechanical one-file
 reversible work: name the eight steps, then record store irrelevance without
 querying. Default and most-intelligent work query a store only when it can
@@ -23,8 +25,8 @@ Do these in order:
    standards, and proven upstream implementations. Record source URLs and date.
 7. Compare proven approaches, steelman the rejected approach, and choose the
    smallest root-owner fix that preserves the invariants.
-8. Record a concrete plan, proof commands, and the first RED observation in the
-   issue for issue-backed work, otherwise in the transient working context.
+8. Record a concrete plan and deferred consolidated proof commands in the issue
+   for issue-backed work, otherwise in transient working context.
 
 This list is the research receipt. Memory, MemPalace, and Graphify are advisory
 for ordinary tasks: store failure records `degraded` and never blocks work.
@@ -39,10 +41,11 @@ contract changes.
 Every substantive plan is thorough and decision-ready. Establish the main
 objective and reasoning, success criteria, audience, included and excluded
 scope, constraints, current state, callers, assumptions, tradeoffs, risks, and
-proof before reducing the work to files or steps. Ask every material question
-needed for high confidence in the user's intent, but never ask a question the
-repository, retrieval stores, or authoritative sources can answer. Record the
-answer, any remaining unknown, and the evidence behind the confidence level.
+proof before reducing the work to files or steps. Never ask a question the
+repository, retrieval stores, or authoritative sources can answer. Then ask
+every material question needed for high confidence in the user's intent, and
+keep asking follow-ups until the plan is decision-ready. Record the answer, any
+remaining unknown, and the evidence behind the confidence level.
 
 Every plan records each store as `used` (scoped query plus verified evidence),
 `skipped` (concrete irrelevance), or `degraded` (attempt plus sanitized reason),
@@ -50,9 +53,12 @@ and includes dated online research. Legacy query/evidence means `used`. Compare
 two complete approaches and steelman the rejected option. Use Mermaid when
 dependencies, components, state, or workflows become materially clearer;
 otherwise record why a diagram would be decorative. Own implementation of the
-plan: after approval, carry it proactively through RED, implementation,
-independent review, PR delivery, authorized merge, and scoped cleanup. Re-ask
-only for a new HALT condition, not for approval already granted.
+plan: after approval, go completely unattended and carry it proactively through
+complete implementation, consolidated Check/Act, one independent PR review,
+PR delivery, authorized merge, and
+scoped cleanup. Do not ask the user for implementation clarifications; dispatch
+a consultant agent. HALT only when merge authority was never granted or a new
+request contradicts the approved plan, not for approval already granted.
 
 Install and learning contracts live in [dependencies.json](../dependencies.json)
 and are enforced by `tests/scripts/test_chaos_engine_installer.py`,

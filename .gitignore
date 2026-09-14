@@ -13,37 +13,26 @@ data/uploads/*
 data/indexes/*
 data/model-cache/*
 data/document-store/*
-# Stray output of IDE-level Playwright MCP servers (screenshots/session YMLs);
-# the app's own execution artifacts live in data/document-store (ignored above).
-.playwright-mcp/
 *.log
 tsconfig.tsbuildinfo
-graphify-out/
 .claude
 .codex
-
-.memory/index/
-.memory/context/
-.memory/exports/
-.memory/recovery/
-.memory/.backup/
-.memory/.lock
-
-# MemPalace canonical taxonomy is tracked in mempalace.yaml. Runtime state is local.
-/.mempalace/
-/entities.json
-/mempalace_embedder.json
 # CHAOSENGINE-RUNTIME:START
 .chaos-engine-runtime/
 .chaos-engine-runtime.lock
 .chaos-engine-runtime.*
 .chaos-engine-state/
+.chaos-engine-runtime-current.json
+.chaos-engine-runtime-current.json.*
+.chaos-engine-runtime-generations/
+.chaos-engine-runtime-transactions/
 .chaos-engine.lock
 .chaos-engine.transaction.json
 .chaos-engine.backup/
 .chaos-engine.backup.*/
 .chaos-engine-cross-rollback/
 .chaos-engine-uninstall-*
+.chaos-engine-dependencies.json
 .chaos-engine-hosts.json
 .chaos-engine-hosts.*
 .chaos-engine-directory-claim-*
@@ -85,6 +74,8 @@ graphify-out/
 !.gemini/skills/chaos-engine/**
 !.github/
 !.github/copilot-instructions.md
+!.github/hooks/
+!.github/hooks/chaos-engine.json
 !.github/skills/
 !.github/skills/chaos-engine/
 !.github/skills/chaos-engine/**
@@ -96,6 +87,15 @@ graphify-out/
 !plugins/ponytail/
 !plugins/ponytail/**
 !.mcp.json
+
+# Machine-local installer and Graphify artifacts remain untracked after the
+# installed-harness allowlist above.
+.chaos-engine-runtime-pointer.repair-backup-*.json
+.claude/*.graphify-bak
+.claude/skills/graphify/
+.codex/*.graphify-bak
+.codex/skills/
+plugins/**/__pycache__/
 !mempalace.yaml
 !AGENTS.md
 !CLAUDE.md
@@ -103,9 +103,3 @@ graphify-out/
 !.gitattributes
 .chaos-engine-owned-directory
 # CHAOSENGINE-RUNTIME:END
-
-# Local agent skill directories (kept outside the ChaosEngine-managed block)
-/.claude/skills/*
-!/.claude/skills/chaos-engine/
-!/.claude/skills/chaos-engine/**
-/.codex/skills/

@@ -3,7 +3,11 @@
 
 from __future__ import annotations
 
+import importlib.util
+import inspect
+
 import argparse
+import base64
 from contextlib import contextmanager, nullcontext
 import hashlib
 import json
@@ -12,16 +16,19 @@ import re
 import runpy
 import secrets
 import shutil
+import subprocess  # nosec B404 - fixed list-form Maven build commands.
 import sys
 import tempfile
 import types
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 INSTALL_DIRECTORY = ".chaos-engine"
 MANIFEST_NAME = "manifest.json"
 SCHEMA_VERSION = 1
+DIAGNOSTIC_SCHEMA_VERSION = 2
+CANONICAL_IDENTITY = "chaos-engine"
 DEFAULT_DISTRIBUTION = "portable"
 DISTRIBUTIONS_NAME = "distributions.json"
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
@@ -38,6 +45,7 @@ UNINSTALL_CURRENT_NAME = ".chaos-engine-uninstall-current"
 UNINSTALL_OLD_BACKUP_NAME = ".chaos-engine-uninstall-old-backup"
 DEPENDENCY_LOCK_MAGIC = b"chaos-engine-dependencies-lock-v1\n"
 CROSS_ROLLBACK_JOURNAL_NAME = ".chaos-engine-cross-rollback"
+ACCOUNT_ROLLBACK_JOURNAL_NAME = ".chaos-engine-account-rollback"
 CAPABILITY_FIELDS = {"owner", "scope", "lifecycle", "taskImpact"}
 CAPABILITY_ENUMS = {
     "owner": {"installer", "project", "user"},
@@ -48,8 +56,36 @@ CAPABILITY_ENUMS = {
 CAPABILITY_COMPONENTS = {
     "core", "skills", "playbooks", "hooks", "plugins", "roles", "mcps",
     "retrieval-config", "projection-policy", "tools", "memory", "mempalace",
-    "graphify", "maven-tools-mcp",
+    "graphify", "maven-tools-mcp", "headroom",
 }
+PROJECT_SETUP_OUTPUTS = (
+    ".agents/skills/graphify",
+    "graphify-out",
+)
+MEMPALACE_STATE_OUTPUT = ".chaos-engine-state/mempalace"
+BUNDLE_OPTIONS_PATH = ".chaos-engine-state/bundle-options.json"
+DEFAULT_BUNDLE_COMPONENTS = (
+    "memory",
+    "mempalace",
+    "graphify",
+    "ponytail",
+    "headroom",
+    "caveman",
+)
+REPAIRABLE_COMPONENTS = frozenset({
+    "plugins",
+    "hosts",
+    "core",
+    "headroom",
+    "mempalace",
+    "graphify",
+    "memory",
+    "hooks",
+    "mcps",
+    "skills",
+    "roles",
+    "tools",
+})
 
 
 def legacy_capability_policy() -> dict[str, dict[str, str]]:
@@ -72,7 +108,10 @@ def legacy_capability_policy() -> dict[str, dict[str, str]]:
         owner="project", scope="repository", lifecycle="derived-single-writer", taskImpact="advisory"
     )
     result["maven-tools-mcp"].update(
-        owner="user", scope="user", lifecycle="user-managed-cache", taskImpact="optional"
+        owner="installer", scope="user", lifecycle="receipt-owned", taskImpact="optional"
+    )
+    result["headroom"].update(
+        owner="installer", scope="user", lifecycle="receipt-owned", taskImpact="optional"
     )
     return _validated_capabilities(result)
 
@@ -141,6 +180,20 @@ def is_link_or_reparse(path: Path) -> bool:
     except FileNotFoundError:
         return False
     return bool(attributes & 0x400)
+
+
+def dependency_tombstone_entries(root: Path) -> list[Path]:
+    entries: list[Path] = []
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as children:
+            paths = sorted((Path(child.path) for child in children), reverse=True)
+        for path in paths:
+            entries.append(path)
+            if not is_link_or_reparse(path) and path.is_dir():
+                pending.append(path)
+    return sorted(entries)
 
 
 def reject_link_or_reparse(path: Path) -> None:
@@ -265,12 +318,21 @@ def load_distribution(source: Path, distribution: str) -> tuple[dict[str, object
         raise ValueError(f"unknown ChaosEngine distribution: {distribution}")
     profile = policy.get("profile")
     forbidden_tokens = policy.get("forbiddenTokens")
+    runtime_files = policy.get("runtimeFiles")
     if (
         not isinstance(profile, str)
         or re.fullmatch(r"[a-z0-9][a-z0-9-]*", profile) is None
         or not isinstance(forbidden_tokens, list)
         or not all(
         isinstance(token, str) and token for token in forbidden_tokens
+        )
+        or not isinstance(runtime_files, list)
+        or not all(
+            isinstance(relative, str)
+            and PurePosixPath(relative).parts
+            and not PurePosixPath(relative).is_absolute()
+            and all(part not in {"", ".", ".."} for part in PurePosixPath(relative).parts)
+            for relative in runtime_files
         )
     ):
         raise ValueError("ChaosEngine distribution policy is invalid")
@@ -319,6 +381,24 @@ def load_capability_policy(source: Path, distribution: str) -> tuple[dict[str, d
     return merged, hashlib.sha256(encoded).hexdigest()
 
 
+def is_origin_only(relative: Path) -> bool:
+    return (
+        relative.parts[:1] == ("guides",)
+        or relative.parts[:2] == ("assets", "brand")
+        or relative.as_posix() in {
+            "README.md",
+            "INSTALL.md",
+            "RESEARCH.md",
+            "STANDALONE.md",
+            "decision-quality-baseline.md",
+            "decision-quality-rubric.md",
+            "decision-quality-calibration.md",
+            "decision-quality-calibration.aggregate.json",
+            "decision-quality-report.md",
+        }
+    )
+
+
 def source_files(source: Path, distribution: str = DEFAULT_DISTRIBUTION) -> tuple[Path, ...]:
     reject_link_or_reparse(source)
     if not (source / "skills/chaos-engine/SKILL.md").is_file():
@@ -328,10 +408,11 @@ def source_files(source: Path, distribution: str = DEFAULT_DISTRIBUTION) -> tupl
     policy, _ = load_distribution(source, distribution)
     selected_profile = str(policy["profile"])
     forbidden_tokens = tuple(str(token).casefold() for token in policy["forbiddenTokens"])
+    runtime_files = frozenset(str(relative) for relative in policy["runtimeFiles"])
     files: list[Path] = []
     for path in sorted(source.rglob("*")):
         relative = path.relative_to(source)
-        if "__pycache__" in relative.parts or path.suffix == ".pyc":
+        if is_generated_python_cache(relative):
             continue
         if relative.as_posix() == DISTRIBUTIONS_NAME:
             continue
@@ -341,7 +422,7 @@ def source_files(source: Path, distribution: str = DEFAULT_DISTRIBUTION) -> tupl
             and relative.parts[1] != selected_profile
         ):
             continue
-        if relative.parts[:2] == ("assets", "brand") or relative.as_posix() == "RESEARCH.md":
+        if is_origin_only(relative):
             continue
         if is_link_or_reparse(path):
             raise ValueError(f"source contains a link or reparse point: {relative}")
@@ -353,6 +434,9 @@ def source_files(source: Path, distribution: str = DEFAULT_DISTRIBUTION) -> tupl
                     f"distribution policy rejected forbidden content: {relative.as_posix()}"
                 )
             files.append(path)
+    packaged = {path.relative_to(source).as_posix() for path in files}
+    if not runtime_files <= packaged:
+        raise ValueError("ChaosEngine distribution runtime inventory is incomplete")
     return tuple(files)
 
 
@@ -400,14 +484,28 @@ def load_manifest(target: Path) -> dict[str, object]:
     if capabilities is not None:
         validated = _validated_capabilities(capabilities)
         encoded = json.dumps(validated, sort_keys=True, separators=(",", ":")).encode()
-        if (
-            set(validated) != CAPABILITY_COMPONENTS
-            or capability_digest != hashlib.sha256(encoded).hexdigest()
-        ):
+        known = set(validated)
+        if not known <= CAPABILITY_COMPONENTS:
             raise ValueError("ChaosEngine manifest has an invalid capability policy")
+        if capability_digest != hashlib.sha256(encoded).hexdigest():
+            raise ValueError("ChaosEngine manifest has an invalid capability policy")
+        # Forward-compatible read: older trees may omit newly added optional
+        # components (e.g. headroom). Required components must still be present so
+        # upgrade can keep a verifiable backup for rollback (#5613).
+        missing = CAPABILITY_COMPONENTS - known
+        if missing:
+            defaults = legacy_capability_policy()
+            if any(defaults[name]["taskImpact"] != "optional" for name in missing):
+                raise ValueError("ChaosEngine manifest has an invalid capability policy")
+            for name in sorted(missing):
+                validated[name] = dict(defaults[name])
         manifest["capabilities"] = validated
     manifest["source"] = normalized_source
     return manifest
+
+
+def is_generated_python_cache(relative: Path) -> bool:
+    return "__pycache__" in relative.parts or relative.suffix == ".pyc"
 
 
 def installed_payload(target: Path) -> dict[str, str]:
@@ -415,9 +513,11 @@ def installed_payload(target: Path) -> dict[str, str]:
     payload: dict[str, str] = {}
     for path in sorted(target.rglob("*")):
         reject_link_or_reparse(path)
-        relative = path.relative_to(target).as_posix()
-        if path.is_file() and relative != MANIFEST_NAME:
-            payload[relative] = file_sha256(path)
+        relative = path.relative_to(target)
+        if is_generated_python_cache(relative):
+            continue
+        if path.is_file() and relative.as_posix() != MANIFEST_NAME:
+            payload[relative.as_posix()] = file_sha256(path)
     return payload
 
 
@@ -426,6 +526,674 @@ def verify_install(target: Path) -> dict[str, object]:
     if installed_payload(target) != manifest["files"]:
         raise ValueError(f"ChaosEngine ownership drift detected: {target}")
     return manifest
+
+
+def _is_link_or_reparse_error(error: BaseException) -> bool:
+    return str(error).startswith("path is a link or reparse point:")
+
+
+def try_verify_install(target: Path) -> dict[str, object] | None:
+    try:
+        return verify_install(target)
+    except ValueError as error:
+        if _is_link_or_reparse_error(error):
+            raise
+        return None
+
+
+def account_dependency_receipt_missing(project: Path) -> bool:
+    """True when the account dependency receipt is absent or unsafe to read."""
+    path = project / ".chaos-engine-dependencies.json"
+    if is_link_or_reparse(path):
+        return True
+    return not path.is_file()
+
+
+def _installed_hosts_receipt_payload(project: Path) -> dict[str, object] | None:
+    """Return the installed-phase host receipt payload, else None."""
+    receipt = project / ".chaos-engine-hosts.json"
+    if not receipt.is_file() or is_link_or_reparse(receipt):
+        return None
+    try:
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if isinstance(payload, dict) and payload.get("phase") == "installed":
+        return payload
+    return None
+
+
+def missing_core_with_installed_hosts(project: Path) -> bool:
+    """True when host receipt claims installed but the portable core tree is absent."""
+    target = project / INSTALL_DIRECTORY
+    if target.exists() or is_link_or_reparse(target):
+        return False
+    return _installed_hosts_receipt_payload(project) is not None
+
+
+def stale_host_state_after_wiped_runtime(project: Path) -> bool:
+    """True for rematerialized core with unbound host anchors (#5587).
+
+    Safe class requires a missing account dependency receipt. coreCommit mismatch
+    and live adapter drift with deps present are handled by
+    upgrade_host_receipt_drift_needed (#5633), not this wiped-runtime gate.
+    Quarantine when an active host anchor token does not match the installed
+    core hostToken — the wipe/rematerialize leftover that otherwise collides
+    after #5606 receipt-only quarantine.
+    """
+    if not account_dependency_receipt_missing(project):
+        return False
+    if missing_core_with_installed_hosts(project):
+        return True
+    target = project / INSTALL_DIRECTORY
+    if not target.exists() or is_link_or_reparse(target):
+        return False
+    if try_verify_install(target) is None:
+        return False
+    core_token = peek_host_token(target)
+    if core_token is None or not project.is_dir():
+        return False
+    for path in project.iterdir():
+        name = path.name
+        if not name.startswith(".chaos-engine-hosts.active-"):
+            continue
+        token = name[len(".chaos-engine-hosts.active-") :]
+        if re.fullmatch(r"[0-9a-f]{64}", token) is None:
+            return True
+        if token != core_token:
+            return True
+    return False
+
+
+def orphan_host_anchors_without_core(project: Path) -> bool:
+    """True when active/removing host anchors exist but `.chaos-engine` is absent (#5630).
+
+    Extends wiped-runtime heal so orphan anchors alone (no phase=installed receipt)
+    are quarantined instead of colliding on reinstall. Healthy dependency receipt
+    with a matching live core is intentionally out of scope (live upgrade).
+    """
+    target = project / INSTALL_DIRECTORY
+    if target.exists() or is_link_or_reparse(target):
+        return False
+    if not project.is_dir():
+        return False
+    for path in project.iterdir():
+        name = path.name
+        if name.startswith(".chaos-engine-hosts.active-") or name.startswith(
+            ".chaos-engine-hosts.removing-"
+        ):
+            return True
+    return False
+
+
+
+def orphan_core_without_hosts_receipt(project: Path) -> bool:
+    """True when portable core verifies but hosts receipt is absent (#5636)."""
+    target = project / INSTALL_DIRECTORY
+    if not target.exists() or is_link_or_reparse(target):
+        return False
+    if try_verify_install(target) is None:
+        return False
+    receipt = project / ".chaos-engine-hosts.json"
+    return not receipt.exists() and not is_link_or_reparse(receipt)
+
+
+def missing_hosts_receipt_recovery_status(project: Path) -> dict[str, object]:
+    """Doctor/status payload for keep-core without hosts receipt (#5636)."""
+    target = project / INSTALL_DIRECTORY
+    commit = "missing-hosts-receipt"
+    distribution = "missing-hosts-receipt"
+    policy = "0" * 64
+    if target.exists() and not is_link_or_reparse(target):
+        manifest = try_verify_install(target)
+        if manifest is not None:
+            commit = str(manifest["source"]["commit"])  # type: ignore[index]
+            distribution = str(manifest["distribution"]["id"])  # type: ignore[index]
+            policy = str(manifest["distribution"]["policySha256"])  # type: ignore[index]
+    return {
+        "status": "recovery-required",
+        "commit": commit,
+        "distribution": distribution,
+        "policySha256": policy,
+        "kernel": {"status": "healthy"},
+        "hosts": {"status": "recovery-required"},
+        "dependencies": {"status": "recovery-required"},
+        "components": {
+            "hosts": {
+                "status": "recovery-required",
+                "code": "CE_HOSTS_RECEIPT_MISSING",
+                "taskImpact": "required",
+                "detail": (
+                    "`.chaos-engine/` is present but `.chaos-engine-hosts.json` is "
+                    "missing (kept core after a provision failure); rerun the "
+                    "ChaosEngine install one-liner or "
+                    "`python3 .chaos-engine/install.py repair --project . --component hosts` "
+                    "to bind hosts from the current core"
+                ),
+            }
+        },
+    }
+
+
+def upgrade_host_receipt_drift_needed(project: Path) -> bool:
+    """True when deps+core healthy but host receipt/anchors drifted (#5633).
+
+    Covers the post-#5631 dogfood upgrade gap: after git FF/restore of
+    receipt-owned host adapters, `.chaos-engine/` + the dependency receipt remain
+    while `.chaos-engine-hosts.json` still names an old coreCommit/token (or live
+    adapters diverge from receipt `after` images). wiped-runtime heal requires a
+    missing dependency receipt, so this gate heals the deps-present case by
+    quarantining the stale receipt/anchors so install / `repair --component hosts`
+    can rebind from the current core without manual surgery or deleting foreign
+    user MCP config.
+    """
+    if account_dependency_receipt_missing(project):
+        return False
+    # In-flight account upgrade journals own the prior host receipt; do not
+    # quarantine out from under recover_account_rollback_journal.
+    if read_account_rollback_journal(project) is not None:
+        return False
+    target = project / INSTALL_DIRECTORY
+    if not target.exists() or is_link_or_reparse(target):
+        return False
+    manifest = try_verify_install(target)
+    if manifest is None:
+        return False
+    core_commit = str(manifest["source"]["commit"])  # type: ignore[index]
+    core_token = peek_host_token(target)
+    if project.is_dir() and core_token is not None:
+        for path in project.iterdir():
+            name = path.name
+            if not name.startswith(".chaos-engine-hosts.active-"):
+                continue
+            token = name[len(".chaos-engine-hosts.active-") :]
+            if re.fullmatch(r"[0-9a-f]{64}", token) is None or token != core_token:
+                return True
+    receipt = _installed_hosts_receipt_payload(project)
+    if receipt is None:
+        return False
+    if receipt.get("coreCommit") != core_commit:
+        return True
+    try:
+        host_controller = load_installed_controller(target, "hosts")
+        host_controller.verify(project, core_commit=core_commit)
+    except (OSError, RuntimeError, ValueError) as error:
+        message = str(error)
+        return any(
+            token in message
+            for token in (
+                "host adapter drift",
+                "host receipt does not match the installed core",
+                "receipt integrity drift",
+                "host receipt is missing or invalid",
+                "host anchor collision",
+            )
+        )
+    return False
+
+
+def wiped_runtime_recovery_needed(project: Path) -> bool:
+    """Unified heal gate for missing-core, rematerialized-core, and upgrade drift."""
+    return (
+        missing_core_with_installed_hosts(project)
+        or stale_host_state_after_wiped_runtime(project)
+        or orphan_host_anchors_without_core(project)
+        or upgrade_host_receipt_drift_needed(project)
+    )
+
+
+def _quarantine_state_path(state: Path, preferred: str) -> Path:
+    destination = state / preferred
+    if destination.exists() or is_link_or_reparse(destination):
+        stem = Path(preferred).stem
+        suffix = Path(preferred).suffix
+        destination = state / f"{stem}-{secrets.token_hex(4)}{suffix}"
+        if destination.exists() or is_link_or_reparse(destination):
+            raise ValueError(
+                f"ChaosEngine cannot quarantine orphaned host state: {destination}"
+            )
+    return destination
+
+
+def quarantine_orphaned_host_receipt(project: Path, reporter=None) -> Path | None:
+    """Move orphaned/stale host receipt (+ anchors) aside for safe reinstall.
+
+    Covers (#5606): phase=installed host receipt with wiped `.chaos-engine`.
+    Extends (#5586/#5587): rematerialized core with missing dependency receipt and
+    stale host receipt/anchor (coreCommit or hostToken drift / verify failure).
+    Extends (#5633): deps+core present with drifted receipt/adapters (upgrade
+    host-adapter drift); quarantine then rebind preserves foreign user MCP.
+    Quarantining lets install rematerialize core and rebind hosts without
+    undocumented file surgery.
+    """
+    if not wiped_runtime_recovery_needed(project):
+        return None
+    receipt = project / ".chaos-engine-hosts.json"
+    state = project / ".chaos-engine-state"
+    state.mkdir(parents=True, exist_ok=True)
+    destination: Path | None = None
+    if receipt.exists() or is_link_or_reparse(receipt):
+        reject_link_or_reparse(receipt)
+        destination = _quarantine_state_path(state, "orphaned-hosts-receipt.json")
+        destination.write_bytes(receipt.read_bytes())
+        receipt.unlink()
+    quarantined_anchors = 0
+    if project.is_dir():
+        for path in sorted(project.iterdir()):
+            name = path.name
+            if not (
+                name.startswith(".chaos-engine-hosts.active-")
+                or name.startswith(".chaos-engine-hosts.removing-")
+            ):
+                continue
+            reject_link_or_reparse(path)
+            moved = _quarantine_state_path(state, f"orphaned-{name}")
+            moved.write_bytes(path.read_bytes() if path.is_file() else b"")
+            if path.is_file():
+                path.unlink()
+            else:
+                remove_repairable_tree(path)
+            quarantined_anchors += 1
+    if reporter is not None:
+        # Receipt already moved; deps+core presence distinguishes #5633 from wiped-runtime.
+        if not account_dependency_receipt_missing(project) and (
+            project / INSTALL_DIRECTORY
+        ).exists():
+            detail = "quarantined drifted host receipt (upgrade adapter drift)"
+        else:
+            detail = "quarantined orphaned host receipt"
+        if quarantined_anchors:
+            detail += f" and {quarantined_anchors} host anchor(s)"
+        detail += "; rematerializing/rebinding from current core"
+        reporter.trace(detail)
+    return destination
+
+
+def missing_core_recovery_status(project: Path) -> dict[str, object]:
+    del project  # project identity is implied by the caller lock scope
+    return {
+        "status": "recovery-required",
+        "commit": "missing-core",
+        "distribution": "missing-core",
+        "policySha256": "0" * 64,
+        "kernel": {"status": "recovery-required"},
+        "hosts": {"status": "recovery-required"},
+        "dependencies": {"status": "recovery-required"},
+        "components": {
+            "core": {
+                "status": "recovery-required",
+                "code": "CE_CORE_MISSING",
+                "detail": (
+                    "host receipt is installed but .chaos-engine core is missing; "
+                    "rerun the ChaosEngine install one-liner to restore core "
+                    "(or uninstall, then install fresh)"
+                ),
+            }
+        },
+    }
+
+
+def wiped_runtime_recovery_status(project: Path) -> dict[str, object]:
+    """Doctor/status payload for rematerialized core + stale hosts (#5587)."""
+    target = project / INSTALL_DIRECTORY
+    commit = "wiped-runtime"
+    distribution = "wiped-runtime"
+    policy = "0" * 64
+    if target.exists() and not is_link_or_reparse(target):
+        manifest = try_verify_install(target)
+        if manifest is not None:
+            commit = str(manifest["source"]["commit"])  # type: ignore[index]
+            distribution = str(manifest["distribution"]["id"])  # type: ignore[index]
+            policy = str(manifest["distribution"]["policySha256"])  # type: ignore[index]
+    return {
+        "status": "recovery-required",
+        "commit": commit,
+        "distribution": distribution,
+        "policySha256": policy,
+        "kernel": {"status": "recovery-required"},
+        "hosts": {"status": "recovery-required"},
+        "dependencies": {"status": "recovery-required"},
+        "components": {
+            "hosts": {
+                "status": "recovery-required",
+                "code": "CE_WIPED_RUNTIME",
+                "taskImpact": "required",
+                "detail": (
+                    "wiped `.chaos-engine` / missing dependency receipt left a stale "
+                    "host receipt or anchor; rerun the ChaosEngine install one-liner "
+                    "to quarantine orphaned host state, restore the dependency "
+                    "receipt, and rebind hosts from the current core"
+                ),
+            },
+            "tools": {
+                "status": "recovery-required",
+                "code": "CE_DEPENDENCY_RECEIPT_MISSING",
+                "taskImpact": "required",
+                "detail": (
+                    "`.chaos-engine-dependencies.json` is missing; rerun the "
+                    "ChaosEngine install one-liner (or "
+                    "`python3 .chaos-engine/install.py install` from a source "
+                    "checkout) to restore the dependency receipt and runtime"
+                ),
+            },
+        },
+    }
+
+
+def upgrade_host_receipt_drift_status(project: Path) -> dict[str, object]:
+    """Doctor/status payload for deps+core present + drifted hosts (#5633)."""
+    target = project / INSTALL_DIRECTORY
+    commit = "host-adapter-drift"
+    distribution = "host-adapter-drift"
+    policy = "0" * 64
+    if target.exists() and not is_link_or_reparse(target):
+        manifest = try_verify_install(target)
+        if manifest is not None:
+            commit = str(manifest["source"]["commit"])  # type: ignore[index]
+            distribution = str(manifest["distribution"]["id"])  # type: ignore[index]
+            policy = str(manifest["distribution"]["policySha256"])  # type: ignore[index]
+    return {
+        "status": "recovery-required",
+        "commit": commit,
+        "distribution": distribution,
+        "policySha256": policy,
+        "kernel": {"status": "healthy"},
+        "hosts": {"status": "recovery-required"},
+        "dependencies": {"status": "healthy"},
+        "components": {
+            "hosts": {
+                "status": "recovery-required",
+                "code": "CE_HOST_ADAPTER_DRIFT",
+                "taskImpact": "required",
+                "detail": (
+                    "host receipt/anchors drifted from the installed core while "
+                    "`.chaos-engine/` and `.chaos-engine-dependencies.json` remain; "
+                    "rerun the ChaosEngine install one-liner or "
+                    "`python3 .chaos-engine/install.py repair --project . --component hosts` "
+                    "to quarantine the stale receipt and rebind hosts (foreign MCP kept)"
+                ),
+            }
+        },
+    }
+
+
+def inspect_current_install(target: Path) -> dict[str, object] | None:
+    reject_link_or_reparse(target)
+    if not target.is_dir():
+        raise ValueError(f"ChaosEngine install path is not a directory: {target}")
+    return try_verify_install(target)
+
+
+def peek_host_token(target: Path) -> str | None:
+    try:
+        manifest = load_manifest(target)
+    except ValueError:
+        return None
+    token = manifest.get("hostToken")
+    if isinstance(token, str) and re.fullmatch(r"[0-9a-f]{64}", token) is not None:
+        return token
+    return None
+
+
+def remove_repairable_tree(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def project_setup_output_files(project: Path, relative: str) -> tuple[bool, dict[str, str]]:
+    """Return one Graphify output tree's exact regular-file digests."""
+    root = project / relative
+    reject_link_or_reparse(root)
+    if not root.exists():
+        return False, {}
+    if not root.is_dir():
+        raise ValueError(f"project setup output is not a directory: {root}")
+    files: dict[str, str] = {}
+    for child in root.rglob("*"):
+        reject_link_or_reparse(child)
+        if child.is_file():
+            files[child.relative_to(root).as_posix()] = file_sha256(child)
+        elif not child.is_dir():
+            raise ValueError(f"project setup output is not a file or directory: {child}")
+    return True, files
+
+
+def snapshot_project_setup_outputs(
+    project: Path,
+) -> tuple[Path, dict[str, tuple[bool, dict[str, str]]]]:
+    """Keep Graphify preimages until host setup commits under the project lock."""
+    snapshot = Path(tempfile.mkdtemp(prefix="chaos-engine-project-setup-"))
+    before: dict[str, tuple[bool, dict[str, str]]] = {}
+    try:
+        for relative in PROJECT_SETUP_OUTPUTS:
+            original = project / relative
+            exists, files = project_setup_output_files(project, relative)
+            before[relative] = (exists, files)
+            if not exists:
+                continue
+            saved = snapshot / relative
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(original, saved)
+    except BaseException:
+        shutil.rmtree(snapshot, ignore_errors=True)
+        raise
+    return snapshot, before
+
+
+def project_setup_after_images(project: Path) -> dict[str, dict[str, str]]:
+    """Capture exact setup-owned Graphify files just before host publication."""
+    return {
+        relative: project_setup_output_files(project, relative)[1]
+        for relative in PROJECT_SETUP_OUTPUTS
+    }
+
+
+def mempalace_rollback_image(
+    before: tuple[bool, dict[str, str]], after: tuple[bool, dict[str, str]]
+) -> dict[str, object]:
+    """Record exact per-file state so rollback preserves the immutable base."""
+    return {
+        "before": {"exists": before[0], "files": dict(before[1])},
+        "after": {"exists": after[0], "files": dict(after[1])},
+    }
+
+
+def _mempalace_state_relative(relative: str = "") -> str:
+    path = PurePosixPath(MEMPALACE_STATE_OUTPUT)
+    if relative:
+        child = PurePosixPath(relative)
+        if child.is_absolute() or any(part in {"", ".", ".."} for part in child.parts):
+            raise ValueError("account rollback has invalid MemPalace state image")
+        path = path / child
+    return path.as_posix()
+
+
+def _mempalace_changed_error(
+    mismatches: list[dict[str, str | None]],
+) -> ValueError:
+    capability = legacy_capability_policy()["mempalace"]
+    evidence = [
+        {
+            "path": item["path"],
+            "expectedDigest": item.get("expectedDigest"),
+            "actualDigest": item.get("actualDigest"),
+            "owner": capability["owner"],
+            "action": "blocked",
+        }
+        for item in mismatches
+    ]
+    payload = evidence[0] if len(evidence) == 1 else {
+        "path": _mempalace_state_relative(),
+        "expectedDigest": None,
+        "actualDigest": None,
+        "owner": capability["owner"],
+        "action": "blocked",
+        "files": evidence,
+    }
+    return ValueError(
+        "candidate MemPalace state changed before rollback: "
+        + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    )
+
+
+def _mempalace_file_mismatches(
+    expected_files: dict[str, str],
+    actual_files: dict[str, str],
+) -> list[dict[str, str | None]]:
+    mismatches: list[dict[str, str | None]] = []
+    for relative in sorted(set(expected_files) | set(actual_files)):
+        expected = expected_files.get(relative)
+        actual = actual_files.get(relative)
+        if expected != actual:
+            mismatches.append(
+                {
+                    "path": _mempalace_state_relative(relative),
+                    "expectedDigest": expected,
+                    "actualDigest": actual,
+                }
+            )
+    return mismatches
+
+
+def restore_candidate_mempalace_state(project: Path, image: dict[str, object]) -> None:
+    """Restore a base palace by deleting only unchanged candidate-created files."""
+    before = image.get("before")
+    after = image.get("after")
+    if (
+        not isinstance(before, dict)
+        or not isinstance(after, dict)
+        or set(before) != {"exists", "files"}
+        or set(after) != {"exists", "files"}
+    ):
+        raise ValueError("account rollback has invalid MemPalace state image")
+    before_exists = before.get("exists")
+    after_exists = after.get("exists")
+    before_files = before.get("files")
+    after_files = after.get("files")
+    if (
+        not isinstance(before_exists, bool)
+        or not isinstance(after_exists, bool)
+        or not isinstance(before_files, dict)
+        or not isinstance(after_files, dict)
+        or any(
+            not isinstance(relative, str)
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for files in (before_files, after_files)
+            for relative, digest in files.items()
+        )
+    ):
+        raise ValueError("account rollback has invalid MemPalace state image")
+    palace = project / MEMPALACE_STATE_OUTPUT
+    exists, current = project_setup_output_files(project, MEMPALACE_STATE_OUTPUT)
+    mismatches = _mempalace_file_mismatches(after_files, current)
+    if exists != after_exists:
+        mismatches.insert(
+            0,
+            {
+                "path": _mempalace_state_relative(),
+                "expectedDigest": None,
+                "actualDigest": None,
+            },
+        )
+    if exists:
+        recorded_ancestors: set[str] = set()
+        for relative in after_files:
+            parts = PurePosixPath(relative).parts
+            for depth in range(1, len(parts)):
+                recorded_ancestors.add(PurePosixPath(*parts[:depth]).as_posix())
+        for child in sorted(
+            (item for item in palace.rglob("*") if item.is_dir()),
+            key=lambda item: item.relative_to(palace).as_posix(),
+        ):
+            relative = child.relative_to(palace).as_posix()
+            if relative not in recorded_ancestors:
+                mismatches.append(
+                    {
+                        "path": _mempalace_state_relative(relative),
+                        "expectedDigest": None,
+                        "actualDigest": None,
+                    }
+                )
+    if mismatches:
+        raise _mempalace_changed_error(mismatches)
+    before_mismatches = [
+        {
+            "path": _mempalace_state_relative(relative),
+            "expectedDigest": digest,
+            "actualDigest": after_files.get(relative),
+        }
+        for relative, digest in sorted(before_files.items())
+        if after_files.get(relative) != digest
+    ]
+    if before_mismatches:
+        raise _mempalace_changed_error(before_mismatches)
+    for relative in set(after_files) - set(before_files):
+        (palace / relative).unlink()
+    if not before_exists and after_exists:
+        for directory in sorted(
+            (item for item in palace.rglob("*") if item.is_dir()),
+            key=lambda item: len(item.parts),
+            reverse=True,
+        ):
+            if not any(directory.iterdir()):
+                directory.rmdir()
+        palace.rmdir()
+        state_root = palace.parent
+        if state_root.exists() and not any(state_root.iterdir()):
+            state_root.rmdir()
+    restored_exists, restored_files = project_setup_output_files(
+        project, MEMPALACE_STATE_OUTPUT
+    )
+    restored_mismatches = _mempalace_file_mismatches(before_files, restored_files)
+    if restored_exists != before_exists:
+        restored_mismatches.insert(
+            0,
+            {
+                "path": _mempalace_state_relative(),
+                "expectedDigest": None,
+                "actualDigest": None,
+            },
+        )
+    if restored_mismatches:
+        raise _mempalace_changed_error(restored_mismatches)
+
+
+def restore_project_setup_outputs(
+    project: Path,
+    snapshot: Path,
+    before: dict[str, tuple[bool, dict[str, str]]],
+    after: dict[str, dict[str, str]],
+) -> None:
+    """Undo only unchanged transaction output files; foreign residue always wins."""
+    for relative in PROJECT_SETUP_OUTPUTS:
+        prior_exists, prior_files = before[relative]
+        published_files = after[relative]
+        _current_exists, current_files = project_setup_output_files(project, relative)
+        root = project / relative
+        for child, published_digest in published_files.items():
+            path = root / child
+            current_digest = current_files.get(child)
+            prior_digest = prior_files.get(child)
+            if prior_digest is None:
+                if current_digest == published_digest:
+                    path.unlink()
+                continue
+            if current_digest == published_digest and prior_digest != published_digest:
+                saved = snapshot / relative / child
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(saved.read_bytes())
+        if not prior_exists and root.exists() and root.is_dir():
+            for directory in sorted(
+                (item for item in root.rglob("*") if item.is_dir()),
+                key=lambda item: len(item.parts), reverse=True,
+            ):
+                if not any(directory.iterdir()):
+                    directory.rmdir()
+            if not any(root.iterdir()):
+                root.rmdir()
 
 
 @contextmanager
@@ -576,7 +1344,344 @@ def write_journal(project: Path, operation: str, commit: str) -> Path:
     return journal
 
 
-def write_cross_rollback_journal(project: Path, desired_commit: str, prior_commit: str) -> Path:
+def validate_account_rollback_mempalace_state(value: object) -> dict[str, object]:
+    """Validate the pre-mutation MemPalace image kept outside host receipts."""
+    if not isinstance(value, dict) or set(value) != {"before", "after"}:
+        raise ValueError("account rollback journal is invalid")
+    normalized: list[dict[str, object]] = []
+    for image in (value["before"], value["after"]):
+        if not isinstance(image, dict) or set(image) != {"exists", "files"}:
+            raise ValueError("account rollback journal is invalid")
+        exists = image.get("exists")
+        files = image.get("files")
+        if type(exists) is not bool or not isinstance(files, dict):
+            raise ValueError("account rollback journal is invalid")
+        validated_files: dict[str, str] = {}
+        for relative, digest in files.items():
+            path = PurePosixPath(relative) if isinstance(relative, str) else None
+            if (
+                path is None
+                or path.is_absolute()
+                or any(part in {"", ".", ".."} for part in path.parts)
+                or path.as_posix() != relative
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                raise ValueError("account rollback journal is invalid")
+            validated_files[relative] = digest
+        normalized.append({"exists": exists, "files": validated_files})
+    if normalized[0] != normalized[1]:
+        raise ValueError("account rollback journal is invalid")
+    return {"before": normalized[0], "after": normalized[1]}
+
+
+def _account_rollback_journal_body(
+    desired_commit: str,
+    prior_commit: str,
+    prior_host_receipt: bytes | None,
+    prior_account_receipt: bytes | None,
+    prior_mempalace_state: dict[str, object],
+) -> dict[str, object]:
+    if (
+        COMMIT_PATTERN.fullmatch(desired_commit) is None
+        or COMMIT_PATTERN.fullmatch(prior_commit) is None
+    ):
+        raise ValueError("account rollback journal commits are invalid")
+    body: dict[str, object] = {
+        "schemaVersion": 1,
+        "desiredCommit": desired_commit,
+        "priorCommit": prior_commit,
+        "priorHostReceipt": (
+            base64.b64encode(prior_host_receipt).decode("ascii")
+            if prior_host_receipt is not None else None
+        ),
+        "priorAccountReceipt": (
+            base64.b64encode(prior_account_receipt).decode("ascii")
+            if prior_account_receipt is not None else None
+        ),
+        "priorMempalaceState": validate_account_rollback_mempalace_state(
+            prior_mempalace_state
+        ),
+    }
+    body["integritySha256"] = hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return body
+
+
+def write_account_rollback_journal(
+    project: Path,
+    desired_commit: str,
+    prior_commit: str,
+    *,
+    prior_host_receipt: bytes | None,
+    prior_account_receipt: bytes | None,
+    prior_mempalace_state: dict[str, object],
+) -> Path:
+    """Durably retain base account data before an account installer can mutate it."""
+    transaction = project / ACCOUNT_ROLLBACK_JOURNAL_NAME
+    journal = transaction / "journal.json"
+    reject_link_or_reparse(transaction)
+    if transaction.exists():
+        raise ValueError(f"account rollback transaction collision: {transaction}")
+    body = _account_rollback_journal_body(
+        desired_commit,
+        prior_commit,
+        prior_host_receipt,
+        prior_account_receipt,
+        prior_mempalace_state,
+    )
+    transaction.mkdir(mode=0o700)
+    fsync_directory(project)
+    descriptor = os.open(
+        journal,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+        0o600,
+    )
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write((json.dumps(body, sort_keys=True) + "\n").encode())
+        stream.flush()
+        os.fsync(stream.fileno())
+    fsync_directory(transaction)
+    return journal
+
+
+def fsync_directory(path: Path) -> None:
+    """Persist directory-entry changes on POSIX filesystems."""
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _decode_account_rollback_journal_bytes(value: object) -> bytes | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("account rollback journal is invalid")
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError) as error:
+        raise ValueError("account rollback journal is invalid") from error
+    if base64.b64encode(decoded).decode("ascii") != value:
+        raise ValueError("account rollback journal is invalid")
+    return decoded
+
+
+def read_account_rollback_journal(project: Path) -> dict[str, object] | None:
+    transaction = project / ACCOUNT_ROLLBACK_JOURNAL_NAME
+    journal = transaction / "journal.json"
+    reject_link_or_reparse(transaction)
+    if not transaction.exists():
+        return None
+    if not transaction.is_dir():
+        raise ValueError("account rollback transaction is invalid")
+    for child in transaction.iterdir():
+        reject_link_or_reparse(child)
+        if child.name != "journal.json":
+            raise ValueError("account rollback transaction contains unknown state")
+    try:
+        value = json.loads(journal.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("account rollback journal is invalid") from error
+    if not isinstance(value, dict):
+        raise ValueError("account rollback journal is invalid")
+    integrity = value.get("integritySha256")
+    body = {key: item for key, item in value.items() if key != "integritySha256"}
+    if (
+        set(value) != {
+            "schemaVersion", "desiredCommit", "priorCommit", "priorHostReceipt",
+            "priorAccountReceipt", "priorMempalaceState", "integritySha256",
+        }
+        or integrity != hashlib.sha256(
+            json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    ):
+        raise ValueError("account rollback journal is invalid")
+    expected = _account_rollback_journal_body(
+        str(value.get("desiredCommit", "")),
+        str(value.get("priorCommit", "")),
+        _decode_account_rollback_journal_bytes(value.get("priorHostReceipt")),
+        _decode_account_rollback_journal_bytes(value.get("priorAccountReceipt")),
+        value.get("priorMempalaceState"),
+    )
+    if value != expected:
+        raise ValueError("account rollback journal is invalid")
+    return {
+        "desiredCommit": value["desiredCommit"],
+        "priorCommit": value["priorCommit"],
+        "priorHostReceipt": _decode_account_rollback_journal_bytes(
+            value["priorHostReceipt"]
+        ),
+        "priorAccountReceipt": _decode_account_rollback_journal_bytes(
+            value["priorAccountReceipt"]
+        ),
+        "priorMempalaceState": value["priorMempalaceState"],
+    }
+
+
+def remove_account_rollback_journal(project: Path) -> None:
+    transaction = project / ACCOUNT_ROLLBACK_JOURNAL_NAME
+    journal = transaction / "journal.json"
+    reject_link_or_reparse(transaction)
+    if not transaction.exists():
+        return
+    if not journal.is_file() or len(tuple(transaction.iterdir())) != 1:
+        raise ValueError("account rollback transaction is invalid")
+    fsync_directory(project)
+    journal.unlink()
+    fsync_directory(transaction)
+    transaction.rmdir()
+    fsync_directory(project)
+
+
+def _restore_account_receipt_from_journal(project: Path, controller, before: bytes | None) -> None:
+    path = project / ".chaos-engine-dependencies.json"
+    if is_link_or_reparse(path):
+        raise ValueError("account rollback receipt is a link or reparse point")
+    if path.exists() and not path.is_file():
+        raise ValueError("account rollback receipt is not a regular file")
+    current = path.read_bytes() if path.exists() else None
+    if current == before:
+        return
+    if before is None:
+        if current is not None:
+            controller.atomic_remove(project, path, current)
+    else:
+        controller.atomic_write(project, path, before, current)
+    current = path.read_bytes() if path.exists() else None
+    if current != before:
+        raise ValueError("account rollback receipt changed during recovery")
+
+
+def _restore_account_mempalace_from_journal(project: Path, pending: dict[str, object]) -> None:
+    before = pending["priorMempalaceState"]
+    current = project_setup_output_files(project, MEMPALACE_STATE_OUTPUT)
+    restore_candidate_mempalace_state(
+        project,
+        {
+            "before": before["before"],  # type: ignore[index]
+            "after": {"exists": current[0], "files": current[1]},
+        },
+    )
+
+
+def _account_upgrade_host_receipt_is_durable(
+    project: Path, controller, pending: dict[str, object]
+) -> bool:
+    try:
+        receipt, _raw = controller.read_receipt(project)
+    except ValueError:
+        # Missing/invalid hosts receipt: not durable (#5636 keep-core orphan).
+        return False
+    if receipt.get("phase") != "installed" or receipt.get("coreCommit") != pending["priorCommit"]:
+        return False
+    expected_host = pending["priorHostReceipt"]
+    encoded_host = receipt.get(controller.ROLLBACK_PREVIOUS_RECEIPT)
+    actual_host = (
+        base64.b64decode(encoded_host, validate=True)
+        if isinstance(encoded_host, str)
+        else None
+    )
+    if actual_host != expected_host:
+        normalize = getattr(controller, "rollback_base_receipt", None)
+        if (
+            not callable(normalize)
+            or not isinstance(actual_host, bytes)
+            or not isinstance(expected_host, bytes)
+        ):
+            return False
+        try:
+            if normalize(project, actual_host) != normalize(project, expected_host):
+                return False
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            return False
+    expected_account = pending["priorAccountReceipt"]
+    encoded_account = receipt.get(controller.ROLLBACK_PREVIOUS_ACCOUNT_RECEIPT)
+    actual_account = (
+        base64.b64decode(encoded_account, validate=True)
+        if isinstance(encoded_account, str)
+        else None
+    )
+    if actual_account != expected_account:
+        return False
+    expected_state = pending["priorMempalaceState"]
+    try:
+        actual_state = controller.validate_rollback_mempalace_state(
+            receipt.get(controller.ROLLBACK_PREVIOUS_MEMPALACE_STATE)
+        )
+    except ValueError:
+        return False
+    return actual_state.get("before") == expected_state["before"]  # type: ignore[index]
+
+
+def recover_account_rollback_journal(project: Path) -> None:
+    """Idempotently finish or reverse a crash between account and host publication."""
+    pending = read_account_rollback_journal(project)
+    if pending is None:
+        return
+    target = project / INSTALL_DIRECTORY
+    backup = project / BACKUP_NAME
+    host_receipt = project / ".chaos-engine-hosts.json"
+    # #5636: post-#5631 keep-core can leave an account journal with no hosts
+    # receipt (provision failed before bind). recover must not fail-closed on
+    # read_receipt — drop the journal so install/repair can rematerialize/bind.
+    if not host_receipt.exists() and not is_link_or_reparse(host_receipt):
+        remove_account_rollback_journal(project)
+        return
+    target_manifest = verify_install(target)
+    target_commit = str(target_manifest["source"]["commit"])
+    desired_commit = pending["desiredCommit"]
+    prior_commit = pending["priorCommit"]
+    if target_commit not in (desired_commit, prior_commit):
+        raise ValueError("account rollback target does not match a recorded generation")
+    controller = load_installed_controller(target, "hosts")
+    if target_commit == prior_commit and _account_upgrade_host_receipt_is_durable(
+        project, controller, pending
+    ):
+        remove_account_rollback_journal(project)
+        return
+    if not backup.exists() and not is_link_or_reparse(backup):
+        # Cannot pair-swap without a backup; clear journal and let install rebind.
+        remove_account_rollback_journal(project)
+        return
+    backup_manifest = verify_install(backup)
+    backup_commit = str(backup_manifest["source"]["commit"])
+    if {target_commit, backup_commit} != {desired_commit, prior_commit}:
+        raise ValueError("account rollback trees do not match the recorded generations")
+    if target_commit == prior_commit:
+        expected_host = pending["priorHostReceipt"]
+        if expected_host is not None:
+            _receipt, current_host = controller.read_receipt(project)
+            if current_host != expected_host:
+                raise ValueError("account rollback host receipt changed during recovery")
+        _restore_account_receipt_from_journal(
+            project, controller, pending["priorAccountReceipt"]
+        )
+        _restore_account_mempalace_from_journal(project, pending)
+        rollback(project, _locked=True)
+        target = project / INSTALL_DIRECTORY
+        controller = load_installed_controller(target, "hosts")
+    if str(verify_install(target)["source"]["commit"]) != desired_commit:
+        raise ValueError("account rollback did not restore the recorded base")
+    expected_host = pending["priorHostReceipt"]
+    if expected_host is not None and controller.read_receipt(project)[1] != expected_host:
+        raise ValueError("account rollback host receipt changed during recovery")
+    _restore_account_receipt_from_journal(project, controller, pending["priorAccountReceipt"])
+    _restore_account_mempalace_from_journal(project, pending)
+    remove_account_rollback_journal(project)
+
+
+def write_cross_rollback_journal(
+    project: Path,
+    desired_commit: str,
+    prior_commit: str,
+    *,
+    prior_host_receipt: bytes | None = None,
+) -> Path:
     if COMMIT_PATTERN.fullmatch(desired_commit) is None or COMMIT_PATTERN.fullmatch(prior_commit) is None:
         raise ValueError("rollback commits are invalid")
     transaction = project / CROSS_ROLLBACK_JOURNAL_NAME
@@ -585,8 +1690,22 @@ def write_cross_rollback_journal(project: Path, desired_commit: str, prior_commi
     if transaction.exists():
         raise ValueError(f"cross-resource rollback transaction collision: {transaction}")
     target = project / INSTALL_DIRECTORY
-    if target.exists():
-        load_installed_controller(target, "hosts").set_rollback_intent(
+    host_controller = load_installed_controller(target, "hosts") if target.exists() else None
+    if prior_host_receipt is None and host_controller is not None:
+        historical_receipt = getattr(host_controller, "rollback_previous_receipt", None)
+        if callable(historical_receipt):
+            prior_host_receipt = historical_receipt(project, desired_commit)
+    if prior_host_receipt is not None:
+        if not target.exists():
+            raise ValueError("cross-resource rollback journal has no installed controller")
+        validate_prior_host_receipt(
+            project,
+            host_controller,
+            prior_host_receipt,
+            desired_commit,
+        )
+    if host_controller is not None:
+        host_controller.set_rollback_intent(
             project, desired_commit, prior_commit
         )
     body: dict[str, object] = {
@@ -594,6 +1713,8 @@ def write_cross_rollback_journal(project: Path, desired_commit: str, prior_commi
         "desiredCommit": desired_commit,
         "priorCommit": prior_commit,
     }
+    if prior_host_receipt is not None:
+        body["priorHostReceipt"] = base64.b64encode(prior_host_receipt).decode("ascii")
     body["integritySha256"] = hashlib.sha256(
         json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -611,7 +1732,30 @@ def write_cross_rollback_journal(project: Path, desired_commit: str, prior_commi
     return journal
 
 
-def read_cross_rollback_journal(project: Path) -> dict[str, str] | None:
+def validate_prior_host_receipt(
+    project: Path, controller, raw: bytes, desired_commit: str
+) -> dict[str, object]:
+    """Validate exact pre-upgrade receipt retained for rollback recovery."""
+    try:
+        receipt = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("cross-resource rollback journal is invalid") from error
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schemaVersion") != controller.SCHEMA_VERSION
+        or receipt.get("phase") != "installed"
+        or receipt.get("coreCommit") != desired_commit
+        or receipt.get("hosts") != controller.host_routes()
+        or receipt.get("rollbackIntent") is not None
+        or controller.receipt_bytes(receipt, project) != raw
+    ):
+        raise ValueError("cross-resource rollback journal is invalid")
+    controller.decode_images(receipt.get("before"), nullable=True)
+    controller.decode_images(receipt.get("after"), nullable=True)
+    return receipt
+
+
+def read_cross_rollback_journal(project: Path) -> dict[str, str | bytes] | None:
     transaction = project / CROSS_ROLLBACK_JOURNAL_NAME
     journal = transaction / "journal.json"
     reject_link_or_reparse(transaction)
@@ -627,7 +1771,8 @@ def read_cross_rollback_journal(project: Path) -> dict[str, str] | None:
     if not target.exists():
         raise ValueError("cross-resource rollback journal has no installed controller")
     verify_install(target)
-    receipt, _ = load_installed_controller(target, "hosts").read_receipt(project)
+    host_controller = load_installed_controller(target, "hosts")
+    receipt, _ = host_controller.read_receipt(project)
     intent = receipt.get("rollbackIntent")
     if not journal.exists():
         if not isinstance(intent, dict):
@@ -664,10 +1809,25 @@ def read_cross_rollback_journal(project: Path) -> dict[str, str] | None:
         "priorCommit": str(value["priorCommit"]),
     }:
         raise ValueError("cross-resource rollback journal intent is not authenticated")
-    return {
+    result: dict[str, str | bytes] = {
         "desiredCommit": str(value["desiredCommit"]),
         "priorCommit": str(value["priorCommit"]),
     }
+    prior_host_receipt = value.get("priorHostReceipt")
+    if prior_host_receipt is not None:
+        if not isinstance(prior_host_receipt, str):
+            raise ValueError("cross-resource rollback journal is invalid")
+        try:
+            decoded = base64.b64decode(prior_host_receipt, validate=True)
+        except (ValueError, TypeError) as error:
+            raise ValueError("cross-resource rollback journal is invalid") from error
+        if base64.b64encode(decoded).decode("ascii") != prior_host_receipt:
+            raise ValueError("cross-resource rollback journal is invalid")
+        validate_prior_host_receipt(
+            project, host_controller, decoded, str(value["desiredCommit"])
+        )
+        result["priorHostReceipt"] = decoded
+    return result
 
 
 def publish_staged_tree(stage: Path, target: Path, displaced: Path) -> None:
@@ -752,24 +1912,36 @@ def _recover_transaction(  # noqa: MC0001 - one auditable recovery state machine
         reject_link_or_reparse(path)
     if operation in ("install", "update"):
         if not target.exists() and displaced.exists():
-            verify_install(displaced)
-            displaced.replace(target)
-        elif not target.exists() and backup.exists() and not displaced.exists():
+            if try_verify_install(displaced) is None:
+                remove_repairable_tree(displaced)
+            else:
+                displaced.replace(target)
+        if not target.exists() and backup.exists() and not displaced.exists():
             verify_install(backup)
             backup.replace(target)
-        elif not target.exists() and not backup.exists() and not displaced.exists():
+        if not target.exists() and not backup.exists() and not displaced.exists():
             journal.unlink()
             return
-        verify_install(target)
+        if try_verify_install(target) is None:
+            if displaced.exists() and try_verify_install(displaced) is not None:
+                remove_repairable_tree(target)
+                displaced.replace(target)
+            else:
+                if displaced.exists():
+                    remove_repairable_tree(displaced)
+                journal.unlink()
+                return
         if backup.exists():
             verify_install(backup)
         if displaced.exists():
-            verify_install(displaced)
-            if backup.exists():
-                require_absent(old_backup, "obsolete backup path")
-                backup.replace(old_backup)
-            displaced.replace(backup)
-            verify_install(backup)
+            if try_verify_install(displaced) is None:
+                remove_repairable_tree(displaced)
+            else:
+                if backup.exists():
+                    require_absent(old_backup, "obsolete backup path")
+                    backup.replace(old_backup)
+                displaced.replace(backup)
+                verify_install(backup)
         if old_backup.exists():
             shutil.rmtree(old_backup)
     elif operation == "rollback":
@@ -860,8 +2032,11 @@ def install(  # noqa: MC0001 - publication and compensation form one transaction
         _recover_transaction(project)
         if read_cross_rollback_journal(project) is not None:
             raise ValueError("rollback recovery is required before install")
-        if target.exists():
-            current = verify_install(target)
+        # Heal wiped runtime leftovers before rematerializing core so a new
+        # hostToken is not published under a stale receipt/anchor (#5586/#5587).
+        quarantine_orphaned_host_receipt(project)
+        current = inspect_current_install(target) if target.exists() else None
+        if current is not None:
             current_commit = current["source"]["commit"]  # type: ignore[index]
             current_distribution = current.get("distribution")
             legacy_distribution = (
@@ -939,7 +2114,10 @@ def install(  # noqa: MC0001 - publication and compensation form one transaction
                 "source": desired_source,
                 "files": ownership,
                 "hostToken": (
-                    str(current["hostToken"]) if target.exists() else secrets.token_hex(32)
+                    str(current["hostToken"])
+                    if current is not None
+                    else (peek_host_token(target) if target.exists() else None)
+                    or secrets.token_hex(32)
                 ),
             }
             (stage / MANIFEST_NAME).write_text(
@@ -949,13 +2127,15 @@ def install(  # noqa: MC0001 - publication and compensation form one transaction
             publish_staged_tree(stage, target, displaced)
             verify_install(target)
             if displaced.exists():
-                verify_install(displaced)
-                if backup.exists():
+                if try_verify_install(displaced) is None:
+                    remove_repairable_tree(displaced)
+                else:
+                    if backup.exists():
+                        verify_install(backup)
+                        require_absent(old_backup, "obsolete backup path")
+                        backup.replace(old_backup)
+                    displaced.replace(backup)
                     verify_install(backup)
-                    require_absent(old_backup, "obsolete backup path")
-                    backup.replace(old_backup)
-                displaced.replace(backup)
-                verify_install(backup)
             if old_backup.exists():
                 shutil.rmtree(old_backup)
             journal.unlink()
@@ -991,6 +2171,7 @@ def rollback(  # noqa: MC0001 - cross-resource rollback is one journaled state m
             receipt_controller = None
             receipt_value = None
             if target.exists():
+                verify_install(target)
                 receipt_controller = load_installed_controller(target, "hosts")
                 host_receipt_path = project / ".chaos-engine-hosts.json"
                 if host_receipt_path.exists() or is_link_or_reparse(host_receipt_path):
@@ -1007,8 +2188,55 @@ def rollback(  # noqa: MC0001 - cross-resource rollback is one journaled state m
             if pending is None:
                 current_commit = str(verify_install(target)["source"]["commit"])
                 previous_commit = str(verify_install(backup)["source"]["commit"])
-                write_cross_rollback_journal(project, previous_commit, current_commit)
-                pending = {"desiredCommit": previous_commit, "priorCommit": current_commit}
+                previous_dependencies = load_dependency_controller(backup)
+                account_receipt_path = project / ".chaos-engine-dependencies.json"
+                account_rollback = (
+                    hasattr(previous_dependencies, "install_account_dependencies")
+                    and account_receipt_path.is_file()
+                )
+                previous_receipt = getattr(
+                    receipt_controller, "rollback_previous_receipt", None
+                )
+                if account_rollback:
+                    if is_link_or_reparse(account_receipt_path):
+                        raise ValueError(
+                            "account rollback has no exact prior dependency receipt"
+                        )
+                    if not callable(previous_receipt):
+                        raise ValueError("account rollback has no exact prior host receipt")
+                    raw = previous_receipt(project, previous_commit)
+                    if not isinstance(raw, bytes):
+                        raise ValueError("account rollback has no exact prior host receipt")
+                    previous_account_receipt = getattr(
+                        receipt_controller, "rollback_previous_account_receipt", None
+                    )
+                    if not callable(previous_account_receipt):
+                        raise ValueError(
+                            "account rollback has no exact prior dependency receipt"
+                        )
+                    account_raw = previous_account_receipt(project, previous_commit)
+                    if not isinstance(account_raw, bytes):
+                        raise ValueError(
+                            "account rollback has no exact prior dependency receipt"
+                        )
+                    previous_mempalace_state = getattr(
+                        receipt_controller, "rollback_previous_mempalace_state", None
+                    )
+                    if not callable(previous_mempalace_state):
+                        raise ValueError("account rollback has no prior MemPalace state image")
+                    mempalace_state = previous_mempalace_state(project, previous_commit)
+                    if not isinstance(mempalace_state, dict):
+                        raise ValueError("account rollback has no prior MemPalace state image")
+                    pending = {
+                        "desiredCommit": previous_commit,
+                        "priorCommit": current_commit,
+                        "priorHostReceipt": raw,
+                        "priorAccountReceipt": account_raw,
+                        "priorMempalaceState": mempalace_state,
+                    }
+                else:
+                    write_cross_rollback_journal(project, previous_commit, current_commit)
+                    pending = {"desiredCommit": previous_commit, "priorCommit": current_commit}
             desired_commit = pending["desiredCommit"]
             prior_commit = pending["priorCommit"]
             target_commit = str(verify_install(target)["source"]["commit"])
@@ -1023,7 +2251,7 @@ def rollback(  # noqa: MC0001 - cross-resource rollback is one journaled state m
                 host_controller.set_rollback_intent(project, desired_commit, prior_commit)
                 host_receipt_value, _ = host_controller.read_receipt(project)
                 intent = host_receipt_value.get("rollbackIntent")
-            if intent != pending:
+            if intent != {"desiredCommit": desired_commit, "priorCommit": prior_commit}:
                 raise ValueError("rollback state does not match the recorded phase")
             valid_phase = (
                 target_commit == prior_commit and backup_commit == desired_commit and host_commit == prior_commit
@@ -1034,25 +2262,176 @@ def rollback(  # noqa: MC0001 - cross-resource rollback is one journaled state m
             )
             if not valid_phase:
                 raise ValueError("rollback state does not match the recorded phase")
+            generation_previous = None
+            generation_pointer_already_published = False
+            previous_specification_sha256 = None
+            previous_core_sha256 = None
+            current_dependencies = load_dependency_controller(target)
+            desired_root = target if target_commit == desired_commit else backup
+            previous_dependencies = load_dependency_controller(desired_root)
+            account_receipt_path = project / ".chaos-engine-dependencies.json"
+            previous_account_mode = (
+                hasattr(previous_dependencies, "install_account_dependencies")
+                and account_receipt_path.is_file()
+            )
+            if previous_account_mode and is_link_or_reparse(account_receipt_path):
+                raise ValueError("account rollback has no exact prior dependency receipt")
+            if not previous_account_mode and hasattr(current_dependencies, "validated_previous") and hasattr(
+                previous_dependencies, "publish_pointer"
+            ):
+                previous_specification = previous_dependencies.load_specification(
+                    desired_root / "dependencies.json"
+                )
+                previous_specification_sha256 = (
+                    previous_dependencies.specification_digest(previous_specification)
+                )
+                previous_core_sha256 = file_sha256(desired_root / MANIFEST_NAME)
+                pointer = current_dependencies.pointer_records(project)
+                active_record = pointer["active"]
+                if (
+                    active_record["specificationSha256"]
+                    == previous_specification_sha256
+                    and active_record["coreSha256"] == previous_core_sha256
+                ):
+                    _, authenticated_pointer = current_dependencies.active_generation(
+                        project,
+                        expected_specification_sha256=previous_specification_sha256,
+                        expected_core_sha256=previous_core_sha256,
+                    )
+                    if authenticated_pointer["active"] != active_record:
+                        raise ValueError("dependency pointer changed during rollback recovery")
+                    generation_previous = active_record
+                    generation_pointer_already_published = True
+                else:
+                    generation_previous = current_dependencies.validated_previous(
+                        project,
+                        previous_specification_sha256,
+                        previous_core_sha256,
+                    )
             if target_commit != desired_commit:
                 rollback(project, _locked=True)
             try:
                 previous_hosts = load_installed_controller(target, "hosts")
-                desired_manifest = verify_install(target)
-                previous_hosts.install(
-                    project,
-                    core_commit=desired_commit,
-                    capability_policy_digest=desired_manifest.get("capabilityPolicySha256"),
+                prior_host_receipt = pending.get("priorHostReceipt")
+                prior_host_receipt_value = (
+                    validate_prior_host_receipt(
+                        project, previous_hosts, prior_host_receipt, desired_commit
+                    )
+                    if isinstance(prior_host_receipt, bytes)
+                    else None
                 )
-                restored_host_receipt, _ = previous_hosts.read_receipt(project)
-                if isinstance(restored_host_receipt.get("clientActivation"), dict):
-                    previous_hosts.activate_detected_plugins(project)
+                prior_account_receipt = pending.get("priorAccountReceipt")
+                prior_account_receipt_value = (
+                    prior_account_receipt
+                    if isinstance(prior_account_receipt, bytes)
+                    else None
+                )
+                if previous_account_mode and prior_account_receipt_value is None:
+                    raise ValueError("account rollback has no exact prior dependency receipt")
+                prior_mempalace_state = pending.get("priorMempalaceState")
+                if previous_account_mode and not isinstance(prior_mempalace_state, dict):
+                    raise ValueError("account rollback has no prior MemPalace state image")
+                restored_prior_host_receipt = (
+                    previous_account_mode and prior_host_receipt_value is not None
+                )
+                if restored_prior_host_receipt:
+                    restore_candidate_mempalace_state(project, prior_mempalace_state)
+                    _current_receipt, current_raw = previous_hosts.read_receipt(project)
+                    current_images = previous_hosts.current_images(project)
+                    prior_after = previous_hosts.decode_images(
+                        prior_host_receipt_value["after"], nullable=True
+                    )
+                    previous_hosts.reconcile(
+                        project, prior_after, (current_images, prior_after)
+                    )
+                    if current_raw != prior_host_receipt:
+                        receipt_name = getattr(
+                            previous_hosts, "RECEIPT_NAME", ".chaos-engine-hosts.json"
+                        )
+                        previous_hosts.atomic_write(
+                            project, project / receipt_name, prior_host_receipt, current_raw
+                        )
+                else:
+                    desired_manifest = verify_install(target)
+                    previous_hosts.install(
+                        project,
+                        core_commit=desired_commit,
+                        capability_policy_digest=desired_manifest.get("capabilityPolicySha256"),
+                        dependency_runtime=(
+                            project / getattr(previous_dependencies, "GENERATIONS_NAME", ".chaos-engine-runtime-generations") / generation_previous["generationId"]
+                            if generation_previous is not None else None
+                        ),
+                    )
+                    restored_host_receipt, _ = previous_hosts.read_receipt(project)
+                    if isinstance(restored_host_receipt.get("clientActivation"), dict):
+                        previous_hosts.activate_detected_plugins(project)
+                    if generation_previous is not None:
+                        restored_host_receipt, restored_host_raw = previous_hosts.read_receipt(
+                            project
+                        )
+                        previous_hosts.apply_hook_receipt(
+                            restored_host_receipt,
+                            previous_hosts.decode_images(
+                                restored_host_receipt["before"], nullable=True
+                            ),
+                            previous_hosts.decode_images(
+                                restored_host_receipt["after"], nullable=True
+                            ),
+                        )
+                        previous_hosts.write_receipt(
+                            project, restored_host_receipt, restored_host_raw
+                        )
                 previous_dependencies = load_dependency_controller(target)
-                repair = provisioner or previous_dependencies.repair
-                repair(
-                    project / ".chaos-engine-runtime",
-                    previous_dependencies.load_specification(target / "dependencies.json"),
-                )
+                if previous_account_mode:
+                    current_account_receipt = account_receipt_path.read_bytes()
+                    previous_hosts.atomic_write(
+                        project,
+                        account_receipt_path,
+                        prior_account_receipt_value,
+                        current_account_receipt,
+                    )
+                    if account_receipt_path.read_bytes() != prior_account_receipt_value:
+                        raise ValueError("account dependency receipt changed during rollback")
+                if (
+                    generation_previous is not None
+                    and not generation_pointer_already_published
+                ):
+                    previous_dependencies.publish_pointer(
+                        project,
+                        generation_previous,
+                        expected_specification_sha256=previous_specification_sha256,
+                        expected_core_sha256=previous_core_sha256,
+                    )
+                elif not previous_account_mode:
+                    runtime = project / ".chaos-engine-runtime"
+                    removed_newer_runtime = False
+                    if not hasattr(previous_dependencies, "RUNTIME_CONTRACT_VERSION"):
+                        removed_newer_runtime = not runtime.exists()
+                        if runtime.exists():
+                            current_dependencies = load_dependency_controller(backup)
+                            current_receipt = current_dependencies.read_receipt(runtime)
+                            ownership = current_receipt.get("ownership")
+                            links = (
+                                ownership.get("links", [])
+                                if isinstance(ownership, dict)
+                                else None
+                            )
+                            if links:
+                                current_dependencies.remove(
+                                    runtime,
+                                    current_dependencies.load_specification(
+                                        backup / "dependencies.json"
+                                    ),
+                                )
+                                removed_newer_runtime = True
+                    if not removed_newer_runtime:
+                        repair = provisioner or previous_dependencies.repair
+                        repair(
+                            runtime,
+                            previous_dependencies.load_specification(
+                                target / "dependencies.json"
+                            ),
+                        )
             except BaseException:
                 raise
             transaction_path = project / CROSS_ROLLBACK_JOURNAL_NAME
@@ -1061,7 +2440,23 @@ def rollback(  # noqa: MC0001 - cross-resource rollback is one journaled state m
                 journal_path.unlink()
             if transaction_path.exists():
                 transaction_path.rmdir()
-            previous_hosts.clear_rollback_intent(project, desired_commit, prior_commit)
+            if restored_prior_host_receipt:
+                pass
+            elif prior_host_receipt_value is not None:
+                prior_after = previous_hosts.decode_images(
+                    prior_host_receipt_value["after"], nullable=True
+                )
+                if previous_hosts.current_images(project) == prior_after:
+                    _, current_raw = previous_hosts.read_receipt(project)
+                    previous_hosts.write_receipt(
+                        project, prior_host_receipt_value, current_raw
+                    )
+                else:
+                    previous_hosts.clear_rollback_intent(
+                        project, desired_commit, prior_commit
+                    )
+            else:
+                previous_hosts.clear_rollback_intent(project, desired_commit, prior_commit)
             return target
     with (nullcontext() if _locked else project_lock(project)):
         _recover_transaction(project)
@@ -1160,8 +2555,300 @@ def load_source_controller(name: str):
     return load_installed_controller(Path(__file__).resolve().parent, name)
 
 
+@contextmanager
+def staged_candidate_host_controller(
+    project: Path,
+    source: Path,
+    commit: str,
+    source_record: dict[str, str] | None,
+    distribution: str,
+):
+    """Load preflight hosts only from an ownership-verified candidate stage."""
+    source = source.resolve()
+    if source == project or source.is_relative_to(project) or project.is_relative_to(source):
+        raise ValueError("ChaosEngine source and project trees must be disjoint")
+    desired_source = normalize_source_record({"commit": commit, "kind": "local"})
+    if source_record is not None:
+        desired_source = normalize_source_record(source_record)
+        if desired_source.get("commit") != commit or desired_source.get("kind") not in {
+            "git",
+            "git-digest",
+        }:
+            raise ValueError("ChaosEngine source record is invalid")
+    if (source / MANIFEST_NAME).exists():
+        raise ValueError(f"source contains the reserved manifest path: {MANIFEST_NAME}")
+    _, policy_digest = load_distribution(source, distribution)
+    capabilities, capability_digest = load_capability_policy(source, distribution)
+    files = source_files(source, distribution)
+    ownership = {path.relative_to(source).as_posix(): file_sha256(path) for path in files}
+    with tempfile.TemporaryDirectory(prefix=f"{INSTALL_DIRECTORY}-candidate-", dir=project) as name:
+        stage = Path(name)
+        for path in files:
+            destination = stage / path.relative_to(source)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, destination)
+        verify_staged_payload(stage, ownership)
+        (stage / MANIFEST_NAME).write_text(
+            json.dumps(
+                {
+                    "schemaVersion": SCHEMA_VERSION,
+                    "distribution": {"id": distribution, "policySha256": policy_digest},
+                    "capabilities": capabilities,
+                    "capabilityPolicySha256": capability_digest,
+                    "source": desired_source,
+                    "files": ownership,
+                    "hostToken": secrets.token_hex(32),
+                },
+                indent=2,
+                sort_keys=True,
+            ) + "\n",
+            encoding="utf-8",
+        )
+        verify_install(stage)
+        yield load_installed_controller(stage, "hosts")
+
+
 def load_dependency_controller(installed_root: Path):
     return load_installed_controller(installed_root, "dependencies")
+
+
+def ensure_maven_tools(  # noqa: MC0001 - cross-resource provisioning is one transaction.
+    target: Path, specification: dict[str, object], *, runner=subprocess.run,
+    reporter=None, confirmer=None, opener=None, mode: str = "native",
+) -> tuple[Path, Path] | dict[str, str]:
+    hosts = load_installed_controller(target, "hosts")
+    dependencies = load_dependency_controller(target)
+    contract = specification["dependencies"]["maven-tools-mcp"]
+    resolver_options = {} if opener is None else {"opener": opener}
+    version = dependencies.resolve_stable_version(
+        "maven-tools-mcp", contract, **resolver_options
+    )
+    if mode == "docker":
+        docker = shutil.which("docker")
+        if not docker:
+            raise ValueError("explicit Maven Tools Docker mode requires healthy Docker")
+        probe = runner(
+            [docker, "version", "--format", "{{.Server.Version}}"],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+        if probe.returncode != 0:
+            raise ValueError("explicit Maven Tools Docker mode requires healthy Docker")
+        return {
+            "mode": "docker",
+            "command": str(Path(docker).resolve()),
+            "image": f"arvindand/maven-tools-mcp:{version}",
+        }
+    if mode != "native":
+        raise ValueError("unsupported Maven Tools mode")
+    tag = f"v{version}"
+    cache_status = hosts.maven_tools_cache_status(version)
+    if cache_status["status"] == "healthy":
+        existing = hosts.discover_maven_tools_runtime()
+        if existing is not None and hosts.probe_maven_tools_runtime(*existing):
+            return existing
+    elif cache_status["status"] != "absent":
+        raise ValueError("Maven Tools MCP cache is invalid")
+    java_candidates = []
+    configured = os.environ.get("CHAOSENGINE_JAVA")
+    java_home = os.environ.get("JAVA_HOME")
+    path_java = shutil.which("java")
+    if configured:
+        java_candidates.append(Path(configured).expanduser())
+    if java_home:
+        java_candidates.append(Path(java_home) / "bin" / ("java.exe" if os.name == "nt" else "java"))
+    if path_java:
+        java_candidates.append(Path(path_java))
+    java = next(
+        (
+            item.resolve()
+            for item in java_candidates
+            if item.is_file() and hosts.java_major(item.resolve()) == 25
+        ),
+        None,
+    )
+    compiler_present = getattr(hosts, "java_compiler_present", None)
+    if java is not None and callable(compiler_present) and not compiler_present(java):
+        # JRE-only Java 25 cannot compile Maven Tools; prefer managed Temurin JDK.
+        java = None
+    if java is None:
+        provision = getattr(hosts, "ensure_managed_temurin_jdk", None)
+        if callable(provision):
+            managed = provision(
+                specification, opener=opener, reporter=reporter, confirmer=confirmer,
+            )
+            if managed is not None:
+                java = managed
+    if java is None:
+        raise ValueError(
+            "Temurin JDK 25 with javac is required for Maven Tools MCP "
+            "(JRE-only Java is not enough); install Temurin 25 JDK or set CHAOSENGINE_JAVA"
+        )
+    cache_root = hosts.maven_tools_cache_root()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".maven-tools-source-") as source_name:
+        source = Path(source_name) / "source"
+        git = shutil.which("git")
+        if not git:
+            raise ValueError("git is required to install Maven Tools MCP")
+        if confirmer is not None:
+            confirmer(f"Download Maven Tools {tag} source with git")
+        if reporter is not None:
+            reporter.start("Install Maven Tools", detail=tag)
+        runner([
+            git, "clone", "--branch", tag, "--depth", "1",
+            "https://github.com/arvindand/maven-tools-mcp.git", str(source),
+        ], check=True, timeout=300)
+        revision = runner(
+            [git, "-C", str(source), "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True, timeout=30,
+        ).stdout.strip().casefold()
+        if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+            raise ValueError("Maven Tools stable tag did not resolve to an immutable commit")
+        wrapper = source / ("mvnw.cmd" if os.name == "nt" else "mvnw")
+        if not wrapper.is_file():
+            raise ValueError("Maven Tools upstream wrapper is missing")
+        environment = os.environ.copy()
+        environment["JAVA_HOME"] = str(java.parent.parent)
+        if confirmer is not None:
+            confirmer("Build and install Maven Tools")
+        runner([str(wrapper), "-B", "clean", "package", "-Pci"], cwd=source, env=environment, check=True, timeout=900)
+        built = source / f"target/maven-tools-mcp-{version}.jar"
+        if not built.is_file() or built.stat().st_size == 0:
+            raise ValueError("Maven Tools build did not produce the pinned JAR")
+        with tempfile.TemporaryDirectory(prefix=".publishing-", dir=cache_root) as staging_name:
+            staging = Path(staging_name)
+            jar = staging / built.name
+            shutil.copyfile(built, jar)
+            receipt = {"version": version, "commit": revision, "jar": jar.name, "sha256": file_sha256(jar)}
+            (staging / hosts.MAVEN_TOOLS_MCP_RECEIPT).write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
+            hosts.publish_maven_tools_cache(staging)
+    runtime = hosts.discover_maven_tools_runtime()
+    if runtime is None or not hosts.probe_maven_tools_runtime(*runtime):
+        raise ValueError("Maven Tools MCP publication probe failed")
+    return runtime
+
+
+def installed_kernel_status(installed_root: Path) -> dict[str, object]:
+    """Report canonical kernel health and declared host coverage."""
+    try:
+        kernel = load_installed_controller(installed_root / "hooks", "kernel")
+        errors = [*kernel.validate_lifecycle(), *kernel.validate_rules(kernel.RULES)]
+        hosts = sorted(kernel.HOST_CAPABILITIES)
+        if hosts != ["claude", "codex", "copilot", "gemini", "grok"]:
+            errors.append("kernel host capability matrix is incomplete")
+        return {
+            "status": "healthy" if not errors else "recovery-required",
+            "schemaVersion": kernel.SCHEMA_VERSION,
+            "hosts": hosts,
+            "capabilities": {
+                host: {
+                    "events": list(kernel.HOST_CAPABILITIES[host].supported_events),
+                    "strictJsonStdout": getattr(
+                        kernel.HOST_CAPABILITIES[host], "strict_json_stdout", True
+                    ),
+                    "liveGate": getattr(kernel.HOST_CAPABILITIES[host], "live_gate", False),
+                    "staticSurfaces": list(
+                        getattr(kernel.HOST_CAPABILITIES[host], "static_surfaces", ())
+                    ),
+                    "hardBlockMechanism": getattr(
+                        kernel.HOST_CAPABILITIES[host],
+                        "hard_block_mechanism",
+                        "decision_json",
+                    ),
+                    "denyExitCode": int(
+                        getattr(kernel.HOST_CAPABILITIES[host], "deny_exit_code", 2)
+                    ),
+                    "processExit2Honored": bool(
+                        getattr(
+                            kernel.HOST_CAPABILITIES[host],
+                            "process_exit2_honored",
+                            True,
+                        )
+                    ),
+                    "blockingGap": str(
+                        getattr(kernel.HOST_CAPABILITIES[host], "blocking_gap", "") or ""
+                    ),
+                }
+                for host in hosts
+            },
+            "errors": errors,
+        }
+    except (OSError, RuntimeError, ValueError) as error:
+        return {"status": "recovery-required", "errors": [str(error)]}
+
+
+
+def _reporter_transition_to_provision(reporter, *, detail: str | None = None) -> None:
+    """Complete Install core (if active) then start Provision dependencies sequentially."""
+    if reporter is None:
+        return
+    in_flight = list(getattr(reporter, "_in_flight", []) or [])
+    remaining = tuple(getattr(reporter, "remaining_operations", ()) or ())
+    if (
+        getattr(reporter, "current_operation", None) == "Install core"
+        or "Install core" in in_flight
+    ):
+        next_remaining = tuple(
+            item for item in remaining if item not in {"Install core", "Provision dependencies"}
+        )
+        # Keep later stages; Provision becomes current via start().
+        if "Provision dependencies" not in next_remaining:
+            # Prefer original remaining order after Install core.
+            next_remaining = tuple(
+                item for item in remaining if item != "Install core"
+            )
+        reporter.complete("Install core", remaining=next_remaining)
+        remaining = tuple(getattr(reporter, "remaining_operations", ()) or ())
+    if (
+        getattr(reporter, "current_operation", None) != "Provision dependencies"
+        and "Provision dependencies" not in list(getattr(reporter, "_in_flight", []) or [])
+        and "Provision dependencies" not in list(getattr(reporter, "completed_operations", []) or [])
+    ):
+        prov_remaining = tuple(
+            item for item in remaining if item != "Provision dependencies"
+        )
+        reporter.start(
+            "Provision dependencies",
+            remaining=prov_remaining,
+            detail=detail,
+        )
+
+
+def _safe_command_trace_line(command: list[str] | tuple[str, ...]) -> str:
+    """Format argv for traces without leaking secret-looking values."""
+    secret = re.compile(
+        r"(?i)(token|secret|password|passwd|api[_-]?key|authorization|bearer)\s*[=:]\s*\S+"
+    )
+    hexish = re.compile(r"^[0-9a-fA-F]{32,}$")
+    parts: list[str] = []
+    for part in command:
+        value = str(part)
+        if secret.search(value):
+            value = secret.sub(
+                lambda match: match.group(0).split("=", 1)[0].split(":", 1)[0] + "=***",
+                value,
+            )
+        elif hexish.fullmatch(value):
+            value = "***"
+        parts.append(value)
+    return " ".join(parts)
+
+
+def _tracing_dependency_runner(reporter, runner):
+    """Wrap a dependency runner so each command is traced at info level."""
+    if reporter is None:
+        return runner
+
+    def traced(*args, **kwargs):
+        command = args[0] if args else kwargs.get("args")
+        if isinstance(command, (list, tuple)) and command:
+            try:
+                reporter.trace(f"run {_safe_command_trace_line(command)}")
+            except Exception:
+                pass
+        return runner(*args, **kwargs)
+
+    return traced
 
 
 def install_with_dependencies(  # noqa: MC0001 - owned resources share one compensation boundary.
@@ -1171,31 +2858,115 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
     provisioner=None,
     source_record: dict[str, str] | None = None,
     distribution: str = DEFAULT_DISTRIBUTION,
+    with_maven_tools: bool = False,
+    maven_tools_mode: str = "native",
+    reporter=None,
+    confirmer=None,
+    bundle_options: dict[str, bool] | None = None,
 ) -> Path:
     project = project.resolve()
+    source = source.absolute()
+    reject_link_or_reparse(source)
+    source = source.resolve()
+    with_maven_tools = with_maven_tools or (project / "pom.xml").is_file()
+    bundle = normalize_bundle_options(bundle_options)
+    write_bundle_options(project, bundle)
+    source_dependencies = load_dependency_controller(source)
+    account_mode = provisioner is None and hasattr(
+        source_dependencies, "install_account_dependencies"
+    )
+    generation_mode = provisioner is None and not account_mode
     with project_lock(project):
+        # Finish any in-flight account/host upgrade journal BEFORE quarantine.
+        # #5633 upgrade-drift quarantine would otherwise remove the prior host
+        # receipt that recover_account_rollback_journal needs to authenticate.
+        recover_account_rollback_journal(project)
+        # Heal: wiped .chaos-engine and/or rematerialized core with a stale
+        # host receipt/anchor + missing dependency receipt must not block
+        # curl|bash reinstall (#5606/#5586/#5587). Also #5633 deps+core present
+        # with drifted receipt/adapters. Quarantine then rematerialize/rebind.
+        quarantine_orphaned_host_receipt(project, reporter=reporter)
         if read_cross_rollback_journal(project) is not None:
             raise ValueError("rollback recovery is required before install")
         current = project / INSTALL_DIRECTORY
         old_commit = None
         old_manifest = None
         host_snapshot = None
-        if current.exists():
-            old_manifest = verify_install(current)
-            old_commit = str(old_manifest["source"]["commit"])
-            old_host_controller = load_installed_controller(current, "hosts")
-            host_receipt_path = project / old_host_controller.RECEIPT_NAME
-            if host_receipt_path.exists() or is_link_or_reparse(host_receipt_path):
-                host_snapshot = old_host_controller.snapshot(project)
-        target = install(
-            project,
-            source,
-            commit,
-            _locked=True,
-            source_record=source_record,
-            distribution=distribution,
+        old_specification_sha256 = None
+        old_core_sha256 = None
+        account_receipt_path = project / ".chaos-engine-dependencies.json"
+        account_receipt_before = (
+            account_receipt_path.read_bytes()
+            if account_mode and account_receipt_path.is_file()
+            and not is_link_or_reparse(account_receipt_path) else None
         )
+        project_setup_snapshot = None
+        project_setup_before: dict[str, tuple[bool, dict[str, str]]] = {}
+        project_setup_after: dict[str, dict[str, str]] | None = None
+        mempalace_state_before = (False, {})
+        rollback_mempalace_state = None
+        if current.exists():
+            old_manifest = inspect_current_install(current)
+            if old_manifest is not None:
+                old_commit = str(old_manifest["source"]["commit"])
+                with staged_candidate_host_controller(
+                    project, source, commit, source_record, distribution
+                ) as candidate_host_controller:
+                    host_receipt_path = project / candidate_host_controller.RECEIPT_NAME
+                    if host_receipt_path.exists() or is_link_or_reparse(host_receipt_path):
+                        try:
+                            host_snapshot = candidate_host_controller.preflight(project)
+                        except ValueError as error:
+                            raise ValueError(
+                                f"ChaosEngine host adapter drift detected (receipt integrity drift): {project}"
+                            ) from error
+                if generation_mode:
+                    try:
+                        old_dependencies = load_dependency_controller(current)
+                        old_specification = old_dependencies.load_specification(
+                            current / "dependencies.json"
+                        )
+                        old_specification_sha256 = old_dependencies.specification_digest(
+                            old_specification
+                        )
+                        old_core_sha256 = file_sha256(current / MANIFEST_NAME)
+                        old_dependencies.active_generation(
+                            project,
+                            expected_specification_sha256=old_specification_sha256,
+                            expected_core_sha256=old_core_sha256,
+                        )
+                    except (OSError, ValueError):
+                        old_specification_sha256 = None
+                        old_core_sha256 = None
+        if account_mode:
+            project_setup_snapshot, project_setup_before = snapshot_project_setup_outputs(
+                project
+            )
+            mempalace_state_before = project_setup_output_files(
+                project, MEMPALACE_STATE_OUTPUT
+            )
+        try:
+            if reporter is not None:
+                reporter.trace(
+                    f"rematerialize core commit={commit} distribution={distribution}"
+                )
+            target = install(
+                project,
+                source,
+                commit,
+                _locked=True,
+                source_record=source_record,
+                distribution=distribution,
+            )
+        except BaseException:
+            if project_setup_snapshot is not None:
+                shutil.rmtree(project_setup_snapshot, ignore_errors=True)
+            raise
         installed_manifest = verify_install(target)
+        # #5635: core and provision are sequential — never leave both "running".
+        _reporter_transition_to_provision(
+            reporter, detail=f"core={commit[:12]}… ready; provisioning tools"
+        )
         core_changed = old_manifest is None or {
             key: value
             for key, value in installed_manifest.items()
@@ -1213,21 +2984,191 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
         runtime_existed = runtime.exists() or is_link_or_reparse(runtime)
         controller = None
         specification = None
+        candidate = None
+        retired_generation = None
+        candidate_published = False
+        account_receipt_after = None
+        account_rollback_journal = None
         try:
+            controller = load_dependency_controller(target)
+            specification = controller.load_specification(target / "dependencies.json")
+            maven_docker = None
+            if with_maven_tools:
+                maven_setup = ensure_maven_tools(
+                    target, specification, reporter=reporter, confirmer=confirmer,
+                    mode=maven_tools_mode,
+                )
+                if isinstance(maven_setup, dict):
+                    maven_docker = (
+                        str(maven_setup["command"]), str(maven_setup["image"])
+                    )
+            dependency_generation = None
+            account_commands = None
+            if generation_mode:
+                specification_sha256 = controller.specification_digest(specification)
+                core_sha256 = file_sha256(target / MANIFEST_NAME)
+                try:
+                    controller.active_generation(
+                        project,
+                        expected_specification_sha256=specification_sha256,
+                        expected_core_sha256=core_sha256,
+                    )
+                except (OSError, ValueError):
+                    callback_options = {}
+                    if reporter is not None:
+                        callback_options["reporter"] = reporter
+                    if confirmer is not None:
+                        callback_options["confirmer"] = confirmer
+                    candidate = controller.prepare_candidate(
+                        project, specification, core_sha256, **callback_options
+                    )
+                if candidate is not None:
+                    dependency_generation = project / getattr(
+                        controller,
+                        "GENERATIONS_NAME",
+                        ".chaos-engine-runtime-generations",
+                    ) / candidate["generationId"]
+                else:
+                    dependency_generation = controller.active_generation(
+                        project,
+                        expected_specification_sha256=specification_sha256,
+                        expected_core_sha256=core_sha256,
+                    )[0]
+            elif account_mode:
+                if old_manifest is not None and old_commit != commit:
+                    prior_host_receipt = (
+                        host_snapshot.get("raw") if isinstance(host_snapshot, dict) else None
+                    )
+                    # When hosts were quarantined for upgrade adapter drift (#5633),
+                    # host_snapshot is None — skip the account/host pairing journal so
+                    # recover cannot treat the rebound receipt as an incomplete upgrade
+                    # and roll the core back. Normal upgrades keep host_snapshot.raw.
+                    if host_snapshot is not None:
+                        account_rollback_journal = write_account_rollback_journal(
+                            project,
+                            old_commit,
+                            commit,
+                            prior_host_receipt=(
+                                prior_host_receipt
+                                if isinstance(prior_host_receipt, bytes) else None
+                            ),
+                            prior_account_receipt=account_receipt_before,
+                            prior_mempalace_state=mempalace_rollback_image(
+                                mempalace_state_before, mempalace_state_before
+                            ),
+                        )
+                if reporter is not None:
+                    reporter.trace("provision account dependencies (uv/python/node/java/tools)")
+                account_runner = _tracing_dependency_runner(reporter, subprocess.run)
+                install_account = controller.install_account_dependencies
+                kwargs = {}
+                try:
+                    parameters = inspect.signature(install_account).parameters
+                except (TypeError, ValueError):
+                    parameters = {}
+                # Require an explicit runner parameter (not bare **kwargs mocks).
+                if "runner" in parameters:
+                    kwargs["runner"] = account_runner
+                account_receipt = install_account(project, specification, **kwargs)
+                account_receipt_after = (
+                    account_receipt_path.read_bytes()
+                    if account_receipt_path.is_file() else None
+                )
+                account_commands = account_receipt.get("commands")
+                project_setup_after = project_setup_after_images(project)
+                mempalace_state_after = project_setup_output_files(
+                    project, MEMPALACE_STATE_OUTPUT
+                )
+                if old_manifest is not None:
+                    rollback_mempalace_state = mempalace_rollback_image(
+                        mempalace_state_before, mempalace_state_after
+                    )
             host_controller.install(
                 project,
                 core_commit=commit,
                 capability_policy_digest=installed_manifest.get("capabilityPolicySha256"),
+                dependency_runtime=dependency_generation,
+                account_commands=account_commands,
+                maven_docker=maven_docker,
+                **(
+                    {"rollback_account_receipt": account_receipt_before}
+                    if account_mode and account_receipt_before is not None
+                    else {}
+                ),
+                **(
+                    {"rollback_mempalace_state": rollback_mempalace_state}
+                    if rollback_mempalace_state is not None else {}
+                ),
+                **({"upgrade_snapshot": host_snapshot} if host_snapshot is not None else {}),
             )
+            if account_rollback_journal is not None:
+                recover_account_rollback_journal(project)
+                if account_rollback_journal.exists():
+                    raise ValueError("account rollback journal was not finalized")
+                account_rollback_journal = None
             host_created = not host_existed
-            controller = load_dependency_controller(target)
-            specification = controller.load_specification(target / "dependencies.json")
-            provision = provisioner or controller.repair
-            provision(runtime, specification)
-            host_controller.initialize_mempalace_runtime(project)
+            if not account_mode and not generation_mode:
+                provisioner(runtime, specification)
+            if not account_mode and bundle.get("mempalace", True):
+                host_controller.initialize_mempalace_runtime(project)
+            if candidate is not None:
+                try:
+                    retired_generation = controller.pointer_records(project).get(
+                        "previous"
+                    )
+                except (OSError, ValueError):
+                    retired_generation = None
+                published_pointer = controller.publish_pointer(
+                    project,
+                    candidate,
+                    expected_specification_sha256=specification_sha256,
+                    expected_core_sha256=core_sha256,
+                )
+                candidate_published = True
+                if retired_generation is not None and retired_generation not in (
+                    published_pointer["active"],
+                    published_pointer.get("previous"),
+                ):
+                    controller.remove_generation(project, retired_generation)
+            if old_commit is not None:
+                client_plugins = host_controller.detected_plugin_status(project)
+                if any(item.get("plugin") == "stale" for item in client_plugins.values()):
+                    host_controller.activate_detected_plugins(project)
         except BaseException as error:
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                raise
             compensation_errors: list[BaseException] = []
-            if (
+            account_rollback_recovered = False
+            if account_rollback_journal is not None:
+                try:
+                    recover_account_rollback_journal(project)
+                    account_rollback_recovered = True
+                except BaseException as cleanup_error:
+                    compensation_errors.append(cleanup_error)
+            restore_generation = None
+            if candidate is not None and not candidate_published:
+                try:
+                    pointer = controller.pointer_records(project)
+                    candidate_published = pointer.get("active") == candidate
+                except (OSError, ValueError):
+                    # Compensation continues from the last authenticated state.
+                    pass
+            if candidate_published and old_specification_sha256 and old_core_sha256:
+                try:
+                    restore_generation = controller.validated_previous(
+                        project,
+                        expected_specification_sha256=old_specification_sha256,
+                        expected_core_sha256=old_core_sha256,
+                    )
+                except BaseException as cleanup_error:
+                    compensation_errors.append(cleanup_error)
+            can_compensate = not candidate_published or restore_generation is not None
+            if candidate is not None and not candidate_published:
+                try:
+                    controller.remove_generation(project, candidate)
+                except BaseException as cleanup_error:
+                    compensation_errors.append(cleanup_error)
+            if can_compensate and (
                 not runtime_existed
                 and runtime.exists()
                 and controller is not None
@@ -1237,30 +3178,262 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
                     controller.remove(runtime, specification)
                 except BaseException as cleanup_error:
                     compensation_errors.append(cleanup_error)
-            if host_snapshot is not None:
+            if can_compensate and host_snapshot is not None:
                 try:
                     host_controller.restore_snapshot(project, host_snapshot)
                 except BaseException as cleanup_error:
                     compensation_errors.append(cleanup_error)
-            elif host_created:
+            if (
+                can_compensate
+                and not account_rollback_recovered
+                and account_mode
+                and account_receipt_after is not None
+            ):
+                try:
+                    if account_receipt_path.read_bytes() != account_receipt_after:
+                        raise ValueError("account dependency receipt changed during compensation")
+                    if account_receipt_before is None:
+                        account_receipt_path.unlink()
+                    else:
+                        account_receipt_path.write_bytes(account_receipt_before)
+                except BaseException as cleanup_error:
+                    compensation_errors.append(cleanup_error)
+            elif can_compensate and host_created:
                 try:
                     host_controller.uninstall(project)
                 except BaseException as cleanup_error:
                     compensation_errors.append(cleanup_error)
-            try:
-                if old_commit is None:
-                    uninstall(project, expected_commit=commit, _locked=True)
-                elif core_changed and (project / BACKUP_NAME).exists():
-                    rollback(project, _locked=True)
-            except BaseException as cleanup_error:
-                compensation_errors.append(cleanup_error)
+            if (
+                can_compensate
+                and not account_rollback_recovered
+                and project_setup_snapshot is not None
+                and project_setup_after is not None
+            ):
+                try:
+                    restore_project_setup_outputs(
+                        project,
+                        project_setup_snapshot,
+                        project_setup_before,
+                        project_setup_after,
+                    )
+                except BaseException as cleanup_error:
+                    compensation_errors.append(cleanup_error)
+            if can_compensate:
+                try:
+                    backup_path = project / BACKUP_NAME
+                    if old_commit is None and try_verify_install(backup_path) is not None:
+                        rollback(project, _locked=True)
+                    elif old_commit is None and account_mode:
+                        # Keep portable core after first-install dependency/provision
+                        # failure so `.chaos-engine/install.py` remains for doctor/heal
+                        # (#5629/#5630). Hosts were not bound yet; re-run rematerializes.
+                        if reporter is not None:
+                            reporter.trace(
+                                "kept installed core after provision failure for self-heal"
+                            )
+                    elif old_commit is None:
+                        uninstall(project, expected_commit=commit, _locked=True)
+                    elif core_changed and backup_path.exists():
+                        rollback(project, _locked=True)
+                    if restore_generation is not None:
+                        controller.publish_pointer(
+                            project,
+                            restore_generation,
+                            expected_specification_sha256=old_specification_sha256,
+                            expected_core_sha256=old_core_sha256,
+                        )
+                except BaseException as cleanup_error:
+                    compensation_errors.append(cleanup_error)
+            elif old_commit is not None:
+                try:
+                    prior_host_receipt = (
+                        host_snapshot.get("raw") if isinstance(host_snapshot, dict) else None
+                    )
+                    write_cross_rollback_journal(
+                        project,
+                        old_commit,
+                        commit,
+                        prior_host_receipt=(
+                            prior_host_receipt if isinstance(prior_host_receipt, bytes) else None
+                        ),
+                    )
+                except BaseException as cleanup_error:
+                    compensation_errors.append(cleanup_error)
             if compensation_errors:
                 if len(compensation_errors) == 1:
                     raise compensation_errors[0] from error
                 details = "; ".join(str(item) for item in compensation_errors)
                 raise RuntimeError(f"ChaosEngine compensation failures: {details}") from error
             raise
+        finally:
+            if project_setup_snapshot is not None:
+                shutil.rmtree(project_setup_snapshot, ignore_errors=True)
+        # Default-on Headroom pin+CLI (#5620). Disable only via --without-headroom.
+        # Best-effort: never abort a successful core install if the CLI pin fails.
+        if bundle.get("headroom", True) and provisioner is None:
+            policy_path = (project / INSTALL_DIRECTORY) / "headroom_policy.py"
+            if policy_path.is_file():
+                try:
+                    spec = importlib.util.spec_from_file_location(
+                        "chaos_engine_headroom_policy_install", policy_path
+                    )
+                    if spec is not None and spec.loader is not None:
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+                        module.ensure_installed()
+                except (OSError, RuntimeError, ValueError, TimeoutError):
+                    pass
         return target
+
+
+
+def default_bundle_options() -> dict[str, bool]:
+    """Return default-on bundle enablement (True = provisioned)."""
+    return {name: True for name in DEFAULT_BUNDLE_COMPONENTS}
+
+
+def normalize_bundle_options(raw: object | None = None) -> dict[str, bool]:
+    """Merge operator disable flags onto the default-on bundle."""
+    options = default_bundle_options()
+    if not isinstance(raw, dict):
+        return options
+    for name in DEFAULT_BUNDLE_COMPONENTS:
+        if name in raw:
+            options[name] = bool(raw[name])
+        without_key = f"without_{name}"
+        if without_key in raw and raw[without_key]:
+            options[name] = False
+    return options
+
+
+def write_bundle_options(project: Path, options: dict[str, bool]) -> Path:
+    """Persist operator bundle enablement under `.chaos-engine-state/`."""
+    project = project.resolve()
+    target = project / BUNDLE_OPTIONS_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schemaVersion": 1,
+        "identity": CANONICAL_IDENTITY,
+        "defaultOn": list(DEFAULT_BUNDLE_COMPONENTS),
+        "enabled": normalize_bundle_options(options),
+    }
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return target
+
+
+def read_bundle_options(project: Path) -> dict[str, bool]:
+    """Load persisted bundle options; missing file means full default-on."""
+    path = project.resolve() / BUNDLE_OPTIONS_PATH
+    if not path.is_file():
+        return default_bundle_options()
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default_bundle_options()
+    enabled = document.get("enabled") if isinstance(document, dict) else None
+    return normalize_bundle_options(enabled)
+
+
+def activation_proof_from_clients(clients: dict[str, object]) -> dict[str, object]:
+    """Build per-host activationProof for doctor JSON (no paths/secrets)."""
+    proof: dict[str, object] = {}
+    for host in sorted(str(name) for name in clients):
+        record = clients.get(host)
+        if not isinstance(record, dict):
+            continue
+        entry: dict[str, object] = {
+            "status": record.get("status"),
+            "marketplace": record.get("marketplace"),
+            "plugin": record.get("plugin"),
+        }
+        plugins = record.get("plugins")
+        if isinstance(plugins, dict):
+            entry["plugins"] = {
+                str(name): plugins[name]
+                for name in sorted(str(item) for item in plugins)
+                if isinstance(plugins.get(name), str)
+            }
+        proof[host] = entry
+    return proof
+
+
+def apply_plugin_client_health(
+    result: dict[str, object],
+    project: Path,
+    host_controller: object,
+    *,
+    attach_clients: bool = False,
+    attach_activation_proof: bool = False,
+) -> None:
+    """Reconcile required `plugins` with client activation so status ⊆ doctor.
+
+    File presence alone can look healthy while marketplace activation is stale or
+    absent for a detected Codex/Claude CLI. Both status and doctor must share this
+    identity for the required `plugins` component.
+    """
+    clients = host_controller.detected_plugin_status(project.resolve())
+    if attach_clients:
+        result["clients"] = clients
+    if attach_activation_proof:
+        result["activationProof"] = activation_proof_from_clients(
+            clients if isinstance(clients, dict) else {}
+        )
+    if not isinstance(clients, dict) or not clients:
+        return
+    if any(
+        isinstance(item, dict) and item.get("status") != "healthy"
+        for item in clients.values()
+    ):
+        result["status"] = "recovery-required"
+        components = result.get("components")
+        if isinstance(components, dict) and isinstance(components.get("plugins"), dict):
+            components["plugins"]["status"] = "recovery-required"
+            if "detail" not in components["plugins"]:
+                components["plugins"]["detail"] = (
+                    "Detected client marketplace/plugin activation is unhealthy. "
+                    "Run `python3 .chaos-engine/install.py repair --project . "
+                    "--component plugins`, restart the client, then rerun doctor."
+                )
+
+
+def required_component_statuses(document: dict[str, object]) -> dict[str, str]:
+    """Return required-component name→status map shared by verify/doctor/CE-INSTALL-FAILED."""
+    components = document.get("components")
+    if not isinstance(components, dict):
+        return {}
+    result: dict[str, str] = {}
+    for name, item in components.items():
+        if not isinstance(name, str) or not isinstance(item, dict):
+            continue
+        if item.get("taskImpact") != "required":
+            continue
+        status = item.get("status")
+        if isinstance(status, str):
+            result[name] = status
+    return result
+
+
+def status_subset_of_doctor(
+    status_doc: dict[str, object], doctor_doc: dict[str, object]
+) -> list[str]:
+    """Return required component ids where status is healthier than doctor (violations)."""
+    rank = {
+        "healthy": 3,
+        "compatible-legacy": 2,
+        "absent": 1,
+        "migration-required": 0,
+        "recovery-required": 0,
+        "broken": 0,
+        "unknown": 0,
+    }
+    status_map = required_component_statuses(status_doc)
+    doctor_map = required_component_statuses(doctor_doc)
+    violations: list[str] = []
+    for name, doctor_status in doctor_map.items():
+        status_value = status_map.get(name, "unknown")
+        if rank.get(status_value, 0) > rank.get(doctor_status, 0):
+            violations.append(name)
+    return sorted(violations)
 
 
 def attach_component_status(
@@ -1269,6 +3442,8 @@ def attach_component_status(
     target: Path,
     dependency_health: str,
     host_controller: object,
+    *,
+    inspect_retrieval_state: bool = True,
 ) -> None:
     manifest = load_manifest(target)
     capabilities = manifest.get("capabilities")
@@ -1279,19 +3454,28 @@ def attach_component_status(
             target / "skills/chaos-engine/SKILL.md",
             target / "vendor/caveman/PIN.json",
             target / "vendor/ponytail/PIN.json",
+            target / "vendor/headroom/PIN.json",
         ],
         "skills": [
             project / ".agents/skills/chaos-engine/SKILL.md",
             project / "plugins/caveman/skills/caveman/SKILL.md",
             project / "plugins/ponytail/skills/ponytail/SKILL.md",
+            target / "vendor/headroom/skills/headroom/SKILL.md",
+            target / "skills/self-improve/SKILL.md",
         ],
         "playbooks": [target / "references/work-github-playbook.md"],
         "hooks": [
             target / "hooks/guard.py",
+            target / "hooks/kernel.py",
+            target / "hooks/launch.js",
+            target / "hooks/lifecycle.py",
             target / "hooks/reflection.py",
             project / ".codex/hooks.json",
             project / ".grok/hooks/lifecycle.json",
+            project / ".gemini/settings.json",
+            project / ".github/hooks/chaos-engine.json",
             project / "plugins/chaos-engine/hooks/hooks.json",
+            project / "plugins/chaos-engine/hooks/launch.js",
             project / "plugins/caveman/src/hooks/caveman-activate.js",
             project / "plugins/caveman/src/hooks/caveman-mode-tracker.js",
             project / "plugins/ponytail/hooks/ponytail-activate.js",
@@ -1327,14 +3511,62 @@ def attach_component_status(
         components[name] = {"status": "healthy" if healthy else "absent", **capabilities[name]}
     for name in ("tools", "memory", "mempalace", "graphify"):
         components[name] = {"status": dependency_health, **capabilities[name]}
-    mempalace_state = host_controller.mempalace_runtime_status(project)
-    if mempalace_state.get("status") != "healthy":
-        components["mempalace"] = {**mempalace_state, **capabilities["mempalace"]}
+    # Load from the installed tree only. Bootstrap runpy-loads install.py from a
+    # temporary download that is deleted before Verify installation; a bare import
+    # or Path(__file__) fallback would point at that cleaned-up source (#5613).
+    import importlib.util as _ilu
+
+    _hp = target / "headroom_policy.py"
+    if not _hp.is_file():
+        headroom_state = {
+            "status": "broken",
+            "detail": "Headroom policy module missing from installed core.",
+            "cliPresent": False,
+            "pin": "headroom-ai",
+        }
+    else:
+        _spec = _ilu.spec_from_file_location("chaos_engine_headroom_policy", _hp)
+        if _spec is None or _spec.loader is None:
+            headroom_state = {
+                "status": "broken",
+                "detail": "Headroom policy module could not be loaded.",
+                "cliPresent": False,
+                "pin": "headroom-ai",
+            }
+        else:
+            _headroom_policy = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_headroom_policy)
+            headroom_state = _headroom_policy.doctor_status()
+    components["headroom"] = {
+        **{k: v for k, v in headroom_state.items() if k in {"status", "detail", "cliPresent", "pin"}},
+        **capabilities["headroom"],
+    }
+    if inspect_retrieval_state:
+        mempalace_state = host_controller.mempalace_runtime_status(project)
+        if mempalace_state.get("status") != "healthy":
+            components["mempalace"] = {**mempalace_state, **capabilities["mempalace"]}
     cache_state = host_controller.maven_tools_cache_status()
     components["maven-tools-mcp"] = {
         **cache_state,
         **capabilities["maven-tools-mcp"],
     }
+    bundle = read_bundle_options(project)
+    for name in ("memory", "mempalace", "graphify"):
+        if not bundle.get(name, True) and name in components:
+            components[name] = {
+                **components[name],
+                "status": "absent",
+                "detail": f"Disabled via --without-{name} (default-on bundle opt-out).",
+                "taskImpact": "optional",
+            }
+    if not bundle.get("headroom", True) and "headroom" in components:
+        components["headroom"] = {
+            **components["headroom"],
+            "status": "absent",
+            "detail": "Disabled via --without-headroom (default-on bundle opt-out).",
+            "taskImpact": "optional",
+            "cliPresent": False,
+        }
     result["components"] = components
     if any(
         item["status"] != "healthy" and item["taskImpact"] != "optional"
@@ -1349,11 +3581,20 @@ def status_with_dependencies(project: Path, *, active_probes: bool = False) -> d
     with project_lock(project):
         with dependency_runtime_lock(runtime):
             target = project / INSTALL_DIRECTORY
+            if missing_core_with_installed_hosts(project):
+                return missing_core_recovery_status(project)
+            if stale_host_state_after_wiped_runtime(project):
+                return wiped_runtime_recovery_status(project)
+            if upgrade_host_receipt_drift_needed(project):
+                return upgrade_host_receipt_drift_status(project)
+            if orphan_core_without_hosts_receipt(project):
+                return missing_hosts_receipt_recovery_status(project)
             manifest = verify_install(target)
             state = (
                 "recovery-required"
                 if (project / JOURNAL_NAME).exists()
                 or (project / CROSS_ROLLBACK_JOURNAL_NAME).exists()
+                or (project / ACCOUNT_ROLLBACK_JOURNAL_NAME).exists()
                 else "healthy"
             )
             result: dict[str, object] = {
@@ -1362,7 +3603,23 @@ def status_with_dependencies(project: Path, *, active_probes: bool = False) -> d
                 "distribution": str(manifest["distribution"]["id"]),  # type: ignore[index]
                 "policySha256": str(manifest["distribution"]["policySha256"]),  # type: ignore[index]
             }
+            result["kernel"] = installed_kernel_status(target)
+            if result["kernel"]["status"] != "healthy":  # type: ignore[index]
+                result["status"] = "recovery-required"
             host_controller = load_installed_controller(target, "hosts")
+            if (project / ACCOUNT_ROLLBACK_JOURNAL_NAME).exists():
+                result["status"] = "recovery-required"
+                result["hosts"] = {"status": "recovery-required"}
+                result["dependencies"] = {"status": "recovery-required"}
+                attach_component_status(
+                    result,
+                    project,
+                    target,
+                    "recovery-required",
+                    host_controller,
+                    inspect_retrieval_state=False,
+                )
+                return result
             pending_rollback = read_cross_rollback_journal(project)
             if pending_rollback is not None:
                 result["hosts"] = host_controller.verify(project)
@@ -1374,6 +3631,11 @@ def status_with_dependencies(project: Path, *, active_probes: bool = False) -> d
                 )
             if result["hosts"]["status"] != "healthy":  # type: ignore[index]
                 result["status"] = "recovery-required"
+            if active_probes:
+                result["hosts"]["grok"] = host_controller.grok_runtime_status(project)  # type: ignore[index]
+                if result["hosts"]["grok"]["status"] == "recovery-required":  # type: ignore[index]
+                    result["hosts"]["status"] = "recovery-required"  # type: ignore[index]
+                    result["status"] = "recovery-required"
             removing = project / ".chaos-engine-runtime.removing"
             backup = project / ".chaos-engine-runtime.backup"
             building = project / ".chaos-engine-runtime.building"
@@ -1384,6 +3646,69 @@ def status_with_dependencies(project: Path, *, active_probes: bool = False) -> d
                 result["dependencies"] = {"status": "recovery-required"}
                 attach_component_status(
                     result, project, target, "recovery-required", host_controller
+                )
+                return result
+            controller = load_dependency_controller(target)
+            account_receipt = project / getattr(
+                controller,
+                "ACCOUNT_RECEIPT_NAME",
+                ".chaos-engine-dependencies.json",
+            )
+            if account_receipt.is_file() and not is_link_or_reparse(account_receipt):
+                controller = load_dependency_controller(target)
+                receipt = controller.read_account_receipt(project)
+                records = receipt.get("components", {})
+                healthy = isinstance(records, dict) and all(
+                    isinstance(item, dict)
+                    and item.get("status") == "healthy"
+                    and item.get("action") != "blocked"
+                    for item in records.values()
+                )
+                result["dependencies"] = {
+                    "status": "healthy" if healthy else "recovery-required",
+                    "schemaVersion": receipt["schemaVersion"],
+                    "checkedAt": receipt.get("checkedAt"),
+                    "scope": receipt.get("scope"),
+                    "components": records,
+                }
+                attach_component_status(
+                    result,
+                    project,
+                    target,
+                    str(result["dependencies"]["status"]),
+                    host_controller,
+                    inspect_retrieval_state=False,
+                )
+                return result
+            pointer_path = project / ".chaos-engine-runtime-current.json"
+            if pointer_path.exists() or is_link_or_reparse(pointer_path):
+                controller = load_dependency_controller(target)
+                specification = controller.load_specification(
+                    target / "dependencies.json"
+                )
+                generation, pointer = controller.active_generation(
+                    project,
+                    expected_specification_sha256=controller.specification_digest(
+                        specification
+                    ),
+                    expected_core_sha256=file_sha256(target / MANIFEST_NAME),
+                )
+                if active_probes:
+                    controller.probe_active(
+                        project,
+                        controller.specification_digest(specification),
+                        file_sha256(target / MANIFEST_NAME),
+                    )
+                result["dependencies"] = {
+                    "status": "healthy",
+                    "generationId": pointer["active"]["generationId"],
+                    "path": str(generation),
+                }
+                receipt = json.loads((generation / getattr(controller, "RECEIPT_NAME", "receipt.json")).read_text(encoding="utf-8"))
+                if isinstance(receipt.get("runtimes"), dict):
+                    result["dependencies"]["runtimes"] = receipt["runtimes"]
+                attach_component_status(
+                    result, project, target, "healthy", host_controller
                 )
                 return result
             if not runtime.exists():
@@ -1408,30 +3733,245 @@ def doctor_with_dependencies(
 ) -> dict[str, object]:
     """Verify installed files and actively execute every dependency entrypoint probe."""
     result = status_with_dependencies(project, active_probes=True)
+    if (project.resolve() / ACCOUNT_ROLLBACK_JOURNAL_NAME).exists():
+        result["clients"] = {}
+        result["activationProof"] = {}
+        result["phaseLedger"] = {"schemaVersion": 1, "sessions": 0, "status": "absent"}
+        return result
     target = project.resolve() / INSTALL_DIRECTORY
     host_controller = load_installed_controller(target, "hosts")
-    if not host_controller.retrieval_runtime_healthy(project.resolve()):
+    dependency = result.get("dependencies")
+    generation_path = dependency.get("path") if isinstance(dependency, dict) else None
+    account_commands = None
+    account_receipt = project.resolve() / ".chaos-engine-dependencies.json"
+    if account_receipt.is_file() and not is_link_or_reparse(account_receipt):
+        controller = load_dependency_controller(target)
+        receipt = controller.read_account_receipt(project.resolve())
+        commands = receipt.get("commands")
+        if isinstance(commands, dict):
+            account_commands = commands
+    retrieval = host_controller.retrieval_runtime_status(project.resolve(), account_commands)
+    if retrieval.get("status") != "healthy":
         result["status"] = "recovery-required"
         components = result.get("components")
-        if isinstance(components, dict) and isinstance(
-            components.get("retrieval-config"), dict
-        ):
-            components["retrieval-config"]["status"] = "recovery-required"
-    if not host_controller.mcp_runtime_healthy(project.resolve()):
+        if isinstance(components, dict) and isinstance(components.get("memory"), dict):
+            components["memory"]["status"] = retrieval["status"]
+            if retrieval.get("reason"):
+                components["memory"]["reason"] = retrieval["reason"]
+            code = retrieval.get("code")
+            if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", code):
+                components["memory"]["code"] = code
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    python_name = "python.exe" if os.name == "nt" else "python"
+    managed_python = (
+        Path(generation_path) / "uv-tools/mempalace" / scripts / python_name
+        if isinstance(generation_path, str) else None
+    )
+    if managed_python is None and account_commands is not None:
+        account_python = account_commands.get("python3")
+        if isinstance(account_python, str):
+            try:
+                candidate_python = Path(account_python).resolve(strict=True)
+            except (OSError, RuntimeError):
+                candidate_python = None
+            if candidate_python is not None and candidate_python.is_file():
+                managed_python = candidate_python
+    mcp_status = (
+        host_controller.mcp_runtime_status(project.resolve(), managed_python, account_commands)
+        if managed_python is not None else {"status": "recovery-required"}
+    )
+    mcp_status_value = str(mcp_status.get("status") or "recovery-required")
+    components = result.get("components")
+    if mcp_status_value == "healthy":
+        pass
+    elif mcp_status_value in {"compatible-legacy", "degraded", "sync-advisory"}:
+        # Memory origin/main write gate during probe is advisory for required mcps
+        # (#5630); tool.py still hard-fails memory writes. Keep overall install
+        # verify from treating this alone as CE-INSTALL-FAILED recovery-required.
+        if isinstance(components, dict) and isinstance(components.get("mcps"), dict):
+            components["mcps"]["status"] = "compatible-legacy"
+            fix_next = mcp_status.get("fixNext")
+            detail = mcp_status.get("detail")
+            if isinstance(fix_next, str) and fix_next.strip():
+                components["mcps"]["detail"] = fix_next.strip()
+            elif isinstance(detail, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", detail):
+                components["mcps"]["detail"] = detail
+            code = mcp_status.get("code")
+            if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code):
+                components["mcps"]["code"] = code
+    else:
         result["status"] = "recovery-required"
-        components = result.get("components")
         if isinstance(components, dict) and isinstance(components.get("mcps"), dict):
             components["mcps"]["status"] = "recovery-required"
-    if not verify_clients:
-        return result
-    clients = host_controller.detected_plugin_status(project.resolve())
-    result["clients"] = clients
-    if any(item.get("status") != "healthy" for item in clients.values()):
+            detail = mcp_status.get("detail")
+            if isinstance(detail, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", detail):
+                components["mcps"]["detail"] = detail
+    if managed_python is None or not host_controller.hook_runtime_healthy(
+        project.resolve(), managed_python
+    ):
         result["status"] = "recovery-required"
         components = result.get("components")
-        if isinstance(components, dict) and isinstance(components.get("plugins"), dict):
-            components["plugins"]["status"] = "recovery-required"
+        if isinstance(components, dict) and isinstance(components.get("hooks"), dict):
+            components["hooks"]["status"] = "recovery-required"
+    if not verify_clients:
+        # Still attach activationProof from receipt when available (no live CLI probe).
+        result.setdefault("activationProof", {})
+        result.setdefault(
+            "phaseLedger",
+            {"schemaVersion": 1, "sessions": 0, "status": "absent"},
+        )
+        return result
+    apply_plugin_client_health(
+        result,
+        project,
+        host_controller,
+        attach_clients=True,
+        attach_activation_proof=True,
+    )
+    try:
+        ledger_path = Path(__file__).resolve().with_name("phase_ledger.py")
+        if ledger_path.is_file():
+            import importlib.util as _ilu
+
+            _spec = _ilu.spec_from_file_location("chaos_engine_phase_ledger_doctor", ledger_path)
+            if _spec is not None and _spec.loader is not None:
+                _mod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                result["phaseLedger"] = _mod.doctor_phase_ledger_summary(project)
+    except (OSError, RuntimeError, ValueError, AttributeError):
+        result["phaseLedger"] = {"schemaVersion": 1, "sessions": 0, "status": "absent"}
     return result
+
+
+_SECRET_FIELD = re.compile(
+    r"(?:authorization|credential|password|private.?key|secret|token)", re.IGNORECASE
+)
+_URL_CREDENTIAL = re.compile(r"(?P<scheme>[a-z][a-z0-9+.-]*://)[^/@\s]+@", re.IGNORECASE)
+_DIAGNOSTIC_FIELDS = {
+    "status": {
+        "schemaVersion", "identity", "kind", "status", "commit", "distribution",
+        "policySha256", "kernel", "hosts", "dependencies", "components",
+    },
+    "doctor": {
+        "schemaVersion", "identity", "kind", "status", "commit", "distribution",
+        "policySha256", "kernel", "hosts", "dependencies", "components", "clients",
+        "activationProof", "phaseLedger",
+    },
+    "explain": {
+        "schemaVersion", "identity", "kind", "host", "event", "phase", "decision",
+        "diagnosticCode", "reason", "remedy", "factsUsed", "effects", "terminalReason",
+    },
+}
+_DIAGNOSTIC_REQUIRED_FIELDS = {
+    kind: frozenset(fields) for kind, fields in _DIAGNOSTIC_FIELDS.items()
+}
+
+
+def _diagnostic_value(value: object, project: Path) -> object:
+    """Return bounded, canonical JSON data without paths or credential-shaped fields."""
+    if isinstance(value, dict):
+        result: dict[str, object] = {}
+        for key in sorted(str(item) for item in value):
+            if key in {"path", "root"} or _SECRET_FIELD.search(key):
+                continue
+            result[key] = _diagnostic_value(value[key], project)
+        return result
+    if isinstance(value, list):
+        return [_diagnostic_value(item, project) for item in value]
+    if isinstance(value, tuple):
+        return [_diagnostic_value(item, project) for item in value]
+    if isinstance(value, str):
+        rendered = _URL_CREDENTIAL.sub(r"\g<scheme><redacted>@", value)
+        replacements = ((str(project.resolve()), "<project>"), (str(Path.home()), "<home>"))
+        for source, replacement in replacements:
+            if source:
+                rendered = rendered.replace(source, replacement)
+                rendered = rendered.replace(source.replace("\\", "/"), replacement)
+        return rendered[:2048]
+    if value is None or type(value) in {bool, int, float}:
+        return value
+    return type(value).__name__
+
+
+def validate_diagnostic_json(document: object) -> dict[str, object]:
+    """Reject schema drift in the current diagnostic contract."""
+    if not isinstance(document, dict) or document.get("schemaVersion") != 2:
+        raise ValueError("diagnostic JSON schema v2 is invalid")
+    kind = document.get("kind")
+    allowed = _DIAGNOSTIC_FIELDS.get(str(kind))
+    if allowed is None or set(document) - allowed:
+        raise ValueError("diagnostic JSON contains unknown or removed fields")
+    required = {"schemaVersion", "identity", "kind"}
+    if not required <= set(document) or document.get("identity") != CANONICAL_IDENTITY:
+        raise ValueError("diagnostic JSON identity is invalid")
+    missing = _DIAGNOSTIC_REQUIRED_FIELDS[str(kind)] - set(document)
+    if missing:
+        raise ValueError(
+            "diagnostic JSON is missing required fields: " + ", ".join(sorted(missing))
+        )
+    return document
+
+
+def status_json(project: Path, *, active_probes: bool = False) -> dict[str, object]:
+    """Expose the stable secret-free status JSON v2 contract."""
+    if active_probes:
+        state = doctor_with_dependencies(project)
+    else:
+        state = status_with_dependencies(project)
+        # Required `plugins` must never look healthier than doctor when a native
+        # client CLI is present (#5619 status ⊆ doctor).
+        target = project.resolve() / INSTALL_DIRECTORY
+        if target.is_dir() and not (project.resolve() / ACCOUNT_ROLLBACK_JOURNAL_NAME).exists():
+            try:
+                host_controller = load_installed_controller(target, "hosts")
+                apply_plugin_client_health(state, project, host_controller)
+            except (OSError, RuntimeError, ValueError):
+                # Status stays fail-closed via existing component/file checks.
+                pass
+    payload = {
+        "schemaVersion": DIAGNOSTIC_SCHEMA_VERSION,
+        "identity": CANONICAL_IDENTITY,
+        "kind": "doctor" if active_probes else "status",
+        **_diagnostic_value(state, project.resolve()),  # type: ignore[arg-type]
+    }
+    return validate_diagnostic_json(payload)
+
+
+def explain_json(
+    project: Path,
+    event: str,
+    *,
+    host: str,
+    session_id: str = "diagnostic-session",
+    phase: str = "ReadOnly",
+    target_phase: str = "",
+    cancelled: bool = False,
+    timed_out: bool = False,
+) -> dict[str, object]:
+    """Evaluate one declarative event without reading ambient session state."""
+    target = project.resolve() / INSTALL_DIRECTORY
+    verify_install(target)
+    kernel = load_installed_controller(target / "hooks", "kernel")
+    if host not in kernel.HOST_CAPABILITIES:
+        raise ValueError("unsupported diagnostic host")
+    normalized = kernel.normalize_event(
+        {
+            "hook_event_name": event,
+            "session_id": session_id,
+            "phase": phase,
+            "target_phase": target_phase,
+            "cancelled": cancelled,
+            "timed_out": timed_out,
+        },
+        host,
+    )
+    report = kernel.evaluate(normalized).to_dict()
+    return validate_diagnostic_json({
+        **_diagnostic_value(report, project.resolve()),  # type: ignore[arg-type]
+        "schemaVersion": DIAGNOSTIC_SCHEMA_VERSION,
+        "identity": CANONICAL_IDENTITY,
+        "kind": "explain",
+    })
 
 
 def uninstall_with_dependencies(  # noqa: MC0001 - coordinated host, runtime, and core teardown.
@@ -1440,6 +3980,8 @@ def uninstall_with_dependencies(  # noqa: MC0001 - coordinated host, runtime, an
     project = project.resolve()
     with project_lock(project):
         _recover_transaction(project)
+        if read_account_rollback_journal(project) is not None:
+            raise ValueError("account rollback recovery is required before uninstall")
         if read_cross_rollback_journal(project) is not None:
             raise ValueError("rollback recovery is required before uninstall")
         target = project / INSTALL_DIRECTORY
@@ -1457,6 +3999,13 @@ def uninstall_with_dependencies(  # noqa: MC0001 - coordinated host, runtime, an
                 receipt, _ = host_controller.read_receipt(project)
                 if receipt["phase"] != "removing":
                     raise ValueError("host removal is not prepared for absent-core recovery")
+            generation_controller = load_source_controller("dependencies")
+            generation_pointer = project / generation_controller.POINTER_NAME
+            generation_removing = project / generation_controller.POINTER_REMOVING_NAME
+            if generation_pointer.exists() or is_link_or_reparse(generation_pointer):
+                raise ValueError("dependency generation removal is not prepared")
+            if generation_removing.exists() or is_link_or_reparse(generation_removing):
+                generation_controller.finalize_generation_remove(project)
             with dependency_runtime_lock(runtime):
                 if removing.exists():
                     finalize_dependency_tombstone(removing)
@@ -1470,20 +4019,52 @@ def uninstall_with_dependencies(  # noqa: MC0001 - coordinated host, runtime, an
         controller = load_dependency_controller(target)
         host_controller = load_installed_controller(target, "hosts")
         specification = controller.load_specification(target / "dependencies.json")
+        generation_pointer = project / controller.POINTER_NAME
+        generation_removing = project / controller.POINTER_REMOVING_NAME
+        if generation_removing.exists() or is_link_or_reparse(generation_removing):
+            raise ValueError("dependency generation removal recovery is required")
+        generation_mode = generation_pointer.exists() or is_link_or_reparse(generation_pointer)
+        if generation_mode and (runtime.exists() or is_link_or_reparse(runtime)):
+            raise ValueError("mixed dependency runtime ownership requires recovery")
         preflight_uninstall(project)
         manifest = verify_install(target)
         commit = str(manifest["source"]["commit"])
         prepared = False
+        generation_prepared = False
         host_prepared = False
+        host_receipt_path = project / getattr(
+            host_controller, "RECEIPT_NAME", ".chaos-engine-hosts.json"
+        )
+        host_receipt_present = host_receipt_path.exists() or is_link_or_reparse(
+            host_receipt_path
+        )
         try:
-            host_controller.prepare_uninstall(project)
-            host_prepared = True
-            if runtime.exists() or is_link_or_reparse(runtime):
+            if host_receipt_present:
+                host_controller.prepare_uninstall(project)
+                host_prepared = True
+            # else: wiped-runtime quarantine already removed host state
+            if generation_mode:
+                controller.prepare_generation_remove(
+                    project,
+                    expected_specification_sha256=controller.specification_digest(
+                        specification
+                    ),
+                    expected_core_sha256=file_sha256(target / MANIFEST_NAME),
+                )
+                generation_prepared = True
+            elif runtime.exists() or is_link_or_reparse(runtime):
                 controller.prepare_remove(runtime, specification)
                 prepared = True
             uninstall(project, expected_commit=commit, _locked=True)
         except BaseException as error:
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                raise
             compensation_errors: list[BaseException] = []
+            if generation_prepared:
+                try:
+                    controller.cancel_generation_remove(project)
+                except BaseException as cleanup_error:
+                    compensation_errors.append(cleanup_error)
             if prepared:
                 try:
                     controller.cancel_remove(runtime)
@@ -1502,7 +4083,10 @@ def uninstall_with_dependencies(  # noqa: MC0001 - coordinated host, runtime, an
             raise
         if prepared or removing.exists():
             controller.finalize_remove(runtime, specification)
-        host_controller.finalize_uninstall(project)
+        if generation_prepared:
+            controller.finalize_generation_remove(project)
+        if host_prepared:
+            host_controller.finalize_uninstall(project)
 
 
 def finalize_dependency_tombstone(removing: Path) -> None:
@@ -1511,9 +4095,10 @@ def finalize_dependency_tombstone(removing: Path) -> None:
     if not any(removing.iterdir()):
         removing.rmdir()
         return
-    for path in removing.rglob("*"):
-        if is_link_or_reparse(path):
-            raise ValueError("dependency removal contains a link or reparse point")
+    entries = dependency_tombstone_entries(removing)
+    for path in entries:
+        if is_link_or_reparse(path) and not path.is_symlink():
+            raise ValueError("dependency removal contains an unsupported reparse point")
     receipt_path = removing / "receipt.json"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     integrity = receipt.pop("receiptIntegritySha256", None)
@@ -1523,12 +4108,34 @@ def finalize_dependency_tombstone(removing: Path) -> None:
     ownership = receipt.get("ownership")
     files = ownership.get("files") if isinstance(ownership, dict) else None
     directories = ownership.get("directories") if isinstance(ownership, dict) else None
-    if not isinstance(files, dict) or not isinstance(directories, list):
+    links = ownership.get("links", []) if isinstance(ownership, dict) else None
+    if (
+        not isinstance(files, dict)
+        or not isinstance(directories, list)
+        or not isinstance(links, list)
+        or not all(
+            isinstance(link, dict)
+            and set(link) == {"path", "target"}
+            and isinstance(link["path"], str)
+            and isinstance(link["target"], str)
+            for link in links
+        )
+    ):
         raise ValueError("dependency removal ownership record is invalid")
+    expected_links = {link["path"]: link["target"] for link in links}
+    present_links = {
+        path.relative_to(removing).as_posix(): os.readlink(path)
+        for path in entries
+        if path.is_symlink()
+    }
+    if not set(present_links) <= set(expected_links) or any(
+        expected_links[path] != target for path, target in present_links.items()
+    ):
+        raise ValueError("dependency removal link ownership drift detected")
     present_files = {
         path.relative_to(removing).as_posix()
-        for path in removing.rglob("*")
-        if path.is_file() and path != receipt_path
+        for path in entries
+        if not is_link_or_reparse(path) and path.is_file() and path != receipt_path
     }
     if not present_files <= set(files):
         raise ValueError("dependency removal contains an unowned file")
@@ -1537,21 +4144,164 @@ def finalize_dependency_tombstone(removing: Path) -> None:
         if file_sha256(path) != files[relative]:
             raise ValueError("dependency removal ownership drift detected")
         path.unlink()
+    for relative in sorted(present_links):
+        (removing / relative).unlink()
     present_directories = {
         path.relative_to(removing).as_posix()
-        for path in removing.rglob("*")
-        if path.is_dir()
+        for path in entries
+        if not is_link_or_reparse(path) and path.is_dir()
     }
     if not present_directories <= set(directories):
         raise ValueError("dependency removal directory ownership drift detected")
     for directory in sorted(
-        (path for path in removing.rglob("*") if path.is_dir()),
+        (
+            path
+            for path in entries
+            if not is_link_or_reparse(path) and path.is_dir()
+        ),
         key=lambda path: len(path.parts),
         reverse=True,
     ):
         directory.rmdir()
     receipt_path.unlink()
     removing.rmdir()
+
+
+
+def repair_component(  # noqa: MC0001 - component switch keeps one operator entrypoint.
+    project: Path,
+    component: str,
+    *,
+    runner=None,
+) -> dict[str, object]:
+    """Zero-LLM targeted repair for one capability component (no full wipe)."""
+    import subprocess
+
+    project = project.resolve()
+    name = str(component).strip().casefold()
+    if name not in REPAIRABLE_COMPONENTS:
+        raise ValueError(
+            "unsupported repair component: "
+            + name
+            + "; choose one of "
+            + ", ".join(sorted(REPAIRABLE_COMPONENTS))
+        )
+    runner = runner or subprocess.run
+    with project_lock(project):
+        _recover_transaction(project)
+        target = project / INSTALL_DIRECTORY
+        if name == "core":
+            if not target.exists():
+                raise ValueError(
+                    "core is missing; rerun the ChaosEngine install one-liner "
+                    "(repair --component core cannot recreate an absent tree)"
+                )
+            verify_install(target)
+            return {"status": "repaired", "component": name, "action": "verified"}
+        if not target.exists():
+            raise ValueError(
+                "ChaosEngine core is missing; rerun the install one-liner before repair"
+            )
+        manifest = verify_install(target)
+        host_controller = load_installed_controller(target, "hosts")
+        repair_core_commit = str(manifest["source"]["commit"])  # type: ignore[index]
+        repair_capability = manifest.get("capabilityPolicySha256")
+        if not isinstance(repair_capability, str):
+            repair_capability = None
+        account_commands = None
+        account_receipt = project / ".chaos-engine-dependencies.json"
+        if account_receipt.is_file() and not is_link_or_reparse(account_receipt):
+            try:
+                account_payload = json.loads(account_receipt.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                account_payload = None
+            if isinstance(account_payload, dict) and isinstance(
+                account_payload.get("commands"), dict
+            ):
+                account_commands = {
+                    str(key): str(value)
+                    for key, value in account_payload["commands"].items()
+                    if isinstance(key, str) and isinstance(value, str)
+                }
+        # Clear stale account journals that block bind when hosts receipt is gone (#5636).
+        recover_account_rollback_journal(project)
+        if name == "plugins":
+            # Republish marketplace/plugins via host install preflight path, then
+            # activate detected clients — no full dependency wipe.
+            quarantine_orphaned_host_receipt(project)
+            host_controller.install(
+                project,
+                core_commit=repair_core_commit,
+                capability_policy_digest=repair_capability,
+                account_commands=account_commands,
+            )
+            activation = host_controller.activate_detected_plugins(project, runner=runner)
+            clients = activation.get("clients", {}) if isinstance(activation, dict) else {}
+            return {
+                "status": "repaired",
+                "component": name,
+                "action": "republish-activate",
+                "clients": {
+                    str(k): (v.get("status") if isinstance(v, dict) else v)
+                    for k, v in (clients.items() if isinstance(clients, dict) else [])
+                },
+            }
+        if name == "hosts":
+            # #5633: quarantine drifted receipt/anchors before rebind when deps+core
+            # are healthy so repair is not fail-closed on upgrade adapter drift.
+            quarantine_orphaned_host_receipt(project)
+            host_controller.install(
+                project,
+                core_commit=repair_core_commit,
+                capability_policy_digest=repair_capability,
+                account_commands=account_commands,
+            )
+            return {"status": "repaired", "component": name, "action": "rebind"}
+        if name in {"hooks", "skills", "roles", "mcps"}:
+            quarantine_orphaned_host_receipt(project)
+            host_controller.install(
+                project,
+                core_commit=repair_core_commit,
+                capability_policy_digest=repair_capability,
+                account_commands=account_commands,
+            )
+            return {"status": "repaired", "component": name, "action": "rebind"}
+        if name == "headroom":
+            policy_path = target / "headroom_policy.py"
+            if not policy_path.is_file():
+                raise ValueError("Headroom policy missing from installed core")
+            spec = importlib.util.spec_from_file_location(
+                "chaos_engine_headroom_policy_repair", policy_path
+            )
+            if spec is None or spec.loader is None:
+                raise ValueError("Headroom policy could not be loaded")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            result = module.ensure_installed(runner=runner)
+            return {"status": "repaired", "component": name, **result}
+        if name in {"memory", "mempalace", "graphify", "tools"}:
+            controller = load_dependency_controller(target)
+            specification = controller.load_specification(target / "dependencies.json")
+            account_receipt = project / ".chaos-engine-dependencies.json"
+            if account_receipt.is_file() and hasattr(controller, "install_account_dependencies"):
+                controller.install_account_dependencies(project, specification, runner=runner)
+                return {
+                    "status": "repaired",
+                    "component": name,
+                    "action": "account-reinstall",
+                }
+            runtime = project / ".chaos-engine-runtime"
+            repair = getattr(controller, "repair", None)
+            if not callable(repair):
+                raise ValueError("dependency repair is unavailable in this distribution")
+            receipt = repair(runtime, specification, runner=runner, force=True)
+            return {
+                "status": "repaired",
+                "component": name,
+                "action": "runtime-repair",
+                "receiptStatus": receipt.get("status") if isinstance(receipt, dict) else None,
+            }
+        raise ValueError(f"repair not implemented for component: {name}")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1563,9 +4313,49 @@ def parser() -> argparse.ArgumentParser:
     install_command.add_argument("--commit", required=True)
     install_command.add_argument("--distribution", default=DEFAULT_DISTRIBUTION)
     install_command.add_argument("--skip-tools", action="store_true")
+    install_command.add_argument("--with-maven-tools", action="store_true")
+    install_command.add_argument(
+        "--maven-tools-mode", choices=("native", "docker"), default="native"
+    )
+    for bundle_name in DEFAULT_BUNDLE_COMPONENTS:
+        install_command.add_argument(
+            f"--without-{bundle_name}",
+            action="store_true",
+            help=f"Disable default-on {bundle_name} provisioning.",
+        )
+    repair_command = commands.add_parser(
+        "repair",
+        help="Targeted zero-LLM repair for one component (no full wipe).",
+    )
+    repair_command.add_argument("--project", required=True, type=Path)
+    repair_command.add_argument(
+        "--component",
+        required=True,
+        choices=sorted(REPAIRABLE_COMPONENTS),
+    )
+    repair_command.add_argument("--json", action="store_true")
     for name in ("status", "doctor", "rollback", "uninstall"):
         command = commands.add_parser(name)
         command.add_argument("--project", required=True, type=Path)
+        if name in {"status", "doctor"}:
+            command.add_argument("--json", action="store_true")
+            command.add_argument(
+                "--fix-next-only",
+                action="store_true",
+                help="Print only fix-next repair lines (zero-LLM / script-first).",
+            )
+    explain = commands.add_parser("explain")
+    explain.add_argument("event")
+    explain.add_argument("--project", required=True, type=Path)
+    explain.add_argument(
+        "--host", choices=("codex", "claude", "gemini", "grok", "copilot"), required=True
+    )
+    explain.add_argument("--session", default="diagnostic-session")
+    explain.add_argument("--phase", default="ReadOnly")
+    explain.add_argument("--target-phase", default="")
+    explain.add_argument("--cancelled", action="store_true")
+    explain.add_argument("--timeout", action="store_true")
+    explain.add_argument("--json", action="store_true")
     cache = commands.add_parser("cache")
     cache_commands = cache.add_subparsers(dest="cache_command", required=True)
     cache_status = cache_commands.add_parser("status")
@@ -1576,10 +4366,294 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+def _doctor_python_cli() -> str:
+    """Return the platform-local interpreter token used in fix-next commands."""
+    return "py -3" if os.name == "nt" else "python3"
+
+
+def _component_severity(item: dict[str, object]) -> str:
+    """Map one component record to a scannable severity for human doctor output."""
+    status = str(item.get("status") or "unknown")
+    impact = str(item.get("taskImpact") or "required")
+    if status == "healthy":
+        return "ok"
+    if status == "absent" and impact == "optional":
+        return "ok"
+    if status == "compatible-legacy":
+        return "info"
+    if status == "migration-required":
+        return "warning"
+    if impact == "advisory":
+        return "warning"
+    if impact == "optional":
+        return "info"
+    return "error"
+
+
+def _looks_like_fix_next(detail: object) -> bool:
+    if not isinstance(detail, str):
+        return False
+    lowered = detail.casefold()
+    return any(
+        token in lowered
+        for token in ("run ", "rerun ", "restore ", "reinstall", "install ", "`", "python")
+    ) and len(detail) <= 320
+
+
+def component_fix_next(name: str, item: dict[str, object]) -> str | None:
+    """Return one actionable fix-next string for an unhealthy component, else None."""
+    status = str(item.get("status") or "")
+    impact = str(item.get("taskImpact") or "required")
+    if status == "healthy" or (status == "absent" and impact == "optional"):
+        return None
+    detail = item.get("detail")
+    if _looks_like_fix_next(detail):
+        return str(detail).strip()
+    reason = item.get("reason")
+    if _looks_like_fix_next(reason):
+        return str(reason).strip()
+    code = item.get("code")
+    cli = _doctor_python_cli()
+    reinstall = (
+        f"Re-run the ChaosEngine install one-liner from INSTALL.md "
+        f"(or `{cli} .chaos-engine/bootstrap.py` from a source checkout), then "
+        f"`{cli} .chaos-engine/install.py doctor --project .`."
+    )
+    if code == "CE_CORE_MISSING" or name == "core":
+        return (
+            "Rerun the ChaosEngine install one-liner to restore `.chaos-engine/` "
+            "under the existing project (orphaned host receipts are quarantined "
+            "automatically). Or uninstall, then install fresh. " + reinstall
+        )
+    if code in {"CE_WIPED_RUNTIME", "CE_DEPENDENCY_RECEIPT_MISSING"}:
+        return (
+            "Rerun the ChaosEngine install one-liner to quarantine stale host "
+            "receipt/anchors, restore `.chaos-engine-dependencies.json`, and "
+            "rebind hosts from the current core (no manual receipt surgery). "
+            + reinstall
+        )
+    if code == "CE_HOST_ADAPTER_DRIFT":
+        return (
+            "Rerun the ChaosEngine install one-liner or "
+            f"`{cli} .chaos-engine/install.py repair --project . --component hosts` "
+            "to quarantine the drifted host receipt/anchors and rebind from the "
+            "current core (foreign user MCP config is preserved). "
+            + reinstall
+        )
+    if code == "CE_HOSTS_RECEIPT_MISSING":
+        return (
+            "Rerun the ChaosEngine install one-liner or "
+            f"`{cli} .chaos-engine/install.py repair --project . --component hosts` "
+            "to bind hosts under the kept `.chaos-engine/` core (no manual "
+            "receipt surgery). "
+            + reinstall
+        )
+    if name == "mempalace" and status == "migration-required":
+        return (
+            "Supply a fresh or valid SQLite-exact MemPalace palace "
+            "(operator-owned migration; ChaosEngine will not convert legacy "
+            "Chroma state). Then rerun doctor."
+        )
+    if name in {"tools", "memory", "mempalace", "graphify"} and status in {
+        "recovery-required",
+        "absent",
+        "broken",
+    }:
+        return (
+            f"Repair the `{name}` dependency/runtime (receipt + managed tools), "
+            f"then rerun `{cli} .chaos-engine/install.py doctor --project .`. "
+            + reinstall
+        )
+    if name == "hooks":
+        return (
+            "Reinstall ChaosEngine hooks, then reload/trust hooks in the active "
+            "host (for Grok: `grok inspect --json`, `/hooks-trust` if needed) "
+            f"and rerun `{cli} .chaos-engine/install.py doctor --project .`."
+        )
+    if name == "plugins" or name == "skills" or name == "roles":
+        return (
+            f"Run `{cli} .chaos-engine/install.py repair --project . "
+            f"--component {name}`, restart the client, then rerun "
+            f"`{cli} .chaos-engine/install.py doctor --project .`."
+        )
+    if name == "mcps":
+        detail = item.get("detail")
+        if isinstance(detail, str) and "git fetch origin main" in detail:
+            return detail.strip()
+        if item.get("code") == "CE_MEMORY_ORIGIN_MAIN_DESYNC" or status == "compatible-legacy":
+            return (
+                "Primary checkout HEAD is not synchronized with origin/main "
+                "(Memory write gate). Fix-next: git fetch origin main && "
+                "git merge --ff-only origin/main — then rerun "
+                f"`{cli} .chaos-engine/install.py doctor --project .`. "
+                "Required mcps stay installable; memory/memory-mcp writes still hard-fail."
+            )
+        return (
+            "Repair MCP launchers (`.mcp.json` / Codex config) via reinstall, "
+            f"then rerun `{cli} .chaos-engine/install.py doctor --project .`."
+        )
+    if name in {"retrieval-config", "projection-policy", "playbooks"}:
+        return (
+            f"Restore missing `{name}` files via reinstall, then rerun "
+            f"`{cli} .chaos-engine/install.py doctor --project .`."
+        )
+    if name == "maven-tools-mcp":
+        return (
+            "For Maven projects, rerun install with Maven Tools enabled "
+            "(`--with-maven-tools` or root `pom.xml`); otherwise optional absence "
+            "is fine."
+        )
+    if name == "headroom":
+        detail = item.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+        return (
+            f"Run `{cli} .chaos-engine/install.py repair --project . "
+            "--component headroom` (or `uv tool install --python 3.13 "
+            '"headroom-ai==0.37.0"`), then `eval "$('
+            f'{cli} .chaos-engine/headroom_policy.py export-env)"` and '
+            "`headroom doctor`. Pass `--without-headroom` to keep Headroom off."
+        )
+    if status == "migration-required":
+        return (
+            f"Complete the operator-owned migration for `{name}`, then rerun "
+            f"`{cli} .chaos-engine/install.py doctor --project .`."
+        )
+    if status == "compatible-legacy":
+        return (
+            f"`{name}` is compatible-legacy: uninstall then reinstall the portable "
+            "bootstrap when you are ready to leave the legacy payload."
+        )
+    return (
+        f"Inspect `{name}` (`status={status}`), repair or reinstall, then rerun "
+        f"`{cli} .chaos-engine/install.py doctor --project .`."
+    )
+
+
+def format_doctor_host_onboarding(clients: dict[str, object] | None = None) -> str:
+    """Load bootstrap host onboarding cards for human doctor output."""
+    bootstrap_path = Path(__file__).resolve().with_name("bootstrap.py")
+    spec = importlib.util.spec_from_file_location(
+        "chaos_engine_bootstrap_onboarding", bootstrap_path
+    )
+    if spec is None or spec.loader is None:
+        return ""
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.format_host_onboarding_cards(
+        detected=module.detect_install_hosts(),
+        activated=clients if isinstance(clients, dict) else {},
+    )
+
+
+
+def format_blocking_fidelity_warnings(document: dict[str, object]) -> list[str]:
+    """Owner-visible warnings when a host may not honor exit-2 hard blocks (#5579)."""
+    lines: list[str] = []
+    kernel = document.get("kernel") if isinstance(document.get("kernel"), dict) else {}
+    capabilities = kernel.get("capabilities") if isinstance(kernel, dict) else None
+    if not isinstance(capabilities, dict):
+        return lines
+    for host, meta in sorted(capabilities.items()):
+        if not isinstance(meta, dict):
+            continue
+        gap = str(meta.get("blockingGap") or "").strip()
+        honored = meta.get("processExit2Honored", True)
+        if gap and honored is False:
+            lines.append(f"warning  host/{host}: {gap}")
+    return lines
+
+
+
+def format_fix_next_only(document: dict[str, object]) -> str:
+    """Emit only actionable fix-next lines for unhealthy components (#5582)."""
+    components = document.get("components")
+    lines: list[str] = []
+    if isinstance(components, dict):
+        for name in sorted(str(item) for item in components):
+            item = components[name]
+            if not isinstance(item, dict):
+                continue
+            if _component_severity(item) == "ok":
+                continue
+            fix = component_fix_next(name, item)
+            if fix:
+                lines.append(f"{name}: {fix}")
+    lines.extend(
+        line.split("warning  ", 1)[-1]
+        if line.startswith("warning  ")
+        else line
+        for line in format_blocking_fidelity_warnings(document)
+    )
+    return ("\n".join(lines) + "\n") if lines else ""
+
+
+def format_health_report(document: dict[str, object], *, kind: str | None = None) -> str:
+    """Render a short healthy summary or a scannable failure list with fix-next lines."""
+    label = kind or str(document.get("kind") or "doctor")
+    status = str(document.get("status") or "unknown")
+    commit = document.get("commit")
+    commit_text = commit if isinstance(commit, str) and commit else "unknown"
+    components = document.get("components")
+    rows: list[tuple[str, dict[str, object], str]] = []
+    if isinstance(components, dict):
+        for name in sorted(str(item) for item in components):
+            item = components[name]
+            if not isinstance(item, dict):
+                continue
+            rows.append((name, item, _component_severity(item)))
+    healthy = sum(1 for _n, _i, severity in rows if severity == "ok")
+    total = len(rows)
+    failures = [(name, item, severity) for name, item, severity in rows if severity != "ok"]
+    lines = [
+        f"ChaosEngine {label}: {status}",
+        f"commit: {commit_text}",
+    ]
+    if total:
+        lines.append(f"components: {healthy}/{total} healthy")
+    if not failures:
+        # Keep the happy path short for first-time users.
+        lines.extend(format_blocking_fidelity_warnings(document))
+        return "\n".join(lines) + "\n"
+    counts: dict[str, int] = {"error": 0, "warning": 0, "info": 0}
+    for _name, _item, severity in failures:
+        counts[severity] = counts.get(severity, 0) + 1
+    summary = ", ".join(
+        f"{counts[key]} {key}" for key in ("error", "warning", "info") if counts.get(key)
+    )
+    lines.append(f"issues: {summary}")
+    lines.append("")
+    for name, item, severity in failures:
+        status_text = str(item.get("status") or "unknown")
+        impact = str(item.get("taskImpact") or "")
+        impact_suffix = f" ({impact})" if impact and impact != "required" else ""
+        code = item.get("code")
+        code_suffix = f" code={code}" if isinstance(code, str) and code else ""
+        lines.append(f"[{severity}] {name} — {status_text}{impact_suffix}{code_suffix}")
+        fix = component_fix_next(name, item)
+        if fix:
+            lines.append(f"  fix-next: {fix}")
+    lines.extend(format_blocking_fidelity_warnings(document))
+    return "\n".join(lines) + "\n"
+
+
+def validate_install_options(args: argparse.Namespace) -> None:
+    if getattr(args, "skip_tools", False) and getattr(args, "with_maven_tools", False):
+        raise ValueError("--with-maven-tools cannot be combined with --skip-tools")
+    if getattr(args, "json", False) and getattr(args, "fix_next_only", False):
+        raise ValueError("--fix-next-only cannot be combined with --json")
+
+
 def main() -> int:
     args = parser().parse_args()
     try:
+        validate_install_options(args)
         if args.command == "install":
+            bundle = default_bundle_options()
+            for name in DEFAULT_BUNDLE_COMPONENTS:
+                if getattr(args, f"without_{name}", False):
+                    bundle[name] = False
+            write_bundle_options(args.project, bundle)
             target = (
                 install(
                     args.project,
@@ -1593,9 +4667,14 @@ def main() -> int:
                     args.source,
                     args.commit,
                     distribution=args.distribution,
+                    with_maven_tools=args.with_maven_tools,
+                    maven_tools_mode=args.maven_tools_mode,
+                    bundle_options=bundle,
                 )
             )
-            result: object = {"status": "installed", "root": str(target)}
+            result: object = {"status": "installed", "root": str(target), "bundle": bundle}
+        elif args.command == "repair":
+            result = repair_component(args.project, args.component)
         elif args.command == "cache":
             controller = load_source_controller("hosts")
             result = (
@@ -1604,18 +4683,160 @@ def main() -> int:
                 else controller.purge_maven_tools_cache(args.version)
             )
         elif args.command == "status":
-            result = status_with_dependencies(args.project)
+            result = status_json(args.project)
         elif args.command == "doctor":
-            result = doctor_with_dependencies(args.project)
+            result = status_json(args.project, active_probes=True)
+        elif args.command == "explain":
+            result = explain_json(
+                args.project,
+                args.event,
+                host=args.host,
+                session_id=args.session,
+                phase=args.phase,
+                target_phase=args.target_phase,
+                cancelled=args.cancelled,
+                timed_out=args.timeout,
+            )
         elif args.command == "rollback":
             result = {"status": "rolled-back", "root": str(rollback(args.project))}
         else:
             uninstall_with_dependencies(args.project)
             result = {"status": "uninstalled"}
     except (OSError, RuntimeError, ValueError) as error:
-        print(str(error), file=sys.stderr)
+        message = str(error)
+        diagnostic_code = "CE_DIAGNOSTIC_UNAVAILABLE"
+        project_arg = getattr(args, "project", None)
+        if "manifest is missing or invalid" in message or (
+            project_arg is not None
+            and missing_core_with_installed_hosts(Path(project_arg))
+        ):
+            diagnostic_code = "CE_CORE_MISSING"
+        elif project_arg is not None and orphan_core_without_hosts_receipt(
+            Path(project_arg)
+        ):
+            diagnostic_code = "CE_HOSTS_RECEIPT_MISSING"
+        elif project_arg is not None and upgrade_host_receipt_drift_needed(
+            Path(project_arg)
+        ):
+            diagnostic_code = "CE_HOST_ADAPTER_DRIFT"
+        elif project_arg is not None and (
+            wiped_runtime_recovery_needed(Path(project_arg))
+            or "host receipt does not match the installed core" in message
+            or "receipt integrity drift" in message
+            or "host adapter drift" in message
+        ) and account_dependency_receipt_missing(Path(project_arg)):
+            diagnostic_code = "CE_WIPED_RUNTIME"
+        elif (
+            "host adapter drift" in message
+            or "host receipt does not match the installed core" in message
+            or "receipt integrity drift" in message
+        ):
+            diagnostic_code = "CE_HOST_ADAPTER_DRIFT"
+        if getattr(args, "json", False):
+            print(
+                json.dumps(
+                    {
+                        "schemaVersion": DIAGNOSTIC_SCHEMA_VERSION,
+                        "identity": CANONICAL_IDENTITY,
+                        "kind": args.command,
+                        "status": "Blocked",
+                        "diagnosticCode": diagnostic_code,
+                        "terminalReason": "blocked",
+                        "reason": message,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+        else:
+            print(f"ChaosEngine {args.command}: Blocked", file=sys.stderr)
+            print(f"reason: {message}", file=sys.stderr)
+            if diagnostic_code == "CE_CORE_MISSING":
+                print(
+                    "fix-next: "
+                    + component_fix_next(
+                        "core",
+                        {
+                            "status": "recovery-required",
+                            "code": "CE_CORE_MISSING",
+                            "taskImpact": "required",
+                        },
+                    ),
+                    file=sys.stderr,
+                )
+            elif diagnostic_code == "CE_WIPED_RUNTIME":
+                print(
+                    "fix-next: "
+                    + component_fix_next(
+                        "hosts",
+                        {
+                            "status": "recovery-required",
+                            "code": "CE_WIPED_RUNTIME",
+                            "taskImpact": "required",
+                        },
+                    ),
+                    file=sys.stderr,
+                )
+            elif diagnostic_code == "CE_HOST_ADAPTER_DRIFT":
+                print(
+                    "fix-next: "
+                    + component_fix_next(
+                        "hosts",
+                        {
+                            "status": "recovery-required",
+                            "code": "CE_HOST_ADAPTER_DRIFT",
+                            "taskImpact": "required",
+                        },
+                    ),
+                    file=sys.stderr,
+                )
+            elif diagnostic_code == "CE_HOSTS_RECEIPT_MISSING":
+                print(
+                    "fix-next: "
+                    + component_fix_next(
+                        "hosts",
+                        {
+                            "status": "recovery-required",
+                            "code": "CE_HOSTS_RECEIPT_MISSING",
+                            "taskImpact": "required",
+                        },
+                    ),
+                    file=sys.stderr,
+                )
+            elif args.command in {"status", "doctor"}:
+                cli = _doctor_python_cli()
+                print(
+                    f"fix-next: repair the install, then rerun "
+                    f"`{cli} .chaos-engine/install.py {args.command} --project .`.",
+                    file=sys.stderr,
+                )
         return 1
-    print(json.dumps(result))
+    if args.command == "repair" and not getattr(args, "json", False):
+        if not isinstance(result, dict):
+            raise TypeError("repair result must be an object")
+        print(
+            f"ChaosEngine repair: {result.get('status')} "
+            f"component={result.get('component')} "
+            f"action={result.get('action')}"
+        )
+        return 0
+    if args.command in {"status", "doctor"} and not getattr(args, "json", False):
+        if not isinstance(result, dict):
+            raise TypeError("doctor/status result must be an object")
+        if getattr(args, "fix_next_only", False):
+            print(format_fix_next_only(result), end="")
+        else:
+            print(format_health_report(result, kind=args.command), end="")
+        if args.command == "doctor":
+            clients = result.get("clients")
+            print(
+                format_doctor_host_onboarding(
+                    clients if isinstance(clients, dict) else {}
+                ),
+                end="",
+            )
+        return 0
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 
 

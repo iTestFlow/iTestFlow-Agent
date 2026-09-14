@@ -1,12 +1,23 @@
 # CHAOSENGINE:START
 [mcp_servers."chaosengine-memory"]
-command = "py"
-args = ["-3", ".chaos-engine/tool.py", "memory-mcp"]
-cwd = ".."
+command = "/home/mohab/.local/share/uv/python/cpython-3.14.7-linux-x86_64-gnu/bin/python3.14"
+args = [".chaos-engine/tool.py", "memory-mcp"]
+commandWindows = "/home/mohab/.local/share/uv/python/cpython-3.14.7-linux-x86_64-gnu/bin/python3.14"
+argsWindows = [".chaos-engine/tool.py", "memory-mcp"]
+cwd = "."
 
 [mcp_servers."chaosengine-mempalace"]
-command = "py"
-args = ["-3", ".chaos-engine/tool.py", "mempalace-mcp", "--palace", ".chaos-engine-state/mempalace", "--backend", "sqlite_exact"]
-cwd = ".."
-env = { MEMPALACE_EMBEDDING_MODEL = "minilm" }
+command = "python3"
+args = [".chaos-engine/tool.py", "mempalace-mcp"]
+commandWindows = "py"
+argsWindows = ["-3", ".chaos-engine/tool.py", "mempalace-mcp"]
+cwd = "."
+env = { MEMPALACE_EMBEDDING_MODEL = "minilm", MEMPALACE_BACKEND = "sqlite_exact" }
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+
+[mcp_servers."maven-tools-mcp"]
+command = "/home/mohab/.cache/chaos-engine/jdk/temurin-25/bin/java"
+args = ["-jar", "/home/mohab/.local/share/ChaosEngine/tools/maven-tools-mcp/3.2.2/maven-tools-mcp-3.2.2.jar"]
 # CHAOSENGINE:END

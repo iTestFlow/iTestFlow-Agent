@@ -2,53 +2,45 @@
   "mcpServers": {
     "chaosengine-memory": {
       "args": [
+        ".chaos-engine/tool.py",
+        "memory-mcp"
+      ],
+      "argsWindows": [
         "-3",
         ".chaos-engine/tool.py",
         "memory-mcp"
       ],
-      "command": "py",
+      "command": "python3",
+      "commandWindows": "py",
       "cwd": "."
     },
     "chaosengine-mempalace": {
       "args": [
+        ".chaos-engine/tool.py",
+        "mempalace-mcp"
+      ],
+      "argsWindows": [
         "-3",
         ".chaos-engine/tool.py",
-        "mempalace-mcp",
-        "--palace",
-        ".chaos-engine-state/mempalace",
-        "--backend",
-        "sqlite_exact"
+        "mempalace-mcp"
       ],
-      "command": "py",
+      "command": "python3",
+      "commandWindows": "py",
       "cwd": ".",
       "env": {
+        "MEMPALACE_BACKEND": "sqlite_exact",
         "MEMPALACE_EMBEDDING_MODEL": "minilm"
       }
     },
-    "itestflow-memory": {
-      "args": [
-        "--yes",
-        "--package",
-        "@aictx/memory@0.1.55",
-        "--",
-        "memory-mcp"
-      ],
-      "command": "npx",
-      "cwd": "."
+    "context7": {
+      "url": "https://mcp.context7.com/mcp"
     },
-    "itestflow-mempalace": {
+    "maven-tools-mcp": {
       "args": [
-        "--from",
-        "mempalace==3.7.0",
-        "mempalace-mcp",
-        "--palace",
-        ".mempalace/palace"
+        "-jar",
+        "/home/mohab/.local/share/ChaosEngine/tools/maven-tools-mcp/3.2.2/maven-tools-mcp-3.2.2.jar"
       ],
-      "command": "uvx",
-      "cwd": ".",
-      "env": {
-        "MEMPALACE_EMBEDDING_MODEL": "minilm"
-      }
+      "command": "/home/mohab/.cache/chaos-engine/jdk/temurin-25/bin/java"
     }
   }
 }

@@ -7,6 +7,9 @@ before touching anything. No edits yet.
 Triage is unconditional and lives in the entrypoint, so a trivial task never
 loads this file. Arrive already knowing which points you owe. If triage and the
 user's framing disagree about size, say so in one line and work to the larger.
+During planning, keep asking material follow-ups until the plan is
+decision-ready. After owner approval, execution is unattended; dispatch a
+consultant agent for implementation ambiguity rather than asking the user.
 
 ## Full pass
 
@@ -90,10 +93,12 @@ rule overrides an imported skill's default path.
 Work runs in this order, and each phase ends before the next begins:
 
 analyze -> plan -> design -> RED -> GREEN -> refactor -> commit ->
-pull request -> babysit (fix review comments and failed tests) to green -> merge.
+pull request -> babysit (fix review comments and failed tests) to green -> merge ->
+terminal reflection when owed -> one root Learning Session -> final report.
 
-Every phase that changes behavior ends with the independent adversarial review
-defined in [delegation](delegation.md), at the depth this task's triage set.
+Behavior changes receive only the planning-approved terminal adversarial review
+defined in [delegation](delegation.md), after the final scope commit and automated
+finding batch. Never force review between phases or actions.
 
 ## Output
 

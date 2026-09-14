@@ -1,0 +1,77 @@
+{
+  "hooks": {
+    "agentStop": [
+      {
+        "bash": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "powershell": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "postToolUse": [
+      {
+        "bash": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "powershell": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "bash": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "powershell": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "preCompact": [
+      {
+        "bash": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "powershell": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "preToolUse": [
+      {
+        "bash": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "powershell": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "sessionEnd": [
+      {
+        "bash": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "powershell": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "sessionStart": [
+      {
+        "bash": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "powershell": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "subagentStop": [
+      {
+        "bash": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "powershell": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "bash": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "powershell": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js copilot",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ]
+  },
+  "version": 1
+}

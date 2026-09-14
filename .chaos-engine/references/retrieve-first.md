@@ -25,7 +25,7 @@ store is `degraded`. Neither state blocks implementation or completion.
 | --- | --- |
 | Has this constraint or gotcha already bitten us? | native Memory — `memory search`, then `memory inspect <id>` |
 | What happened around this before, and what does it touch? | MemPalace |
-| What calls or depends on this? | [Graphify](graphify.md) |
+| What calls or depends on this? | [Graphify](graphify.md) — unclassified extract skips are coverage, not a failed install |
 | What does the code do right now? | targeted `rg` and exact reads |
 
 Only the last one settles a disagreement. A retrieved claim is a lead: confirm
@@ -40,8 +40,23 @@ only after a live authoritative source confirms it. SessionStart deliberately
 injects no Memory or MemPalace prose, because untargeted recall has neither the
 task scope nor the evidence needed to earn authority.
 
-`memory load` compiles a whole context pack and will exceed a tool-result
-budget on a store of any size; `memory search` is the one to reach for.
+Use a bounded `memory search`, then inspect only the selected records. Never
+compile or inject a whole-store context pack.
+
+## Retrieve orchestrator (#5624)
+
+One store, one bounded query, receipt status `used` | `skipped` | `degraded`:
+
+```text
+python3 .chaos-engine/tool.py retrieve "has this gotcha bitten us?"
+python3 .chaos-engine/tool.py retrieve --store graphify "what calls Foo?"
+python3 .chaos-engine/retrieve.py --dry-run "probe"
+```
+
+Owner-curated wake pack (≤~120 tokens) lives at
+`.chaos-engine-state/wake-pack.md`. MemPalace may write
+`wake-pack.mempalace-draft.md` only — never silent overwrite. SessionStart
+injects the wake-pack **locator**, never Memory/MemPalace prose.
 
 ## Bounded retrieval
 
@@ -52,9 +67,8 @@ with a concrete irrelevance reason, or `degraded`. Do not skip the attempt.
 When a store can answer a concrete question, query it before broad discovery.
 Allow one attempt through the existing host timeout, with no retries, repair,
 refresh, mining, checkpointing, polling, or watching. Ordinary tasks launch no
-background store processes. Preserve bounded SessionStart Memory summaries and
-the MemPalace wake-up as best-effort preload only; any failure is silent to task
-control.
+background store processes. SessionStart launches no optional retrieval tool
+and injects only tracked locators; any store failure is silent to task control.
 
 Install, upgrade, explicit maintenance, `status`, and `doctor` are not ordinary
 retrieval. They remain strict, and an unhealthy selected component still makes
@@ -62,7 +76,7 @@ a requested doctor result `recovery-required`.
 
 ## The completion half
 
-The [learning loop](work-github-playbook.md#learned-lessons-workflow) routes
+The [learning session](work-github-playbook.md#learned-lessons-workflow) routes
 each learning to its home. That is where a *fact* goes. It does not make the
 task responsible for keeping derived stores usable:
 
@@ -88,6 +102,6 @@ only with materially new sanitized evidence. Never close or automatically
 recover a store issue, and never put issue management in a hook or scheduler.
 Failure to reach GitHub is non-blocking.
 
-The Learning Loop accepts a successful store write, a non-blocking degraded
+The Learning Session accepts a successful store write, a non-blocking degraded
 disposition, an issue reference, or an explicit “nothing durable.” It never
 demands a retry or derived-store refresh.

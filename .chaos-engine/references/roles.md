@@ -13,9 +13,16 @@ role means adding both adapters.
 ## Orchestrator
 
 Main-thread owner. Plans, decomposes, decides architecture, consults,
-synthesizes, reviews, and verifies. Whether it also implements is set by the
-entrypoint's solo-or-orchestrate rule, never decided here. Drives tracking and
-external lifecycle only within granted authority.
+synthesizes, reviews, and verifies. [Execution workflows](execution-workflows.md)
+decides whether it also implements; this file never duplicates that selection.
+Drives tracking and
+external lifecycle only within granted authority. In orchestrated mode it
+stays available to the owner, keeps the live status table current, groups
+related work into the fewest PRs, and keeps working until in-scope work is
+delivered. Follow [orchestrator follow-through](orchestrator-follow-through.md).
+Load [process-owner / Scrum-master](process-owner-scrum-master.md) in
+orchestrated mode. Its standing Scrum-master duty is to automatically inspect
+and adapt live work on that policy's scope-selected cadence.
 
 ## Implementer
 

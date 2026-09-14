@@ -1,29 +1,134 @@
 {
+  "hooks": {
+    "AfterAgent": [
+      {
+        "hooks": [
+          {
+            "command": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js gemini",
+            "name": "ChaosEngine lifecycle",
+            "timeout": 30000,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "hooks": [
+          {
+            "command": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js gemini",
+            "name": "ChaosEngine lifecycle",
+            "timeout": 30000,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash|PowerShell|shell_command|exec_command|functions[.]exec|run_shell_command|run_in_terminal|Write|Edit|NotebookEdit|apply_patch|write_file|create_file|edit_file|replace|replace_string_in_file|multi_replace_string_in_file|mcp__[^|]*memory__(?:remember_memory|save_memory_patch)|mcp__mempalace__mempalace_(?:add_drawer|checkpoint|create_tunnel|delete_by_source|delete_drawer|delete_hallway|delete_tunnel|diary_write|kg_(?:add|invalidate|supersede)|mine|sync|update_drawer)"
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "command": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js gemini",
+            "name": "ChaosEngine lifecycle",
+            "timeout": 30000,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "BeforeTool": [
+      {
+        "hooks": [
+          {
+            "command": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js gemini",
+            "name": "ChaosEngine lifecycle",
+            "timeout": 30000,
+            "type": "command"
+          }
+        ],
+        "matcher": "Task|Agent|spawn_agent|collaboration[.]spawn_agent|task|agent|Bash|PowerShell|shell_command|exec_command|functions[.]exec|run_shell_command|run_in_terminal|Write|Edit|NotebookEdit|apply_patch|write_file|create_file|edit_file|replace|replace_string_in_file|multi_replace_string_in_file|store|mcp__[^|]*memory__(?:remember_memory|save_memory_patch)|mcp__mempalace__mempalace_(?:add_drawer|checkpoint|create_tunnel|delete_by_source|delete_drawer|delete_hallway|delete_tunnel|diary_write|kg_(?:add|invalidate|supersede)|mine|sync|update_drawer)"
+      }
+    ],
+    "PreCompress": [
+      {
+        "hooks": [
+          {
+            "command": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js gemini",
+            "name": "ChaosEngine lifecycle",
+            "timeout": 30000,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "command": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js gemini",
+            "name": "ChaosEngine lifecycle",
+            "timeout": 30000,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "\"/home/mohab/.local/share/chaos-engine/node/24.20.0/bin/node\" .chaos-engine/hooks/launch.js gemini",
+            "name": "ChaosEngine lifecycle",
+            "timeout": 30000,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
   "mcpServers": {
     "chaosengine-memory": {
       "args": [
+        ".chaos-engine/tool.py",
+        "memory-mcp"
+      ],
+      "argsWindows": [
         "-3",
         ".chaos-engine/tool.py",
         "memory-mcp"
       ],
-      "command": "py",
+      "command": "python3",
+      "commandWindows": "py",
       "cwd": "."
     },
     "chaosengine-mempalace": {
       "args": [
+        ".chaos-engine/tool.py",
+        "mempalace-mcp"
+      ],
+      "argsWindows": [
         "-3",
         ".chaos-engine/tool.py",
-        "mempalace-mcp",
-        "--palace",
-        ".chaos-engine-state/mempalace",
-        "--backend",
-        "sqlite_exact"
+        "mempalace-mcp"
       ],
-      "command": "py",
+      "command": "python3",
+      "commandWindows": "py",
       "cwd": ".",
       "env": {
+        "MEMPALACE_BACKEND": "sqlite_exact",
         "MEMPALACE_EMBEDDING_MODEL": "minilm"
       }
+    },
+    "context7": {
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "maven-tools-mcp": {
+      "args": [
+        "-jar",
+        "/home/mohab/.local/share/ChaosEngine/tools/maven-tools-mcp/3.2.2/maven-tools-mcp-3.2.2.jar"
+      ],
+      "command": "/home/mohab/.cache/chaos-engine/jdk/temurin-25/bin/java"
     }
   }
 }

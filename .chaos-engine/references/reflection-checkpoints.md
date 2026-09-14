@@ -50,14 +50,28 @@ Stores and GitHub are optional: an unavailable service never prevents the
 local receipt or resumption, and hooks never create or update issues.
 
 For semantic events the hook cannot infer safely, record the trigger explicitly
-with `py -3 scripts/agents/reflection.py trigger --session-id <id> --trigger
-<enum>`. Append a receipt without creating a blocked intermediate file using
-`py -3 scripts/agents/reflection.py receipt --session-id <id> --session-token
-<token> --json <receipt-json>`. Mark only a proved setup, syntax, or capability
+with `py -3 scripts/agents/reflection.py trigger --session-id {id} --trigger
+{enum}`. Append a receipt without creating a blocked intermediate file using
+`py -3 scripts/agents/reflection.py receipt --session-id {id} --session-token
+{token} --json {receipt-json}`. Mark only a proved setup, syntax, or capability
 probe by exact ID with the `non-attempt` subcommand. Portable installs use the
 same subcommands through `.chaos-engine/hooks/reflection.py`.
 
 For a terminal receipt, the final user-facing summary must label the elapsed
 estimate, main time consumer, repeated failures or corrections, changed
 assumption or approach, successful proof, remaining risk or follow-up, and
-Learning Loop disposition.
+Learning Session disposition.
+The terminal root reflection consumes the root session receipt and receipts from
+every delegate created during the runtime. Delegate termination does not discard
+its failures, recoveries, blockers, token costs, dead ends, or improvement ideas;
+the root deduplicates them before the one Learning Session. Persist only the
+minimal privacy-safe evidence and never persist provider, model, private route,
+credential, transcript, or machine-local path data.
+
+The root creates an open runtime registry before delegation. Every dispatch
+atomically registers its participant before process launch. Finalization closes
+and freezes the registry, then terminal reflection reads that stored membership
+rather than a caller-supplied list reconstructed at the end.
+Each registered main or delegate must have dispositions for its incidents or a
+no-learning attestation. Only an unreachable delegate may use an explicit
+unavailable attestation; absence is never treated as no learning.

@@ -30,27 +30,61 @@ mechanical-helper role from [roles](roles.md) to both subagent hosts.
 ## Main-thread duties
 
 Orchestrator retains decomposition, architecture, consultation, assignment,
-synthesis, integration, and final verification, and stays available for owner
-realignment and delegate questions. The entrypoint's solo-or-orchestrate rule
-decides whether it also implements; this file governs the orchestrated mode.
+synthesis, integration, and final verification. Stay available to the owner
+for realignment and delegate questions. Select and switch modes only through
+[execution workflows](execution-workflows.md); this file does not redefine
+their criteria or writer limits. Each writer owns an isolated worktree. While
+a writer, subagent, or required check is live, automatically follow
+[orchestrator follow-through](orchestrator-follow-through.md); never a
+heartbeat.
 
-Run only independent file scopes concurrently. Each writer owns an isolated
-worktree. Hard cap four concurrent writing agents; a read-only reviewer does not
-consume a slot. Check real progress for any agent or
-command unexamined for about twenty minutes, and supply a decision, a solved
-subproblem, or a re-spec — never a heartbeat.
+Treat agent lifetime as part of the assignment. Collect the writer's bounded
+failures, findings, and durable-learning candidates for the root session; a
+delegate never runs the terminal Learning Session. Then close every no-longer-needed agent and its descendants before
+moving to the next phase. Never use `followup_task` to reactivate a completed
+or finished assignment; a new review round gets a new reviewer instance.
+Preserve the closed relationship as history instead of deleting it. A final
+answer with an unneeded live agent is incomplete.
 
-Treat agent lifetime as part of the assignment. Close every no-longer-needed
-agent and its descendants before moving to the next phase. Never use
-`followup_task` to reactivate a completed or finished assignment; a new review
-round gets a new reviewer instance. Preserve the closed relationship as
-history instead of deleting it. A final answer with an unneeded live agent is
-incomplete.
+## Orchestrator duties
+
+Same class of standing duties: stay available, keep the live status table
+current after every dispatch and every finished agent, group related work into
+the fewest PRs that still keep one problem per issue (`Closes #N` per completed
+subtask), and keep working until every in-scope ticket is delivered. Do not
+treat planning, a status table, or one PR as session complete.
+
+After grouping, the done condition is: every in-scope ticket is merged or
+explicitly out of scope. After each chunk merges, destroy that writer, start
+the next from a fresh `ChaosEngine/*` branch off the fetched configured
+default branch, update the live status table, and continue. Stop only when
+the in-scope set is empty, the owner narrows scope, or a real blocker needs
+the owner.
+
+Same-subsystem leftovers share one PR. Split only when writers would collide on
+the same files and cannot be sequenced, or when the work truly belongs to
+different categories. If a delegate omitted an actionable leftover, file the
+missing issue or Memory as an owner-command; do not implement the leftover work.
+
+After every dispatch and after every subagent finishes, post or update a status
+table the owner can read without reconstructing the session. Include completed,
+in progress, planned, and out of scope rows so out of scope is not silently
+dropped. Enhance with blocker, PR/issue links, HEAD SHA, and root-learning
+handoff (`findings` / `nothing durable`). Do not put secrets in the
+table.
+
+| ID / work item | Mode stream | Status | Owner / agent | Dependency | Last update | Details / evidence | Next action |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+
+Status values at least: `planned`, `in progress`, `blocked`, `review`,
+`completed`, `out of scope`.
 
 ## Independent adversarial review
 
-Every behavior-changing step ends with a review before the next step starts. The
-property that makes it work is independence, so it is not optional:
+Review is optional and selected explicitly during planning; recommend it and
+default it on. If approved, review complete pull-request implementation only
+after final scope commit plus automated CI/comment fixes. Never review
+individual implementation steps. Independence remains mandatory when enabled:
 
 - The reviewer is a **separate agent instance, never the author** of the work.
 - Choose a disposable review mechanism. When the host provides reliable terminal
@@ -58,7 +92,7 @@ property that makes it work is independence, so it is not optional:
   reliable terminal close, use an artifact-bounded ephemeral reviewer and pass
   the exact revision or diff plus its directly required guidance as immutable
   input. It must not depend on repository shell access to discover the artifact.
-  Such a review clears the automated review gate only when the active host
+  When review is enabled, such a review records a valid receipt only when active host
   adapter records its successful receipt, bound to that artifact. Until an
   adapter supports that receipt, obtain an independent pull-request review too;
   prose claiming the one-shot review happened is not evidence.
@@ -74,9 +108,8 @@ property that makes it work is independence, so it is not optional:
   search that misses because the tree is wrong returns a clean no-match, which
   is indistinguishable from a real absence and is the most confident wrong
   answer a review can produce.
-- Depth scales with the step, matching the consult triage: one reviewer for
-  bounded reversible work; three reviewers with distinct lenses (correctness,
-  does-it-reproduce, blast radius) for hard-to-reverse or cross-cutting change.
+- Depth scales with the pull request, matching consult triage. Use one reviewer
+  with correctness, reproduction, and blast-radius lenses.
 - Escalate to the most intelligent model for a new subsystem, a migration, a
   dependency swap, or any decision that is expensive to unwind.
 
@@ -107,7 +140,7 @@ a row that already exists.
 
 | Class | Shape | What catches it now |
 | --- | --- | --- |
-| `vacuous-check` | a test, pin or self-test that cannot fail | `validate_red_before_green.py`, and the `setUp`-patch pin in `test_agent_router_contract.py` |
+| `vacuous-check` | a test, pin or self-test that cannot fail | mutation checks and the `setUp`-patch pin in `test_agent_router_contract.py` |
 | `unspecified-predicate` | the rule re-guesses a decision the ticket never made | nothing -- it needs a ruling on the issue |
 | `credit-not-in-diff` | prose credits work the diff does not contain | the credit scan in `validate_pr_closing_keywords.py` |
 | `sibling-left` | the instance was fixed and its twin was not | the docstring duplicate scan in `validate_agent_guidance.py` |
@@ -115,18 +148,12 @@ a row that already exists.
 | `live-state-in-tests` | the test's answer depends on the machine | `StopTestsAreIndependentOfLiveStateTest` |
 | `wrong-width-check` | the command measured is not the command that matters | nothing -- see #4559 item 3 |
 
-### When the loop stops
+### Review disposition
 
-The loop stops at the first round with **zero blocking findings**. Every
-remaining finding is ticketed, never carried. Fixes to that final round's own
-findings ship without a new round unless a fix is itself blocking. Three rounds
-is the hard ceiling; continuing past it needs an explicit owner instruction on
-the pull request. Measured on #4554: blocking yield ran 14, 5, 0, 0, and
-stopping at the first zero would have merged the same content about two hours
-earlier.
-
-Every round after the first is scoped to the diff since the last verdict, never
-a full-branch re-read.
+Run no more than two rounds. Batch-fix first-round confirmed findings at the
+end, then use a second round only to assess those fixes. Never exceed two or
+restart full review. A finding that changes architecture returns work to
+planning. Extra local tests run only after this terminal review stage.
 
 Post the findings as a pull-request review, not only in chat. Findings that live
 only in a transcript die with the session, which is how the same class gets
@@ -140,8 +167,8 @@ carries it:
 > Load the canonical ChaosEngine entrypoint before all other work. Evidence over
 > inference: read or run before claiming. Stay inside assigned scope; report
 > adjacent findings. Cite repository-relative `file:line` evidence. Behavior
-> changes use observed RED, minimal implementation, observed GREEN. Never claim
-> an unrun check. Escalate architecture or ambiguity instead of deciding it.
+> complete the bounded implementation before consolidated validation. Never
+> claim an unrun check. Escalate architecture or ambiguity instead of deciding it.
 > Report failures plainly. Before waiting or after a material finding, send a
 > substantive handoff: done evidence, current step, blockers, and whether a
 > decision is needed.
