@@ -103,3 +103,14 @@ plugins/**/__pycache__/
 !.gitattributes
 .chaos-engine-owned-directory
 # CHAOSENGINE-RUNTIME:END
+
+# Local generated artifacts
+.playwright-mcp/
+/.chaos-worktrees/
+/.mempalace/
+
+# Local agent skill directories (kept outside the ChaosEngine-managed block)
+/.claude/skills/*
+!/.claude/skills/chaos-engine/
+!/.claude/skills/chaos-engine/**
+/.codex/skills/
