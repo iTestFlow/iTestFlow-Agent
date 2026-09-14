@@ -522,8 +522,8 @@ $brandLogoPath = Join-Path $repoRoot "public/brand/itestflow-logo-full.png"
 $brandIconPath = Join-Path $repoRoot "public/brand/itestflow-icon.png"
 
 DrawImageContained $g $brandLogoPath 507 8 520 70
-DrawText $g "Hosted Multi-User QA Intelligence for Azure DevOps" 494 77 550 28 $fontSubtitle "#061747" ([System.Drawing.StringAlignment]::Center)
-DrawText $g "Org-scoped sessions + workspace isolation + AI-assisted human review" 455 106 630 23 $fontSmallSubtitle "#274464" ([System.Drawing.StringAlignment]::Center)
+DrawText $g "Hosted Multi-Provider QA Intelligence" 494 77 550 28 $fontSubtitle "#061747" ([System.Drawing.StringAlignment]::Center)
+DrawText $g "Azure DevOps + Jira Cloud + AI-assisted human review" 455 106 630 23 $fontSmallSubtitle "#274464" ([System.Drawing.StringAlignment]::Center)
 
 $leftX = 36
 $leftW = 276
@@ -554,6 +554,7 @@ $rightItems = @(
   @{ Title = "Hosted Next.js`nApp + API"; Sub = "Authenticated web surface"; Icon = "doc" },
   @{ Title = "Azure DevOps`nBoards"; Sub = "Requirements and tasks"; Icon = "board" },
   @{ Title = "Azure Test`nPlans"; Sub = "Cases, suites, outcomes"; Icon = "list" },
+  @{ Title = "Jira Cloud`n+ Backends"; Sub = "Issues, sync, Xray, Zephyr"; Icon = "board" },
   @{ Title = "LLM Provider`nAPIs"; Sub = "OpenAI, Gemini, Anthropic"; Icon = "chip" },
   @{ Title = "PostgreSQL`nWorkspace Data"; Sub = "Users, sessions, jobs, audit"; Icon = "db" },
   @{ Title = "Worker &`nJob Queue"; Sub = "Scheduled sync and indexing"; Icon = "gear" },
@@ -613,7 +614,8 @@ foreach ($cap in $capItems) {
 DrawArrow $g ($leftX + $leftW) 246 ($coreX - 9) 246 "#061747" 2.3 $false
 DrawArrow $g ($coreX + $coreW + 8) 193 ($rightX - 12) 193 "#061747" 2.1 $true
 DrawArrow $g ($coreX + $coreW + 8) 274 ($rightX - 12) 274 "#061747" 2.1 $true
-DrawArrow $g ($coreX + $coreW + 8) 354 ($rightX - 12) 354 "#061747" 2.1 $true
+DrawArrow $g ($coreX + $coreW + 8) 345 ($rightX - 12) 345 "#061747" 2.1 $true
+DrawArrow $g ($coreX + $coreW + 8) 426 ($rightX - 12) 426 "#061747" 2.1 $true
 DrawArrow $g 765 ($coreY + $coreH) 765 405 "#061747" 2.2 $false
 
 $workX = 325
@@ -722,7 +724,7 @@ for ($i = 0; $i -lt $insights.Count; $i++) {
 }
 
 DrawArrow $g ($outX + $outW + 8) 855 ($insX - 8) 855 "#e48300" 2.2 $false
-DrawArrow $g ($rightX + 130) 618 ($rightX + 130) 792 "#058b8f" 2.0 $false
+DrawArrow $g ($rightX + 130) 690 ($rightX + 130) 792 "#058b8f" 2.0 $false
 
 # --- Arrow labels ---
 # Inputs → Core: carry context into AI core
@@ -731,8 +733,10 @@ DrawText $g "context" 314 230 70 13 $fontArrowLabel "#274464" ([System.Drawing.S
 DrawText $g "reads reqs" 1152 178 68 12 $fontArrowLabel "#274464" ([System.Drawing.StringAlignment]::Center) ([System.Drawing.StringAlignment]::Center)
 # Core ↔ Azure Test Plans
 DrawText $g "publishes" 1152 258 68 12 $fontArrowLabel "#274464" ([System.Drawing.StringAlignment]::Center) ([System.Drawing.StringAlignment]::Center)
+# Core ↔ Jira Cloud + artifact backends
+DrawText $g "syncs & publishes" 1152 330 68 12 $fontArrowLabel "#274464" ([System.Drawing.StringAlignment]::Center) ([System.Drawing.StringAlignment]::Center)
 # Core ↔ LLM Provider APIs
-DrawText $g "AI reasoning" 1152 339 68 12 $fontArrowLabel "#274464" ([System.Drawing.StringAlignment]::Center) ([System.Drawing.StringAlignment]::Center)
+DrawText $g "AI reasoning" 1152 411 68 12 $fontArrowLabel "#274464" ([System.Drawing.StringAlignment]::Center) ([System.Drawing.StringAlignment]::Center)
 # Core → Specialized QA Workflows
 DrawText $g "dispatches" 770 384 78 12 $fontArrowLabel "#274464"
 # Governance ↑ Workflows: knowledge grounds each workflow
@@ -740,7 +744,7 @@ DrawText $g "knowledge anchors" 682 639 168 12 $fontArrowLabel "#2b36c9" ([Syste
 # Reviewed Outputs → Insights & Feedback
 DrawText $g "reviewed" 756 840 76 12 $fontArrowLabel "#b86000" ([System.Drawing.StringAlignment]::Center) ([System.Drawing.StringAlignment]::Center)
 # Platform data → Insights (audit trail)
-DrawText $g "audit & data" 1365 700 112 13 $fontArrowLabel "#058b8f"
+DrawText $g "audit & data" 1365 720 112 13 $fontArrowLabel "#058b8f"
 
 $benefitX = 31
 $benefitY = 942

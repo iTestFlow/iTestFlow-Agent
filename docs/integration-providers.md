@@ -5,7 +5,7 @@ This document describes the integration provider boundary for iTestFlow. Azure D
 ## Status
 
 - Existing Azure routes, stored scopes, PAT flows, and compatibility result fields remain in place.
-- Azure DevOps is the first implementation behind generic work-management and test-management ports.
+- Azure DevOps implements the generic work-management and test-management ports; Jira Cloud implements work management and uses a selected artifact backend for test-case publication.
 - Jira API-token onboarding, trusted site/project selection, mappings, backend configuration, sync/conflict status, trace links, and disconnect are exposed through provider-aware login, header, and Settings surfaces.
 - Provider identity is persisted on `workspaces.provider_id` and `projects.provider_id`, both defaulting to `azure-devops`.
 - Jira API-token and backend secrets are encrypted; client responses expose status and redacted metadata only.
@@ -17,6 +17,11 @@ This document describes the integration provider boundary for iTestFlow. Azure D
 - Azure DevOps facade interface: `src/modules/integrations/azure-devops/azure-devops-adapter.ts`
 - Azure DevOps REST implementation: `src/modules/integrations/azure-devops/azure-devops-client.ts`
 - Azure DevOps descriptor and error wrapper: `src/modules/integrations/azure-devops/azure-devops-descriptor.ts`, `azure-devops-error.ts`
+- Jira Cloud adapter and descriptor: `src/modules/integrations/jira-cloud/jira-cloud-adapter.ts`, `jira-cloud-descriptor.ts`
+- Jira Cloud HTTP, reconciliation, and polling runtime: `src/modules/integrations/jira-cloud/jira-http.ts`, `jira-reconciliation.service.ts`, `jira-sync-runtime.service.ts`
+- Jira artifact backends: `src/modules/integrations/jira-cloud/plain-jira-artifact-backend.ts`, `xray-cloud-backend.ts`, `zephyr-scale-backend.ts`
+- Jira authentication and provisioning: `src/modules/auth/jira-token-auth.service.ts`, `jira-oauth.ts`, `jira-provisioning.service.ts`
+- Jira project mapping: `src/modules/projects/jira-project-mapping.service.ts`
 - Request-time construction: `src/modules/credentials/scoped-resolution.service.ts`
 - Worker construction: `src/modules/jobs/workspace-sync.handler.ts`
 
@@ -75,9 +80,10 @@ Capabilities are method names derived from the provider ports. There is no secon
 
 - `hasCapability(descriptor, capability)` checks support.
 - `assertCapability(descriptor, capability)` throws `IntegrationError` with `integration_unsupported_capability`.
-- The Azure DevOps descriptor declares all current capabilities and both categories: `work-management` and `test-management`.
+- The Azure DevOps descriptor declares its work-management and test-management capabilities. The Jira Cloud descriptor declares work-management capabilities; its test-management methods fail closed with `integration_unsupported_capability`.
+- Jira test-case publication is deliberately outside `TestManagementProvider`: Plain Jira, Xray Cloud, and Zephyr Scale Cloud backends own the provider-specific artifact contract, with one backend selected per Jira project.
 
-Business flows do not gate behavior on capabilities yet. The registry and tests exercise the capability surface for future providers.
+The provider registry is used by request-time and worker construction. Capability checks and provider-specific artifact selection keep unsupported Jira test-plan operations explicit instead of silently mapping them to Azure semantics.
 
 ## Error Contract
 
@@ -117,7 +123,7 @@ These accessors resolve the user PAT, read `ctx.workspace.providerId`, and call 
 
 The worker sync path reads the trusted project row, including `projects.provider_id`, resolves the workspace sync PAT, and builds the provider through the same registry.
 
-`pat-auth-provider.ts` intentionally still constructs the Azure DevOps REST adapter directly. It is already behind the `AuthProvider` port and validates login PATs for Azure DevOps organizations.
+`pat-auth-provider.ts` intentionally still constructs the Azure DevOps REST adapter directly. It is already behind the `AuthProvider` port and validates login PATs for Azure DevOps organizations. Jira token and OAuth login use the Jira-specific auth services.
 
 ## Adding A Provider
 
@@ -130,13 +136,13 @@ The worker sync path reads the trusted project row, including `projects.provider
 7. Add migrations for any provider-specific persisted settings.
 8. Keep route paths and existing Azure-facing contracts unchanged until a separate compatibility migration is planned.
 
-Examples:
+Examples for future providers:
 
-- Jira as work management: implement work-item metadata, issue reads, comments, attachments, and web URLs; either leave test management unsupported or pair it with another test provider.
-- Jira plus Xray: Jira owns work items while Xray owns test cases, plans, and traceability links.
+- A future work-management provider can implement metadata, item reads, comments, attachments, and web URLs while leaving test management unsupported.
+- A future split-provider composition could let one provider own work items while another owns test cases, plans, runs, results, and traceability links.
 - Azure Boards plus TestRail: Boards owns requirements/bugs/tasks; TestRail owns test suites, runs, results, and requirement-to-test associations.
 
-Split-provider orchestration is deferred. The current registry returns one provider that satisfies both work and test ports.
+Generic split-provider orchestration is deferred. Jira's artifact backends are a deliberate provider-specific composition, while the current registry still returns one registered work-management provider per workspace.
 
 ## Testing Conventions
 
@@ -154,5 +160,5 @@ This provider boundary is ADR-11 in practice, although no separate ADR file exis
 - Split `AzureDevOpsRestAdapter` into work and test classes.
 - Rename the legacy `/api/azure-devops/*` compatibility routes after clients migrate to neutral paths.
 - Replace Azure-specific string heuristics in response classification with code-driven integration handling.
-- Generalize workspace setup variables beyond Azure DevOps organizations.
-- Extend credential type checks for non-Azure provider credentials.
+- Generalize bootstrap configuration beyond provider-specific variables.
+- Generalize credential type checks as additional providers are added.
