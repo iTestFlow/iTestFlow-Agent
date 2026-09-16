@@ -103,6 +103,7 @@ export type TestCaseGenerationRunResult = {
 export type ManualPromptDraft = {
   prompt: string;
   promptVersion: string;
+  warnings?: string[];
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   options?: TestDesignOptions;
   selectedContextIds?: string[];

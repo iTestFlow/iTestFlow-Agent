@@ -46,6 +46,9 @@ vi.mock("@/components/workflow/work-item-loader", () => ({
   WorkItemPreview: () => null,
   useWorkItemLookup: () => ({ data: null }),
 }));
+vi.mock("@/components/workflow/story-attachments-panel", () => ({
+  StoryAttachmentsPanel: () => null,
+}));
 vi.mock("@/shared/lib/use-external-llm-availability", () => ({
   useExternalLlmAvailability: () => ({ enabled: false }),
 }));

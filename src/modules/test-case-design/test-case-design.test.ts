@@ -119,6 +119,44 @@ describe("test design options and schema", () => {
     });
   });
 
+  it("includes selected story attachment evidence and derived visuals in the AI request", async () => {
+    const generated = {
+      testCases: [GeneratedTestCaseSchema.parse(validCase)],
+      summary: { totalCases: 1, byType: { integration: 1 }, byPriority: { "2": 1 }, coverageEstimate: 80 },
+      contextUsed: ["WI:101"],
+    };
+    const provider = fakeLlmProvider({ structuredOutput: generated });
+    const image = {
+      mediaType: "image/png" as const,
+      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
+    };
+
+    const result = await generateTestCases({
+      scope: projectScope(),
+      actor: "qa",
+      provider,
+      targetRequirement: requirement(),
+      selectedContext: [],
+      storyAttachments: [{
+        id: "attachment-payment-spec",
+        fileName: "payment-design.pdf",
+        mimeType: "application/pdf",
+        text: "Card charges need amount confirmation.",
+        visualCount: 1,
+      }],
+      attachmentImages: [image],
+    });
+
+    expect(provider.generateStructuredOutput).toHaveBeenCalledWith(expect.objectContaining({
+      images: [image],
+      user: expect.stringContaining("payment-design.pdf"),
+    }));
+    expect(result).toMatchObject({
+      includedStoryAttachmentTextIds: ["attachment-payment-spec"],
+      omittedStoryAttachmentTextIds: [],
+    });
+  });
+
   describe("TestCaseGenerationOutputSchema direct validation", () => {
     const validOutput = {
       testCases: [validCase],

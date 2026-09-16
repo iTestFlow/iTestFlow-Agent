@@ -5,6 +5,7 @@ const capabilities = [
   "testConnection", "fetchAuthenticatedUser", "fetchProjects",
   "fetchIterations", "fetchAreas", "fetchProjectUsers", "fetchProjectWorkItemMetadata",
   "fetchWorkItemTypeFields", "fetchWorkItems", "fetchWorkItemById", "fetchWorkItemsByIds",
+  "fetchWorkItemAttachments", "downloadWorkItemAttachment",
   "fetchLinkedWorkItems", "fetchLinkedRequirementWorkItems",
   "addWorkItemComment", "createChildTask", "createBug", "buildWorkItemWebUrl",
 ] satisfies ProviderCapability[];

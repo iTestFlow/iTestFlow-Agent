@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   resolveWorkflowContext: vi.fn(),
   resolveRetrievalTopK: vi.fn(),
   loadProjectKnowledgeContext: vi.fn(),
+  loadSelectedStoryAttachmentWorkflowContext: vi.fn(),
   generateTestCases: vi.fn(),
   buildWorkflowContextCitations: vi.fn(),
   writeGenerationFailureAudit: vi.fn(),
@@ -37,6 +38,9 @@ vi.mock("@/modules/rag/retrieval-config", () => ({
 }));
 vi.mock("@/modules/rag/project-knowledge.service", () => ({
   loadProjectKnowledgeContext: mocks.loadProjectKnowledgeContext,
+}));
+vi.mock("@/modules/story-attachments/story-attachment-workflow-context", () => ({
+  loadSelectedStoryAttachmentWorkflowContext: mocks.loadSelectedStoryAttachmentWorkflowContext,
 }));
 vi.mock("@/modules/rag/workflow-context-citations", () => ({
   buildWorkflowContextCitations: mocks.buildWorkflowContextCitations,
@@ -81,7 +85,7 @@ describe("POST /api/test-cases/generate", () => {
     const provider = fakeLlmProvider();
     mocks.requireWorkflowContext.mockResolvedValue({
       userId: "user-1",
-      workspace: { id: "ws-1" },
+      workspace: { id: "ws-1", providerId: "azure-devops" },
     });
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
     mocks.getUserAzureAdapter.mockResolvedValue(fakeAzureAdapter({
@@ -97,6 +101,14 @@ describe("POST /api/test-cases/generate", () => {
       retrievalTopK: 8,
     });
     mocks.loadProjectKnowledgeContext.mockResolvedValue({ knowledgeBase: null, health: null, usage: "raw_only", promptNotice: null });
+    mocks.loadSelectedStoryAttachmentWorkflowContext.mockResolvedValue({
+      promptAttachments: [],
+      citationAttachments: [],
+      images: [],
+      imageTokenReserve: 0,
+      effectivePromptInputTokens: 128_000,
+      warnings: [],
+    });
     mocks.buildWorkflowContextCitations.mockReturnValue([]);
     mocks.startWorkflowRun.mockReturnValue("run-1");
     mocks.generateTestCases.mockResolvedValue({
@@ -110,6 +122,8 @@ describe("POST /api/test-cases/generate", () => {
       },
       relevantProjectKnowledgeBase: null,
       warnings: ["One optional field was normalized."],
+      includedStoryAttachmentTextIds: [],
+      omittedStoryAttachmentTextIds: [],
     });
   });
 
@@ -161,6 +175,72 @@ describe("POST /api/test-cases/generate", () => {
       tokenUsage: { input: 10, output: 20, total: 30 },
       warnings: ["One optional field was normalized."],
     });
+  });
+
+  it("uses selected attachment text and visuals with the canonical story identity", async () => {
+    mocks.getUserLLMProvider.mockResolvedValue({ ...fakeLlmProvider(), maxInputTokens: 128_000 });
+    mocks.fetchWorkItemById.mockResolvedValue(requirement({ id: "PAY-101", raw: { id: "10042" } }));
+    const promptAttachments = [{
+      id: "attachment-1",
+      fileName: "payment-flow.png",
+      mimeType: "image/png",
+      text: "Payment flow design omitted from the prompt.",
+      visualCount: 1,
+    }, {
+      id: "attachment-no-evidence",
+      fileName: "unreadable.txt",
+      mimeType: "text/plain",
+      text: "This text did not fit the prompt.",
+      visualCount: 0,
+    }];
+    const images = [{ mediaType: "image/png" as const, data: "cG5n" }];
+    mocks.loadSelectedStoryAttachmentWorkflowContext.mockResolvedValue({
+      promptAttachments,
+      citationAttachments: promptAttachments,
+      images,
+      imageTokenReserve: 8_000,
+      effectivePromptInputTokens: 120_000,
+      warnings: ["Some attachment visuals were omitted to stay within the AI request image limit."],
+    });
+
+    const response = await POST(generateRequest({
+      targetWorkItemId: "PAY-101",
+      attachmentIds: ["attachment-1"],
+    }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.loadSelectedStoryAttachmentWorkflowContext).toHaveBeenCalledWith({
+      scope: {
+        workspaceId: "ws-1",
+        projectId: trustedScope.projectId,
+        providerId: "azure-devops",
+        canonicalStoryId: "10042",
+        storyDisplayKey: "PAY-101",
+      },
+      attachmentIds: ["attachment-1"],
+      includeVisuals: true,
+      maxInputTokens: 128_000,
+    });
+    expect(mocks.generateTestCases).toHaveBeenCalledWith(expect.objectContaining({
+      storyAttachments: promptAttachments,
+      attachmentImages: images,
+      maxInputTokens: 120_000,
+    }));
+    expect(mocks.buildWorkflowContextCitations).toHaveBeenCalledWith(expect.objectContaining({
+      storyAttachments: [promptAttachments[0]],
+    }));
+    expect((await response.json()).warnings).toContain(
+      "Some attachment visuals were omitted to stay within the AI request image limit.",
+    );
+  });
+
+  it("rejects more than 20 selected attachments before resolving credentials", async () => {
+    const response = await POST(generateRequest({
+      attachmentIds: Array.from({ length: 21 }, (_, index) => `attachment-${index}`),
+    }));
+
+    expect(response.status).toBe(400);
+    expect(mocks.requireWorkflowContext).not.toHaveBeenCalled();
   });
 
   it("rejects malformed JSON before resolving credentials", async () => {

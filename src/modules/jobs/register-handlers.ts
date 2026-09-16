@@ -5,6 +5,8 @@ import { runWorkspaceContextSync, WORKSPACE_CONTEXT_SYNC } from "./workspace-syn
 import { PROJECT_KNOWLEDGE_JOB, runProjectKnowledgeJob } from "./project-knowledge.handler";
 import { runUploadedDocumentIngestJob } from "./uploaded-document-ingest.handler";
 import { UPLOADED_DOCUMENT_INGEST } from "./uploaded-document-jobs.service";
+import { runStoryAttachmentCleanupJob, runStoryAttachmentParseJob } from "./story-attachment.handler";
+import { STORY_ATTACHMENT_CLEANUP, STORY_ATTACHMENT_PARSE } from "./story-attachment-jobs.service";
 import { JIRA_SYNC_OPERATIONS } from "@/modules/integrations/jira-cloud/jira-sync-runtime.service";
 import { runJiraSyncOperations } from "./jira-sync-operations.handler";
 import { runPlaywrightExecutionJob } from "@/modules/test-execution/playwright-execution-job";
@@ -17,6 +19,8 @@ export function registerAllJobHandlers(): void {
   registerJobHandler(WORKSPACE_CONTEXT_SYNC, runWorkspaceContextSync);
   registerJobHandler(PROJECT_KNOWLEDGE_JOB, runProjectKnowledgeJob);
   registerJobHandler(UPLOADED_DOCUMENT_INGEST, runUploadedDocumentIngestJob);
+  registerJobHandler(STORY_ATTACHMENT_PARSE, runStoryAttachmentParseJob);
+  registerJobHandler(STORY_ATTACHMENT_CLEANUP, runStoryAttachmentCleanupJob);
   registerJobHandler(JIRA_SYNC_OPERATIONS, runJiraSyncOperations);
   registerJobHandler("playwright_mcp_execution", runPlaywrightExecutionJob);
   registered = true;

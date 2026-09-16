@@ -6,6 +6,8 @@ import type {
   ProjectUser,
   ProjectWorkItemMetadata,
   Requirement,
+  WorkItemAttachment,
+  WorkItemAttachmentDownload,
   WorkItemRevision,
   WorkItemTypeField,
 } from "./integration-types";
@@ -50,6 +52,17 @@ export interface WorkManagementProvider extends ProviderConnection {
     projectId: string;
     workItemId: string;
   }): Promise<Requirement>;
+
+  fetchWorkItemAttachments(input: {
+    projectId: string;
+    workItemId: string;
+  }): Promise<WorkItemAttachment[]>;
+
+  downloadWorkItemAttachment(input: {
+    projectId: string;
+    workItemId: string;
+    attachmentId: string;
+  }): Promise<WorkItemAttachmentDownload>;
 
   fetchWorkItemsByIds(input: {
     projectId: string;

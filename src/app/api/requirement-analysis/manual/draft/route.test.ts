@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   rankProjectKnowledgeForWorkItem: vi.fn(),
   getWorkspaceSettings: vi.fn(),
   buildRequirementAnalysisPromptDraft: vi.fn(),
+  loadSelectedStoryAttachmentWorkflowContext: vi.fn(),
 }));
 
 vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal) => {
@@ -41,6 +42,9 @@ vi.mock("@/modules/workspace/workspace-settings.service", () => ({
 vi.mock("@/modules/requirement-analysis/application/requirement-analysis.service", () => ({
   buildRequirementAnalysisPromptDraft: mocks.buildRequirementAnalysisPromptDraft,
 }));
+vi.mock("@/modules/story-attachments/story-attachment-workflow-context", () => ({
+  loadSelectedStoryAttachmentWorkflowContext: mocks.loadSelectedStoryAttachmentWorkflowContext,
+}));
 
 import { azureDevOpsIntegrationError } from "@/modules/integrations/azure-devops/azure-devops-error";
 import { fakeAzureAdapter, jsonRequest, projectScope, requirement } from "@/test/factories";
@@ -56,7 +60,7 @@ import { POST } from "./route";
 const trustedScope = projectScope();
 const context = {
   userId: "user-1",
-  workspace: { id: "ws-1", azureOrgUrl: "https://dev.azure.com/demo" },
+  workspace: { id: "ws-1", azureOrgUrl: "https://dev.azure.com/demo", providerId: "azure-devops" },
 };
 
 function body() {
@@ -84,6 +88,15 @@ describe("requirement-analysis manual draft route", () => {
     mocks.buildRequirementAnalysisPromptDraft.mockReturnValue({
       prompt: "mock prompt",
       relevantProjectKnowledgeBase: null,
+      includedStoryAttachmentTextIds: [],
+      omittedStoryAttachmentTextIds: [],
+      storyAttachmentWarnings: [],
+    });
+    mocks.loadSelectedStoryAttachmentWorkflowContext.mockResolvedValue({
+      promptAttachments: [],
+      citationAttachments: [],
+      images: [],
+      warnings: [],
     });
   });
 
@@ -134,6 +147,102 @@ describe("requirement-analysis manual draft route", () => {
     }));
   });
 
+  it("adds selected story attachment text and citations to the copied prompt", async () => {
+    const promptAttachments = [{
+      id: "attachment-1",
+      fileName: "checkout.png",
+      mimeType: "image/png",
+      text: "Checkout form shows card number and confirmation button.",
+      visualCount: 0,
+    }];
+    const citationAttachments = [{
+      id: "attachment-1",
+      fileName: "checkout.png",
+      mimeType: "image/png",
+      visualCount: 0,
+    }];
+    mocks.loadSelectedStoryAttachmentWorkflowContext.mockResolvedValue({
+      promptAttachments,
+      citationAttachments,
+      images: [],
+      warnings: ["Attachment visual bytes are omitted from copied prompts."],
+    });
+    mocks.buildRequirementAnalysisPromptDraft.mockReturnValue({
+      prompt: "mock prompt",
+      relevantProjectKnowledgeBase: null,
+      includedStoryAttachmentTextIds: ["attachment-1"],
+      omittedStoryAttachmentTextIds: [],
+      storyAttachmentWarnings: [],
+    });
+    mocks.getUserAzureAdapter.mockResolvedValue(fakeAzureAdapter({
+      fetchWorkItemById: vi.fn(async () => requirement({ id: "PAY-123", title: "Target", raw: { id: "10001" } })),
+    }));
+
+    const response = await POST(jsonRequest("/api/requirement-analysis/manual/draft", {
+      ...body(),
+      attachmentIds: ["attachment-1"],
+    }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.loadSelectedStoryAttachmentWorkflowContext).toHaveBeenCalledWith({
+      scope: {
+        workspaceId: "ws-1",
+        projectId: trustedScope.projectId,
+        providerId: "azure-devops",
+        canonicalStoryId: "10001",
+        storyDisplayKey: "PAY-123",
+      },
+      attachmentIds: ["attachment-1"],
+      includeVisuals: false,
+    });
+    expect(mocks.buildRequirementAnalysisPromptDraft).toHaveBeenCalledWith(expect.objectContaining({
+      storyAttachments: promptAttachments,
+    }));
+    await expect(response.json()).resolves.toMatchObject({
+      warnings: ["Attachment visual bytes are omitted from copied prompts."],
+      contextCitations: [expect.objectContaining({
+        sourceType: "story_attachment",
+        attachmentId: "attachment-1",
+        fileName: "checkout.png",
+      })],
+    });
+  });
+
+  it("does not cite attachment text omitted from a copied prompt and reports the budget warning", async () => {
+    const omittedAttachment = {
+      id: "attachment-omitted",
+      fileName: "large-specification.pdf",
+      mimeType: "application/pdf",
+      visualCount: 0,
+    };
+    mocks.loadSelectedStoryAttachmentWorkflowContext.mockResolvedValue({
+      promptAttachments: [{ ...omittedAttachment, text: "This content did not fit." }],
+      citationAttachments: [omittedAttachment],
+      images: [],
+      warnings: [],
+    });
+    mocks.buildRequirementAnalysisPromptDraft.mockReturnValue({
+      prompt: "mock prompt",
+      relevantProjectKnowledgeBase: null,
+      includedStoryAttachmentTextIds: [],
+      omittedStoryAttachmentTextIds: ["attachment-omitted"],
+      storyAttachmentWarnings: [
+        "Some selected attachment text was omitted to fit the model context window: large-specification.pdf.",
+      ],
+    });
+
+    const response = await POST(jsonRequest("/api/requirement-analysis/manual/draft", {
+      ...body(),
+      attachmentIds: ["attachment-omitted"],
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      contextCitations: [],
+      warnings: ["Some selected attachment text was omitted to fit the model context window: large-specification.pdf."],
+    });
+  });
+
   it("maps an integration auth failure to 401 with the integration scope header", async () => {
     mocks.resolveWorkflowContextWithoutLLM.mockRejectedValue(azureDevOpsIntegrationError(
       401,
@@ -154,5 +263,15 @@ describe("requirement-analysis manual draft route", () => {
 
     expect(response.status).toBe(400);
     expect(mocks.resolveWorkflowContextWithoutLLM).not.toHaveBeenCalled();
+  });
+
+  it("rejects more than 20 selected story attachments before doing any work", async () => {
+    const response = await POST(jsonRequest("/api/requirement-analysis/manual/draft", {
+      ...body(),
+      attachmentIds: Array.from({ length: 21 }, (_, index) => `attachment-${index}`),
+    }));
+
+    expect(response.status).toBe(400);
+    expect(mocks.getUserAzureAdapter).not.toHaveBeenCalled();
   });
 });

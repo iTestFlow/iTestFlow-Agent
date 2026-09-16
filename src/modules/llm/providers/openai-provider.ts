@@ -7,7 +7,15 @@ import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provid
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
 import { isMaxTokensRenameError, withMaxCompletionTokens } from "./provider-param-compat";
 import { toOpenAIStrictJsonSchema } from "./structured-output-json-schema";
-import type { GenerateStructuredOutputInput, GenerateTextInput, GenerateToolCallInput } from "../llm-types";
+import {
+  redactLLMImagePayload,
+  toLLMImageDataUrl,
+  validateLLMImageInputs,
+  type GenerateStructuredOutputInput,
+  type GenerateTextInput,
+  type GenerateToolCallInput,
+  type LLMImageInput,
+} from "../llm-types";
 
 export class OpenAIProvider extends BaseJsonProvider {
   // GPT-5 / o-series reasoning models require `max_completion_tokens` instead of `max_tokens`.
@@ -32,7 +40,7 @@ export class OpenAIProvider extends BaseJsonProvider {
       max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
       messages: [
         { role: "system", content: input.system },
-        { role: "user", content: input.user },
+        { role: "user", content: openAIUserContent(input.user, input.images) },
       ],
     };
     const response = await this.requestChatCompletion(requestBody, input.signal);
@@ -41,7 +49,7 @@ export class OpenAIProvider extends BaseJsonProvider {
       const errorText = await response.text();
       return {
         rawOutput: "",
-        requestBody,
+        requestBody: redactLLMImagePayload(requestBody),
         responseBody: errorText,
         errorMessage: `OpenAI request failed: ${errorText}`,
       };
@@ -49,7 +57,7 @@ export class OpenAIProvider extends BaseJsonProvider {
     const json = await response.json();
     return {
       rawOutput: json.choices?.[0]?.message?.content ?? "",
-      requestBody,
+      requestBody: redactLLMImagePayload(requestBody),
       responseBody: json,
       finishReason: json.choices?.[0]?.finish_reason,
       tokenUsage: openAITokenUsage(json.usage),
@@ -60,7 +68,7 @@ export class OpenAIProvider extends BaseJsonProvider {
     if (!this.config.apiKey) throw new Error("OpenAI API key is not configured.");
     const messages = [
       { role: "system", content: withStructuredOutputInstruction(input.system, input.schemaName) },
-      { role: "user", content: input.user },
+      { role: "user", content: openAIUserContent(input.user, input.images) },
     ];
     const requestBody = {
       model: this.model,
@@ -91,7 +99,7 @@ export class OpenAIProvider extends BaseJsonProvider {
       }
       return {
         rawOutput: "{}",
-        requestBody,
+        requestBody: redactLLMImagePayload(requestBody),
         responseBody: errorText,
         errorMessage: `OpenAI request failed: ${errorText}`,
       };
@@ -183,7 +191,7 @@ async function openAIStructuredCallResult(
     const errorText = await response.text();
     return {
       rawOutput: "{}",
-      requestBody,
+      requestBody: redactLLMImagePayload(requestBody),
       responseBody: errorText,
       errorMessage: `OpenAI request failed: ${errorText}`,
     };
@@ -191,11 +199,20 @@ async function openAIStructuredCallResult(
   const json = await response.json();
   return {
     rawOutput: json.choices?.[0]?.message?.content ?? "{}",
-    requestBody,
+    requestBody: redactLLMImagePayload(requestBody),
     responseBody: json,
     finishReason: json.choices?.[0]?.finish_reason,
     tokenUsage: openAITokenUsage(json.usage),
   };
+}
+
+function openAIUserContent(user: string, images?: readonly LLMImageInput[]) {
+  const validImages = validateLLMImageInputs(images);
+  if (!validImages?.length) return user;
+  return [
+    ...validImages.map((image) => ({ type: "image_url" as const, image_url: { url: toLLMImageDataUrl(image) } })),
+    { type: "text" as const, text: user },
+  ];
 }
 
 function isOpenAIJsonSchemaFallbackError(errorText: string) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeRequirementAnalysisChecklistScope } from "./requirement-analysis.service";
+import { fakeLlmProvider, projectScope, requirement } from "@/test/factories";
+import { normalizeRequirementAnalysisChecklistScope, runRequirementAnalysis } from "./requirement-analysis.service";
 import type { RequirementAnalysisOutput } from "../schemas/requirement-analysis.schema";
 
 const baseFinding = {
@@ -73,5 +74,40 @@ describe("normalizeRequirementAnalysisChecklistScope", () => {
     expect(result.output).toBe(output);
     expect(result.warnings).toBeUndefined();
     expect(result.droppedFindings).toEqual([]);
+  });
+});
+
+describe("runRequirementAnalysis attachment evidence", () => {
+  it("sends selected attachment text and derived visuals to the structured provider call", async () => {
+    const provider = fakeLlmProvider({ structuredOutput: output });
+    const image = {
+      mediaType: "image/png" as const,
+      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
+    };
+
+    const result = await runRequirementAnalysis({
+      scope: projectScope(),
+      actor: "qa",
+      provider,
+      targetRequirement: requirement(),
+      selectedContext: [],
+      storyAttachments: [{
+        id: "attachment-checkout-design",
+        fileName: "checkout-design.png",
+        mimeType: "image/png",
+        text: "The amount confirmation is shown before submit.",
+        visualCount: 1,
+      }],
+      attachmentImages: [image],
+    });
+
+    expect(provider.generateStructuredOutput).toHaveBeenCalledWith(expect.objectContaining({
+      images: [image],
+      user: expect.stringContaining("checkout-design.png"),
+    }));
+    expect(result).toMatchObject({
+      includedStoryAttachmentTextIds: ["attachment-checkout-design"],
+      omittedStoryAttachmentTextIds: [],
+    });
   });
 });

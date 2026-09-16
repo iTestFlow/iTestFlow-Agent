@@ -7,7 +7,14 @@ import { normalizeProviderBaseUrl } from "../provider-base-url";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
 import { toAnthropicCompatibleJsonSchema } from "./structured-output-json-schema";
-import type { GenerateStructuredOutputInput, GenerateTextInput, GenerateToolCallInput } from "../llm-types";
+import {
+  redactLLMImagePayload,
+  validateLLMImageInputs,
+  type GenerateStructuredOutputInput,
+  type GenerateTextInput,
+  type GenerateToolCallInput,
+  type LLMImageInput,
+} from "../llm-types";
 
 const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
 
@@ -36,7 +43,7 @@ export class AnthropicProvider extends BaseJsonProvider {
       model: this.model,
       max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
       system: input.system,
-      messages: [{ role: "user", content: input.user }],
+      messages: [{ role: "user", content: anthropicUserContent(input.user, input.images) }],
     };
     const response = await fetchWithTransientRetry(`${this.baseUrl()}/messages`, {
       method: "POST",
@@ -53,7 +60,7 @@ export class AnthropicProvider extends BaseJsonProvider {
       const errorText = await response.text();
       return {
         rawOutput: "",
-        requestBody,
+        requestBody: redactLLMImagePayload(requestBody),
         responseBody: errorText,
         errorMessage: `Anthropic request failed: ${errorText}`,
       };
@@ -62,7 +69,7 @@ export class AnthropicProvider extends BaseJsonProvider {
     const rawOutput = anthropicTextContent(json.content);
     return {
       rawOutput,
-      requestBody,
+      requestBody: redactLLMImagePayload(requestBody),
       responseBody: json,
       errorMessage: rawOutput.trim() ? undefined : noTextContentError(json.content),
       userMessage: rawOutput.trim()
@@ -95,7 +102,7 @@ export class AnthropicProvider extends BaseJsonProvider {
       }
       return {
         rawOutput: "{}",
-        requestBody,
+        requestBody: redactLLMImagePayload(requestBody),
         responseBody: errorText,
         errorMessage: `Anthropic request failed: ${errorText}`,
       };
@@ -142,7 +149,7 @@ export class AnthropicProvider extends BaseJsonProvider {
       model: this.model,
       max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
       system: withStructuredOutputInstruction(input.system, input.schemaName),
-      messages: [{ role: "user", content: input.user }],
+      messages: [{ role: "user", content: anthropicUserContent(input.user, input.images) }],
       ...(outputConfig ? { output_config: outputConfig } : {}),
     };
   }
@@ -199,7 +206,7 @@ async function anthropicStructuredCallResult(
     const errorText = await response.text();
     return {
       rawOutput: "{}",
-      requestBody,
+      requestBody: redactLLMImagePayload(requestBody),
       responseBody: errorText,
       errorMessage: `Anthropic request failed: ${errorText}`,
     };
@@ -208,7 +215,7 @@ async function anthropicStructuredCallResult(
   const rawOutput = anthropicTextContent(json.content);
   return {
     rawOutput,
-    requestBody,
+    requestBody: redactLLMImagePayload(requestBody),
     responseBody: json,
     errorMessage: rawOutput.trim() ? undefined : noTextContentError(json.content),
     userMessage: rawOutput.trim()
@@ -217,6 +224,18 @@ async function anthropicStructuredCallResult(
     finishReason: json.stop_reason,
     tokenUsage: anthropicTokenUsage(json.usage),
   };
+}
+
+function anthropicUserContent(user: string, images?: readonly LLMImageInput[]) {
+  const validImages = validateLLMImageInputs(images);
+  if (!validImages?.length) return user;
+  return [
+    ...validImages.map((image) => ({
+      type: "image" as const,
+      source: { type: "base64" as const, media_type: image.mediaType, data: image.data },
+    })),
+    { type: "text" as const, text: user },
+  ];
 }
 
 function isAnthropicNativeSchemaFallbackError(errorText: string) {

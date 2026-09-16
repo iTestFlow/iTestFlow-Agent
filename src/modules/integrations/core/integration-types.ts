@@ -161,6 +161,23 @@ export type AttachmentUpload = {
   content: ArrayBuffer;
 };
 
+/** Safe, provider-neutral metadata for a file already attached to a work item. */
+export type WorkItemAttachment = {
+  id: string;
+  /** Stable provider ID of the work item that currently owns this attachment. */
+  sourceWorkItemId: string;
+  fileName: string;
+  contentType?: string;
+  size?: number;
+  createdAt?: string;
+};
+
+/** Attachment bytes are read only on the server after membership is rechecked. */
+export type WorkItemAttachmentDownload = {
+  attachment: WorkItemAttachment;
+  content: ArrayBuffer;
+};
+
 export type TestPlan = {
   id: string;
   name: string;

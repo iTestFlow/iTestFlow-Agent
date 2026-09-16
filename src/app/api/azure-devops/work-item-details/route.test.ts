@@ -60,7 +60,7 @@ describe("POST /api/azure-devops/work-item-details", () => {
     expect(response.status).toBe(401);
     expect(response.headers.get("x-itf-error-scope")).toBe("integration");
     expect(await response.json()).toEqual({
-      error: "Could not load this work item from Azure DevOps. Check the ID, selected project, and connection settings.",
+      error: "Could not load this work item from the connected provider. Check the ID, selected project, and connection settings.",
     });
   });
 
@@ -76,5 +76,15 @@ describe("POST /api/azure-devops/work-item-details", () => {
     expect(response.status).toBe(404);
     expect(response.headers.get("x-itf-error-scope")).toBeNull();
     expect(await response.json()).toEqual({ error: workItemNotInProjectMessage("123") });
+  });
+
+  it("accepts a Jira-style issue key so the selected provider can resolve it", async () => {
+    const response = await POST(jsonRequest("/api/azure-devops/work-item-details", body("PAY-123")));
+
+    expect(response.status).toBe(200);
+    expect(mocks.fetchWorkItemById).toHaveBeenCalledWith({
+      projectId: trustedScope.azureProjectId,
+      workItemId: "PAY-123",
+    });
   });
 });

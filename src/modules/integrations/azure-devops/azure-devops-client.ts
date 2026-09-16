@@ -1,5 +1,8 @@
 import "server-only";
 
+import { readBoundedDocumentResponse } from "@/modules/documents/bounded-document-response";
+import { IntegrationError } from "../core/integration-error";
+import type { WorkItemAttachment, WorkItemAttachmentDownload } from "../core/integration-types";
 import { ProjectIsolationError, workItemNotInProjectMessage } from "@/modules/projects/project-isolation.guard";
 import type { AzureDevOpsAdapter } from "./azure-devops-adapter";
 import { mapAzureTestCase, mapAzureWorkItem } from "./azure-devops-mapper";
@@ -366,6 +369,35 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
     );
     this.assertFieldsInScope((item as { fields?: Record<string, unknown> }).fields, input.workItemId);
     return mapAzureWorkItem(item as never, input.projectId);
+  }
+
+  async fetchWorkItemAttachments(input: { projectId: string; workItemId: string }): Promise<WorkItemAttachment[]> {
+    return this.readWorkItemAttachments(input);
+  }
+
+  async downloadWorkItemAttachment(input: {
+    projectId: string;
+    workItemId: string;
+    attachmentId: string;
+  }): Promise<WorkItemAttachmentDownload> {
+    const attachmentId = canonicalAzureAttachmentId(input.attachmentId);
+    if (!attachmentId) throw azureAttachmentNotFoundError();
+
+    const attachments = await this.readWorkItemAttachments(input);
+    const attachment = attachments.find((candidate) => candidate.id === attachmentId);
+    if (!attachment) throw azureAttachmentNotFoundError();
+
+    const downloaded = await this.requestAttachmentBytes(
+      `${encodeURIComponent(input.projectId)}/_apis/wit/attachments/${encodeURIComponent(attachment.id)}?api-version=7.1`,
+    );
+    return {
+      attachment: {
+        ...attachment,
+        contentType: downloaded.contentType ?? attachment.contentType,
+        size: downloaded.size ?? attachment.size,
+      },
+      content: downloaded.content,
+    };
   }
 
   async fetchWorkItemsByIds(input: { projectId: string; workItemIds: string[] }): Promise<Requirement[]> {
@@ -1068,6 +1100,67 @@ export class AzureDevOpsRestAdapter implements AzureDevOpsAdapter {
       .filter((id): id is number => typeof id === "number");
   }
 
+  private async readWorkItemAttachments(input: { projectId: string; workItemId: string }): Promise<WorkItemAttachment[]> {
+    let item: JsonValue;
+    try {
+      item = await this.requestJson<JsonValue>(
+        `${encodeURIComponent(input.projectId)}/_apis/wit/workitems/${encodeURIComponent(input.workItemId)}?$expand=Relations&api-version=7.1`,
+      );
+    } catch (error) {
+      throw safeAzureAttachmentReadError(error);
+    }
+    this.assertFieldsInScope(objectValue(item.fields), input.workItemId);
+
+    const sourceWorkItemId = canonicalAzureWorkItemId(item.id);
+    if (!sourceWorkItemId) {
+      throw azureDevOpsInvalidResponseError("Azure DevOps returned an invalid work item response.", 200);
+    }
+
+    const attachments = new Map<string, WorkItemAttachment>();
+    for (const relation of arrayValue(item.relations)) {
+      const attachment = mapAzureAttachedFileRelation(relation, sourceWorkItemId);
+      if (attachment && !attachments.has(attachment.id)) attachments.set(attachment.id, attachment);
+    }
+    return [...attachments.values()];
+  }
+
+  private async requestAttachmentBytes(path: string): Promise<{
+    content: ArrayBuffer;
+    contentType?: string;
+    size?: number;
+  }> {
+    let response: Response;
+    try {
+      response = await this.request(path, { headers: { Accept: "application/octet-stream" }, redirect: "error" });
+    } catch {
+      throw new IntegrationError({
+        providerId: "azure-devops",
+        code: "integration_unavailable",
+        message: "Azure DevOps attachment download failed.",
+      });
+    }
+
+    if (!response.ok) {
+      void response.body?.cancel();
+      if (response.status === 401) this.onUnauthorized?.();
+      throw azureDevOpsIntegrationError(response.status, "", path);
+    }
+
+    try {
+      return {
+        content: await readBoundedDocumentResponse(response),
+        contentType: safeAttachmentContentType(response.headers.get("content-type")),
+        size: nonNegativeSafeInteger(response.headers.get("content-length")),
+      };
+    } catch {
+      throw new IntegrationError({
+        providerId: "azure-devops",
+        code: "integration_unavailable",
+        message: "Azure DevOps attachment download failed.",
+      });
+    }
+  }
+
   private async requestJson<T>(path: string, init?: RequestInit & { contentType?: string }): Promise<T> {
     const { json } = await this.requestJsonWithHeaders<T>(path, init);
     return json;
@@ -1454,6 +1547,93 @@ function escapeWiqlValue(value: string) {
 
 function normalizeProjectName(value: unknown): string {
   return typeof value === "string" ? value.trim().toLocaleLowerCase() : "";
+}
+
+function mapAzureAttachedFileRelation(
+  relation: JsonValue,
+  sourceWorkItemId: string,
+): WorkItemAttachment | undefined {
+  if (textValue(relation.rel) !== "AttachedFile") return undefined;
+  const attachmentId = azureAttachmentIdFromRelationUrl(textValue(relation.url));
+  if (!attachmentId) return undefined;
+  const attributes = objectValue(relation.attributes);
+  return {
+    id: attachmentId,
+    sourceWorkItemId,
+    fileName: safeAttachmentFileName(attributes?.name, `Attachment ${attachmentId}`),
+    createdAt: normalizedAttachmentDate(attributes?.resourceCreatedDate),
+  };
+}
+
+function azureAttachmentIdFromRelationUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const match = new URL(value).pathname.match(/\/_apis\/wit\/attachments\/([^/]+)$/i);
+    return match ? canonicalAzureAttachmentId(decodeURIComponent(match[1])) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function canonicalAzureAttachmentId(value: unknown): string | undefined {
+  const candidate = typeof value === "string" ? value.trim().toLocaleLowerCase() : "";
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(candidate)
+    ? candidate
+    : undefined;
+}
+
+function canonicalAzureWorkItemId(value: unknown): string | undefined {
+  const candidate = idValue(value)?.trim();
+  return candidate && /^\d+$/.test(candidate) ? candidate : undefined;
+}
+
+function safeAttachmentFileName(value: unknown, fallback: string): string {
+  const candidate = typeof value === "string"
+    ? value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 255)
+    : "";
+  return candidate || fallback;
+}
+
+function safeAttachmentContentType(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const candidate = value.trim().toLocaleLowerCase();
+  return candidate && candidate.length <= 255 && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+(?:;\s*[^;]+)?$/.test(candidate)
+    ? candidate
+    : undefined;
+}
+
+function normalizedAttachmentDate(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+}
+
+function nonNegativeSafeInteger(value: unknown): number | undefined {
+  const candidate = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : undefined;
+}
+
+function azureAttachmentNotFoundError(): IntegrationError {
+  return new IntegrationError({
+    providerId: "azure-devops",
+    code: "integration_not_found",
+    message: "The requested attachment is not attached to this Azure DevOps work item.",
+  });
+}
+
+function safeAzureAttachmentReadError(error: unknown): IntegrationError {
+  if (error instanceof IntegrationError && error.statusCode !== undefined && error.code !== "integration_invalid_response") {
+    return azureDevOpsIntegrationError(error.statusCode, "");
+  }
+  return new IntegrationError({
+    providerId: "azure-devops",
+    code: error instanceof IntegrationError ? error.code : "integration_unavailable",
+    statusCode: error instanceof IntegrationError ? error.statusCode : undefined,
+    retryAfterSeconds: error instanceof IntegrationError ? error.retryAfterSeconds : undefined,
+    message: error instanceof IntegrationError && error.code === "integration_invalid_response"
+      ? "Azure DevOps returned an invalid attachment response."
+      : "Azure DevOps attachment read failed.",
+  });
 }
 
 function uniqueSortedValues(values: string[]) {

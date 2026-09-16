@@ -13,8 +13,10 @@ describe("azureDevOpsDescriptor", () => {
 
   it("declares every current provider capability", () => {
     // Compile-time exhaustiveness lives in azure-devops-descriptor.ts; this count is the runtime tripwire.
-    expect(azureDevOpsDescriptor.capabilities.size).toBe(37);
-    expect(Object.keys(azureDevOpsCapabilities)).toHaveLength(37);
+    expect(azureDevOpsDescriptor.capabilities.size).toBe(39);
+    expect(Object.keys(azureDevOpsCapabilities)).toHaveLength(39);
+    expect(azureDevOpsDescriptor.capabilities.has("fetchWorkItemAttachments")).toBe(true);
+    expect(azureDevOpsDescriptor.capabilities.has("downloadWorkItemAttachment")).toBe(true);
     for (const capability of Object.keys(azureDevOpsCapabilities)) {
       expect(azureDevOpsDescriptor.capabilities.has(capability as never)).toBe(true);
     }

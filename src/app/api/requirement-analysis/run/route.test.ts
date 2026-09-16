@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   resolveRetrievalTopK: vi.fn(),
   loadProjectKnowledgeContext: vi.fn(),
   rankProjectKnowledgeForWorkItem: vi.fn(),
+  loadSelectedStoryAttachmentWorkflowContext: vi.fn(),
   runRequirementAnalysis: vi.fn(),
   writeGenerationFailureAudit: vi.fn(),
   startWorkflowRun: vi.fn(),
@@ -39,6 +40,9 @@ vi.mock("@/modules/rag/project-knowledge.service", () => ({
 }));
 vi.mock("@/modules/rag/knowledge-relevance.service", () => ({
   rankProjectKnowledgeForWorkItem: mocks.rankProjectKnowledgeForWorkItem,
+}));
+vi.mock("@/modules/story-attachments/story-attachment-workflow-context", () => ({
+  loadSelectedStoryAttachmentWorkflowContext: mocks.loadSelectedStoryAttachmentWorkflowContext,
 }));
 vi.mock("@/modules/requirement-analysis/application/requirement-analysis.service", () => ({
   runRequirementAnalysis: mocks.runRequirementAnalysis,
@@ -71,7 +75,7 @@ import { POST } from "./route";
 const trustedScope = projectScope();
 const context = {
   userId: "user-1",
-  workspace: { id: "ws-1", azureOrgUrl: "https://dev.azure.com/demo" },
+  workspace: { id: "ws-1", providerId: "azure-devops", azureOrgUrl: "https://dev.azure.com/demo" },
 };
 
 function body() {
@@ -97,12 +101,22 @@ describe("requirement-analysis run route", () => {
     });
     mocks.loadProjectKnowledgeContext.mockResolvedValue({ knowledgeBase: {}, promptNotice: null });
     mocks.rankProjectKnowledgeForWorkItem.mockResolvedValue({ businessRules: ["rule-1"] });
+    mocks.loadSelectedStoryAttachmentWorkflowContext.mockResolvedValue({
+      promptAttachments: [],
+      citationAttachments: [],
+      images: [],
+      imageTokenReserve: 0,
+      effectivePromptInputTokens: 128_000,
+      warnings: [],
+    });
     mocks.runRequirementAnalysis.mockResolvedValue({
       validatedOutput: {
         findings: [],
         summary: { criticalCount: 0, highCount: 0, mediumCount: 0, lowCount: 0 },
       },
       relevantProjectKnowledgeBase: null,
+      includedStoryAttachmentTextIds: [],
+      omittedStoryAttachmentTextIds: [],
     });
   });
 
@@ -128,6 +142,67 @@ describe("requirement-analysis run route", () => {
     expect(mocks.rankProjectKnowledgeForWorkItem).toHaveBeenCalledWith(expect.objectContaining({
       contextWorkItemIds: ["200", "201"],
     }));
+  });
+
+  it("loads selected attachments under the stable story scope and sends text and visuals to the model", async () => {
+    const target = requirement({ id: "PAY-123", raw: { id: "10042" } });
+    mocks.getUserAzureAdapter.mockResolvedValue(fakeAzureAdapter({
+      fetchWorkItemById: vi.fn(async () => target),
+    }));
+    const promptAttachments = [{
+      id: "attachment-1",
+      fileName: "checkout.png",
+      mimeType: "image/png",
+      text: "Checkout flow mockup omitted from the prompt.",
+      visualCount: 1,
+    }, {
+      id: "attachment-no-evidence",
+      fileName: "unreadable.txt",
+      mimeType: "text/plain",
+      text: "This text did not fit the prompt.",
+      visualCount: 0,
+    }];
+    const images = [{ mediaType: "image/png" as const, data: "cG5n" }];
+    mocks.loadSelectedStoryAttachmentWorkflowContext.mockResolvedValue({
+      promptAttachments,
+      citationAttachments: promptAttachments,
+      images,
+      imageTokenReserve: 8_000,
+      effectivePromptInputTokens: 120_000,
+      warnings: ["Attachment visual was reduced before sending it to the model."],
+    });
+
+    const response = await POST(jsonRequest("/api/requirement-analysis/run", {
+      ...body(),
+      targetWorkItemId: "PAY-123",
+      attachmentIds: ["attachment-1"],
+    }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.loadSelectedStoryAttachmentWorkflowContext).toHaveBeenCalledWith({
+      scope: {
+        workspaceId: "ws-1",
+        projectId: trustedScope.projectId,
+        providerId: "azure-devops",
+        canonicalStoryId: "10042",
+        storyDisplayKey: "PAY-123",
+      },
+      attachmentIds: ["attachment-1"],
+      includeVisuals: true,
+      maxInputTokens: 128_000,
+    });
+    expect(mocks.runRequirementAnalysis).toHaveBeenCalledWith(expect.objectContaining({
+      storyAttachments: promptAttachments,
+      attachmentImages: images,
+      maxInputTokens: 120_000,
+    }));
+    expect(await response.json()).toMatchObject({
+      warnings: ["Attachment visual was reduced before sending it to the model."],
+      contextCitations: [{
+        sourceType: "story_attachment",
+        attachmentId: "attachment-1",
+      }],
+    });
   });
 
   it("still produces an analysis when knowledge ranking yields nothing", async () => {

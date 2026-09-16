@@ -5,7 +5,14 @@ import { DEFAULT_TEXT_OUTPUT_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defau
 import { withStructuredOutputInstruction } from "../prompts";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
-import type { GenerateStructuredOutputInput, GenerateTextInput, GenerateToolCallInput } from "../llm-types";
+import {
+  redactLLMImagePayload,
+  validateLLMImageInputs,
+  type GenerateStructuredOutputInput,
+  type GenerateTextInput,
+  type GenerateToolCallInput,
+  type LLMImageInput,
+} from "../llm-types";
 
 export class GeminiProvider extends BaseJsonProvider {
   async testConnection(): Promise<boolean> {
@@ -29,7 +36,7 @@ export class GeminiProvider extends BaseJsonProvider {
       contents: [
         {
           role: "user",
-          parts: [{ text: input.user }],
+          parts: geminiUserParts(input.user, input.images),
         },
       ],
     };
@@ -49,7 +56,7 @@ export class GeminiProvider extends BaseJsonProvider {
       const errorText = await response.text();
       return {
         rawOutput: "",
-        requestBody,
+        requestBody: redactLLMImagePayload(requestBody),
         responseBody: errorText,
         errorMessage: `Gemini request failed: ${errorText}`,
       };
@@ -57,7 +64,7 @@ export class GeminiProvider extends BaseJsonProvider {
     const json = await response.json();
     return {
       rawOutput: json.candidates?.[0]?.content?.parts?.[0]?.text ?? "",
-      requestBody,
+      requestBody: redactLLMImagePayload(requestBody),
       responseBody: json,
       finishReason: json.candidates?.[0]?.finishReason,
       tokenUsage: geminiTokenUsage(json.usageMetadata),
@@ -79,7 +86,7 @@ export class GeminiProvider extends BaseJsonProvider {
       contents: [
         {
           role: "user",
-          parts: [{ text: input.user }],
+          parts: geminiUserParts(input.user, input.images),
         },
       ],
     };
@@ -99,7 +106,7 @@ export class GeminiProvider extends BaseJsonProvider {
       const errorText = await response.text();
       return {
         rawOutput: "{}",
-        requestBody,
+        requestBody: redactLLMImagePayload(requestBody),
         responseBody: errorText,
         errorMessage: `Gemini request failed: ${errorText}`,
       };
@@ -107,7 +114,7 @@ export class GeminiProvider extends BaseJsonProvider {
     const json = await response.json();
     return {
       rawOutput: json.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}",
-      requestBody,
+      requestBody: redactLLMImagePayload(requestBody),
       responseBody: json,
       finishReason: json.candidates?.[0]?.finishReason,
       tokenUsage: geminiTokenUsage(json.usageMetadata),
@@ -145,6 +152,15 @@ export class GeminiProvider extends BaseJsonProvider {
     }
     return { rawOutput: JSON.stringify(json), requestBody, responseBody: json, finishReason: json?.candidates?.[0]?.finishReason, tokenUsage: geminiTokenUsage(json?.usageMetadata), toolCall: { name: call.name, arguments: call.args } };
   }
+}
+
+function geminiUserParts(user: string, images?: readonly LLMImageInput[]) {
+  const validImages = validateLLMImageInputs(images);
+  if (!validImages?.length) return [{ text: user }];
+  return [
+    ...validImages.map((image) => ({ inlineData: { mimeType: image.mediaType, data: image.data } })),
+    { text: user },
+  ];
 }
 
 function geminiStructuredOutputOptions(model: string) {

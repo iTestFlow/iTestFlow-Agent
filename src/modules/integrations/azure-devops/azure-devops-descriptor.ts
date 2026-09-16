@@ -12,6 +12,8 @@ const AZURE_DEVOPS_CAPABILITIES: Record<ProviderCapability, true> = {
   fetchWorkItemTypeFields: true,
   fetchWorkItems: true,
   fetchWorkItemById: true,
+  fetchWorkItemAttachments: true,
+  downloadWorkItemAttachment: true,
   fetchWorkItemsByIds: true,
   fetchLinkedWorkItems: true,
   fetchLinkedRequirementWorkItems: true,
