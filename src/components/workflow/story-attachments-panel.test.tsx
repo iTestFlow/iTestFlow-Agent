@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { StoryAttachmentsPanel } from "./story-attachments-panel";
@@ -21,15 +21,17 @@ function json(body: unknown) {
 
 const fetchMock = vi.fn();
 let uploadFailures: Array<{ clientIndex: number; fileName: string; error: string }> = [];
+let savedAttachmentResponses: unknown[][] | null = null;
 
 beforeEach(() => {
   fetchMock.mockReset();
   uploadFailures = [];
+  savedAttachmentResponses = null;
   fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.startsWith("/api/story-attachments?")) {
       return json({
-        attachments: [
+        attachments: savedAttachmentResponses?.shift() ?? [
           {
             id: "attachment-ready",
             originalFileName: "design.png",
@@ -89,6 +91,46 @@ describe("StoryAttachmentsPanel", () => {
 
     fireEvent.click(ready);
     expect(onSelectedAttachmentIdsChange).toHaveBeenCalledWith(["attachment-ready"]);
+  });
+
+  it("silently refreshes while an attachment is processing", async () => {
+    const intervalSpy = vi.spyOn(window, "setInterval");
+    savedAttachmentResponses = [
+      [{
+        id: "attachment-processing",
+        originalFileName: "wireframe.png",
+        mimeType: "image/png",
+        byteSize: 166 * 1024,
+        parseStatus: "parsing",
+        source: { kind: "upload" },
+      }],
+      [{
+        id: "attachment-processing",
+        originalFileName: "wireframe.png",
+        mimeType: "image/png",
+        byteSize: 166 * 1024,
+        parseStatus: "parsed",
+        source: { kind: "upload" },
+      }],
+    ];
+    render(
+      <StoryAttachmentsPanel
+        scope={scope}
+        targetWorkItemId="123"
+        selectedAttachmentIds={[]}
+        onSelectedAttachmentIdsChange={vi.fn()}
+        onAttachmentsChanged={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Processing")).toBeInTheDocument();
+    const poll = intervalSpy.mock.calls.find(([, delay]) => delay === 2_000)?.[0];
+    expect(poll).toEqual(expect.any(Function));
+    await act(async () => {
+      (poll as () => void)();
+    });
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("uploads files with story fields before files and refreshes the saved list", async () => {

@@ -56,6 +56,7 @@ type LoadingState<T> = {
 const EMPTY_SAVED_ATTACHMENTS: LoadingState<StoryAttachment[]> = { loading: false, error: null, data: [], contextKey: null };
 const EMPTY_SOURCE_ATTACHMENTS: LoadingState<SourceAttachment[]> = { loading: false, error: null, data: [], contextKey: null };
 const ACCEPTED_ATTACHMENT_TYPES = ".pdf,.docx,.xlsx,.csv,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp";
+const STORY_ATTACHMENT_POLL_INTERVAL_MS = 2_000;
 
 export function StoryAttachmentsPanel({
   scope,
@@ -127,6 +128,18 @@ export function StoryAttachmentsPanel({
     setActionError(null);
     void loadSavedAttachments();
   }, [loadSavedAttachments]);
+
+  useEffect(() => {
+    if (
+      !attachmentContextKey
+      || savedAttachments.contextKey !== attachmentContextKey
+      || savedAttachments.loading
+      || savedAttachments.error
+      || !savedAttachments.data.some(isProcessingAttachment)
+    ) return;
+    const interval = window.setInterval(() => void loadSavedAttachments(true), STORY_ATTACHMENT_POLL_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [attachmentContextKey, loadSavedAttachments, savedAttachments.contextKey, savedAttachments.data, savedAttachments.error, savedAttachments.loading]);
 
   useEffect(() => {
     if (!attachmentContextKey || savedAttachments.contextKey !== attachmentContextKey || savedAttachments.loading || savedAttachments.error) return;
@@ -412,6 +425,10 @@ export function StoryAttachmentsPanel({
 
 function isSelectableAttachment(attachment: StoryAttachment) {
   return attachment.parseStatus === "parsed" || attachment.parseStatus === "partially_parsed";
+}
+
+function isProcessingAttachment(attachment: StoryAttachment) {
+  return attachment.parseStatus === "pending" || attachment.parseStatus === "parsing";
 }
 
 function AttachmentStatusBadge({ status }: { status: string }) {
