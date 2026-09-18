@@ -91,10 +91,6 @@ export async function loadSelectedStoryAttachmentWorkflowContext(input: {
           omittedVisualForModelContext = true;
           continue;
         }
-        if (preparedVisual.normalized) {
-          warnings.push(`${context.attachment.originalFileName} has a visual that was reduced before sending it to the AI model.`);
-        }
-
         const data = preparedVisual.data.toString("base64");
         if (data.length > MAX_LLM_IMAGE_INPUT_BASE64_BYTES) {
           warnings.push(`${context.attachment.originalFileName} has a visual that is too large for the selected AI provider.`);

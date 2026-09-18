@@ -110,7 +110,7 @@ describe("selected story attachment workflow context", () => {
     expect(result.imageTokenReserve).toBe(4_096);
     expect(result.effectivePromptInputTokens).toBe(5_904);
     expect(result.promptAttachments).toMatchObject([{ text: "The confirmation button is disabled until the amount is accepted.", visualCount: 1 }]);
-    expect(result.warnings).toContain("design.png has a visual that was reduced before sending it to the AI model.");
+    expect(result.warnings).not.toContain("design.png has a visual that was reduced before sending it to the AI model.");
     expect(result.warnings).toContain("Some selected attachment visuals were omitted to preserve room for the workflow prompt in the model context window.");
   });
 });
