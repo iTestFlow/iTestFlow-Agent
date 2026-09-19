@@ -4,7 +4,7 @@ This document is the living architecture map for iTestFlow. Update it whenever a
 
 ## Architecture Overview
 
-iTestFlow is a privately hosted, workspace-scoped Next.js application for Azure DevOps testing workflows. The browser talks only to Next.js pages and API routes. Server-side modules own authentication, workspace authorization, project isolation, PostgreSQL access, integration-provider access, LLM provider calls, RAG/knowledge workflows, audit logging, and background jobs.
+iTestFlow is a privately hosted, workspace-scoped Next.js application for Azure DevOps and Jira Cloud QA workflows. The browser talks only to Next.js pages and API routes. Server-side modules own authentication, workspace authorization, project isolation, PostgreSQL access, integration-provider access, Jira artifact backends, LLM provider calls, RAG/knowledge workflows, audit logging, and background jobs.
 
 ```mermaid
 flowchart LR
@@ -15,6 +15,8 @@ flowchart LR
   PG["PostgreSQL"]
   Worker["Background worker"]
   ADO["Azure DevOps REST API"]
+  Jira["Jira Cloud REST API"]
+  Artifacts["Xray / Zephyr Cloud APIs"]
   LLM["LLM provider API"]
 
   User --> UI
@@ -22,12 +24,17 @@ flowchart LR
   API --> Modules
   Modules --> PG
   Modules --> ADO
+  Modules --> Jira
+  Modules --> Artifacts
   Modules --> LLM
   Worker --> PG
   Worker --> ADO
+  Worker --> Jira
   PG --> Modules
   PG --> Worker
   ADO --> Modules
+  Jira --> Modules
+  Artifacts --> Modules
   LLM --> Modules
   Modules --> API
   API --> UI
@@ -46,20 +53,20 @@ Primary dependency direction:
 
 iTestFlow helps QA, product, and delivery teams:
 
-- Sign in with an Azure DevOps organization and Personal Access Token.
-- **Single-org mode**: Work inside one workspace tied to the configured Azure DevOps organization.
-- **Multi-org mode**: Select an organization at login; each organization has its own workspace with dedicated owners and members.
-- Each session is org-scoped: the active workspace is stored in the session and determines all workspace-level reads and writes.
-- Store each user's Azure DevOps PAT and LLM API key encrypted and private to that user/workspace.
-- Select an active Azure DevOps project whose server-side project anchor is validated before scoped reads or writes.
-- Index filtered Azure DevOps work items into project context.
+- Sign in to an enabled Azure DevOps organization or Jira Cloud site with the provider's supported credentials.
+- **Single-provider workspace**: Work inside one workspace tied to one configured Azure DevOps organization or Jira Cloud site.
+- **Provider-aware login**: Select the configured organization or site at login; each workspace has its own owner and members.
+- Each session is workspace-scoped: the active workspace is stored in the session and determines all workspace-level reads and writes.
+- Store each user's provider and LLM credentials encrypted and private to that user/workspace.
+- Select an active provider project whose server-side project anchor is validated before scoped reads or writes.
+- Index filtered work items from the active provider into project context.
 - Compile durable project knowledge with revisions, publish-time lint checks, citations, and Markdown export.
 - Ask grounded questions through the Business Owner Assistant.
 - Analyze requirements, design test cases, review gaps, report bugs, migrate suites, and bulk-create tasks.
-- Publish only reviewed artifacts back to Azure DevOps.
+- Publish only reviewed artifacts through the active provider's supported work or test-artifact path.
 - Review dashboards, activity history, audit logs, jobs, and workspace-level settings.
 
-The app intentionally avoids becoming a general Azure DevOps work-item browser. Work items are loaded for concrete workflows or through filtered Knowledge Hub/context sync.
+The app intentionally avoids becoming a general work-item browser. Work items are loaded for concrete workflows or through filtered Knowledge Hub/context sync.
 
 ## Runtime Stack
 
@@ -69,7 +76,7 @@ The app intentionally avoids becoming a general Azure DevOps work-item browser. 
 - Runtime supervision: `npm run dev` and `npm start` launch both the web and background processes; split commands remain available for independently scaled deployments.
 - Background work uses the `jobs` table with `FOR UPDATE SKIP LOCKED`, process capability heartbeats, active-job heartbeats, and stale-lock recovery.
 - Authentication: opaque session cookie backed by hashed session tokens in PostgreSQL.
-- External systems: Azure DevOps REST APIs and OpenAI, Gemini, or Anthropic LLM provider APIs.
+- External systems: Azure DevOps REST APIs, Jira Cloud REST APIs, optional Xray/Zephyr Cloud artifact APIs, and OpenAI, Gemini, or Anthropic LLM provider APIs.
 
 ## Source Layout
 
@@ -105,7 +112,7 @@ The app intentionally avoids becoming a general Azure DevOps work-item browser. 
 The active shell is `src/components/layout/app-shell.tsx`. It wraps the authenticated app and renders:
 
 - `src/components/layout/sidebar.tsx` for primary workflow navigation.
-- `src/components/layout/topbar.tsx` for active project selection and Azure DevOps profile state.
+- `src/components/layout/topbar.tsx` for active project selection and provider profile state.
 
 The root route redirects to `/dashboards`. `/setup` and `/configuration` redirect to `/settings`. `/login` is public; authenticated page navigations are protected by `src/middleware.ts`. API routes validate sessions server-side and return JSON errors instead of redirects.
 
@@ -127,61 +134,71 @@ Durable page routes:
 
 ## Auth, Workspace, And Project Scope
 
-Authentication is PAT-backed and org-scoped:
+Authentication is provider-aware and workspace-scoped:
 
-- `GET /api/auth/organizations` lists enabled Azure DevOps organizations (workspace selection UI).
-- `POST /api/auth/login` accepts a selected organization, validates the submitted PAT against that org, and stores the org as the session's `activeWorkspaceId`.
-- Each enabled organization maps to a row in `workspaces` with a designated owner and optional team members.
-- In **single-org mode**, one org with one owner is seeded at startup via `BOOTSTRAP_OWNER_EMAIL` and `BOOTSTRAP_OWNER_AZURE_ORG`.
-- In **multi-org mode**, multiple orgs are seeded via `BOOTSTRAP_AZURE_ORGS` (comma-separated `orgUrl|ownerEmail` entries), each with its own owner. Login shows an org selector; the user picks or types an org, signs in with a PAT for that org, and the session becomes bound to that org.
-- Successful login provisions or updates the user, ensures workspace membership, stores the user's PAT encrypted, and creates an opaque session cookie.
+- `GET /api/auth/organizations` lists enabled Azure DevOps organizations, while `GET /api/auth/jira/sites` lists enabled Jira Cloud sites for workspace selection.
+- `POST /api/auth/login` validates an Azure DevOps PAT for the selected organization; `POST /api/auth/jira/login` validates a Jira API token for the selected site.
+- `/api/auth/jira/start` and `/api/auth/jira/callback` implement the optional Atlassian OAuth sign-in flow.
+- Each enabled organization or site maps to a row in `workspaces` with a provider id, designated owner, and optional team members.
+- In **single-provider mode**, one workspace is seeded at startup via the Azure bootstrap variables or `BOOTSTRAP_JIRA_SITES` for Jira Cloud.
+- Azure multi-org deployments seed multiple organizations via `BOOTSTRAP_AZURE_ORGS` (`orgUrl|ownerEmail` entries), each with its own owner.
+- Jira deployments seed sites via `BOOTSTRAP_JIRA_SITES` (`siteUrl|ownerEmail` entries); unconfigured Jira sites cannot be created by first login.
+- Provider-aware login validates credentials against the selected workspace, provisions or updates the user, ensures workspace membership, stores provider credentials encrypted, and creates an opaque session cookie.
 - Session tokens are hashed in PostgreSQL; the raw token exists only in the browser cookie.
-- The session table now tracks `active_workspace_id`, making workspace resolution org-scoped.
+- The session table now tracks `active_workspace_id`, making workspace resolution provider/workspace-scoped.
 
 Workspace resolution is centralized in `src/modules/credentials/scoped-resolution.service.ts`, `src/modules/workspace`, and `src/modules/auth/session.service.ts`:
 
 - All workspace-scoped API routes use the authenticated session's `activeWorkspaceId` as the primary workspace reference.
-- `resolveActiveWorkspaceForUser` checks that the user is still a member of the active org.
-- Org enable/disable is reversible: `npm run org:disable -- <orgUrl>` and `npm run org:enable -- <orgUrl>` soft-disable/enable workspaces without deleting any data.
+- `resolveActiveWorkspaceForUser` checks that the user is still a member of the active workspace.
+- Workspace enable/disable is reversible: `npm run org:disable -- <orgUrl>` and `npm run org:enable -- <orgUrl>` soft-disable/enable workspaces without deleting any data.
 
 Project isolation is mandatory:
 
 - The browser can submit a candidate `ProjectScope`, but route handlers must resolve a trusted scope for the authenticated workspace.
 - `src/modules/projects/workspace-projects.service.ts` owns project anchors and trusted project resolution.
-- Project-scoped Azure DevOps adapters must be created with the trusted scope so by-ID work item reads/writes are checked against the item's real `System.TeamProject`.
-- Feature rows include workspace/project ownership columns and must never rely on client-supplied Azure project fields for authorization decisions.
+- Project-scoped provider adapters must be created with the trusted scope so work-item reads/writes are checked against the provider's real project identity.
+- Feature rows include workspace/project ownership columns and must never rely on client-supplied provider project fields for authorization decisions.
 
 ## Core Workflows
 
 Settings and workspace administration:
 
 - `/settings` manages private user credentials and workspace-wide options.
-- `/api/settings/credentials` stores encrypted Azure DevOps and LLM credentials for the current user/workspace.
+- `/api/settings/credentials` stores encrypted provider and LLM credentials for the current user/workspace.
+- `/api/integrations/jira` manages Jira connection state, visible projects, mappings, sync/conflict actions, and the selected test-artifact backend.
 - `/api/settings/llm-models` lists provider models where supported.
 - `/api/workspace/*` manages members, workspace settings, sync credentials, sync schedules, sync requests, and job status.
 
 Authentication:
 
-- `/login` signs users into enabled Azure DevOps organizations; the org selector is populated by `GET /api/auth/organizations`.
-- `/api/auth/organizations` lists enabled orgs for the login picker.
-- `/api/auth/login` validates PATs for the selected org, stores encrypted credentials, and creates a session with `active_workspace_id`.
+- `/login` signs users into enabled Azure DevOps organizations or Jira Cloud sites; provider selectors are populated by the corresponding auth routes.
+- `/api/auth/organizations` and `/api/auth/jira/sites` list enabled workspaces for the login picker.
+- `/api/auth/login` and `/api/auth/jira/login` validate provider credentials, store encrypted credentials, and create a session with `active_workspace_id`.
 - `/api/auth/session` reports the current authentication state.
 
 Project selection:
 
-- `/api/azure-devops/projects` lists projects through a user org-level Azure DevOps adapter.
-- `/api/azure-devops/project/select` verifies selection and persists a workspace project anchor.
+- `/api/azure-devops/projects` remains the compatibility project-list path and resolves the active workspace provider, including Jira project ids/keys when the workspace uses Jira.
+- `/api/azure-devops/project/select` verifies selection and persists a workspace project anchor; Jira Settings uses `/api/integrations/jira` for project selection and mapping.
 - The topbar uses the selected anchor as the active project scope for project-scoped workflows.
+
+Jira Cloud integration:
+
+- `src/modules/auth/jira-token-auth.service.ts`, `jira-oauth.ts`, and `jira-provisioning.service.ts` own API-token, OAuth, and bootstrap identity handling.
+- `src/modules/integrations/jira-cloud/` owns the Jira adapter, HTTP client, reconciliation, polling runtime, and provider-specific errors.
+- `src/modules/projects/jira-project-mapping.service.ts` persists visible-project mappings and provider project identity.
+- Plain Jira, Xray Cloud, and Zephyr Scale Cloud are project-selected artifact backends; a Jira project uses one backend at a time.
 
 Dashboards:
 
 - `/dashboards` renders project-scoped QA leadership analytics.
-- `/api/dashboard/analytics`, `/api/dashboard/my-workbench`, and `/api/dashboard/system-analytics` aggregate Azure DevOps test results, defects, coverage, blockers, readiness, workflow history, and user/workbench metrics.
+- `/api/dashboard/analytics`, `/api/dashboard/my-workbench`, and `/api/dashboard/system-analytics` aggregate provider work-management data, Azure DevOps test results where available, coverage, blockers, readiness, workflow history, and user/workbench metrics.
 - Dashboard services live under `src/modules/dashboard` and `src/modules/analytics`.
 
 Knowledge Hub and RAG:
 
-- `/knowledge-hub` indexes filtered Azure DevOps work items, compiles project knowledge, and exports a Markdown wiki.
+- `/knowledge-hub` indexes filtered work items from the active provider, compiles project knowledge, and exports a Markdown wiki.
 - Workspace owners and admins can upload PDF, DOCX, XLSX, CSV, TXT, Markdown, PNG, JPEG, and WebP sources within the active project scope. Uploads are isolated per file, and the dedicated document-ingest lane isolates sibling job failures. PNG/JPEG/WebP parsing runs local Tesseract with bundled, preflight-verified English and Arabic model data; no model is downloaded and no source image leaves the worker. Decoded images are capped by `OCR_MAX_IMAGE_PIXELS` (default `40000000`), regions below `OCR_MIN_CONFIDENCE` (default `50`) are excluded, and recognition is bounded by `OCR_RECOGNIZE_TIMEOUT_MS` (default `120000`) while status, warnings, and rejected counts remain available. No accepted text produces a successful zero-chunk version.
 - OCR chunks retain engine/version, language, confidence, region identity, and `{x0,y0,x1,y1}` source-image provenance. They reuse the existing project-scoped document/version/chunk persistence, permission checks, archive/reprocess replacement, hybrid retrieval, and citation source identity.
 - `/api/context/index`, `/api/context/status`, and `/api/context/suggestions` manage project context indexing and retrieval.
@@ -199,38 +216,38 @@ Business Owner Assistant:
 
 Requirements Analysis:
 
-- `/requirements-analysis` analyzes a real Azure DevOps requirement.
+- `/requirements-analysis` analyzes a real requirement from the active work-management provider.
 - `/api/requirement-analysis/run`, `/comment`, and `/manual/*` fetch target data, resolve context, call or validate LLM output, and publish reviewed comments.
 - Service, schema, comment, and prompt logic live under `src/modules/requirement-analysis`.
 
 Test Case Design:
 
 - `/test-case-design` and `/test-cases/new` generate editable test cases.
-- `/api/test-cases/generate`, `/api/test-cases/manual/*`, and `/api/publish/test-cases` prepare, validate, and publish reviewed Azure Test Case work items.
+- `/api/test-cases/generate`, `/api/test-cases/manual/*`, and `/api/publish/test-cases` prepare, validate, and publish reviewed test cases through Azure Test Plans or the configured Jira artifact backend.
 - Service, schema, and generation logic live under `src/modules/test-case-design`.
 
 Test Gap Analysis:
 
-- `/test-gap-analysis` compares requirement details to linked Azure DevOps test cases and creates selected additions.
+- `/test-gap-analysis` compares requirement details to linked provider test cases and creates selected additions where the active provider supports them.
 - `/api/existing-test-case-review/*` runs automatic/manual review.
 - `/api/test-coverage-matrix/suggested-additions/publish` creates selected Azure Test Case additions and links them to the user story.
 - Service, prompt, and schema code live under `src/modules/existing-test-case-review`.
 
 Bug Reporting:
 
-- `/report-bug` converts QA notes into reviewed Azure DevOps Bug work items.
+- `/report-bug` converts QA notes into reviewed bugs through the active work-management provider.
 - `/api/bugs/generate`, `/metadata`, `/post`, `/manual/*`, and `/reproduction-test-case/publish` generate, validate, and publish bug reports and optional reproduction test cases.
 - Service and schemas live under `src/modules/bug-reporting`.
 
 Suite Migration:
 
-- `/suite-migration` previews and runs same-project Azure Test Suite copy/move operations.
+- `/suite-migration` previews and runs same-project Azure Test Suite copy/move operations where Azure Test Plans are available.
 - `/api/test-suite-migration/tree`, `/preview`, and `/execute` load suite trees, build dry-run plans, and execute confirmed migrations.
 - `src/modules/test-suite-migration` owns selection normalization, recursive hierarchy planning, outcome mapping, guarded move deletion, and migration reporting.
 
 Bulk Task Creation:
 
-- `/bulk-task-creation` creates multiple Azure DevOps Tasks under selected User Stories.
+- `/bulk-task-creation` creates multiple provider tasks under selected provider User Stories.
 - `/api/azure-devops/bulk-tasks` owns the write path through the Azure DevOps bulk task service.
 
 Activity and audit:
@@ -248,13 +265,16 @@ Work and test management providers:
 - Azure DevOps compatibility interface: `src/modules/integrations/azure-devops/azure-devops-adapter.ts`.
 - Azure DevOps REST implementation: `src/modules/integrations/azure-devops/azure-devops-client.ts`.
 - Azure DevOps mapping: `src/modules/integrations/azure-devops/azure-devops-mapper.ts`.
+- Jira Cloud adapter, descriptor, HTTP client, reconciliation, and sync runtime: `src/modules/integrations/jira-cloud/`.
+- Jira artifact backends: `plain-jira-artifact-backend.ts`, `xray-cloud-backend.ts`, and `zephyr-scale-backend.ts` under `src/modules/integrations/jira-cloud/`.
 - Workflow-specific services handle comments, linked test cases, test plan publishing, suite migration, bulk task creation, metadata, and user/project reads.
-- Azure DevOps is the only registered provider today. `workspaces.provider_id` and `projects.provider_id` default to `azure-devops` so provider resolution is explicit without changing current behavior.
+- Azure DevOps and Jira Cloud are registered providers. `workspaces.provider_id` and `projects.provider_id` default to `azure-devops` so existing deployments remain compatible while provider resolution is explicit.
 - `src/modules/integrations/core` must not import provider-specific packages. Provider packages may import core contracts; `provider-registry.ts` is the composition point for workflow and worker provider construction.
-- Login PAT validation remains a documented exception: `pat-auth-provider.ts` is already behind the `AuthProvider` port and constructs the Azure DevOps client directly until non-Azure auth is introduced.
+- Azure login PAT validation remains a documented exception: `pat-auth-provider.ts` is already behind the `AuthProvider` port and constructs the Azure DevOps client directly. Jira token and OAuth login use `jira-token-auth.service.ts`, `jira-oauth.ts`, and `jira-provisioning.service.ts`.
 - Azure-branded routes, result fields, and accessor names remain compatibility contracts until a separate migration is planned.
 - Use org-level adapters only for org-wide reads such as profile, project list, and connection validation.
 - Use project-scoped adapters for project data and writes.
+- Jira synchronization is worker-backed and durable: `workspace-sync.handler.ts` dispatches Jira reconciliation through `jira-sync-runtime.service.ts`.
 - Provider architecture details are documented in `docs/integration-providers.md`.
 
 LLM providers:
@@ -283,6 +303,7 @@ The worker entrypoint is `src/worker/main.ts`.
 - Job handlers are registered in `src/modules/jobs/register-handlers.ts`.
 - The queue is implemented in `src/modules/jobs/job-queue.service.ts`.
 - Scheduled workspace sync is implemented in `src/modules/jobs/sync-schedule.service.ts` and `workspace-sync.handler.ts`.
+- Jira project reconciliation and polling sync run through the same workspace-sync job path and `src/modules/integrations/jira-cloud/jira-sync-runtime.service.ts`.
 - Background processes register capabilities in `worker_instances` and heartbeat with PostgreSQL time. Automatic Knowledge Hub builds are rejected before enqueue when no healthy `project_knowledge_build` capability is available.
 - Only automatic AI knowledge compilation uses the Knowledge Hub queue. Project indexing, external-LLM finalization, conflict decisions, and publication execute as normal server requests.
 - The worker runs two execution lanes: a Knowledge Hub dispatcher that claims every ready `project_knowledge_build` job and runs those builds concurrently (no process-wide cap; one active build per project is enforced by the queue dedupe key), and a serial lane that processes workspace sync and all other job types one at a time.
@@ -295,19 +316,20 @@ Multiple worker processes may run against the same database. A job should be wri
 ## Current Architecture Decisions
 
 - iTestFlow is a hosted workspace app, not a single-user local settings file app.
-- Multi-org is a first-class deployment mode: each Azure DevOps organization has its own workspace, owner, and member list. Session-scoped `active_workspace_id` drives all workspace resolution.
+- Provider workspaces are first-class: each Azure DevOps organization or Jira Cloud site has its own workspace, owner, and member list. Session-scoped `active_workspace_id` drives all workspace resolution.
 - PostgreSQL is the only durable data store.
 - All browser-to-provider access flows through server-side API routes.
-- User Azure DevOps and LLM credentials are private per user/workspace and encrypted before persistence.
+- User provider and LLM credentials are private per user/workspace and encrypted before persistence.
 - Shared project context, compiled knowledge, dashboards, jobs, audit logs, and workflow history are workspace scoped.
-- Azure DevOps is the first implementation behind generic work-management and test-management provider contracts, not a standalone bulk work-item browser.
-- Provider identity is persisted per workspace and project, but no provider selection UI exists yet.
+- Azure DevOps and Jira Cloud are registered behind generic work-management and test-management provider contracts, not as standalone bulk work-item browsers.
+- Provider identity is persisted per workspace and project, and provider/site selection is explicit at login and project onboarding.
+- Jira test artifacts use one selected project backend—Plain Jira, Xray Cloud, or Zephyr Scale Cloud—rather than pretending Jira provides Azure-style test plans.
 - Project Context/Knowledge Hub is the only place that intentionally fetches many work items, and it does so with filters.
 - Same-id knowledge entries merge by default (longer wording and unioned evidence); only provable atomic value contradictions keep both entries and block as hard conflicts. Full rebuilds extract purely from sources without published-KB re-feed, while incremental builds reconcile changed sources.
 - Workflows usually operate on one selected project and one target work item ID.
-- All project-scoped Azure DevOps access must be resolved through trusted workspace/project scope before reading or writing.
+- All project-scoped provider access must be resolved through trusted workspace/project scope before reading or writing.
 - Server route handlers should stay thin and delegate validation, integration calls, and business rules to modules.
-- UI components should not call Azure DevOps or LLM providers directly.
+- UI components should not call Azure DevOps, Jira Cloud, artifact backends, or LLM providers directly.
 - New navigation items should represent user workflows, not technical resources.
 
 ## Maintenance Rules
@@ -317,7 +339,7 @@ Update this document when you:
 - Add, remove, or rename a page route or API route.
 - Add a new domain module under `src/modules`.
 - Change how sessions, credentials, workspace settings, project scope, audit logs, jobs, or indexed context are stored.
-- Add or remove an Azure DevOps or LLM integration capability.
+- Add or remove a provider or LLM integration capability.
 - Change worker behavior, job types, lock/retry behavior, or scheduler behavior.
 - Move active UI ownership between `src/components` and `src/shared`.
 - Make an architecture decision that future development should follow.

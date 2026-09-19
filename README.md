@@ -5,10 +5,10 @@
 </p>
 
 <p align="center">
-Workspace-scoped test intelligence for Azure DevOps, grounded in project knowledge and controlled by human review.
+Workspace-scoped test intelligence for Azure DevOps and Jira Cloud, grounded in project knowledge and controlled by human review.
 </p>
 
-iTestFlow brings requirement analysis, test design, coverage review, defect reporting, and test-suite operations into authenticated QA workspaces. It connects to real Azure DevOps and LLM provider APIs while keeping credentials, indexed context, audit history, jobs, and workflow records in PostgreSQL.
+iTestFlow brings requirement analysis, test design, coverage review, defect reporting, and test-suite operations into authenticated QA workspaces. It connects to Azure DevOps, Jira Cloud, Jira test-artifact backends, and LLM provider APIs while keeping credentials, indexed context, audit history, jobs, and workflow records in PostgreSQL.
 
 ## Contents
 
@@ -25,12 +25,12 @@ iTestFlow brings requirement analysis, test design, coverage review, defect repo
 ## Architecture
 
 <p align="center">
-  <img src="public/brand/itestflow-architecture-hosted.png" alt="iTestFlow hosted multi-user workspace architecture and AI-powered software testing lifecycle" width="1200" />
+  <img src="public/brand/itestflow-architecture-hosted.png" alt="iTestFlow hosted multi-provider workspace architecture and AI-powered software testing lifecycle" width="1200" />
 </p>
 
-The browser communicates only with Next.js API routes. Server-side domain modules own workflow logic, PostgreSQL access, Azure DevOps calls, LLM provider calls, workspace authorization, and project isolation.
+The browser communicates only with Next.js API routes. Server-side domain modules own workflow logic, PostgreSQL access, Azure DevOps and Jira Cloud calls, Jira test-artifact publishing, LLM provider calls, workspace authorization, and project isolation.
 
-**Multi-org Support**: iTestFlow supports both single-org and multi-org deployments. In multi-org mode, each Azure DevOps organization has its own owner and workspace isolation. Users sign in, select an org from the login screen, and the session becomes org-scoped. Each org is independently manageable and can be enabled/disabled without data loss.
+**Multi-provider workspace support**: iTestFlow supports single-provider workspaces for Azure DevOps organizations and Jira Cloud sites. Each configured organization or site has its own owner and workspace isolation. Users select the provider workspace at login, and the session becomes workspace-scoped. Each workspace is independently manageable and can be enabled/disabled without data loss.
 
 For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md).
 
@@ -38,18 +38,24 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 
 ### Knowledge and Context
 
-- **Knowledge Hub** indexes filtered Azure DevOps work items, builds compiled project knowledge, monitors knowledge health, and exports a Markdown wiki.
+- **Knowledge Hub** indexes filtered work items from the active provider, builds compiled project knowledge, monitors knowledge health, and exports a Markdown wiki.
 - **Business Owner Assistant** answers questions using retrieved project context and saved knowledge, with source citations.
 - **Automatic context selection** grounds supported AI workflows in relevant project information.
 - **Scheduled context updates** can refresh a configured project scope using a cron expression.
 
 ### Testing Lifecycle
 
-- **Requirements Analysis** finds ambiguities, risks, omissions, and testability concerns, then publishes reviewed comments to Azure DevOps.
-- **Test Case Design** generates editable positive, negative, boundary, and edge-case scenarios and publishes approved cases to Azure Test Plans.
-- **Test Gap Analysis** maps requirement details and acceptance criteria to linked test cases, identifies missing coverage, and creates selected additions.
+- **Requirements Analysis** finds ambiguities, risks, omissions, and testability concerns, then publishes reviewed comments through the active work-management provider.
+- **Test Case Design** generates editable positive, negative, boundary, and edge-case scenarios and publishes approved cases to Azure Test Plans or the configured Jira artifact backend.
+- **Test Gap Analysis** maps requirement details and acceptance criteria to linked test artifacts where supported, identifies missing coverage, and creates selected additions.
 - **Test Execution** expands an Azure Test Suite tree and executes its Test Plan steps through a bounded Playwright MCP agent. Results and trace artifacts remain in iTestFlow for review until a user explicitly publishes outcomes to Azure DevOps.
-- **Report Bug** converts QA notes into reviewed Azure DevOps Bug work items with fields, relationships, and attachments.
+- **Report Bug** converts QA notes into reviewed bugs through the active work-management provider with fields, relationships, and attachments.
+
+### Jira Cloud Integration
+
+- **Jira Cloud Sign-in** supports Atlassian API tokens and optional Atlassian OAuth for configured Jira sites.
+- **Jira Work Management** supports visible project selection, provider-aware issue workflows, polling synchronization, field/status mappings, durable conflict resolution, and traceability.
+- **Jira Test Artifacts** publishes reviewed test cases through one selected project backend: Plain Jira, Xray Cloud, or Zephyr Scale Cloud.
 
 ### Utilities and Governance
 
@@ -57,8 +63,8 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 - **Bulk Task Creation** defines multiple Azure DevOps Tasks once and creates each task under every selected User Story.
 - **Dashboards** combine current Azure Test Plan outcomes, bugs, requirement-to-test coverage, release blockers, and live execution/defect history into a project-scoped QA leadership view.
 - **Activity Log** provides a traceable history of generated outputs, publishing operations, and user actions.
-- **Human review gates** keep AI-generated analysis and artifacts editable before any Azure DevOps write.
-- **Project isolation** validates Azure DevOps resources against the active project before project-scoped reads or writes.
+- **Human review gates** keep AI-generated analysis and artifacts editable before any external-provider write.
+- **Project isolation** validates provider resources against the active project before project-scoped reads or writes.
 
 ## Quick Start
 
@@ -67,9 +73,10 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 - Node.js 24 or newer
 - npm
 - PostgreSQL 16, either from `docker compose up -d postgres` or a native/server instance
-- An Azure DevOps organization URL, such as `https://dev.azure.com/YOUR_ORG`
-- An Azure DevOps Personal Access Token with the permissions needed for work items, comments, Test Plans, Test Suites, test cases, and links
+- An enabled work-management provider: Azure DevOps (organization URL and PAT) or Jira Cloud (site and API token/OAuth)
+- Azure DevOps permissions for work items, comments, Test Plans, Test Suites, test cases, and links when Azure workflows are enabled
 - One LLM provider: OpenAI, Gemini, or Anthropic
+- Optional Jira Cloud site and API-token or Atlassian OAuth configuration when enabling Jira Cloud
 
 ### Install and Run
 
@@ -91,9 +98,9 @@ BOOTSTRAP_AZURE_ORGS=https://dev.azure.com/org-a|admin@company.com, https://dev.
 **Jira Cloud sign-in** (optional provider): users sign in with their Atlassian account email and API token — no OAuth app or public origin is needed for token sign-in, and Atlassian OAuth is available as an optional second method. A fresh Jira Cloud deployment must set `BOOTSTRAP_JIRA_SITES` with an owner email (comma-separated `siteUrl|ownerEmail`, e.g. `mysite|admin@company.com`) so seeded sites appear in the login picker with their declared owners; only an upgrade whose database already carries an active jira-cloud workspace may omit bootstrap. `BOOTSTRAP_ENABLED_PROVIDERS` controls which providers the login page offers (unset auto-detects). See [docs/jira-cloud.md](docs/jira-cloud.md).
 
 After starting:
-1. Visit [Login](http://127.0.0.1:3000/login) and select an organization (or enter one by URL).
-2. Sign in with a PAT for that organization.
-3. Add personal LLM credentials in Settings if needed.
+1. Visit [Login](http://127.0.0.1:3000/login) and select an enabled Azure DevOps organization or Jira Cloud site.
+2. Sign in with the matching provider credentials: an Azure PAT, Jira API token, or Atlassian OAuth.
+3. Add or verify private provider and LLM credentials in Settings if needed.
 4. Select a project from the top bar.
 5. Open [Dashboards](http://127.0.0.1:3000/dashboards).
 
@@ -125,6 +132,7 @@ These links work while the local development or production server is running on 
 The recommended setup path is [http://127.0.0.1:3000/login](http://127.0.0.1:3000/login), followed by [Settings](http://127.0.0.1:3000/settings). In hosted mode, each user configures private credentials from Settings:
 
 - Azure DevOps organization URL and Personal Access Token
+- Jira Cloud API-token connection or Atlassian OAuth reconnect when the active workspace uses Jira Cloud
 - LLM provider and model
 - Provider API key
 - Maximum output token cap and transient-failure retry count
@@ -133,7 +141,7 @@ The recommended setup path is [http://127.0.0.1:3000/login](http://127.0.0.1:300
 - Project-context retrieval count
 - Optional automatic context-update schedule and filters owned by the workspace
 
-Models are loaded from the selected provider's model-list API where supported. The top bar displays the authenticated Azure DevOps profile and lets you choose the active project; the server persists and verifies the project row before project-scoped API routes can use it.
+Models are loaded from the selected provider's model-list API where supported. The top bar displays the authenticated provider profile and lets you choose the active project; the server persists and verifies the project row before project-scoped API routes can use it.
 
 ### Environment
 
@@ -196,11 +204,19 @@ npm run org:enable -- <orgUrlOrName>  # to re-enable later
 
 **Note**: Org selection happens at login and becomes the session's active workspace. Users can sign out and sign in to a different org if they have credentials for multiple orgs.
 
+### Jira Cloud Mode
+
+1. Set `APP_ENCRYPTION_KEY` and `BOOTSTRAP_JIRA_SITES` for fresh site workspaces, then run migrations and start the app.
+2. Select the configured Jira site at `/login` and sign in with an API token or Atlassian OAuth.
+3. Add the visible Jira project from Settings or the top bar, then configure polling sync and one test-artifact backend when needed.
+4. Use Knowledge Hub and the supported QA workflows; Jira sync status, mappings, conflicts, trace links, and backend settings remain workspace/project scoped.
+5. Follow [docs/jira-cloud.md](docs/jira-cloud.md) for token scopes, OAuth, recovery, URL renames, and rollback.
+
 ## Data and Security
 
-- User Azure DevOps and LLM credentials are encrypted with AES-256-GCM using `APP_ENCRYPTION_KEY`.
+- User Azure DevOps or Jira Cloud and LLM credentials are encrypted with AES-256-GCM using `APP_ENCRYPTION_KEY`.
 - Workspace data, project anchors, indexed context, knowledge, audit records, workflow analytics, and jobs are stored in PostgreSQL.
-- Azure DevOps and LLM requests are made server-side; credentials are not sent directly from browser components to external providers.
+- Azure DevOps, Jira Cloud, Jira test-artifact backend, and LLM requests are made server-side; credentials are not sent directly from browser components to external providers.
 - Project selection is persisted server-side and project-scoped API routes resolve a trusted workspace/project scope before reading or writing.
 - Background workers heartbeat running jobs and stale worker locks are requeued automatically.
 - Playwright MCP bearer tokens are encrypted at rest. Browser tool calls use a fixed allowlist, exclude `browser_run_code_unsafe`, run each test case in an isolated MCP session, and never retry a whole browser run.

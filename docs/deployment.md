@@ -79,7 +79,7 @@ Store `APP_ENCRYPTION_KEY` outside the database. Without the same key, encrypted
 
 Each user stores private credentials in Settings:
 
-- Azure DevOps PAT
+- Azure DevOps PAT for Azure workspaces, or a Jira API-token/OAuth connection for Jira workspaces
 - LLM provider
 - LLM model
 - LLM API key
@@ -95,7 +95,7 @@ Owners/admins manage workspace-level settings:
 - Workspace sync credential
 - Workspace sync schedule and filters
 
-Interactive actions use the current user's Azure DevOps PAT and LLM key. Scheduled sync uses the workspace sync credential because no user is present.
+Interactive actions use the current user's active-workspace provider connection and LLM key. Scheduled sync uses the workspace's designated provider sync credential because no user is present.
 
 ## First Run
 
@@ -182,9 +182,9 @@ These operations are reversible and preserve all workspace data, user records, p
 
 ## Credentials And Data Model
 
-- Private per user/workspace: Azure DevOps PAT, LLM provider/model/base URL, and LLM API key.
+- Private per user/workspace: Azure DevOps PAT or Jira API-token/OAuth connection, LLM provider/model/base URL, and LLM API key.
 - Shared per workspace: project anchors, synced project context, compiled knowledge, dashboards, workflow analytics, activity logs, audit logs, jobs, workspace settings, and member records.
-- Workspace sync credential: encrypted service/admin PAT used by the worker for scheduled sync.
+- Workspace sync credential: encrypted provider service/admin credential used by the worker for scheduled sync.
 - Sessions: opaque cookie token in the browser, SHA-256 token hash in PostgreSQL.
 - Secrets are never returned to the frontend in plain text and should be redacted from logs.
 
