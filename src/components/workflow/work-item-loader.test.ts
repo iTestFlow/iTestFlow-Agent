@@ -51,13 +51,13 @@ describe("useWorkItemLookup", () => {
     postJsonMock.mockReset();
   });
 
-  it("flags a non-numeric ID immediately and never fetches", async () => {
+  it("flags a malformed work item reference immediately and never fetches", async () => {
     vi.useFakeTimers();
-    const { result } = renderLookup({ scope: projectScope(), workItemId: "12a" });
+    const { result } = renderLookup({ scope: projectScope(), workItemId: "12 a" });
     // No debounce for validation: the error is set synchronously by the effect.
     expect(result.current).toEqual({
       loading: false,
-      error: "Enter a valid numeric work item ID.",
+      error: "Enter a valid work item ID or Jira key.",
       data: null,
     });
 
@@ -65,14 +65,29 @@ describe("useWorkItemLookup", () => {
     expect(postJsonMock).not.toHaveBeenCalled();
   });
 
-  it("uses the caller's invalidIdMessage for non-numeric input", () => {
+  it("uses the caller's invalidIdMessage for malformed input", () => {
     vi.useFakeTimers();
     const { result } = renderLookup({
       scope: projectScope(),
-      workItemId: "abc",
+      workItemId: "abc def",
       invalidIdMessage: "Numbers only.",
     });
     expect(result.current.error).toBe("Numbers only.");
+  });
+
+  it("accepts a Jira issue key and sends it unchanged to the provider-aware lookup", async () => {
+    vi.useFakeTimers();
+    const scope = projectScope();
+    postJsonMock.mockResolvedValue({ workItem: workItem("PAY-123") });
+    const { result } = renderLookup({ scope, workItemId: "PAY-123" });
+
+    await act(async () => vi.advanceTimersByTimeAsync(700));
+
+    expect(postJsonMock).toHaveBeenCalledWith("/api/azure-devops/work-item-details", {
+      scope,
+      workItemId: "PAY-123",
+    });
+    expect(result.current.data).toEqual(workItem("PAY-123"));
   });
 
   it("stays idle without fetching when input is blank, scope is null, or enabled is false", async () => {

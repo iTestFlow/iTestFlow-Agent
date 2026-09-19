@@ -9,7 +9,7 @@ import type { ActiveProjectScope } from "@/shared/lib/active-project";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 
 /**
- * Shared Azure DevOps work-item lookup: a debounced "load by ID" hook plus a
+ * Shared provider-aware work-item lookup: a debounced "load by ID" hook plus a
  * drop-in preview component built on {@link WorkItemSummaryCard}. Extracted so
  * the workflow clients (Requirement Analysis, Test Case Design, Test Coverage
  * Matrix) get the same "confirm the entered ID" affordance that Create Bug already
@@ -20,10 +20,10 @@ import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 const WORK_ITEM_LOOKUP_DEBOUNCE_MS = 700;
 
 /** Shared title for the work-item ID inputs in the workflow clients. */
-export const WORK_ITEM_ID_TITLE = "Work Item ID";
+export const WORK_ITEM_ID_TITLE = "Work Item ID or Jira Key";
 
 /** Shared placeholder for the work-item ID inputs in the workflow clients. */
-export const WORK_ITEM_ID_PLACEHOLDER = "e.g. 123456";
+export const WORK_ITEM_ID_PLACEHOLDER = "e.g. 123456 or PAY-123";
 
 /** Structural superset of {@link WorkItemSummary} mirroring /work-item-details. */
 export type LoadedWorkItem = WorkItemSummary & {
@@ -37,7 +37,7 @@ export function useWorkItemLookup({
   workItemId,
   debounceMs = WORK_ITEM_LOOKUP_DEBOUNCE_MS,
   errorMessage = "Work item lookup failed.",
-  invalidIdMessage = "Enter a valid numeric work item ID.",
+  invalidIdMessage = "Enter a valid work item ID or Jira key.",
   enabled = true,
 }: {
   scope: ActiveProjectScope | null;
@@ -56,7 +56,7 @@ export function useWorkItemLookup({
       setState({ loading: false, error: null, data: null });
       return;
     }
-    if (!/^\d+$/.test(trimmed)) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(trimmed)) {
       setState({ loading: false, error: invalidIdMessage, data: null });
       return;
     }

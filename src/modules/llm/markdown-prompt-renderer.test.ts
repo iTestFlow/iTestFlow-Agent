@@ -305,6 +305,49 @@ describe("buildRequirementAnalysisMarkdownPrompt", () => {
       "# Required JSON Output",
     ]);
   });
+
+  it("adds selected story attachment text after saved knowledge and keeps it within the remaining model budget", () => {
+    const attachmentText = "The customer must confirm the payment amount before the card is charged. ".repeat(80);
+    const maxInputTokens = 1_000;
+    const result = buildRequirementAnalysisMarkdownPrompt({
+      currentProject,
+      targetRequirement,
+      outputContract,
+      maxInputTokens,
+      storyAttachments: [
+        {
+          id: "attachment-payment-spec",
+          fileName: "payment-design.pdf",
+          mimeType: "application/pdf",
+          text: attachmentText,
+          visualCount: 2,
+        },
+        {
+          id: "attachment-release-notes",
+          fileName: "release-notes.txt",
+          mimeType: "text/plain",
+          text: "The confirmation flow must preserve the selected payment method.",
+        },
+      ],
+    });
+    const { prompt } = result;
+
+    expectOrdered(prompt, ["# Saved Project Knowledge", "# Story Attachments", "# Required JSON Output"]);
+    expect(prompt).toContain("## payment-design.pdf");
+    expect(prompt).toContain("- Attachment ID: attachment-payment-spec");
+    expect(prompt).toContain("- 2 related visual");
+    expect(prompt).toContain("The customer must confirm the payment amount");
+    expect(prompt).toContain("[Attachment text truncated to fit the model context window.]");
+    expect(prompt).not.toContain("The confirmation flow must preserve the selected payment method.");
+    expect(estimateTokens(prompt)).toBeLessThanOrEqual(usableInputTokens(maxInputTokens));
+    expect(result).toMatchObject({
+      includedStoryAttachmentTextIds: ["attachment-payment-spec"],
+      omittedStoryAttachmentTextIds: ["attachment-payment-spec", "attachment-release-notes"],
+      storyAttachmentWarnings: [
+        "Some selected attachment text was omitted to fit the model context window: payment-design.pdf, release-notes.txt.",
+      ],
+    });
+  });
 });
 
 describe("buildTestCaseGenerationMarkdownPrompt", () => {

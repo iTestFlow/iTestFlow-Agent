@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
     completeSession: vi.fn(), endSession: vi.fn(), startSession: vi.fn(),
     panel: null, shouldKeepPanelMounted: false,
   },
+  storyAttachmentProps: null as null | { onSelectedAttachmentIdsChange: (ids: string[]) => void },
+  externalLlmEnabled: false,
 }));
 vi.mock("@/components/workflow/post-json", () => ({ postJson: mocks.postJson }));
 vi.mock("@/components/navigation/unsaved-changes-provider", () => ({ useUnsavedChangesGuard: vi.fn() }));
@@ -26,13 +28,23 @@ vi.mock("@/components/workflow/llm-loading-games/use-llm-loading-game-session", 
     return mocks.loadingGame;
   },
 }));
-vi.mock("@/components/workflow/generation-mode-toggle", () => ({ GenerationModeToggle: () => null }));
+vi.mock("@/components/workflow/generation-mode-toggle", () => ({
+  GenerationModeToggle: ({ onChange }: { onChange: (mode: "manual") => void }) => (
+    <button type="button" onClick={() => onChange("manual")}>Use External LLM</button>
+  ),
+}));
 vi.mock("@/components/workflow/work-item-loader", () => ({
   WORK_ITEM_ID_PLACEHOLDER: "Enter work item ID", WORK_ITEM_ID_TITLE: "Work Item ID",
   WorkItemPreview: () => null, useWorkItemLookup: () => ({ data: null }),
 }));
+vi.mock("@/components/workflow/story-attachments-panel", () => ({
+  StoryAttachmentsPanel: (props: { onSelectedAttachmentIdsChange: (ids: string[]) => void }) => {
+    mocks.storyAttachmentProps = props;
+    return <button type="button" onClick={() => props.onSelectedAttachmentIdsChange(["attachment-1"])}>Use story attachment</button>;
+  },
+}));
 vi.mock("@/shared/lib/use-external-llm-availability", () => ({
-  useExternalLlmAvailability: () => ({ enabled: false }),
+  useExternalLlmAvailability: () => ({ enabled: mocks.externalLlmEnabled }),
 }));
 
 import { TestCaseDesignClient } from "./test-case-design-client";
@@ -62,6 +74,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.externalLlmEnabled = false;
   writeActiveProject(scope);
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
   mocks.generation.start.mockImplementation((request: (signal: AbortSignal) => Promise<unknown>) => request(new AbortController().signal));
@@ -150,4 +163,43 @@ it("rejects a recognized provider returned for the wrong workspace", async () =>
   expect(await screen.findByRole("button", { name: "Retry workspace lookup" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Publish 2" })).toBeDisabled();
   expect(screen.queryByText("Create requirement-based suite for this user story")).not.toBeInTheDocument();
+});
+
+it("sends selected story attachments with the generation request", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(session("azure-devops")));
+  render(<TestCaseDesignClient />);
+  fireEvent.change(screen.getByLabelText("Work Item ID"), { target: { value: "123" } });
+  fireEvent.click(screen.getByRole("button", { name: "Use story attachment" }));
+  fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+
+  await waitFor(() => expect(mocks.postJson).toHaveBeenCalledWith(
+    "/api/test-cases/generate",
+    expect.objectContaining({ targetWorkItemId: "123", attachmentIds: ["attachment-1"] }),
+    expect.any(AbortSignal),
+  ));
+});
+
+it("explains when copied manual prompts omit selected visual evidence", async () => {
+  mocks.externalLlmEnabled = true;
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(session("azure-devops")));
+  mocks.postJson.mockImplementation(async (url: string) => {
+    if (url === "/api/test-cases/manual/draft") {
+      return {
+        prompt: "Create test cases from this requirement.",
+        promptVersion: "2026-09-16",
+        contextCitations: [],
+        warnings: ["Visual attachment content is not embedded in copied prompts. To have an external LLM inspect it, upload the selected files to that external LLM as well."],
+      };
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  });
+
+  render(<TestCaseDesignClient />);
+  fireEvent.click(screen.getByRole("button", { name: "Use External LLM" }));
+  fireEvent.change(screen.getByLabelText("Work Item ID"), { target: { value: "123" } });
+  fireEvent.click(screen.getByRole("button", { name: "Prepare Prompt" }));
+
+  expect(await screen.findByText("Attachment context notice")).toBeInTheDocument();
+  expect(screen.getByText(/Visual attachment content is not embedded in copied prompts/)).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "External LLM prompt" })).toHaveValue("Create test cases from this requirement.");
 });

@@ -10,7 +10,9 @@ export const runtime = "nodejs";
 
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
-  workItemId: z.string().trim().regex(/^\d+$/, "Enter a valid numeric work item ID."),
+  // Azure uses numeric IDs while Jira Cloud also accepts issue keys such as PAY-123.
+  // Keep this endpoint name for backward compatibility with existing workflow clients.
+  workItemId: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/, "Enter a valid work item ID or Jira key."),
 });
 
 export async function POST(request: Request) {
@@ -57,7 +59,7 @@ function isWorkItemNotFound(error: unknown) {
 function friendlyWorkItemError(error: unknown) {
   const message = error instanceof Error ? error.message : "";
   if (message.includes("401") || message.includes("403")) {
-    return "Azure DevOps rejected the request. Check that your connection settings and permissions allow reading work items.";
+    return "The connected provider rejected the request. Check that your connection settings and permissions allow reading work items.";
   }
-  return "Could not load this work item from Azure DevOps. Check the ID, selected project, and connection settings.";
+  return "Could not load this work item from the connected provider. Check the ID, selected project, and connection settings.";
 }

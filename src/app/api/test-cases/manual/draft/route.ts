@@ -19,6 +19,9 @@ import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions"
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
+import { resolveWorkspaceProviderId } from "@/modules/integrations/provider-registry";
+import { storyAttachmentInputErrorResponse } from "@/app/api/story-attachments/story-attachment-route-helpers";
+import { loadSelectedStoryAttachmentWorkflowContext } from "@/modules/story-attachments/story-attachment-workflow-context";
 
 export const runtime = "nodejs";
 
@@ -26,6 +29,7 @@ const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   targetWorkItemId: z.string().min(1),
   selectedContextIds: z.array(z.string()).optional().default([]),
+  attachmentIds: z.array(z.string().trim().min(1)).max(20).optional().default([]),
   options: TestDesignOptionsRequestSchema.optional(),
   extraInstructions: z.string().max(EXTRA_INSTRUCTIONS_MAX_LENGTH, `Extra Instructions must be ${EXTRA_INSTRUCTIONS_MAX_LENGTH} characters or fewer.`).optional(),
 });
@@ -48,6 +52,17 @@ export async function POST(request: Request) {
     const targetRequirement = await adapter.fetchWorkItemById({
       projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
+    });
+    const attachmentContext = await loadSelectedStoryAttachmentWorkflowContext({
+      scope: {
+        workspaceId: ctx.workspace.id,
+        projectId: trustedScope.projectId,
+        providerId: resolveWorkspaceProviderId(ctx.workspace),
+        canonicalStoryId: canonicalStoryId(targetRequirement),
+        storyDisplayKey: targetRequirement.id.trim() || parsed.data.targetWorkItemId.trim(),
+      },
+      attachmentIds: parsed.data.attachmentIds,
+      includeVisuals: false,
     });
     const autoContext = await resolveWorkflowContextWithoutLLM({
       scope: trustedScope,
@@ -89,27 +104,45 @@ export async function POST(request: Request) {
       selectedContext: autoContext.selectedContext,
       projectKnowledgeBase: knowledgeContext.knowledgeBase,
       projectKnowledgeNotice: knowledgeContext.promptNotice,
+      storyAttachments: attachmentContext.promptAttachments,
       options,
       extraInstructions: parsed.data.extraInstructions,
     });
+    const includedAttachmentTextIds = new Set(draft.includedStoryAttachmentTextIds ?? []);
     const contextCitations = buildWorkflowContextCitations({
       resolvedContextUsed: autoContext.contextUsed,
       relevantProjectKnowledgeBase: draft.relevantProjectKnowledgeBase,
+      storyAttachments: attachmentContext.citationAttachments.filter((attachment) => includedAttachmentTextIds.has(attachment.id.trim())),
     });
+    const warnings = [knowledgeContext.promptNotice, ...attachmentContext.warnings, ...(draft.storyAttachmentWarnings ?? [])]
+      .filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0);
 
     return NextResponse.json({
       targetWorkItemId: parsed.data.targetWorkItemId,
       selectedContextIds: parsed.data.selectedContextIds,
+      attachmentIds: parsed.data.attachmentIds,
       resolvedContextUsed: autoContext.contextUsed,
       contextCitations,
       retrievalTopK: autoContext.retrievalTopK,
       options,
       ...draft,
-      warnings: knowledgeContext.promptNotice ? [knowledgeContext.promptNotice] : undefined,
+      warnings: warnings.length ? Array.from(new Set(warnings)) : undefined,
     });
   } catch (error) {
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
+    const attachmentResponse = storyAttachmentInputErrorResponse(error);
+    if (attachmentResponse) return attachmentResponse;
     return routeErrorResponse(error, { domain: "llm", status: 503, fallback: "External LLM test case prompt preparation failed." });
   }
+}
+
+function canonicalStoryId(targetRequirement: { id: string; raw?: unknown }) {
+  const raw = targetRequirement.raw;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const rawId = (raw as Record<string, unknown>).id;
+    if (typeof rawId === "string" && rawId.trim()) return rawId.trim();
+    if (typeof rawId === "number" && Number.isFinite(rawId)) return String(rawId);
+  }
+  return targetRequirement.id.trim();
 }

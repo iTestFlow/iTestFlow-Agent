@@ -15,6 +15,7 @@ export default function nextConfig(phase: string): NextConfig {
       "pg-connection-string",
       "@huggingface/transformers",
       "onnxruntime-node",
+      "@napi-rs/canvas",
       "pdfjs-dist",
       "mammoth",
       "xlsx",

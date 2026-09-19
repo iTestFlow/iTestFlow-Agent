@@ -190,6 +190,7 @@ export function JiraIntegrationSection() {
       ) : null}
       {tokenEnabled ? (
         <ConnectTokenForm
+          key={overview.connection.status}
           connectionStatus={overview.connection.status}
           busy={Boolean(busy)}
           error={connectError}
@@ -246,8 +247,6 @@ function ConnectTokenForm({ connectionStatus, busy, error, onConnect }: {
   const [open, setOpen] = useState(!connected);
   const [emailAddress, setEmailAddress] = useState("");
   const [apiToken, setApiToken] = useState("");
-
-  useEffect(() => { setOpen(connectionStatus !== "active"); }, [connectionStatus]);
 
   if (!open) {
     return <Button type="button" variant="outline" onClick={() => setOpen(true)}>Replace API token</Button>;

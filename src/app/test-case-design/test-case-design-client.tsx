@@ -18,6 +18,7 @@ import { WorkflowContextCitations } from "@/components/workflow/workflow-context
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
+import { StoryAttachmentsPanel } from "@/components/workflow/story-attachments-panel";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import {
   GeneratedTestCasesReview,
@@ -115,6 +116,7 @@ export function TestCaseDesignClient() {
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const externalLlmAvailability = useExternalLlmAvailability(scope?.workspaceId);
   const [extraInstructions, setExtraInstructions] = useState("");
+  const [selectedAttachmentIdsByTarget, setSelectedAttachmentIdsByTarget] = useState<Record<string, string[]>>({});
   const [state, setState] = useState<ApiState<TestCaseGenerationRunResult>>({ loading: false, error: null, data: null });
   const gen = useAiGeneration();
   const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
@@ -154,6 +156,7 @@ export function TestCaseDesignClient() {
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
+    setSelectedAttachmentIdsByTarget({});
   }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
   useEffect(() => {
     if (externalLlmAvailability.enabled || mode !== "manual") return;
@@ -181,6 +184,10 @@ export function TestCaseDesignClient() {
       (testDesignSettings.customMinCases ?? 0) <= (testDesignSettings.customMaxCases ?? 0));
   const testDesignOptionsValid = coverageFocusSelectionValid && customRangeValid;
   const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
+  const attachmentSelectionKey = scope && targetWorkItemId.trim()
+    ? `${scope.workspaceId ?? ""}:${scope.projectId}:${targetWorkItemId.trim()}`
+    : "";
+  const selectedAttachmentIds = attachmentSelectionKey ? selectedAttachmentIdsByTarget[attachmentSelectionKey] ?? [] : [];
   const selectedTestCases = useMemo(() => {
     const selectedIds = new Set(selectedTestCaseIds);
     return testCases.filter((testCase) => selectedIds.has(testCase.id));
@@ -222,6 +229,36 @@ export function TestCaseDesignClient() {
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
+  }
+
+  function resetForStoryAttachmentChange() {
+    manualOperationVersionRef.current += 1;
+    gen.cancel();
+    prep.cancel();
+    loadingGame.endSession();
+    setActiveStep("generate");
+    setState({ loading: false, error: null, data: null });
+    setTestCases([]);
+    setSelectedTestCaseIds([]);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitLoading(false);
+    setManualSubmitError(null);
+  }
+
+  function changeSelectedAttachmentIds(ids: string[]) {
+    if (!attachmentSelectionKey) return;
+    const nextIds = Array.from(new Set(ids));
+    const currentIds = selectedAttachmentIdsByTarget[attachmentSelectionKey] ?? [];
+    if (nextIds.length === currentIds.length && nextIds.every((id, index) => id === currentIds[index])) return;
+    setSelectedAttachmentIdsByTarget((current) => ({ ...current, [attachmentSelectionKey]: nextIds }));
+    setHasUnfinishedWork(true);
+    resetForStoryAttachmentChange();
+  }
+
+  function invalidateForStoryAttachmentChange() {
+    setHasUnfinishedWork(true);
+    resetForStoryAttachmentChange();
   }
 
   function resetManualDraftForTestDesignOptionsChange() {
@@ -322,6 +359,7 @@ export function TestCaseDesignClient() {
           scope,
           targetWorkItemId,
           options: buildTestDesignOptionsRequest(),
+          attachmentIds: selectedAttachmentIds,
           extraInstructions: normalizeExtraInstructions(extraInstructions),
         },
         signal,
@@ -353,6 +391,7 @@ export function TestCaseDesignClient() {
           scope,
           targetWorkItemId,
           options: buildTestDesignOptionsRequest(),
+          attachmentIds: selectedAttachmentIds,
           extraInstructions: normalizeExtraInstructions(extraInstructions),
         },
         signal,
@@ -455,7 +494,7 @@ export function TestCaseDesignClient() {
                   <Input
                     id="test-case-design-work-item-id"
                     value={targetWorkItemId}
-                    inputMode="numeric"
+                    inputMode="text"
                     onChange={(event) => changeTargetWorkItemId(event.target.value)}
                     placeholder={WORK_ITEM_ID_PLACEHOLDER}
                     title={WORK_ITEM_ID_TITLE}
@@ -473,9 +512,16 @@ export function TestCaseDesignClient() {
                     {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
                   </Button>
                 )}
-              </div>
-              <WorkItemPreview scope={scope} workItemId={targetWorkItemId} lookup={workItemLookup} />
-              <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
+               </div>
+               <WorkItemPreview scope={scope} workItemId={targetWorkItemId} lookup={workItemLookup} />
+               <StoryAttachmentsPanel
+                 scope={scope}
+                 targetWorkItemId={targetWorkItemId}
+                 selectedAttachmentIds={selectedAttachmentIds}
+                 onSelectedAttachmentIdsChange={changeSelectedAttachmentIds}
+                 onAttachmentsChanged={invalidateForStoryAttachmentChange}
+               />
+               <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
               <TestDesignOptionsSelector
                 settings={testDesignSettings}
                 customRangeValid={customRangeValid}
@@ -511,23 +557,32 @@ export function TestCaseDesignClient() {
               <div className="space-y-4">
                 {manualSubmitError ? <Callout tone="error" role="alert">{manualSubmitError}</Callout> : null}
                 {manualDraft.data ? (
-                  <ManualLLMPanel
-                    prompt={manualDraft.data.prompt}
-                    promptVersion={manualDraft.data.promptVersion}
-                    contextCitations={manualDraft.data.contextCitations}
-                    response={manualResponse}
-                    onResponseChange={(value) => {
-                      setHasUnfinishedWork(true);
-                      setManualResponse(value);
-                    }}
-                    onSubmit={submitManualResponse}
-                    submitting={manualSubmitLoading}
-                    submitLabel="Validate and Continue"
-                    submittingLabel="Validating..."
-                    responseLabel="External LLM Response"
-                    promptMinHeightClass="min-h-[360px]"
-                    responseMinHeightClass="min-h-[260px]"
-                  />
+                  <>
+                    {manualDraft.data.warnings?.length ? (
+                      <Callout tone="warning" role="alert" title="Attachment context notice">
+                        <ul className="list-disc space-y-1 pl-5">
+                          {manualDraft.data.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}
+                        </ul>
+                      </Callout>
+                    ) : null}
+                    <ManualLLMPanel
+                      prompt={manualDraft.data.prompt}
+                      promptVersion={manualDraft.data.promptVersion}
+                      contextCitations={manualDraft.data.contextCitations}
+                      response={manualResponse}
+                      onResponseChange={(value) => {
+                        setHasUnfinishedWork(true);
+                        setManualResponse(value);
+                      }}
+                      onSubmit={submitManualResponse}
+                      submitting={manualSubmitLoading}
+                      submitLabel="Validate and Continue"
+                      submittingLabel="Validating..."
+                      responseLabel="External LLM Response"
+                      promptMinHeightClass="min-h-[360px]"
+                      responseMinHeightClass="min-h-[260px]"
+                    />
+                  </>
                 ) : null}
               </div>
             ) : null}

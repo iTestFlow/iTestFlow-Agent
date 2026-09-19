@@ -231,6 +231,27 @@ describe("RAG pipeline", () => {
     }]);
   });
 
+  it("adds selected story attachment citations alongside project context", () => {
+    const citations = buildWorkflowContextCitations({
+      resolvedContextUsed: [
+        { workItemId: "1", title: "Story", workItemType: "User Story", source: "explicit", relevanceScore: 1 },
+      ],
+      storyAttachments: [
+        { id: "attachment-payment-design", fileName: "payment-design.pdf", mimeType: "application/pdf", visualCount: 2 },
+      ],
+    });
+
+    expect(citations).toContainEqual({
+      sourceType: "story_attachment",
+      sourceId: "SA:attachment-payment-design",
+      title: "payment-design.pdf",
+      attachmentId: "attachment-payment-design",
+      fileName: "payment-design.pdf",
+      mimeType: "application/pdf",
+      visualCount: 2,
+    });
+  });
+
   it("emits a knowledge citation per category and dedups KB source ID collisions", () => {
     const knowledgeBase = ProjectKnowledgeBaseSchema.parse({
       modules: [

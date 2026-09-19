@@ -66,6 +66,122 @@ describe("JiraCloudAdapter", () => {
       .rejects.toThrow("not in the selected Jira project");
   });
 
+  it("lists safe attachment metadata using Jira's canonical issue ID", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({
+      id: "10001",
+      key: "QA-7",
+      fields: {
+        project: { id: "10000", key: "QA", name: "Quality" },
+        attachment: [{
+          id: "90001",
+          filename: "checkout-flow.png",
+          mimeType: "image/png",
+          size: 42,
+          created: "2026-09-16T10:00:00.000+0000",
+          content: "https://files.example/attachments/90001?token=must-not-leak",
+          thumbnail: "https://files.example/attachments/90001/thumbnail",
+        }],
+      },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(jiraAdapter().fetchWorkItemAttachments({ projectId: "10000", workItemId: "QA-7" }))
+      .resolves.toEqual([{
+        id: "90001",
+        sourceWorkItemId: "10001",
+        fileName: "checkout-flow.png",
+        contentType: "image/png",
+        size: 42,
+        createdAt: "2026-09-16T10:00:00.000Z",
+      }]);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/issue/QA-7?fields=project%2Cattachment");
+  });
+
+  it("rechecks Jira attachment membership before downloading server-side bytes", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({
+        id: "10001",
+        key: "QA-7",
+        fields: {
+          project: { id: "10000", key: "QA", name: "Quality" },
+          attachment: [{ id: "90001", filename: "flow.png", mimeType: "image/png", size: 3 }],
+        },
+      }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const downloaded = await jiraAdapter().downloadWorkItemAttachment({
+      projectId: "10000",
+      workItemId: "10001",
+      attachmentId: "90001",
+    });
+
+    expect(downloaded.attachment).toEqual({
+      id: "90001",
+      sourceWorkItemId: "10001",
+      fileName: "flow.png",
+      contentType: "image/png",
+      size: 3,
+    });
+    expect([...new Uint8Array(downloaded.content)]).toEqual([1, 2, 3]);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/issue/10001?fields=project%2Cattachment");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/attachment/content/90001?redirect=false");
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ redirect: "error" });
+  });
+
+  it("rejects an oversized Jira attachment download with the safe integration error", async () => {
+    const originalLimit = process.env.DOCUMENT_MAX_UPLOAD_BYTES;
+    process.env.DOCUMENT_MAX_UPLOAD_BYTES = "3";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({
+        id: "10001",
+        key: "QA-7",
+        fields: {
+          project: { id: "10000", key: "QA", name: "Quality" },
+          attachment: [{ id: "90001", filename: "flow.png", mimeType: "image/png", size: 4 }],
+        },
+      }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3, 4]), {
+        status: 200,
+        headers: { "content-length": "4" },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await expect(jiraAdapter().downloadWorkItemAttachment({
+        projectId: "10000",
+        workItemId: "10001",
+        attachmentId: "90001",
+      })).rejects.toMatchObject({
+        code: "integration_unavailable",
+        message: "Jira Cloud attachment download failed.",
+      });
+    } finally {
+      if (originalLimit === undefined) delete process.env.DOCUMENT_MAX_UPLOAD_BYTES;
+      else process.env.DOCUMENT_MAX_UPLOAD_BYTES = originalLimit;
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses a Jira attachment ID that is no longer attached without fetching bytes", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({
+      id: "10001",
+      key: "QA-7",
+      fields: { project: { id: "10000", key: "QA", name: "Quality" }, attachment: [] },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(jiraAdapter().downloadWorkItemAttachment({
+      projectId: "10000",
+      workItemId: "QA-7",
+      attachmentId: "90001",
+    })).rejects.toMatchObject({ code: "integration_not_found", message: "The requested attachment is not attached to this Jira issue." });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("creates Jira comments and bugs using ADF and configured field mappings", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({ id: "10007", key: "QA-7", fields: { project: { id: "10000", key: "QA", name: "Quality" }, issuetype: { name: "Story" }, summary: "Story" } }))

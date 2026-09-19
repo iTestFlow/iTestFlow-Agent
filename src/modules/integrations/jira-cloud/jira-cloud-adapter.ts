@@ -1,11 +1,12 @@
 import "server-only";
 
+import { readBoundedDocumentResponse } from "@/modules/documents/bounded-document-response";
 import type { WorkManagementProvider } from "../core/work-management-provider";
 import type { TestManagementProvider } from "../core/test-management-provider";
 import type {
   Area, AttachmentUpload, BugWorkItemInput, Iteration,
   ProjectUser, ProjectWorkItemMetadata, ProviderAuthenticatedUser, ProviderProject,
-  Requirement, WorkItemRevision, WorkItemTypeField,
+  Requirement, WorkItemAttachment, WorkItemAttachmentDownload, WorkItemRevision, WorkItemTypeField,
 } from "../core/integration-types";
 import { IntegrationError } from "../core/integration-error";
 import { jiraApiBase, jiraFetch, type JiraAccessTokenSupplier, type JiraAuth, type JiraTokenKind, type JiraUnauthorizedHooks } from "./jira-http";
@@ -180,6 +181,30 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
     return this.mapIssue(issue);
   }
 
+  async fetchWorkItemAttachments(input: { projectId: string; workItemId: string }): Promise<WorkItemAttachment[]> {
+    return (await this.readIssueAttachments(input)).attachments;
+  }
+
+  async downloadWorkItemAttachment(input: {
+    projectId: string;
+    workItemId: string;
+    attachmentId: string;
+  }): Promise<WorkItemAttachmentDownload> {
+    const { attachments } = await this.readIssueAttachments(input);
+    const attachment = attachments.find((candidate) => candidate.id === input.attachmentId.trim());
+    if (!attachment) throw jiraAttachmentNotFoundError();
+
+    const downloaded = await this.requestAttachmentBytes(`/attachment/content/${encodeURIComponent(attachment.id)}?redirect=false`);
+    return {
+      attachment: {
+        ...attachment,
+        contentType: downloaded.contentType ?? attachment.contentType,
+        size: downloaded.content.byteLength,
+      },
+      content: downloaded.content,
+    };
+  }
+
   async fetchWorkItemsByIds(input: { projectId: string; workItemIds: string[] }): Promise<Requirement[]> {
     if (!input.workItemIds.length) return [];
     this.assertProjectInput(input.projectId);
@@ -346,6 +371,51 @@ export class JiraCloudAdapter implements WorkManagementProvider, TestManagementP
     return this.requestJson<Json>("/issue", { method: "POST", body: JSON.stringify({ fields: { ...fields, project: { id: projectId } } }) });
   }
 
+  private async readIssueAttachments(input: { projectId: string; workItemId: string }): Promise<{
+    sourceWorkItemId: string;
+    attachments: WorkItemAttachment[];
+  }> {
+    this.assertProjectInput(input.projectId);
+    const issue = await this.requestJson<Json>(
+      `/issue/${encodeURIComponent(input.workItemId)}?fields=${encodeURIComponent("project,attachment")}`,
+    );
+    this.assertIssueScope(issue);
+    const sourceWorkItemId = canonicalJiraIssueId(issue.id);
+    if (!sourceWorkItemId) {
+      throw new IntegrationError({
+        providerId: "jira-cloud",
+        code: "integration_invalid_response",
+        message: "Jira Cloud returned an invalid attachment response.",
+      });
+    }
+    const fields = object(issue.fields) ?? {};
+    return {
+      sourceWorkItemId,
+      attachments: array(fields.attachment)
+        .map((attachment) => mapJiraAttachment(attachment, sourceWorkItemId))
+        .filter(defined),
+    };
+  }
+
+  private async requestAttachmentBytes(path: string): Promise<{ content: ArrayBuffer; contentType?: string }> {
+    const response = await jiraFetch(`${this.baseUrl}${path}`, {
+      headers: { Accept: "application/octet-stream" },
+      redirect: "error",
+    }, this.auth, this.hooks);
+    try {
+      return {
+        content: await readBoundedDocumentResponse(response),
+        contentType: safeJiraAttachmentContentType(response.headers.get("content-type")),
+      };
+    } catch {
+      throw new IntegrationError({
+        providerId: "jira-cloud",
+        code: "integration_unavailable",
+        message: "Jira Cloud attachment download failed.",
+      });
+    }
+  }
+
   private mapIssue(issue: Json): Requirement {
     this.assertIssueScope(issue);
     const fields = object(issue.fields) ?? {};
@@ -411,3 +481,55 @@ function number(value: unknown): number | undefined { const parsed = typeof valu
 function strings(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []; }
 function unique<T>(values: T[]): T[] { return [...new Set(values)]; }
 function defined<T>(value: T | undefined): value is T { return value !== undefined; }
+
+function mapJiraAttachment(attachment: Json, sourceWorkItemId: string): WorkItemAttachment | undefined {
+  const id = text(attachment.id)?.trim();
+  if (!id) return undefined;
+  return {
+    id,
+    sourceWorkItemId,
+    fileName: safeJiraAttachmentFileName(attachment.filename, `Attachment ${id}`),
+    contentType: safeJiraAttachmentContentType(attachment.mimeType),
+    size: jiraAttachmentSize(attachment.size),
+    createdAt: normalizedJiraAttachmentDate(attachment.created),
+  };
+}
+
+function canonicalJiraIssueId(value: unknown): string | undefined {
+  const candidate = text(value)?.trim();
+  return candidate && /^\d+$/.test(candidate) ? candidate : undefined;
+}
+
+function safeJiraAttachmentFileName(value: unknown, fallback: string): string {
+  const candidate = typeof value === "string"
+    ? value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 255)
+    : "";
+  return candidate || fallback;
+}
+
+function safeJiraAttachmentContentType(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const candidate = value.trim().toLocaleLowerCase();
+  return candidate && candidate.length <= 255 && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+(?:;\s*[^;]+)?$/.test(candidate)
+    ? candidate
+    : undefined;
+}
+
+function jiraAttachmentSize(value: unknown): number | undefined {
+  const candidate = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : undefined;
+}
+
+function normalizedJiraAttachmentDate(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+}
+
+function jiraAttachmentNotFoundError(): IntegrationError {
+  return new IntegrationError({
+    providerId: "jira-cloud",
+    code: "integration_not_found",
+    message: "The requested attachment is not attached to this Jira issue.",
+  });
+}

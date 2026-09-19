@@ -93,6 +93,146 @@ describe("AzureDevOpsRestAdapter project isolation", () => {
     // Only the ownership pre-check fired; the comment POST never happened.
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("lists only AttachedFile relations as safe attachment metadata", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      id: 42,
+      fields: { "System.TeamProject": "Fabrikam Project" },
+      relations: [
+        {
+          rel: "AttachedFile",
+          url: "https://files.example/_apis/wit/attachments/550e8400-e29b-41d4-a716-446655440000?token=must-not-leak",
+          attributes: { name: "checkout-wireframe.png", resourceCreatedDate: "2026-09-16T10:00:00.000Z" },
+        },
+        { rel: "System.LinkTypes.Related", url: "https://dev.azure.com/fabrikam/_apis/wit/workItems/99" },
+      ],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(scopedAdapter().fetchWorkItemAttachments({ projectId: "proj-guid-1", workItemId: "42" }))
+      .resolves.toEqual([{
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        sourceWorkItemId: "42",
+        fileName: "checkout-wireframe.png",
+        createdAt: "2026-09-16T10:00:00.000Z",
+      }]);
+  });
+
+  it("rechecks Azure AttachedFile membership before downloading bytes", async () => {
+    const attachmentId = "550e8400-e29b-41d4-a716-446655440000";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/_apis/wit/workitems/42?")) {
+        return jsonResponse({
+          id: 42,
+          fields: { "System.TeamProject": "Fabrikam Project" },
+          relations: [{
+            rel: "AttachedFile",
+            url: `https://files.example/_apis/wit/attachments/${attachmentId}?token=must-not-leak`,
+            attributes: { name: "wireframe.png" },
+          }],
+        });
+      }
+      if (url.includes(`/_apis/wit/attachments/${attachmentId}?`)) {
+        return new Response(new Uint8Array([4, 5, 6]), {
+          status: 200,
+          headers: { "content-type": "image/png", "content-length": "3" },
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const downloaded = await scopedAdapter().downloadWorkItemAttachment({
+      projectId: "proj-guid-1",
+      workItemId: "42",
+      attachmentId,
+    });
+
+    expect(downloaded.attachment).toEqual({
+      id: attachmentId,
+      sourceWorkItemId: "42",
+      fileName: "wireframe.png",
+      contentType: "image/png",
+      size: 3,
+    });
+    expect([...new Uint8Array(downloaded.content)]).toEqual([4, 5, 6]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an oversized Azure attachment download without exposing upstream details", async () => {
+    const attachmentId = "550e8400-e29b-41d4-a716-446655440000";
+    const originalLimit = process.env.DOCUMENT_MAX_UPLOAD_BYTES;
+    process.env.DOCUMENT_MAX_UPLOAD_BYTES = "3";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/_apis/wit/workitems/42?")) {
+        return jsonResponse({
+          id: 42,
+          fields: { "System.TeamProject": "Fabrikam Project" },
+          relations: [{
+            rel: "AttachedFile",
+            url: `https://files.example/_apis/wit/attachments/${attachmentId}?token=must-not-leak`,
+            attributes: { name: "wireframe.png" },
+          }],
+        });
+      }
+      if (url.includes(`/_apis/wit/attachments/${attachmentId}?`)) {
+        return new Response(new Uint8Array([4, 5, 6, 7]), {
+          status: 200,
+          headers: { "content-length": "4" },
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await expect(scopedAdapter().downloadWorkItemAttachment({
+        projectId: "proj-guid-1",
+        workItemId: "42",
+        attachmentId,
+      })).rejects.toMatchObject({
+        code: "integration_unavailable",
+        message: "Azure DevOps attachment download failed.",
+      });
+    } finally {
+      if (originalLimit === undefined) delete process.env.DOCUMENT_MAX_UPLOAD_BYTES;
+      else process.env.DOCUMENT_MAX_UPLOAD_BYTES = originalLimit;
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses an Azure attachment ID not present on the rechecked work item", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      id: 42,
+      fields: { "System.TeamProject": "Fabrikam Project" },
+      relations: [],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(scopedAdapter().downloadWorkItemAttachment({
+      projectId: "proj-guid-1",
+      workItemId: "42",
+      attachmentId: "550e8400-e29b-41d4-a716-446655440000",
+    })).rejects.toMatchObject({ code: "integration_not_found", message: "The requested attachment is not attached to this Azure DevOps work item." });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not expose Azure source URLs or tokens when attachment membership read fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({
+      message: "Attachment source https://files.example/download?token=must-not-leak is unavailable",
+    }, { status: 404 })));
+
+    const failure = await scopedAdapter().downloadWorkItemAttachment({
+      projectId: "proj-guid-1",
+      workItemId: "42",
+      attachmentId: "550e8400-e29b-41d4-a716-446655440000",
+    }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "integration_not_found" });
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).not.toMatch(/files\.example|must-not-leak/);
+  });
 });
 
 describe("AzureDevOpsRestAdapter WIQL query building", () => {

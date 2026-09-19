@@ -28,6 +28,15 @@ export const WorkflowContextCitationSchema = z.discriminatedUnion("sourceType", 
     section: z.string().min(1).optional(),
     pageNumber: z.number().int().positive().optional(),
   }),
+  z.object({
+    sourceType: z.literal("story_attachment"),
+    sourceId: z.string().min(1),
+    title: z.string().min(1),
+    attachmentId: z.string().min(1),
+    fileName: z.string().min(1),
+    mimeType: z.string().min(1).optional(),
+    visualCount: z.number().int().nonnegative().optional(),
+  }),
 ]);
 
 export const WorkflowContextCitationsSchema = z.array(WorkflowContextCitationSchema).default([]);
@@ -37,6 +46,12 @@ export type WorkflowContextCitation = z.infer<typeof WorkflowContextCitationSche
 export function buildWorkflowContextCitations(input: {
   resolvedContextUsed: ContextUsedItem[];
   relevantProjectKnowledgeBase?: ProjectKnowledgeBase | null;
+  storyAttachments?: Array<{
+    id: string;
+    fileName: string;
+    mimeType?: string;
+    visualCount?: number;
+  }>;
 }): WorkflowContextCitation[] {
   const citations: WorkflowContextCitation[] = input.resolvedContextUsed.map((item) => ({
     sourceType: "project_context",
@@ -77,6 +92,23 @@ export function buildWorkflowContextCitations(input: {
         ),
       ),
     );
+  }
+
+  for (const attachment of input.storyAttachments ?? []) {
+    const attachmentId = attachment.id.trim();
+    const fileName = attachment.fileName.trim();
+    if (!attachmentId || !fileName) continue;
+    citations.push({
+      sourceType: "story_attachment",
+      sourceId: `SA:${attachmentId}`,
+      title: fileName,
+      attachmentId,
+      fileName,
+      mimeType: attachment.mimeType?.trim() || undefined,
+      visualCount: Number.isInteger(attachment.visualCount) && attachment.visualCount! >= 0
+        ? attachment.visualCount
+        : undefined,
+    });
   }
 
   const unique = new Map<string, WorkflowContextCitation>();

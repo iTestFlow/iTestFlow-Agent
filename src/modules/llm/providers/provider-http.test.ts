@@ -5,6 +5,7 @@ vi.mock("../llm-request-log.service", () => ({
   writeLLMRequestLog: vi.fn(),
 }));
 
+import { writeLLMRequestLog } from "../llm-request-log.service";
 import { AnthropicProvider } from "./anthropic-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
 import { GeminiProvider } from "./gemini-provider";
@@ -21,9 +22,151 @@ const browserTool = {
   inputSchema: { type: "object", properties: {} },
 };
 
+const visionImage = {
+  mediaType: "image/png" as const,
+  data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
+};
+
+const visionSchema = z.object({ value: z.number() });
+
 describe("provider HTTP adapters", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  const visionRequestCases = [
+    {
+      name: "OpenAI",
+      create: () => new OpenAIProvider({ provider: "openai", model: "gpt-test", apiKey: "key", retryAttempts: 0 }),
+      response: { choices: [{ message: { content: "{\"value\":1}" }, finish_reason: "stop" }] },
+      assertImageContent: (body: unknown) => {
+        const request = body as { messages: Array<{ content: unknown }> };
+        expect(request.messages[1]?.content).toEqual([
+          { type: "image_url", image_url: { url: `data:${visionImage.mediaType};base64,${visionImage.data}` } },
+          { type: "text", text: "user prompt" },
+        ]);
+      },
+      assertNoImageContent: (body: unknown) => {
+        const request = body as { messages: Array<{ content: unknown }> };
+        expect(request.messages[1]?.content).toBe("user prompt");
+      },
+    },
+    {
+      name: "Anthropic",
+      create: () => new AnthropicProvider({ provider: "anthropic", model: "claude-sonnet-5", apiKey: "key", retryAttempts: 0 }),
+      response: { content: [{ type: "text", text: "{\"value\":1}" }], stop_reason: "end_turn" },
+      assertImageContent: (body: unknown) => {
+        const request = body as { messages: Array<{ content: unknown }> };
+        expect(request.messages[0]?.content).toEqual([
+          {
+            type: "image",
+            source: { type: "base64", media_type: visionImage.mediaType, data: visionImage.data },
+          },
+          { type: "text", text: "user prompt" },
+        ]);
+      },
+      assertNoImageContent: (body: unknown) => {
+        const request = body as { messages: Array<{ content: unknown }> };
+        expect(request.messages[0]?.content).toBe("user prompt");
+      },
+    },
+    {
+      name: "Gemini",
+      create: () => new GeminiProvider({ provider: "gemini", model: "gemini-2.5-flash", apiKey: "key", retryAttempts: 0 }),
+      response: { candidates: [{ content: { parts: [{ text: "{\"value\":1}" }] }, finishReason: "STOP" }] },
+      assertImageContent: (body: unknown) => {
+        const request = body as { contents: Array<{ parts: unknown }> };
+        expect(request.contents[0]?.parts).toEqual([
+          { inlineData: { mimeType: visionImage.mediaType, data: visionImage.data } },
+          { text: "user prompt" },
+        ]);
+      },
+      assertNoImageContent: (body: unknown) => {
+        const request = body as { contents: Array<{ parts: unknown }> };
+        expect(request.contents[0]?.parts).toEqual([{ text: "user prompt" }]);
+      },
+    },
+  ] as const;
+
+  it.each(visionRequestCases)("sends inline images in native $name text and structured requests", async ({ create, response, assertImageContent }) => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = create();
+
+    await provider.generateText({ system: "system prompt", user: "user prompt", images: [visionImage] });
+    await provider.generateStructuredOutput({
+      system: "system prompt",
+      user: "user prompt",
+      schemaName: "Vision",
+      schema: visionSchema,
+      images: [visionImage],
+    });
+
+    assertImageContent(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)));
+    assertImageContent(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)));
+  });
+
+  it.each(visionRequestCases)("keeps $name no-image text and structured request bodies unchanged", async ({ create, response, assertNoImageContent }) => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = create();
+
+    await provider.generateText({ system: "system prompt", user: "user prompt" });
+    await provider.generateStructuredOutput({
+      system: "system prompt",
+      user: "user prompt",
+      schemaName: "Vision",
+      schema: visionSchema,
+    });
+
+    assertNoImageContent(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)));
+    assertNoImageContent(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)));
+  });
+
+  it.each(visionRequestCases)("rejects malformed $name image input before sending a request", async ({ create, response }) => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = create();
+
+    await expect(provider.generateText({
+      system: "system prompt",
+      user: "user prompt",
+      images: [{ mediaType: "image/png", data: "not base64" }],
+    })).rejects.toThrow(/base64/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects image data that would exceed the aggregate inline payload limit", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new OpenAIProvider({ provider: "openai", model: "gpt-test", apiKey: "key", retryAttempts: 0 });
+    const tenMiB = "AAAA".repeat((10 * 1024 * 1024) / 4);
+
+    await expect(provider.generateText({
+      system: "system prompt",
+      user: "user prompt",
+      images: [
+        { mediaType: "image/png", data: tenMiB },
+        { mediaType: "image/png", data: tenMiB },
+        { mediaType: "image/png", data: "AAAA" },
+      ],
+    })).rejects.toThrow(/combined.*base64 data/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(visionRequestCases)("redacts inline image bytes from $name request logs", async ({ create, response }) => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = create();
+
+    await provider.generateText({ system: "system prompt", user: "user prompt", images: [visionImage] });
+
+    const logged = vi.mocked(writeLLMRequestLog).mock.calls[0]?.[0];
+    expect(JSON.stringify(logged?.requestBody)).toContain("[REDACTED_IMAGE_DATA]");
+    expect(JSON.stringify(logged?.requestBody)).not.toContain(visionImage.data);
   });
 
   it.each([

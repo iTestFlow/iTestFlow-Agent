@@ -20,6 +20,7 @@ import { WorkflowContextCitations } from "@/components/workflow/workflow-context
 import { useAiGeneration } from "@/components/workflow/use-ai-generation";
 import { useLlmLoadingGameSession } from "@/components/workflow/llm-loading-games/use-llm-loading-game-session";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
+import { StoryAttachmentsPanel } from "@/components/workflow/story-attachments-panel";
 import { StickyActionBar } from "@/components/workflow/sticky-action-bar";
 import { WorkflowStepper } from "@/components/workflow/workflow-stepper";
 import {
@@ -74,6 +75,7 @@ export function RequirementsAnalysisClient() {
   const [mode, setMode] = useState<WorkflowMode>("auto");
   const externalLlmAvailability = useExternalLlmAvailability(scope?.workspaceId);
   const [extraInstructions, setExtraInstructions] = useState("");
+  const [selectedAttachmentIdsByTarget, setSelectedAttachmentIdsByTarget] = useState<Record<string, string[]>>({});
   const [enabledChecklistItemIds, setEnabledChecklistItemIds] = useState<RequirementAnalysisChecklistItemId[]>(() => [...allRequirementAnalysisChecklistItemIds]);
   const [analysis, setAnalysis] = useState<ApiState<RequirementAnalysisRunResult>>({
     loading: false,
@@ -126,6 +128,7 @@ export function RequirementsAnalysisClient() {
     setManualSubmitError(null);
     setPushState({ loading: false, error: null, data: null });
     setSelectedMentionUserIds([]);
+    setSelectedAttachmentIdsByTarget({});
   }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
   useEffect(() => {
     if (externalLlmAvailability.enabled || mode !== "manual") return;
@@ -160,6 +163,10 @@ export function RequirementsAnalysisClient() {
   }, [projectUsers, selectedMentionUserIds]);
   const checklistSelectionValid = enabledChecklistItemIds.length > 0;
   const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
+  const attachmentSelectionKey = scope && targetWorkItemId.trim()
+    ? `${scope.workspaceId ?? ""}:${scope.projectId}:${targetWorkItemId.trim()}`
+    : "";
+  const selectedAttachmentIds = attachmentSelectionKey ? selectedAttachmentIdsByTarget[attachmentSelectionKey] ?? [] : [];
   const pushActionDescription = invalidSelectedFindingCount > 0 ? (
     <span id="push-comment-reason" className="inline-flex items-center gap-1 font-medium text-warning-foreground dark:text-warning">
       <TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />
@@ -228,6 +235,39 @@ export function RequirementsAnalysisClient() {
     setManualSubmitError(null);
   }
 
+  function resetForStoryAttachmentChange() {
+    manualOperationVersionRef.current += 1;
+    gen.cancel();
+    prep.cancel();
+    loadingGame.endSession();
+    setActiveStep("analyze");
+    setAnalysis({ loading: false, error: null, data: null });
+    setFindings([]);
+    setSelectedFindingIds([]);
+    setFindingsReviewVersion((current) => current + 1);
+    setPushState({ loading: false, error: null, data: null });
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitLoading(false);
+    setManualSubmitError(null);
+    setSelectedMentionUserIds([]);
+  }
+
+  function changeSelectedAttachmentIds(ids: string[]) {
+    if (!attachmentSelectionKey) return;
+    const nextIds = Array.from(new Set(ids));
+    const currentIds = selectedAttachmentIdsByTarget[attachmentSelectionKey] ?? [];
+    if (nextIds.length === currentIds.length && nextIds.every((id, index) => id === currentIds[index])) return;
+    setSelectedAttachmentIdsByTarget((current) => ({ ...current, [attachmentSelectionKey]: nextIds }));
+    setHasUnfinishedWork(true);
+    resetForStoryAttachmentChange();
+  }
+
+  function invalidateForStoryAttachmentChange() {
+    setHasUnfinishedWork(true);
+    resetForStoryAttachmentChange();
+  }
+
   function resetManualDraftForChecklistChange() {
     gen.cancel();
     prep.cancel();
@@ -290,7 +330,13 @@ export function RequirementsAnalysisClient() {
     const data = await gen.start((signal) =>
       postJson<RequirementAnalysisRunResult>(
         "/api/requirement-analysis/run",
-        { scope, targetWorkItemId, enabledChecklistItemIds, extraInstructions: normalizeExtraInstructions(extraInstructions) },
+        {
+          scope,
+          targetWorkItemId,
+          enabledChecklistItemIds,
+          attachmentIds: selectedAttachmentIds,
+          extraInstructions: normalizeExtraInstructions(extraInstructions),
+        },
         signal,
       ),
     );
@@ -317,7 +363,13 @@ export function RequirementsAnalysisClient() {
     const data = await prep.start((signal) =>
       postJson<ManualPromptDraft>(
         "/api/requirement-analysis/manual/draft",
-        { scope, targetWorkItemId, enabledChecklistItemIds, extraInstructions: normalizeExtraInstructions(extraInstructions) },
+        {
+          scope,
+          targetWorkItemId,
+          enabledChecklistItemIds,
+          attachmentIds: selectedAttachmentIds,
+          extraInstructions: normalizeExtraInstructions(extraInstructions),
+        },
         signal,
       ),
     );
@@ -473,7 +525,7 @@ export function RequirementsAnalysisClient() {
                   <Input
                     id="requirement-analysis-work-item-id"
                     value={targetWorkItemId}
-                    inputMode="numeric"
+                    inputMode="text"
                     onChange={(event) => changeTargetWorkItemId(event.target.value)}
                     placeholder={WORK_ITEM_ID_PLACEHOLDER}
                     title={WORK_ITEM_ID_TITLE}
@@ -491,9 +543,16 @@ export function RequirementsAnalysisClient() {
                     {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
                   </Button>
                 )}
-              </div>
-              <WorkItemPreview scope={scope} workItemId={targetWorkItemId} lookup={workItemLookup} />
-              <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
+               </div>
+               <WorkItemPreview scope={scope} workItemId={targetWorkItemId} lookup={workItemLookup} />
+               <StoryAttachmentsPanel
+                 scope={scope}
+                 targetWorkItemId={targetWorkItemId}
+                 selectedAttachmentIds={selectedAttachmentIds}
+                 onSelectedAttachmentIdsChange={changeSelectedAttachmentIds}
+                 onAttachmentsChanged={invalidateForStoryAttachmentChange}
+               />
+               <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
               <RequirementChecklistSelector
                 selectedIds={enabledChecklistItemIds}
                 onToggle={changeChecklistSelection}
@@ -525,23 +584,32 @@ export function RequirementsAnalysisClient() {
               <div className="space-y-4">
                 {manualSubmitError ? <Callout tone="error" role="alert">{manualSubmitError}</Callout> : null}
                 {manualDraft.data ? (
-                  <ManualLLMPanel
-                    prompt={manualDraft.data.prompt}
-                    promptVersion={manualDraft.data.promptVersion}
-                    contextCitations={manualDraft.data.contextCitations}
-                    response={manualResponse}
-                    onResponseChange={(value) => {
-                      setHasUnfinishedWork(true);
-                      setManualResponse(value);
-                    }}
-                    onSubmit={submitManualResponse}
-                    submitting={manualSubmitLoading}
-                    submitLabel="Validate and Continue"
-                    submittingLabel="Validating..."
-                    responseLabel="External LLM Response"
-                    promptMinHeightClass="min-h-[360px]"
-                    responseMinHeightClass="min-h-[260px]"
-                  />
+                  <>
+                    {manualDraft.data.warnings?.length ? (
+                      <Callout tone="warning" role="alert" title="Attachment context notice">
+                        <ul className="list-disc space-y-1 pl-5">
+                          {manualDraft.data.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}
+                        </ul>
+                      </Callout>
+                    ) : null}
+                    <ManualLLMPanel
+                      prompt={manualDraft.data.prompt}
+                      promptVersion={manualDraft.data.promptVersion}
+                      contextCitations={manualDraft.data.contextCitations}
+                      response={manualResponse}
+                      onResponseChange={(value) => {
+                        setHasUnfinishedWork(true);
+                        setManualResponse(value);
+                      }}
+                      onSubmit={submitManualResponse}
+                      submitting={manualSubmitLoading}
+                      submitLabel="Validate and Continue"
+                      submittingLabel="Validating..."
+                      responseLabel="External LLM Response"
+                      promptMinHeightClass="min-h-[360px]"
+                      responseMinHeightClass="min-h-[260px]"
+                    />
+                  </>
                 ) : null}
               </div>
             ) : null}

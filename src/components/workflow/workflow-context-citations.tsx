@@ -1,7 +1,7 @@
 "use client"
 
 import type { ReactNode } from "react"
-import { BookOpen, Database } from "lucide-react"
+import { BookOpen, Database, Paperclip } from "lucide-react"
 
 import { Badge, badgeVariants } from "@/components/ui/badge"
 import {
@@ -25,7 +25,8 @@ export function WorkflowContextCitations({
 }) {
   const contextCount = citations.filter((citation) => citation.sourceType === "project_context").length
   const documentCount = citations.filter((citation) => citation.sourceType === "uploaded_document").length
-  const knowledgeCount = citations.length - contextCount - documentCount
+  const attachmentCount = citations.filter((citation) => citation.sourceType === "story_attachment").length
+  const knowledgeCount = citations.length - contextCount - documentCount - attachmentCount
   return (
     <div className={cn("space-y-2", className)}>
       <div className="flex items-center justify-between gap-3">
@@ -35,6 +36,7 @@ export function WorkflowContextCitations({
             contextCount={contextCount}
             knowledgeCount={knowledgeCount}
             documentCount={documentCount}
+            attachmentCount={attachmentCount}
             trigger={
               <button
                 type="button"
@@ -63,6 +65,12 @@ export function WorkflowContextCitations({
             {documentCount} document{documentCount === 1 ? "" : "s"}
           </Badge>
         ) : null}
+        {attachmentCount ? (
+          <Badge variant="secondary" className="gap-1">
+            <Paperclip className="size-3" />
+            {attachmentCount} attachment{attachmentCount === 1 ? "" : "s"}
+          </Badge>
+        ) : null}
         <ContextCitationBadges citations={citations} />
       </div>
     </div>
@@ -74,12 +82,14 @@ function ContextCitationsDialog({
   contextCount,
   knowledgeCount,
   documentCount,
+  attachmentCount,
   trigger,
 }: {
   citations: WorkflowContextCitation[]
   contextCount: number
   knowledgeCount: number
   documentCount: number
+  attachmentCount: number
   trigger: ReactNode
 }) {
   return (
@@ -91,7 +101,7 @@ function ContextCitationsDialog({
         <DialogHeader>
           <DialogTitle>All Context References</DialogTitle>
           <DialogDescription>
-            {citations.length} references used: {contextCount} project context, {knowledgeCount} project knowledge, and {documentCount} documents.
+            {citations.length} references used: {contextCount} project context, {knowledgeCount} project knowledge, {documentCount} documents, and {attachmentCount} attachments.
           </DialogDescription>
         </DialogHeader>
         <div className="max-h-[min(65vh,36rem)] overflow-y-scroll pr-3 [scrollbar-gutter:stable]">
@@ -109,6 +119,10 @@ function ContextCitationsDialog({
                 ) : citation.sourceType === "uploaded_document" ? (
                   <div className="text-xs text-muted-foreground">
                     {citation.documentName}{citation.pageNumber ? ` · page ${citation.pageNumber}` : ""}{citation.section ? ` · ${citation.section}` : ""}
+                  </div>
+                ) : citation.sourceType === "story_attachment" ? (
+                  <div className="text-xs text-muted-foreground">
+                    {citation.fileName}{citation.mimeType ? ` · ${citation.mimeType}` : ""}{citation.visualCount ? ` · ${citation.visualCount} visual${citation.visualCount === 1 ? "" : "s"}` : ""}
                   </div>
                 ) : (
                   <div className="space-y-1 text-xs text-muted-foreground">
@@ -198,7 +212,9 @@ function citationLabel(citation: WorkflowContextCitation) {
     ? `${citation.sourceId} ${citation.workItemType}`.trim()
     : citation.sourceType === "uploaded_document"
       ? `${citation.sourceId} Document`
-    : citation.sourceId
+      : citation.sourceType === "story_attachment"
+        ? `${citation.sourceId} Attachment`
+      : citation.sourceId
 }
 
 function citationTitle(citation: WorkflowContextCitation) {
@@ -207,6 +223,9 @@ function citationTitle(citation: WorkflowContextCitation) {
   }
   if (citation.sourceType === "uploaded_document") {
     return `${citation.title}\nDocument: ${citation.documentName}${citation.pageNumber ? `\nPage: ${citation.pageNumber}` : ""}${citation.section ? `\nSection: ${citation.section}` : ""}`
+  }
+  if (citation.sourceType === "story_attachment") {
+    return `${citation.title}\nAttachment: ${citation.fileName}${citation.mimeType ? `\nContent type: ${citation.mimeType}` : ""}${citation.visualCount ? `\nVisuals: ${citation.visualCount}` : ""}`
   }
 
   const sources = citation.sourceWorkItemIds.length

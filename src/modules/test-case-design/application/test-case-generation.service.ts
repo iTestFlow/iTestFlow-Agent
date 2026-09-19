@@ -3,9 +3,13 @@ import "server-only";
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import { truncationAuditDetails } from "@/modules/llm/llm-warnings";
 import { parseExternalStructuredOutput } from "@/modules/llm/external-structured-output";
-import type { LLMProvider } from "@/modules/llm/llm-types";
+import type { LLMImageInput, LLMProvider } from "@/modules/llm/llm-types";
 import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
-import { buildTestCaseGenerationMarkdownPrompt, extractWorkItemId } from "@/modules/llm/markdown-prompt-renderer";
+import {
+  buildTestCaseGenerationMarkdownPrompt,
+  extractWorkItemId,
+  type StoryAttachmentPromptContext,
+} from "@/modules/llm/markdown-prompt-renderer";
 import { buildTestCaseGenerationSystemPrompt, testCaseGenerationPrompt } from "@/modules/llm/prompts";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { normalizeTestDesignOptions, type TestDesignOptions } from "@/modules/test-case-design/test-design-options";
@@ -26,6 +30,8 @@ export async function generateTestCases(input: {
   /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
   rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
+  storyAttachments?: StoryAttachmentPromptContext[];
+  attachmentImages?: readonly LLMImageInput[];
   options?: Partial<TestDesignOptions>;
   extraInstructions?: string;
 }) {
@@ -41,6 +47,7 @@ export async function generateTestCases(input: {
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
     projectKnowledgeNotice: input.projectKnowledgeNotice,
+    storyAttachments: input.storyAttachments,
     options: input.options,
     extraInstructions: input.extraInstructions,
   });
@@ -49,6 +56,7 @@ export async function generateTestCases(input: {
     schema: TestCaseGenerationOutputSchema,
     system: promptDraft.systemPrompt,
     user: promptDraft.userPrompt,
+    images: input.attachmentImages,
     metadata: {
       action: "test_case_generation.run",
       promptName: testCaseGenerationPrompt.name,
@@ -82,6 +90,9 @@ export async function generateTestCases(input: {
   return {
     ...result,
     relevantProjectKnowledgeBase: promptDraft.relevantProjectKnowledgeBase,
+    includedStoryAttachmentTextIds: promptDraft.includedStoryAttachmentTextIds,
+    omittedStoryAttachmentTextIds: promptDraft.omittedStoryAttachmentTextIds,
+    warnings: mergeWarnings(result.warnings, promptDraft.storyAttachmentWarnings),
   };
 }
 
@@ -98,6 +109,7 @@ export function buildTestCaseGenerationPromptDraft(input: {
   /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
   rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
+  storyAttachments?: StoryAttachmentPromptContext[];
   options?: Partial<TestDesignOptions>;
   extraInstructions?: string;
 }) {
@@ -118,6 +130,7 @@ export function buildTestCaseGenerationPromptDraft(input: {
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
     projectKnowledgeNotice: input.projectKnowledgeNotice,
+    storyAttachments: input.storyAttachments,
     options: testDesignOptions,
     extraInstructions: input.extraInstructions,
     outputContract: testCaseOutputContract,
@@ -136,7 +149,15 @@ export function buildTestCaseGenerationPromptDraft(input: {
     }),
     testDesignOptions,
     relevantProjectKnowledgeBase: promptPayload.relevantProjectKnowledgeBase,
+    includedStoryAttachmentTextIds: promptPayload.includedStoryAttachmentTextIds,
+    omittedStoryAttachmentTextIds: promptPayload.omittedStoryAttachmentTextIds,
+    storyAttachmentWarnings: promptPayload.storyAttachmentWarnings,
   };
+}
+
+function mergeWarnings(...warningGroups: Array<string[] | undefined>) {
+  const warnings = warningGroups.flatMap((group) => group ?? []).filter((warning) => warning.trim().length > 0);
+  return warnings.length ? warnings : undefined;
 }
 
 export function completeManualTestCaseGeneration(input: {

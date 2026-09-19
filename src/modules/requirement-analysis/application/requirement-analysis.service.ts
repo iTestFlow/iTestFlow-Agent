@@ -4,9 +4,13 @@ import { assertProjectScope, type ProjectScope } from "@/modules/projects/projec
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import { truncationAuditDetails } from "@/modules/llm/llm-warnings";
 import { parseExternalStructuredOutput } from "@/modules/llm/external-structured-output";
-import type { LLMProvider } from "@/modules/llm/llm-types";
+import type { LLMImageInput, LLMProvider } from "@/modules/llm/llm-types";
 import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
-import { buildRequirementAnalysisMarkdownPrompt, extractWorkItemId } from "@/modules/llm/markdown-prompt-renderer";
+import {
+  buildRequirementAnalysisMarkdownPrompt,
+  extractWorkItemId,
+  type StoryAttachmentPromptContext,
+} from "@/modules/llm/markdown-prompt-renderer";
 import {
   buildRequirementAnalysisSystemPrompt,
   normalizeRequirementAnalysisChecklistItemIds,
@@ -30,6 +34,8 @@ export async function runRequirementAnalysis(input: {
   /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
   rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
+  storyAttachments?: StoryAttachmentPromptContext[];
+  attachmentImages?: readonly LLMImageInput[];
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   extraInstructions?: string;
 }) {
@@ -45,6 +51,7 @@ export async function runRequirementAnalysis(input: {
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
     projectKnowledgeNotice: input.projectKnowledgeNotice,
+    storyAttachments: input.storyAttachments,
     enabledChecklistItemIds: input.enabledChecklistItemIds,
     extraInstructions: input.extraInstructions,
   });
@@ -53,6 +60,7 @@ export async function runRequirementAnalysis(input: {
     schema: RequirementAnalysisOutputSchema,
     system: promptDraft.systemPrompt,
     user: promptDraft.userPrompt,
+    images: input.attachmentImages,
     metadata: {
       action: "requirement_analysis.run",
       promptName: requirementAnalysisPrompt.name,
@@ -90,7 +98,9 @@ export async function runRequirementAnalysis(input: {
     validatedOutput: scopedOutput.output,
     enabledChecklistItemIds: promptDraft.enabledChecklistItemIds,
     relevantProjectKnowledgeBase: promptDraft.relevantProjectKnowledgeBase,
-    warnings: mergeWarnings(result.warnings, scopedOutput.warnings),
+    includedStoryAttachmentTextIds: promptDraft.includedStoryAttachmentTextIds,
+    omittedStoryAttachmentTextIds: promptDraft.omittedStoryAttachmentTextIds,
+    warnings: mergeWarnings(result.warnings, scopedOutput.warnings, promptDraft.storyAttachmentWarnings),
   };
 }
 
@@ -107,6 +117,7 @@ export function buildRequirementAnalysisPromptDraft(input: {
   /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
   rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
+  storyAttachments?: StoryAttachmentPromptContext[];
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   extraInstructions?: string;
 }) {
@@ -127,6 +138,7 @@ export function buildRequirementAnalysisPromptDraft(input: {
     selectedContext: input.selectedContext,
     projectKnowledgeBase: input.projectKnowledgeBase,
     projectKnowledgeNotice: input.projectKnowledgeNotice,
+    storyAttachments: input.storyAttachments,
     extraInstructions: input.extraInstructions,
     outputContract: buildRequirementOutputContract(enabledChecklistItemIds),
   });
@@ -144,6 +156,9 @@ export function buildRequirementAnalysisPromptDraft(input: {
       user: promptPayload.prompt,
     }),
     relevantProjectKnowledgeBase: promptPayload.relevantProjectKnowledgeBase,
+    includedStoryAttachmentTextIds: promptPayload.includedStoryAttachmentTextIds,
+    omittedStoryAttachmentTextIds: promptPayload.omittedStoryAttachmentTextIds,
+    storyAttachmentWarnings: promptPayload.storyAttachmentWarnings,
   };
 }
 

@@ -330,7 +330,7 @@ export function TestGapAnalysisClient() {
                   <Input
                     id="test-coverage-matrix-work-item-id"
                     value={targetWorkItemId}
-                    inputMode="numeric"
+                    inputMode="text"
                     onChange={(event) => changeTargetWorkItemId(event.target.value)}
                     placeholder={WORK_ITEM_ID_PLACEHOLDER}
                     title={WORK_ITEM_ID_TITLE}
