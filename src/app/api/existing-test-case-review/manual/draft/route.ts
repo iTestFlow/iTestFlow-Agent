@@ -6,17 +6,18 @@ import {
   requireExternalLlmEnabled,
   requireWorkflowContext,
 } from "@/modules/credentials/scoped-resolution.service";
-import { buildExistingTestCaseReviewPromptDraft } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
-import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
-import { resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
-import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
-import { rankProjectKnowledgeForWorkItem } from "@/modules/rag/knowledge-relevance.service";
 import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
-import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
+import {
+  contextReviewRequiredResponseBody,
+  ContextReviewRequiredError,
+  prepareWorkflowContext,
+} from "@/modules/rag/workflow-context-preparation.service";
+import { WorkflowContextControlsSchema } from "@/modules/rag/workflow-context-controls";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
+import { resolveWorkspaceProviderId } from "@/modules/integrations/provider-registry";
 
 export const runtime = "nodejs";
 
@@ -25,7 +26,7 @@ const RequestSchema = z.object({
   targetWorkItemId: z.string().min(1),
   selectedContextIds: z.array(z.string()).optional().default([]),
   extraInstructions: z.string().max(EXTRA_INSTRUCTIONS_MAX_LENGTH, `Extra Instructions must be ${EXTRA_INSTRUCTIONS_MAX_LENGTH} characters or fewer.`).optional(),
-});
+}).merge(WorkflowContextControlsSchema);
 
 export async function POST(request: Request) {
   const parsed = RequestSchema.safeParse(await request.json());
@@ -45,69 +46,39 @@ export async function POST(request: Request) {
       projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
-    const linkedTestCases = await adapter.fetchLinkedTestCases({
-      projectId: trustedScope.azureProjectId,
-      userStoryId: parsed.data.targetWorkItemId,
-    });
-    const autoContext = await resolveWorkflowContextWithoutLLM({
+    const workspaceSettings = await getWorkspaceSettings(ctx.workspace.id);
+    const prepared = await prepareWorkflowContext({
+      workflow: "existing_test_case_review",
+      mode: "manual",
       scope: trustedScope,
+      actor: ctx.userId,
       adapter,
+      workspaceId: ctx.workspace.id,
+      workspaceProviderId: resolveWorkspaceProviderId(ctx.workspace),
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: await resolveRetrievalTopK({
-        workspaceId: ctx.workspace.id,
-        query: `${targetRequirement.title}\n${targetRequirement.description ?? ""}`,
-      }),
-    });
-    const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "existing_test_case_review_manual" });
-    // The prepared prompt must match what the internal run sends for the same work item.
-    // Without a model window it fell back to a fixed default regardless of the workspace's
-    // configured model-input-limit, and without ranked keys it used keyword-only knowledge
-    // selection — so a user copying this prompt out got materially less context than
-    // production, silently. There is no LLM provider here, so the window comes from the
-    // workspace override: the admin's own statement of what their models accept.
-    const workspaceSettings = await getWorkspaceSettings(ctx.workspace.id);
-    // Same selection the internal run performs. Without it the prepared prompt differed
-    // in *which* knowledge entries it carried, not merely their order — a silent
-    // divergence for the same work item.
-    const rankedKnowledgeKeys = await rankProjectKnowledgeForWorkItem({
-      scope: trustedScope,
-      targetRequirement,
-      projectKnowledgeBase: knowledgeContext.knowledgeBase,
-      contextWorkItemIds: [
-        ...autoContext.relatedWorkItems.map((item) => item.workItemId),
-        ...autoContext.selectedContext.map((item) => item.workItemId),
-      ],
-    });
-    const draft = buildExistingTestCaseReviewPromptDraft({
-      rankedKnowledgeKeys: rankedKnowledgeKeys ?? undefined,
+      reviewedSourceIds: parsed.data.reviewedSourceIds,
+      excludedSourceIds: parsed.data.excludedSourceIds,
       maxInputTokens: workspaceSettings?.modelInputTokenLimitOverride ?? undefined,
-      relatedWorkItemsFloor: autoContext.retrievalTopK,
-      scope: trustedScope,
-      targetRequirement,
-      linkedTestCases,
-      relatedWorkItems: autoContext.relatedWorkItems,
-      selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: knowledgeContext.knowledgeBase,
-      projectKnowledgeNotice: knowledgeContext.promptNotice,
       extraInstructions: parsed.data.extraInstructions,
-    });
-    const contextCitations = buildWorkflowContextCitations({
-      resolvedContextUsed: autoContext.contextUsed,
-      relevantProjectKnowledgeBase: draft.relevantProjectKnowledgeBase,
     });
 
     return NextResponse.json({
       targetWorkItemId: parsed.data.targetWorkItemId,
-      linkedTestCases,
+      linkedTestCases: prepared.linkedTestCases,
       selectedContextIds: parsed.data.selectedContextIds,
-      resolvedContextUsed: autoContext.contextUsed,
-      contextCitations,
-      retrievalTopK: autoContext.retrievalTopK,
-      ...draft,
-      warnings: knowledgeContext.promptNotice ? [knowledgeContext.promptNotice] : undefined,
+      reviewedSourceIds: prepared.reviewedSourceIds,
+      excludedSourceIds: prepared.excludedSourceIds,
+      resolvedContextUsed: prepared.contextUsed,
+      contextCitations: prepared.contextCitations,
+      retrievalTopK: prepared.retrievalTopK,
+      ...prepared.promptDraft,
+      warnings: prepared.projectKnowledgeNotice ? [prepared.projectKnowledgeNotice] : undefined,
     });
   } catch (error) {
+    if (error instanceof ContextReviewRequiredError) {
+      return NextResponse.json(contextReviewRequiredResponseBody(error), { status: 409 });
+    }
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
     return routeErrorResponse(error, { domain: "llm", status: 503, fallback: "External LLM traceability prompt preparation failed." });

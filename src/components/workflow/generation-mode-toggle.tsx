@@ -23,6 +23,7 @@ export function GenerationModeToggle({
   manualIcon: ManualIcon = SquareTerminal,
   ariaLabel = "LLM execution mode",
   externalLlmAvailability,
+  disabled = false,
   className,
 }: {
   mode: GenerationMode
@@ -33,10 +34,13 @@ export function GenerationModeToggle({
   manualIcon?: LucideIcon
   ariaLabel?: string
   externalLlmAvailability: ExternalLlmAvailability
+  /** Locks the mode while a workflow is preparing, running, or validating a response. */
+  disabled?: boolean
   className?: string
 }) {
-  const manualDisabled = !externalLlmAvailability.enabled
-  const selectedMode = manualDisabled && mode === "manual" ? "auto" : mode
+  const externalManualDisabled = !externalLlmAvailability.enabled
+  const manualDisabled = externalManualDisabled || disabled
+  const selectedMode = externalManualDisabled && mode === "manual" ? "auto" : mode
   const manualDescriptionId = useId()
   const itemClass = (value: GenerationMode) =>
     cn(
@@ -61,6 +65,7 @@ export function GenerationModeToggle({
               aria-selected={selectedMode === "auto"}
               className={itemClass("auto")}
               onClick={() => onChange("auto")}
+              disabled={disabled}
             >
               <AutoIcon className="size-4 shrink-0" aria-hidden="true" />
               {autoLabel}
@@ -72,8 +77,8 @@ export function GenerationModeToggle({
               className={itemClass("manual")}
               onClick={() => onChange("manual")}
               disabled={manualDisabled}
-              aria-describedby={manualDisabled ? manualDescriptionId : undefined}
-              title={manualDisabled ? externalLlmAvailability.message : undefined}
+              aria-describedby={!externalLlmAvailability.enabled ? manualDescriptionId : undefined}
+              title={!externalLlmAvailability.enabled ? externalLlmAvailability.message : undefined}
             >
               <ManualIcon className="size-4 shrink-0" aria-hidden="true" />
               {manualLabel}
@@ -95,7 +100,7 @@ export function GenerationModeToggle({
             </TooltipContent>
           </Tooltip>
         </div>
-        {manualDisabled ? (
+        {!externalLlmAvailability.enabled ? (
           <p id={manualDescriptionId} role="status" className="text-xs text-muted-foreground">
             {externalLlmAvailability.message}
           </p>

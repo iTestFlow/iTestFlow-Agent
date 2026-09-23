@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, CheckCircle2, FileSearch, ListChecks, Loader2, Play, Send, TriangleAlert, X } from "lucide-react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
@@ -54,6 +54,8 @@ import { cn } from "@/lib/utils";
 import { countEditedById } from "@/shared/lib/edited-count";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
+import { isContextReviewRefreshRequired } from "@/components/workflow/workflow-context-review-error";
+import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-citations";
 
 import { buildCommentBodyWithMentions } from "./lib/comment-helpers";
 import {
@@ -64,11 +66,19 @@ import {
   toggleUniqueId,
 } from "./lib/findings-selection";
 
+type ContextReviewPreview = {
+  contextCitations: WorkflowContextCitation[];
+  reviewedSourceIds: string[];
+  excludedSourceIds?: string[];
+  contextConsistency?: { valid: true };
+};
+
 export function RequirementsAnalysisClient() {
   const scope = useActiveProject();
   const findingsCardRef = useRef<HTMLDivElement | null>(null);
   const findingsHeadingRef = useRef<HTMLDivElement | null>(null);
   const promptSectionRef = useRef<HTMLDivElement | null>(null);
+  const reviewContextButtonRef = useRef<HTMLButtonElement | null>(null);
   const [activeStep, setActiveStep] = useState<"analyze" | "review">("analyze");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
@@ -96,6 +106,13 @@ export function RequirementsAnalysisClient() {
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
   const manualOperationVersionRef = useRef(0);
+  const [contextPreview, setContextPreview] = useState<ContextReviewPreview | null>(null);
+  const [excludedSourceIds, setExcludedSourceIds] = useState<string[]>([]);
+  const [contextReviewOpen, setContextReviewOpen] = useState(false);
+  const [contextPreviewLoading, setContextPreviewLoading] = useState(false);
+  const [contextPreviewError, setContextPreviewError] = useState<string | null>(null);
+  const contextPreviewVersionRef = useRef(0);
+  const contextPreviewAbortRef = useRef<AbortController | null>(null);
   const [findings, setFindings] = useState<RequirementFinding[]>([]);
   const [selectedFindingIds, setSelectedFindingIds] = useState<string[]>([]);
   const [findingsReviewVersion, setFindingsReviewVersion] = useState(0);
@@ -111,9 +128,21 @@ export function RequirementsAnalysisClient() {
       manualSubmitLoading ||
       pushState.loading ||
       gen.isRunning ||
-      prep.isRunning,
+      prep.isRunning ||
+      contextPreviewLoading,
   });
+  const invalidateContextPreview = useCallback((resetExclusions = false) => {
+    contextPreviewVersionRef.current += 1;
+    contextPreviewAbortRef.current?.abort();
+    contextPreviewAbortRef.current = null;
+    setContextPreviewLoading(false);
+    setContextPreview(null);
+    setContextReviewOpen(false);
+    setContextPreviewError(null);
+    if (resetExclusions) setExcludedSourceIds([]);
+  }, []);
   useEffect(() => {
+    manualOperationVersionRef.current += 1;
     cancelGeneration();
     cancelPreparation();
     endLoadingGameSession();
@@ -125,11 +154,13 @@ export function RequirementsAnalysisClient() {
     setSelectedFindingIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
+    setManualSubmitLoading(false);
     setManualSubmitError(null);
     setPushState({ loading: false, error: null, data: null });
     setSelectedMentionUserIds([]);
     setSelectedAttachmentIdsByTarget({});
-  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
+    invalidateContextPreview(true);
+  }, [scope?.workspaceId, scope?.projectId, scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession, invalidateContextPreview]);
   useEffect(() => {
     if (externalLlmAvailability.enabled || mode !== "manual") return;
     manualOperationVersionRef.current += 1;
@@ -139,7 +170,8 @@ export function RequirementsAnalysisClient() {
     setManualResponse("");
     setManualSubmitLoading(false);
     setManualSubmitError(null);
-  }, [cancelPreparation, externalLlmAvailability.enabled, mode]);
+    invalidateContextPreview();
+  }, [cancelPreparation, externalLlmAvailability.enabled, invalidateContextPreview, mode]);
   const sortedFindingList = useMemo(
     () => sortFindingsBySeverity(findings),
     [findings],
@@ -203,6 +235,7 @@ export function RequirementsAnalysisClient() {
   }, [scope]);
 
   function changeTargetWorkItemId(value: string) {
+    manualOperationVersionRef.current += 1;
     gen.cancel();
     prep.cancel();
     loadingGame.endSession();
@@ -216,11 +249,14 @@ export function RequirementsAnalysisClient() {
     setPushState({ loading: false, error: null, data: null });
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
+    setManualSubmitLoading(false);
     setManualSubmitError(null);
     setSelectedMentionUserIds([]);
+    invalidateContextPreview(true);
   }
 
   function changeExtraInstructions(value: string) {
+    manualOperationVersionRef.current += 1;
     gen.cancel();
     prep.cancel();
     loadingGame.endSession();
@@ -232,7 +268,24 @@ export function RequirementsAnalysisClient() {
     setSelectedFindingIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
+    setManualSubmitLoading(false);
     setManualSubmitError(null);
+    invalidateContextPreview();
+  }
+
+  function changeMode(nextMode: WorkflowMode) {
+    if (nextMode === mode) return;
+    manualOperationVersionRef.current += 1;
+    gen.cancel();
+    prep.cancel();
+    loadingGame.endSession();
+    setHasUnfinishedWork(true);
+    setMode(nextMode);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitLoading(false);
+    setManualSubmitError(null);
+    invalidateContextPreview();
   }
 
   function resetForStoryAttachmentChange() {
@@ -251,6 +304,7 @@ export function RequirementsAnalysisClient() {
     setManualSubmitLoading(false);
     setManualSubmitError(null);
     setSelectedMentionUserIds([]);
+    invalidateContextPreview();
   }
 
   function changeSelectedAttachmentIds(ids: string[]) {
@@ -269,6 +323,7 @@ export function RequirementsAnalysisClient() {
   }
 
   function resetManualDraftForChecklistChange() {
+    manualOperationVersionRef.current += 1;
     gen.cancel();
     prep.cancel();
     loadingGame.endSession();
@@ -278,7 +333,9 @@ export function RequirementsAnalysisClient() {
     setSelectedFindingIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
+    setManualSubmitLoading(false);
     setManualSubmitError(null);
+    invalidateContextPreview();
   }
 
   function changeChecklistSelection(checklistItemId: RequirementAnalysisChecklistItemId, checked: boolean) {
@@ -306,6 +363,67 @@ export function RequirementsAnalysisClient() {
     resetManualDraftForChecklistChange();
   }
 
+  function contextSelectionPayload() {
+    return {
+      ...(contextPreview ? { reviewedSourceIds: contextPreview.reviewedSourceIds } : {}),
+      excludedSourceIds,
+    };
+  }
+
+  function changeExcludedContextSourceIds(nextIds: string[]) {
+    if (nextIds.length === excludedSourceIds.length && nextIds.every((id, index) => id === excludedSourceIds[index])) return;
+    manualOperationVersionRef.current += 1;
+    gen.cancel();
+    prep.cancel();
+    loadingGame.endSession();
+    setHasUnfinishedWork(true);
+    setExcludedSourceIds(nextIds);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitLoading(false);
+    setManualSubmitError(null);
+  }
+
+  async function reviewContext() {
+    if (!scope || !targetWorkItemId || !checklistSelectionValid || !extraInstructionsValid) return;
+    if (contextPreviewLoading || gen.isRunning || prep.isRunning || manualSubmitLoading) return;
+    if (contextPreview) {
+      setContextReviewOpen(true);
+      return;
+    }
+    const previewVersion = ++contextPreviewVersionRef.current;
+    contextPreviewAbortRef.current?.abort();
+    const controller = new AbortController();
+    contextPreviewAbortRef.current = controller;
+    setContextPreviewLoading(true);
+    setContextPreviewError(null);
+    try {
+      const data = await postJson<ContextReviewPreview>(
+        "/api/workflow-context/preview",
+        {
+          workflow: "requirement_analysis",
+          mode,
+          scope,
+          targetWorkItemId,
+          enabledChecklistItemIds,
+          attachmentIds: selectedAttachmentIds,
+          extraInstructions: normalizeExtraInstructions(extraInstructions),
+          ...contextSelectionPayload(),
+        },
+        controller.signal,
+      );
+      if (previewVersion !== contextPreviewVersionRef.current) return;
+      setContextPreview(data);
+      setExcludedSourceIds((current) => data.excludedSourceIds ?? current);
+      setContextReviewOpen(true);
+    } catch (error) {
+      if (controller.signal.aborted || previewVersion !== contextPreviewVersionRef.current) return;
+      setContextPreviewError(caughtErrorMessage(error, "Context preview failed."));
+    } finally {
+      if (previewVersion === contextPreviewVersionRef.current) setContextPreviewLoading(false);
+    }
+  }
+
   function applyAnalysisResult(data: RequirementAnalysisRunResult) {
     setActiveStep("review");
     setHasUnfinishedWork(data.findings.length > 0);
@@ -319,7 +437,8 @@ export function RequirementsAnalysisClient() {
 
   async function runAnalysis() {
     if (!scope || !targetWorkItemId || !checklistSelectionValid || !extraInstructionsValid) return;
-    if (gen.isRunning) return;
+    if (gen.isRunning || contextPreviewLoading || manualSubmitLoading) return;
+    setContextReviewOpen(false);
     loadingGame.startSession();
     setAnalysis({ loading: true, error: null, data: null });
     setFindings([]);
@@ -327,19 +446,25 @@ export function RequirementsAnalysisClient() {
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
-    const data = await gen.start((signal) =>
-      postJson<RequirementAnalysisRunResult>(
-        "/api/requirement-analysis/run",
-        {
-          scope,
-          targetWorkItemId,
-          enabledChecklistItemIds,
-          attachmentIds: selectedAttachmentIds,
-          extraInstructions: normalizeExtraInstructions(extraInstructions),
-        },
-        signal,
-      ),
-    );
+    const data = await gen.start(async (signal) => {
+      try {
+        return await postJson<RequirementAnalysisRunResult>(
+          "/api/requirement-analysis/run",
+          {
+            scope,
+            targetWorkItemId,
+            enabledChecklistItemIds,
+            attachmentIds: selectedAttachmentIds,
+            extraInstructions: normalizeExtraInstructions(extraInstructions),
+            ...contextSelectionPayload(),
+          },
+          signal,
+        );
+      } catch (error) {
+        if (isContextReviewRefreshRequired(error)) invalidateContextPreview();
+        throw error;
+      }
+    });
     if (data) {
       loadingGame.completeSession(data);
     } else {
@@ -351,7 +476,8 @@ export function RequirementsAnalysisClient() {
 
   async function prepareManualPrompt() {
     if (!externalLlmAvailability.enabled || !scope || !targetWorkItemId || !checklistSelectionValid || !extraInstructionsValid) return;
-    if (prep.isRunning) return;
+    if (prep.isRunning || contextPreviewLoading || manualSubmitLoading) return;
+    setContextReviewOpen(false);
     const manualOperationVersion = manualOperationVersionRef.current;
     setAnalysis({ loading: false, error: null, data: null });
     setFindings([]);
@@ -360,19 +486,25 @@ export function RequirementsAnalysisClient() {
     setManualSubmitError(null);
     setManualResponse("");
     scrollToNextStep(promptSectionRef);
-    const data = await prep.start((signal) =>
-      postJson<ManualPromptDraft>(
-        "/api/requirement-analysis/manual/draft",
-        {
-          scope,
-          targetWorkItemId,
-          enabledChecklistItemIds,
-          attachmentIds: selectedAttachmentIds,
-          extraInstructions: normalizeExtraInstructions(extraInstructions),
-        },
-        signal,
-      ),
-    );
+    const data = await prep.start(async (signal) => {
+      try {
+        return await postJson<ManualPromptDraft>(
+          "/api/requirement-analysis/manual/draft",
+          {
+            scope,
+            targetWorkItemId,
+            enabledChecklistItemIds,
+            attachmentIds: selectedAttachmentIds,
+            extraInstructions: normalizeExtraInstructions(extraInstructions),
+            ...contextSelectionPayload(),
+          },
+          signal,
+        );
+      } catch (error) {
+        if (isContextReviewRefreshRequired(error)) invalidateContextPreview();
+        throw error;
+      }
+    });
     if (data) {
       if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualDraft({ loading: false, error: null, data });
@@ -398,6 +530,7 @@ export function RequirementsAnalysisClient() {
         resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
         contextCitations: manualDraft.data.contextCitations,
         retrievalTopK: manualDraft.data.retrievalTopK,
+        ...contextSelectionPayload(),
       });
       if (manualOperationVersion !== manualOperationVersionRef.current) return;
       applyAnalysisResult(data);
@@ -509,10 +642,8 @@ export function RequirementsAnalysisClient() {
               <GenerationModeToggle
                 mode={mode}
                 externalLlmAvailability={externalLlmAvailability}
-                onChange={(nextMode) => {
-                  setHasUnfinishedWork(true);
-                  setMode(nextMode);
-                }}
+                disabled={contextPreviewLoading || gen.isRunning || prep.isRunning || manualSubmitLoading}
+                onChange={changeMode}
               />
             }
           >
@@ -532,18 +663,45 @@ export function RequirementsAnalysisClient() {
                     aria-label={WORK_ITEM_ID_TITLE}
                   />
                 </div>
-                {mode === "auto" ? (
-                  <Button className="w-full min-w-[9rem] lg:w-auto" onClick={runAnalysis} disabled={!scope || !targetWorkItemId || gen.isRunning || !checklistSelectionValid || !extraInstructionsValid}>
-                    {gen.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                    {gen.isRunning ? "Analyzing..." : "Analyze"}
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Button
+                    ref={reviewContextButtonRef}
+                    type="button"
+                    variant="outline"
+                    className="w-full min-w-[9rem] lg:w-auto"
+                    onClick={reviewContext}
+                    disabled={!scope || !targetWorkItemId || contextPreviewLoading || gen.isRunning || prep.isRunning || manualSubmitLoading || !checklistSelectionValid || !extraInstructionsValid || (mode === "manual" && !externalLlmAvailability.enabled)}
+                  >
+                    {contextPreviewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {contextPreviewLoading ? "Reviewing..." : "Review context"}
                   </Button>
-                ) : (
-                  <Button className="w-full min-w-[9rem] lg:w-auto" onClick={prepareManualPrompt} disabled={!externalLlmAvailability.enabled || !scope || !targetWorkItemId || prep.isRunning || !checklistSelectionValid || !extraInstructionsValid}>
-                    {prep.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                    {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
-                  </Button>
-                )}
+                  {mode === "auto" ? (
+                    <Button className="w-full min-w-[9rem] lg:w-auto" onClick={runAnalysis} disabled={!scope || !targetWorkItemId || contextPreviewLoading || gen.isRunning || manualSubmitLoading || !checklistSelectionValid || !extraInstructionsValid}>
+                      {gen.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                      {gen.isRunning ? "Analyzing..." : "Analyze"}
+                    </Button>
+                  ) : (
+                    <Button className="w-full min-w-[9rem] lg:w-auto" onClick={prepareManualPrompt} disabled={!externalLlmAvailability.enabled || !scope || !targetWorkItemId || contextPreviewLoading || prep.isRunning || manualSubmitLoading || !checklistSelectionValid || !extraInstructionsValid}>
+                      {prep.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                      {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
+                    </Button>
+                  )}
+                </div>
                </div>
+               {contextPreviewError ? <Callout tone="error" role="alert">{contextPreviewError}</Callout> : null}
+               {contextPreview ? (
+                 <WorkflowContextCitations
+                   citations={contextPreview.contextCitations}
+                   excludedSourceIds={excludedSourceIds}
+                   onExcludedSourceIdsChange={changeExcludedContextSourceIds}
+                   editable
+                   busy={contextPreviewLoading || gen.isRunning || prep.isRunning || manualSubmitLoading}
+                   open={contextReviewOpen}
+                   onOpenChange={setContextReviewOpen}
+                   restoreFocusRef={reviewContextButtonRef}
+                   hideSummary
+                 />
+               ) : null}
                <WorkItemPreview scope={scope} workItemId={targetWorkItemId} lookup={workItemLookup} />
                <StoryAttachmentsPanel
                  scope={scope}

@@ -9,14 +9,16 @@ import {
   requireWorkflowContext,
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
-import { reviewExistingLinkedTestCases } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
+import { buildExistingTestCaseReviewPromptDraft, reviewExistingLinkedTestCases } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
 import { deriveExistingTestCaseReviewMetrics } from "@/modules/existing-test-case-review/review-metrics";
-import { rankProjectKnowledgeForWorkItem } from "@/modules/rag/knowledge-relevance.service";
-import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
-import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
-import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
-import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
+import {
+  buildPreparedWorkflowContextCitations,
+  contextReviewRequiredResponseBody,
+  ContextReviewRequiredError,
+  prepareWorkflowContext,
+} from "@/modules/rag/workflow-context-preparation.service";
+import { WorkflowContextControlsSchema } from "@/modules/rag/workflow-context-controls";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import { integrationScopeHeaders } from "@/modules/shared/errors/route-error-response";
 import {
@@ -25,6 +27,7 @@ import {
   updateWorkflowRun,
 } from "@/modules/analytics/workflow-analytics.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
+import { resolveWorkspaceProviderId } from "@/modules/integrations/provider-registry";
 
 export const runtime = "nodejs";
 
@@ -33,7 +36,7 @@ const RequestSchema = z.object({
   targetWorkItemId: z.string().min(1),
   selectedContextIds: z.array(z.string()).optional().default([]),
   extraInstructions: z.string().max(EXTRA_INSTRUCTIONS_MAX_LENGTH, `Extra Instructions must be ${EXTRA_INSTRUCTIONS_MAX_LENGTH} characters or fewer.`).optional(),
-});
+}).merge(WorkflowContextControlsSchema);
 
 export async function POST(request: Request) {
   const parsed = RequestSchema.safeParse(await request.json());
@@ -64,56 +67,39 @@ export async function POST(request: Request) {
       projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
-    const linkedTestCases = await adapter.fetchLinkedTestCases({
-      projectId: trustedScope.azureProjectId,
-      userStoryId: parsed.data.targetWorkItemId,
-    });
-    const autoContext = await resolveWorkflowContext({
+    const prepared = await prepareWorkflowContext({
+      workflow: "existing_test_case_review",
+      mode: "auto",
       scope: trustedScope,
       actor: ctx.userId,
       adapter,
       provider,
+      workspaceId: ctx.workspace.id,
+      workspaceProviderId: resolveWorkspaceProviderId(ctx.workspace),
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: await resolveRetrievalTopK({
-        workspaceId: ctx.workspace.id,
-        query: `${targetRequirement.title}\n${targetRequirement.description ?? ""}`,
-      }),
-      workflowType: "existing_test_case_review",
-    });
-    const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "existing_test_case_review" });
-    // Selects the compiled knowledge this work item is actually connected to, by
-    // similarity and by the project's own module/provenance/dependency graph.
-    const rankedKnowledgeKeys = await rankProjectKnowledgeForWorkItem({
-      scope: trustedScope,
-      targetRequirement,
-      projectKnowledgeBase: knowledgeContext.knowledgeBase,
-      contextWorkItemIds: [
-        ...autoContext.relatedWorkItems.map((item) => item.workItemId),
-        ...autoContext.selectedContext.map((item) => item.workItemId),
-      ],
+      reviewedSourceIds: parsed.data.reviewedSourceIds,
+      excludedSourceIds: parsed.data.excludedSourceIds,
+      maxInputTokens: provider.maxInputTokens,
+      extraInstructions: parsed.data.extraInstructions,
     });
     const result = await reviewExistingLinkedTestCases({
       scope: trustedScope,
       actor: ctx.userId,
       provider,
       targetRequirement,
-      linkedTestCases,
-      relatedWorkItems: autoContext.relatedWorkItems,
-      selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: knowledgeContext.knowledgeBase,
-      // Size the prompt's compiled knowledge and related context to the caller's
-      // model, keeping the workspace top-K as a floor rather than a ceiling.
-      maxInputTokens: provider.maxInputTokens,
-      relatedWorkItemsFloor: autoContext.retrievalTopK,
-      rankedKnowledgeKeys: rankedKnowledgeKeys ?? undefined,
-      projectKnowledgeNotice: knowledgeContext.promptNotice,
+      linkedTestCases: prepared.linkedTestCases,
+      relatedWorkItems: prepared.relatedWorkItems,
+      selectedContext: prepared.selectedContext,
+      projectKnowledgeBase: prepared.projectKnowledgeBase,
+      maxInputTokens: prepared.maxInputTokens,
+      relatedWorkItemsFloor: prepared.retrievalTopK,
+      rankedKnowledgeKeys: prepared.rankedKnowledgeKeys,
+      projectKnowledgeNotice: prepared.projectKnowledgeNotice,
       extraInstructions: parsed.data.extraInstructions,
+      preparedPromptDraft: prepared.promptDraft as ReturnType<typeof buildExistingTestCaseReviewPromptDraft>,
     });
-    const contextCitations = buildWorkflowContextCitations({
-      resolvedContextUsed: autoContext.contextUsed,
-      relevantProjectKnowledgeBase: result.relevantProjectKnowledgeBase,
-    });
+    const contextCitations = buildPreparedWorkflowContextCitations(prepared, result);
     const metrics = deriveExistingTestCaseReviewMetrics(result.validatedOutput);
     updateWorkflowRun({
       scope: trustedScope,
@@ -141,19 +127,25 @@ export async function POST(request: Request) {
     return NextResponse.json({
       analyticsRunId,
       targetWorkItemId: parsed.data.targetWorkItemId,
-      linkedTestCases,
+      linkedTestCases: prepared.linkedTestCases,
       selectedContextIds: parsed.data.selectedContextIds,
-      resolvedContextUsed: autoContext.contextUsed,
+      reviewedSourceIds: prepared.reviewedSourceIds,
+      excludedSourceIds: prepared.excludedSourceIds,
+      resolvedContextUsed: prepared.contextUsed,
       contextCitations,
-      retrievalTopK: autoContext.retrievalTopK,
+      retrievalTopK: prepared.retrievalTopK,
       provider: result.provider,
       model: result.model,
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
       tokenUsage: provider.getTokenUsage(),
-      warnings: [...(result.warnings ?? []), ...(knowledgeContext.promptNotice ? [knowledgeContext.promptNotice] : [])],
+      warnings: [...(result.warnings ?? []), ...(prepared.projectKnowledgeNotice ? [prepared.projectKnowledgeNotice] : [])],
     });
   } catch (error) {
+    if (error instanceof ContextReviewRequiredError) {
+      if (trustedScope && analyticsRunId) failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error.message });
+      return NextResponse.json(contextReviewRequiredResponseBody(error), { status: 409 });
+    }
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
     if (trustedScope && actor) writeGenerationFailureAudit({ scope: trustedScope, actor, action: "existing_test_case_review.run", label: "Test Coverage Matrix generation failed.", error });

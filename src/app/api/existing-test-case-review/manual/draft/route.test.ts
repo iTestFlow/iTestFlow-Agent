@@ -23,7 +23,8 @@ vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal
 vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
 }));
-vi.mock("@/modules/rag/auto-context-resolver.service", () => ({
+vi.mock("@/modules/rag/auto-context-resolver.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/rag/auto-context-resolver.service")>(),
   resolveWorkflowContextWithoutLLM: mocks.resolveWorkflowContextWithoutLLM,
 }));
 vi.mock("@/modules/rag/retrieval-config", () => ({
@@ -56,7 +57,7 @@ import { POST } from "./route";
 const trustedScope = projectScope();
 const context = {
   userId: "user-1",
-  workspace: { id: "ws-1", azureOrgUrl: "https://dev.azure.com/demo" },
+  workspace: { id: "ws-1", azureOrgUrl: "https://dev.azure.com/demo", providerId: "azure-devops" },
 };
 
 function body() {

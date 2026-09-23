@@ -24,7 +24,8 @@ vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal
 vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
 }));
-vi.mock("@/modules/rag/auto-context-resolver.service", () => ({
+vi.mock("@/modules/rag/auto-context-resolver.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/rag/auto-context-resolver.service")>(),
   resolveWorkflowContextWithoutLLM: mocks.resolveWorkflowContextWithoutLLM,
 }));
 vi.mock("@/modules/rag/retrieval-config", () => ({
@@ -47,6 +48,7 @@ vi.mock("@/modules/story-attachments/story-attachment-workflow-context", () => (
 }));
 
 import { azureDevOpsIntegrationError } from "@/modules/integrations/azure-devops/azure-devops-error";
+import { StoryAttachmentNotReadyError } from "@/modules/story-attachments/story-attachments.service";
 import { fakeAzureAdapter, jsonRequest, projectScope, requirement } from "@/test/factories";
 import { POST } from "./route";
 
@@ -112,6 +114,21 @@ describe("requirement-analysis manual draft route", () => {
       relatedWorkItemsFloor: 6,
       rankedKnowledgeKeys: { businessRules: ["rule-1"] },
     }));
+  });
+
+  it("returns review-required when a reviewed attachment is no longer ready", async () => {
+    mocks.loadProjectKnowledgeContext.mockResolvedValue({ knowledgeBase: null, promptNotice: null });
+    mocks.loadSelectedStoryAttachmentWorkflowContext.mockRejectedValue(new StoryAttachmentNotReadyError());
+
+    const response = await POST(jsonRequest("/api/requirement-analysis/manual/draft", {
+      ...body(), reviewedSourceIds: ["SA:attachment-1"], attachmentIds: ["attachment-1"],
+    }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "CONTEXT_REVIEW_REQUIRED", missingSourceIds: ["SA:attachment-1"],
+    });
+    expect(mocks.buildRequirementAnalysisPromptDraft).not.toHaveBeenCalled();
   });
 
   it("anchors knowledge ranking on the work items context actually resolved", async () => {
@@ -194,6 +211,7 @@ describe("requirement-analysis manual draft route", () => {
       },
       attachmentIds: ["attachment-1"],
       includeVisuals: false,
+      maxInputTokens: 64_000,
     });
     expect(mocks.buildRequirementAnalysisPromptDraft).toHaveBeenCalledWith(expect.objectContaining({
       storyAttachments: promptAttachments,

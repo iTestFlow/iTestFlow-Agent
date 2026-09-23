@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   resolveWorkflowContext: vi.fn(),
   resolveRetrievalTopK: vi.fn(),
   loadProjectKnowledgeContext: vi.fn(),
+  rankProjectKnowledgeForWorkItem: vi.fn(),
+  buildExistingTestCaseReviewPromptDraft: vi.fn(),
   writeGenerationFailureAudit: vi.fn(),
   startWorkflowRun: vi.fn(),
   updateWorkflowRun: vi.fn(),
@@ -32,19 +34,25 @@ vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal
 // existing-test-case-review.test.ts; here it is the boundary the route
 // orchestrates around. Metric derivation itself is pinned by review-metrics.test.ts.
 vi.mock("@/modules/existing-test-case-review/application/existing-test-case-review.service", () => ({
+  buildExistingTestCaseReviewPromptDraft: mocks.buildExistingTestCaseReviewPromptDraft,
   reviewExistingLinkedTestCases: mocks.reviewExistingLinkedTestCases,
 }));
 vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
 }));
-vi.mock("@/modules/rag/auto-context-resolver.service", () => ({
+vi.mock("@/modules/rag/auto-context-resolver.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/rag/auto-context-resolver.service")>(),
   resolveWorkflowContext: mocks.resolveWorkflowContext,
+  resolveWorkflowContextWithoutLLM: mocks.resolveWorkflowContext,
 }));
 vi.mock("@/modules/rag/retrieval-config", () => ({
   resolveRetrievalTopK: mocks.resolveRetrievalTopK,
 }));
 vi.mock("@/modules/rag/project-knowledge.service", () => ({
   loadProjectKnowledgeContext: mocks.loadProjectKnowledgeContext,
+}));
+vi.mock("@/modules/rag/knowledge-relevance.service", () => ({
+  rankProjectKnowledgeForWorkItem: mocks.rankProjectKnowledgeForWorkItem,
 }));
 vi.mock("@/modules/audit/generation-failure-audit", () => ({
   writeGenerationFailureAudit: mocks.writeGenerationFailureAudit,
@@ -94,7 +102,7 @@ function runRequest(overrides: Record<string, unknown> = {}) {
 describe("POST /api/existing-test-case-review/run", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.requireWorkflowContext.mockResolvedValue({ userId: "user-1", workspace: { id: "ws-1" } });
+    mocks.requireWorkflowContext.mockResolvedValue({ userId: "user-1", workspace: { id: "ws-1", providerId: "azure-devops" } });
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
     mocks.getUserLLMProvider.mockResolvedValue(fakeLlmProvider());
     mocks.getUserAzureAdapter.mockResolvedValue(fakeAzureAdapter({
@@ -111,6 +119,12 @@ describe("POST /api/existing-test-case-review/run", () => {
     });
     mocks.resolveRetrievalTopK.mockResolvedValue(5);
     mocks.loadProjectKnowledgeContext.mockResolvedValue({ knowledgeBase: null, health: null, usage: "raw_only", promptNotice: null });
+    mocks.rankProjectKnowledgeForWorkItem.mockResolvedValue(null);
+    mocks.buildExistingTestCaseReviewPromptDraft.mockReturnValue({
+      prompt: "mock prompt",
+      userPrompt: "mock user prompt",
+      relevantProjectKnowledgeBase: null,
+    });
     mocks.startWorkflowRun.mockReturnValue("run-1");
     mocks.reviewExistingLinkedTestCases.mockResolvedValue({
       provider: "openai",

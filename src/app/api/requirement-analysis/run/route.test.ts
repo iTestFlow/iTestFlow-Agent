@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   loadProjectKnowledgeContext: vi.fn(),
   rankProjectKnowledgeForWorkItem: vi.fn(),
   loadSelectedStoryAttachmentWorkflowContext: vi.fn(),
+  buildRequirementAnalysisPromptDraft: vi.fn(),
   runRequirementAnalysis: vi.fn(),
   writeGenerationFailureAudit: vi.fn(),
   startWorkflowRun: vi.fn(),
@@ -29,8 +30,10 @@ vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal
 vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
 }));
-vi.mock("@/modules/rag/auto-context-resolver.service", () => ({
+vi.mock("@/modules/rag/auto-context-resolver.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/rag/auto-context-resolver.service")>(),
   resolveWorkflowContext: mocks.resolveWorkflowContext,
+  resolveWorkflowContextWithoutLLM: mocks.resolveWorkflowContext,
 }));
 vi.mock("@/modules/rag/retrieval-config", () => ({
   resolveRetrievalTopK: mocks.resolveRetrievalTopK,
@@ -45,6 +48,7 @@ vi.mock("@/modules/story-attachments/story-attachment-workflow-context", () => (
   loadSelectedStoryAttachmentWorkflowContext: mocks.loadSelectedStoryAttachmentWorkflowContext,
 }));
 vi.mock("@/modules/requirement-analysis/application/requirement-analysis.service", () => ({
+  buildRequirementAnalysisPromptDraft: mocks.buildRequirementAnalysisPromptDraft,
   runRequirementAnalysis: mocks.runRequirementAnalysis,
 }));
 vi.mock("@/modules/audit/generation-failure-audit", () => ({
@@ -62,6 +66,7 @@ vi.mock("@/modules/analytics/workflow-analytics.service", async (importOriginal)
 });
 
 import { azureDevOpsIntegrationError } from "@/modules/integrations/azure-devops/azure-devops-error";
+import { ReviewedContextSourceUnavailableError } from "@/modules/rag/auto-context-resolver.service";
 import { fakeAzureAdapter, fakeLlmProvider, jsonRequest, projectScope, requirement } from "@/test/factories";
 import { POST } from "./route";
 
@@ -109,6 +114,14 @@ describe("requirement-analysis run route", () => {
       effectivePromptInputTokens: 128_000,
       warnings: [],
     });
+    mocks.buildRequirementAnalysisPromptDraft.mockReturnValue({
+      prompt: "mock prompt",
+      userPrompt: "mock user prompt",
+      relevantProjectKnowledgeBase: null,
+      includedStoryAttachmentTextIds: [],
+      omittedStoryAttachmentTextIds: [],
+      storyAttachmentWarnings: [],
+    });
     mocks.runRequirementAnalysis.mockResolvedValue({
       validatedOutput: {
         findings: [],
@@ -132,6 +145,20 @@ describe("requirement-analysis run route", () => {
       relatedWorkItemsFloor: 6,
       rankedKnowledgeKeys: { businessRules: ["rule-1"] },
     }));
+  });
+
+  it("returns review-required before generation when a reviewed work item disappears", async () => {
+    mocks.resolveWorkflowContext.mockRejectedValue(new ReviewedContextSourceUnavailableError("WI:404"));
+
+    const response = await POST(jsonRequest("/api/requirement-analysis/run", {
+      ...body(), reviewedSourceIds: ["WI:404"],
+    }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "CONTEXT_REVIEW_REQUIRED", missingSourceIds: ["WI:404"],
+    });
+    expect(mocks.runRequirementAnalysis).not.toHaveBeenCalled();
   });
 
   it("anchors knowledge ranking on the work items context actually resolved", async () => {

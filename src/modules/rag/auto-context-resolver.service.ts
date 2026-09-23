@@ -3,6 +3,7 @@ import "server-only";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
+import { isIntegrationError } from "@/modules/integrations/core/integration-error";
 import { suggestContextStories } from "@/modules/context-selection/context-selection.service";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
@@ -12,6 +13,13 @@ import {
   workItemToLlmContextSource,
   type LlmWorkItemContextSource,
 } from "./project-context-store.service";
+import {
+  filterWorkItemSourcesForContextControls,
+  isWorkflowContextSourceAllowed,
+  normalizeWorkflowContextControls,
+  sourceIdForWorkItem,
+  workItemIdsFromSourceIds,
+} from "./workflow-context-controls";
 
 export const REQUIREMENT_CONTEXT_WORK_ITEM_TYPES = [
   "Epic",
@@ -30,6 +38,8 @@ export type ContextUsedItem = {
   workItemType: string;
   source: "explicit" | "linked_requirement" | "stored_project_context" | "llm_selected_context";
   relevanceScore: number;
+  /** A model-provided selection explanation when automatic selection supplied one. */
+  reason?: string;
 };
 
 export type AutoContextResolution = {
@@ -44,6 +54,13 @@ export type AutoContextResolution = {
   retrievalTopK: number;
 };
 
+export class ReviewedContextSourceUnavailableError extends Error {
+  constructor(readonly sourceId: string) {
+    super(`Reviewed context source ${sourceId} is no longer available.`);
+    this.name = "ReviewedContextSourceUnavailableError";
+  }
+}
+
 export async function resolveWorkflowContext(input: {
   scope: ProjectScope;
   actor: string;
@@ -51,6 +68,8 @@ export async function resolveWorkflowContext(input: {
   provider: LLMProvider;
   targetRequirement: Requirement;
   selectedContextIds?: string[];
+  reviewedSourceIds?: string[];
+  excludedSourceIds?: string[];
   retrievalTopK: number;
   workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review";
 }): Promise<AutoContextResolution> {
@@ -62,6 +81,8 @@ export async function resolveWorkflowContextWithoutLLM(input: {
   adapter: AzureDevOpsAdapter;
   targetRequirement: Requirement;
   selectedContextIds?: string[];
+  reviewedSourceIds?: string[];
+  excludedSourceIds?: string[];
   retrievalTopK: number;
 }): Promise<AutoContextResolution> {
   return resolveWorkflowContextCore({
@@ -77,23 +98,68 @@ async function resolveWorkflowContextCore(input: {
   actor?: string;
   targetRequirement: Requirement;
   selectedContextIds?: string[];
+  reviewedSourceIds?: string[];
+  excludedSourceIds?: string[];
   retrievalTopK: number;
   workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review";
 }): Promise<AutoContextResolution> {
   const scope = assertProjectScope(input.scope);
   const retrievalTopK = clampTopK(input.retrievalTopK);
-  const linkedRequirementContext = await loadLinkedRequirementContext({
-    scope,
-    adapter: input.adapter,
-    targetRequirement: input.targetRequirement,
+  const controls = normalizeWorkflowContextControls({
+    reviewedSourceIds: input.reviewedSourceIds,
+    excludedSourceIds: input.excludedSourceIds,
   });
 
+  // An explicit review is authoritative.  It never adds linked items or
+  // backfills a missing reviewed reference from automatic retrieval.
+  if (controls.reviewedSourceIds !== undefined) {
+    const reviewedWorkItemIds = Array.from(new Set(
+      workItemIdsFromSourceIds(controls.reviewedSourceIds).filter((workItemId) =>
+        workItemId !== input.targetRequirement.id &&
+        isWorkflowContextSourceAllowed(sourceIdForWorkItem(workItemId), controls),
+      ),
+    ));
+    if (!reviewedWorkItemIds.length) {
+      return {
+        selectedContext: [],
+        relatedWorkItems: [],
+        contextUsed: [],
+        retrievalTopK,
+      };
+    }
+
+    const selectedContext = await loadReviewedContext({
+      scope,
+      adapter: input.adapter,
+      workItemIds: reviewedWorkItemIds,
+    });
+    return {
+      selectedContext,
+      relatedWorkItems: [],
+      contextUsed: selectedContext.map((item) => toContextUsedItem(item, "explicit")),
+      retrievalTopK,
+    };
+  }
+
+  const linkedRequirementContext = filterWorkItemSourcesForContextControls(
+    await loadLinkedRequirementContext({
+      scope,
+      adapter: input.adapter,
+      targetRequirement: input.targetRequirement,
+    }),
+    controls,
+  );
+
   if (input.selectedContextIds?.length) {
+    const selectedContextIds = input.selectedContextIds.filter((workItemId) =>
+      workItemId !== input.targetRequirement.id &&
+      isWorkflowContextSourceAllowed(sourceIdForWorkItem(workItemId), controls),
+    );
     const explicitContext = await loadExplicitContext({
       scope,
       adapter: input.adapter,
-      selectedContextIds: input.selectedContextIds,
-      retrievalTopK: Math.max(retrievalTopK, input.selectedContextIds.length * 3),
+      selectedContextIds,
+      retrievalTopK: Math.max(retrievalTopK, selectedContextIds.length * 3),
     });
     const selectedContext = mergePinnedContextItems({
       pinned: linkedRequirementContext,
@@ -119,11 +185,13 @@ async function resolveWorkflowContextCore(input: {
       query: requirementToRetrievalQuery(input.targetRequirement),
       topK: retrievalTopK,
       sourceKinds: ["azure_work_item"],
-    })).filter(isWorkItemLlmContextSource).filter((item) => item.workItemId !== input.targetRequirement.id),
+    }))
+      .filter(isWorkItemLlmContextSource)
+      .filter((item) => item.workItemId !== input.targetRequirement.id),
   );
   const candidates = distinctContextByWorkItem([
     ...linkedRequirementContext,
-    ...storedContext,
+    ...filterWorkItemSourcesForContextControls(storedContext, controls),
   ]).slice(0, Math.max(retrievalTopK, linkedRequirementContext.length));
 
   if (!candidates.length) {
@@ -134,7 +202,7 @@ async function resolveWorkflowContextCore(input: {
       retrievalTopK,
     };
   }
-  const llmSelected = await selectContextWithLLM({
+  const llmSelection = await selectContextWithLLM({
     scope,
     actor: input.actor,
     provider: input.provider,
@@ -145,10 +213,10 @@ async function resolveWorkflowContextCore(input: {
   });
   const selectedContext = mergePinnedContextItems({
     pinned: linkedRequirementContext,
-    ranked: llmSelected.length ? llmSelected : candidates.slice(0, retrievalTopK),
+    ranked: llmSelection.items.length ? llmSelection.items : candidates.slice(0, retrievalTopK),
     maxItems: contextBudget(retrievalTopK, linkedRequirementContext.length),
   });
-  const llmSelectedIds = new Set(llmSelected.map((item) => item.workItemId));
+  const llmSelectedIds = new Set(llmSelection.items.map((item) => item.workItemId));
 
   return {
     selectedContext,
@@ -161,6 +229,7 @@ async function resolveWorkflowContextCore(input: {
           : linkedRequirementContext.some((linked) => linked.workItemId === item.workItemId)
             ? "linked_requirement"
             : "stored_project_context",
+        llmSelection.reasons.get(item.workItemId),
       ),
     ),
     retrievalTopK,
@@ -193,6 +262,8 @@ async function loadExplicitContext(input: {
   selectedContextIds: string[];
   retrievalTopK: number;
 }) {
+  if (!input.selectedContextIds.length) return [];
+  const requestedIds = new Set(input.selectedContextIds);
   const stored = await retrieveStoredProjectContext({
     scope: input.scope,
     query: input.selectedContextIds.join(" "),
@@ -200,7 +271,9 @@ async function loadExplicitContext(input: {
     topK: input.retrievalTopK,
     sourceKinds: ["azure_work_item"],
   });
-  const workItemContext = stored.filter(isWorkItemLlmContextSource);
+  const workItemContext = stored
+    .filter(isWorkItemLlmContextSource)
+    .filter((item) => requestedIds.has(item.workItemId));
   const foundIds = new Set(workItemContext.map((item) => item.workItemId));
   const missingIds = input.selectedContextIds.filter((id) => !foundIds.has(id));
   if (!missingIds.length) return distinctContextByWorkItem(workItemContext);
@@ -224,8 +297,8 @@ async function selectContextWithLLM(input: {
   candidates: LlmWorkItemContextSource[];
   maxContextItems: number;
   workflowType: "requirement_analysis" | "test_case_generation" | "existing_test_case_review";
-}) {
-  if (!input.provider) return [];
+}): Promise<{ items: LlmWorkItemContextSource[]; reasons: Map<string, string> }> {
+  if (!input.provider) return { items: [], reasons: new Map() };
   if (!input.actor) throw new Error("Audit actor is required for LLM context selection.");
 
   try {
@@ -238,12 +311,42 @@ async function selectContextWithLLM(input: {
       maxContextItems: input.maxContextItems,
       action: `${input.workflowType}.auto_context_select`,
     });
-    const ids = new Set(result.validatedOutput.suggestedItems.map((item) => item.workItemId));
-    return input.candidates.filter((item) => ids.has(item.workItemId)).slice(0, input.maxContextItems);
+    const reasons = new Map(
+      result.validatedOutput.suggestedItems.map((item) => [item.workItemId, item.reason] as const),
+    );
+    const ids = new Set(reasons.keys());
+    const items = input.candidates.filter((item) => ids.has(item.workItemId)).slice(0, input.maxContextItems);
+    return {
+      items,
+      reasons: new Map(items.map((item) => [item.workItemId, reasons.get(item.workItemId) ?? ""])),
+    };
   } catch (error) {
     console.error("Internal LLM context selection failed; falling back to deterministic context retrieval.", error);
-    return [];
+    return { items: [], reasons: new Map() };
   }
+}
+
+/** A review freezes membership, but current content and access come from the source. */
+async function loadReviewedContext(input: {
+  scope: ProjectScope;
+  adapter: AzureDevOpsAdapter;
+  workItemIds: string[];
+}) {
+  const fetched = await Promise.all(input.workItemIds.map(async (workItemId) => {
+    try {
+      return await input.adapter.fetchWorkItemById({
+        projectId: input.scope.azureProjectId,
+        workItemId,
+      });
+    } catch (error) {
+      if (isIntegrationError(error) &&
+        (error.code === "integration_not_found" || error.code === "integration_permission_denied")) {
+        throw new ReviewedContextSourceUnavailableError(sourceIdForWorkItem(workItemId));
+      }
+      throw error;
+    }
+  }));
+  return distinctContextByWorkItem(fetched.map((item) => workItemToLlmContextSource(item)));
 }
 
 function distinctContextByWorkItem(items: LlmWorkItemContextSource[]) {
@@ -267,13 +370,18 @@ function contextBudget(retrievalTopK: number, pinnedCount: number) {
   return Math.min(25, Math.max(retrievalTopK, pinnedCount));
 }
 
-function toContextUsedItem(item: LlmWorkItemContextSource, source: ContextUsedItem["source"]): ContextUsedItem {
+function toContextUsedItem(
+  item: LlmWorkItemContextSource,
+  source: ContextUsedItem["source"],
+  reason?: string,
+): ContextUsedItem {
   return {
     workItemId: item.workItemId,
     title: item.title,
     workItemType: item.workItemType,
     source,
     relevanceScore: item.relevanceScore,
+    ...(reason?.trim() ? { reason } : {}),
   };
 }
 

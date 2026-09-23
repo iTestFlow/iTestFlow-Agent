@@ -34,9 +34,10 @@ export async function generateTestCases(input: {
   attachmentImages?: readonly LLMImageInput[];
   options?: Partial<TestDesignOptions>;
   extraInstructions?: string;
+  preparedPromptDraft?: ReturnType<typeof buildTestCaseGenerationPromptDraft>;
 }) {
   const scope = assertProjectScope(input.scope);
-  const promptDraft = buildTestCaseGenerationPromptDraft({
+  const promptDraft = input.preparedPromptDraft ?? buildTestCaseGenerationPromptDraft({
     scope,
     // Sizes how much compiled knowledge and related context the prompt carries.
     maxInputTokens: input.maxInputTokens,

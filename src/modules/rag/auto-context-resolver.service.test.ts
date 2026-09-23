@@ -13,6 +13,7 @@ vi.mock("@/modules/context-selection/context-selection.service", () => ({
 
 import { suggestContextStories } from "@/modules/context-selection/context-selection.service";
 import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
+import { IntegrationError } from "@/modules/integrations/core/integration-error";
 import { fakeAzureAdapter, fakeLlmProvider, projectScope, requirement } from "@/test/factories";
 import {
   requirementToRetrievalQuery,
@@ -23,6 +24,7 @@ import {
 import {
   isRequirementContextWorkItem,
   REQUIREMENT_CONTEXT_WORK_ITEM_TYPES,
+  ReviewedContextSourceUnavailableError,
   resolveWorkflowContext,
   resolveWorkflowContextWithoutLLM,
 } from "./auto-context-resolver.service";
@@ -215,6 +217,102 @@ describe("resolveWorkflowContextWithoutLLM", () => {
   });
 });
 
+describe("reviewed workflow context", () => {
+  it("honors an explicitly empty review without loading linked or replacement context", async () => {
+    const fns = adapterFns();
+
+    const resolution = await resolveWorkflowContextWithoutLLM({
+      scope: projectScope(),
+      adapter: fakeAzureAdapter(fns),
+      targetRequirement: requirement(),
+      reviewedSourceIds: [],
+      excludedSourceIds: [],
+      retrievalTopK: 8,
+    });
+
+    expect(resolution).toEqual({
+      selectedContext: [],
+      relatedWorkItems: [],
+      contextUsed: [],
+      retrievalTopK: 8,
+    });
+    expect(fns.fetchLinkedRequirementWorkItems).not.toHaveBeenCalled();
+    expect(retrieveStoredProjectContextMock).not.toHaveBeenCalled();
+    expect(suggestContextStoriesMock).not.toHaveBeenCalled();
+  });
+
+  it("loads only reviewed work items and never adds linked or retrieved replacements", async () => {
+    const fns = adapterFns();
+    fns.fetchWorkItemById.mockResolvedValue(requirement({ id: "400", title: "Reviewed story" }));
+    retrieveStoredProjectContextMock.mockResolvedValue([
+      storedContext({ workItemId: "400", title: "Reviewed story" }),
+      storedContext({ workItemId: "500", title: "Unreviewed replacement" }),
+    ]);
+
+    const resolution = await resolveWorkflowContext({
+      scope: projectScope(),
+      actor: "tester@example.com",
+      adapter: fakeAzureAdapter(fns),
+      provider: fakeLlmProvider(),
+      targetRequirement: requirement(),
+      reviewedSourceIds: ["WI:400"],
+      excludedSourceIds: [],
+      retrievalTopK: 8,
+      workflowType: "test_case_generation",
+    });
+
+    expect(resolution.selectedContext.map((item) => item.workItemId)).toEqual(["400"]);
+    expect(resolution.relatedWorkItems).toEqual([]);
+    expect(resolution.contextUsed).toEqual([
+      expect.objectContaining({ workItemId: "400", source: "explicit" }),
+    ]);
+    expect(fns.fetchLinkedRequirementWorkItems).not.toHaveBeenCalled();
+    expect(suggestContextStoriesMock).not.toHaveBeenCalled();
+    expect(retrieveStoredProjectContextMock).not.toHaveBeenCalled();
+    expect(fns.fetchWorkItemById).toHaveBeenCalledWith({
+      projectId: "azure-project-1", workItemId: "400",
+    });
+  });
+
+  it("honors exclusions before reviewed work-item loading", async () => {
+    const fns = adapterFns();
+
+    const resolution = await resolveWorkflowContextWithoutLLM({
+      scope: projectScope(),
+      adapter: fakeAzureAdapter(fns),
+      targetRequirement: requirement(),
+      reviewedSourceIds: ["WI:400"],
+      excludedSourceIds: ["WI:400"],
+      retrievalTopK: 8,
+    });
+
+    expect(resolution.selectedContext).toEqual([]);
+    expect(retrieveStoredProjectContextMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["integration_not_found", "integration_permission_denied"] as const)(
+    "identifies a reviewed work item that disappeared despite a cached hit (%s)", async (code) => {
+    retrieveStoredProjectContextMock.mockResolvedValue([storedContext({ workItemId: "404" })]);
+    const adapter = fakeAzureAdapter({
+      fetchWorkItemById: vi.fn(async () => {
+        throw new IntegrationError({ code, statusCode: code === "integration_not_found" ? 404 : 403, message: "Unavailable work item" });
+      }),
+    });
+
+    await expect(resolveWorkflowContextWithoutLLM({
+      scope: projectScope(),
+      adapter,
+      targetRequirement: requirement(),
+      reviewedSourceIds: ["WI:404"],
+      retrievalTopK: 8,
+    })).rejects.toMatchObject({
+      name: ReviewedContextSourceUnavailableError.name,
+      sourceId: "WI:404",
+    });
+    expect(retrieveStoredProjectContextMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("resolveWorkflowContext (LLM selection path)", () => {
   it("returns the documented empty shape on an empty corpus instead of calling the LLM", async () => {
     const fns = adapterFns();
@@ -266,7 +364,7 @@ describe("resolveWorkflowContext (LLM selection path)", () => {
     expect(resolution.selectedContext.map((item) => item.workItemId)).toEqual(["300", "500"]);
     expect(resolution.contextUsed).toEqual([
       expect.objectContaining({ workItemId: "300", source: "linked_requirement" }),
-      expect.objectContaining({ workItemId: "500", source: "llm_selected_context" }),
+      expect.objectContaining({ workItemId: "500", source: "llm_selected_context", reason: "Related flow" }),
     ]);
     expect(suggestContextStoriesMock).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ClipboardList, ListChecks, Loader2, Play } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -55,16 +55,25 @@ import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/mod
 import { cn } from "@/lib/utils";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
+import { isContextReviewRefreshRequired } from "@/components/workflow/workflow-context-review-error";
+import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-citations";
 import {
   normalizeTestCaseDesignProviderId,
   testCaseDesignProviderCopy,
 } from "./test-case-design-copy";
+
+type ContextReviewPreview = {
+  contextCitations: WorkflowContextCitation[];
+  reviewedSourceIds: string[];
+  excludedSourceIds?: string[];
+};
 
 export function TestCaseDesignClient() {
   const activeProject = useActiveProject();
   const scope = activeProject ?? null;
   const generatedCasesRef = useRef<HTMLDivElement | null>(null);
   const promptSectionRef = useRef<HTMLDivElement | null>(null);
+  const reviewContextButtonRef = useRef<HTMLButtonElement | null>(null);
   const [activeStep, setActiveStep] = useState<"generate" | "review">("generate");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const workspaceId = scope?.workspaceId;
@@ -132,6 +141,13 @@ export function TestCaseDesignClient() {
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
   const manualOperationVersionRef = useRef(0);
+  const [contextPreview, setContextPreview] = useState<ContextReviewPreview | null>(null);
+  const [excludedSourceIds, setExcludedSourceIds] = useState<string[]>([]);
+  const [contextReviewOpen, setContextReviewOpen] = useState(false);
+  const [contextPreviewLoading, setContextPreviewLoading] = useState(false);
+  const [contextPreviewError, setContextPreviewError] = useState<string | null>(null);
+  const contextPreviewVersionRef = useRef(0);
+  const contextPreviewAbortRef = useRef<AbortController | null>(null);
   const [testCases, setTestCases] = useState<GeneratedTestCase[]>([]);
   const [selectedTestCaseIds, setSelectedTestCaseIds] = useState<string[]>([]);
   const [testDesignSettings, setTestDesignSettings] = useState<TestDesignOptions>(() => ({
@@ -141,9 +157,20 @@ export function TestCaseDesignClient() {
   const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
   useUnsavedChangesGuard({
     dirty: hasUnfinishedWork,
-    busy: state.loading || manualDraft.loading || manualSubmitLoading || gen.isRunning || prep.isRunning,
+    busy: state.loading || manualDraft.loading || manualSubmitLoading || gen.isRunning || prep.isRunning || contextPreviewLoading,
   });
+  const invalidateContextPreview = useCallback((resetExclusions = false) => {
+    contextPreviewVersionRef.current += 1;
+    contextPreviewAbortRef.current?.abort();
+    contextPreviewAbortRef.current = null;
+    setContextPreviewLoading(false);
+    setContextPreview(null);
+    setContextReviewOpen(false);
+    setContextPreviewError(null);
+    if (resetExclusions) setExcludedSourceIds([]);
+  }, []);
   useEffect(() => {
+    manualOperationVersionRef.current += 1;
     cancelGeneration();
     cancelPreparation();
     endLoadingGameSession();
@@ -155,9 +182,11 @@ export function TestCaseDesignClient() {
     setSelectedTestCaseIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
+    setManualSubmitLoading(false);
     setManualSubmitError(null);
     setSelectedAttachmentIdsByTarget({});
-  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
+    invalidateContextPreview(true);
+  }, [scope?.workspaceId, scope?.projectId, scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession, invalidateContextPreview]);
   useEffect(() => {
     if (externalLlmAvailability.enabled || mode !== "manual") return;
     manualOperationVersionRef.current += 1;
@@ -167,7 +196,8 @@ export function TestCaseDesignClient() {
     setManualResponse("");
     setManualSubmitLoading(false);
     setManualSubmitError(null);
-  }, [cancelPreparation, externalLlmAvailability.enabled, mode]);
+    invalidateContextPreview();
+  }, [cancelPreparation, externalLlmAvailability.enabled, invalidateContextPreview, mode]);
   const selectedTargetRangeOption = useMemo(
     () =>
       targetTestCaseRangeOptions.find((option) => option.id === testDesignSettings.targetTestCaseRange) ??
@@ -202,6 +232,7 @@ export function TestCaseDesignClient() {
   }, [selectedTestCases, state.data?.testCases]);
 
   function changeTargetWorkItemId(value: string) {
+    manualOperationVersionRef.current += 1;
     gen.cancel();
     prep.cancel();
     loadingGame.endSession();
@@ -213,10 +244,13 @@ export function TestCaseDesignClient() {
     setSelectedTestCaseIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
+    setManualSubmitLoading(false);
     setManualSubmitError(null);
+    invalidateContextPreview(true);
   }
 
   function changeExtraInstructions(value: string) {
+    manualOperationVersionRef.current += 1;
     gen.cancel();
     prep.cancel();
     loadingGame.endSession();
@@ -228,7 +262,24 @@ export function TestCaseDesignClient() {
     setSelectedTestCaseIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
+    setManualSubmitLoading(false);
     setManualSubmitError(null);
+    invalidateContextPreview();
+  }
+
+  function changeMode(nextMode: WorkflowMode) {
+    if (nextMode === mode) return;
+    manualOperationVersionRef.current += 1;
+    gen.cancel();
+    prep.cancel();
+    loadingGame.endSession();
+    setHasUnfinishedWork(true);
+    setMode(nextMode);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitLoading(false);
+    setManualSubmitError(null);
+    invalidateContextPreview();
   }
 
   function resetForStoryAttachmentChange() {
@@ -244,6 +295,7 @@ export function TestCaseDesignClient() {
     setManualResponse("");
     setManualSubmitLoading(false);
     setManualSubmitError(null);
+    invalidateContextPreview();
   }
 
   function changeSelectedAttachmentIds(ids: string[]) {
@@ -262,6 +314,7 @@ export function TestCaseDesignClient() {
   }
 
   function resetManualDraftForTestDesignOptionsChange() {
+    manualOperationVersionRef.current += 1;
     gen.cancel();
     prep.cancel();
     loadingGame.endSession();
@@ -271,7 +324,9 @@ export function TestCaseDesignClient() {
     setSelectedTestCaseIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
+    setManualSubmitLoading(false);
     setManualSubmitError(null);
+    invalidateContextPreview();
   }
 
   function changeTargetTestCaseRange(targetTestCaseRange: TargetTestCaseRangeId) {
@@ -334,6 +389,67 @@ export function TestCaseDesignClient() {
     };
   }
 
+  function contextSelectionPayload() {
+    return {
+      ...(contextPreview ? { reviewedSourceIds: contextPreview.reviewedSourceIds } : {}),
+      excludedSourceIds,
+    };
+  }
+
+  function changeExcludedContextSourceIds(nextIds: string[]) {
+    if (nextIds.length === excludedSourceIds.length && nextIds.every((id, index) => id === excludedSourceIds[index])) return;
+    manualOperationVersionRef.current += 1;
+    gen.cancel();
+    prep.cancel();
+    loadingGame.endSession();
+    setHasUnfinishedWork(true);
+    setExcludedSourceIds(nextIds);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitLoading(false);
+    setManualSubmitError(null);
+  }
+
+  async function reviewContext() {
+    if (!scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
+    if (contextPreviewLoading || gen.isRunning || prep.isRunning || manualSubmitLoading || (mode === "manual" && !externalLlmAvailability.enabled)) return;
+    if (contextPreview) {
+      setContextReviewOpen(true);
+      return;
+    }
+    const previewVersion = ++contextPreviewVersionRef.current;
+    contextPreviewAbortRef.current?.abort();
+    const controller = new AbortController();
+    contextPreviewAbortRef.current = controller;
+    setContextPreviewLoading(true);
+    setContextPreviewError(null);
+    try {
+      const data = await postJson<ContextReviewPreview>(
+        "/api/workflow-context/preview",
+        {
+          workflow: "test_case_generation",
+          mode,
+          scope,
+          targetWorkItemId,
+          options: buildTestDesignOptionsRequest(),
+          attachmentIds: selectedAttachmentIds,
+          extraInstructions: normalizeExtraInstructions(extraInstructions),
+          ...contextSelectionPayload(),
+        },
+        controller.signal,
+      );
+      if (previewVersion !== contextPreviewVersionRef.current) return;
+      setContextPreview(data);
+      setExcludedSourceIds((current) => data.excludedSourceIds ?? current);
+      setContextReviewOpen(true);
+    } catch (error) {
+      if (controller.signal.aborted || previewVersion !== contextPreviewVersionRef.current) return;
+      setContextPreviewError(caughtErrorMessage(error, "Context preview failed."));
+    } finally {
+      if (previewVersion === contextPreviewVersionRef.current) setContextPreviewLoading(false);
+    }
+  }
+
   function applyGeneratedCases(data: TestCaseGenerationRunResult) {
     setActiveStep("review");
     setHasUnfinishedWork(data.testCases.length > 0);
@@ -344,7 +460,8 @@ export function TestCaseDesignClient() {
 
   async function generate() {
     if (!scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
-    if (gen.isRunning) return;
+    if (gen.isRunning || contextPreviewLoading || manualSubmitLoading) return;
+    setContextReviewOpen(false);
     loadingGame.startSession();
     setState({ loading: true, error: null, data: null });
     setTestCases([]);
@@ -352,19 +469,25 @@ export function TestCaseDesignClient() {
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
-    const data = await gen.start((signal) =>
-      postJson<TestCaseGenerationRunResult>(
-        "/api/test-cases/generate",
-        {
-          scope,
-          targetWorkItemId,
-          options: buildTestDesignOptionsRequest(),
-          attachmentIds: selectedAttachmentIds,
-          extraInstructions: normalizeExtraInstructions(extraInstructions),
-        },
-        signal,
-      ),
-    );
+    const data = await gen.start(async (signal) => {
+      try {
+        return await postJson<TestCaseGenerationRunResult>(
+          "/api/test-cases/generate",
+          {
+            scope,
+            targetWorkItemId,
+            options: buildTestDesignOptionsRequest(),
+            attachmentIds: selectedAttachmentIds,
+            extraInstructions: normalizeExtraInstructions(extraInstructions),
+            ...contextSelectionPayload(),
+          },
+          signal,
+        );
+      } catch (error) {
+        if (isContextReviewRefreshRequired(error)) invalidateContextPreview();
+        throw error;
+      }
+    });
     if (data) {
       loadingGame.completeSession(data);
     } else {
@@ -375,7 +498,8 @@ export function TestCaseDesignClient() {
 
   async function prepareManualPrompt() {
     if (!externalLlmAvailability.enabled || !scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
-    if (prep.isRunning) return;
+    if (prep.isRunning || contextPreviewLoading || manualSubmitLoading) return;
+    setContextReviewOpen(false);
     const manualOperationVersion = manualOperationVersionRef.current;
     setState({ loading: false, error: null, data: null });
     setTestCases([]);
@@ -384,19 +508,25 @@ export function TestCaseDesignClient() {
     setManualSubmitError(null);
     setManualResponse("");
     scrollToNextStep(promptSectionRef);
-    const data = await prep.start((signal) =>
-      postJson<ManualPromptDraft>(
-        "/api/test-cases/manual/draft",
-        {
-          scope,
-          targetWorkItemId,
-          options: buildTestDesignOptionsRequest(),
-          attachmentIds: selectedAttachmentIds,
-          extraInstructions: normalizeExtraInstructions(extraInstructions),
-        },
-        signal,
-      ),
-    );
+    const data = await prep.start(async (signal) => {
+      try {
+        return await postJson<ManualPromptDraft>(
+          "/api/test-cases/manual/draft",
+          {
+            scope,
+            targetWorkItemId,
+            options: buildTestDesignOptionsRequest(),
+            attachmentIds: selectedAttachmentIds,
+            extraInstructions: normalizeExtraInstructions(extraInstructions),
+            ...contextSelectionPayload(),
+          },
+          signal,
+        );
+      } catch (error) {
+        if (isContextReviewRefreshRequired(error)) invalidateContextPreview();
+        throw error;
+      }
+    });
     if (data) {
       if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualDraft({ loading: false, error: null, data });
@@ -421,6 +551,7 @@ export function TestCaseDesignClient() {
         resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
         contextCitations: manualDraft.data.contextCitations,
         retrievalTopK: manualDraft.data.retrievalTopK,
+        ...contextSelectionPayload(),
       });
       if (manualOperationVersion !== manualOperationVersionRef.current) return;
       applyGeneratedCases(data);
@@ -478,10 +609,8 @@ export function TestCaseDesignClient() {
               <GenerationModeToggle
                 mode={mode}
                 externalLlmAvailability={externalLlmAvailability}
-                onChange={(nextMode) => {
-                  setHasUnfinishedWork(true);
-                  setMode(nextMode);
-                }}
+                disabled={contextPreviewLoading || gen.isRunning || prep.isRunning || manualSubmitLoading}
+                onChange={changeMode}
               />
             }
           >
@@ -501,18 +630,44 @@ export function TestCaseDesignClient() {
                     aria-label={WORK_ITEM_ID_TITLE}
                   />
                 </div>
-                {mode === "auto" ? (
-                  <Button onClick={generate} disabled={!scope || !targetWorkItemId || gen.isRunning || !testDesignOptionsValid || !extraInstructionsValid}>
-                    {gen.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                    {gen.isRunning ? "Generating..." : "Generate"}
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Button
+                    ref={reviewContextButtonRef}
+                    type="button"
+                    variant="outline"
+                    onClick={reviewContext}
+                    disabled={!scope || !targetWorkItemId || contextPreviewLoading || gen.isRunning || prep.isRunning || manualSubmitLoading || !testDesignOptionsValid || !extraInstructionsValid || (mode === "manual" && !externalLlmAvailability.enabled)}
+                  >
+                    {contextPreviewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {contextPreviewLoading ? "Reviewing..." : "Review context"}
                   </Button>
-                ) : (
-                  <Button onClick={prepareManualPrompt} disabled={!externalLlmAvailability.enabled || !scope || !targetWorkItemId || prep.isRunning || !testDesignOptionsValid || !extraInstructionsValid}>
-                    {prep.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                    {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
-                  </Button>
-                )}
+                  {mode === "auto" ? (
+                    <Button onClick={generate} disabled={!scope || !targetWorkItemId || contextPreviewLoading || gen.isRunning || manualSubmitLoading || !testDesignOptionsValid || !extraInstructionsValid}>
+                      {gen.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                      {gen.isRunning ? "Generating..." : "Generate"}
+                    </Button>
+                  ) : (
+                    <Button onClick={prepareManualPrompt} disabled={!externalLlmAvailability.enabled || !scope || !targetWorkItemId || contextPreviewLoading || prep.isRunning || manualSubmitLoading || !testDesignOptionsValid || !extraInstructionsValid}>
+                      {prep.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                      {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
+                    </Button>
+                  )}
+                </div>
                </div>
+               {contextPreviewError ? <Callout tone="error" role="alert">{contextPreviewError}</Callout> : null}
+               {contextPreview ? (
+                 <WorkflowContextCitations
+                   citations={contextPreview.contextCitations}
+                   excludedSourceIds={excludedSourceIds}
+                   onExcludedSourceIdsChange={changeExcludedContextSourceIds}
+                   editable
+                   busy={contextPreviewLoading || gen.isRunning || prep.isRunning || manualSubmitLoading}
+                   open={contextReviewOpen}
+                   onOpenChange={setContextReviewOpen}
+                   restoreFocusRef={reviewContextButtonRef}
+                   hideSummary
+                 />
+               ) : null}
                <WorkItemPreview scope={scope} workItemId={targetWorkItemId} lookup={workItemLookup} />
                <StoryAttachmentsPanel
                  scope={scope}

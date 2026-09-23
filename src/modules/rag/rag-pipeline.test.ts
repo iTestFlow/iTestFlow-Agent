@@ -8,7 +8,11 @@ import { projectScope } from "@/test/factories";
 import { ProjectKnowledgeBaseSchema } from "./project-knowledge.schema";
 import { LocalKeywordVectorStore } from "./local-vector-store";
 import { chunkText, indexProjectContext, retrieveProjectContext } from "./rag-pipeline.service";
-import { buildWorkflowContextCitations } from "./workflow-context-citations";
+import {
+  buildWorkflowContextCitations,
+  normalizeWorkflowContextReason,
+  WorkflowContextCitationSchema,
+} from "./workflow-context-citations";
 
 describe("RAG pipeline", () => {
   it("chunks text deterministically and records indexes", () => {
@@ -226,6 +230,7 @@ describe("RAG pipeline", () => {
       sourceType: "project_context",
       sourceId: "WI:1",
       title: "Story",
+      reason: "Selected for this story.",
       workItemId: "1",
       workItemType: "User Story",
     }]);
@@ -245,6 +250,7 @@ describe("RAG pipeline", () => {
       sourceType: "story_attachment",
       sourceId: "SA:attachment-payment-design",
       title: "payment-design.pdf",
+      reason: "Attached to this story.",
       attachmentId: "attachment-payment-design",
       fileName: "payment-design.pdf",
       mimeType: "application/pdf",
@@ -287,6 +293,15 @@ describe("RAG pipeline", () => {
           evidence: "WI 14",
         },
       ],
+      chatInsights: [
+        {
+          id: "chat-1",
+          title: "Checkout discussion",
+          content: "A synthesis of the checkout discussion.",
+          sourceWorkItemIds: ["15"],
+          evidence: "WI 15",
+        },
+      ],
     });
 
     const citations = buildWorkflowContextCitations({
@@ -302,6 +317,7 @@ describe("RAG pipeline", () => {
     // The duplicate mod-1 entry collapsed into a single KB:module:mod-1.
     expect([...byId.keys()].sort()).toEqual([
       "KB:business_rule:rule-1",
+      "KB:chat_insight:chat-1",
       "KB:dependency:dep-1",
       "KB:glossary:Cart",
       "KB:module:mod-1",
@@ -314,6 +330,7 @@ describe("RAG pipeline", () => {
       sourceType: "project_knowledge",
       sourceId: "KB:module:mod-1",
       title: "Checkout",
+      reason: "Module behavior: Checkout module.",
       category: "module",
       sourceWorkItemIds: ["10"],
     });
@@ -321,6 +338,7 @@ describe("RAG pipeline", () => {
       sourceType: "project_knowledge",
       sourceId: "KB:business_rule:rule-1",
       title: "Orders over 100 require approval",
+      reason: "Business rule: Checks a constraint from acceptance criteria.",
       category: "business_rule",
       sourceWorkItemIds: ["11"],
     });
@@ -328,6 +346,7 @@ describe("RAG pipeline", () => {
       sourceType: "project_knowledge",
       sourceId: "KB:state_transition:trans-1",
       title: "Order Lifecycle: Pending -> Shipped",
+      reason: "Workflow behavior: Triggered when Payment captured.",
       category: "state_transition",
       sourceWorkItemIds: ["12"],
     });
@@ -335,6 +354,7 @@ describe("RAG pipeline", () => {
       sourceType: "project_knowledge",
       sourceId: "KB:glossary:Cart",
       title: "Cart",
+      reason: "Project term: A customer shopping cart.",
       category: "glossary",
       sourceWorkItemIds: ["13"],
     });
@@ -342,8 +362,17 @@ describe("RAG pipeline", () => {
       sourceType: "project_knowledge",
       sourceId: "KB:dependency:dep-1",
       title: "Billing -> Notifications",
+      reason: "Module dependency: Billing notifies Notifications.",
       category: "dependency",
       sourceWorkItemIds: ["14"],
+    });
+    expect(byId.get("KB:chat_insight:chat-1")).toEqual({
+      sourceType: "project_knowledge",
+      sourceId: "KB:chat_insight:chat-1",
+      title: "Checkout discussion",
+      reason: "Approved project insight: A synthesis of the checkout discussion.",
+      category: "chat_insight",
+      sourceWorkItemIds: ["15"],
     });
 
     // Context citations are still emitted alongside knowledge citations.
@@ -351,12 +380,60 @@ describe("RAG pipeline", () => {
       sourceType: "project_context",
       sourceId: "WI:1",
       title: "Story",
+      reason: "Selected for this story.",
       workItemId: "1",
       workItemType: "User Story",
     });
 
     // Dedup collapsed the duplicate mod-1 module: first occurrence kept, no dupes.
     expect(byId.size).toBe(citations.length);
+  });
+
+  it("explains knowledge using its content and a verified story connection instead of only source IDs", () => {
+    const knowledgeBase = ProjectKnowledgeBaseSchema.parse({
+      modules: [
+        { id: "catalog", name: "Product Discovery", description: "Customers can browse and filter products", sourceWorkItemIds: ["2"], evidence: "Catalog story" },
+        { id: "cart", name: "Cart", description: "Cart totals include discounts", sourceWorkItemIds: ["1"], evidence: "Cart story" },
+        { id: "orders", name: "Orders", description: "Orders show fulfillment status", sourceWorkItemIds: ["3"], evidence: "Orders story" },
+      ],
+    });
+    const citations = buildWorkflowContextCitations({
+      targetWorkItemId: "1",
+      resolvedContextUsed: [{ workItemId: "3", title: "Order tracking", workItemType: "User Story", source: "linked_requirement", relevanceScore: 1 }],
+      relevantProjectKnowledgeBase: knowledgeBase,
+    });
+    const byId = new Map(citations.map((citation) => [citation.sourceId, citation]));
+
+    expect(byId.get("KB:module:catalog")?.reason).toBe("Module behavior: Customers can browse and filter products.");
+    expect(byId.get("KB:module:cart")?.reason).toBe("From this story: Cart totals include discounts.");
+    expect(byId.get("KB:module:orders")?.reason).toBe("From retrieved “Order tracking”: Orders show fulfillment status.");
+    expect(byId.get("KB:module:catalog")?.reason).not.toContain("WI:2");
+  });
+
+  it("normalizes concise reasons while accepting citations recorded before reasons existed", () => {
+    expect(normalizeWorkflowContextReason(
+      " This is relevant because it covers the payment authorization flow. A second sentence is not shown.",
+      "Fallback reason.",
+    )).toBe("This is relevant because it covers the payment authorization flow.");
+    expect(normalizeWorkflowContextReason("x".repeat(300), "Fallback reason.")).toHaveLength(160);
+    const unicodeReason = normalizeWorkflowContextReason("😀".repeat(160), "Fallback reason.");
+    expect(unicodeReason.length).toBeLessThanOrEqual(160);
+    expect(WorkflowContextCitationSchema.safeParse({
+      sourceType: "project_knowledge",
+      sourceId: "KB:module:unicode",
+      title: "Unicode module",
+      reason: unicodeReason,
+      category: "module",
+      sourceWorkItemIds: ["1"],
+    }).success).toBe(true);
+
+    expect(WorkflowContextCitationSchema.parse({
+      sourceType: "project_context",
+      sourceId: "WI:legacy",
+      title: "Legacy reference",
+      workItemId: "legacy",
+      workItemType: "User Story",
+    })).not.toHaveProperty("reason");
   });
 
 
