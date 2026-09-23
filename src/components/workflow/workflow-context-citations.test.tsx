@@ -56,13 +56,22 @@ describe("WorkflowContextCitations", () => {
 
   it("uses the knowledge topic for older citations without a reason", () => {
     render(<WorkflowContextCitations
-      citations={[{
-        sourceType: "project_knowledge",
-        sourceId: "KB:module:catalog",
-        title: "Product Discovery & Catalog Browsing",
-        category: "module",
-        sourceWorkItemIds: ["2"],
-      }]}
+      citations={[
+        {
+          sourceType: "project_knowledge",
+          sourceId: "KB:module:catalog",
+          title: "Product Discovery & Catalog Browsing",
+          category: "module",
+          sourceWorkItemIds: ["2"],
+        },
+        {
+          sourceType: "project_knowledge",
+          sourceId: "KB:module:long",
+          title: "😀".repeat(160),
+          category: "module",
+          sourceWorkItemIds: ["3"],
+        },
+      ]}
       open
       onOpenChange={() => undefined}
       hideSummary
@@ -70,6 +79,8 @@ describe("WorkflowContextCitations", () => {
 
     expect(screen.getByText("Adds module context about Product Discovery & Catalog Browsing.")).toBeInTheDocument();
     expect(screen.queryByText(/Derived from related story/)).not.toBeInTheDocument();
+    expect(screen.getByText(/^Adds module context about 😀/).textContent?.replace(/^Reason: /, "").length)
+      .toBeLessThanOrEqual(160);
   });
 
   it("shows concise reasons, removes/restores dependent context, and restores focus after Escape", async () => {

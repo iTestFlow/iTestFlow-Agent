@@ -61,7 +61,12 @@ export function normalizeWorkflowContextReason(value: string | null | undefined,
   const compact = (value?.trim() || fallback).replace(/\s+/g, " ").trim();
   const firstSentence = compact.match(/^(.+?[.!?])(?:\s|$)/)?.[1] ?? compact;
   const stem = firstSentence.replace(/[.!?]+$/u, "").trim();
-  const truncated = Array.from(stem).slice(0, WORKFLOW_CONTEXT_REASON_MAX_LENGTH - 1).join("").trimEnd();
+  let truncated = "";
+  for (const character of stem) {
+    if (truncated.length + character.length >= WORKFLOW_CONTEXT_REASON_MAX_LENGTH) break;
+    truncated += character;
+  }
+  truncated = truncated.trimEnd();
   return `${truncated || "Relevant context"}.`;
 }
 

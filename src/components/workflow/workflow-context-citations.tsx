@@ -363,7 +363,13 @@ function citationReason(citation: WorkflowContextCitation) {
   if (citation.sourceType === "project_context") return "Related to this story."
   if (citation.sourceType === "project_knowledge") {
     const category = citation.category.replace(/_/g, " ")
-    return `Adds ${category} context about ${citation.title}.`
+    const stem = `Adds ${category} context about ${citation.title}`.replace(/[.!?]+$/u, "")
+    let shortened = ""
+    for (const character of stem) {
+      if (shortened.length + character.length >= 160) break
+      shortened += character
+    }
+    return `${shortened.trimEnd()}.`
   }
   if (citation.sourceType === "uploaded_document") return "Relevant project document content."
   return "Selected attachment for this story."

@@ -416,6 +416,16 @@ describe("RAG pipeline", () => {
       "Fallback reason.",
     )).toBe("This is relevant because it covers the payment authorization flow.");
     expect(normalizeWorkflowContextReason("x".repeat(300), "Fallback reason.")).toHaveLength(160);
+    const unicodeReason = normalizeWorkflowContextReason("😀".repeat(160), "Fallback reason.");
+    expect(unicodeReason.length).toBeLessThanOrEqual(160);
+    expect(WorkflowContextCitationSchema.safeParse({
+      sourceType: "project_knowledge",
+      sourceId: "KB:module:unicode",
+      title: "Unicode module",
+      reason: unicodeReason,
+      category: "module",
+      sourceWorkItemIds: ["1"],
+    }).success).toBe(true);
 
     expect(WorkflowContextCitationSchema.parse({
       sourceType: "project_context",
