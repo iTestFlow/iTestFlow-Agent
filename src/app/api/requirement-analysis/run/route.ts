@@ -13,6 +13,7 @@ import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import {
   buildPreparedWorkflowContextCitations,
+  contextReviewRequiredResponseBody,
   ContextReviewRequiredError,
   prepareWorkflowContext,
 } from "@/modules/rag/workflow-context-preparation.service";
@@ -159,7 +160,7 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof ContextReviewRequiredError) {
       if (scope && analyticsRunId) failWorkflowRun({ scope, runId: analyticsRunId, error: error.message });
-      return NextResponse.json({ error: error.message, code: error.code, missingSourceIds: error.missingSourceIds }, { status: 409 });
+      return NextResponse.json(contextReviewRequiredResponseBody(error), { status: 409 });
     }
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;

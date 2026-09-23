@@ -114,6 +114,18 @@ export function isContextReviewRequiredError(error: unknown): error is ContextRe
 }
 
 /**
+ * Typed review errors carry user-safe messages chosen by this module. Keep route
+ * responses consistent without exposing arbitrary caught error messages.
+ */
+export function contextReviewRequiredResponseBody(error: ContextReviewRequiredError) {
+  return {
+    error: error.message,
+    code: error.code,
+    missingSourceIds: error.missingSourceIds,
+  };
+}
+
+/**
  * Resolve and render the exact optional inputs that a workflow will use.  Preview
  * calls use deterministic retrieval only; a reviewed automatic request also avoids
  * a second selector pass so it can never refill the user-approved set.

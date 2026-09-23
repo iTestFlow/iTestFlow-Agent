@@ -10,6 +10,7 @@ import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.ser
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import {
+  contextReviewRequiredResponseBody,
   ContextReviewRequiredError,
   prepareWorkflowContext,
 } from "@/modules/rag/workflow-context-preparation.service";
@@ -76,7 +77,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     if (error instanceof ContextReviewRequiredError) {
-      return NextResponse.json({ error: error.message, code: error.code, missingSourceIds: error.missingSourceIds }, { status: 409 });
+      return NextResponse.json(contextReviewRequiredResponseBody(error), { status: 409 });
     }
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;

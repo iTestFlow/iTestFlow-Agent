@@ -12,6 +12,7 @@ import { resolveWorkspaceProviderId } from "@/modules/integrations/provider-regi
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import {
+  contextReviewRequiredResponseBody,
   ContextReviewRequiredError,
   prepareWorkflowContext,
   workflowContextWorkflowValues,
@@ -100,7 +101,7 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof ContextReviewRequiredError) {
       return NextResponse.json(
-        { error: error.message, code: error.code, missingSourceIds: error.missingSourceIds },
+        contextReviewRequiredResponseBody(error),
         { status: 409 },
       );
     }
