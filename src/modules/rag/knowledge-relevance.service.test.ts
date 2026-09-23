@@ -14,9 +14,12 @@ vi.mock("@/modules/rag/embedding-provider", () => ({
   }),
 }));
 
-import { projectScope } from "@/test/factories";
+import { projectScope, requirement } from "@/test/factories";
 import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema";
-import { rankProjectKnowledgeByRelevance } from "@/modules/rag/knowledge-relevance.service";
+import {
+  rankProjectKnowledgeByRelevance,
+  rankProjectKnowledgeForWorkItem,
+} from "@/modules/rag/knowledge-relevance.service";
 
 /**
  * The contract that matters here is degradation. This ranking is an improvement layered
@@ -146,5 +149,41 @@ describe("rankProjectKnowledgeByRelevance", () => {
 
     expect(result?.businessRules).toContain("rule-1");
     expect(JSON.stringify(result)).not.toContain("removed-rule");
+  });
+
+  it("keeps every supported knowledge category eligible for a workflow work item", async () => {
+    const projectKnowledgeBase = ProjectKnowledgeBaseSchema.parse({
+      modules: [{ id: "billing", name: "Billing", description: "Invoices", sourceWorkItemIds: ["101"], evidence: "e" }],
+      businessRules: [{ id: "rule-1", rule: "Approve refunds", sourceField: "description", moduleName: "Billing", sourceWorkItemIds: ["101"], evidence: "e" }],
+      stateTransitions: [{ id: "transition-1", workflowName: "Invoice", fromState: "Draft", toState: "Approved", triggerOrCondition: "Manager approval", actor: "Manager", moduleName: "Billing", sourceWorkItemIds: ["101"], evidence: "e" }],
+      glossary: [{ term: "Invoice", type: "business_entity", definition: "Customer bill", sourceWorkItemIds: ["101"], evidence: "e" }],
+      crossDependencies: [{ id: "dependency-1", sourceModule: "Billing", targetModule: "Payments", dependencyType: "uses", description: "Billing uses payments", sourceWorkItemIds: ["101"], evidence: "e" }],
+      chatInsights: [{ id: "insight-1", title: "Refund guidance", content: "Managers approve refunds.", sourceWorkItemIds: ["101"], evidence: "e" }],
+    });
+    searchByEmbedding.mockResolvedValue([
+      { entry_key: "billing", category: "module", similarity: 0.8 },
+      { entry_key: "rule-1", category: "business_rule", similarity: 0.8 },
+      { entry_key: "transition-1", category: "state_transition", similarity: 0.8 },
+      { entry_key: "Invoice", category: "glossary", similarity: 0.8 },
+      { entry_key: "dependency-1", category: "dependency", similarity: 0.8 },
+      { entry_key: "insight-1", category: "chat_insight", similarity: 0.8 },
+    ]);
+
+    const result = await rankProjectKnowledgeForWorkItem({
+      scope: projectScope(),
+      targetRequirement: requirement({ id: "101", areaPath: "Billing area" }),
+      projectKnowledgeBase,
+      contextWorkItemIds: ["102"],
+    });
+
+    expect(searchByEmbedding).toHaveBeenCalledWith(expect.objectContaining({ query: expect.stringContaining("Billing area") }));
+    expect(result).toMatchObject({
+      modules: ["billing"],
+      businessRules: ["rule-1"],
+      stateTransitions: ["transition-1"],
+      glossary: ["Invoice"],
+      crossDependencies: ["dependency-1"],
+      chatInsights: ["insight-1"],
+    });
   });
 });
