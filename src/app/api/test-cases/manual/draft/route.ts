@@ -6,22 +6,20 @@ import {
   requireExternalLlmEnabled,
   requireWorkflowContext,
 } from "@/modules/credentials/scoped-resolution.service";
-import { buildTestCaseGenerationPromptDraft } from "@/modules/test-case-design/application/test-case-generation.service";
 import { defaultTestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import { TestDesignOptionsRequestSchema } from "@/modules/test-case-design/test-design-options.schema";
-import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
-import { resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
-import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
-import { rankProjectKnowledgeForWorkItem } from "@/modules/rag/knowledge-relevance.service";
 import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
-import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
+import {
+  ContextReviewRequiredError,
+  prepareWorkflowContext,
+} from "@/modules/rag/workflow-context-preparation.service";
+import { WorkflowContextControlsSchema } from "@/modules/rag/workflow-context-controls";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import { resolveWorkspaceProviderId } from "@/modules/integrations/provider-registry";
 import { storyAttachmentInputErrorResponse } from "@/app/api/story-attachments/story-attachment-route-helpers";
-import { loadSelectedStoryAttachmentWorkflowContext } from "@/modules/story-attachments/story-attachment-workflow-context";
 
 export const runtime = "nodejs";
 
@@ -32,7 +30,7 @@ const RequestSchema = z.object({
   attachmentIds: z.array(z.string().trim().min(1)).max(20).optional().default([]),
   options: TestDesignOptionsRequestSchema.optional(),
   extraInstructions: z.string().max(EXTRA_INSTRUCTIONS_MAX_LENGTH, `Extra Instructions must be ${EXTRA_INSTRUCTIONS_MAX_LENGTH} characters or fewer.`).optional(),
-});
+}).merge(WorkflowContextControlsSchema);
 
 export async function POST(request: Request) {
   const parsed = RequestSchema.safeParse(await request.json());
@@ -53,96 +51,52 @@ export async function POST(request: Request) {
       projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
-    const attachmentContext = await loadSelectedStoryAttachmentWorkflowContext({
-      scope: {
-        workspaceId: ctx.workspace.id,
-        projectId: trustedScope.projectId,
-        providerId: resolveWorkspaceProviderId(ctx.workspace),
-        canonicalStoryId: canonicalStoryId(targetRequirement),
-        storyDisplayKey: targetRequirement.id.trim() || parsed.data.targetWorkItemId.trim(),
-      },
-      attachmentIds: parsed.data.attachmentIds,
-      includeVisuals: false,
-    });
-    const autoContext = await resolveWorkflowContextWithoutLLM({
+    const workspaceSettings = await getWorkspaceSettings(ctx.workspace.id);
+    const prepared = await prepareWorkflowContext({
+      workflow: "test_case_generation",
+      mode: "manual",
       scope: trustedScope,
+      actor: ctx.userId,
       adapter,
+      workspaceId: ctx.workspace.id,
+      workspaceProviderId: resolveWorkspaceProviderId(ctx.workspace),
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: await resolveRetrievalTopK({
-        workspaceId: ctx.workspace.id,
-        query: `${targetRequirement.title}\n${targetRequirement.description ?? ""}`,
-      }),
-    });
-    const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "test_case_design_manual" });
-    // The prepared prompt must match what the internal run sends for the same work item.
-    // Without a model window it fell back to a fixed default regardless of the workspace's
-    // configured model-input-limit, and without ranked keys it used keyword-only knowledge
-    // selection — so a user copying this prompt out got materially less context than
-    // production, silently. There is no LLM provider here, so the window comes from the
-    // workspace override: the admin's own statement of what their models accept.
-    const workspaceSettings = await getWorkspaceSettings(ctx.workspace.id);
-    // Same selection the internal run performs. Without it the prepared prompt differed
-    // in *which* knowledge entries it carried, not merely their order — a silent
-    // divergence for the same work item.
-    const rankedKnowledgeKeys = await rankProjectKnowledgeForWorkItem({
-      scope: trustedScope,
-      targetRequirement,
-      projectKnowledgeBase: knowledgeContext.knowledgeBase,
-      contextWorkItemIds: [
-        ...autoContext.relatedWorkItems.map((item) => item.workItemId),
-        ...autoContext.selectedContext.map((item) => item.workItemId),
-      ],
-    });
-    const draft = buildTestCaseGenerationPromptDraft({
-      rankedKnowledgeKeys: rankedKnowledgeKeys ?? undefined,
+      attachmentIds: parsed.data.attachmentIds,
+      reviewedSourceIds: parsed.data.reviewedSourceIds,
+      excludedSourceIds: parsed.data.excludedSourceIds,
       maxInputTokens: workspaceSettings?.modelInputTokenLimitOverride ?? undefined,
-      relatedWorkItemsFloor: autoContext.retrievalTopK,
-      scope: trustedScope,
-      targetRequirement,
-      relatedWorkItems: autoContext.relatedWorkItems,
-      selectedContext: autoContext.selectedContext,
-      projectKnowledgeBase: knowledgeContext.knowledgeBase,
-      projectKnowledgeNotice: knowledgeContext.promptNotice,
-      storyAttachments: attachmentContext.promptAttachments,
       options,
       extraInstructions: parsed.data.extraInstructions,
     });
-    const includedAttachmentTextIds = new Set(draft.includedStoryAttachmentTextIds ?? []);
-    const contextCitations = buildWorkflowContextCitations({
-      resolvedContextUsed: autoContext.contextUsed,
-      relevantProjectKnowledgeBase: draft.relevantProjectKnowledgeBase,
-      storyAttachments: attachmentContext.citationAttachments.filter((attachment) => includedAttachmentTextIds.has(attachment.id.trim())),
-    });
-    const warnings = [knowledgeContext.promptNotice, ...attachmentContext.warnings, ...(draft.storyAttachmentWarnings ?? [])]
+    const warnings = [
+      prepared.projectKnowledgeNotice,
+      ...(prepared.storyAttachmentContext?.warnings ?? []),
+      ...(prepared.promptDraft.storyAttachmentWarnings ?? []),
+    ]
       .filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0);
 
     return NextResponse.json({
       targetWorkItemId: parsed.data.targetWorkItemId,
       selectedContextIds: parsed.data.selectedContextIds,
       attachmentIds: parsed.data.attachmentIds,
-      resolvedContextUsed: autoContext.contextUsed,
-      contextCitations,
-      retrievalTopK: autoContext.retrievalTopK,
+      reviewedSourceIds: prepared.reviewedSourceIds,
+      excludedSourceIds: prepared.excludedSourceIds,
+      resolvedContextUsed: prepared.contextUsed,
+      contextCitations: prepared.contextCitations,
+      retrievalTopK: prepared.retrievalTopK,
       options,
-      ...draft,
+      ...prepared.promptDraft,
       warnings: warnings.length ? Array.from(new Set(warnings)) : undefined,
     });
   } catch (error) {
+    if (error instanceof ContextReviewRequiredError) {
+      return NextResponse.json({ error: error.message, code: error.code, missingSourceIds: error.missingSourceIds }, { status: 409 });
+    }
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
     const attachmentResponse = storyAttachmentInputErrorResponse(error);
     if (attachmentResponse) return attachmentResponse;
     return routeErrorResponse(error, { domain: "llm", status: 503, fallback: "External LLM test case prompt preparation failed." });
   }
-}
-
-function canonicalStoryId(targetRequirement: { id: string; raw?: unknown }) {
-  const raw = targetRequirement.raw;
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    const rawId = (raw as Record<string, unknown>).id;
-    if (typeof rawId === "string" && rawId.trim()) return rawId.trim();
-    if (typeof rawId === "number" && Number.isFinite(rawId)) return String(rawId);
-  }
-  return targetRequirement.id.trim();
 }

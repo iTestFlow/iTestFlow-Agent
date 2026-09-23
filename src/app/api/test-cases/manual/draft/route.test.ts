@@ -24,7 +24,8 @@ vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal
 vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
 }));
-vi.mock("@/modules/rag/auto-context-resolver.service", () => ({
+vi.mock("@/modules/rag/auto-context-resolver.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/rag/auto-context-resolver.service")>(),
   resolveWorkflowContextWithoutLLM: mocks.resolveWorkflowContextWithoutLLM,
 }));
 vi.mock("@/modules/rag/retrieval-config", () => ({
@@ -194,6 +195,7 @@ describe("test-cases manual draft route", () => {
       },
       attachmentIds: ["attachment-1"],
       includeVisuals: false,
+      maxInputTokens: 64_000,
     });
     expect(mocks.buildTestCaseGenerationPromptDraft).toHaveBeenCalledWith(expect.objectContaining({
       storyAttachments: promptAttachments,

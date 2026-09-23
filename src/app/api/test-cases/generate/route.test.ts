@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   resolveRetrievalTopK: vi.fn(),
   loadProjectKnowledgeContext: vi.fn(),
   loadSelectedStoryAttachmentWorkflowContext: vi.fn(),
+  buildTestCaseGenerationPromptDraft: vi.fn(),
   generateTestCases: vi.fn(),
   buildWorkflowContextCitations: vi.fn(),
   writeGenerationFailureAudit: vi.fn(),
@@ -30,8 +31,10 @@ vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal
 vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
 }));
-vi.mock("@/modules/rag/auto-context-resolver.service", () => ({
+vi.mock("@/modules/rag/auto-context-resolver.service", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/modules/rag/auto-context-resolver.service")>(),
   resolveWorkflowContext: mocks.resolveWorkflowContext,
+  resolveWorkflowContextWithoutLLM: mocks.resolveWorkflowContext,
 }));
 vi.mock("@/modules/rag/retrieval-config", () => ({
   resolveRetrievalTopK: mocks.resolveRetrievalTopK,
@@ -46,6 +49,7 @@ vi.mock("@/modules/rag/workflow-context-citations", () => ({
   buildWorkflowContextCitations: mocks.buildWorkflowContextCitations,
 }));
 vi.mock("@/modules/test-case-design/application/test-case-generation.service", () => ({
+  buildTestCaseGenerationPromptDraft: mocks.buildTestCaseGenerationPromptDraft,
   generateTestCases: mocks.generateTestCases,
 }));
 vi.mock("@/modules/audit/generation-failure-audit", () => ({
@@ -108,6 +112,14 @@ describe("POST /api/test-cases/generate", () => {
       imageTokenReserve: 0,
       effectivePromptInputTokens: 128_000,
       warnings: [],
+    });
+    mocks.buildTestCaseGenerationPromptDraft.mockReturnValue({
+      prompt: "mock prompt",
+      userPrompt: "mock user prompt",
+      relevantProjectKnowledgeBase: null,
+      includedStoryAttachmentTextIds: [],
+      omittedStoryAttachmentTextIds: [],
+      storyAttachmentWarnings: [],
     });
     mocks.buildWorkflowContextCitations.mockReturnValue([]);
     mocks.startWorkflowRun.mockReturnValue("run-1");

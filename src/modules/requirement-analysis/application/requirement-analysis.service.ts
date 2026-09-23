@@ -38,9 +38,10 @@ export async function runRequirementAnalysis(input: {
   attachmentImages?: readonly LLMImageInput[];
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   extraInstructions?: string;
+  preparedPromptDraft?: ReturnType<typeof buildRequirementAnalysisPromptDraft>;
 }) {
   const scope = assertProjectScope(input.scope);
-  const promptDraft = buildRequirementAnalysisPromptDraft({
+  const promptDraft = input.preparedPromptDraft ?? buildRequirementAnalysisPromptDraft({
     scope,
     // Sizes how much compiled knowledge and related context the prompt carries.
     maxInputTokens: input.maxInputTokens,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ListChecks, Loader2, Play, Radar } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,8 @@ import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/mod
 import { countEditedById } from "@/shared/lib/edited-count";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
+import { isContextReviewRefreshRequired } from "@/components/workflow/workflow-context-review-error";
+import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-citations";
 
 import {
   countInvalidSuggestions,
@@ -58,12 +60,18 @@ import { SuggestedAdditionsPublishPanel } from "./components/suggested-additions
 
 type TestGapAnalysisStep = "analyze" | "review" | "linkedCases";
 type ReviewTab = "findings" | "matrix";
+type ContextReviewPreview = {
+  contextCitations: WorkflowContextCitation[];
+  reviewedSourceIds: string[];
+  excludedSourceIds?: string[];
+};
 
 export function TestGapAnalysisClient() {
   const scope = useActiveProject();
   const resultsRef = useRef<HTMLDivElement | null>(null);
   const promptSectionRef = useRef<HTMLDivElement | null>(null);
   const traceabilityMatrixRef = useRef<HTMLDivElement | null>(null);
+  const reviewContextButtonRef = useRef<HTMLButtonElement | null>(null);
   const [activeStep, setActiveStep] = useState<TestGapAnalysisStep>("analyze");
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
@@ -85,15 +93,33 @@ export function TestGapAnalysisClient() {
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
   const manualOperationVersionRef = useRef(0);
+  const [contextPreview, setContextPreview] = useState<ContextReviewPreview | null>(null);
+  const [excludedSourceIds, setExcludedSourceIds] = useState<string[]>([]);
+  const [contextReviewOpen, setContextReviewOpen] = useState(false);
+  const [contextPreviewLoading, setContextPreviewLoading] = useState(false);
+  const [contextPreviewError, setContextPreviewError] = useState<string | null>(null);
+  const contextPreviewVersionRef = useRef(0);
+  const contextPreviewAbortRef = useRef<AbortController | null>(null);
   const [selectedSuggestedIds, setSelectedSuggestedIds] = useState<string[]>([]);
   const [focusedMatrixRowIds, setFocusedMatrixRowIds] = useState<string[]>([]);
   const [reviewTab, setReviewTab] = useState<ReviewTab>("findings");
   const [hasUnfinishedWork, setHasUnfinishedWork] = useState(false);
   useUnsavedChangesGuard({
     dirty: hasUnfinishedWork,
-    busy: state.loading || manualDraft.loading || manualSubmitLoading || gen.isRunning || prep.isRunning,
+    busy: state.loading || manualDraft.loading || manualSubmitLoading || gen.isRunning || prep.isRunning || contextPreviewLoading,
   });
+  const invalidateContextPreview = useCallback((resetExclusions = false) => {
+    contextPreviewVersionRef.current += 1;
+    contextPreviewAbortRef.current?.abort();
+    contextPreviewAbortRef.current = null;
+    setContextPreviewLoading(false);
+    setContextPreview(null);
+    setContextReviewOpen(false);
+    setContextPreviewError(null);
+    if (resetExclusions) setExcludedSourceIds([]);
+  }, []);
   useEffect(() => {
+    manualOperationVersionRef.current += 1;
     cancelGeneration();
     cancelPreparation();
     endLoadingGameSession();
@@ -105,8 +131,10 @@ export function TestGapAnalysisClient() {
     setFocusedMatrixRowIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
+    setManualSubmitLoading(false);
     setManualSubmitError(null);
-  }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
+    invalidateContextPreview(true);
+  }, [scope?.workspaceId, scope?.projectId, scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession, invalidateContextPreview]);
   useEffect(() => {
     if (externalLlmAvailability.enabled || mode !== "manual") return;
     manualOperationVersionRef.current += 1;
@@ -116,7 +144,8 @@ export function TestGapAnalysisClient() {
     setManualResponse("");
     setManualSubmitLoading(false);
     setManualSubmitError(null);
-  }, [cancelPreparation, externalLlmAvailability.enabled, mode]);
+    invalidateContextPreview();
+  }, [cancelPreparation, externalLlmAvailability.enabled, invalidateContextPreview, mode]);
   const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
   const suggestedAdditions = useMemo(() => state.data?.suggestedAdditions ?? [], [state.data?.suggestedAdditions]);
   const selectedSuggestedAdditions = useMemo(
@@ -133,6 +162,7 @@ export function TestGapAnalysisClient() {
   );
 
   function changeTargetWorkItemId(value: string) {
+    manualOperationVersionRef.current += 1;
     gen.cancel();
     prep.cancel();
     loadingGame.endSession();
@@ -144,10 +174,13 @@ export function TestGapAnalysisClient() {
     setFocusedMatrixRowIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
+    setManualSubmitLoading(false);
     setManualSubmitError(null);
+    invalidateContextPreview(true);
   }
 
   function changeExtraInstructions(value: string) {
+    manualOperationVersionRef.current += 1;
     gen.cancel();
     prep.cancel();
     loadingGame.endSession();
@@ -159,7 +192,83 @@ export function TestGapAnalysisClient() {
     setFocusedMatrixRowIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
+    setManualSubmitLoading(false);
     setManualSubmitError(null);
+    invalidateContextPreview();
+  }
+
+  function changeMode(nextMode: WorkflowMode) {
+    if (nextMode === mode) return;
+    manualOperationVersionRef.current += 1;
+    gen.cancel();
+    prep.cancel();
+    loadingGame.endSession();
+    setHasUnfinishedWork(true);
+    setMode(nextMode);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitLoading(false);
+    setManualSubmitError(null);
+    invalidateContextPreview();
+  }
+
+  function contextSelectionPayload() {
+    return {
+      ...(contextPreview ? { reviewedSourceIds: contextPreview.reviewedSourceIds } : {}),
+      excludedSourceIds,
+    };
+  }
+
+  function changeExcludedContextSourceIds(nextIds: string[]) {
+    if (nextIds.length === excludedSourceIds.length && nextIds.every((id, index) => id === excludedSourceIds[index])) return;
+    manualOperationVersionRef.current += 1;
+    gen.cancel();
+    prep.cancel();
+    loadingGame.endSession();
+    setHasUnfinishedWork(true);
+    setExcludedSourceIds(nextIds);
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitLoading(false);
+    setManualSubmitError(null);
+  }
+
+  async function reviewContext() {
+    if (!scope || !targetWorkItemId || !extraInstructionsValid) return;
+    if (contextPreviewLoading || gen.isRunning || prep.isRunning || manualSubmitLoading || (mode === "manual" && !externalLlmAvailability.enabled)) return;
+    if (contextPreview) {
+      setContextReviewOpen(true);
+      return;
+    }
+    const previewVersion = ++contextPreviewVersionRef.current;
+    contextPreviewAbortRef.current?.abort();
+    const controller = new AbortController();
+    contextPreviewAbortRef.current = controller;
+    setContextPreviewLoading(true);
+    setContextPreviewError(null);
+    try {
+      const data = await postJson<ContextReviewPreview>(
+        "/api/workflow-context/preview",
+        {
+          workflow: "existing_test_case_review",
+          mode,
+          scope,
+          targetWorkItemId,
+          extraInstructions: normalizeExtraInstructions(extraInstructions),
+          ...contextSelectionPayload(),
+        },
+        controller.signal,
+      );
+      if (previewVersion !== contextPreviewVersionRef.current) return;
+      setContextPreview(data);
+      setExcludedSourceIds((current) => data.excludedSourceIds ?? current);
+      setContextReviewOpen(true);
+    } catch (error) {
+      if (controller.signal.aborted || previewVersion !== contextPreviewVersionRef.current) return;
+      setContextPreviewError(caughtErrorMessage(error, "Context preview failed."));
+    } finally {
+      if (previewVersion === contextPreviewVersionRef.current) setContextPreviewLoading(false);
+    }
   }
 
   function applyReviewResult(data: ExistingReviewResult) {
@@ -199,20 +308,31 @@ export function TestGapAnalysisClient() {
 
   async function review() {
     if (!scope || !targetWorkItemId || !extraInstructionsValid) return;
-    if (gen.isRunning) return;
+    if (gen.isRunning || contextPreviewLoading || manualSubmitLoading) return;
+    setContextReviewOpen(false);
     loadingGame.startSession();
     setState({ loading: true, error: null, data: null });
     setSelectedSuggestedIds([]);
     setManualDraft({ loading: false, error: null, data: null });
     setManualResponse("");
     setManualSubmitError(null);
-    const data = await gen.start((signal) =>
-      postJson<ExistingReviewResult>(
-        "/api/existing-test-case-review/run",
-        { scope, targetWorkItemId, extraInstructions: normalizeExtraInstructions(extraInstructions) },
-        signal,
-      ),
-    );
+    const data = await gen.start(async (signal) => {
+      try {
+        return await postJson<ExistingReviewResult>(
+          "/api/existing-test-case-review/run",
+          {
+            scope,
+            targetWorkItemId,
+            extraInstructions: normalizeExtraInstructions(extraInstructions),
+            ...contextSelectionPayload(),
+          },
+          signal,
+        );
+      } catch (error) {
+        if (isContextReviewRefreshRequired(error)) invalidateContextPreview();
+        throw error;
+      }
+    });
     if (data) {
       loadingGame.completeSession(data);
     } else {
@@ -223,7 +343,8 @@ export function TestGapAnalysisClient() {
 
   async function prepareManualPrompt() {
     if (!externalLlmAvailability.enabled || !scope || !targetWorkItemId || !extraInstructionsValid) return;
-    if (prep.isRunning) return;
+    if (prep.isRunning || contextPreviewLoading || manualSubmitLoading) return;
+    setContextReviewOpen(false);
     const manualOperationVersion = manualOperationVersionRef.current;
     setState({ loading: false, error: null, data: null });
     setSelectedSuggestedIds([]);
@@ -231,13 +352,23 @@ export function TestGapAnalysisClient() {
     setManualSubmitError(null);
     setManualResponse("");
     scrollToNextStep(promptSectionRef);
-    const data = await prep.start((signal) =>
-      postJson<ManualPromptDraft>(
-        "/api/existing-test-case-review/manual/draft",
-        { scope, targetWorkItemId, extraInstructions: normalizeExtraInstructions(extraInstructions) },
-        signal,
-      ),
-    );
+    const data = await prep.start(async (signal) => {
+      try {
+        return await postJson<ManualPromptDraft>(
+          "/api/existing-test-case-review/manual/draft",
+          {
+            scope,
+            targetWorkItemId,
+            extraInstructions: normalizeExtraInstructions(extraInstructions),
+            ...contextSelectionPayload(),
+          },
+          signal,
+        );
+      } catch (error) {
+        if (isContextReviewRefreshRequired(error)) invalidateContextPreview();
+        throw error;
+      }
+    });
     if (data) {
       if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualDraft({ loading: false, error: null, data });
@@ -262,6 +393,7 @@ export function TestGapAnalysisClient() {
         resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
         contextCitations: manualDraft.data.contextCitations,
         retrievalTopK: manualDraft.data.retrievalTopK,
+        ...contextSelectionPayload(),
       });
       if (manualOperationVersion !== manualOperationVersionRef.current) return;
       applyReviewResult(data);
@@ -314,10 +446,8 @@ export function TestGapAnalysisClient() {
               <GenerationModeToggle
                 mode={mode}
                 externalLlmAvailability={externalLlmAvailability}
-                onChange={(nextMode) => {
-                  setHasUnfinishedWork(true);
-                  setMode(nextMode);
-                }}
+                disabled={contextPreviewLoading || gen.isRunning || prep.isRunning || manualSubmitLoading}
+                onChange={changeMode}
               />
             }
           >
@@ -337,18 +467,44 @@ export function TestGapAnalysisClient() {
                     aria-label={WORK_ITEM_ID_TITLE}
                   />
                 </div>
-                {mode === "auto" ? (
-                  <Button onClick={review} disabled={!scope || !targetWorkItemId || gen.isRunning || !extraInstructionsValid}>
-                    {gen.isRunning ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" />}
-                    {gen.isRunning ? "Reviewing..." : "Analyze Coverage"}
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Button
+                    ref={reviewContextButtonRef}
+                    type="button"
+                    variant="outline"
+                    onClick={reviewContext}
+                    disabled={!scope || !targetWorkItemId || contextPreviewLoading || gen.isRunning || prep.isRunning || manualSubmitLoading || !extraInstructionsValid || (mode === "manual" && !externalLlmAvailability.enabled)}
+                  >
+                    {contextPreviewLoading ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : null}
+                    {contextPreviewLoading ? "Reviewing..." : "Review context"}
                   </Button>
-                ) : (
-                  <Button onClick={prepareManualPrompt} disabled={!externalLlmAvailability.enabled || !scope || !targetWorkItemId || prep.isRunning || !extraInstructionsValid}>
-                    {prep.isRunning ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" />}
-                    {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
-                  </Button>
-                )}
+                  {mode === "auto" ? (
+                    <Button onClick={review} disabled={!scope || !targetWorkItemId || contextPreviewLoading || gen.isRunning || manualSubmitLoading || !extraInstructionsValid}>
+                      {gen.isRunning ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" />}
+                      {gen.isRunning ? "Reviewing..." : "Analyze Coverage"}
+                    </Button>
+                  ) : (
+                    <Button onClick={prepareManualPrompt} disabled={!externalLlmAvailability.enabled || !scope || !targetWorkItemId || contextPreviewLoading || prep.isRunning || manualSubmitLoading || !extraInstructionsValid}>
+                      {prep.isRunning ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" />}
+                      {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
+                    </Button>
+                  )}
+                </div>
               </div>
+              {contextPreviewError ? <Callout tone="error" role="alert">{contextPreviewError}</Callout> : null}
+              {contextPreview ? (
+                <WorkflowContextCitations
+                  citations={contextPreview.contextCitations}
+                  excludedSourceIds={excludedSourceIds}
+                  onExcludedSourceIdsChange={changeExcludedContextSourceIds}
+                  editable
+                  busy={contextPreviewLoading || gen.isRunning || prep.isRunning || manualSubmitLoading}
+                  open={contextReviewOpen}
+                  onOpenChange={setContextReviewOpen}
+                  restoreFocusRef={reviewContextButtonRef}
+                  hideSummary
+                />
+              ) : null}
               <WorkItemPreview scope={scope} workItemId={targetWorkItemId} lookup={workItemLookup} />
               <ExtraInstructionsField value={extraInstructions} onChange={changeExtraInstructions} />
             </div>

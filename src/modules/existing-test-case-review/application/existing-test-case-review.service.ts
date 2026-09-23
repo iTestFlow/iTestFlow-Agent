@@ -27,9 +27,10 @@ export async function reviewExistingLinkedTestCases(input: {
   rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
   extraInstructions?: string;
+  preparedPromptDraft?: ReturnType<typeof buildExistingTestCaseReviewPromptDraft>;
 }) {
   const scope = assertProjectScope(input.scope);
-  const promptDraft = buildExistingTestCaseReviewPromptDraft({
+  const promptDraft = input.preparedPromptDraft ?? buildExistingTestCaseReviewPromptDraft({
     scope,
     // Sizes how much compiled knowledge and related context the prompt carries.
     maxInputTokens: input.maxInputTokens,

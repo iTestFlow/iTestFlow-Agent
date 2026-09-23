@@ -82,12 +82,17 @@ export async function rankProjectKnowledgeByRelevance(input: {
     });
     if (!ranked.length) return null;
 
+    // The embedding index may still contain entries removed for this request.
+    // They must not affect cutoff scores or the renderer's eligible-key lists.
+    const allowedKeys = knowledgeKeysByCategory(input.projectKnowledgeBase);
     const scored: ScoredEntry[] = [];
     for (const entry of ranked) {
       const category = CATEGORY_BY_STORED_NAME[entry.category];
-      if (!category) continue;
+      if (!category || !allowedKeys[category].has(entry.entry_key)) continue;
       scored.push({ key: entry.entry_key, category, similarity: entry.similarity });
     }
+
+    if (!scored.length) return null;
 
     const ontology = buildKnowledgeOntology(input.projectKnowledgeBase);
     const connected = resolveConnectedEntries(ontology, {
@@ -102,6 +107,17 @@ export async function rankProjectKnowledgeByRelevance(input: {
     console.error("Semantic knowledge ranking failed; falling back to keyword ranking.", error);
     return null;
   }
+}
+
+function knowledgeKeysByCategory(knowledgeBase: ProjectKnowledgeBase): Record<OntologyCategory, Set<string>> {
+  return {
+    modules: new Set(knowledgeBase.modules.map((entry) => entry.id)),
+    businessRules: new Set(knowledgeBase.businessRules.map((entry) => entry.id)),
+    stateTransitions: new Set(knowledgeBase.stateTransitions.map((entry) => entry.id)),
+    glossary: new Set(knowledgeBase.glossary.map((entry) => entry.term)),
+    crossDependencies: new Set(knowledgeBase.crossDependencies.map((entry) => entry.id)),
+    chatInsights: new Set(knowledgeBase.chatInsights.map((entry) => entry.id)),
+  };
 }
 
 /**

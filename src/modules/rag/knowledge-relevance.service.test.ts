@@ -114,7 +114,7 @@ describe("rankProjectKnowledgeByRelevance", () => {
   });
 
   it("distinguishes a scored-but-fully-cut category from one that was never scored", async () => {
-    // Keys deliberately absent from the fixture ontology so nothing is rescued by
+    // Keys have no provenance connection, so nothing is rescued by
     // connection: with similarities 0.9/0.2 the bar sits at 0.55, so the module entry
     // is cut. Its category must still arrive as an explicit empty array — the renderer
     // reads that as "send nothing", whereas an absent key (glossary here) means "keep
@@ -124,10 +124,27 @@ describe("rankProjectKnowledgeByRelevance", () => {
       { entry_key: "mod-x", category: "module", similarity: 0.2 },
     ]);
 
-    const result = await rankProjectKnowledgeByRelevance(baseInput());
+    const projectKnowledgeBase = ProjectKnowledgeBaseSchema.parse({
+      modules: [{ id: "mod-x", name: "Unrelated module", description: "Other work", sourceWorkItemIds: ["999"], evidence: "e" }],
+      businessRules: [{ id: "rule-x", rule: "Unrelated rule", sourceField: "description", sourceWorkItemIds: ["999"], evidence: "e" }],
+      stateTransitions: [], glossary: [], crossDependencies: [], chatInsights: [],
+    });
+    const result = await rankProjectKnowledgeByRelevance({ ...baseInput(), projectKnowledgeBase });
 
     expect(result?.businessRules).toEqual(["rule-x"]);
     expect(result?.modules).toEqual([]);
     expect(result && "glossary" in result).toBe(false);
+  });
+
+  it("does not let removed knowledge scores suppress a retained entry", async () => {
+    searchByEmbedding.mockResolvedValue([
+      { entry_key: "removed-rule", category: "business_rule", similarity: 0.99 },
+      { entry_key: "rule-1", category: "business_rule", similarity: 0.62 },
+    ]);
+
+    const result = await rankProjectKnowledgeByRelevance(baseInput());
+
+    expect(result?.businessRules).toContain("rule-1");
+    expect(JSON.stringify(result)).not.toContain("removed-rule");
   });
 });
