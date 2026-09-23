@@ -67,6 +67,7 @@ export function normalizeWorkflowContextReason(value: string | null | undefined,
 
 export function buildWorkflowContextCitations(input: {
   resolvedContextUsed: ContextUsedItem[];
+  targetWorkItemId?: string;
   relevantProjectKnowledgeBase?: ProjectKnowledgeBase | null;
   storyAttachments?: Array<{
     id: string;
@@ -86,12 +87,17 @@ export function buildWorkflowContextCitations(input: {
   const knowledgeBase = input.relevantProjectKnowledgeBase;
 
   if (knowledgeBase) {
+    const reasonContext = {
+      targetWorkItemId: input.targetWorkItemId,
+      contextByWorkItemId: new Map(input.resolvedContextUsed.map((item) => [item.workItemId, item.title])),
+    };
     citations.push(
       ...knowledgeBase.modules.map((item) =>
-        toKnowledgeCitation("module", item.id, item.name, item.sourceWorkItemIds),
+        toKnowledgeCitation("module", item.id, item.name, item.sourceWorkItemIds, item.description, reasonContext),
       ),
       ...knowledgeBase.businessRules.map((item) =>
-        toKnowledgeCitation("business_rule", item.id, item.rule, item.sourceWorkItemIds),
+        toKnowledgeCitation("business_rule", item.id, item.rule, item.sourceWorkItemIds,
+          item.moduleName ? `Applies to ${item.moduleName} behavior` : `Checks a constraint from ${readableSourceField(item.sourceField)}`, reasonContext),
       ),
       ...knowledgeBase.stateTransitions.map((item) =>
         toKnowledgeCitation(
@@ -101,10 +107,12 @@ export function buildWorkflowContextCitations(input: {
             .filter(Boolean)
             .join(": "),
           item.sourceWorkItemIds,
+          `Triggered when ${item.triggerOrCondition}`,
+          reasonContext,
         ),
       ),
       ...knowledgeBase.glossary.map((item) =>
-        toKnowledgeCitation("glossary", item.term, item.term, item.sourceWorkItemIds),
+        toKnowledgeCitation("glossary", item.term, item.term, item.sourceWorkItemIds, item.definition, reasonContext),
       ),
       ...knowledgeBase.crossDependencies.map((item) =>
         toKnowledgeCitation(
@@ -112,10 +120,12 @@ export function buildWorkflowContextCitations(input: {
           item.id,
           `${item.sourceModule} -> ${item.targetModule}`,
           item.sourceWorkItemIds,
+          item.description,
+          reasonContext,
         ),
       ),
       ...knowledgeBase.chatInsights.map((item) =>
-        toKnowledgeCitation("chat_insight", item.id, item.title, item.sourceWorkItemIds),
+        toKnowledgeCitation("chat_insight", item.id, item.title, item.sourceWorkItemIds, item.content, reasonContext),
       ),
     );
   }
@@ -150,12 +160,14 @@ function toKnowledgeCitation(
   entryKey: string,
   title: string,
   sourceWorkItemIds: string[],
+  detail: string,
+  context: { targetWorkItemId?: string; contextByWorkItemId: Map<string, string> },
 ): WorkflowContextCitation {
   return {
     sourceType: "project_knowledge",
     sourceId: sourceIdForProjectKnowledge(category, entryKey),
     title,
-    reason: projectKnowledgeCitationReason(sourceWorkItemIds),
+    reason: projectKnowledgeCitationReason(category, title, detail, sourceWorkItemIds, context),
     category,
     sourceWorkItemIds,
   };
@@ -171,11 +183,33 @@ function workItemCitationReason(item: ContextUsedItem) {
   return normalizeWorkflowContextReason(item.reason, fallback);
 }
 
-function projectKnowledgeCitationReason(sourceWorkItemIds: string[]) {
-  const ids = Array.from(new Set(sourceWorkItemIds.map((id) => id.trim()).filter(Boolean)));
-  if (!ids.length) return normalizeWorkflowContextReason(undefined, "Project knowledge relevant to this story.");
-  const sourceLabel = ids.length === 1 ? "story" : "stories";
-  const displayIds = ids.slice(0, 3).map((id) => `WI:${id}`).join(", ");
-  const suffix = ids.length > 3 ? ", and others" : "";
-  return normalizeWorkflowContextReason(undefined, `Derived from related ${sourceLabel} ${displayIds}${suffix}.`);
+function projectKnowledgeCitationReason(
+  category: string,
+  title: string,
+  detail: string,
+  sourceWorkItemIds: string[],
+  context: { targetWorkItemId?: string; contextByWorkItemId: Map<string, string> },
+) {
+  const sourceIds = sourceWorkItemIds.map((id) => id.trim());
+  const relatedTitle = sourceIds.map((id) => context.contextByWorkItemId.get(id)).find(Boolean);
+  const prefix = context.targetWorkItemId && sourceIds.includes(context.targetWorkItemId)
+    ? "From this story"
+    : relatedTitle
+      ? `From retrieved “${relatedTitle}”`
+      : {
+          module: "Module behavior",
+          business_rule: "Business rule",
+          state_transition: "Workflow behavior",
+          glossary: "Project term",
+          dependency: "Module dependency",
+          chat_insight: "Approved project insight",
+        }[category] ?? "Project knowledge";
+  const content = detail.trim() && detail.trim().toLowerCase() !== title.trim().toLowerCase()
+    ? detail.trim()
+    : `${title} context`;
+  return normalizeWorkflowContextReason(`${prefix}: ${content}`, "Relevant project knowledge.");
+}
+
+function readableSourceField(sourceField: string) {
+  return sourceField === "acceptanceCriteria" ? "acceptance criteria" : sourceField.trim() || "the source story";
 }

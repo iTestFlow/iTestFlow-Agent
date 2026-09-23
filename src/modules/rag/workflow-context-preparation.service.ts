@@ -228,6 +228,7 @@ export async function prepareWorkflowContext(input: {
     retrievalTopK: autoContext.retrievalTopK,
   });
   const contextCitations = buildContextCitations({
+    targetWorkItemId: input.targetRequirement.id,
     contextUsed,
     promptDraft,
     storyAttachmentContext,
@@ -270,6 +271,7 @@ export function buildPreparedWorkflowContextCitations(
   },
 ) {
   const citations = buildContextCitations({
+    targetWorkItemId: preparation.targetRequirement.id,
     contextUsed: preparation.contextUsed,
     promptDraft: {
       ...preparation.promptDraft,
@@ -363,12 +365,14 @@ async function prepareStoryAttachmentContext(input: {
 }
 
 function buildContextCitations(input: {
+  targetWorkItemId: string;
   contextUsed: ContextUsedItem[];
   promptDraft: Pick<WorkflowPromptDraft, "relevantProjectKnowledgeBase" | "includedStoryAttachmentTextIds">;
   storyAttachmentContext?: StoryAttachmentWorkflowContext;
 }) {
   const includedAttachmentTextIds = new Set(input.promptDraft.includedStoryAttachmentTextIds ?? []);
   return buildWorkflowContextCitations({
+    targetWorkItemId: input.targetWorkItemId,
     resolvedContextUsed: input.contextUsed,
     relevantProjectKnowledgeBase: input.promptDraft.relevantProjectKnowledgeBase,
     storyAttachments: input.storyAttachmentContext?.citationAttachments.filter((attachment) => (

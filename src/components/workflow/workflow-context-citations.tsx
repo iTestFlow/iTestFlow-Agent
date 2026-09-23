@@ -362,9 +362,8 @@ function citationReason(citation: WorkflowContextCitation) {
   if (reason) return reason
   if (citation.sourceType === "project_context") return "Related to this story."
   if (citation.sourceType === "project_knowledge") {
-    return citation.sourceWorkItemIds.length
-      ? `Derived from related story WI:${citation.sourceWorkItemIds[0]}.`
-      : "Relevant project knowledge."
+    const category = citation.category.replace(/_/g, " ")
+    return `Adds ${category} context about ${citation.title}.`
   }
   if (citation.sourceType === "uploaded_document") return "Relevant project document content."
   return "Selected attachment for this story."

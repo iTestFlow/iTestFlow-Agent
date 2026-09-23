@@ -54,6 +54,24 @@ function ReviewHarness() {
 describe("WorkflowContextCitations", () => {
   afterEach(cleanup);
 
+  it("uses the knowledge topic for older citations without a reason", () => {
+    render(<WorkflowContextCitations
+      citations={[{
+        sourceType: "project_knowledge",
+        sourceId: "KB:module:catalog",
+        title: "Product Discovery & Catalog Browsing",
+        category: "module",
+        sourceWorkItemIds: ["2"],
+      }]}
+      open
+      onOpenChange={() => undefined}
+      hideSummary
+    />);
+
+    expect(screen.getByText("Adds module context about Product Discovery & Catalog Browsing.")).toBeInTheDocument();
+    expect(screen.queryByText(/Derived from related story/)).not.toBeInTheDocument();
+  });
+
   it("shows concise reasons, removes/restores dependent context, and restores focus after Escape", async () => {
     const user = userEvent.setup();
     render(<ReviewHarness />);

@@ -44,6 +44,7 @@ import { ProjectKnowledgeBaseSchema } from "./project-knowledge.schema";
 import { ReviewedContextSourceUnavailableError } from "./auto-context-resolver.service";
 import { StoryAttachmentNotReadyError } from "@/modules/story-attachments/story-attachments.service";
 import {
+  buildPreparedWorkflowContextCitations,
   ContextReviewRequiredError,
   prepareWorkflowContext,
   type WorkflowContextWorkflow,
@@ -120,6 +121,32 @@ describe("prepareWorkflowContext", () => {
     expect(mocks.resolveWorkflowContext).not.toHaveBeenCalled();
     expect(mocks.resolveWorkflowContextWithoutLLM).toHaveBeenCalledOnce();
     expect(provider.generateStructuredOutput).not.toHaveBeenCalled();
+  });
+
+  it.each<WorkflowContextWorkflow>([
+    "requirement_analysis",
+    "test_case_generation",
+    "existing_test_case_review",
+  ])("keeps the same specific knowledge reason in %s preview and result", async (workflow) => {
+    const knowledgeBase = ProjectKnowledgeBaseSchema.parse({
+      modules: [{
+        id: "catalog",
+        name: "Product Discovery",
+        description: "Customers can browse and filter products",
+        sourceWorkItemIds: ["101"],
+        evidence: "Target story",
+      }],
+    });
+    mocks.loadProjectKnowledgeContext.mockResolvedValue({ knowledgeBase, promptNotice: null });
+
+    const prepared = await prepareWorkflowContext(input(workflow, { preview: true }));
+    const resultCitations = buildPreparedWorkflowContextCitations(prepared, {
+      relevantProjectKnowledgeBase: prepared.promptDraft.relevantProjectKnowledgeBase,
+    });
+
+    expect(prepared.contextCitations.find((citation) => citation.sourceId === "KB:module:catalog")?.reason)
+      .toBe("From this story: Customers can browse and filter products.");
+    expect(resultCitations).toEqual(prepared.contextCitations);
   });
 
   it("allows dependent knowledge to disappear with its removed story while retaining the reviewed set", async () => {

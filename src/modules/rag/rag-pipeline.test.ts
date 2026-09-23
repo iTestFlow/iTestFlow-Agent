@@ -330,7 +330,7 @@ describe("RAG pipeline", () => {
       sourceType: "project_knowledge",
       sourceId: "KB:module:mod-1",
       title: "Checkout",
-      reason: "Derived from related story WI:10.",
+      reason: "Module behavior: Checkout module.",
       category: "module",
       sourceWorkItemIds: ["10"],
     });
@@ -338,7 +338,7 @@ describe("RAG pipeline", () => {
       sourceType: "project_knowledge",
       sourceId: "KB:business_rule:rule-1",
       title: "Orders over 100 require approval",
-      reason: "Derived from related story WI:11.",
+      reason: "Business rule: Checks a constraint from acceptance criteria.",
       category: "business_rule",
       sourceWorkItemIds: ["11"],
     });
@@ -346,7 +346,7 @@ describe("RAG pipeline", () => {
       sourceType: "project_knowledge",
       sourceId: "KB:state_transition:trans-1",
       title: "Order Lifecycle: Pending -> Shipped",
-      reason: "Derived from related story WI:12.",
+      reason: "Workflow behavior: Triggered when Payment captured.",
       category: "state_transition",
       sourceWorkItemIds: ["12"],
     });
@@ -354,7 +354,7 @@ describe("RAG pipeline", () => {
       sourceType: "project_knowledge",
       sourceId: "KB:glossary:Cart",
       title: "Cart",
-      reason: "Derived from related story WI:13.",
+      reason: "Project term: A customer shopping cart.",
       category: "glossary",
       sourceWorkItemIds: ["13"],
     });
@@ -362,7 +362,7 @@ describe("RAG pipeline", () => {
       sourceType: "project_knowledge",
       sourceId: "KB:dependency:dep-1",
       title: "Billing -> Notifications",
-      reason: "Derived from related story WI:14.",
+      reason: "Module dependency: Billing notifies Notifications.",
       category: "dependency",
       sourceWorkItemIds: ["14"],
     });
@@ -370,7 +370,7 @@ describe("RAG pipeline", () => {
       sourceType: "project_knowledge",
       sourceId: "KB:chat_insight:chat-1",
       title: "Checkout discussion",
-      reason: "Derived from related story WI:15.",
+      reason: "Approved project insight: A synthesis of the checkout discussion.",
       category: "chat_insight",
       sourceWorkItemIds: ["15"],
     });
@@ -387,6 +387,27 @@ describe("RAG pipeline", () => {
 
     // Dedup collapsed the duplicate mod-1 module: first occurrence kept, no dupes.
     expect(byId.size).toBe(citations.length);
+  });
+
+  it("explains knowledge using its content and a verified story connection instead of only source IDs", () => {
+    const knowledgeBase = ProjectKnowledgeBaseSchema.parse({
+      modules: [
+        { id: "catalog", name: "Product Discovery", description: "Customers can browse and filter products", sourceWorkItemIds: ["2"], evidence: "Catalog story" },
+        { id: "cart", name: "Cart", description: "Cart totals include discounts", sourceWorkItemIds: ["1"], evidence: "Cart story" },
+        { id: "orders", name: "Orders", description: "Orders show fulfillment status", sourceWorkItemIds: ["3"], evidence: "Orders story" },
+      ],
+    });
+    const citations = buildWorkflowContextCitations({
+      targetWorkItemId: "1",
+      resolvedContextUsed: [{ workItemId: "3", title: "Order tracking", workItemType: "User Story", source: "linked_requirement", relevanceScore: 1 }],
+      relevantProjectKnowledgeBase: knowledgeBase,
+    });
+    const byId = new Map(citations.map((citation) => [citation.sourceId, citation]));
+
+    expect(byId.get("KB:module:catalog")?.reason).toBe("Module behavior: Customers can browse and filter products.");
+    expect(byId.get("KB:module:cart")?.reason).toBe("From this story: Cart totals include discounts.");
+    expect(byId.get("KB:module:orders")?.reason).toBe("From retrieved “Order tracking”: Orders show fulfillment status.");
+    expect(byId.get("KB:module:catalog")?.reason).not.toContain("WI:2");
   });
 
   it("normalizes concise reasons while accepting citations recorded before reasons existed", () => {
