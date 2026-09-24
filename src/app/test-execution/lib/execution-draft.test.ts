@@ -57,6 +57,17 @@ describe("draftIssues", () => {
     expect(draftIssues(executableDraft())).toEqual([]);
   });
 
+  it("allows API-only runs without browser fields and checks connection aliases", () => {
+    const draft = executableDraft();
+    draft.setup.browserEnabled = false;
+    draft.setup.baseUrl = "";
+    draft.setup.viewportWidth = "";
+    draft.setup.connections = [{ localId: "api-1", kind: "api", alias: "orders-api", baseUrl: "https://api.example.com", auth: { type: "none" }, allowWrites: false }];
+    expect(draftIssues(draft)).toEqual([]);
+    draft.setup.connections.push({ ...draft.setup.connections[0], localId: "api-2" });
+    expect(draftIssues(draft).join(" ")).toMatch(/used more than once/);
+  });
+
   it("flags missing base URL, missing cases, and unready cases", () => {
     const draft = createEmptyDraft();
     draft.cases = [newManualCase(0)];
@@ -228,5 +239,17 @@ describe("rerun and profile prefill", () => {
     expect(applied.setup.viewportHeight).toBe("768");
     expect(applied.setup.testData[0].savedRef).toEqual({ kind: "profile", id: "prof-1", title: "Password" });
     expect(applied.cases).toBe(draft.cases);
+  });
+
+  it("restores connection secrets as references and preserves cleanup phases on rerun", () => {
+    const draft = draftFromRunDetail({
+      id: "run-10", baseUrl: null, browserEnabled: false, executionNotes: null, screenshotPolicy: "failures-only",
+      azurePlanId: null, azureSuiteId: null,
+      connections: [{ kind: "database", alias: "orders-db", engine: "postgres", host: "db.example.com", database: "orders", allowWrites: false, savedCredentials: { password: true } }],
+      cases: [{ azureTestCaseId: null, azureTestPointId: null, title: "Order", steps: [{ action: "Delete fixture", expectedResult: null, phase: "cleanup" }] }],
+    });
+    expect(draft.setup.browserEnabled).toBe(false);
+    expect(draft.setup.connections[0].credentials?.password).toEqual({ fromRunId: "run-10", sourceAlias: "orders-db", sourceField: "password" });
+    expect(draft.cases[0].steps[0].phase).toBe("cleanup");
   });
 });

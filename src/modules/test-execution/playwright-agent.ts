@@ -174,7 +174,7 @@ function allowedNavigationUrl(value: string, policy: PlaywrightToolPolicy): URL 
 
 export type PlaywrightBrowserTab = string | { url: string; current: boolean };
 
-function assertAllowedBrowserState(tabs: readonly PlaywrightBrowserTab[], policy: PlaywrightToolPolicy): void {
+export function assertAllowedBrowserState(tabs: readonly PlaywrightBrowserTab[], policy: PlaywrightToolPolicy): void {
   for (const tab of tabs) {
     const value = typeof tab === "string" ? tab : tab.url;
     if (value === "about:blank") continue;

@@ -1,4 +1,20 @@
 import type { ScreenshotPolicy } from "@/modules/test-execution/screenshot-policy";
+import type { ConnectionView, StepPhase } from "@/modules/test-execution/execution-connections.shared";
+
+export type InstructionSnippet = { id: string; name: string; instructions: string; expectedResult: string | null };
+
+export type RunOperation = {
+  id: string;
+  connectionAlias?: string | null;
+  alias?: string | null;
+  layer?: "browser" | "api" | "database" | null;
+  toolName?: string | null;
+  operation?: string | null;
+  status?: RunStatus;
+  durationMs?: number | null;
+  assertion?: string | null;
+  errorMessage?: string | null;
+};
 
 export type RunStatus = "queued" | "running" | "passed" | "failed" | "blocked" | "timeout" | "cancelled" | "error" | "skipped";
 
@@ -18,6 +34,9 @@ export type RunStep = {
   id: string;
   index: number;
   action: string;
+  phase?: StepPhase;
+  layer?: "browser" | "api" | "database" | null;
+  operations?: RunOperation[];
   expectedResult: string | null;
   status: RunStatus;
   toolName: string | null;
@@ -54,6 +73,8 @@ export type RunPublication = {
 
 export type RunDetail = RunSummary & {
   baseUrl: string | null;
+  browserEnabled?: boolean;
+  connections?: ConnectionView[];
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
   headless?: boolean;
@@ -69,6 +90,8 @@ export type ExecutionProfileView = {
   id: string;
   name: string;
   baseUrl: string | null;
+  browserEnabled?: boolean;
+  connections?: ConnectionView[];
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
   headless: boolean;

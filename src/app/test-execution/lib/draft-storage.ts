@@ -24,6 +24,12 @@ function withoutSecretValues(draft: ExecutionDraft): ExecutionDraft {
       testData: draft.setup.testData.map((entry) =>
         entry.isSecret && entry.value ? { ...entry, value: "" } : entry,
       ),
+      connections: draft.setup.connections.map((connection) => ({
+        ...connection,
+        credentials: Object.fromEntries(Object.entries(connection.credentials ?? {}).map(([field, secret]) =>
+          [field, { ...secret, value: undefined }],
+        )),
+      })),
     },
   };
 }

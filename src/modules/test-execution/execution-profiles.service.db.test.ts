@@ -12,6 +12,7 @@ import {
   updateExecutionProfile,
 } from "./execution-profiles.service";
 import { TestDataResolutionError, resolveTestDataEntries } from "./execution-test-data.service";
+import { prepareConnections } from "./execution-connections.service";
 
 const workspaceId = uniqueTestId("ws_pw_prof");
 const userId = uniqueTestId("user_pw_prof");
@@ -116,5 +117,27 @@ describeDb("Execution profiles (DB-backed)", () => {
       workspaceId, projectId,
       entries: [{ title: "Password", isSecret: true, fromProfileId: profile.id }],
     })).rejects.toBeInstanceOf(TestDataResolutionError);
+  });
+
+  it("encrypts connection credentials and enforces project-scoped secret reuse", async () => {
+    const profile = await createExecutionProfile(writeInput({
+      name: "API credentials",
+      browserEnabled: false,
+      connections: [{ kind: "api", alias: "orders-api", baseUrl: "https://orders.example.test",
+        auth: { type: "bearer" }, allowWrites: false, credentials: { bearerToken: { value: "secret-token-1234" } } }],
+    }));
+    expect(profile).toMatchObject({ browserEnabled: false,
+      connections: [{ alias: "orders-api", savedCredentials: { bearerToken: true } }] });
+    expect(JSON.stringify(profile)).not.toContain("secret-token-1234");
+    const stored = await sqlGet<{ encrypted_credentials: string; settings_json: unknown }>(
+      `SELECT encrypted_credentials, settings_json FROM playwright_execution_profile_connections WHERE profile_id = @profileId`,
+      { profileId: profile.id },
+    );
+    expect(stored?.encrypted_credentials).toBeTruthy();
+    expect(JSON.stringify(stored?.settings_json)).not.toContain("secret-token-1234");
+    await expect(prepareConnections({ workspaceId, projectId: otherProjectId,
+      connections: [{ kind: "api", alias: "orders-api", baseUrl: "https://orders.example.test", auth: { type: "bearer" },
+        allowWrites: false, credentials: { bearerToken: { fromProfileId: profile.id } } }],
+    })).rejects.toThrow(/Enter the bearerToken credential/);
   });
 });

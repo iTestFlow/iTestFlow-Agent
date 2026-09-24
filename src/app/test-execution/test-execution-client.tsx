@@ -21,6 +21,7 @@ import {
   testDataIssues,
   viewportIssues,
   type DraftCase,
+  type DraftStep,
   type DraftSetup,
   type ExecutionDraft,
   type ImportedCase,
@@ -28,7 +29,7 @@ import {
 import { clearDraft, loadDraft, saveDraft } from "./lib/draft-storage";
 import { draftToRunRequest, setupToProfileRequest } from "./lib/run-payload";
 import { EXECUTION_STEPS, deriveStepperState, type ExecutionStepId } from "./lib/stepper-gating";
-import { isLiveRunStatus, type ExecutionProfileView, type RunDetail, type RunSummary } from "./lib/run-types";
+import { isLiveRunStatus, type ExecutionProfileView, type InstructionSnippet, type RunDetail, type RunSummary } from "./lib/run-types";
 import { SetupStep } from "./components/setup-step";
 import { CaseImportPanel } from "./components/case-import-panel";
 import { WorkingSetEditor } from "./components/working-set-editor";
@@ -51,6 +52,7 @@ export function TestExecutionClient() {
   const [liveRun, setLiveRun] = useState<RunDetail | null>(null);
   const [viewedRun, setViewedRun] = useState<RunDetail | null>(null);
   const [profiles, setProfiles] = useState<ExecutionProfileView[]>([]);
+  const [snippets, setSnippets] = useState<InstructionSnippet[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [publishBusy, setPublishBusy] = useState(false);
@@ -68,7 +70,8 @@ export function TestExecutionClient() {
 
   // A typed private value is the only draft content that does NOT survive a
   // refresh (drafts persist secret-free), so it is what the guard protects.
-  const typedSecretValues = draft.setup.testData.some((entry) => entry.isSecret && entry.value.length > 0);
+  const typedSecretValues = draft.setup.testData.some((entry) => entry.isSecret && entry.value.length > 0)
+    || draft.setup.connections.some((connection) => Object.values(connection.credentials ?? {}).some((secret) => Boolean(secret.value)));
   useUnsavedChangesGuard({ dirty: typedSecretValues, busy: creating });
 
   useEffect(() => {
@@ -122,6 +125,34 @@ export function TestExecutionClient() {
     }
   }, [scope]);
 
+  const loadSnippets = useCallback(async () => {
+    if (!scope) return;
+    try {
+      const data = await postJson<{ snippets: InstructionSnippet[] }>("/api/test-execution/playwright/snippets", { scope });
+      setSnippets(data.snippets);
+    } catch { setSnippets([]); }
+  }, [scope]);
+
+  async function saveSnippet(name: string, step: DraftStep) {
+    if (!scope) return;
+    try {
+      await postJson("/api/test-execution/playwright/snippets", {
+        scope, name: name.trim(), instructions: step.action.trim(), expectedResult: step.expectedResult.trim(),
+      });
+      await loadSnippets();
+      toast.success(`Snippet "${name.trim()}" saved.`);
+    } catch (error) { toast.error(caughtErrorMessage(error, "Snippet could not be saved.")); }
+  }
+
+  async function deleteSnippet(id: string) {
+    if (!scope) return;
+    try {
+      await postJson(`/api/test-execution/playwright/snippets/${id}`, { scope, action: "delete" });
+      await loadSnippets();
+      toast.success("Snippet deleted.");
+    } catch (error) { toast.error(caughtErrorMessage(error, "Snippet could not be deleted.")); }
+  }
+
   // Boot / project switch: restore the per-project draft, then load history + profiles.
   useEffect(() => {
     if (!projectId || bootedProjectRef.current === projectId) return;
@@ -133,7 +164,8 @@ export function TestExecutionClient() {
     setRuns([]);
     void loadHistory();
     void loadProfiles();
-  }, [projectId, loadHistory, loadProfiles]);
+    void loadSnippets();
+  }, [projectId, loadHistory, loadProfiles, loadSnippets]);
 
   // Secret-free draft autosave, per project.
   useEffect(() => {
@@ -207,6 +239,7 @@ export function TestExecutionClient() {
         totalCases: draft.cases.length, completedCases: 0,
         createdAt: new Date().toISOString(), azurePlanId: null, azureSuiteId: null,
         baseUrl: draft.setup.baseUrl, executionNotes: null, screenshotPolicy: draft.setup.screenshotPolicy,
+        browserEnabled: draft.setup.browserEnabled, connections: [],
         headless: draft.setup.headless,
         viewportWidth: Number(draft.setup.viewportWidth) || 1920, viewportHeight: Number(draft.setup.viewportHeight) || 1080,
         cases: [], artifacts: [],
@@ -299,7 +332,7 @@ export function TestExecutionClient() {
     if (draft.setup.baseUrl.trim() && !isValidHttpUrl(draft.setup.baseUrl)) {
       return "The Base URL must start with http:// or https://.";
     }
-    const viewportProblems = viewportIssues(draft.setup);
+    const viewportProblems = draft.setup.browserEnabled ? viewportIssues(draft.setup) : [];
     if (viewportProblems.length) return viewportProblems[0];
     return null;
   }
@@ -323,7 +356,7 @@ export function TestExecutionClient() {
         setupToProfileRequest({ scope, name, setup: draft.setup }),
       );
       toast.success(`Profile "${data.profile.name}" saved.`);
-      setDraft((current) => ({ ...current, setup: { ...current.setup, profileId: data.profile.id } }));
+      setDraft((current) => applyProfileToDraft(current, data.profile));
       await loadProfiles();
       return true;
     } catch (error) {
@@ -345,11 +378,12 @@ export function TestExecutionClient() {
     }
     setProfileBusy(true);
     try {
-      await postJson(
+      const data = await postJson<{ profile: ExecutionProfileView }>(
         `/api/test-execution/playwright/profiles/${selected.id}`,
         setupToProfileRequest({ scope, name: selected.name, setup: draft.setup }),
       );
       toast.success(`Profile "${selected.name}" updated.`);
+      setDraft((current) => applyProfileToDraft(current, data.profile));
       await loadProfiles();
     } catch (error) {
       toast.error(caughtErrorMessage(error, "The profile could not be updated."));
@@ -405,6 +439,7 @@ export function TestExecutionClient() {
         />
       ) : activeStep === "setup" ? (
         <SetupStep
+          scope={scope}
           setup={draft.setup}
           onSetupChange={setSetup}
           profiles={profiles}
@@ -423,7 +458,7 @@ export function TestExecutionClient() {
             existingCases={draft.cases}
             onAddCases={addImportedCases}
           />
-          <WorkingSetEditor cases={draft.cases} onChange={setCases} />
+          <WorkingSetEditor cases={draft.cases} onChange={setCases} snippets={snippets} onSaveSnippet={saveSnippet} onDeleteSnippet={deleteSnippet} />
         </>
       ) : activeStep === "review" ? (
         <ReviewStep

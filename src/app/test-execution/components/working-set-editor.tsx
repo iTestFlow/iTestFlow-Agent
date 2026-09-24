@@ -7,11 +7,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusChip } from "@/components/qa/status-chip";
 import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { cn } from "@/lib/utils";
+import type { StepPhase } from "@/modules/test-execution/execution-connections.shared";
 import { caseIsReady, newDraftStep, newManualCase, type DraftCase, type DraftStep } from "../lib/execution-draft";
+import type { InstructionSnippet } from "../lib/run-types";
 
 const SOURCE_LABELS: Record<DraftCase["source"], string> = {
   "plan-suite": "Test Plan",
@@ -26,11 +29,18 @@ const SOURCE_LABELS: Record<DraftCase["source"], string> = {
 export function WorkingSetEditor({
   cases,
   onChange,
+  snippets,
+  onSaveSnippet,
+  onDeleteSnippet,
 }: {
   cases: DraftCase[];
   onChange: (cases: DraftCase[]) => void;
+  snippets: InstructionSnippet[];
+  onSaveSnippet: (name: string, step: DraftStep) => Promise<void>;
+  onDeleteSnippet: (id: string) => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [snippetNames, setSnippetNames] = useState<Record<string, string>>({});
 
   function updateCase(localId: string, patch: Partial<DraftCase>) {
     onChange(cases.map((testCase) => (testCase.localId === localId ? { ...testCase, ...patch } : testCase)));
@@ -61,6 +71,7 @@ export function WorkingSetEditor({
 
   return (
     <div className="space-y-3">
+      {snippets.length ? <div className="rounded-lg border border-border p-3"><h3 className="text-sm font-medium">Saved API snippets</h3><ul className="mt-2 flex flex-wrap gap-2">{snippets.map((snippet) => <li key={snippet.id} className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs">{snippet.name}<Button type="button" size="xs" variant="ghost" aria-label={`Delete snippet ${snippet.name}`} onClick={() => void onDeleteSnippet(snippet.id)}>Delete</Button></li>)}</ul></div> : null}
       {!cases.length ? (
         <div className="content-empty-state">
           <p className="text-sm text-muted-foreground">
@@ -109,12 +120,15 @@ export function WorkingSetEditor({
                     onChange={(event) => updateCase(testCase.localId, { title: event.target.value })}
                   />
                 </div>
+                {snippets.length ? <div className="space-y-1.5"><Label htmlFor={`snippet-${testCase.localId}`}>Insert saved API instructions</Label><NativeSelect id={`snippet-${testCase.localId}`} value="" onChange={(event) => { const snippet = snippets.find((entry) => entry.id === event.target.value); if (snippet) updateCase(testCase.localId, { steps: [...testCase.steps, newDraftStep({ action: snippet.instructions, expectedResult: snippet.expectedResult })] }); }}><option value="">Select snippet to copy into a scenario step</option>{snippets.map((snippet) => <option key={snippet.id} value={snippet.id}>{snippet.name}</option>)}</NativeSelect></div> : null}
+                <p className="text-xs text-muted-foreground">Steps run in this order. Mark each as setup, scenario, or cleanup; move steps to place preparation or cleanup between actions.</p>
                 <ol className="space-y-2">
                   {testCase.steps.map((step, index) => (
                     <li key={step.localId} className="rounded-lg border border-border bg-card p-3">
                       <div className="flex items-start gap-2">
                         <span className="mt-1.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold tabular-nums text-primary">{index + 1}</span>
                         <div className="min-w-0 flex-1 space-y-2">
+                          <div className="space-y-1.5"><Label htmlFor={`step-phase-${step.localId}`}>Phase</Label><NativeSelect id={`step-phase-${step.localId}`} value={step.phase ?? "scenario"} onChange={(event) => updateStep(testCase.localId, step.localId, { phase: event.target.value as StepPhase })}><option value="setup">Setup</option><option value="scenario">Scenario</option><option value="cleanup">Cleanup</option></NativeSelect></div>
                           <div className="space-y-1.5">
                             <Label htmlFor={`step-action-${step.localId}`}>Step</Label>
                             <Textarea
@@ -122,10 +136,11 @@ export function WorkingSetEditor({
                               rows={2}
                               value={step.action}
                               maxLength={4000}
-                              placeholder="What should happen — e.g. Enter the Username and the Password, then select Sign in"
+                              placeholder="Use the browser, an API or database alias. Capture values with {{capture:name}} for later steps."
                               onChange={(event) => updateStep(testCase.localId, step.localId, { action: event.target.value })}
                             />
                           </div>
+                          <div className="flex flex-wrap items-end gap-2"><div className="space-y-1"><Label htmlFor={`snippet-name-${step.localId}`}>Save as API snippet</Label><Input id={`snippet-name-${step.localId}`} value={snippetNames[step.localId] ?? ""} maxLength={120} placeholder="Reusable instruction name" onChange={(event) => setSnippetNames((current) => ({ ...current, [step.localId]: event.target.value }))} /></div><Button type="button" size="sm" variant="outline" disabled={!(snippetNames[step.localId] ?? "").trim() || !step.action.trim()} onClick={() => void onSaveSnippet(snippetNames[step.localId], step).then(() => setSnippetNames((current) => ({ ...current, [step.localId]: "" })))}>Save snippet</Button></div>
                           <div className="space-y-1.5">
                             <Label htmlFor={`step-expected-${step.localId}`}>Expected result (optional — screenshots use this as a checkpoint)</Label>
                             <Input
@@ -155,15 +170,16 @@ export function WorkingSetEditor({
                     </li>
                   ))}
                 </ol>
-                <Button
+                <div className="flex flex-wrap gap-2">{(["setup", "scenario", "cleanup"] as StepPhase[]).map((phase) => <Button
+                  key={phase}
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => updateCase(testCase.localId, { steps: [...testCase.steps, newDraftStep()] })}
+                  onClick={() => updateCase(testCase.localId, { steps: [...testCase.steps, newDraftStep({ phase })] })}
                 >
                   <Plus className="size-4" aria-hidden="true" />
-                  Add step
-                </Button>
+                  Add {phase} step
+                </Button>)}</div>
               </div>
             ) : null}
           </div>

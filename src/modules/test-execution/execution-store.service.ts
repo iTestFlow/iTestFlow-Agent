@@ -7,6 +7,9 @@ import { insertRunTestData, runTestDataMeta, type PreparedTestDataEntry } from "
 import type { ScreenshotPolicy } from "./screenshot-policy";
 import { enqueueJob } from "@/modules/jobs/job-queue.service";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
+import { insertRunConnections, listRunConnections, type PreparedConnection } from "./execution-connections.service";
+import { listExecutionOperations } from "./execution-operation.service";
+import type { StepPhase } from "./execution-connections.shared";
 
 export type RunStatus = "queued" | "running" | "skipped" | ExecutionOutcome;
 
@@ -22,6 +25,7 @@ export type ExecutionRun = {
   totalCases: number;
   completedCases: number;
   baseUrl: string | null;
+  browserEnabled: boolean;
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
   headless: boolean;
@@ -36,13 +40,13 @@ type RunRow = {
   id: string; name: string | null; workspace_id: string; project_id: string; azure_plan_id: number | null; azure_suite_id: number | null;
   status: RunStatus; cancel_requested: boolean; total_cases: number; completed_cases: number;
   base_url: string | null; execution_notes: string | null; screenshot_policy: ScreenshotPolicy;
-  headless: boolean; viewport_width: number; viewport_height: number;
+  headless: boolean; viewport_width: number; viewport_height: number; browser_enabled: boolean;
   error_message: string | null; created_at: string; updated_at: string;
 };
 
 const RUN_COLUMNS = `id, name, workspace_id, project_id, azure_plan_id, azure_suite_id, status, cancel_requested,
             total_cases, completed_cases, base_url, execution_notes, screenshot_policy,
-            headless, viewport_width, viewport_height, error_message, created_at, updated_at`;
+            headless, viewport_width, viewport_height, browser_enabled, error_message, created_at, updated_at`;
 
 function mapRun(row: RunRow): ExecutionRun {
   return {
@@ -50,7 +54,7 @@ function mapRun(row: RunRow): ExecutionRun {
     azurePlanId: row.azure_plan_id, azureSuiteId: row.azure_suite_id,
     status: row.status, cancelRequested: row.cancel_requested,
     totalCases: row.total_cases, completedCases: row.completed_cases,
-    baseUrl: row.base_url, executionNotes: row.execution_notes, screenshotPolicy: row.screenshot_policy,
+    baseUrl: row.base_url, browserEnabled: row.browser_enabled, executionNotes: row.execution_notes, screenshotPolicy: row.screenshot_policy,
     headless: row.headless, viewportWidth: row.viewport_width, viewportHeight: row.viewport_height,
     errorMessage: row.error_message, createdAt: row.created_at, updatedAt: row.updated_at,
   };
@@ -62,14 +66,15 @@ export type ExecutionCaseInput = {
   planId?: number | null;
   suiteId?: number | null;
   title: string;
-  steps: Array<{ action: string; expectedResult?: string | null }>;
+  steps: Array<{ action: string; expectedResult?: string | null; phase?: StepPhase }>;
 };
 
 export async function createExecutionRun(input: {
   workspaceId: string; projectId: string; planId: number | null; suiteId: number | null; requestedByUserId: string;
   name: string | null;
-  settings: { baseUrl: string; executionNotes: string | null; screenshotPolicy: ScreenshotPolicy; headless: boolean; viewportWidth: number; viewportHeight: number };
+  settings: { baseUrl: string | null; browserEnabled?: boolean; executionNotes: string | null; screenshotPolicy: ScreenshotPolicy; headless: boolean; viewportWidth: number; viewportHeight: number };
   testData: readonly PreparedTestDataEntry[];
+  connections?: readonly PreparedConnection[];
   configSnapshot: Record<string, unknown>;
   job: { userId: string; scope: ProjectScope };
   cases: ExecutionCaseInput[];
@@ -81,20 +86,22 @@ export async function createExecutionRun(input: {
     `INSERT INTO playwright_execution_runs (
        id, name, workspace_id, project_id, azure_plan_id, azure_suite_id, status,
        requested_by_user_id, total_cases, base_url, execution_notes, screenshot_policy,
-       headless, viewport_width, viewport_height,
+       headless, viewport_width, viewport_height, browser_enabled,
        config_snapshot_json, created_at, updated_at
      ) VALUES (@id, @name, @workspaceId, @projectId, @planId, @suiteId, 'queued',
        @userId, @totalCases, @baseUrl, @executionNotes, @screenshotPolicy,
-       @headless, @viewportWidth, @viewportHeight, @snapshot::jsonb, @now, @now)`,
+       @headless, @viewportWidth, @viewportHeight, @browserEnabled, @snapshot::jsonb, @now, @now)`,
     { id: runId, name: input.name, workspaceId: input.workspaceId, projectId: input.projectId, planId: input.planId ?? null,
       suiteId: input.suiteId ?? null, userId: input.requestedByUserId, totalCases: input.cases.length,
       baseUrl: input.settings.baseUrl, executionNotes: input.settings.executionNotes,
       screenshotPolicy: input.settings.screenshotPolicy,
       headless: input.settings.headless, viewportWidth: input.settings.viewportWidth, viewportHeight: input.settings.viewportHeight,
+      browserEnabled: input.settings.browserEnabled ?? true,
       snapshot: JSON.stringify(input.configSnapshot), now },
     client,
   );
   await insertRunTestData(client, runId, input.testData, now);
+  await insertRunConnections(client, runId, input.connections ?? [], now);
   for (const testCase of input.cases) {
     const caseId = createId("pwcase");
     await sqlRun(
@@ -107,9 +114,9 @@ export async function createExecutionRun(input: {
     for (const [index, step] of testCase.steps.entries()) {
       await sqlRun(
         `INSERT INTO playwright_execution_steps (
-           id, case_id, step_index, action, expected_result, status, created_at, updated_at
-         ) VALUES (@id, @caseId, @stepIndex, @action, @expected, 'queued', @now, @now)`,
-        { id: createId("pwstep"), caseId, stepIndex: index, action: step.action, expected: step.expectedResult ?? null, now }, client,
+           id, case_id, step_index, action, expected_result, phase, status, created_at, updated_at
+         ) VALUES (@id, @caseId, @stepIndex, @action, @expected, @phase, 'queued', @now, @now)`,
+        { id: createId("pwstep"), caseId, stepIndex: index, action: step.action, expected: step.expectedResult ?? null, phase: step.phase ?? "scenario", now }, client,
       );
     }
   }
@@ -138,6 +145,7 @@ export async function executionConfigSnapshot(runId: string): Promise<Record<str
 
 export type ExecutionRunSettings = {
   baseUrl: string | null;
+  browserEnabled: boolean;
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
   headless: boolean;
@@ -146,11 +154,11 @@ export type ExecutionRunSettings = {
 };
 
 export async function executionRunSettings(runId: string): Promise<ExecutionRunSettings | null> {
-  const row = await sqlGet<{ base_url: string | null; execution_notes: string | null; screenshot_policy: ScreenshotPolicy; headless: boolean; viewport_width: number; viewport_height: number }>(
-    `SELECT base_url, execution_notes, screenshot_policy, headless, viewport_width, viewport_height FROM playwright_execution_runs WHERE id = @runId`, { runId },
+  const row = await sqlGet<{ base_url: string | null; execution_notes: string | null; screenshot_policy: ScreenshotPolicy; headless: boolean; viewport_width: number; viewport_height: number; browser_enabled: boolean }>(
+    `SELECT base_url, execution_notes, screenshot_policy, headless, viewport_width, viewport_height, browser_enabled FROM playwright_execution_runs WHERE id = @runId`, { runId },
   );
   return row ? {
-    baseUrl: row.base_url, executionNotes: row.execution_notes, screenshotPolicy: row.screenshot_policy,
+    baseUrl: row.base_url, browserEnabled: row.browser_enabled, executionNotes: row.execution_notes, screenshotPolicy: row.screenshot_policy,
     headless: row.headless, viewportWidth: row.viewport_width, viewportHeight: row.viewport_height,
   } : null;
 }
@@ -195,23 +203,23 @@ export async function getExecutionRunDetails(id: string, workspaceId: string, pr
   );
   const cases = [];
   for (const testCase of caseRows) {
-    const steps = await sqlAll<{ id: string; step_index: number; action: string; expected_result: string | null; status: RunStatus; tool_name: string | null; error_message: string | null }>(
-      `SELECT id, step_index, action, expected_result, status, tool_name, error_message
+    const steps = await sqlAll<{ id: string; step_index: number; action: string; expected_result: string | null; phase: StepPhase; status: RunStatus; tool_name: string | null; error_message: string | null }>(
+      `SELECT id, step_index, action, expected_result, phase, status, tool_name, error_message
          FROM playwright_execution_steps WHERE case_id = @caseId ORDER BY step_index`, { caseId: testCase.id },
     );
     cases.push({
       id: testCase.id, azureTestCaseId: testCase.azure_test_case_id, azureTestPointId: testCase.azure_test_point_id,
       azurePlanId: testCase.azure_plan_id, azureSuiteId: testCase.azure_suite_id,
       title: testCase.title, status: testCase.status, errorMessage: testCase.error_message,
-      steps: steps.map((step) => ({ id: step.id, index: step.step_index, action: step.action, expectedResult: step.expected_result, status: step.status, toolName: step.tool_name, errorMessage: step.error_message })),
+      steps: steps.map((step) => ({ id: step.id, index: step.step_index, action: step.action, expectedResult: step.expected_result, phase: step.phase, status: step.status, toolName: step.tool_name, errorMessage: step.error_message })),
     });
   }
   const artifacts = await sqlAll<{ id: string; case_id: string | null; step_id: string | null; kind: string; mime_type: string; byte_size: number }>(
     `SELECT id, case_id, step_id, kind, mime_type, byte_size FROM playwright_execution_artifacts WHERE run_id = @id ORDER BY created_at`, { id },
   );
-  const [testData, publication] = await Promise.all([runTestDataMeta(id), getExecutionPublication(id)]);
+  const [testData, publication, connections, operations] = await Promise.all([runTestDataMeta(id), getExecutionPublication(id), listRunConnections(id), listExecutionOperations(id)]);
   return {
-    ...run, cases, testData, publication,
+    ...run, cases, testData, publication, connections, operations,
     artifacts: artifacts.map((artifact) => ({ id: artifact.id, caseId: artifact.case_id, stepId: artifact.step_id, kind: artifact.kind, mimeType: artifact.mime_type, byteSize: artifact.byte_size })),
   };
 }
@@ -236,7 +244,7 @@ export async function requestExecutionCancellation(id: string, workspaceId: stri
 }
 
 export type StoredCase = { id: string; azureTestCaseId: number | null; azureTestPointId: number | null; azurePlanId: number | null; azureSuiteId: number | null; title: string; status: RunStatus };
-export type StoredStep = { id: string; stepIndex: number; action: string; expectedResult: string | null; status: RunStatus };
+export type StoredStep = { id: string; stepIndex: number; action: string; expectedResult: string | null; phase: StepPhase; status: RunStatus };
 
 export async function casesForRun(runId: string): Promise<StoredCase[]> {
   const rows = await sqlAll<{ id: string; azure_test_case_id: number | null; azure_test_point_id: number | null; azure_plan_id: number | null; azure_suite_id: number | null; title: string; status: RunStatus }>(
@@ -246,25 +254,38 @@ export async function casesForRun(runId: string): Promise<StoredCase[]> {
 }
 
 export async function stepsForCase(caseId: string): Promise<StoredStep[]> {
-  const rows = await sqlAll<{ id: string; step_index: number; action: string; expected_result: string | null; status: RunStatus }>(
-    `SELECT id, step_index, action, expected_result, status FROM playwright_execution_steps WHERE case_id = @caseId ORDER BY step_index`, { caseId },
+  const rows = await sqlAll<{ id: string; step_index: number; action: string; expected_result: string | null; phase: StepPhase; status: RunStatus }>(
+    `SELECT id, step_index, action, expected_result, phase, status FROM playwright_execution_steps WHERE case_id = @caseId ORDER BY step_index`, { caseId },
   );
-  return rows.map((row) => ({ id: row.id, stepIndex: row.step_index, action: row.action, expectedResult: row.expected_result, status: row.status }));
+  return rows.map((row) => ({ id: row.id, stepIndex: row.step_index, action: row.action, expectedResult: row.expected_result, phase: row.phase, status: row.status }));
 }
 
-export async function markRunStarted(runId: string) {
+const ownedRun = `EXISTS (SELECT 1 FROM jobs j WHERE j.id = playwright_execution_runs.job_id
+  AND j.status = 'running' AND j.locked_by = @workerId)`;
+const ownedCase = `EXISTS (SELECT 1 FROM playwright_execution_runs r JOIN jobs j ON j.id = r.job_id
+  WHERE r.id = playwright_execution_cases.run_id AND r.status = 'running'
+    AND j.status = 'running' AND j.locked_by = @workerId)`;
+const ownedStep = `EXISTS (SELECT 1 FROM playwright_execution_cases c
+  JOIN playwright_execution_runs r ON r.id = c.run_id JOIN jobs j ON j.id = r.job_id
+  WHERE c.id = playwright_execution_steps.case_id AND r.status = 'running'
+    AND j.status = 'running' AND j.locked_by = @workerId)`;
+
+export async function markRunStarted(runId: string, workerId?: string): Promise<boolean> {
   const now = nowIso();
-  await sqlRun(`UPDATE playwright_execution_runs SET status = 'running', started_at = @now, updated_at = @now WHERE id = @runId`, { runId, now });
+  return (await sqlRun(`UPDATE playwright_execution_runs SET status = 'running', started_at = @now, updated_at = @now
+    WHERE id = @runId AND (@workerId::text IS NULL OR (status = 'queued' AND ${ownedRun}))`, { runId, now, workerId: workerId ?? null })) > 0;
 }
 
-export async function markCaseStarted(caseId: string) {
+export async function markCaseStarted(caseId: string, workerId?: string): Promise<boolean> {
   const now = nowIso();
-  await sqlRun(`UPDATE playwright_execution_cases SET status = 'running', started_at = @now, updated_at = @now WHERE id = @caseId`, { caseId, now });
+  return (await sqlRun(`UPDATE playwright_execution_cases SET status = 'running', started_at = @now, updated_at = @now
+    WHERE id = @caseId AND (@workerId::text IS NULL OR (status = 'queued' AND ${ownedCase}))`, { caseId, now, workerId: workerId ?? null })) > 0;
 }
 
-export async function markStepStarted(stepId: string) {
+export async function markStepStarted(stepId: string, workerId?: string): Promise<boolean> {
   const now = nowIso();
-  await sqlRun(`UPDATE playwright_execution_steps SET status = 'running', updated_at = @now WHERE id = @stepId`, { stepId, now });
+  return (await sqlRun(`UPDATE playwright_execution_steps SET status = 'running', updated_at = @now
+    WHERE id = @stepId AND (@workerId::text IS NULL OR (status = 'queued' AND ${ownedStep}))`, { stepId, now, workerId: workerId ?? null })) > 0;
 }
 
 /**
@@ -273,42 +294,57 @@ export async function markStepStarted(stepId: string) {
  * status, so "Queued" never lingers on work that will not happen. Cancellation
  * keeps its own sweep in finishRun ('cancelled').
  */
-export async function skipRemainingQueuedSteps(caseId: string) {
+export async function skipRemainingQueuedSteps(caseId: string, workerId?: string): Promise<boolean> {
   const now = nowIso();
-  await sqlRun(`UPDATE playwright_execution_steps SET status = 'skipped', updated_at = @now WHERE case_id = @caseId AND status = 'queued'`, { caseId, now });
+  const affected = await sqlRun(`UPDATE playwright_execution_steps SET status = 'skipped', updated_at = @now
+    WHERE case_id = @caseId AND status = 'queued' AND (@workerId::text IS NULL OR ${ownedStep})`, { caseId, now, workerId: workerId ?? null });
+  return workerId ? affected > 0 || await ownsExecutionCase(caseId, workerId) : true;
 }
 
-export async function recordStepToolCall(stepId: string, toolName: string, args: Record<string, unknown>, result: unknown, secrets: readonly string[] = []) {
-  await sqlRun(`UPDATE playwright_execution_steps SET status = 'running', tool_name = @toolName,
-    tool_arguments_json = @args::jsonb, tool_result_json = @result::jsonb, updated_at = @now WHERE id = @stepId`,
-  { stepId, toolName, args: JSON.stringify(sanitizeExecutionPayload(args, secrets)), result: JSON.stringify(sanitizeExecutionPayload(result ?? null, secrets)), now: nowIso() });
+export async function recordStepToolCall(stepId: string, toolName: string, args: Record<string, unknown>, result: unknown, secrets: readonly string[] = [], workerId?: string): Promise<boolean> {
+  return (await sqlRun(`UPDATE playwright_execution_steps SET status = 'running', tool_name = @toolName,
+    tool_arguments_json = @args::jsonb, tool_result_json = @result::jsonb, updated_at = @now
+    WHERE id = @stepId AND (@workerId::text IS NULL OR (status = 'running' AND ${ownedStep}))`,
+  { stepId, toolName, args: JSON.stringify(sanitizeExecutionPayload(args, secrets)), result: JSON.stringify(sanitizeExecutionPayload(result ?? null, secrets)), now: nowIso(), workerId: workerId ?? null })) > 0;
 }
 
-export async function finishStep(stepId: string, outcome: ExecutionOutcome, errorMessage?: string | null, secrets: readonly string[] = []) {
-  await sqlRun(`UPDATE playwright_execution_steps SET status = @outcome, error_message = @error, updated_at = @now WHERE id = @stepId`,
-    { stepId, outcome, error: errorMessage ? sanitizeExecutionError(errorMessage, secrets) : null, now: nowIso() });
+export async function finishStep(stepId: string, outcome: ExecutionOutcome, errorMessage?: string | null, secrets: readonly string[] = [], workerId?: string): Promise<boolean> {
+  return (await sqlRun(`UPDATE playwright_execution_steps SET status = @outcome, error_message = @error, updated_at = @now
+    WHERE id = @stepId AND (@workerId::text IS NULL OR (status = 'running' AND ${ownedStep}))`,
+    { stepId, outcome, error: errorMessage ? sanitizeExecutionError(errorMessage, secrets) : null, now: nowIso(), workerId: workerId ?? null })) > 0;
 }
 
-export async function finishCase(caseId: string, outcome: ExecutionOutcome, errorMessage?: string | null, secrets: readonly string[] = []) {
+export async function finishCase(caseId: string, outcome: ExecutionOutcome, errorMessage?: string | null, secrets: readonly string[] = [], workerId?: string): Promise<boolean> {
   const now = nowIso();
-  await sqlRun(`UPDATE playwright_execution_cases SET status = @outcome, error_message = @error, finished_at = @now, updated_at = @now WHERE id = @caseId`,
-    { caseId, outcome, error: errorMessage ? sanitizeExecutionError(errorMessage, secrets) : null, now });
+  return (await sqlRun(`UPDATE playwright_execution_cases SET status = @outcome, error_message = @error, finished_at = @now, updated_at = @now
+    WHERE id = @caseId AND (@workerId::text IS NULL OR (status = 'running' AND ${ownedCase}))`,
+    { caseId, outcome, error: errorMessage ? sanitizeExecutionError(errorMessage, secrets) : null, now, workerId: workerId ?? null })) > 0;
 }
 
-export async function incrementCompletedCases(runId: string) {
-  await sqlRun(`UPDATE playwright_execution_runs SET completed_cases = completed_cases + 1, updated_at = @now WHERE id = @runId`, { runId, now: nowIso() });
+export async function incrementCompletedCases(runId: string, workerId?: string): Promise<boolean> {
+  return (await sqlRun(`UPDATE playwright_execution_runs SET completed_cases = completed_cases + 1, updated_at = @now
+    WHERE id = @runId AND (@workerId::text IS NULL OR (status = 'running' AND ${ownedRun}))`, { runId, now: nowIso(), workerId: workerId ?? null })) > 0;
 }
 
-export async function finishRun(runId: string, outcome: ExecutionOutcome, errorMessage?: string | null, secrets: readonly string[] = []) {
+export async function finishRun(runId: string, outcome: ExecutionOutcome, errorMessage?: string | null, secrets: readonly string[] = [], workerId?: string): Promise<boolean> {
   const now = nowIso();
   if (outcome === "cancelled") {
     await sqlRun(`UPDATE playwright_execution_steps SET status = 'cancelled', error_message = 'Execution was cancelled.', updated_at = @now
-      WHERE status = 'queued' AND case_id IN (SELECT id FROM playwright_execution_cases WHERE run_id = @runId)`, { runId, now });
+      WHERE status = 'queued' AND case_id IN (SELECT id FROM playwright_execution_cases WHERE run_id = @runId)
+        AND (@workerId::text IS NULL OR ${ownedStep})`, { runId, now, workerId: workerId ?? null });
     await sqlRun(`UPDATE playwright_execution_cases SET status = 'cancelled', error_message = 'Execution was cancelled.', finished_at = @now, updated_at = @now
-      WHERE run_id = @runId AND status = 'queued'`, { runId, now });
+      WHERE run_id = @runId AND status = 'queued' AND (@workerId::text IS NULL OR ${ownedCase})`, { runId, now, workerId: workerId ?? null });
   }
-  await sqlRun(`UPDATE playwright_execution_runs SET status = @outcome, error_message = @error, finished_at = @now, updated_at = @now WHERE id = @runId`,
-    { runId, outcome, error: errorMessage ? sanitizeExecutionError(errorMessage, secrets) : null, now });
+  return (await sqlRun(`UPDATE playwright_execution_runs SET status = @outcome, error_message = @error, finished_at = @now, updated_at = @now
+    WHERE id = @runId AND (@workerId::text IS NULL OR (status = 'running' AND ${ownedRun}))`,
+    { runId, outcome, error: errorMessage ? sanitizeExecutionError(errorMessage, secrets) : null, now, workerId: workerId ?? null })) > 0;
+}
+
+async function ownsExecutionCase(caseId: string, workerId: string): Promise<boolean> {
+  const row = await sqlGet<{ id: string }>(`SELECT c.id FROM playwright_execution_cases c
+    JOIN playwright_execution_runs r ON r.id = c.run_id JOIN jobs j ON j.id = r.job_id
+    WHERE c.id = @caseId AND r.status = 'running' AND j.status = 'running' AND j.locked_by = @workerId`, { caseId, workerId });
+  return Boolean(row);
 }
 
 export async function isRunCancellationRequested(runId: string): Promise<boolean> {

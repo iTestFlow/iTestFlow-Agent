@@ -17,6 +17,8 @@ import {
 import { resolvePlaywrightMcpConfig } from "@/modules/test-execution/playwright-mcp-config.service";
 import { SCREENSHOT_POLICIES } from "@/modules/test-execution/screenshot-policy";
 import { hasHealthyWorkerCapability } from "@/modules/jobs/worker-registry.service";
+import { ConnectionsSchema } from "@/modules/test-execution/execution-connections.schema";
+import { ConnectionResolutionError, prepareConnections } from "@/modules/test-execution/execution-connections.service";
 
 export const runtime = "nodejs";
 
@@ -32,6 +34,7 @@ const TestDataEntrySchema = z.union([
 const StepSchema = z.object({
   action: z.string().trim().min(1).max(4000, "Each step is limited to 4000 characters."),
   expectedResult: z.string().trim().max(4000, "Each expected result is limited to 4000 characters.").optional(),
+  phase: z.enum(["setup", "scenario", "cleanup"]).default("scenario"),
 });
 
 const CaseSchema = z.object({
@@ -46,7 +49,9 @@ const CaseSchema = z.object({
 const Schema = z.object({
   scope: ProjectScopeSchema,
   name: z.string().trim().max(200, "Run names are limited to 200 characters.").optional(),
-  baseUrl: z.string().trim().min(1).max(2048),
+  baseUrl: z.string().trim().max(2048).nullish(),
+  browserEnabled: z.boolean().default(true),
+  connections: ConnectionsSchema,
   executionNotes: z.string().trim().max(EXTRA_INSTRUCTIONS_MAX_LENGTH).optional(),
   screenshotPolicy: z.enum(SCREENSHOT_POLICIES),
   headless: z.boolean().default(true),
@@ -63,6 +68,8 @@ const Schema = z.object({
   suiteId: z.coerce.number().int().positive().nullish(),
   cases: z.array(CaseSchema).min(1).max(200, "Runs are limited to 200 test cases."),
 }).superRefine((value, ctx) => {
+  if (value.browserEnabled && !value.baseUrl) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["baseUrl"], message: "Provide a Base URL for browser execution." });
+  if (!value.browserEnabled && value.connections.length === 0) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["connections"], message: "Enable the browser or add an API or database connection." });
   for (const [index, testCase] of value.cases.entries()) {
     if (testCase.azureTestPointId && !(testCase.azureTestCaseId && testCase.azurePlanId && testCase.azureSuiteId)) {
       ctx.addIssue({
@@ -115,24 +122,30 @@ export async function POST(request: Request) {
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     const scope = await resolveProjectScope(ctx, parsed.data.scope);
-    const config = await resolvePlaywrightMcpConfig(ctx.workspace.id);
-    if (!config || config.status !== "configured") {
+    const config = parsed.data.browserEnabled ? await resolvePlaywrightMcpConfig(ctx.workspace.id) : null;
+    if (parsed.data.browserEnabled && (!config || config.status !== "configured")) {
       return NextResponse.json({ error: "A workspace owner or admin must configure and enable Playwright MCP first." }, { status: 409 });
     }
     if (!await hasHealthyWorkerCapability("playwright_mcp_execution")) {
       return NextResponse.json({ error: "No healthy worker is available for Playwright MCP execution." }, { status: 503 });
     }
-    const baseUrlIssue = invalidBaseUrlMessage(parsed.data.baseUrl);
+    const baseUrlIssue = parsed.data.browserEnabled ? invalidBaseUrlMessage(parsed.data.baseUrl ?? "") : null;
     if (baseUrlIssue) return NextResponse.json({ error: baseUrlIssue }, { status: 422 });
     let testData;
+    let connections;
     try {
       testData = await resolveTestDataEntries({
         workspaceId: ctx.workspace.id,
         projectId: scope.projectId,
         entries: parsed.data.testData,
       });
+      connections = await prepareConnections({
+        workspaceId: ctx.workspace.id,
+        projectId: scope.projectId,
+        connections: parsed.data.connections,
+      });
     } catch (error) {
-      if (error instanceof TestDataResolutionError) {
+      if (error instanceof TestDataResolutionError || error instanceof ConnectionResolutionError) {
         const friendly = error.message;
         return NextResponse.json({ error: friendly }, { status: 422 });
       }
@@ -147,7 +160,8 @@ export async function POST(request: Request) {
         requestedByUserId: ctx.userId,
         name: parsed.data.name || null,
         settings: {
-          baseUrl: parsed.data.baseUrl,
+          baseUrl: parsed.data.browserEnabled ? parsed.data.baseUrl ?? null : null,
+          browserEnabled: parsed.data.browserEnabled,
           executionNotes: normalizeExtraInstructions(parsed.data.executionNotes) || null,
           screenshotPolicy: parsed.data.screenshotPolicy,
           headless: parsed.data.headless,
@@ -155,7 +169,10 @@ export async function POST(request: Request) {
           viewportHeight: parsed.data.viewportHeight,
         },
         testData,
-        configSnapshot: { transport: config.transport, endpoint: config.endpoint, artifactBaseUrl: config.artifactBaseUrl },
+        connections,
+        configSnapshot: config && config.status === "configured"
+          ? { transport: config.transport, endpoint: config.endpoint, artifactBaseUrl: config.artifactBaseUrl }
+          : {},
         job: { userId: ctx.userId, scope },
         cases: parsed.data.cases.map((testCase) => ({
           testCaseId: testCase.azureTestCaseId ?? null,

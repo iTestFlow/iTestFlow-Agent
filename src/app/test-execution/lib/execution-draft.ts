@@ -1,4 +1,5 @@
 import { DEFAULT_SCREENSHOT_POLICY, type ScreenshotPolicy } from "@/modules/test-execution/screenshot-policy";
+import type { ConnectionInput, ConnectionView, StepPhase } from "@/modules/test-execution/execution-connections.shared";
 
 /* --------------------------------------------------------------------------
  * Client-side draft model for the Test Execution workbench. Runs stay
@@ -12,7 +13,10 @@ export type DraftStep = {
   localId: string;
   action: string;
   expectedResult: string;
+  phase?: StepPhase;
 };
+
+export type DraftConnection = ConnectionInput & { localId: string };
 
 export type DraftCase = {
   localId: string;
@@ -39,6 +43,8 @@ export type TestDataDraftEntry = {
 
 export type DraftSetup = {
   profileId: string | null;
+  browserEnabled: boolean;
+  connections: DraftConnection[];
   /** Optional per-run identity shown in history next to the date. */
   runName: string;
   baseUrl: string;
@@ -70,6 +76,8 @@ export function createEmptyDraft(): ExecutionDraft {
   return {
     setup: {
       profileId: null,
+      browserEnabled: true,
+      connections: [],
       runName: "",
       baseUrl: "",
       executionNotes: "",
@@ -84,8 +92,27 @@ export function createEmptyDraft(): ExecutionDraft {
   };
 }
 
-export function newDraftStep(step?: { action?: string; expectedResult?: string | null }): DraftStep {
-  return { localId: newLocalId("step"), action: step?.action ?? "", expectedResult: step?.expectedResult ?? "" };
+export function newDraftStep(step?: { action?: string; expectedResult?: string | null; phase?: StepPhase }): DraftStep {
+  return { localId: newLocalId("step"), action: step?.action ?? "", expectedResult: step?.expectedResult ?? "", phase: step?.phase ?? "scenario" };
+}
+
+export function newDraftConnection(kind: "api" | "database"): DraftConnection {
+  const common = { localId: newLocalId("connection"), alias: "", allowWrites: false, credentials: {} };
+  return kind === "api"
+    ? { ...common, kind, baseUrl: "", auth: { type: "none" } }
+    : { ...common, kind, engine: "postgres", host: "", database: "", username: "" };
+}
+
+function savedConnections(connections: readonly ConnectionView[] | undefined, source: "run" | "profile", id: string): DraftConnection[] {
+  return (connections ?? []).map((connection) => {
+    const credentials = Object.fromEntries(Object.entries(connection.savedCredentials ?? {})
+      .filter(([, saved]) => saved)
+      .map(([field]) => [field, source === "run"
+        ? { fromRunId: id, sourceAlias: connection.alias, sourceField: field }
+        : { fromProfileId: id, sourceAlias: connection.alias, sourceField: field }]));
+    const { savedCredentials: _, ...settings } = connection;
+    return { ...settings, localId: newLocalId("connection"), credentials } as DraftConnection;
+  });
 }
 
 export function newManualCase(existingCount: number): DraftCase {
@@ -147,6 +174,8 @@ export type RunDetailForDraft = {
   id: string;
   name?: string | null;
   baseUrl: string | null;
+  browserEnabled?: boolean;
+  connections?: ConnectionView[];
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
   headless?: boolean;
@@ -161,7 +190,7 @@ export type RunDetailForDraft = {
     azurePlanId?: number | null;
     azureSuiteId?: number | null;
     title: string;
-    steps: Array<{ action: string; expectedResult: string | null }>;
+    steps: Array<{ action: string; expectedResult: string | null; phase?: StepPhase }>;
   }>;
 };
 
@@ -174,6 +203,8 @@ export function draftFromRunDetail(detail: RunDetailForDraft): ExecutionDraft {
   return {
     setup: {
       profileId: null,
+      browserEnabled: detail.browserEnabled ?? true,
+      connections: savedConnections(detail.connections, "run", detail.id),
       runName: detail.name ?? "",
       baseUrl: detail.baseUrl ?? "",
       executionNotes: detail.executionNotes ?? "",
@@ -207,6 +238,8 @@ export function draftFromRunDetail(detail: RunDetailForDraft): ExecutionDraft {
 
 export type ProfileForDraft = {
   id: string;
+  browserEnabled?: boolean;
+  connections?: ConnectionView[];
   baseUrl: string | null;
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
@@ -226,6 +259,8 @@ export function applyProfileToDraft(draft: ExecutionDraft, profile: ProfileForDr
     ...draft,
     setup: {
       profileId: profile.id,
+      browserEnabled: profile.browserEnabled ?? true,
+      connections: savedConnections(profile.connections, "profile", profile.id),
       runName: draft.setup.runName,
       baseUrl: profile.baseUrl ?? "",
       executionNotes: profile.executionNotes ?? "",
@@ -273,6 +308,7 @@ export function caseIsReady(testCase: DraftCase): boolean {
 /** True when losing this draft would cost the user authored work. */
 export function draftHasContent(draft: ExecutionDraft): boolean {
   return draft.cases.length > 0
+    || draft.setup.connections.length > 0
     || Boolean(draft.setup.baseUrl.trim())
     || Boolean(draft.setup.executionNotes.trim())
     || draft.setup.testData.some((entry) => entry.title.trim() || entry.value || entry.savedRef);
@@ -316,10 +352,22 @@ export function viewportIssues(setup: Pick<DraftSetup, "viewportWidth" | "viewpo
 /** Blocking problems, phrased for the review step's "cannot run yet" callout. */
 export function draftIssues(draft: ExecutionDraft): string[] {
   const issues: string[] = [];
-  if (!draft.setup.baseUrl.trim()) issues.push("Enter the Base URL the tests should start from.");
-  else if (!isValidHttpUrl(draft.setup.baseUrl)) issues.push("The Base URL must start with http:// or https://.");
+  if (!draft.setup.browserEnabled && !draft.setup.connections.length) issues.push("Enable the browser or add an API or database connection.");
+  if (draft.setup.browserEnabled && !draft.setup.baseUrl.trim()) issues.push("Enter the Base URL the tests should start from.");
+  else if (draft.setup.baseUrl.trim() && !isValidHttpUrl(draft.setup.baseUrl)) issues.push("The Base URL must start with http:// or https://.");
   if (draft.setup.runName.trim().length > RUN_NAME_LIMIT) issues.push(`Run names are limited to ${RUN_NAME_LIMIT} characters.`);
-  issues.push(...viewportIssues(draft.setup));
+  if (draft.setup.browserEnabled) issues.push(...viewportIssues(draft.setup));
+  const aliases = new Set<string>();
+  if (draft.setup.connections.length > 20) issues.push("Use at most 20 connections.");
+  for (const connection of draft.setup.connections) {
+    if (!/^[a-z][a-z0-9-]{0,62}$/.test(connection.alias)) issues.push(`Connection alias "${connection.alias}" must start with a lowercase letter and contain only lowercase letters, digits, or hyphens.`);
+    if (aliases.has(connection.alias)) issues.push(`Connection alias "${connection.alias}" is used more than once.`);
+    aliases.add(connection.alias);
+    if (connection.kind === "api" && !isValidHttpUrl(connection.baseUrl)) issues.push(`API connection "${connection.alias}" needs a valid base URL.`);
+    if (connection.kind === "api" && connection.openApiUrl && !isValidHttpUrl(connection.openApiUrl)) issues.push(`API connection "${connection.alias}" needs a valid OpenAPI URL.`);
+    if (connection.kind === "api" && connection.auth.type === "oauth2ClientCredentials" && !isValidHttpUrl(connection.auth.tokenUrl)) issues.push(`API connection "${connection.alias}" needs a valid OAuth token URL.`);
+    if (connection.kind === "database" && !connection.credentials?.url?.value && !connection.credentials?.url?.fromProfileId && !connection.credentials?.url?.fromRunId && (!connection.host || !connection.database)) issues.push(`Database connection "${connection.alias}" needs a URL or host and database.`);
+  }
   if (!draft.cases.length) issues.push("Add at least one test case.");
   if (draft.cases.length > RUN_CASE_LIMIT) {
     issues.push(`Runs are limited to ${RUN_CASE_LIMIT} test cases — remove ${draft.cases.length - RUN_CASE_LIMIT} to continue.`);

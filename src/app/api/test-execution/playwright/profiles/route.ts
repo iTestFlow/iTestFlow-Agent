@@ -14,6 +14,8 @@ import {
   TestDataResolutionError,
 } from "@/modules/test-execution/execution-test-data.shared";
 import { SCREENSHOT_POLICIES } from "@/modules/test-execution/screenshot-policy";
+import { ConnectionsSchema } from "@/modules/test-execution/execution-connections.schema";
+import { ConnectionResolutionError } from "@/modules/test-execution/execution-connections.service";
 
 export const runtime = "nodejs";
 
@@ -39,6 +41,8 @@ const Schema = z.object({
   scope: ProjectScopeSchema,
   name: z.string().trim().min(1).max(MAX_PROFILE_NAME_LENGTH),
   baseUrl: BaseUrlSchema.nullish(),
+  browserEnabled: z.boolean().default(true),
+  connections: ConnectionsSchema,
   executionNotes: z.string().trim().max(EXTRA_INSTRUCTIONS_MAX_LENGTH).nullish(),
   screenshotPolicy: z.enum(SCREENSHOT_POLICIES),
   headless: z.boolean().default(true),
@@ -68,6 +72,8 @@ export async function POST(request: Request) {
       userId: ctx.userId,
       name: parsed.data.name,
       baseUrl: parsed.data.baseUrl || null,
+      browserEnabled: parsed.data.browserEnabled,
+      connections: parsed.data.connections,
       executionNotes: parsed.data.executionNotes || null,
       screenshotPolicy: parsed.data.screenshotPolicy,
       headless: parsed.data.headless,
@@ -77,7 +83,7 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ profile }, { status: 201 });
   } catch (error) {
-    if (error instanceof ProfileNameConflictError || error instanceof TestDataResolutionError) {
+    if (error instanceof ProfileNameConflictError || error instanceof TestDataResolutionError || error instanceof ConnectionResolutionError) {
       const friendly = error.message;
       return NextResponse.json({ error: friendly }, { status: error instanceof ProfileNameConflictError ? 409 : 422 });
     }
