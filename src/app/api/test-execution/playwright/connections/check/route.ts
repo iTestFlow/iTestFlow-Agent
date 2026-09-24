@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     const result = await checkExecutionConnection(prepared);
     return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    if (error instanceof ConnectionResolutionError) return NextResponse.json({ error: error.message }, { status: 422 });
+    if (error instanceof ConnectionResolutionError) return NextResponse.json({ error: "Connection details are incomplete or invalid." }, { status: 422 });
     return authErrorResponse(error) ?? NextResponse.json({ error: "Connection could not be checked." }, { status: 503 });
   }
 }
