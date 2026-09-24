@@ -88,10 +88,17 @@ async function sourceCredential(input: {
 function credentialBinding(value: Record<string, unknown> | ConnectionInput): string {
   const settings = value as Record<string, unknown>;
   if (settings.kind === "api") {
-    return JSON.stringify({ kind: settings.kind, baseUrl: settings.baseUrl, auth: settings.auth });
+    return JSON.stringify({ kind: settings.kind, baseUrl: settings.baseUrl, auth: canonicalAuth(settings.auth) });
   }
   return JSON.stringify({ kind: settings.kind, engine: settings.engine, host: settings.host, port: settings.port,
     database: settings.database, username: settings.username, ssl: settings.ssl, tlsMode: settings.tlsMode });
+}
+
+function canonicalAuth(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalAuth);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, entry]) => [key, canonicalAuth(entry)]));
+  return value;
 }
 
 function validateSettings(connection: ConnectionInput): void {
@@ -158,6 +165,8 @@ export async function prepareConnections(input: {
         connection.auth.type === "apiKey" ? "apiKey" :
         connection.auth.type === "oauth2ClientCredentials" ? "oauthClientSecret" : null;
       if (required && !credentials[required]) throw new ConnectionResolutionError(`Enter the ${required} credential for "${connection.alias}".`);
+    } else if (credentials.url && credentials.password) {
+      throw new ConnectionResolutionError("Use either a database connection URL or a password, not both.");
     } else if (credentials.url) {
       try {
         const url = new URL(credentials.url);

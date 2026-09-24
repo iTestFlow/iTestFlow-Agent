@@ -135,7 +135,7 @@ describe("mixed execution job", () => {
       if (input.action === "Inspect UI") await input.executeTool("browser_snapshot", {});
       return { outcome: "passed", summary: "ok", turns: 1 };
     });
-    await runPlaywrightExecutionJob(job, context());
+    await expect(runPlaywrightExecutionJob(job, context())).resolves.toMatchObject({ outcome: "passed" });
     expect(events).toEqual(["api", "db", "browser_navigate", "browser_resize", "browser_snapshot"]);
     expect(deps.connectMcp).toHaveBeenCalledWith(expect.objectContaining({ transport: "stdio" }), { headless: true });
   });
@@ -169,7 +169,7 @@ describe("mixed execution job", () => {
       expect(JSON.stringify(result)).not.toContain("test-secret");
       return { outcome: "passed", summary: "ok", turns: 1 };
     });
-    await runPlaywrightExecutionJob(job, context());
+    await expect(runPlaywrightExecutionJob(job, context())).resolves.toMatchObject({ outcome: "passed" });
   });
 
   it("canonicalizes mixed-case discovered table names in the runner allowlist", async () => {

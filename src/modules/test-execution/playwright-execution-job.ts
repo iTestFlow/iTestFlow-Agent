@@ -97,7 +97,7 @@ function modelSafeBrowserResult(value: unknown, secrets: readonly string[], dept
   if (Array.isArray(value)) return value.slice(0, 30).map((entry) => modelSafeBrowserResult(entry, secrets, depth + 1));
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
-    return Object.fromEntries(Object.entries(record).slice(0, 40).map(([key, entry]) => [key,
+    return Object.fromEntries(Object.entries(record).slice(0, 40).map(([key, entry]) => [modelSafeText(key, secrets),
       key === "data" && record.type === "image" ? "[IMAGE]"
         : /^(authorization|cookie|password|secret|token|api.?key|value)$/i.test(key) ? "[REDACTED]"
           : modelSafeBrowserResult(entry, secrets, depth + 1)]));

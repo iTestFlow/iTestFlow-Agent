@@ -53,6 +53,22 @@ describe("execution connection preparation", () => {
     expect(sameTarget.credentialFields).toEqual(["bearerToken"]);
   });
 
+  it("reuses API-key and OAuth secrets despite JSONB auth key order", async () => {
+    for (const [auth, storedAuth, field] of [
+      [{ type: "apiKey" as const, name: "X-Key", in: "header" as const }, { in: "header", name: "X-Key", type: "apiKey" }, "apiKey"],
+      [{ type: "oauth2ClientCredentials" as const, tokenUrl: "https://auth.example.test/token", clientId: "client", scopes: ["read"] as string[] },
+        { scopes: ["read"], clientId: "client", tokenUrl: "https://auth.example.test/token", type: "oauth2ClientCredentials" }, "oauthClientSecret"],
+    ] as const) {
+      sqlGet.mockResolvedValue({ settings_json: { ...api("orders-api"), auth: storedAuth },
+        encrypted_credentials: Buffer.from(JSON.stringify({ [field]: "saved-secret" })).toString("base64"),
+        credentials_iv: "iv", credentials_tag: "tag", credentials_key_version: 1 });
+      const [prepared] = await prepareConnections({ workspaceId: "w", projectId: "p", connections: [
+        { ...api("orders-api"), auth, credentials: { [field]: { fromProfileId: "profile-in-p" } } },
+      ] });
+      expect(prepared.credentialFields).toEqual([field]);
+    }
+  });
+
   it("rejects saved database secrets when endpoint or TLS settings change", async () => {
     const original = { kind: "database" as const, alias: "orders-db", engine: "postgres" as const,
       host: "db.example.test", database: "orders", username: "qa", tlsMode: "verify-full" as const, allowWrites: false };
@@ -63,6 +79,13 @@ describe("execution connection preparation", () => {
         { ...original, ...change, credentials: { password: { fromProfileId: "profile-in-p" } } },
       ] })).rejects.toThrow(/original connection destination/);
     }
+    sqlGet.mockResolvedValue({ settings_json: { kind: "database", alias: "orders-db", engine: "postgres", allowWrites: false },
+      encrypted_credentials: Buffer.from('{"password":"saved-password"}').toString("base64"),
+      credentials_iv: "iv", credentials_tag: "tag", credentials_key_version: 1 });
+    await expect(prepareConnections({ workspaceId: "w", projectId: "p", connections: [
+      { kind: "database", alias: "orders-db", engine: "postgres", allowWrites: false,
+        credentials: { url: { value: "postgresql://qa:fresh@attacker.example/orders" }, password: { fromProfileId: "profile-in-p" } } },
+    ] })).rejects.toThrow(/either a database connection URL or a password/);
   });
 
   it("rejects incomplete and irrelevant credentials before queueing a run", async () => {
