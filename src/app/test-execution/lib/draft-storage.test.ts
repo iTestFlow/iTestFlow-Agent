@@ -63,6 +63,17 @@ describe("draft storage", () => {
     expect(loaded?.setup.headless).toBe(true);
     expect(loaded?.setup.viewportWidth).toBe("1920");
     expect(loaded?.setup.viewportHeight).toBe("1080");
+    expect(loaded?.setup.browserEnabled).toBe(true);
+    expect(loaded?.setup.connections).toEqual([]);
+  });
+
+  it("removes typed connection credentials while retaining saved references", () => {
+    const draft = sampleDraft();
+    draft.setup.connections = [{ localId: "api-1", kind: "api", alias: "orders-api", baseUrl: "https://api.example.com", auth: { type: "bearer" }, allowWrites: false,
+      credentials: { bearerToken: { value: "TypedConnectionSecret!" }, apiKey: { fromProfileId: "profile-1", sourceAlias: "orders-api", sourceField: "apiKey" } } }];
+    saveDraft(projectId, draft);
+    expect(window.localStorage.getItem(`itestflow.testExecution.draft.${projectId}`)).not.toContain("TypedConnectionSecret!");
+    expect(loadDraft(projectId)?.setup.connections[0].credentials).toEqual({ bearerToken: {}, apiKey: { fromProfileId: "profile-1", sourceAlias: "orders-api", sourceField: "apiKey" } });
   });
 
   it("clears saved drafts", () => {

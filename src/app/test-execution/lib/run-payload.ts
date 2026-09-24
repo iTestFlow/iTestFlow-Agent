@@ -54,9 +54,29 @@ function caseToPayload(testCase: DraftCase) {
       .filter((step) => step.action.trim())
       .map((step) => ({
         action: step.action.trim(),
+        phase: step.phase ?? "scenario",
         ...(step.expectedResult.trim() ? { expectedResult: step.expectedResult.trim() } : {}),
       })),
   };
+}
+
+function connectionsToPayload(connections: ExecutionDraft["setup"]["connections"]) {
+  return connections.map(({ localId: _, ...connection }) => {
+    if (connection.kind === "api") return {
+      ...connection, alias: connection.alias.trim(), baseUrl: connection.baseUrl.trim(),
+      openApiUrl: connection.openApiUrl?.trim() || null,
+    };
+    return {
+      kind: connection.kind, alias: connection.alias.trim(), engine: connection.engine,
+      allowWrites: connection.allowWrites, credentials: connection.credentials,
+      ...(connection.host?.trim() ? { host: connection.host.trim() } : {}),
+      ...(connection.port ? { port: connection.port } : {}),
+      ...(connection.database?.trim() ? { database: connection.database.trim() } : {}),
+      ...(connection.username?.trim() ? { username: connection.username.trim() } : {}),
+      ...(connection.ssl !== undefined ? { ssl: connection.ssl } : {}),
+      ...(connection.tlsMode ? { tlsMode: connection.tlsMode } : {}),
+    };
+  });
 }
 
 export function draftToRunRequest(draft: ExecutionDraft, scope: ActiveProjectScope) {
@@ -64,6 +84,8 @@ export function draftToRunRequest(draft: ExecutionDraft, scope: ActiveProjectSco
     scope,
     ...(draft.setup.runName.trim() ? { name: draft.setup.runName.trim() } : {}),
     baseUrl: draft.setup.baseUrl.trim(),
+    browserEnabled: draft.setup.browserEnabled,
+    connections: connectionsToPayload(draft.setup.connections),
     ...(draft.setup.executionNotes.trim() ? { executionNotes: draft.setup.executionNotes.trim() } : {}),
     screenshotPolicy: draft.setup.screenshotPolicy,
     headless: draft.setup.headless,
@@ -85,6 +107,8 @@ export function setupToProfileRequest(input: {
     scope: input.scope,
     name: input.name.trim(),
     baseUrl: input.setup.baseUrl.trim() || null,
+    browserEnabled: input.setup.browserEnabled,
+    connections: connectionsToPayload(input.setup.connections),
     executionNotes: input.setup.executionNotes.trim() || null,
     screenshotPolicy: input.setup.screenshotPolicy,
     headless: input.setup.headless,

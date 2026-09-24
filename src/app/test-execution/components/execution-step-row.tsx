@@ -33,8 +33,10 @@ export function ExecutionStepRow({ step, children }: { step: RunStep; children?:
             <span className="min-w-0 break-words">{step.action}</span>
             <StatusChip tone={runStatusTone(step.status)} className="shrink-0">{runStatusLabel(step.status)}</StatusChip>
           </div>
+          <p className="mt-1 text-xs capitalize text-muted-foreground">{step.phase ?? "scenario"}{step.layer ? ` · ${step.layer}` : ""}</p>
           {step.expectedResult ? <p className="mt-1 text-muted-foreground">Expected: {step.expectedResult}</p> : null}
           {step.errorMessage ? <p className="mt-1 text-destructive">{step.errorMessage}</p> : null}
+          {step.operations?.length ? <ol className="mt-2 space-y-1 border-l border-border pl-3 text-xs">{step.operations.map((operation) => <li key={operation.id}><span className="font-medium">{operation.connectionAlias ?? operation.alias ?? operation.layer ?? "browser"}</span> · {operation.operation ?? operation.toolName ?? "operation"}{operation.assertion ? ` · ${operation.assertion}` : ""}{operation.durationMs != null ? ` · ${operation.durationMs} ms` : ""}{operation.status ? ` · ${runStatusLabel(operation.status)}` : ""}{operation.errorMessage ? ` · ${operation.errorMessage}` : ""}</li>)}</ol> : null}
           {children}
         </div>
       </div>

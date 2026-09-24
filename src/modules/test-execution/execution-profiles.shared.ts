@@ -1,5 +1,6 @@
 import type { ScreenshotPolicy } from "./screenshot-policy";
 import type { TestDataMetaEntry } from "./execution-test-data.shared";
+import type { ConnectionView } from "./execution-connections.shared";
 
 export const MAX_PROFILE_NAME_LENGTH = 120;
 
@@ -21,6 +22,8 @@ export type ExecutionProfile = {
   id: string;
   name: string;
   baseUrl: string | null;
+  browserEnabled: boolean;
+  connections: ConnectionView[];
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
   headless: boolean;

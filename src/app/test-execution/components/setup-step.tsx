@@ -12,6 +12,7 @@ import { ConfirmationDialog } from "@/components/qa/confirmation-dialog";
 import { SectionCard } from "@/components/workflow/test-intelligence-shared";
 import { ExtraInstructionsField } from "@/components/workflow/extra-instructions-field";
 import { cn } from "@/lib/utils";
+import type { ActiveProjectScope } from "@/shared/lib/active-project";
 import { SCREENSHOT_POLICIES, SCREENSHOT_POLICY_LABELS, type ScreenshotPolicy } from "@/modules/test-execution/screenshot-policy";
 import {
   RUN_NAME_LIMIT,
@@ -25,6 +26,7 @@ import {
 } from "../lib/execution-draft";
 import type { ExecutionProfileView } from "../lib/run-types";
 import { TestDataEditor } from "./test-data-editor";
+import { ConnectionsEditor } from "./connections-editor";
 
 function CollapsibleSection({
   id,
@@ -62,6 +64,7 @@ function CollapsibleSection({
  * required.
  */
 export function SetupStep({
+  scope,
   setup,
   onSetupChange,
   profiles,
@@ -72,6 +75,7 @@ export function SetupStep({
   onUpdateProfile,
   onDeleteProfile,
 }: {
+  scope: ActiveProjectScope | null;
   setup: DraftSetup;
   onSetupChange: (setup: DraftSetup) => void;
   profiles: ExecutionProfileView[];
@@ -93,7 +97,7 @@ export function SetupStep({
   return (
     <SectionCard
       title="Execution setup"
-      description="Only the Base URL is required — everything else is optional and starts with sensible defaults."
+      description="Choose browser and connection preparations for this run."
     >
       <div className="space-y-4 p-4">
         {profiles.length || profilesLoading ? (
@@ -144,7 +148,9 @@ export function SetupStep({
           </p>
         </div>
 
-        <div className="space-y-1.5">
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={setup.browserEnabled} onChange={(event) => onSetupChange({ ...setup, browserEnabled: event.target.checked })} />Use browser</label>
+
+        {setup.browserEnabled ? <div className="space-y-1.5">
           <Label htmlFor="execution-base-url">Base URL <span aria-hidden="true" className="text-destructive">*</span></Label>
           <Input
             id="execution-base-url"
@@ -162,9 +168,9 @@ export function SetupStep({
               ? "The Base URL must start with http:// or https://."
               : "Every test case starts from this page."}
           </p>
-        </div>
+        </div> : null}
 
-        <div className="space-y-1.5">
+        {setup.browserEnabled ? <div className="space-y-1.5">
           <Label htmlFor="execution-screenshot-policy">Screenshots</Label>
           <NativeSelect
             id="execution-screenshot-policy"
@@ -179,9 +185,9 @@ export function SetupStep({
           <p className="text-xs text-muted-foreground">
             “Validation points only” captures each step that has an expected result, plus evidence whenever a step fails.
           </p>
-        </div>
+        </div> : null}
 
-        <div className="space-y-1.5">
+        {setup.browserEnabled ? <div className="space-y-1.5">
           <Label htmlFor="execution-browser-mode">Browser window</Label>
           <NativeSelect
             id="execution-browser-mode"
@@ -195,9 +201,9 @@ export function SetupStep({
           <p className="text-xs text-muted-foreground">
             Applies when this deployment runs Playwright over stdio. A remote (HTTP) Playwright server controls its own browser window, and a deployment that already forces headless stays headless.
           </p>
-        </div>
+        </div> : null}
 
-        <div className="space-y-1.5">
+        {setup.browserEnabled ? <div className="space-y-1.5">
           <div className="grid max-w-md gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="execution-viewport-width">Viewport width (px)</Label>
@@ -230,7 +236,11 @@ export function SetupStep({
             {viewportProblems[0]
               ?? `Browser size for every test case. Width ${VIEWPORT_WIDTH_MIN}–${VIEWPORT_WIDTH_MAX}, height ${VIEWPORT_HEIGHT_MIN}–${VIEWPORT_HEIGHT_MAX}. Default 1920 × 1080.`}
           </p>
-        </div>
+        </div> : null}
+
+        <CollapsibleSection id="execution-preparations" title={`Preparations — API and database connections (${setup.connections.length})`} defaultOpen={setup.connections.length > 0}>
+          <ConnectionsEditor scope={scope} connections={setup.connections} onChange={(connections) => onSetupChange({ ...setup, connections })} />
+        </CollapsibleSection>
 
         <CollapsibleSection id="execution-test-data" title={`Test data (optional)${setup.testData.length ? ` — ${setup.testData.length}` : ""}`} defaultOpen={hasOptionalContent}>
           <TestDataEditor entries={setup.testData} onChange={(testData) => onSetupChange({ ...setup, testData })} />

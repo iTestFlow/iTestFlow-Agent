@@ -75,6 +75,7 @@ describeDb("Execution run test data (DB-backed)", () => {
 
     await expect(executionRunSettings(runId)).resolves.toEqual({
       baseUrl: "https://app.example.test/start",
+      browserEnabled: true,
       executionNotes: "Use the staging tenant.",
       screenshotPolicy: "failures-only",
       headless: true,

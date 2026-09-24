@@ -2,6 +2,8 @@ import "server-only";
 
 import { createId, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import type { ScreenshotPolicy } from "./screenshot-policy";
+import { insertProfileConnections, listProfileConnections, prepareConnections } from "./execution-connections.service";
+import type { ConnectionInput, ConnectionView } from "./execution-connections.shared";
 import {
   ProfileNameConflictError,
   ProfileNotFoundError,
@@ -22,7 +24,7 @@ export {
 
 type ProfileRow = {
   id: string; name: string; base_url: string | null; execution_notes: string | null;
-  screenshot_policy: ScreenshotPolicy; headless: boolean; viewport_width: number; viewport_height: number; updated_at: string;
+  screenshot_policy: ScreenshotPolicy; headless: boolean; viewport_width: number; viewport_height: number; browser_enabled: boolean; updated_at: string;
 };
 
 type ProfileDataRow = { profile_id: string; title: string; is_secret: boolean; value: string | null };
@@ -49,11 +51,13 @@ async function insertProfileData(client: DbClient, profileId: string, entries: r
   }
 }
 
-function mapProfile(row: ProfileRow, data: readonly ProfileDataRow[]): ExecutionProfile {
+function mapProfile(row: ProfileRow, data: readonly ProfileDataRow[], connections: ConnectionView[]): ExecutionProfile {
   return {
     id: row.id,
     name: row.name,
     baseUrl: row.base_url,
+    browserEnabled: row.browser_enabled,
+    connections,
     executionNotes: row.execution_notes,
     screenshotPolicy: row.screenshot_policy,
     headless: row.headless,
@@ -68,7 +72,7 @@ function mapProfile(row: ProfileRow, data: readonly ProfileDataRow[]): Execution
 
 export async function listExecutionProfiles(workspaceId: string, projectId: string): Promise<ExecutionProfile[]> {
   const rows = await sqlAll<ProfileRow>(
-    `SELECT id, name, base_url, execution_notes, screenshot_policy, headless, viewport_width, viewport_height, updated_at
+    `SELECT id, name, base_url, execution_notes, screenshot_policy, headless, viewport_width, viewport_height, browser_enabled, updated_at
        FROM playwright_execution_profiles
       WHERE workspace_id = @workspaceId AND project_id = @projectId
       ORDER BY lower(name)`,
@@ -83,12 +87,12 @@ export async function listExecutionProfiles(workspaceId: string, projectId: stri
       ORDER BY d.position, d.title`,
     { workspaceId, projectId },
   );
-  return rows.map((row) => mapProfile(row, data));
+  return Promise.all(rows.map(async (row) => mapProfile(row, data, await listProfileConnections(row.id))));
 }
 
 export async function getExecutionProfile(profileId: string, workspaceId: string, projectId: string): Promise<ExecutionProfile | null> {
   const row = await sqlGet<ProfileRow>(
-    `SELECT id, name, base_url, execution_notes, screenshot_policy, headless, viewport_width, viewport_height, updated_at
+    `SELECT id, name, base_url, execution_notes, screenshot_policy, headless, viewport_width, viewport_height, browser_enabled, updated_at
        FROM playwright_execution_profiles
       WHERE id = @profileId AND workspace_id = @workspaceId AND project_id = @projectId`,
     { profileId, workspaceId, projectId },
@@ -99,7 +103,7 @@ export async function getExecutionProfile(profileId: string, workspaceId: string
       WHERE profile_id = @profileId ORDER BY position, title`,
     { profileId },
   );
-  return mapProfile(row, data);
+  return mapProfile(row, data, await listProfileConnections(profileId));
 }
 
 export type ProfileWriteInput = {
@@ -108,6 +112,8 @@ export type ProfileWriteInput = {
   userId: string;
   name: string;
   baseUrl: string | null;
+  browserEnabled?: boolean;
+  connections?: readonly ConnectionInput[];
   executionNotes: string | null;
   screenshotPolicy: ScreenshotPolicy;
   headless: boolean;
@@ -119,27 +125,29 @@ export type ProfileWriteInput = {
 export async function createExecutionProfile(input: ProfileWriteInput): Promise<ExecutionProfile> {
   const name = input.name.trim();
   const entries = await resolveTestDataEntries({ workspaceId: input.workspaceId, projectId: input.projectId, entries: input.testData });
+  const connections = await prepareConnections({ workspaceId: input.workspaceId, projectId: input.projectId, connections: input.connections ?? [] });
   const profileId = createId("pwprof");
   const now = nowIso();
   const created = await withTransaction(async (client) => {
     const inserted = await sqlGet<{ id: string }>(
       `INSERT INTO playwright_execution_profiles (
          id, workspace_id, project_id, name, base_url, execution_notes, screenshot_policy,
-         headless, viewport_width, viewport_height,
+         headless, viewport_width, viewport_height, browser_enabled,
          created_by_user_id, updated_by_user_id, created_at, updated_at
        ) VALUES (@id, @workspaceId, @projectId, @name, @baseUrl, @notes, @policy,
-         @headless, @viewportWidth, @viewportHeight, @userId, @userId, @now, @now)
+         @headless, @viewportWidth, @viewportHeight, @browserEnabled, @userId, @userId, @now, @now)
        ON CONFLICT (workspace_id, project_id, lower(name)) DO NOTHING RETURNING id`,
       {
         id: profileId, workspaceId: input.workspaceId, projectId: input.projectId, name,
         baseUrl: input.baseUrl, notes: input.executionNotes, policy: input.screenshotPolicy,
-        headless: input.headless, viewportWidth: input.viewportWidth, viewportHeight: input.viewportHeight,
+        headless: input.headless, viewportWidth: input.viewportWidth, viewportHeight: input.viewportHeight, browserEnabled: input.browserEnabled ?? true,
         userId: input.userId, now,
       },
       client,
     );
     if (!inserted) return false;
     await insertProfileData(client, profileId, entries, now);
+    await insertProfileConnections(client, profileId, connections, now);
     return true;
   });
   if (!created) throw new ProfileNameConflictError(name);
@@ -169,6 +177,10 @@ export async function updateExecutionProfile(profileId: string, input: ProfileWr
     entries: input.testData,
     keepSourceProfileId: profileId,
   });
+  const connections = await prepareConnections({
+    workspaceId: input.workspaceId, projectId: input.projectId,
+    connections: input.connections ?? [], keepSourceProfileId: profileId,
+  });
   const now = nowIso();
   try {
     await withTransaction(async (client) => {
@@ -176,15 +188,18 @@ export async function updateExecutionProfile(profileId: string, input: ProfileWr
         `UPDATE playwright_execution_profiles
             SET name = @name, base_url = @baseUrl, execution_notes = @notes, screenshot_policy = @policy,
                 headless = @headless, viewport_width = @viewportWidth, viewport_height = @viewportHeight,
+                browser_enabled = @browserEnabled,
                 updated_by_user_id = @userId, updated_at = @now
           WHERE id = @profileId`,
         { profileId, name, baseUrl: input.baseUrl, notes: input.executionNotes, policy: input.screenshotPolicy,
-          headless: input.headless, viewportWidth: input.viewportWidth, viewportHeight: input.viewportHeight,
+          headless: input.headless, viewportWidth: input.viewportWidth, viewportHeight: input.viewportHeight, browserEnabled: input.browserEnabled ?? true,
           userId: input.userId, now },
         client,
       );
       await sqlRun(`DELETE FROM playwright_execution_profile_data WHERE profile_id = @profileId`, { profileId }, client);
       await insertProfileData(client, profileId, entries, now);
+      await sqlRun(`DELETE FROM playwright_execution_profile_connections WHERE profile_id = @profileId`, { profileId }, client);
+      await insertProfileConnections(client, profileId, connections, now);
     });
   } catch (error) {
     // A concurrent create/rename can beat the pre-check; keep the friendly 409.

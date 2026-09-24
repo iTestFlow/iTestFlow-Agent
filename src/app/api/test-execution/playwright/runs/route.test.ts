@@ -153,6 +153,22 @@ describe("Playwright execution start", () => {
     }));
   });
 
+  it("queues an API-only run without browser configuration or Base URL", async () => {
+    resolveConfig.mockRejectedValue(new Error("MCP must not be read"));
+    const response = await POST(postRequest({
+      ...validBody, browserEnabled: false, baseUrl: undefined,
+      connections: [{ kind: "api", alias: "orders-api", baseUrl: "https://api.example.test",
+        auth: { type: "none" }, allowWrites: false }],
+      cases: [{ title: "API case", steps: [{ action: "Check orders", phase: "setup" }] }],
+    }));
+    expect(response.status).toBe(202);
+    expect(resolveConfig).not.toHaveBeenCalled();
+    expect(createExecutionRun).toHaveBeenCalledWith(expect.objectContaining({
+      settings: expect.objectContaining({ browserEnabled: false, baseUrl: null }),
+      cases: [expect.objectContaining({ steps: [expect.objectContaining({ phase: "setup" })] })],
+    }));
+  });
+
   it("rejects out-of-range viewport dimensions with the authored message", async () => {
     const response = await POST(postRequest({ ...validBody, viewportWidth: 100 }));
     expect(response.status).toBe(400);

@@ -120,23 +120,23 @@ export function ReviewStep({
       <SectionCard title="Review the plan" description="Check the summary, then approve to start the execution.">
         <dl className="divide-y divide-border p-4">
           <SummaryRow label="Run name" value={draft.setup.runName.trim() || <span className="text-muted-foreground">Not set</span>} />
-          <SummaryRow label="Base URL" value={draft.setup.baseUrl.trim() || <span className="text-muted-foreground">Not set</span>} />
-          <SummaryRow label="Screenshots" value={SCREENSHOT_POLICY_LABELS[draft.setup.screenshotPolicy]} />
-          <SummaryRow label="Browser" value={draft.setup.headless ? "Headless" : "Headed (visible window)"} />
-          <SummaryRow label="Viewport" value={`${draft.setup.viewportWidth} × ${draft.setup.viewportHeight}`} />
+          <SummaryRow label="Browser" value={draft.setup.browserEnabled ? draft.setup.headless ? "Headless" : "Headed (visible window)" : "Disabled"} />
+          {draft.setup.browserEnabled ? <><SummaryRow label="Base URL" value={draft.setup.baseUrl.trim()} /><SummaryRow label="Screenshots" value={SCREENSHOT_POLICY_LABELS[draft.setup.screenshotPolicy]} /><SummaryRow label="Viewport" value={`${draft.setup.viewportWidth} × ${draft.setup.viewportHeight}`} /></> : null}
+          <SummaryRow label="Connections" value={draft.setup.connections.length ? <ul>{draft.setup.connections.map((connection) => <li key={connection.localId}>{connection.alias || "Unnamed"} · {connection.kind === "api" ? "API" : connection.engine} · {connection.allowWrites ? "writes allowed" : "read-only"}</li>)}</ul> : "None"} />
           <SummaryRow
             label="Test data"
             value={dataCount ? `${dataCount} value${dataCount === 1 ? "" : "s"}${secretCount ? ` (${secretCount} private)` : ""}` : "None"}
           />
           <SummaryRow label="Instructions for the AI" value={draft.setup.executionNotes.trim() ? "Provided" : "None"} />
           <SummaryRow label="Test cases" value={`${draft.cases.length} case${draft.cases.length === 1 ? "" : "s"} · ${totalSteps} step${totalSteps === 1 ? "" : "s"}`} />
+          <SummaryRow label="Cleanup" value={`${draft.cases.reduce((sum, testCase) => sum + testCase.steps.filter((step) => step.phase === "cleanup").length, 0)} step(s); attempted after scenario failure or cancellation`} />
           <SummaryRow
             label="Azure outcomes"
             value={publishable
               ? `${publishable} of ${draft.cases.length} case${draft.cases.length === 1 ? "" : "s"} can publish results back to the Test Plan after the run.`
               : "No cases came from a Test Plan, so results stay in iTestFlow."}
           />
-          <SummaryRow label="Order" value="Cases run one after another in a fresh browser each." />
+          <SummaryRow label="Order" value="Cases run one after another. Each case follows setup, scenario, then cleanup." />
         </dl>
       </SectionCard>
 
@@ -151,7 +151,7 @@ export function ReviewStep({
       <StickyActionBar
         title="Ready to execute?"
         description={draft.cases.length
-          ? `Runs ${draft.cases.length} test case${draft.cases.length === 1 ? "" : "s"} against ${draft.setup.baseUrl.trim() || "the Base URL"}.`
+          ? `Runs ${draft.cases.length} test case${draft.cases.length === 1 ? "" : "s"} using the selected preparations.`
           : "Add test cases before executing."}
         actions={
           <Button type="button" disabled={creating || issues.length > 0 || !draft.cases.length} onClick={onExecute}>

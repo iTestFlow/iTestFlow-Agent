@@ -39,6 +39,8 @@ describe("draftToRunRequest", () => {
     expect(request).toEqual({
       scope,
       baseUrl: "https://app.example.com/login",
+      browserEnabled: true,
+      connections: [],
       screenshotPolicy: "failures-only",
       headless: true,
       viewportWidth: 1920,
@@ -49,7 +51,7 @@ describe("draftToRunRequest", () => {
       cases: [{
         azureTestCaseId: 1, azureTestPointId: 10, azurePlanId: 7, azureSuiteId: 8,
         title: "Imported",
-        steps: [{ action: "Open", expectedResult: "Loads" }],
+        steps: [{ action: "Open", expectedResult: "Loads", phase: "scenario" }],
       }],
     });
     expect(request).not.toHaveProperty("executionNotes");
@@ -89,6 +91,8 @@ describe("setupToProfileRequest", () => {
       scope,
       name: "Staging",
       baseUrl: null,
+      browserEnabled: true,
+      connections: [],
       executionNotes: null,
       screenshotPolicy: "every-step",
       headless: true,
@@ -96,5 +100,22 @@ describe("setupToProfileRequest", () => {
       viewportHeight: 1080,
       testData: [{ title: "Password", isSecret: true, value: "S3cret" }],
     });
+  });
+
+  it("sends API and database connection settings and credential references", () => {
+    const draft = createEmptyDraft();
+    draft.setup.browserEnabled = false;
+    draft.setup.connections = [{
+      localId: "local-1", kind: "api", alias: "orders-api", baseUrl: " https://api.example.com ",
+      auth: { type: "bearer" }, allowWrites: false,
+      credentials: { bearerToken: { fromProfileId: "profile-1", sourceAlias: "orders-api", sourceField: "bearerToken" } },
+    }];
+    draft.cases = mergeImportedCases([], [{ title: "API only", steps: [{ action: "GET /orders" }], source: "manual" }]);
+    draft.cases[0].steps.push({ localId: "cleanup", phase: "cleanup", action: "Remove order", expectedResult: "" });
+    draft.cases[0].steps.push({ localId: "setup", phase: "setup", action: "Create order", expectedResult: "" });
+    const request = draftToRunRequest(draft, scope);
+    expect(request.browserEnabled).toBe(false);
+    expect(request.connections).toEqual([{ kind: "api", alias: "orders-api", baseUrl: "https://api.example.com", openApiUrl: null, auth: { type: "bearer" }, allowWrites: false, credentials: { bearerToken: { fromProfileId: "profile-1", sourceAlias: "orders-api", sourceField: "bearerToken" } } }]);
+    expect(request.cases[0].steps.map((step) => step.phase)).toEqual(["scenario", "cleanup", "setup"]);
   });
 });
