@@ -10,7 +10,7 @@ const store = vi.hoisted(() => ({
 const deps = vi.hoisted(() => ({
   connections: vi.fn(), testData: vi.fn(), mcpConfig: vi.fn(), connectMcp: vi.fn(),
   mixedAgent: vi.fn(), startOperation: vi.fn(), finishOperation: vi.fn(async (..._args: Array<{ evidence?: unknown }>) => true),
-  apiExecute: vi.fn(), databaseExecute: vi.fn(), databaseDiscover: vi.fn(),
+  apiExecute: vi.fn(), databaseExecute: vi.fn(), databaseDiscover: vi.fn(), setDatabaseAccess: vi.fn(),
   importArtifact: vi.fn(), openApi: vi.fn(),
 }));
 
@@ -35,7 +35,7 @@ vi.mock("@/modules/integrations/api-automation/guarded-api-executor", () => ({
   GuardedApiExecutor: class { execute = deps.apiExecute; dispose = vi.fn(async () => undefined); },
 }));
 vi.mock("@/modules/integrations/database-automation/database-executor.factory", () => ({
-  createDatabaseExecutor: vi.fn(() => ({ driver: "postgres", execute: deps.databaseExecute, discoverObjects: deps.databaseDiscover, setDatabaseAccess: vi.fn(), dispose: vi.fn(async () => undefined) })),
+  createDatabaseExecutor: vi.fn(() => ({ driver: "postgres", execute: deps.databaseExecute, discoverObjects: deps.databaseDiscover, setDatabaseAccess: deps.setDatabaseAccess, dispose: vi.fn(async () => undefined) })),
 }));
 vi.mock("./execution-operation.service", () => ({ startOperation: deps.startOperation, finishOperation: deps.finishOperation }));
 vi.mock("./mixed-execution-agent", () => ({
@@ -158,6 +158,29 @@ describe("mixed execution job", () => {
     expect(deps.apiExecute.mock.calls[1]?.[0]).toMatchObject({ path: "/session/private-session-token" });
     expect(JSON.stringify(deps.finishOperation.mock.calls.map((call) => call[0].evidence))).not.toContain("private-session-token");
     expect(JSON.stringify(store.recordStepToolCall.mock.calls.map((call) => [call[2], call[3]]))).not.toContain("private-session-token");
+  });
+
+  it("redacts secrets in API observation fields before they reach the model", async () => {
+    prime();
+    deps.apiExecute.mockResolvedValue({ statusCode: 200, statusText: "test-secret", body: { "test-secret": "visible" },
+      contentType: "test-secret", truncated: false, durationMs: 1 });
+    deps.mixedAgent.mockImplementation(async (input: { executeTool: (name: string, args: Record<string, unknown>) => Promise<unknown> }) => {
+      const result = await input.executeTool("api_request", { alias: "service", method: "GET", path: "/accounts" });
+      expect(JSON.stringify(result)).not.toContain("test-secret");
+      return { outcome: "passed", summary: "ok", turns: 1 };
+    });
+    await runPlaywrightExecutionJob(job, context());
+  });
+
+  it("canonicalizes mixed-case discovered table names in the runner allowlist", async () => {
+    prime({ connections: [dbConnection()] });
+    deps.databaseDiscover.mockResolvedValue({ objects: [{ schema: "DbO", table: "Orders", columns: [] }], truncated: false });
+    deps.mixedAgent.mockImplementation(async (input: { executeTool: (name: string, args: Record<string, unknown>) => Promise<unknown> }) => {
+      await input.executeTool("database_schema", { alias: "records" });
+      return { outcome: "passed", summary: "ok", turns: 1 };
+    });
+    await runPlaywrightExecutionJob(job, context());
+    expect(deps.setDatabaseAccess).toHaveBeenCalledWith({ schemas: ["DbO"], tables: new Set(["dbo.orders"]) });
   });
 
   it("still captures validation screenshots and redacts secret values from persisted tool evidence", async () => {

@@ -238,6 +238,14 @@ describe("database object discovery contract", () => {
     expect(harness.statements.some((statement) => /FROM\s+\S*orders/i.test(statement))).toBe(true);
   });
 
+  it("keeps SQL Server schema inspection behind its table SELECT permission check", async () => {
+    const spec = DRIVERS.find((entry) => entry.driver === "sqlserver")!;
+    const harness = harnessFor(spec, { rows: sampleRows(spec) });
+    harness.executor.setDatabaseAccess(accessFrom(await harness.executor.discoverObjects()));
+    await harness.executor.execute({ kind: "schema" });
+    expect(harness.statements.at(-1)).toContain("HAS_PERMS_BY_NAME");
+  });
+
   it.each(DRIVERS)("rejects a $driver SELECT against an undiscovered table", async (spec) => {
     const harness = harnessFor(spec, { rows: sampleRows(spec) });
     harness.executor.setDatabaseAccess(accessFrom(await harness.executor.discoverObjects()));

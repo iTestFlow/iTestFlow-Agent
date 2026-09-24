@@ -62,6 +62,7 @@ async function sourceCredential(input: {
   fromProfileId?: string;
   alias: string;
   field: string;
+  target: ConnectionInput;
 }): Promise<string | null> {
   const source = input.fromRunId
     ? await sqlGet<SavedConnectionRow>(
@@ -76,7 +77,21 @@ async function sourceCredential(input: {
         { sourceId: input.fromProfileId, workspaceId: input.workspaceId, projectId: input.projectId, alias: input.alias },
       )
       : null;
-  return source ? credentialValues(source)[input.field] ?? null : null;
+  if (!source) return null;
+  if (credentialBinding(source.settings_json) !== credentialBinding(input.target)) {
+    throw new ConnectionResolutionError("Saved credentials require the original connection destination and authentication settings. Enter credentials again for this change.");
+  }
+  return credentialValues(source)[input.field] ?? null;
+}
+
+/** Saved secrets may be reused only with the same destination and auth context. */
+function credentialBinding(value: Record<string, unknown> | ConnectionInput): string {
+  const settings = value as Record<string, unknown>;
+  if (settings.kind === "api") {
+    return JSON.stringify({ kind: settings.kind, baseUrl: settings.baseUrl, auth: settings.auth });
+  }
+  return JSON.stringify({ kind: settings.kind, engine: settings.engine, host: settings.host, port: settings.port,
+    database: settings.database, username: settings.username, ssl: settings.ssl, tlsMode: settings.tlsMode });
 }
 
 function validateSettings(connection: ConnectionInput): void {
@@ -131,6 +146,7 @@ export async function prepareConnections(input: {
           fromProfileId: source.fromProfileId ?? (source.fromRunId ? undefined : input.keepSourceProfileId),
           alias: source.sourceAlias ?? connection.alias,
           field: source.sourceField ?? field,
+          target: connection,
         }) ?? undefined;
       }
       if (!value) throw new ConnectionResolutionError(`Enter the ${field} credential for "${connection.alias}" again.`);

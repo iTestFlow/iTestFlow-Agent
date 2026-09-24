@@ -37,6 +37,34 @@ describe("execution connection preparation", () => {
       expect.objectContaining({ workspaceId: "w", projectId: "other-project", sourceId: "profile-in-p" }));
   });
 
+  it("binds saved API secrets to their original endpoint and auth settings", async () => {
+    sqlGet.mockResolvedValue({ settings_json: api("orders-api"), encrypted_credentials: Buffer.from('{"bearerToken":"saved-token"}').toString("base64"),
+      credentials_iv: "iv", credentials_tag: "tag", credentials_key_version: 1 });
+    const reference = { bearerToken: { fromProfileId: "profile-in-p" } };
+    await expect(prepareConnections({ workspaceId: "w", projectId: "p", connections: [
+      { ...api("orders-api"), baseUrl: "https://attacker.example", credentials: reference },
+    ] })).rejects.toThrow(/original connection destination/);
+    await expect(prepareConnections({ workspaceId: "w", projectId: "p", connections: [
+      { ...api("orders-api"), auth: { type: "basic", username: "qa" }, credentials: { basicPassword: { fromProfileId: "profile-in-p", sourceField: "bearerToken" } } },
+    ] })).rejects.toThrow(/original connection destination/);
+    const [sameTarget] = await prepareConnections({ workspaceId: "w", projectId: "p", connections: [
+      { ...api("orders-api"), allowWrites: true, credentials: reference },
+    ] });
+    expect(sameTarget.credentialFields).toEqual(["bearerToken"]);
+  });
+
+  it("rejects saved database secrets when endpoint or TLS settings change", async () => {
+    const original = { kind: "database" as const, alias: "orders-db", engine: "postgres" as const,
+      host: "db.example.test", database: "orders", username: "qa", tlsMode: "verify-full" as const, allowWrites: false };
+    sqlGet.mockResolvedValue({ settings_json: original, encrypted_credentials: Buffer.from('{"password":"saved-password"}').toString("base64"),
+      credentials_iv: "iv", credentials_tag: "tag", credentials_key_version: 1 });
+    for (const change of [{ host: "attacker.example" }, { tlsMode: "disable" as const }, { database: "other" }]) {
+      await expect(prepareConnections({ workspaceId: "w", projectId: "p", connections: [
+        { ...original, ...change, credentials: { password: { fromProfileId: "profile-in-p" } } },
+      ] })).rejects.toThrow(/original connection destination/);
+    }
+  });
+
   it("rejects incomplete and irrelevant credentials before queueing a run", async () => {
     await expect(prepareConnections({ workspaceId: "w", projectId: "p", connections: [api("orders-api")] }))
       .rejects.toThrow(/Enter the bearerToken credential/);

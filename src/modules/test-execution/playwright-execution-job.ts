@@ -4,6 +4,7 @@ import { resolveUserLlmConfig } from "@/modules/credentials/credential.service";
 import { createEgressAuthorizer, authorizeEgressTarget, type EgressBoundary, type EgressTarget } from "@/modules/integrations/api-automation/egress-boundary";
 import { GuardedApiExecutor } from "@/modules/integrations/api-automation/guarded-api-executor";
 import { createDatabaseExecutor } from "@/modules/integrations/database-automation/database-executor.factory";
+import { databaseObjectKey } from "@/modules/integrations/database-automation/database-executor.shared";
 import type { DatabaseExecutor } from "@/modules/integrations/database-automation/database-executor.port";
 import type { JobHandler } from "@/modules/jobs/job-handlers";
 import { DEFAULT_RETRY_ATTEMPTS, getMaxOutputTokenCapDefaultFromEnv } from "@/modules/llm/llm-defaults";
@@ -232,7 +233,7 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
         const discover = async (alias: string, executor: DatabaseExecutor) => {
           const result = await journal(alias, "Database schema discovery", () => executor.discoverObjects(),
             (value) => ({ objectCount: value.objects.length, truncated: value.truncated }));
-          executor.setDatabaseAccess({ schemas: [...new Set(result.objects.map((object) => object.schema))], tables: new Set(result.objects.map((object) => `${object.schema}.${object.table}`)) });
+          executor.setDatabaseAccess({ schemas: [...new Set(result.objects.map((object) => object.schema))], tables: new Set(result.objects.map((object) => databaseObjectKey(object.schema, object.table))) });
           discovered.add(alias);
           return result;
         };
@@ -330,7 +331,7 @@ export const runPlaywrightExecutionJob: JobHandler = async (job, context) => {
                   : name === "browser_file_upload" ? { paths: "[fixture]" } : args;
               await requireOwnership(recordStepToolCall(step.id, name, modelSafeBrowserResult(auditArgs, allSecrets()) as Record<string, unknown>,
                 modelSafeBrowserResult(observation, allSecrets()), allSecrets(), workerId));
-              return { observation, succeeded, external: true };
+              return { observation: modelSafeBrowserResult(observation, allSecrets()), succeeded, external: true };
             },
           });
           return { ...result, usedBrowser };

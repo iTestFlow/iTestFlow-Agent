@@ -263,6 +263,7 @@ export class SqlServerDatabaseExecutor implements DatabaseExecutor {
                COLUMN_NAME AS column_name, DATA_TYPE AS data_type, IS_NULLABLE AS is_nullable
         FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@schemas, ','))
+          AND HAS_PERMS_BY_NAME(QUOTENAME(TABLE_SCHEMA) + '.' + QUOTENAME(TABLE_NAME), 'OBJECT', 'SELECT') = 1
           AND (@pattern IS NULL OR TABLE_NAME LIKE @pattern ESCAPE '\\')
         ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION`);
       return normalizeSqlServer(result, "SELECT", Date.now() - started, this.config);
