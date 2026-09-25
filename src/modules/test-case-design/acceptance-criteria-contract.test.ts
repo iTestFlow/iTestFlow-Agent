@@ -56,6 +56,15 @@ describe("selected-story acceptance criteria contract", () => {
     ]);
   });
 
+  it("preserves nested list context across blank Markdown list spacers", () => {
+    const contract = buildAcceptanceCriteriaContract({ acceptanceCriteria: "- Payment methods\n\n  - Card succeeds\n  - Cash is unavailable\n\n- Order receipt appears" });
+    expect(contract.criteria).toEqual([
+      { id: "AC-001", text: "Payment methods — Card succeeds" },
+      { id: "AC-002", text: "Payment methods — Cash is unavailable" },
+      { id: "AC-003", text: "Order receipt appears" },
+    ]);
+  });
+
   it("keeps adjacent Given/When/Then scenarios separate without splitting prose sentences", () => {
     const contract = buildAcceptanceCriteriaContract({ acceptanceCriteria: "Given an active user\nWhen they submit\nThen save the form\nGiven a blocked user\nWhen they submit\nThen show an error" });
     expect(contract.criteria).toEqual([

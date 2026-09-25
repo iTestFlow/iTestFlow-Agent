@@ -133,7 +133,8 @@ function plainBlockCriteria(block: string): string[] {
 
 function extractCriteria(source: string): string[] {
   const html = /<\/?[a-z][^>]*>/i.test(source);
-  const blocks = html ? htmlBlocks(source) : source.replace(/\r\n?/g, "\n").split(/\n\s*\n/);
+  const plainSource = source.replace(/\r\n?/g, "\n");
+  const blocks = html ? htmlBlocks(source) : splitPlainBlocks(plainSource);
   const criteria: string[] = [];
   for (const block of blocks) {
     if (!html) {
@@ -175,6 +176,32 @@ function extractCriteria(source: string): string[] {
     } else grouped.push(text);
   }
   return grouped.filter(Boolean);
+}
+
+function splitPlainBlocks(source: string): string[] {
+  const lines = source.split("\n");
+  const blocks: string[] = [];
+  let current: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (normalize(line)) {
+      current.push(line);
+      continue;
+    }
+    let next = index + 1;
+    while (next < lines.length && !normalize(lines[next])) next += 1;
+    const nextLine = lines[next] ?? "";
+    const isIndentedListItem = /^\s+\s*(?:[-*•]\s+|\d+[.)]\s+|AC[-\s]?\d+\s*[:.)-]\s*)/i.test(nextLine);
+    if (isIndentedListItem) {
+      current.push("");
+    } else if (current.some(normalize)) {
+      blocks.push(current.join("\n"));
+      current = [];
+    }
+    index = next - 1;
+  }
+  if (current.some(normalize)) blocks.push(current.join("\n"));
+  return blocks;
 }
 
 export function buildAcceptanceCriteriaContract(story: unknown): AcceptanceCriteriaContract {
