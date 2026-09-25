@@ -21,6 +21,8 @@ import { resolveProjectScope } from "@/modules/projects/workspace-projects.servi
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 import { resolveWorkspaceProviderId } from "@/modules/integrations/provider-registry";
 import { storyAttachmentInputErrorResponse } from "@/app/api/story-attachments/story-attachment-route-helpers";
+import { AcceptanceCriteriaError, buildAcceptanceCriteriaContract } from "@/modules/test-case-design/acceptance-criteria-contract";
+import { createManualDraftToken } from "@/modules/test-case-design/manual-draft-token";
 
 export const runtime = "nodejs";
 
@@ -78,6 +80,13 @@ export async function POST(request: Request) {
       .filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0);
 
     return NextResponse.json({
+      draftToken: createManualDraftToken({
+        userId: ctx.userId,
+        workspaceId: ctx.workspace.id,
+        projectId: trustedScope.projectId,
+        integrationProvider: resolveWorkspaceProviderId(ctx.workspace),
+        storyId: parsed.data.targetWorkItemId,
+      }, buildAcceptanceCriteriaContract(targetRequirement)),
       targetWorkItemId: parsed.data.targetWorkItemId,
       selectedContextIds: parsed.data.selectedContextIds,
       attachmentIds: parsed.data.attachmentIds,
@@ -91,6 +100,9 @@ export async function POST(request: Request) {
       warnings: warnings.length ? Array.from(new Set(warnings)) : undefined,
     });
   } catch (error) {
+    if (error instanceof AcceptanceCriteriaError) {
+      return NextResponse.json({ error: error.userMessage, code: error.code, details: error.details }, { status: error.status });
+    }
     if (error instanceof ContextReviewRequiredError) {
       return NextResponse.json(contextReviewRequiredResponseBody(error), { status: 409 });
     }

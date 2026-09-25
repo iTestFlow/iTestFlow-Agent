@@ -98,11 +98,15 @@ export type TestCaseGenerationRunResult = {
   contextCitations: WorkflowContextCitation[];
   options?: TestDesignOptions;
   tokenUsage?: TokenUsage;
+  acceptanceCriteriaContract?: import("@/modules/test-case-design/acceptance-criteria-contract").AcceptanceCriteriaContract;
+  acceptanceCriteriaCoverage?: import("@/modules/test-case-design/acceptance-criteria-coverage").AcceptanceCriteriaCoverage;
+  correctionAttempts?: number;
 };
 
 export type ManualPromptDraft = {
   prompt: string;
   promptVersion: string;
+  draftToken?: string;
   warnings?: string[];
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   options?: TestDesignOptions;

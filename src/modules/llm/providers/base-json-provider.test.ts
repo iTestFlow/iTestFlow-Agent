@@ -7,6 +7,8 @@ vi.mock("../llm-request-log.service", () => ({
 
 import { AppErrorCode } from "@/modules/shared/errors/app-error";
 import { TestCaseGenerationSummarySchema } from "@/modules/test-case-design/schemas/test-case.schema";
+import { writeLLMRequestLog } from "../llm-request-log.service";
+import { AppError } from "@/modules/shared/errors/app-error";
 import {
   BaseJsonProvider,
   resolveModelInputTokenLimit,
@@ -110,6 +112,34 @@ describe("BaseJsonProvider", () => {
     });
     expect(result.validatedOutput).toEqual({ value: 1 });
     expect(instance.receivedMaxTokens).toBe(16000);
+  });
+
+  it("runs caller validation before any success log", async () => {
+    vi.mocked(writeLLMRequestLog).mockClear();
+    const instance = provider();
+    await expect(instance.generateStructuredOutput({
+      schemaName: "Value",
+      schema: z.object({ value: z.number() }),
+      system: "s",
+      user: "u",
+      validateOutput: () => { throw new AppError({ code: AppErrorCode.AcceptanceCriteriaCoverage, message: "Missing AC-001", userMessage: "Missing AC-001" }); },
+    })).rejects.toMatchObject({ code: AppErrorCode.AcceptanceCriteriaCoverage });
+    expect(writeLLMRequestLog).toHaveBeenCalledWith(expect.objectContaining({ status: "Failed" }));
+    expect(writeLLMRequestLog).toHaveBeenCalledWith(expect.objectContaining({ rawOutput: "", responseBody: undefined }));
+    expect(vi.mocked(writeLLMRequestLog).mock.calls.some(([entry]) => entry.status === "Success")).toBe(false);
+  });
+
+  it("keeps repair candidates out of persistent request logs", async () => {
+    vi.mocked(writeLLMRequestLog).mockClear();
+    const instance = provider();
+    await instance.generateStructuredOutput({
+      schemaName: "Value", schema: z.object({ value: z.number() }),
+      system: "s", user: "Rejected candidate: private JSON", redactRequestLog: true,
+    });
+    expect(writeLLMRequestLog).toHaveBeenCalledWith(expect.objectContaining({
+      status: "Success", userPrompt: "[REDACTED_REPAIR_PROMPT]", rawOutput: undefined,
+      requestBody: undefined, responseBody: undefined,
+    }));
   });
 
   it("trims text, reports usage, and accumulates complete usage", async () => {

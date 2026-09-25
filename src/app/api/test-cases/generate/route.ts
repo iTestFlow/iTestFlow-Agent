@@ -30,6 +30,7 @@ import {
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { resolveWorkspaceProviderId } from "@/modules/integrations/provider-registry";
 import { storyAttachmentInputErrorResponse } from "@/app/api/story-attachments/story-attachment-route-helpers";
+import { AcceptanceCriteriaError } from "@/modules/test-case-design/acceptance-criteria-contract";
 
 export const runtime = "nodejs";
 
@@ -107,6 +108,7 @@ export async function POST(request: Request) {
       options,
       extraInstructions: parsed.data.extraInstructions,
       preparedPromptDraft: prepared.promptDraft as ReturnType<typeof buildTestCaseGenerationPromptDraft>,
+      signal: request.signal,
     });
     const contextCitations = buildPreparedWorkflowContextCitations(prepared, result);
     updateWorkflowRun({
@@ -119,7 +121,7 @@ export async function POST(request: Request) {
         usedKnowledgeContext: contextCitations.length > 0,
         metadata: {
           testDesign: { categories: countTestCategories(result.validatedOutput.testCases) },
-          coverage: { score: result.validatedOutput.summary.coverageEstimate },
+          coverage: { score: result.validatedOutput.summary.coverageEstimate, acceptanceCriteria: { requiredCount: result.acceptanceCriteriaCoverage.requiredCount, coveredCount: result.acceptanceCriteriaCoverage.coveredCount, correctionAttempts: result.correctionAttempts } },
           contextUsed: result.validatedOutput.contextUsed,
         },
       },
@@ -139,6 +141,9 @@ export async function POST(request: Request) {
       model: result.model,
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
+      acceptanceCriteriaContract: result.acceptanceCriteriaContract,
+      acceptanceCriteriaCoverage: result.acceptanceCriteriaCoverage,
+      correctionAttempts: result.correctionAttempts,
       tokenUsage: provider.getTokenUsage(),
       warnings: [
         ...(result.warnings ?? []),
@@ -147,6 +152,10 @@ export async function POST(request: Request) {
       ],
     });
   } catch (error) {
+    if (error instanceof AcceptanceCriteriaError) {
+      if (trustedScope && analyticsRunId) failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error.message });
+      return NextResponse.json({ error: error.userMessage, code: error.code, details: error.details }, { status: error.status });
+    }
     if (error instanceof ContextReviewRequiredError) {
       if (trustedScope && analyticsRunId) failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error.message });
       return NextResponse.json(contextReviewRequiredResponseBody(error), { status: 409 });

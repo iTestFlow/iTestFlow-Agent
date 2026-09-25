@@ -92,6 +92,14 @@ export function statusForManualValidationError(error: unknown) {
 
 export function statusForCode(code: AppErrorCode) {
   switch (code) {
+    case AppErrorCode.AcceptanceCriteriaDraftStale:
+      return 409;
+    case AppErrorCode.AcceptanceCriteriaDraftInvalid:
+      return 403;
+    case AppErrorCode.AcceptanceCriteriaInvalidSource:
+    case AppErrorCode.AcceptanceCriteriaCoverage:
+    case AppErrorCode.AcceptanceCriteriaInputBudget:
+      return 422;
     case AppErrorCode.KnowledgeDraftConflict:
     case AppErrorCode.KnowledgeContractMismatch:
       return 409;

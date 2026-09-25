@@ -146,6 +146,7 @@ export abstract class BaseJsonProvider implements LLMProvider {
       }
 
       const validatedOutput = this.parseAndValidate(input, callResult.rawOutput, callResult.finishReason, callResult.tokenUsage);
+      input.validateOutput?.({ validatedOutput, rawOutput: callResult.rawOutput });
       // Parse succeeded but the model still stopped on a token limit: the JSON is valid yet may be
       // semantically cut short (e.g. fewer test cases than intended). Surface a non-blocking warning.
       const warnings = buildTruncationWarnings(callResult.finishReason, budget);
@@ -169,7 +170,8 @@ export abstract class BaseJsonProvider implements LLMProvider {
         durationMs,
       });
       const message = normalizedError instanceof Error ? normalizedError.message : "Unknown LLM request error.";
-      this.logRequest(input, callResult, "Failed", durationMs, message);
+      this.logRequest(input, normalizedError instanceof AppError && normalizedError.code === AppErrorCode.AcceptanceCriteriaCoverage && callResult
+        ? { ...callResult, rawOutput: "", responseBody: undefined } : callResult, "Failed", durationMs, message);
       throw normalizedError;
     }
   }
@@ -316,17 +318,18 @@ export abstract class BaseJsonProvider implements LLMProvider {
     validatedOutput?: z.infer<TSchema>,
   ) {
     try {
+      const loggedResult = input.redactRequestLog ? null : callResult;
       writeLLMRequestLog({
         ...input.metadata,
         provider: this.name,
         model: this.model,
         schemaName: input.schemaName,
         systemPrompt: input.system,
-        userPrompt: input.user,
-        requestBody: callResult?.requestBody,
-        responseBody: callResult?.responseBody,
-        rawOutput: callResult?.rawOutput,
-        validatedOutput,
+        userPrompt: input.redactRequestLog ? "[REDACTED_REPAIR_PROMPT]" : input.user,
+        requestBody: loggedResult?.requestBody,
+        responseBody: loggedResult?.responseBody,
+        rawOutput: loggedResult?.rawOutput,
+        validatedOutput: input.redactRequestLog ? undefined : validatedOutput,
         status,
         errorDetails,
         durationMs,
