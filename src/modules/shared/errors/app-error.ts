@@ -1,6 +1,11 @@
 import type { TokenUsage } from "@/modules/llm/llm-types";
 
 export enum AppErrorCode {
+  AcceptanceCriteriaInvalidSource = "acceptance_criteria_invalid_source",
+  AcceptanceCriteriaCoverage = "acceptance_criteria_coverage",
+  AcceptanceCriteriaInputBudget = "acceptance_criteria_input_budget",
+  AcceptanceCriteriaDraftStale = "acceptance_criteria_draft_stale",
+  AcceptanceCriteriaDraftInvalid = "acceptance_criteria_draft_invalid",
   TokenLimit = "token_limit",
   InvalidJson = "invalid_json",
   SchemaValidation = "schema_validation",

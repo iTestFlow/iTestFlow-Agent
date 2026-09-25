@@ -21,6 +21,8 @@ import {
   completeManualTestCaseGeneration,
   generateTestCases,
 } from "./application/test-case-generation.service";
+import { buildAcceptanceCriteriaContract } from "./acceptance-criteria-contract";
+import { writeAuditLog } from "@/modules/audit/audit.service";
 
 const validCase = {
   id: "TC-1",
@@ -29,6 +31,7 @@ const validCase = {
   priority: "2",
   type: "Integration / API",
   category: "Positive",
+  relatedAcceptanceCriteria: ["AC-001"],
   preconditions: "Cart has an item",
   steps: [
     { stepNumber: 1, action: "Preconditions: cart is ready", expectedResult: "Anything" },
@@ -104,6 +107,7 @@ describe("test design options and schema", () => {
     expect(provider.generateStructuredOutput).toHaveBeenCalledWith(
       expect.objectContaining({
         schemaName: "TestCaseGenerationOutput",
+        user: expect.stringContaining("AC-001: Given a cart, when checkout succeeds, then show confirmation."),
         metadata: expect.objectContaining({ targetWorkItemId: "101" }),
       }),
     );
@@ -113,6 +117,7 @@ describe("test design options and schema", () => {
       actor: "qa",
       rawOutput: JSON.stringify(generated),
       targetWorkItemId: "101",
+      acceptanceCriteriaContract: buildAcceptanceCriteriaContract(requirement()),
     })).toMatchObject({
       provider: "external",
       validatedOutput: generated,
@@ -155,6 +160,66 @@ describe("test design options and schema", () => {
       includedStoryAttachmentTextIds: ["attachment-payment-spec"],
       omittedStoryAttachmentTextIds: [],
     });
+  });
+
+  it("repairs one incomplete automatic result and accepts only the corrected full mapping", async () => {
+    const incomplete = {
+      testCases: [GeneratedTestCaseSchema.parse({ ...validCase, relatedAcceptanceCriteria: [] })],
+      summary: { totalCases: 1, byType: {}, byPriority: {}, coverageEstimate: 100 },
+      contextUsed: [],
+    };
+    const complete = { ...incomplete, testCases: [GeneratedTestCaseSchema.parse(validCase)] };
+    const provider = fakeLlmProvider();
+    let calls = 0;
+    provider.generateStructuredOutput = vi.fn(async (request) => {
+      const validatedOutput = calls++ === 0 ? incomplete : complete;
+      const rawOutput = JSON.stringify(validatedOutput);
+      request.validateOutput?.({ validatedOutput, rawOutput });
+      return { provider: "openai" as const, model: "test-model", rawOutput, validatedOutput };
+    }) as typeof provider.generateStructuredOutput;
+    const result = await generateTestCases({ scope: projectScope(), actor: "qa", provider, targetRequirement: requirement(), selectedContext: [], maxInputTokens: 128_000 });
+    expect(calls).toBe(2);
+    expect(result).toMatchObject({ correctionAttempts: 1, acceptanceCriteriaCoverage: { coveredCount: 1, requiredCount: 1 } });
+    expect(vi.mocked(provider.generateStructuredOutput).mock.calls[1]?.[0].user).toContain("Rejected candidate");
+  });
+
+  it("stops after one failed correction and records no success audit", async () => {
+    vi.mocked(writeAuditLog).mockClear();
+    const incomplete = {
+      testCases: [GeneratedTestCaseSchema.parse({ ...validCase, relatedAcceptanceCriteria: [] })],
+      summary: { totalCases: 1, byType: {}, byPriority: {}, coverageEstimate: 100 },
+      contextUsed: [],
+    };
+    const provider = fakeLlmProvider();
+    let calls = 0;
+    provider.generateStructuredOutput = vi.fn(async (request) => {
+      calls += 1;
+      const rawOutput = JSON.stringify(incomplete);
+      request.validateOutput?.({ validatedOutput: incomplete, rawOutput });
+      return { provider: "openai" as const, model: "test-model", rawOutput, validatedOutput: incomplete };
+    }) as typeof provider.generateStructuredOutput;
+    await expect(generateTestCases({ scope: projectScope(), actor: "qa", provider, targetRequirement: requirement(), selectedContext: [], maxInputTokens: 128_000 })).rejects.toMatchObject({ code: "acceptance_criteria_coverage" });
+    expect(calls).toBe(2);
+    expect(writeAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("rejects an undersized input budget before calling the model", async () => {
+    const provider = fakeLlmProvider();
+    await expect(generateTestCases({ scope: projectScope(), actor: "qa", provider, targetRequirement: requirement(), selectedContext: [], maxInputTokens: 1 }))
+      .rejects.toMatchObject({ code: "acceptance_criteria_input_budget" });
+    expect(provider.generateStructuredOutput).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized repair candidate without making a second call", async () => {
+    const provider = fakeLlmProvider();
+    const incomplete = {
+      testCases: [GeneratedTestCaseSchema.parse({ ...validCase, relatedAcceptanceCriteria: [] })],
+      summary: { totalCases: 1, byType: {}, byPriority: {}, coverageEstimate: 100 }, contextUsed: [],
+    };
+    provider.generateStructuredOutput = vi.fn(async () => ({ provider: "openai" as const, model: "test-model", rawOutput: "x".repeat(100_000), validatedOutput: incomplete })) as typeof provider.generateStructuredOutput;
+    await expect(generateTestCases({ scope: projectScope(), actor: "qa", provider, targetRequirement: requirement(), selectedContext: [], maxInputTokens: 16_000 }))
+      .rejects.toMatchObject({ code: "acceptance_criteria_input_budget" });
+    expect(provider.generateStructuredOutput).toHaveBeenCalledTimes(1);
   });
 
   describe("TestCaseGenerationOutputSchema direct validation", () => {

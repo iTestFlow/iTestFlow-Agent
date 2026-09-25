@@ -4,6 +4,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { TestCaseGenerationRunResult } from "@/components/workflow/test-intelligence-types";
 import { writeActiveProject } from "@/shared/lib/active-project";
+import { ApiError } from "@/components/workflow/api-error";
+import { AppErrorCode } from "@/modules/shared/errors/app-error";
 
 const mocks = vi.hoisted(() => ({
   postJson: vi.fn(),
@@ -179,6 +181,34 @@ it("sends selected story attachments with the generation request", async () => {
   ));
 });
 
+it("recalculates full and selected AC mappings and drops the validation badge after edits", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(session("azure-devops")));
+  const output = structuredClone(generated);
+  output.testCases[0].relatedAcceptanceCriteria = ["AC-001"];
+  output.testCases[1].relatedAcceptanceCriteria = ["AC-002"];
+  output.acceptanceCriteriaContract = { version: "1", sourceHash: "hash", criteria: [
+    { id: "AC-001", text: "Card payment succeeds" },
+    { id: "AC-002", text: "Order receipt appears" },
+  ] };
+  mocks.postJson.mockImplementation(async (url: string) => {
+    if (url === "/api/test-cases/generate") return output;
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  render(<TestCaseDesignClient />);
+  await generateCases();
+  const mapping = screen.getByRole("region", { name: "Acceptance criteria mapping" });
+  expect(mapping).toHaveTextContent("2 of 2 AC IDs mapped.");
+  expect(mapping).toHaveTextContent("Server validated");
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select TC-2" }));
+  expect(mapping).toHaveTextContent("Selected cases: 1 of 2 AC IDs mapped.");
+  fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+  fireEvent.change(screen.getByDisplayValue("Checkout TC-1"), { target: { value: "Edited checkout" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  expect(mapping).toHaveTextContent("Edited since validation");
+  fireEvent.click(screen.getByText("Show acceptance criteria and linked cases"));
+  expect(screen.getByRole("link", { name: "TC-1" })).toHaveAttribute("href", "#test-case-TC-1");
+});
+
 it("explains when copied manual prompts omit selected visual evidence", async () => {
   mocks.externalLlmEnabled = true;
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(session("azure-devops")));
@@ -202,4 +232,54 @@ it("explains when copied manual prompts omit selected visual evidence", async ()
   expect(await screen.findByText("Attachment context notice")).toBeInTheDocument();
   expect(screen.getByText(/Visual attachment content is not embedded in copied prompts/)).toBeInTheDocument();
   expect(screen.getByRole("textbox", { name: "External LLM prompt" })).toHaveValue("Create test cases from this requirement.");
+});
+
+it("keeps pasted manual output and offers a copyable correction prompt on missing ACs", async () => {
+  mocks.externalLlmEnabled = true;
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(session("azure-devops")));
+  mocks.postJson.mockImplementation(async (url: string) => {
+    if (url === "/api/test-cases/manual/draft") return { prompt: "Original prompt", promptVersion: "3.1.0", draftToken: "sealed-draft", contextCitations: [] };
+    if (url === "/api/test-cases/manual/submit") throw new ApiError("Missing AC-002", {
+      status: 422, code: AppErrorCode.AcceptanceCriteriaCoverage,
+      payload: { details: { coverage: { missingCriteria: [{ id: "AC-002", text: "Show a receipt" }], unknownReferences: [] } } },
+    });
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  render(<TestCaseDesignClient />);
+  fireEvent.click(screen.getByRole("button", { name: "Use External LLM" }));
+  fireEvent.change(screen.getByLabelText("Work Item ID"), { target: { value: "123" } });
+  fireEvent.click(screen.getByRole("button", { name: "Prepare Prompt" }));
+  await screen.findByRole("textbox", { name: "External LLM prompt" });
+  fireEvent.change(screen.getByRole("textbox", { name: "External LLM Response" }), { target: { value: '{"testCases":[]}' } });
+  fireEvent.click(screen.getByRole("button", { name: "Validate and Continue" }));
+  await waitFor(() => expect((screen.getByRole("textbox", { name: "External LLM prompt" }) as HTMLTextAreaElement).value).toContain("AC-002: Show a receipt"));
+  expect(screen.getByRole("textbox", { name: "External LLM Response" })).toHaveValue('{"testCases":[]}');
+  expect(screen.getByRole("button", { name: "Copy Prompt" })).toBeInTheDocument();
+});
+
+it("keeps pasted output while preparing a fresh prompt after a stale draft", async () => {
+  mocks.externalLlmEnabled = true;
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(session("azure-devops")));
+  let draftCount = 0;
+  mocks.postJson.mockImplementation(async (url: string) => {
+    if (url === "/api/test-cases/manual/draft") {
+      draftCount += 1;
+      return { prompt: draftCount === 1 ? "Original prompt" : "Fresh prompt", promptVersion: "3.1.0", draftToken: `sealed-${draftCount}`, contextCitations: [] };
+    }
+    if (url === "/api/test-cases/manual/submit") throw new ApiError("Story changed. Prepare a fresh prompt.", {
+      status: 409, code: AppErrorCode.AcceptanceCriteriaDraftStale,
+    });
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  render(<TestCaseDesignClient />);
+  fireEvent.click(screen.getByRole("button", { name: "Use External LLM" }));
+  fireEvent.change(screen.getByLabelText("Work Item ID"), { target: { value: "123" } });
+  fireEvent.click(screen.getByRole("button", { name: "Prepare Prompt" }));
+  await screen.findByRole("textbox", { name: "External LLM Response" });
+  fireEvent.change(screen.getByRole("textbox", { name: "External LLM Response" }), { target: { value: "My pasted response" } });
+  fireEvent.click(screen.getByRole("button", { name: "Validate and Continue" }));
+  await screen.findByText(/This draft can no longer be submitted/);
+  fireEvent.click(screen.getByRole("button", { name: "Prepare Prompt" }));
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "External LLM prompt" })).toHaveValue("Fresh prompt"));
+  expect(screen.getByRole("textbox", { name: "External LLM Response" })).toHaveValue("My pasted response");
 });

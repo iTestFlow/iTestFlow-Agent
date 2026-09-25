@@ -128,7 +128,7 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
 
   const beforeAttachmentSection = [
       renderCurrentProject(input.currentProject),
-      renderTargetWorkItem("User Story Under Test", input.targetRequirement),
+      renderTargetWorkItem("User Story Under Test", withoutRawAcceptanceCriteria(input.targetRequirement)),
       renderWorkItemCollection("Related Work Items", relatedWorkItems),
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
       renderTestDesignOptions(input.options ?? {}),
@@ -158,6 +158,11 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
       omittedTextAttachmentIds: attachmentSection.omittedTextAttachmentIds,
     }),
   };
+}
+
+function withoutRawAcceptanceCriteria(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return { ...value, acceptanceCriteria: undefined };
 }
 
 export function buildExistingTestCaseReviewMarkdownPrompt(input: MarkdownPromptInput & { linkedTestCases?: unknown[] }) {

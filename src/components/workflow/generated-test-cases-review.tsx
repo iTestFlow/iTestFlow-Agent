@@ -300,8 +300,8 @@ export function GeneratedTestCasesReview({
 
       <div className="space-y-3 bg-muted/20 p-4">
         {filteredCases.length ? filteredCases.map((testCase) => (
+          <div key={testCase.id} id={`test-case-${encodeURIComponent(testCase.id)}`} className="scroll-mt-4">
           <GeneratedTestCaseReviewCard
-            key={testCase.id}
             testCase={testCase}
             onChange={updateCase}
             selected={selectedSet.has(testCase.id)}
@@ -324,6 +324,7 @@ export function GeneratedTestCasesReview({
             allowDelete={allowDelete}
             onDelete={() => deleteCase(testCase.id)}
           />
+          </div>
         )) : (
           <div className="rounded-xl border border-dashed border-border bg-card p-8 text-center">
             <ListChecks className="mx-auto size-8 text-muted-foreground" />

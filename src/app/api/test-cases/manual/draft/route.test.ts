@@ -43,6 +43,9 @@ vi.mock("@/modules/workspace/workspace-settings.service", () => ({
 vi.mock("@/modules/test-case-design/application/test-case-generation.service", () => ({
   buildTestCaseGenerationPromptDraft: mocks.buildTestCaseGenerationPromptDraft,
 }));
+vi.mock("@/modules/test-case-design/manual-draft-token", () => ({
+  createManualDraftToken: vi.fn(() => "sealed-draft"),
+}));
 vi.mock("@/modules/story-attachments/story-attachment-workflow-context", () => ({
   loadSelectedStoryAttachmentWorkflowContext: mocks.loadSelectedStoryAttachmentWorkflowContext,
 }));

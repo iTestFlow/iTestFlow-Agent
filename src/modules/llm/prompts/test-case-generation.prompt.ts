@@ -89,7 +89,7 @@ If a useful scenario cannot be designed because required behavior is missing, am
 
 The current output contract does not support separate notes, assumptions, risks, or coverage gaps fields. Do not add unsupported fields. Generate only supported test cases and use existing fields naturally when grounded traceability or scope context is useful.
 
-If the supplied packet does not contain enough information to generate any valid test case, return the valid JSON structure required by the output contract with an empty test case list if the contract allows it.
+The selected story's Required Acceptance Criteria Contract is authoritative. If its wording is unclear, do not invent behavior; still map every supplied canonical ID to at least one grounded test case.
 
 If a behavior is not documented but there is a meaningful risk that unrelated behavior may be incorrectly inherited, create a scope or risk validation test case only when the supplied context provides enough information to verify that the unrelated behavior should not apply.
 
@@ -136,7 +136,7 @@ Use it only to improve the generated test cases.
 
 ## 2.2 Scenario Selection and Consolidation Rules
 
-Each acceptance criterion must be covered by at least one test case when enough information exists.
+Every canonical acceptance-criterion ID in the selected story's contract must appear in relatedAcceptanceCriteria of at least one test case. Do not omit an ID because a different coverage focus or count range was selected.
 
 A single test case may cover multiple related acceptance criteria if they belong to the same logical behavior, workflow, or user outcome.
 
@@ -353,7 +353,7 @@ If the requirement is too small to justify the minimum range, generate fewer tes
 
 If acceptance criteria exceed the selected range, combine related acceptance criteria into broader workflow or end-to-end test cases instead of creating excessive low-value cases.
 
-If the requirement is too complex to fit within the selected range, prioritize the highest-risk and highest-business-impact scenarios first.
+If complete AC mapping requires more cases than the selected range, exceed the range. Prioritize additional scenarios by risk after all required AC IDs are mapped.
 
 Do not treat target test case range options as coverage focus options.
 
@@ -386,7 +386,7 @@ If no Coverage Focus is provided, use default baseline coverage.
 
 If a specific Coverage Focus is selected, keep default baseline coverage as the foundation, then give higher priority to scenarios related to the selected focus.
 
-The selected Coverage Focus should influence which supported scenarios are prioritized when the selected Target Test Case Range cannot cover everything.
+The selected Coverage Focus should prioritize supplemental scenarios after every required AC ID is mapped.
 
 Do not treat the selected Coverage Focus as permission to ignore critical documented behavior outside that focus.
 
@@ -809,7 +809,7 @@ export function buildTestCaseGenerationSystemPrompt(options?: Partial<TestDesign
 
 export const testCaseGenerationPrompt: SystemPromptDefinition = {
   name: "test-case-generation",
-  version: "3.0.0",
+  version: "3.1.0",
   purpose: "Generate Azure DevOps-compatible, risk-based test cases from one requirement, related requirement work items, selected project context, extracted project knowledge, selected target test case range, and selected coverage focus.",
   system: buildTestCaseGenerationSystemPrompt({
     coverageFocusIds: allCoverageFocusIds,

@@ -132,6 +132,9 @@ describe("POST /api/test-cases/generate", () => {
         summary: { totalCases: 1, coverageEstimate: 91 },
         contextUsed: ["requirement-101"],
       },
+      acceptanceCriteriaContract: { version: "1", sourceHash: "hash", criteria: [{ id: "AC-001", text: "Checkout succeeds" }] },
+      acceptanceCriteriaCoverage: { requiredCount: 1, coveredCount: 1, missingCriteria: [], unknownReferences: [], casePositionsByCriterion: { "AC-001": [1] } },
+      correctionAttempts: 0,
       relevantProjectKnowledgeBase: null,
       warnings: ["One optional field was normalized."],
       includedStoryAttachmentTextIds: [],
@@ -176,7 +179,7 @@ describe("POST /api/test-cases/generate", () => {
         usedKnowledgeContext: true,
         metadata: {
           testDesign: { categories: { Positive: 1 } },
-          coverage: { score: 91 },
+          coverage: { score: 91, acceptanceCriteria: { requiredCount: 1, coveredCount: 1, correctionAttempts: 0 } },
           contextUsed: ["requirement-101"],
         },
       }),

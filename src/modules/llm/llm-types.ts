@@ -121,6 +121,9 @@ export type GenerateStructuredOutputInput<TSchema extends z.ZodTypeAny = z.ZodTy
   images?: readonly LLMImageInput[];
   schema: TSchema;
   schemaName: string;
+  validateOutput?: (output: { validatedOutput: z.infer<TSchema>; rawOutput: string }) => void;
+  /** Omit sensitive repair prompts and provider payloads from request logs. */
+  redactRequestLog?: boolean;
   maxTokens?: number;
   metadata?: LLMRequestLogMetadata;
   signal?: AbortSignal;

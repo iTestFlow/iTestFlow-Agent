@@ -54,6 +54,9 @@ import {
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 import { cn } from "@/lib/utils";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
+import { ApiError } from "@/components/workflow/api-error";
+import { AppErrorCode } from "@/modules/shared/errors/app-error";
+import { evaluateAcceptanceCriteriaCoverage } from "@/modules/test-case-design/acceptance-criteria-coverage";
 import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
 import { isContextReviewRefreshRequired } from "@/components/workflow/workflow-context-review-error";
 import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-citations";
@@ -140,6 +143,7 @@ export function TestCaseDesignClient() {
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
+  const [manualCorrectionPrompt, setManualCorrectionPrompt] = useState<string | null>(null);
   const manualOperationVersionRef = useRef(0);
   const [contextPreview, setContextPreview] = useState<ContextReviewPreview | null>(null);
   const [excludedSourceIds, setExcludedSourceIds] = useState<string[]>([]);
@@ -222,6 +226,10 @@ export function TestCaseDesignClient() {
     const selectedIds = new Set(selectedTestCaseIds);
     return testCases.filter((testCase) => selectedIds.has(testCase.id));
   }, [selectedTestCaseIds, testCases]);
+  const contract = state.data?.acceptanceCriteriaContract;
+  const allCaseCoverage = useMemo(() => contract ? evaluateAcceptanceCriteriaCoverage(contract, { testCases }) : null, [contract, testCases]);
+  const selectedCaseCoverage = useMemo(() => contract ? evaluateAcceptanceCriteriaCoverage(contract, { testCases: selectedTestCases }) : null, [contract, selectedTestCases]);
+  const editedSinceValidation = Boolean(state.data && JSON.stringify(testCases) !== JSON.stringify(state.data.testCases));
   const invalidSelectedCaseCount = useMemo(
     () => selectedTestCases.filter((testCase) => !validateGeneratedTestCase(testCase).valid).length,
     [selectedTestCases],
@@ -504,9 +512,13 @@ export function TestCaseDesignClient() {
     setState({ loading: false, error: null, data: null });
     setTestCases([]);
     setSelectedTestCaseIds([]);
-    setManualDraft({ loading: true, error: null, data: null });
+    const recoveryDraft = manualDraft.data && manualResponse.trim()
+      ? { ...manualDraft.data, draftToken: "" }
+      : null;
+    setManualDraft({ loading: true, error: null, data: recoveryDraft });
     setManualSubmitError(null);
-    setManualResponse("");
+    setManualCorrectionPrompt(null);
+    if (!recoveryDraft) setManualResponse("");
     scrollToNextStep(promptSectionRef);
     const data = await prep.start(async (signal) => {
       try {
@@ -533,12 +545,12 @@ export function TestCaseDesignClient() {
       scrollToNextStep(promptSectionRef);
     } else {
       if (manualOperationVersion !== manualOperationVersionRef.current) return;
-      setManualDraft({ loading: false, error: null, data: null });
+      setManualDraft({ loading: false, error: null, data: recoveryDraft });
     }
   }
 
   async function submitManualResponse() {
-    if (!externalLlmAvailability.enabled || !scope || !targetWorkItemId || !manualDraft.data || !manualResponse.trim()) return;
+    if (!externalLlmAvailability.enabled || !scope || !targetWorkItemId || !manualDraft.data?.draftToken || !manualResponse.trim()) return;
     const manualOperationVersion = manualOperationVersionRef.current;
     setManualSubmitLoading(true);
     setManualSubmitError(null);
@@ -547,6 +559,7 @@ export function TestCaseDesignClient() {
         scope,
         targetWorkItemId,
         rawOutput: manualResponse,
+        draftToken: manualDraft.data.draftToken,
         selectedContextIds: manualDraft.data.selectedContextIds ?? [],
         resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
         contextCitations: manualDraft.data.contextCitations,
@@ -555,10 +568,29 @@ export function TestCaseDesignClient() {
       });
       if (manualOperationVersion !== manualOperationVersionRef.current) return;
       applyGeneratedCases(data);
+      setManualCorrectionPrompt(null);
       scrollToNextStep(generatedCasesRef);
     } catch (error) {
       if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualSubmitError(caughtErrorMessage(error, "External LLM response validation failed."));
+      if (error instanceof ApiError && error.code === AppErrorCode.AcceptanceCriteriaCoverage) {
+        const details = (error.payload as { details?: { coverage?: { missingCriteria?: Array<{ id: string; text: string }>; unknownReferences?: Array<{ id: string; casePosition: number }> } } })?.details;
+        const missing = details?.coverage?.missingCriteria ?? [];
+        const unknown = details?.coverage?.unknownReferences ?? [];
+        setManualCorrectionPrompt([
+          manualDraft.data.prompt,
+          "# Correct the rejected test-case response",
+          `Missing criteria: ${missing.map((item) => `${item.id}: ${item.text}`).join("; ") || "none"}`,
+          `Unknown references: ${unknown.map((item) => `${item.id} in case ${item.casePosition}`).join("; ") || "none"}`,
+          "Return a complete replacement JSON response that maps all required AC IDs. Keep valid cases where possible.",
+          "Rejected response:",
+          manualResponse,
+        ].join("\n\n"));
+      }
+      if (error instanceof ApiError && (error.code === AppErrorCode.AcceptanceCriteriaDraftStale || error.code === AppErrorCode.AcceptanceCriteriaDraftInvalid)) {
+        setManualDraft((current) => current.data ? { ...current, data: { ...current.data, draftToken: "" } } : current);
+        setManualCorrectionPrompt(null);
+      }
     } finally {
       if (manualOperationVersion === manualOperationVersionRef.current) setManualSubmitLoading(false);
     }
@@ -713,6 +745,7 @@ export function TestCaseDesignClient() {
                 {manualSubmitError ? <Callout tone="error" role="alert">{manualSubmitError}</Callout> : null}
                 {manualDraft.data ? (
                   <>
+                    {!manualDraft.data.draftToken ? <Callout tone="warning" role="alert">This draft can no longer be submitted. Prepare a fresh prompt; your pasted response is still available below.</Callout> : null}
                     {manualDraft.data.warnings?.length ? (
                       <Callout tone="warning" role="alert" title="Attachment context notice">
                         <ul className="list-disc space-y-1 pl-5">
@@ -721,7 +754,7 @@ export function TestCaseDesignClient() {
                       </Callout>
                     ) : null}
                     <ManualLLMPanel
-                      prompt={manualDraft.data.prompt}
+                      prompt={manualCorrectionPrompt ?? manualDraft.data.prompt}
                       promptVersion={manualDraft.data.promptVersion}
                       contextCitations={manualDraft.data.contextCitations}
                       response={manualResponse}
@@ -784,6 +817,24 @@ export function TestCaseDesignClient() {
                   <AiGenerationCompletedMetrics elapsedSeconds={gen.elapsedSeconds} tokenUsage={gen.tokenUsage} warnings={gen.warnings} />
                 ) : null}
                 <WorkflowContextCitations citations={state.data.contextCitations ?? []} />
+                {contract && allCaseCoverage && selectedCaseCoverage ? (
+                  <section className="rounded-xl border border-border bg-card p-4" aria-label="Acceptance criteria mapping">
+                    <div className="font-semibold">{allCaseCoverage.coveredCount} of {allCaseCoverage.requiredCount} AC IDs mapped.</div>
+                    <div className="text-sm text-muted-foreground">{editedSinceValidation ? "Edited since validation" : "Server validated"} · Selected cases: {selectedCaseCoverage.coveredCount} of {selectedCaseCoverage.requiredCount} AC IDs mapped.</div>
+                    <details className="mt-3"><summary className="cursor-pointer">Show acceptance criteria and linked cases</summary>
+                      <ul className="mt-2 space-y-2">
+                        {contract.criteria.map((criterion) => <li key={criterion.id}>
+                          <strong>{criterion.id}</strong>: {criterion.text}
+                          <span className="block text-xs text-muted-foreground">Cases: {allCaseCoverage.casePositionsByCriterion[criterion.id]?.length
+                            ? allCaseCoverage.casePositionsByCriterion[criterion.id].map((position) => {
+                              const linked = testCases[position - 1];
+                              return linked ? <a key={`${criterion.id}-${position}`} href={`#test-case-${encodeURIComponent(linked.id)}`} className="mr-2 underline">{linked.id}</a> : null;
+                            }) : "none"}; selected: {selectedCaseCoverage.casePositionsByCriterion[criterion.id]?.join(", ") || "none"}</span>
+                        </li>)}
+                      </ul>
+                    </details>
+                  </section>
+                ) : <Callout tone="warning">Acceptance criteria coverage unverified for this older result.</Callout>}
                 <GeneratedTestCasesReview
                   testCases={testCases}
                   onChange={(nextCases) => {

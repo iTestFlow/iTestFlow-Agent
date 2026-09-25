@@ -55,6 +55,7 @@
     "next": "^15.5.0",
     "next-themes": "^0.4.6",
     "node-sql-parser": "^5.4.0",
+    "parse5": "^8.0.1",
     "pdfjs-dist": "^6.2.108",
     "pg": "^8.13.1",
     "radix-ui": "^1.4.3",

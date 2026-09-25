@@ -6,6 +6,7 @@ import {
   authErrorResponse,
   requireExternalLlmEnabled,
   requireWorkflowContext,
+  getUserAzureAdapter,
 } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
@@ -13,6 +14,10 @@ import { WorkflowContextCitationsSchema } from "@/modules/rag/workflow-context-c
 import { isAppError } from "@/modules/shared/errors/app-error";
 import { statusForManualValidationError, toErrorResponse } from "@/modules/shared/errors/error-response";
 import { integrationScopeHeaders, routeErrorResponse } from "@/modules/shared/errors/route-error-response";
+import { resolveWorkspaceProviderId } from "@/modules/integrations/provider-registry";
+import { AcceptanceCriteriaError, buildAcceptanceCriteriaContract } from "@/modules/test-case-design/acceptance-criteria-contract";
+import { verifyManualDraftContract, verifyManualDraftToken } from "@/modules/test-case-design/manual-draft-token";
+import { AppErrorCode } from "@/modules/shared/errors/app-error";
 import {
   failWorkflowRun,
   startWorkflowRun,
@@ -26,6 +31,7 @@ const RequestSchema = z.object({
   targetWorkItemId: z.string().min(1),
   selectedContextIds: z.array(z.string()).optional().default([]),
   rawOutput: z.string().min(1),
+  draftToken: z.string().min(1),
   resolvedContextUsed: z.unknown().optional(),
   contextCitations: WorkflowContextCitationsSchema,
   retrievalTopK: z.number().int().optional(),
@@ -34,7 +40,8 @@ const RequestSchema = z.object({
 export async function POST(request: Request) {
   const parsed = RequestSchema.safeParse(await request.json().catch(() => ({})));
   if (!parsed.success) {
-    return NextResponse.json({ error: "Paste the external LLM response before continuing." }, { status: 400 });
+    const missingResponse = parsed.error.issues.some((issue) => issue.path[0] === "rawOutput");
+    return NextResponse.json({ error: missingResponse ? "Paste the external LLM response before continuing." : "A prepared manual prompt and its draft token are required. Prepare a fresh prompt if this draft predates AC validation." }, { status: 400 });
   }
 
   let trustedScope: ProjectScope | undefined;
@@ -43,6 +50,25 @@ export async function POST(request: Request) {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     await requireExternalLlmEnabled(ctx);
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const adapter = await getUserAzureAdapter(ctx, trustedScope);
+    const verifiedDraft = verifyManualDraftToken(parsed.data.draftToken, {
+      userId: ctx.userId,
+      workspaceId: ctx.workspace.id,
+      projectId: trustedScope.projectId,
+      integrationProvider: resolveWorkspaceProviderId(ctx.workspace),
+      storyId: parsed.data.targetWorkItemId,
+    });
+    const story = await adapter.fetchWorkItemById({ projectId: trustedScope.azureProjectId, workItemId: parsed.data.targetWorkItemId });
+    let acceptanceCriteriaContract;
+    try {
+      acceptanceCriteriaContract = buildAcceptanceCriteriaContract(story);
+    } catch (error) {
+      if (error instanceof AcceptanceCriteriaError && error.code === AppErrorCode.AcceptanceCriteriaInvalidSource) {
+        throw new AcceptanceCriteriaError(AppErrorCode.AcceptanceCriteriaDraftStale, "The story's acceptance criteria changed since this manual prompt was prepared. Prepare a fresh prompt; your pasted response remains available to copy.");
+      }
+      throw error;
+    }
+    verifyManualDraftContract(verifiedDraft, acceptanceCriteriaContract);
     analyticsRunId = startWorkflowRun({
       scope: trustedScope,
       workflowType: "test_case_design",
@@ -54,6 +80,7 @@ export async function POST(request: Request) {
       actor: ctx.userId,
       rawOutput: parsed.data.rawOutput,
       targetWorkItemId: parsed.data.targetWorkItemId,
+      acceptanceCriteriaContract,
     });
     updateWorkflowRun({
       scope: trustedScope,
@@ -65,7 +92,7 @@ export async function POST(request: Request) {
         usedKnowledgeContext: parsed.data.contextCitations.length > 0,
         metadata: {
           testDesign: { categories: countTestCategories(result.validatedOutput.testCases) },
-          coverage: { score: result.validatedOutput.summary.coverageEstimate },
+          coverage: { score: result.validatedOutput.summary.coverageEstimate, acceptanceCriteria: { requiredCount: result.acceptanceCriteriaCoverage.requiredCount, coveredCount: result.acceptanceCriteriaCoverage.coveredCount, correctionAttempts: 0 } },
           contextUsed: result.validatedOutput.contextUsed,
         },
       },
@@ -82,8 +109,14 @@ export async function POST(request: Request) {
       model: result.model,
       rawOutput: result.rawOutput,
       ...result.validatedOutput,
+      acceptanceCriteriaContract: result.acceptanceCriteriaContract,
+      acceptanceCriteriaCoverage: result.acceptanceCriteriaCoverage,
     });
   } catch (error) {
+    if (error instanceof AcceptanceCriteriaError) {
+      if (trustedScope && analyticsRunId) failWorkflowRun({ scope: trustedScope, runId: analyticsRunId, error: error.message });
+      return NextResponse.json({ error: error.userMessage, code: error.code, details: error.details }, { status: error.status });
+    }
     const authResponse = authErrorResponse(error);
     if (authResponse) return authResponse;
     if (trustedScope && analyticsRunId) {
