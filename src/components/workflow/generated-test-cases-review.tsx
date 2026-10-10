@@ -123,7 +123,7 @@ export function GeneratedTestCasesReview({
       if (selectedOnly && !selectedSet.has(testCase.id)) return false;
       if (editedOnly && !editedSet.has(testCase.id)) return false;
       if (!query) return true;
-      return searchableTestCaseText(testCase).includes(query);
+      return searchableTestCaseText(testCase, testDesignMode).includes(query);
     });
   }, [editedOnly, editedSet, priorityFilter, search, selectedOnly, selectedSet, tagFilter, testCases, typeFilter, testDesignMode]);
 
@@ -973,7 +973,7 @@ function parseTags(value: string) {
   return [...new Set(value.split(",").map((tag) => tag.trim()).filter(Boolean))];
 }
 
-function searchableTestCaseText(testCase: GeneratedTestCase) {
+function searchableTestCaseText(testCase: GeneratedTestCase, includeBasis: boolean) {
   return [
     testCase.id,
     testCase.title,
@@ -982,9 +982,11 @@ function searchableTestCaseText(testCase: GeneratedTestCase) {
     testCase.testData,
     testCase.type,
     testCase.category,
-    testCase.basis ? testCaseBasisLabels[testCase.basis.kind] : "Source not recorded",
-    testCase.basis?.explanation,
-    ...(testCase.basis?.sourceReferences ?? []),
+    ...(includeBasis ? [
+      testCase.basis ? testCaseBasisLabels[testCase.basis.kind] : "Source not recorded",
+      testCase.basis?.explanation,
+      ...(testCase.basis?.sourceReferences ?? []),
+    ] : []),
     ...(testCase.tags ?? []),
     ...(testCase.relatedAcceptanceCriteria ?? []),
     ...(testCase.relatedBusinessRules ?? []),

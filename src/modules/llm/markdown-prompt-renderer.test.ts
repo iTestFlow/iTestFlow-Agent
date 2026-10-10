@@ -438,7 +438,7 @@ function largeKnowledgeBase(businessRuleCount: number): ProjectKnowledgeBase {
   };
 }
 
-function selectionFor(builder: typeof buildTestCaseGenerationMarkdownPrompt, options: {
+function selectionFor(builder: typeof buildTestCaseGenerationMarkdownPrompt | typeof buildRequirementAnalysisMarkdownPrompt, options: {
   projectKnowledgeBase: ProjectKnowledgeBase;
   maxInputTokens: number;
   rankedKnowledgeKeys?: Record<string, string[]>;
@@ -585,7 +585,7 @@ describe("compiled knowledge selection at corpus scale", () => {
 describe("Test Design actual source manifest", () => {
   it("uses only rendered work items and knowledge entries, never provenance links or focus values", () => {
     const input = { currentProject, targetRequirement, outputContract, selectedContext: [], projectKnowledgeBase: knowledgeBase(), maxInputTokens: 8000,
-      relatedWorkItemsFloor: 1, relatedWorkItems: Array.from({ length: 20 }, (_, index) => ({ id: `related-${index}`, title: "Related checkout", description: "context ".repeat(2000) })) };
+      relatedWorkItemsFloor: 1, relatedWorkItems: Array.from({ length: 20 }, (_, index) => ({ id: `related-${index}`, title: "Related checkout", description: "context ".repeat(300) })) };
     const result = buildTestCaseGenerationMarkdownPrompt(input);
     expect(result.includedSourceIds).toContain("WI:101");
     expect(result.includedSourceIds).toContain("WI:related-0");

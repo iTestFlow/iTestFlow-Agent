@@ -216,6 +216,7 @@ function BasisReview({ initialSelected = [supported.id], mode = "test-design" }:
 }
 
 describe("Test Design review basis", () => {
+  afterEach(cleanup);
   it("renders supported first without reordering stored cases and makes suggestion assumptions visible when collapsed", () => {
     render(<BasisReview />);
     expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(["Supported checkout", "Proposed keyboard path", "Legacy case"]);
@@ -266,5 +267,7 @@ describe("Test Design review basis", () => {
     expect(screen.queryByText("Proposed expected outcome")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: "Select all visible test cases" }));
     expect(JSON.parse(screen.getByTestId("selected-cases").textContent!)).toEqual([suggested.id, supported.id, legacy.id]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search generated test cases" }), { target: { value: "Source not recorded" } });
+    expect(screen.getByText("No test cases match the current filters.")).toBeInTheDocument();
   });
 });

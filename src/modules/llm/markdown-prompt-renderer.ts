@@ -7,8 +7,6 @@ import type { ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schem
 import type { LlmContextSource } from "@/modules/rag/project-context-store.service";
 import { EXTRA_INSTRUCTIONS_SOURCE_ID } from "@/modules/test-case-design/test-case-basis";
 import { sourceIdForWorkItem, sourceIdForProjectKnowledge, sourceIdForStoryAttachment } from "@/modules/rag/workflow-context-controls";
-import { EXTRA_INSTRUCTIONS_SOURCE_ID } from "@/modules/test-case-design/test-case-basis";
-import { sourceIdForWorkItem, sourceIdForProjectKnowledge, sourceIdForStoryAttachment } from "@/modules/rag/workflow-context-controls";
 import { renderExtraInstructionsSection } from "@/modules/llm/extra-instructions";
 
 type CurrentProjectPromptInput = {
@@ -136,9 +134,11 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
     visualCount: input.includeAttachmentVisuals ? attachment.visualCount : 0,
   }));
   const workItemSourceIds = [withoutRawAcceptanceCriteria(input.targetRequirement), ...relatedWorkItems, ...(input.selectedContext ?? [])]
-    .map(toPromptWorkItem)
-    .filter((item) => item.id && (item.title || item.description || item.acceptanceCriteria || item.content))
-    .map((item) => sourceIdForWorkItem(item.id!));
+    .flatMap((value) => {
+      const item = toPromptWorkItem(value);
+      const id = extractWorkItemId(value);
+      return id?.trim() && (item.title || item.description || item.acceptanceCriteria || item.content) ? [sourceIdForWorkItem(id)] : [];
+    });
   const knowledgeSourceIds = relevantKnowledge ? [
     ...relevantKnowledge.modules.map((item) => sourceIdForProjectKnowledge("module", item.id)),
     ...relevantKnowledge.businessRules.map((item) => sourceIdForProjectKnowledge("business_rule", item.id)),
@@ -149,9 +149,9 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
   ] : [];
   const beforeAttachmentSection = [
       renderCurrentProject(input.currentProject),
-      renderTargetWorkItem("User Story Under Test", withoutRawAcceptanceCriteria(input.targetRequirement)),
-      renderWorkItemCollection("Related Work Items", relatedWorkItems),
-      renderWorkItemCollection("Project Context", input.selectedContext ?? []),
+      renderTargetWorkItem("User Story Under Test", withoutRawAcceptanceCriteria(input.targetRequirement), true),
+      renderWorkItemCollection("Related Work Items", relatedWorkItems, true),
+      renderWorkItemCollection("Project Context", input.selectedContext ?? [], true),
       renderTestDesignOptions(input.options ?? {}),
       renderCoverageExpectations(),
       renderProjectKnowledgeAuthorityNotice(input.projectKnowledgeNotice),
@@ -248,7 +248,7 @@ export function extractWorkItemId(value: unknown) {
 
 /**
  * Floor per knowledge category, so every category is represented even on a small
- * model. These are minimums, not caps â€” the token budget decides how far past them to
+ * model. These are minimums, not caps — the token budget decides how far past them to
  * go. They were previously hard caps (6/14/6/14/6), which on a real 213-entry project
  * meant workflows saw 22% of the compiled knowledge regardless of the model's window:
  * 14 of 114 business rules reached test design, and business rules ARE the test
@@ -275,8 +275,8 @@ const KNOWLEDGE_BUDGET_SHARE = 0.35;
  *
  * Uniform round-robin is only defensible while everything fits. Once the corpus
  * outgrows the window it silently equalises categories that are not equally useful:
- * modelled on a 2,000-entry corpus, business rules â€” half the corpus and the single
- * most load-bearing category for test work â€” received about a fifth of the slots.
+ * modelled on a 2,000-entry corpus, business rules — half the corpus and the single
+ * most load-bearing category for test work — received about a fifth of the slots.
  *
  * The weights encode what each workflow actually reasons over:
  * - **Test design**: business rules and state transitions ARE the test
@@ -314,16 +314,16 @@ function renderCurrentProject(project: CurrentProjectPromptInput) {
   ].join("\n");
 }
 
-function renderTargetWorkItem(title: string, item: unknown) {
-  return [`# ${title}`, renderWorkItem(item, 2)].join("\n\n");
+function renderTargetWorkItem(title: string, item: unknown, includeSourceIds = false) {
+  return [`# ${title}`, renderWorkItem(item, 2, includeSourceIds)].join("\n\n");
 }
 
-function renderWorkItemCollection(title: string, items: unknown[]) {
+function renderWorkItemCollection(title: string, items: unknown[], includeSourceIds = false) {
   if (!items.length) {
     return [`# ${title}`, "No related items were supplied."].join("\n\n");
   }
 
-  return [`# ${title}`, ...items.map((item) => renderWorkItem(item, 2))].join("\n\n");
+  return [`# ${title}`, ...items.map((item) => renderWorkItem(item, 2, includeSourceIds))].join("\n\n");
 }
 
 function renderLinkedTestCaseCollection(title: string, items: unknown[]) {
@@ -334,10 +334,12 @@ function renderLinkedTestCaseCollection(title: string, items: unknown[]) {
   return [`# ${title}`, ...items.map((item) => renderLinkedTestCase(item, 2))].join("\n\n");
 }
 
-function renderWorkItem(value: unknown, headingLevel: number) {
+function renderWorkItem(value: unknown, headingLevel: number, includeSourceIds = false) {
   const item = toPromptWorkItem(value);
   const heading = `${"#".repeat(headingLevel)} ${item.id ? `#${item.id} - ` : ""}${item.title ?? "Untitled Work Item"}`;
   const lines = [heading];
+  const sourceId = extractWorkItemId(value);
+  if (includeSourceIds && sourceId?.trim()) lines.push(`- Source ID: ${sourceIdForWorkItem(sourceId)}`);
 
   const metadata = [
     item.workItemType ? `Type: ${item.workItemType}` : undefined,
@@ -919,7 +921,7 @@ function selectRelevantProjectKnowledge(input: {
     describe: (item: TItem) => string,
   ): TItem[] => rankKnowledgeItems(items, queryTerms, prioritySourceIds, describe);
 
-  // The semantic override is the eligible set for its category, in relevance order â€”
+  // The semantic override is the eligible set for its category, in relevance order —
   // not a reordering of everything. It arrives already cut at a relevance threshold, so
   // admitting the entries it left out would put back exactly the material the threshold
   // exists to remove: a category with nothing to say about this work item still has a
@@ -1087,7 +1089,7 @@ function rankKnowledgeItems<TItem extends { sourceWorkItemIds?: string[] }>(
     }))
     // Ranking orders; it must not exclude. Entries that share no term with the work
     // item used to be dropped here unless they were in the first three, which capped
-    // modules and dependencies at three on any model â€” a hard filter applied before the
+    // modules and dependencies at three on any model — a hard filter applied before the
     // token budget, and before semantic ranking could speak for an entry that keyword
     // overlap cannot see. Zero-scoring entries now sort last instead, so a small window
     // still never reaches them and a large one can.
