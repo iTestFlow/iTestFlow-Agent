@@ -58,7 +58,7 @@ const scope = {
 const generated: TestCaseGenerationRunResult = {
   testCases: ["TC-1", "TC-2"].map((id) => ({
     id, title: `Checkout ${id}`, description: "Checkout succeeds", priority: 1,
-    type: "functional", category: "Checkout", preconditions: "Customer has a cart",
+    type: "functional", category: "Checkout", basis: { kind: "requirement", explanation: "Story describes checkout.", sourceReferences: ["WI:123"] }, preconditions: "Customer has a cart",
     steps: [{ stepNumber: 1, action: "Submit payment", expectedResult: "Order created" }],
   })),
   summary: { totalCases: 2, byType: { functional: 2 }, byPriority: { "1": 2 }, coverageEstimate: 100 },
@@ -198,7 +198,7 @@ it("recalculates full and selected AC mappings and drops the validation badge af
   await generateCases();
   const mapping = screen.getByRole("region", { name: "Acceptance criteria mapping" });
   expect(mapping).toHaveTextContent("2 of 2 AC IDs mapped.");
-  expect(mapping).toHaveTextContent("Server validated");
+  expect(mapping).toHaveTextContent("Source IDs and structure checked");
   fireEvent.click(screen.getByRole("checkbox", { name: "Select TC-2" }));
   expect(mapping).toHaveTextContent("Selected cases: 1 of 2 AC IDs mapped.");
   fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
@@ -238,7 +238,7 @@ it("keeps pasted manual output and offers a copyable correction prompt on missin
   mocks.externalLlmEnabled = true;
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(session("azure-devops")));
   mocks.postJson.mockImplementation(async (url: string) => {
-    if (url === "/api/test-cases/manual/draft") return { prompt: "Original prompt", promptVersion: "3.1.0", draftToken: "sealed-draft", contextCitations: [] };
+    if (url === "/api/test-cases/manual/draft") return { prompt: "Original prompt", promptVersion: "4.0.0", draftToken: "sealed-draft", sourceManifest: ["WI:123", "AC-001"], contextCitations: [] };
     if (url === "/api/test-cases/manual/submit") throw new ApiError("Missing AC-002", {
       status: 422, code: AppErrorCode.AcceptanceCriteriaCoverage,
       payload: { details: { coverage: { missingCriteria: [{ id: "AC-002", text: "Show a receipt" }], unknownReferences: [] } } },
@@ -255,6 +255,7 @@ it("keeps pasted manual output and offers a copyable correction prompt on missin
   await waitFor(() => expect((screen.getByRole("textbox", { name: "External LLM prompt" }) as HTMLTextAreaElement).value).toContain("AC-002: Show a receipt"));
   expect(screen.getByRole("textbox", { name: "External LLM Response" })).toHaveValue('{"testCases":[]}');
   expect(screen.getByRole("button", { name: "Copy Prompt" })).toBeInTheDocument();
+  expect(mocks.postJson).toHaveBeenCalledWith("/api/test-cases/manual/submit", expect.objectContaining({ sourceManifest: ["WI:123", "AC-001"] }));
 });
 
 it("keeps pasted output while preparing a fresh prompt after a stale draft", async () => {
@@ -282,4 +283,59 @@ it("keeps pasted output while preparing a fresh prompt after a stale draft", asy
   fireEvent.click(screen.getByRole("button", { name: "Prepare Prompt" }));
   await waitFor(() => expect(screen.getByRole("textbox", { name: "External LLM prompt" })).toHaveValue("Fresh prompt"));
   expect(screen.getByRole("textbox", { name: "External LLM Response" })).toHaveValue("My pasted response");
+});
+
+
+it("reviews a mixed generated list, edits and selects one suggestion, and publishes only selected cases with origin metadata", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(session("jira-cloud")));
+  const output = structuredClone(generated);
+  const clipboard = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboard } });
+  const optional = { ...output.testCases[0], id: "TC-OPTIONAL", title: "Keyboard navigation (suggested)", type: "accessibility", relatedAcceptanceCriteria: [],
+    basis: { kind: "suggested" as const, explanation: "Checkout has controls; assume visible focus follows reading order.", sourceReferences: ["WI:123"] } };
+  output.testCases.unshift(optional);
+  output.testCases[1].relatedAcceptanceCriteria = ["AC-001"];
+  output.acceptanceCriteriaContract = { version: "1", sourceHash: "hash", criteria: [{ id: "AC-001", text: "Order confirmation" }] };
+  mocks.postJson.mockImplementation(async (url: string) => {
+    if (url === "/api/test-cases/generate") return output;
+    if (url === "/api/publish/test-cases") return { suiteMode: "none", results: [{ localId: "TC-OPTIONAL", azureTestCaseId: "QA-1", success: true }] };
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  render(<TestCaseDesignClient />);
+  await generateCases();
+  expect(screen.getByRole("checkbox", { name: "Select TC-1" })).toHaveAttribute("aria-checked", "true");
+  expect(screen.getByRole("checkbox", { name: "Select TC-OPTIONAL" })).toHaveAttribute("aria-checked", "false");
+  expect(screen.getByRole("heading", { name: "Keyboard navigation" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Keyboard navigation (suggested)" })).not.toBeInTheDocument();
+  expect(screen.getByText(/Source IDs and structure checked/)).toBeInTheDocument();
+  fireEvent.click(screen.getAllByRole("button", { name: "Copy JSON" })[2]);
+  await waitFor(() => expect(clipboard).toHaveBeenCalled());
+  expect(JSON.parse(clipboard.mock.calls[0][0])).toMatchObject({ title: "Keyboard navigation", basis: optional.basis });
+  expect(screen.getAllByRole("heading", { level: 3 }).findIndex((item) => item.textContent === "Checkout TC-1"))
+    .toBeLessThan(screen.getAllByRole("heading", { level: 3 }).findIndex((item) => item.textContent === "Keyboard navigation"));
+  fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[2]);
+  fireEvent.change(screen.getByDisplayValue("Keyboard navigation"), { target: { value: "Edited optional keyboard path" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select TC-OPTIONAL" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select TC-2" }));
+  fireEvent.click(screen.getByText("Show acceptance criteria and linked cases"));
+  expect(screen.getByRole("link", { name: "TC-1" })).toHaveAttribute("href", "#test-case-TC-1");
+  expect(screen.getByRole("region", { name: "Acceptance criteria mapping" })).toHaveTextContent("Selected cases: 1 of 1 AC IDs mapped.");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Publish 2" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Publish 2" }));
+  fireEvent.click(screen.getByRole("button", { name: "Publish cases" }));
+  await waitFor(() => expect(mocks.postJson).toHaveBeenCalledWith("/api/publish/test-cases", expect.objectContaining({
+    testCases: [expect.objectContaining({ id: "TC-OPTIONAL", title: "Edited optional keyboard path", basis: optional.basis }), expect.objectContaining({ id: "TC-1" })],
+  })));
+});
+
+it("leaves source-not-recorded legacy results unchecked", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(session("jira-cloud")));
+  const legacy = structuredClone(generated);
+  legacy.testCases.forEach((testCase) => { delete testCase.basis; });
+  mocks.postJson.mockResolvedValue(legacy);
+  render(<TestCaseDesignClient />);
+  await generateCases();
+  expect(screen.getByRole("checkbox", { name: "Select TC-1" })).toHaveAttribute("aria-checked", "false");
+  expect(screen.getByRole("checkbox", { name: "Select all supported visible" })).toBeDisabled();
 });

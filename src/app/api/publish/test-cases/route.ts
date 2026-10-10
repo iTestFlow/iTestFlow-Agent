@@ -1,3 +1,4 @@
+import { TestCaseBasisSchema, withSuggestionOrigin } from "@/modules/test-case-design/test-case-basis";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
@@ -24,6 +25,7 @@ const FinalApprovedTestCaseSchema = z.object({
   targetUserStoryId: z.string().min(1),
   title: z.string().min(1),
   description: z.string().optional(),
+  basis: TestCaseBasisSchema.optional(),
   preconditions: z.string().optional(),
   steps: z.array(z.object({ action: z.string().min(1), expectedResult: z.string().min(1) })).min(1),
   testData: z.string().optional(),
@@ -94,10 +96,11 @@ export async function POST(request: Request) {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     jiraWorkspace = ctx.workspace.providerId === "jira-cloud";
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    const testCases = parsed.data.testCases.map(withSuggestionOrigin);
     const result = jiraWorkspace
       ? await publishConfiguredJiraTestCases({
           workspaceId: ctx.workspace.id, projectId: trustedScope.projectId,
-          actorUserId: ctx.userId, testCases: parsed.data.testCases,
+          actorUserId: ctx.userId, testCases,
         })
       : await publishApprovedTestCases(await getUserAzureAdapter(ctx, trustedScope), trustedScope, {
           actor: ctx.userId,
@@ -106,7 +109,7 @@ export async function POST(request: Request) {
           testSuiteId: parsed.data.testSuiteId,
           parentSuiteId: parsed.data.parentSuiteId,
           suiteMode: parsed.data.suiteMode,
-          testCases: parsed.data.testCases,
+          testCases,
         });
     const successCount = result.results.filter((item) => item.success).length;
     if (parsed.data.analyticsRunId) {

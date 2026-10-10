@@ -1,9 +1,27 @@
 import { createHash } from "node:crypto";
+import { withSuggestionOrigin } from "@/modules/test-case-design/test-case-basis";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PlainJiraArtifactBackend } from "./plain-jira-artifact-backend";
 
 describe("PlainJiraArtifactBackend", () => {
   beforeEach(() => vi.unstubAllGlobals());
+
+  const suggestedCase = () => withSuggestionOrigin({ localId: "case-1", targetUserStoryId: "QA-7", title: "Keyboard path", description: "Review keyboard path", steps: [{ action: "Tab through checkout", expectedResult: "Focus follows reading order" }],
+    basis: { kind: "suggested" as const, explanation: "Assume logical focus order for checkout controls.", sourceReferences: ["WI:QA-7"] } });
+
+  it("preserves suggestion origin in the Plain Jira ADF description", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ id: "10007", key: "QA-7", fields: { project: { id: "10000", key: "QA" }, summary: "Story", issuetype: { name: "Story" } } }))
+      .mockResolvedValueOnce(json({ issues: [] })).mockResolvedValueOnce(json({ id: "10009", key: "QA-9" }))
+      .mockResolvedValueOnce(json({ comments: [], isLast: true })).mockResolvedValueOnce(json({ id: "1" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const testCase = suggestedCase();
+    await plainBackend().createTestCase({ projectId: "10000", testCase });
+    const body = JSON.parse(String(fetchMock.mock.calls[2][1]?.body));
+    expect(JSON.stringify(body.fields.description)).toContain("Suggested coverage — proposed assumption:");
+    expect(JSON.stringify(body.fields.description)).toContain(testCase.basis.explanation);
+    expect(JSON.stringify(body.fields.description)).toContain("Focus follows reading order");
+  });
 
   it("carries OAuth snapshots through artifact requests and final-401 invalidation", async () => {
     const getAccessToken = vi.fn()

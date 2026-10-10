@@ -74,6 +74,7 @@ export type GeneratedTestCase = {
   type: string;
   category: string;
   tags?: string[];
+  basis?: import("@/modules/test-case-design/test-case-basis").TestCaseBasis;
   relatedAcceptanceCriteria?: string[];
   relatedBusinessRules?: string[];
   relatedModules?: string[];
@@ -87,6 +88,8 @@ export type TestCaseSummary = {
   byType: Record<string, number>;
   byPriority: Record<string, number>;
   coverageEstimate: number;
+  supportedCases?: number;
+  suggestedCases?: number;
 };
 
 export type TestCaseGenerationRunResult = {
@@ -107,6 +110,8 @@ export type ManualPromptDraft = {
   prompt: string;
   promptVersion: string;
   draftToken?: string;
+  sourceManifest?: string[];
+  outputContractVersion?: string;
   warnings?: string[];
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   options?: TestDesignOptions;

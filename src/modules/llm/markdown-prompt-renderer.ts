@@ -5,6 +5,8 @@ import { estimateTokens, usableInputTokens } from "./token-estimate";
 import type { NormalizedTestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import type { ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema";
 import type { LlmContextSource } from "@/modules/rag/project-context-store.service";
+import { EXTRA_INSTRUCTIONS_SOURCE_ID } from "@/modules/test-case-design/test-case-basis";
+import { sourceIdForWorkItem, sourceIdForProjectKnowledge, sourceIdForStoryAttachment } from "@/modules/rag/workflow-context-controls";
 import { renderExtraInstructionsSection } from "@/modules/llm/extra-instructions";
 
 type CurrentProjectPromptInput = {
@@ -33,6 +35,7 @@ type MarkdownPromptInput = {
   projectKnowledgeBase?: unknown | null;
   projectKnowledgeNotice?: string | null;
   storyAttachments?: StoryAttachmentPromptContext[];
+  includeAttachmentVisuals?: boolean;
   extraInstructions?: string;
   outputContract: unknown;
   /** The caller's configured model window; sizes how much context is included. */
@@ -126,22 +129,41 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
     ].filter(Boolean) as string[],
   });
 
+  const generationAttachments = (input.storyAttachments ?? []).map((attachment) => ({
+    ...attachment,
+    visualCount: input.includeAttachmentVisuals ? attachment.visualCount : 0,
+  }));
+  const workItemSourceIds = [withoutRawAcceptanceCriteria(input.targetRequirement), ...relatedWorkItems, ...(input.selectedContext ?? [])]
+    .flatMap((value) => {
+      const item = toPromptWorkItem(value);
+      const id = extractWorkItemId(value);
+      return id?.trim() && (item.title || item.description || item.acceptanceCriteria || item.content) ? [sourceIdForWorkItem(id)] : [];
+    });
+  const knowledgeSourceIds = relevantKnowledge ? [
+    ...relevantKnowledge.modules.map((item) => sourceIdForProjectKnowledge("module", item.id)),
+    ...relevantKnowledge.businessRules.map((item) => sourceIdForProjectKnowledge("business_rule", item.id)),
+    ...relevantKnowledge.stateTransitions.map((item) => sourceIdForProjectKnowledge("state_transition", item.id)),
+    ...relevantKnowledge.glossary.map((item) => sourceIdForProjectKnowledge("glossary", item.term)),
+    ...relevantKnowledge.crossDependencies.map((item) => sourceIdForProjectKnowledge("dependency", item.id)),
+    ...relevantKnowledge.chatInsights.map((item) => sourceIdForProjectKnowledge("chat_insight", item.id)),
+  ] : [];
   const beforeAttachmentSection = [
       renderCurrentProject(input.currentProject),
-      renderTargetWorkItem("User Story Under Test", withoutRawAcceptanceCriteria(input.targetRequirement)),
-      renderWorkItemCollection("Related Work Items", relatedWorkItems),
-      renderWorkItemCollection("Project Context", input.selectedContext ?? []),
+      renderTargetWorkItem("User Story Under Test", withoutRawAcceptanceCriteria(input.targetRequirement), true),
+      renderWorkItemCollection("Related Work Items", relatedWorkItems, true),
+      renderWorkItemCollection("Project Context", input.selectedContext ?? [], true),
       renderTestDesignOptions(input.options ?? {}),
       renderCoverageExpectations(),
       renderProjectKnowledgeAuthorityNotice(input.projectKnowledgeNotice),
-      renderProjectKnowledge(relevantKnowledge),
+      renderProjectKnowledge(relevantKnowledge, true),
   ].filter(Boolean);
   const afterAttachmentSection = [
       renderExtraInstructionsSection(input.extraInstructions),
+      input.extraInstructions?.trim() ? `Source ID: ${EXTRA_INSTRUCTIONS_SOURCE_ID} (explicit instructions only; focus choices are not evidence).` : undefined,
       renderOutputContract(input.outputContract),
   ].filter(Boolean);
   const attachmentSection = renderStoryAttachmentsWithinRemainingBudget({
-    attachments: input.storyAttachments ?? [],
+    attachments: generationAttachments,
     maxInputTokens: input.maxInputTokens,
     basePrompt: [...beforeAttachmentSection, ...afterAttachmentSection].join("\n\n"),
   });
@@ -150,11 +172,18 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
     prompt: [...beforeAttachmentSection, attachmentSection.markdown, ...afterAttachmentSection]
       .filter(Boolean)
       .join("\n\n"),
+    includedSourceIds: [...new Set([
+      ...workItemSourceIds,
+      ...knowledgeSourceIds,
+      ...attachmentSection.includedTextAttachmentIds.map(sourceIdForStoryAttachment),
+      ...generationAttachments.filter((attachment) => attachment.id.trim() && attachment.fileName.trim() && attachmentVisualCount(attachment) > 0).map((attachment) => sourceIdForStoryAttachment(attachment.id)),
+      ...(input.extraInstructions?.trim() ? [EXTRA_INSTRUCTIONS_SOURCE_ID] : []),
+    ])],
     relevantProjectKnowledgeBase: relevantKnowledge,
     includedStoryAttachmentTextIds: attachmentSection.includedTextAttachmentIds,
     omittedStoryAttachmentTextIds: attachmentSection.omittedTextAttachmentIds,
     storyAttachmentWarnings: buildStoryAttachmentBudgetWarnings({
-      attachments: input.storyAttachments ?? [],
+      attachments: generationAttachments,
       omittedTextAttachmentIds: attachmentSection.omittedTextAttachmentIds,
     }),
   };
@@ -285,16 +314,16 @@ function renderCurrentProject(project: CurrentProjectPromptInput) {
   ].join("\n");
 }
 
-function renderTargetWorkItem(title: string, item: unknown) {
-  return [`# ${title}`, renderWorkItem(item, 2)].join("\n\n");
+function renderTargetWorkItem(title: string, item: unknown, includeSourceIds = false) {
+  return [`# ${title}`, renderWorkItem(item, 2, includeSourceIds)].join("\n\n");
 }
 
-function renderWorkItemCollection(title: string, items: unknown[]) {
+function renderWorkItemCollection(title: string, items: unknown[], includeSourceIds = false) {
   if (!items.length) {
     return [`# ${title}`, "No related items were supplied."].join("\n\n");
   }
 
-  return [`# ${title}`, ...items.map((item) => renderWorkItem(item, 2))].join("\n\n");
+  return [`# ${title}`, ...items.map((item) => renderWorkItem(item, 2, includeSourceIds))].join("\n\n");
 }
 
 function renderLinkedTestCaseCollection(title: string, items: unknown[]) {
@@ -305,10 +334,12 @@ function renderLinkedTestCaseCollection(title: string, items: unknown[]) {
   return [`# ${title}`, ...items.map((item) => renderLinkedTestCase(item, 2))].join("\n\n");
 }
 
-function renderWorkItem(value: unknown, headingLevel: number) {
+function renderWorkItem(value: unknown, headingLevel: number, includeSourceIds = false) {
   const item = toPromptWorkItem(value);
   const heading = `${"#".repeat(headingLevel)} ${item.id ? `#${item.id} - ` : ""}${item.title ?? "Untitled Work Item"}`;
   const lines = [heading];
+  const sourceId = extractWorkItemId(value);
+  if (includeSourceIds && sourceId?.trim()) lines.push(`- Source ID: ${sourceIdForWorkItem(sourceId)}`);
 
   const metadata = [
     item.workItemType ? `Type: ${item.workItemType}` : undefined,
@@ -384,8 +415,9 @@ function isNormalizedTestDesignOptions(value: Record<string, unknown> | Normaliz
 function renderCoverageExpectations() {
   return [
     "# Coverage Expectations",
-    "- Each acceptance criterion should have at least one test case when enough information exists.",
-    "- Include positive, negative, edge, boundary, integration, workflow, role/permission, data validation, accessibility, and regression scenarios when supported by context.",
+    "- Map every canonical AC ID to at least one supported test case. Suggestions never count as AC mapping.",
+    "- Across every category, distinguish requirement, derived, project_rule, and suggested basis. Supported cases need supplied evidence; useful undocumented outcomes must be marked suggested with an explicit proposed assumption.",
+    "- Generate supported cases first, then optional suggestions within the same target count. No separate suggestion cap, minimum quota, or filler.",
     "- Use realistic test data based on the project domain.",
     "- Step 1 in every test case must start with Preconditions and use expectedResult exactly \"Preconditions are met\".",
     "- Avoid duplicate, trivial, overly broad, or non-executable test cases.",
@@ -458,7 +490,7 @@ function renderProjectKnowledgeAuthorityNotice(notice: string | null | undefined
   return notice ? ["# Knowledge Authority", notice].join("\n\n") : "";
 }
 
-function renderProjectKnowledge(knowledgeBase: ProjectKnowledgeBase | null) {
+function renderProjectKnowledge(knowledgeBase: ProjectKnowledgeBase | null, includeSourceIds = false) {
   if (!knowledgeBase) {
     return [
       "# Saved Project Knowledge",
@@ -468,12 +500,12 @@ function renderProjectKnowledge(knowledgeBase: ProjectKnowledgeBase | null) {
 
   return [
     "# Saved Project Knowledge",
-    renderModules(knowledgeBase),
-    renderBusinessRules(knowledgeBase),
-    renderStateTransitions(knowledgeBase),
-    renderGlossary(knowledgeBase),
-    renderDependencies(knowledgeBase),
-    renderChatInsights(knowledgeBase),
+    renderModules(knowledgeBase, includeSourceIds),
+    renderBusinessRules(knowledgeBase, includeSourceIds),
+    renderStateTransitions(knowledgeBase, includeSourceIds),
+    renderGlossary(knowledgeBase, includeSourceIds),
+    renderDependencies(knowledgeBase, includeSourceIds),
+    renderChatInsights(knowledgeBase, includeSourceIds),
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -637,12 +669,13 @@ function truncateTextToTokenBudget(value: string, tokenBudget: number) {
   return value.slice(0, lower).trimEnd();
 }
 
-function renderModules(knowledgeBase: ProjectKnowledgeBase) {
+function renderModules(knowledgeBase: ProjectKnowledgeBase, includeSourceIds = false) {
   if (!knowledgeBase.modules.length) return "## Modules\nNo modules were supplied.";
   return [
     "## Modules",
     ...knowledgeBase.modules.map((item) =>
       [
+        includeSourceIds ? `  - Source ID: ${sourceIdForProjectKnowledge("module", item.id)}` : undefined,
         `- ${item.id}: ${item.name}`,
         item.description ? `  - Description: ${cleanPromptText(item.description)}` : undefined,
         item.sourceWorkItemIds.length ? `  - Sources: ${item.sourceWorkItemIds.join(", ")}` : undefined,
@@ -654,12 +687,13 @@ function renderModules(knowledgeBase: ProjectKnowledgeBase) {
   ].join("\n");
 }
 
-function renderBusinessRules(knowledgeBase: ProjectKnowledgeBase) {
+function renderBusinessRules(knowledgeBase: ProjectKnowledgeBase, includeSourceIds = false) {
   if (!knowledgeBase.businessRules.length) return "## Business Rules\nNo business rules were supplied.";
   return [
     "## Business Rules",
     ...knowledgeBase.businessRules.map((item) =>
       [
+        includeSourceIds ? `  - Source ID: ${sourceIdForProjectKnowledge("business_rule", item.id)}` : undefined,
         `- ${item.id}: ${cleanPromptText(item.rule)}`,
         item.moduleName ? `  - Module: ${item.moduleName}` : undefined,
         item.sourceField ? `  - Source Field: ${item.sourceField}` : undefined,
@@ -672,12 +706,13 @@ function renderBusinessRules(knowledgeBase: ProjectKnowledgeBase) {
   ].join("\n");
 }
 
-function renderStateTransitions(knowledgeBase: ProjectKnowledgeBase) {
+function renderStateTransitions(knowledgeBase: ProjectKnowledgeBase, includeSourceIds = false) {
   if (!knowledgeBase.stateTransitions.length) return "## State Transitions\nNo state transitions were supplied.";
   return [
     "## State Transitions",
     ...knowledgeBase.stateTransitions.map((item) =>
       [
+        includeSourceIds ? `  - Source ID: ${sourceIdForProjectKnowledge("state_transition", item.id)}` : undefined,
         `- ${item.id}: ${item.workflowName}`,
         item.fromState || item.toState ? `  - Transition: ${item.fromState ?? "unspecified"} -> ${item.toState ?? "unspecified"}` : undefined,
         `  - Trigger/Condition: ${cleanPromptText(item.triggerOrCondition)}`,
@@ -691,12 +726,13 @@ function renderStateTransitions(knowledgeBase: ProjectKnowledgeBase) {
   ].join("\n");
 }
 
-function renderGlossary(knowledgeBase: ProjectKnowledgeBase) {
+function renderGlossary(knowledgeBase: ProjectKnowledgeBase, includeSourceIds = false) {
   if (!knowledgeBase.glossary.length) return "## Glossary\nNo glossary terms were supplied.";
   return [
     "## Glossary",
     ...knowledgeBase.glossary.map((item) =>
       [
+        includeSourceIds ? `  - Source ID: ${sourceIdForProjectKnowledge("glossary", item.term)}` : undefined,
         `- ${item.term} (${item.type}): ${cleanPromptText(item.definition)}`,
         item.sourceWorkItemIds.length ? `  - Sources: ${item.sourceWorkItemIds.join(", ")}` : undefined,
         item.evidence ? `  - Evidence: ${cleanPromptText(item.evidence)}` : undefined,
@@ -707,7 +743,7 @@ function renderGlossary(knowledgeBase: ProjectKnowledgeBase) {
   ].join("\n");
 }
 
-function renderChatInsights(knowledgeBase: ProjectKnowledgeBase) {
+function renderChatInsights(knowledgeBase: ProjectKnowledgeBase, includeSourceIds = false) {
   // Unlike the five compiler categories, omitted entirely rather than a "none supplied"
   // placeholder when empty: most projects will never integrate one, and a permanent
   // empty section for a feature that is off by default is noise, not information.
@@ -717,6 +753,7 @@ function renderChatInsights(knowledgeBase: ProjectKnowledgeBase) {
     "These are a human-approved synthesis, not an extracted-and-verified fact re-anchored to a source quote -- weigh them accordingly.",
     ...knowledgeBase.chatInsights.map((item) =>
       [
+        includeSourceIds ? `  - Source ID: ${sourceIdForProjectKnowledge("chat_insight", item.id)}` : undefined,
         `- ${cleanPromptText(item.content)}`,
         item.sourceWorkItemIds.length ? `  - Sources: ${item.sourceWorkItemIds.join(", ")}` : undefined,
         item.evidence ? `  - Evidence: ${cleanPromptText(item.evidence)}` : undefined,
@@ -727,12 +764,13 @@ function renderChatInsights(knowledgeBase: ProjectKnowledgeBase) {
   ].join("\n");
 }
 
-function renderDependencies(knowledgeBase: ProjectKnowledgeBase) {
+function renderDependencies(knowledgeBase: ProjectKnowledgeBase, includeSourceIds = false) {
   if (!knowledgeBase.crossDependencies.length) return "## Dependencies\nNo cross dependencies were supplied.";
   return [
     "## Dependencies",
     ...knowledgeBase.crossDependencies.map((item) =>
       [
+        includeSourceIds ? `  - Source ID: ${sourceIdForProjectKnowledge("dependency", item.id)}` : undefined,
         `- ${item.id}: ${item.sourceModule} -> ${item.targetModule}`,
         `  - Type: ${item.dependencyType}`,
         item.description ? `  - Description: ${cleanPromptText(item.description)}` : undefined,

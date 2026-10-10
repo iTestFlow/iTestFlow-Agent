@@ -313,4 +313,26 @@ describe("POST /api/publish/test-cases", () => {
       error: "Azure unavailable",
     });
   });
+  it.each(["azure-devops", "jira-cloud"])("adds suggestion origin once before %s fanout and leaves step assertions unchanged", async (providerId) => {
+    mocks.requireWorkflowContext.mockResolvedValue({ userId: "user-1", workspace: { id: "ws-1", providerId } });
+    const basis = { kind: "suggested", explanation: "Checkout controls exist; assume keyboard focus follows reading order.", sourceReferences: ["WI:42"] };
+    const candidate = testCaseInput({ title: "Successful checkout (suggested)", description: "Keyboard path", basis });
+    const send = async (description: string) => POST(publishRequest({ suiteMode: "none", testCases: [{ ...candidate, description }] }));
+    expect((await send("Keyboard path")).status).toBe(200);
+    const forwarded = providerId === "jira-cloud"
+      ? mocks.publishConfiguredJiraTestCases.mock.calls[0][0].testCases[0]
+      : mocks.publishApprovedTestCases.mock.calls[0][2].testCases[0];
+    const note = `Suggested coverage — proposed assumption: ${basis.explanation}`;
+    expect(forwarded.description).toBe(`Keyboard path\n\n${note}`);
+    expect(forwarded.title).toBe("Successful checkout");
+    expect(forwarded.steps).toEqual(candidate.steps);
+    expect(forwarded.basis).toEqual(basis);
+    expect((await send(forwarded.description)).status).toBe(200);
+    const retried = providerId === "jira-cloud"
+      ? mocks.publishConfiguredJiraTestCases.mock.calls[1][0].testCases[0]
+      : mocks.publishApprovedTestCases.mock.calls[1][2].testCases[0];
+    expect(retried.description).toBe(forwarded.description);
+    expect(retried.title).toBe(forwarded.title);
+  });
+
 });

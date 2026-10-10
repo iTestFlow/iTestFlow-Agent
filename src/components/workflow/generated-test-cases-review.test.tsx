@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { GeneratedTestCase } from "./test-intelligence-types";
@@ -198,6 +199,162 @@ describe("GeneratedTestCasesReview", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Search generated test cases" }), {
       target: { value: "not present" },
     });
+    expect(screen.getByText("No test cases match the current filters.")).toBeInTheDocument();
+  });
+});
+
+
+const supported = generatedCase({ id: "TC-SUPPORTED", title: "Supported checkout", basis: { kind: "requirement", explanation: "The story requires checkout.", sourceReferences: ["WI:101"] } });
+const suggested = generatedCase({ id: "TC-SUGGESTED", title: "Proposed keyboard path", type: "accessibility", basis: { kind: "suggested", explanation: "Keyboard users need checkout; assume logical focus order.", sourceReferences: ["WI:101"] } });
+const legacy = generatedCase({ id: "TC-LEGACY", title: "Legacy case" });
+
+function BasisReview({
+  initialCases = [suggested, supported, legacy],
+  initialSelected = [supported.id],
+  mode = "test-design",
+}: {
+  initialCases?: GeneratedTestCase[];
+  initialSelected?: string[];
+  mode?: "test-design" | "standard";
+}) {
+  const [cases, setCases] = useState(initialCases);
+  const [selected, setSelected] = useState(initialSelected);
+  return <><GeneratedTestCasesReview mode={mode} testCases={cases} selectedIds={selected} onChange={setCases} onSelectedIdsChange={setSelected} />
+    <output data-testid="selected-cases">{JSON.stringify(selected)}</output><output data-testid="case-json">{JSON.stringify(cases)}</output></>;
+}
+
+describe("Test Design review basis", () => {
+  afterEach(cleanup);
+  it("renders supported first without reordering stored cases and makes suggestion assumptions visible when collapsed", () => {
+    render(<BasisReview />);
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(["Supported checkout", "Proposed keyboard path", "Legacy case"]);
+    expect(screen.getByText("Keyboard users need checkout; assume logical focus order.")).toBeVisible();
+    expect(screen.getByText("Proposed expected outcome")).toBeVisible();
+    expect(screen.getByText("Source not recorded", { selector: "span" })).toBeVisible();
+    expect(screen.getByLabelText("Test case basis counts")).toHaveTextContent("Supported: 1Suggested: 1Selected: 1");
+    expect(JSON.parse(screen.getByTestId("case-json").textContent!)[0].id).toBe(suggested.id);
+  });
+
+  it("toggles only supported filtered cases and preserves independently selected suggestions", () => {
+    render(<BasisReview initialSelected={[suggested.id]} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all supported visible" }));
+    expect(JSON.parse(screen.getByTestId("selected-cases").textContent!)).toEqual([suggested.id, supported.id]);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all supported visible" }));
+    expect(JSON.parse(screen.getByTestId("selected-cases").textContent!)).toEqual([suggested.id]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search generated test cases" }), { target: { value: "logical focus order" } });
+    expect(screen.getByRole("heading", { name: suggested.title })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: supported.title })).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Select all supported visible" })).toBeDisabled();
+    fireEvent.change(screen.getByRole("textbox", { name: "Search generated test cases" }), { target: { value: "WI:101" } });
+    expect(screen.getByRole("heading", { name: supported.title })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: legacy.title })).not.toBeInTheDocument();
+  });
+
+  const derived = generatedCase({
+    id: "TC-DERIVED",
+    title: "Reject missing checkout payment",
+    basis: { kind: "derived", explanation: "Checkout requires a valid payment.", sourceReferences: ["WI:101"] },
+  });
+  const projectRule = generatedCase({
+    id: "TC-PROJECT-RULE",
+    title: "Keep checkout audit records",
+    basis: { kind: "project_rule", explanation: "The project requires an audit trail.", sourceReferences: ["KNOW:checkout-audit"] },
+  });
+  const casesWithBases = [suggested, supported, derived, projectRule, legacy];
+
+  it.each([
+    ["requirement", "Requirement", supported],
+    ["derived", "Derived", derived],
+    ["project_rule", "Project rule", projectRule],
+    ["suggested", "Suggested coverage", suggested],
+    ["unrecorded", "Source not recorded", legacy],
+  ] as const)("filters %s coverage without changing cases or selections", (value, label, expectedCase) => {
+    render(<BasisReview initialCases={casesWithBases} />);
+    const filter = screen.getByRole("combobox", { name: "Filter by coverage" });
+    expect(within(filter).getByRole("option", { name: label })).toHaveValue(value);
+    fireEvent.change(filter, { target: { value } });
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual([expectedCase.title]);
+    expect(JSON.parse(screen.getByTestId("case-json").textContent!)).toEqual(casesWithBases);
+    expect(JSON.parse(screen.getByTestId("selected-cases").textContent!)).toEqual([supported.id]);
+  });
+
+  it("combines suggested and unselected filters, updates after selection, and resets both filters", () => {
+    const selectedSuggestion = generatedCase({ ...suggested, id: "TC-SELECTED-SUGGESTION", title: "Selected keyboard suggestion" });
+    const initialCases = [suggested, supported, legacy, selectedSuggestion];
+    render(<BasisReview initialCases={initialCases} initialSelected={[supported.id, selectedSuggestion.id]} />);
+    const coverage = screen.getByRole("combobox", { name: "Filter by coverage" });
+    const selection = screen.getByRole("combobox", { name: "Filter by selection" });
+    expect(screen.queryByRole("checkbox", { name: "Selected only" })).not.toBeInTheDocument();
+    fireEvent.change(coverage, { target: { value: "suggested" } });
+    fireEvent.change(selection, { target: { value: "unselected" } });
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual([suggested.title]);
+    expect(screen.getByRole("checkbox", { name: "Select all supported visible" })).toBeDisabled();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter by type" }), { target: { value: "functional" } });
+    expect(screen.getByText("No test cases match the current filters.")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter by type" }), { target: { value: "all" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: `Select ${suggested.id}` }));
+    expect(screen.getByText("No test cases match the current filters.")).toBeInTheDocument();
+    expect(JSON.parse(screen.getByTestId("selected-cases").textContent!)).toEqual([supported.id, selectedSuggestion.id, suggested.id]);
+
+    fireEvent.change(selection, { target: { value: "selected" } });
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual([suggested.title, selectedSuggestion.title]);
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(coverage).toHaveValue("all");
+    expect(selection).toHaveValue("all");
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(initialCases.length);
+    expect(screen.queryByRole("button", { name: "Clear filters" })).not.toBeInTheDocument();
+    expect(JSON.parse(screen.getByTestId("case-json").textContent!)).toEqual(initialCases);
+    expect(JSON.parse(screen.getByTestId("selected-cases").textContent!)).toEqual([supported.id, selectedSuggestion.id, suggested.id]);
+  });
+
+  it("selects only unselected supported visible cases while keeping hidden suggestions selected", () => {
+    render(<BasisReview initialSelected={[suggested.id]} />);
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter by selection" }), { target: { value: "unselected" } });
+    expect(screen.queryByRole("heading", { name: suggested.title })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all supported visible" }));
+    expect(JSON.parse(screen.getByTestId("selected-cases").textContent!)).toEqual([suggested.id, supported.id]);
+    expect(screen.queryByRole("heading", { name: supported.title })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: legacy.title })).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "Select all supported visible" })).toBeDisabled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter by coverage" }), { target: { value: "unrecorded" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: `Select ${legacy.id}` }));
+    expect(screen.getByText("No test cases match the current filters.")).toBeInTheDocument();
+    expect(JSON.parse(screen.getByTestId("selected-cases").textContent!)).toEqual([suggested.id, supported.id, legacy.id]);
+    expect(JSON.parse(screen.getByTestId("case-json").textContent!)).toEqual([suggested, supported, legacy]);
+  });
+
+  it("preserves suggestion basis through edit and copy, selects new manual cases, and cleans up deletion", async () => {
+    const clipboard = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboard } });
+    render(<BasisReview initialSelected={[suggested.id]} />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[1]);
+    fireEvent.change(screen.getByDisplayValue(suggested.title), { target: { value: "Edited keyboard path" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(JSON.parse(screen.getByTestId("case-json").textContent!)[0]).toMatchObject({ title: "Edited keyboard path", basis: suggested.basis });
+    fireEvent.click(screen.getByRole("button", { name: "Copy selected JSON" }));
+    expect(JSON.parse(clipboard.mock.calls[0][0])[0].basis).toEqual(suggested.basis);
+    fireEvent.click(screen.getByRole("button", { name: "Add Test Case" }));
+    expect(JSON.parse(screen.getByTestId("selected-cases").textContent!)).toEqual([suggested.id, "TC-MANUAL-001"]);
+    fireEvent.click(screen.getByRole("button", { name: "Delete TC-SUGGESTED" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete test case" }));
+    expect(JSON.parse(screen.getByTestId("selected-cases").textContent!)).toEqual(["TC-MANUAL-001"]);
+    expect(screen.queryByRole("heading", { name: "Edited keyboard path" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the shared Gap Analysis mode order, labels, and select-all behavior", () => {
+    render(<BasisReview mode="standard" initialSelected={[]} />);
+    expect(screen.getAllByRole("heading", { level: 3 })[0]).toHaveTextContent(suggested.title);
+    expect(screen.queryByText("Suggested coverage")).not.toBeInTheDocument();
+    expect(screen.queryByText("Proposed expected outcome")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Filter by coverage" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Filter by selection" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Selected only" }));
+    expect(screen.getByText("No test cases match the current filters.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Selected only" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all visible test cases" }));
+    expect(JSON.parse(screen.getByTestId("selected-cases").textContent!)).toEqual([suggested.id, supported.id, legacy.id]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search generated test cases" }), { target: { value: "Source not recorded" } });
     expect(screen.getByText("No test cases match the current filters.")).toBeInTheDocument();
   });
 });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TestCaseBasisSchema } from "../test-case-basis";
 import { ContextUsedSchema } from "@/modules/llm/context-used";
 
 export const TestCasePrioritySchema = z.preprocess(
@@ -95,13 +96,16 @@ const generatedTestCaseBaseSchema = z.object({
   type: TestCaseTypeSchema,
   category: z.string().min(1),
   tags: z.array(z.string()).default([]),
+  basis: TestCaseBasisSchema.optional(),
   relatedAcceptanceCriteria: z.array(z.string()).default([]),
   relatedBusinessRules: z.array(z.string()).default([]),
   relatedModules: z.array(z.string()).default([]),
   preconditions: z.string().min(1),
   testData: z.string().optional().default(""),
   steps: z.array(TestCaseStepSchema).min(1),
-}).superRefine((testCase, ctx) => {
+});
+
+function validateFirstStep(testCase: z.infer<typeof generatedTestCaseBaseSchema>, ctx: z.RefinementCtx) {
   const firstStep = testCase.steps[0];
   if (firstStep?.stepNumber !== 1) {
     ctx.addIssue({
@@ -124,11 +128,11 @@ const generatedTestCaseBaseSchema = z.object({
       message: "The first step expectedResult must be Preconditions are met.",
     });
   }
-});
+}
 
 export const GeneratedTestCaseSchema = z.preprocess(
   normalizeFirstStepExpectedResult,
-  generatedTestCaseBaseSchema,
+  generatedTestCaseBaseSchema.superRefine(validateFirstStep),
 );
 
 export const TestCaseGenerationSummarySchema = z.object({
@@ -139,8 +143,14 @@ export const TestCaseGenerationSummarySchema = z.object({
 });
 
 export const TestCaseGenerationOutputSchema = z.object({
-  testCases: z.array(GeneratedTestCaseSchema),
-  summary: TestCaseGenerationSummarySchema,
+  testCases: z.array(z.preprocess(
+    normalizeFirstStepExpectedResult,
+    generatedTestCaseBaseSchema.extend({ basis: TestCaseBasisSchema }).superRefine(validateFirstStep),
+  )),
+  summary: TestCaseGenerationSummarySchema.extend({
+    supportedCases: z.number().int().min(0).optional(),
+    suggestedCases: z.number().int().min(0).optional(),
+  }),
   contextUsed: ContextUsedSchema,
 });
 

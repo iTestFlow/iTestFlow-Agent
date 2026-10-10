@@ -22,6 +22,7 @@ import { routeErrorResponse } from "@/modules/shared/errors/route-error-response
 import { resolveWorkspaceProviderId } from "@/modules/integrations/provider-registry";
 import { storyAttachmentInputErrorResponse } from "@/app/api/story-attachments/story-attachment-route-helpers";
 import { AcceptanceCriteriaError, buildAcceptanceCriteriaContract } from "@/modules/test-case-design/acceptance-criteria-contract";
+import { SourceManifestSchema } from "@/modules/test-case-design/generation-grounding";
 import { createManualDraftToken } from "@/modules/test-case-design/manual-draft-token";
 
 export const runtime = "nodejs";
@@ -86,7 +87,7 @@ export async function POST(request: Request) {
         projectId: trustedScope.projectId,
         integrationProvider: resolveWorkspaceProviderId(ctx.workspace),
         storyId: parsed.data.targetWorkItemId,
-      }, buildAcceptanceCriteriaContract(targetRequirement)),
+      }, buildAcceptanceCriteriaContract(targetRequirement), SourceManifestSchema.parse(prepared.promptDraft.sourceManifest)),
       targetWorkItemId: parsed.data.targetWorkItemId,
       selectedContextIds: parsed.data.selectedContextIds,
       attachmentIds: parsed.data.attachmentIds,

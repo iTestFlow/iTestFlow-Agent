@@ -90,6 +90,7 @@ describe("test-cases manual draft route", () => {
     mocks.rankProjectKnowledgeForWorkItem.mockResolvedValue({ businessRules: ["rule-1"] });
     mocks.getWorkspaceSettings.mockResolvedValue({ externalLlmEnabled: true, modelInputTokenLimitOverride: 64_000 });
     mocks.buildTestCaseGenerationPromptDraft.mockReturnValue({
+      sourceManifest: ["WI:123", "AC-001"],
       prompt: "mock prompt",
       relevantProjectKnowledgeBase: null,
       includedStoryAttachmentTextIds: [],
@@ -172,6 +173,7 @@ describe("test-cases manual draft route", () => {
       warnings: ["Attachment visual bytes are omitted from copied prompts."],
     });
     mocks.buildTestCaseGenerationPromptDraft.mockReturnValue({
+      sourceManifest: ["WI:123", "AC-001"],
       prompt: "mock prompt",
       relevantProjectKnowledgeBase: null,
       includedStoryAttachmentTextIds: ["attachment-1"],
@@ -227,6 +229,7 @@ describe("test-cases manual draft route", () => {
       warnings: [],
     });
     mocks.buildTestCaseGenerationPromptDraft.mockReturnValue({
+      sourceManifest: ["WI:123", "AC-001"],
       prompt: "mock prompt",
       relevantProjectKnowledgeBase: null,
       includedStoryAttachmentTextIds: [],

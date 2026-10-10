@@ -1,3 +1,4 @@
+import type { TestCaseBasis } from "./test-case-basis";
 import type { AcceptanceCriteriaContract } from "./acceptance-criteria-contract";
 
 export type AcceptanceCriteriaCoverage = {
@@ -10,12 +11,15 @@ export type AcceptanceCriteriaCoverage = {
 
 export function evaluateAcceptanceCriteriaCoverage(
   contract: AcceptanceCriteriaContract,
-  output: { testCases: Array<{ relatedAcceptanceCriteria?: string[] }> },
+  output: { testCases: Array<{ id?: string; basis?: TestCaseBasis; relatedAcceptanceCriteria?: string[] }> },
+  selectedIds?: readonly string[],
 ): AcceptanceCriteriaCoverage {
   const known = new Set(contract.criteria.map((criterion) => criterion.id));
   const mapped = new Map(contract.criteria.map((criterion) => [criterion.id, new Set<number>()]));
   const unknownReferences: AcceptanceCriteriaCoverage["unknownReferences"] = [];
+  const selected = selectedIds ? new Set(selectedIds) : undefined;
   output.testCases.forEach((testCase, index) => {
+    if (testCase.basis?.kind === "suggested" || (selected && !selected.has(testCase.id ?? ""))) return;
     for (const id of new Set(testCase.relatedAcceptanceCriteria ?? [])) {
       if (known.has(id)) mapped.get(id)?.add(index + 1);
       else unknownReferences.push({ id, casePosition: index + 1 });

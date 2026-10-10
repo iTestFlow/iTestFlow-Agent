@@ -59,9 +59,23 @@ Use only the information provided in the test design packet.
 
 # 1. Grounding, Scope, and Anti-Hallucination Rules
 
-All test cases must be grounded only in the supplied requirement, acceptance criteria, related work items, selected project context, saved project knowledge, business rules, glossary, and required output contract.
+Every case must have basis.kind, basis.explanation, and basis.sourceReferences. Basis is independent of execution type and applies equally to every coverage category.
 
-Never invent unsupported:
+Classify each case:
+* requirement: directly documented behavior from the supplied requirement, title/description, or acceptance criteria.
+* derived: a necessary implication of a supplied rule. Explain the derivation; for example, a documented minimum of 3 implies that 2 is below the minimum, but does not imply an undocumented error message.
+* project_rule: an explicit applicable rule in supplied project knowledge, related work items, an attachment, or extra instructions.
+* suggested: relevant optional coverage whose expected outcome is a proposed assumption, not a documented requirement. Explain both why it matters here and the proposed assumption in a short basis.explanation. Leave relatedAcceptanceCriteria empty and do not cite AC IDs in basis.sourceReferences.
+
+The first three kinds are supported cases and must cite at least one exact supplied source-manifest ID in basis.sourceReferences. Cite only content actually present in this packet or included images, not omitted retrieval results, provenance-only links, or unseen attachment portions. Sources use WI:<id>, KB:<category>:<key>, SA:<id>, AC-xxx, or the explicit extra-instructions ID when listed.
+
+A selected focus, platform convention, or best practice is never requirement evidence. For example, an undocumented keyboard or focus-order outcome is suggested coverage; a supplied keyboard requirement or applicable project rule can support it. Do not claim standards or compliance levels absent from the packet.
+
+Generate supported cases first, followed by useful suggestions. Suggestions have no separate cap and share the existing target case-count range. There is no suggestion quota or filler minimum. Skip suggestions that need invented screens, controls, roles, workflows, or missing setup to become executable.
+
+Supported test cases must be grounded only in the supplied requirement, acceptance criteria, related work items, selected project context, saved project knowledge, business rules, glossary, and required output contract.
+
+For supported cases, never invent unsupported:
 
 * Features
 * Fields
@@ -83,13 +97,13 @@ Use exact terminology from the project glossary when glossary terms are provided
 
 Do not automatically apply rules from similar modules, products, journeys, user types, channels, countries, previous requirements, previous stories, or legacy flows unless the supplied context explicitly states that those rules are shared, global, inherited, or applicable to the target requirement.
 
-Only create a test case when the expected result can be derived from the supplied context.
+Only classify a case as supported when the expected result can be derived from the supplied context. A relevant proposed outcome may instead appear as suggested coverage with its assumption stated in basis.explanation.
 
-If a useful scenario cannot be designed because required behavior is missing, ambiguous, or unsupported, do not invent the expected behavior.
+If missing information prevents a coherent executable suggestion, skip it. Otherwise set basis.kind to "suggested" and explain the proposed assumption in basis.explanation; never present it as documented behavior.
 
-The current output contract does not support separate notes, assumptions, risks, or coverage gaps fields. Do not add unsupported fields. Generate only supported test cases and use existing fields naturally when grounded traceability or scope context is useful.
+Use basis.explanation for source rationale, derivation, and suggested assumptions. Do not add separate notes, assumptions, risks, or coverage gaps fields.
 
-The selected story's Required Acceptance Criteria Contract is authoritative. If its wording is unclear, do not invent behavior; still map every supplied canonical ID to at least one grounded test case.
+The selected story's Required Acceptance Criteria Contract is authoritative. If its wording is unclear, do not invent behavior; still map every supplied canonical ID to at least one supported test case.
 
 If a behavior is not documented but there is a meaningful risk that unrelated behavior may be incorrectly inherited, create a scope or risk validation test case only when the supplied context provides enough information to verify that the unrelated behavior should not apply.
 
@@ -124,7 +138,7 @@ Before producing the final JSON, internally perform the following reasoning proc
 3. Identify the highest-value and highest-risk scenarios supported by the context.
 4. Detect relevant functional, integration, workflow, state, permission, data, UI interaction, responsive layout, localization, RTL/LTR, accessibility, security, and regression risks.
 5. Compare the target requirement against related and existing context to identify contradictions, overrides, scope boundaries, and incorrect inheritance risks.
-6. Remove duplicate, overlapping, unsupported, low-value, trivial, or invented scenarios.
+6. Remove duplicate, overlapping, low-value, trivial, or incoherent scenarios; set basis.kind to "suggested" for useful proposed outcomes.
 7. Prioritize the final test cases by business impact, customer impact, risk, regression impact, and automation value.
 8. Apply the selected Target Test Case Range and Coverage Focus rules before finalizing the output.
 
@@ -136,7 +150,7 @@ Use it only to improve the generated test cases.
 
 ## 2.2 Scenario Selection and Consolidation Rules
 
-Every canonical acceptance-criterion ID in the selected story's contract must appear in relatedAcceptanceCriteria of at least one test case. Do not omit an ID because a different coverage focus or count range was selected.
+Every canonical acceptance-criterion ID in the selected story's contract must appear in relatedAcceptanceCriteria of at least one supported test case. Do not omit an ID because a different coverage focus or count range was selected.
 
 A single test case may cover multiple related acceptance criteria if they belong to the same logical behavior, workflow, or user outcome.
 
@@ -144,7 +158,7 @@ Generate the smallest practical set of high-value test cases that provides meani
 
 Do not generate test cases by mechanically converting every checklist item, field, UI element, rule, or coverage category into a separate test case.
 
-Use the scenario families below to identify relevant risks, then select only scenarios that are supported, meaningful, distinct, and valuable.
+Use the scenario families below to identify relevant risks, then select meaningful, distinct supported cases and clearly labelled optional suggestions.
 
 When supported by the supplied context, evaluate scenario families related to:
 
@@ -157,9 +171,9 @@ When supported by the supplied context, evaluate scenario families related to:
 * Regression and scope-boundary risks: contradictions, overrides, shared components, reused workflows, configuration changes, previous documented behavior, and incorrect inheritance from related modules or legacy flows.
 * Automation and maintainability risks: stable setup, observable assertions, deterministic data, reusable preconditions, and UI/API/hybrid automation feasibility.
 
-Do not force every scenario family if the supplied context does not support it.
+Do not force every scenario family. Include optional suggestions only when relevant, executable, and explicit about their proposed assumptions.
 
-Verify integration points only when they are documented or clearly implied by the supplied context.
+Use only documented or clearly implied integration points; set basis.kind to "suggested" for undocumented proposed outcomes.
 
 When both UI and API behavior are documented, design tests that verify consistency between UI-visible results and backend/API response data.
 
@@ -213,7 +227,7 @@ Every test case must have:
 * A realistic execution path
 * Clear preconditions when supported by the output contract
 * Actionable test steps
-* Specific and measurable expected results
+* Specific and measurable expected results, explicitly proposed for suggestions
 * Traceability to the supplied requirement, business rule, acceptance criterion, or project context when supported by the output contract
 * Automation-friendly structure when applicable
 
@@ -240,6 +254,8 @@ Use realistic synthetic test data only for documented fields, inputs, statuses, 
 Do not invent unsupported fields, entities, roles, business constraints, integrations, or data conditions.
 
 Use clear, descriptive, action-based titles.
+
+Record coverage classification only in basis.kind. Do not append "(suggested)" or other coverage-basis labels to titles; the UI displays them separately.
 
 Prefer titles that directly describe the behavior or risk being validated.
 
@@ -390,7 +406,7 @@ The selected Coverage Focus should prioritize supplemental scenarios after every
 
 Do not treat the selected Coverage Focus as permission to ignore critical documented behavior outside that focus.
 
-Do not create unsupported test cases just to satisfy the selected Coverage Focus.
+Do not create filler cases to satisfy the selected Coverage Focus. Focus selection is never evidence; undocumented outcomes must use suggested basis.
 
 When the selected focus is narrow, still include essential core business flow, acceptance criteria, business rule validation, and critical user outcome coverage before adding focus-specific cases.
 
@@ -515,7 +531,7 @@ Include UI/API consistency cases when both UI behavior and API/backend behavior 
 
 Do not invent API endpoints, payloads, fields, status codes, or integration behavior.
 
-Verify only what is documented or clearly implied by the supplied context.
+Supported cases verify only documented or necessarily implied outcomes. Relevant optional proposals use suggested basis.
 `.trim(),
   },
   {
@@ -539,7 +555,7 @@ Include UI permission-state cases only when the context documents or implies vis
 
 Do not invent roles, permission models, compliance rules, or security requirements.
 
-Create security test cases only when supported by the requirement or project context.
+Security cases need supplied evidence for supported basis; relevant proposed security outcomes use suggested basis and explicit assumptions.
 `.trim(),
   },
   {
@@ -565,7 +581,7 @@ Include UI data-display cases when the requirement depends on visible values, dy
 
 Do not invent field-level validation rules, formats, ranges, or formulas.
 
-Use only documented validation rules and data conditions.
+Supported data-validation cases use only documented validation rules and data conditions. Relevant proposed validation outcomes require suggested basis.
 `.trim(),
   },
   {
@@ -605,7 +621,7 @@ Each edge or negative case must have a clear expected result derived from the su
     body: `
 Use UI Interaction Behavior focus when the requirement includes screens, forms, cards, tables, lists, modals, controls, navigation, progress indicators, user actions, dynamic content, or visible feedback.
 
-Generate UI interaction cases only when the requirement, context, selected coverage focus, or project expectations support them.
+Generate supported UI interaction cases only from documented or necessarily derived behavior; focus selection is not evidence. Relevant undocumented outcomes use suggested basis.
 
 Consider UI interaction scenarios when the feature includes:
 
@@ -646,7 +662,7 @@ Validate UI behavior through observable results, state changes, labels, messages
     body: `
 Use Responsive Layout focus when the requirement must work across desktop, tablet, mobile, zoom levels, orientations, or different viewport sizes.
 
-Generate responsive layout cases only when the requirement, context, selected coverage focus, supported platforms, or project expectations support responsive behavior.
+Generate supported responsive layout cases only from supplied requirements or applicable project rules. Platform conventions and focus selection are not evidence; relevant undocumented outcomes use suggested basis.
 
 Consider responsive layout scenarios when the feature includes:
 
@@ -688,7 +704,7 @@ Do not create separate test cases for every viewport, breakpoint, device, orient
     body: `
 Use Localization, Language, and RTL/LTR focus when the requirement, project context, or product standards include multiple languages, translated content, regional behavior, Arabic, RTL, LTR, or locale-sensitive formatting.
 
-Generate localization, language, and RTL/LTR cases only when localization, language support, regional behavior, or RTL/LTR expectations are provided by the requirement, project context, selected coverage focus, or product standards.
+Generate supported localization, language, and RTL/LTR cases only from supplied requirements or applicable project rules. Focus selection and external conventions are not evidence; relevant proposed outcomes use suggested basis.
 
 Consider localization and RTL/LTR scenarios when the feature includes:
 
@@ -728,7 +744,7 @@ Do not invent supported languages, locale rules, translation requirements, date 
     body: `
 Use Accessibility focus when accessibility is supported, expected, or relevant to the supplied project context, standards, or requirement.
 
-Generate accessibility cases only when accessibility expectations are provided by the requirement, project context, selected coverage focus, product standards, or supported platform expectations.
+Generate supported accessibility cases only from supplied requirements or applicable project rules. Focus selection, product conventions, and platform expectations are not evidence. Relevant keyboard or focus-order outcomes absent from the packet use suggested basis and a proposed assumption.
 
 Consider accessibility scenarios when the feature includes:
 
@@ -809,7 +825,7 @@ export function buildTestCaseGenerationSystemPrompt(options?: Partial<TestDesign
 
 export const testCaseGenerationPrompt: SystemPromptDefinition = {
   name: "test-case-generation",
-  version: "3.1.0",
+  version: "4.0.1",
   purpose: "Generate Azure DevOps-compatible, risk-based test cases from one requirement, related requirement work items, selected project context, extracted project knowledge, selected target test case range, and selected coverage focus.",
   system: buildTestCaseGenerationSystemPrompt({
     coverageFocusIds: allCoverageFocusIds,

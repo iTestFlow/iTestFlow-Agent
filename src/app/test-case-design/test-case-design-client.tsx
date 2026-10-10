@@ -56,6 +56,7 @@ import { cn } from "@/lib/utils";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 import { ApiError } from "@/components/workflow/api-error";
 import { AppErrorCode } from "@/modules/shared/errors/app-error";
+import { isSupportedTestCase, normalizeSuggestedTestCaseTitle } from "@/modules/test-case-design/test-case-basis";
 import { evaluateAcceptanceCriteriaCoverage } from "@/modules/test-case-design/acceptance-criteria-coverage";
 import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
 import { isContextReviewRefreshRequired } from "@/components/workflow/workflow-context-review-error";
@@ -152,7 +153,8 @@ export function TestCaseDesignClient() {
   const [contextPreviewError, setContextPreviewError] = useState<string | null>(null);
   const contextPreviewVersionRef = useRef(0);
   const contextPreviewAbortRef = useRef<AbortController | null>(null);
-  const [testCases, setTestCases] = useState<GeneratedTestCase[]>([]);
+  const [rawTestCases, setTestCases] = useState<GeneratedTestCase[]>([]);
+  const testCases = useMemo(() => rawTestCases.map(normalizeSuggestedTestCaseTitle), [rawTestCases]);
   const [selectedTestCaseIds, setSelectedTestCaseIds] = useState<string[]>([]);
   const [testDesignSettings, setTestDesignSettings] = useState<TestDesignOptions>(() => ({
     ...defaultTestDesignOptions,
@@ -228,16 +230,17 @@ export function TestCaseDesignClient() {
   }, [selectedTestCaseIds, testCases]);
   const contract = state.data?.acceptanceCriteriaContract;
   const allCaseCoverage = useMemo(() => contract ? evaluateAcceptanceCriteriaCoverage(contract, { testCases }) : null, [contract, testCases]);
-  const selectedCaseCoverage = useMemo(() => contract ? evaluateAcceptanceCriteriaCoverage(contract, { testCases: selectedTestCases }) : null, [contract, selectedTestCases]);
-  const editedSinceValidation = Boolean(state.data && JSON.stringify(testCases) !== JSON.stringify(state.data.testCases));
+  const selectedCaseCoverage = useMemo(() => contract ? evaluateAcceptanceCriteriaCoverage(contract, { testCases }, selectedTestCaseIds) : null, [contract, testCases, selectedTestCaseIds]);
+  const originalTestCases = useMemo(() => (state.data?.testCases ?? []).map(normalizeSuggestedTestCaseTitle), [state.data?.testCases]);
+  const editedSinceValidation = Boolean(state.data && JSON.stringify(testCases) !== JSON.stringify(originalTestCases));
   const invalidSelectedCaseCount = useMemo(
     () => selectedTestCases.filter((testCase) => !validateGeneratedTestCase(testCase).valid).length,
     [selectedTestCases],
   );
   const editedSelectedCaseCount = useMemo(() => {
-    const originalById = new Map((state.data?.testCases ?? []).map((testCase) => [testCase.id, testCase]));
+    const originalById = new Map(originalTestCases.map((testCase) => [testCase.id, testCase]));
     return selectedTestCases.filter((testCase) => JSON.stringify(testCase) !== JSON.stringify(originalById.get(testCase.id))).length;
-  }, [selectedTestCases, state.data?.testCases]);
+  }, [selectedTestCases, originalTestCases]);
 
   function changeTargetWorkItemId(value: string) {
     manualOperationVersionRef.current += 1;
@@ -463,7 +466,7 @@ export function TestCaseDesignClient() {
     setHasUnfinishedWork(data.testCases.length > 0);
     setState({ loading: false, error: null, data });
     setTestCases(data.testCases);
-    setSelectedTestCaseIds(data.testCases.map((testCase) => testCase.id));
+    setSelectedTestCaseIds(data.testCases.filter(isSupportedTestCase).map((testCase) => testCase.id));
   }
 
   async function generate() {
@@ -560,6 +563,7 @@ export function TestCaseDesignClient() {
         targetWorkItemId,
         rawOutput: manualResponse,
         draftToken: manualDraft.data.draftToken,
+        sourceManifest: manualDraft.data.sourceManifest,
         selectedContextIds: manualDraft.data.selectedContextIds ?? [],
         resolvedContextUsed: manualDraft.data.resolvedContextUsed ?? [],
         contextCitations: manualDraft.data.contextCitations,
@@ -573,16 +577,18 @@ export function TestCaseDesignClient() {
     } catch (error) {
       if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualSubmitError(caughtErrorMessage(error, "External LLM response validation failed."));
-      if (error instanceof ApiError && error.code === AppErrorCode.AcceptanceCriteriaCoverage) {
+      if (error instanceof ApiError && (error.code === AppErrorCode.AcceptanceCriteriaCoverage || error.code === AppErrorCode.SchemaValidation)) {
         const details = (error.payload as { details?: { coverage?: { missingCriteria?: Array<{ id: string; text: string }>; unknownReferences?: Array<{ id: string; casePosition: number }> } } })?.details;
         const missing = details?.coverage?.missingCriteria ?? [];
         const unknown = details?.coverage?.unknownReferences ?? [];
         setManualCorrectionPrompt([
           manualDraft.data.prompt,
           "# Correct the rejected test-case response",
+          `Validation error: ${error.message}`,
           `Missing criteria: ${missing.map((item) => `${item.id}: ${item.text}`).join("; ") || "none"}`,
           `Unknown references: ${unknown.map((item) => `${item.id} in case ${item.casePosition}`).join("; ") || "none"}`,
-          "Return a complete replacement JSON response that maps all required AC IDs. Keep valid cases where possible.",
+          "Return a complete replacement JSON response with valid basis and supported mappings for all required AC IDs. Keep valid cases where possible.",
+          `Basis and mapping errors: ${JSON.stringify((error.payload as { details?: unknown })?.details ?? {})}`,
           "Rejected response:",
           manualResponse,
         ].join("\n\n"));
@@ -820,7 +826,8 @@ export function TestCaseDesignClient() {
                 {contract && allCaseCoverage && selectedCaseCoverage ? (
                   <section className="rounded-xl border border-border bg-card p-4" aria-label="Acceptance criteria mapping">
                     <div className="font-semibold">{allCaseCoverage.coveredCount} of {allCaseCoverage.requiredCount} AC IDs mapped.</div>
-                    <div className="text-sm text-muted-foreground">{editedSinceValidation ? "Edited since validation" : "Server validated"} · Selected cases: {selectedCaseCoverage.coveredCount} of {selectedCaseCoverage.requiredCount} AC IDs mapped.</div>
+                    <div className="text-sm text-muted-foreground">{editedSinceValidation ? "Edited since validation" : "Source IDs and structure checked"} · Selected cases: {selectedCaseCoverage.coveredCount} of {selectedCaseCoverage.requiredCount} AC IDs mapped.</div>
+                    <p className="mt-1 text-xs text-muted-foreground">AC IDs mapped is traceability, not proof that the tests or expected outcomes are correct. Suggested coverage does not count.</p>
                     <details className="mt-3"><summary className="cursor-pointer">Show acceptance criteria and linked cases</summary>
                       <ul className="mt-2 space-y-2">
                         {contract.criteria.map((criterion) => <li key={criterion.id}>
@@ -829,13 +836,14 @@ export function TestCaseDesignClient() {
                             ? allCaseCoverage.casePositionsByCriterion[criterion.id].map((position) => {
                               const linked = testCases[position - 1];
                               return linked ? <a key={`${criterion.id}-${position}`} href={`#test-case-${encodeURIComponent(linked.id)}`} className="mr-2 underline">{linked.id}</a> : null;
-                            }) : "none"}; selected: {selectedCaseCoverage.casePositionsByCriterion[criterion.id]?.join(", ") || "none"}</span>
+                            }) : "none"}; selected: {selectedCaseCoverage.casePositionsByCriterion[criterion.id]?.map((position) => testCases[position - 1]?.id).filter(Boolean).join(", ") || "none"}</span>
                         </li>)}
                       </ul>
                     </details>
                   </section>
                 ) : <Callout tone="warning">Acceptance criteria coverage unverified for this older result.</Callout>}
                 <GeneratedTestCasesReview
+                  mode="test-design"
                   testCases={testCases}
                   onChange={(nextCases) => {
                     setHasUnfinishedWork(true);

@@ -120,7 +120,7 @@ export async function POST(request: Request) {
         itemsGenerated: result.validatedOutput.testCases.length,
         usedKnowledgeContext: contextCitations.length > 0,
         metadata: {
-          testDesign: { categories: countTestCategories(result.validatedOutput.testCases) },
+          testDesign: { categories: countTestCategories(result.validatedOutput.testCases), supportedCases: result.validatedOutput.summary.supportedCases, suggestedCases: result.validatedOutput.summary.suggestedCases },
           coverage: { score: result.validatedOutput.summary.coverageEstimate, acceptanceCriteria: { requiredCount: result.acceptanceCriteriaCoverage.requiredCount, coveredCount: result.acceptanceCriteriaCoverage.coveredCount, correctionAttempts: result.correctionAttempts } },
           contextUsed: result.validatedOutput.contextUsed,
         },
