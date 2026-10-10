@@ -95,6 +95,8 @@ export function GeneratedTestCasesReview({
   const [typeFilter, setTypeFilter] = useState("all");
   const [priorityFilter, setPriorityFilter] = useState("all");
   const [tagFilter, setTagFilter] = useState("all");
+  const [basisFilter, setBasisFilter] = useState("all");
+  const [selectionFilter, setSelectionFilter] = useState("all");
   const [selectedOnly, setSelectedOnly] = useState(false);
   const [editedOnly, setEditedOnly] = useState(false);
   const [expandedIds, setExpandedIds] = useState<string[]>([]);
@@ -120,12 +122,18 @@ export function GeneratedTestCasesReview({
       if (typeFilter !== "all" && testCase.type !== typeFilter) return false;
       if (priorityFilter !== "all" && String(testCase.priority) !== priorityFilter) return false;
       if (tagFilter !== "all" && !(testCase.tags ?? []).includes(tagFilter)) return false;
-      if (selectedOnly && !selectedSet.has(testCase.id)) return false;
+      if (testDesignMode) {
+        if (basisFilter !== "all" && (testCase.basis?.kind ?? "unrecorded") !== basisFilter) return false;
+        if (selectionFilter === "selected" && !selectedSet.has(testCase.id)) return false;
+        if (selectionFilter === "unselected" && selectedSet.has(testCase.id)) return false;
+      } else if (selectedOnly && !selectedSet.has(testCase.id)) {
+        return false;
+      }
       if (editedOnly && !editedSet.has(testCase.id)) return false;
       if (!query) return true;
       return searchableTestCaseText(testCase, testDesignMode).includes(query);
     });
-  }, [editedOnly, editedSet, priorityFilter, search, selectedOnly, selectedSet, tagFilter, testCases, typeFilter, testDesignMode]);
+  }, [basisFilter, editedOnly, editedSet, priorityFilter, search, selectedOnly, selectedSet, selectionFilter, tagFilter, testCases, typeFilter, testDesignMode]);
 
   const stats = useMemo(() => {
     const invalid = testCases.filter((testCase) => !validateGeneratedTestCase(testCase).valid).length;
@@ -149,7 +157,7 @@ export function GeneratedTestCasesReview({
     typeFilter !== "all" ||
     priorityFilter !== "all" ||
     tagFilter !== "all" ||
-    selectedOnly ||
+    (testDesignMode ? basisFilter !== "all" || selectionFilter !== "all" : selectedOnly) ||
     editedOnly;
 
   function updateCase(next: GeneratedTestCase) {
@@ -201,6 +209,8 @@ export function GeneratedTestCasesReview({
     setTypeFilter("all");
     setPriorityFilter("all");
     setTagFilter("all");
+    setBasisFilter("all");
+    setSelectionFilter("all");
     setSelectedOnly(false);
     setEditedOnly(false);
   }
@@ -238,6 +248,13 @@ export function GeneratedTestCasesReview({
                 className="h-8 pl-8"
               />
             </div>
+            {testDesignMode ? (
+              <select className={selectClass} value={basisFilter} onChange={(event) => setBasisFilter(event.target.value)} aria-label="Filter by coverage">
+                <option value="all">All coverage</option>
+                {Object.entries(testCaseBasisLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
+                <option value="unrecorded">Source not recorded</option>
+              </select>
+            ) : null}
             <select className={selectClass} value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} aria-label="Filter by type">
               <option value="all">All types</option>
               {types.map((type) => <option key={type} value={type}>{formatEnumLabel(type)}</option>)}
@@ -257,7 +274,15 @@ export function GeneratedTestCasesReview({
             ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <ToolbarCheckbox label="Selected only" checked={selectedOnly} onChange={setSelectedOnly} />
+            {testDesignMode ? (
+              <select className={selectClass} value={selectionFilter} onChange={(event) => setSelectionFilter(event.target.value)} aria-label="Filter by selection">
+                <option value="all">All selections</option>
+                <option value="selected">Selected</option>
+                <option value="unselected">Unselected</option>
+              </select>
+            ) : (
+              <ToolbarCheckbox label="Selected only" checked={selectedOnly} onChange={setSelectedOnly} />
+            )}
             <ToolbarCheckbox label="Edited only" checked={editedOnly} onChange={setEditedOnly} />
             {filtersActive ? (
               <Button type="button" size="sm" variant="ghost" onClick={clearFilters}>

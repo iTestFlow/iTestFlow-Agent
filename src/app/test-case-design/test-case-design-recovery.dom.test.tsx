@@ -289,7 +289,9 @@ it("keeps pasted output while preparing a fresh prompt after a stale draft", asy
 it("reviews a mixed generated list, edits and selects one suggestion, and publishes only selected cases with origin metadata", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(session("jira-cloud")));
   const output = structuredClone(generated);
-  const optional = { ...output.testCases[0], id: "TC-OPTIONAL", title: "Keyboard navigation", type: "accessibility", relatedAcceptanceCriteria: [],
+  const clipboard = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboard } });
+  const optional = { ...output.testCases[0], id: "TC-OPTIONAL", title: "Keyboard navigation (suggested)", type: "accessibility", relatedAcceptanceCriteria: [],
     basis: { kind: "suggested" as const, explanation: "Checkout has controls; assume visible focus follows reading order.", sourceReferences: ["WI:123"] } };
   output.testCases.unshift(optional);
   output.testCases[1].relatedAcceptanceCriteria = ["AC-001"];
@@ -303,6 +305,12 @@ it("reviews a mixed generated list, edits and selects one suggestion, and publis
   await generateCases();
   expect(screen.getByRole("checkbox", { name: "Select TC-1" })).toHaveAttribute("aria-checked", "true");
   expect(screen.getByRole("checkbox", { name: "Select TC-OPTIONAL" })).toHaveAttribute("aria-checked", "false");
+  expect(screen.getByRole("heading", { name: "Keyboard navigation" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Keyboard navigation (suggested)" })).not.toBeInTheDocument();
+  expect(screen.getByText(/Source IDs and structure checked/)).toBeInTheDocument();
+  fireEvent.click(screen.getAllByRole("button", { name: "Copy JSON" })[2]);
+  await waitFor(() => expect(clipboard).toHaveBeenCalled());
+  expect(JSON.parse(clipboard.mock.calls[0][0])).toMatchObject({ title: "Keyboard navigation", basis: optional.basis });
   expect(screen.getAllByRole("heading", { level: 3 }).findIndex((item) => item.textContent === "Checkout TC-1"))
     .toBeLessThan(screen.getAllByRole("heading", { level: 3 }).findIndex((item) => item.textContent === "Keyboard navigation"));
   fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[2]);

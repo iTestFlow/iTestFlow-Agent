@@ -6,6 +6,7 @@ import { AppErrorCode } from "@/modules/shared/errors/app-error";
 import { AcceptanceCriteriaError, type AcceptanceCriteriaContract } from "./acceptance-criteria-contract";
 import { evaluateAcceptanceCriteriaCoverage } from "./acceptance-criteria-coverage";
 import type { TestCaseGenerationOutput } from "./schemas/test-case.schema";
+import { normalizeSuggestedTestCaseTitle } from "./test-case-basis";
 
 export const SourceManifestSchema = z.array(z.string().trim().min(1).max(1000)).max(10000);
 
@@ -58,7 +59,7 @@ export function normalizeGenerationSummary(output: TestCaseGenerationOutput, cov
     byPriority[testCase.priority] = (byPriority[testCase.priority] ?? 0) + 1;
     if (testCase.basis.kind === "suggested") suggestedCases += 1;
   }
-  return { ...output, summary: {
+  return { ...output, testCases: output.testCases.map(normalizeSuggestedTestCaseTitle), summary: {
     totalCases: output.testCases.length,
     supportedCases: output.testCases.length - suggestedCases,
     suggestedCases,

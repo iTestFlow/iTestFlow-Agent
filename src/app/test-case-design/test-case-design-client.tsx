@@ -56,7 +56,7 @@ import { cn } from "@/lib/utils";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
 import { ApiError } from "@/components/workflow/api-error";
 import { AppErrorCode } from "@/modules/shared/errors/app-error";
-import { isSupportedTestCase } from "@/modules/test-case-design/test-case-basis";
+import { isSupportedTestCase, normalizeSuggestedTestCaseTitle } from "@/modules/test-case-design/test-case-basis";
 import { evaluateAcceptanceCriteriaCoverage } from "@/modules/test-case-design/acceptance-criteria-coverage";
 import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
 import { isContextReviewRefreshRequired } from "@/components/workflow/workflow-context-review-error";
@@ -153,7 +153,8 @@ export function TestCaseDesignClient() {
   const [contextPreviewError, setContextPreviewError] = useState<string | null>(null);
   const contextPreviewVersionRef = useRef(0);
   const contextPreviewAbortRef = useRef<AbortController | null>(null);
-  const [testCases, setTestCases] = useState<GeneratedTestCase[]>([]);
+  const [rawTestCases, setTestCases] = useState<GeneratedTestCase[]>([]);
+  const testCases = useMemo(() => rawTestCases.map(normalizeSuggestedTestCaseTitle), [rawTestCases]);
   const [selectedTestCaseIds, setSelectedTestCaseIds] = useState<string[]>([]);
   const [testDesignSettings, setTestDesignSettings] = useState<TestDesignOptions>(() => ({
     ...defaultTestDesignOptions,
@@ -230,15 +231,16 @@ export function TestCaseDesignClient() {
   const contract = state.data?.acceptanceCriteriaContract;
   const allCaseCoverage = useMemo(() => contract ? evaluateAcceptanceCriteriaCoverage(contract, { testCases }) : null, [contract, testCases]);
   const selectedCaseCoverage = useMemo(() => contract ? evaluateAcceptanceCriteriaCoverage(contract, { testCases }, selectedTestCaseIds) : null, [contract, testCases, selectedTestCaseIds]);
-  const editedSinceValidation = Boolean(state.data && JSON.stringify(testCases) !== JSON.stringify(state.data.testCases));
+  const originalTestCases = useMemo(() => (state.data?.testCases ?? []).map(normalizeSuggestedTestCaseTitle), [state.data?.testCases]);
+  const editedSinceValidation = Boolean(state.data && JSON.stringify(testCases) !== JSON.stringify(originalTestCases));
   const invalidSelectedCaseCount = useMemo(
     () => selectedTestCases.filter((testCase) => !validateGeneratedTestCase(testCase).valid).length,
     [selectedTestCases],
   );
   const editedSelectedCaseCount = useMemo(() => {
-    const originalById = new Map((state.data?.testCases ?? []).map((testCase) => [testCase.id, testCase]));
+    const originalById = new Map(originalTestCases.map((testCase) => [testCase.id, testCase]));
     return selectedTestCases.filter((testCase) => JSON.stringify(testCase) !== JSON.stringify(originalById.get(testCase.id))).length;
-  }, [selectedTestCases, state.data?.testCases]);
+  }, [selectedTestCases, originalTestCases]);
 
   function changeTargetWorkItemId(value: string) {
     manualOperationVersionRef.current += 1;

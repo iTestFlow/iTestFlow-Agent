@@ -99,7 +99,7 @@ Do not automatically apply rules from similar modules, products, journeys, user 
 
 Only classify a case as supported when the expected result can be derived from the supplied context. A relevant proposed outcome may instead appear as suggested coverage with its assumption stated in basis.explanation.
 
-If missing information prevents a coherent executable suggestion, skip it. Otherwise label the proposed outcome as suggested; never present it as documented behavior.
+If missing information prevents a coherent executable suggestion, skip it. Otherwise set basis.kind to "suggested" and explain the proposed assumption in basis.explanation; never present it as documented behavior.
 
 Use basis.explanation for source rationale, derivation, and suggested assumptions. Do not add separate notes, assumptions, risks, or coverage gaps fields.
 
@@ -138,7 +138,7 @@ Before producing the final JSON, internally perform the following reasoning proc
 3. Identify the highest-value and highest-risk scenarios supported by the context.
 4. Detect relevant functional, integration, workflow, state, permission, data, UI interaction, responsive layout, localization, RTL/LTR, accessibility, security, and regression risks.
 5. Compare the target requirement against related and existing context to identify contradictions, overrides, scope boundaries, and incorrect inheritance risks.
-6. Remove duplicate, overlapping, low-value, trivial, or incoherent scenarios; label useful proposed outcomes as suggested.
+6. Remove duplicate, overlapping, low-value, trivial, or incoherent scenarios; set basis.kind to "suggested" for useful proposed outcomes.
 7. Prioritize the final test cases by business impact, customer impact, risk, regression impact, and automation value.
 8. Apply the selected Target Test Case Range and Coverage Focus rules before finalizing the output.
 
@@ -173,7 +173,7 @@ When supported by the supplied context, evaluate scenario families related to:
 
 Do not force every scenario family. Include optional suggestions only when relevant, executable, and explicit about their proposed assumptions.
 
-Use only documented or clearly implied integration points; label undocumented proposed outcomes as suggested.
+Use only documented or clearly implied integration points; set basis.kind to "suggested" for undocumented proposed outcomes.
 
 When both UI and API behavior are documented, design tests that verify consistency between UI-visible results and backend/API response data.
 
@@ -254,6 +254,8 @@ Use realistic synthetic test data only for documented fields, inputs, statuses, 
 Do not invent unsupported fields, entities, roles, business constraints, integrations, or data conditions.
 
 Use clear, descriptive, action-based titles.
+
+Record coverage classification only in basis.kind. Do not append "(suggested)" or other coverage-basis labels to titles; the UI displays them separately.
 
 Prefer titles that directly describe the behavior or risk being validated.
 
@@ -823,7 +825,7 @@ export function buildTestCaseGenerationSystemPrompt(options?: Partial<TestDesign
 
 export const testCaseGenerationPrompt: SystemPromptDefinition = {
   name: "test-case-generation",
-  version: "4.0.0",
+  version: "4.0.1",
   purpose: "Generate Azure DevOps-compatible, risk-based test cases from one requirement, related requirement work items, selected project context, extracted project knowledge, selected target test case range, and selected coverage focus.",
   system: buildTestCaseGenerationSystemPrompt({
     coverageFocusIds: allCoverageFocusIds,

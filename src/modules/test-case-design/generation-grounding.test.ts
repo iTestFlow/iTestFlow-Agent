@@ -7,7 +7,7 @@ import { evaluateAcceptanceCriteriaCoverage } from "./acceptance-criteria-covera
 import { GeneratedTestCaseSchema, TestCaseGenerationOutputSchema } from "./schemas/test-case.schema";
 import { buildTestCaseGenerationPromptDraft, completeManualTestCaseGeneration, generateTestCases } from "./application/test-case-generation.service";
 import { normalizeGenerationSummary, validateGenerationGrounding } from "./generation-grounding";
-import { isSupportedTestCase, type TestCaseBasis } from "./test-case-basis";
+import { isSupportedTestCase, normalizeSuggestedTestCaseTitle, type TestCaseBasis } from "./test-case-basis";
 import { buildTestCaseGenerationSystemPrompt } from "@/modules/llm/prompts/test-case-generation.prompt";
 import { withStructuredOutputInstruction } from "@/modules/llm/prompts/structured-output.prompt";
 
@@ -83,6 +83,45 @@ describe("Test Design basis contract", () => {
     expect(() => completeManualTestCaseGeneration({ scope: projectScope(), actor: "qa", rawOutput: JSON.stringify(mixed), acceptanceCriteriaContract: contract, sourceManifest: ["AC-001"] })).toThrow(/not supplied/);
   });
 
+  it.each([
+    "Keyboard focus order (suggested)",
+    "Keyboard focus order (Suggested)  ",
+    "Keyboard focus order  ( suggested )",
+    "Keyboard focus order (suggested) (suggested)",
+  ])("removes a redundant trailing marker from suggested title %s without changing its basis", (title) => {
+    const candidate = { ...suggestion, title };
+    const normalized = normalizeSuggestedTestCaseTitle(candidate);
+    expect(normalized).toEqual({ ...candidate, title: "Keyboard focus order" });
+    expect(normalized.basis).toBe(candidate.basis);
+    expect(candidate.title).toBe(title);
+    expect(normalizeSuggestedTestCaseTitle(normalized)).toBe(normalized);
+  });
+
+  it("preserves supported and legacy titles, internal wording, and titles that would become empty", () => {
+    for (const kind of ["requirement", "derived", "project_rule"] as const) {
+      const candidate = { ...caseInput, title: "Documented label (suggested)", basis: { ...requirementBasis, kind } };
+      expect(normalizeSuggestedTestCaseTitle(candidate)).toBe(candidate);
+    }
+    const legacy = { title: "Unrecorded label (suggested)" };
+    expect(normalizeSuggestedTestCaseTitle(legacy)).toBe(legacy);
+    for (const title of ["Keyboard (suggested) focus order", "Show suggested address", " (suggested) "]) {
+      const candidate = { ...suggestion, title };
+      expect(normalizeSuggestedTestCaseTitle(candidate)).toBe(candidate);
+    }
+  });
+
+  it("cleans titles in automatic and manual results while preserving raw input and coverage counts", async () => {
+    const mixed = output([caseInput, { ...suggestion, title: "Keyboard focus order (suggested)" }]);
+    const before = structuredClone(mixed);
+    const automatic = await generateTestCases({ scope: projectScope(), actor: "qa", provider: fakeLlmProvider({ structuredOutput: mixed }), targetRequirement: requirement(), selectedContext: [] });
+    const manual = completeManualTestCaseGeneration({ scope: projectScope(), actor: "qa", rawOutput: JSON.stringify(mixed), acceptanceCriteriaContract: contract, sourceManifest: manifest });
+    expect(automatic.validatedOutput).toEqual(manual.validatedOutput);
+    expect(automatic.validatedOutput.testCases[1]).toEqual({ ...mixed.testCases[1], title: "Keyboard focus order" });
+    expect(automatic.validatedOutput.testCases[0]).toEqual(mixed.testCases[0]);
+    expect(automatic.validatedOutput.summary).toMatchObject({ supportedCases: 1, suggestedCases: 1, coverageEstimate: 100 });
+    expect(mixed).toEqual(before);
+  });
+
   it("repairs a bad source once using the rejected output and exact errors", async () => {
     const bad = output([{ ...caseInput, basis: { ...requirementBasis, sourceReferences: ["WI:omitted"] } }]);
     const good = output([caseInput]);
@@ -105,6 +144,7 @@ describe("Test Design basis contract", () => {
   it("keeps default focus, makes optional assumptions explicit, and includes basis in repair shapes only for Test Design", () => {
     const prompt = buildTestCaseGenerationSystemPrompt();
     expect(prompt).toContain("### Accessibility");
+    expect(prompt).toContain('Record coverage classification only in basis.kind. Do not append "(suggested)"');
     expect(prompt).toContain("A selected focus, platform convention, or best practice is never requirement evidence.");
     expect(prompt).toContain("a documented minimum of 3 implies that 2 is below the minimum");
     expect(prompt).toContain("Suggestions have no separate cap");
