@@ -1,8 +1,23 @@
+import { withSuggestionOrigin } from "@/modules/test-case-design/test-case-basis";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ZephyrScaleBackend } from "./zephyr-scale-backend";
 
 describe("ZephyrScaleBackend", () => {
   beforeEach(() => vi.unstubAllGlobals());
+
+  const suggestedCase = () => withSuggestionOrigin({ localId: "case-1", targetUserStoryId: "QA-7", title: "Keyboard path", description: "Review keyboard path", steps: [{ action: "Tab through checkout", expectedResult: "Focus follows reading order" }],
+    basis: { kind: "suggested" as const, explanation: "Assume logical focus order for checkout controls.", sourceReferences: ["WI:QA-7"] } });
+
+  it("preserves suggestion origin in the Zephyr objective and leaves step assertions intact", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(json({ values: [], isLast: true }))
+      .mockResolvedValueOnce(json({ id: 1, key: "QA-T1" }, 201)).mockResolvedValueOnce(json({ id: 1 }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+    const testCase = suggestedCase();
+    await backend().createTestCase({ projectId: "QA", testCase });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body)).objective).toBe(testCase.description);
+    expect(testCase.description).toContain("Suggested coverage — proposed assumption:");
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body)).items[0].inline.expectedResult).toBe("Focus follows reading order");
+  });
 
   it("uses the allowlisted regional endpoint and bounded cursor pagination", async () => {
     const fetchMock = vi.fn()

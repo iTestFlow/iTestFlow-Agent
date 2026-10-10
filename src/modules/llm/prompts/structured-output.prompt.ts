@@ -2,7 +2,7 @@ import type { SystemPromptDefinition } from "./prompt.types";
 
 export const structuredOutputPrompt: SystemPromptDefinition = {
   name: "structured-output-format",
-  version: "1.1.0",
+  version: "1.2.0",
   purpose: "Provider-neutral instruction for returning schema-conformant JSON.",
   system: [
     "Return only valid JSON matching schema {schemaName}.",
@@ -119,12 +119,22 @@ function requiredOutputShape(schemaName: string) {
 
   if (schemaName === "TestCaseGenerationOutput") {
     return {
-      testCases: [generatedTestCaseShape()],
+      testCases: [{
+        ...generatedTestCaseShape(),
+        basis: {
+          kind: "requirement | derived | project_rule | suggested",
+          explanation: "source rationale; explain derivations; for suggestions explain relevance and proposed assumption",
+          sourceReferences: ["exact supplied manifest ID; supported cases require one; suggestions must not cite AC IDs"],
+        },
+        relatedAcceptanceCriteria: ["canonical AC ID; MUST be empty for suggested coverage"],
+      }],
       summary: {
         totalCases: "integer 0 or greater",
         byType: { regression: "integer count example" },
         byPriority: { "1": "integer count example" },
-        coverageEstimate: "number from 0 to 100",
+        coverageEstimate: "percentage of required AC IDs mapped by supported cases, not proof of correctness",
+        supportedCases: "integer count of requirement, derived, and project_rule cases",
+        suggestedCases: "integer count of suggested cases",
       },
       contextUsed: ["source ID string only, not objects or prompt filenames"],
     };

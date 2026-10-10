@@ -8,7 +8,8 @@ import { buildManualPromptMarkdown } from "@/modules/llm/manual-prompt";
 import { estimateTokens, usableInputTokens } from "@/modules/llm/token-estimate";
 import { AppErrorCode } from "@/modules/shared/errors/app-error";
 import { AcceptanceCriteriaError, buildAcceptanceCriteriaContract, type AcceptanceCriteriaContract } from "../acceptance-criteria-contract";
-import { evaluateAcceptanceCriteriaCoverage } from "../acceptance-criteria-coverage";
+import { canonicalSourceManifest, normalizeGenerationSummary, validateGenerationGrounding } from "../generation-grounding";
+import { TEST_CASE_OUTPUT_CONTRACT_VERSION } from "../test-case-basis";
 import {
   buildTestCaseGenerationMarkdownPrompt,
   extractWorkItemId,
@@ -18,18 +19,6 @@ import { buildTestCaseGenerationSystemPrompt, testCaseGenerationPrompt } from "@
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { normalizeTestDesignOptions, type TestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import { TestCaseGenerationOutputSchema, type TestCaseGenerationOutput } from "../schemas/test-case.schema";
-
-function requireCoverage(contract: AcceptanceCriteriaContract, output: TestCaseGenerationOutput) {
-  const coverage = evaluateAcceptanceCriteriaCoverage(contract, output);
-  if (coverage.missingCriteria.length || coverage.unknownReferences.length) {
-    throw new AcceptanceCriteriaError(
-      AppErrorCode.AcceptanceCriteriaCoverage,
-      `Acceptance criteria mapping is incomplete: ${coverage.coveredCount} of ${coverage.requiredCount} AC IDs mapped. Add missing IDs and remove unknown references.`,
-      { coverage },
-    );
-  }
-  return coverage;
-}
 
 function checkInputBudget(system: string, user: string, maxInputTokens?: number) {
   if (estimateTokens(`${system}\n${user}`) > usableInputTokens(maxInputTokens)) {
@@ -73,6 +62,7 @@ export async function generateTestCases(input: {
     projectKnowledgeBase: input.projectKnowledgeBase,
     projectKnowledgeNotice: input.projectKnowledgeNotice,
     storyAttachments: input.storyAttachments,
+    includeAttachmentVisuals: Boolean(input.attachmentImages?.length),
     options: input.options,
     extraInstructions: input.extraInstructions,
   });
@@ -88,7 +78,7 @@ export async function generateTestCases(input: {
     signal: input.signal,
     validateOutput: ({ validatedOutput, rawOutput }: { validatedOutput: TestCaseGenerationOutput; rawOutput: string }) => {
       rejected = { validatedOutput, rawOutput };
-      requireCoverage(contract, validatedOutput);
+      validateGenerationGrounding(contract, promptDraft.sourceManifest, validatedOutput);
     },
     metadata: {
       action: "test_case_generation.run",
@@ -106,7 +96,7 @@ export async function generateTestCases(input: {
   try {
     result = await input.provider.generateStructuredOutput(request);
     rejected = { validatedOutput: result.validatedOutput, rawOutput: result.rawOutput };
-    requireCoverage(contract, result.validatedOutput);
+    validateGenerationGrounding(contract, promptDraft.sourceManifest, result.validatedOutput);
   } catch (error) {
     if (!(error instanceof AcceptanceCriteriaError) || error.code !== AppErrorCode.AcceptanceCriteriaCoverage) throw error;
     if (input.signal?.aborted) throw error;
@@ -115,16 +105,17 @@ export async function generateTestCases(input: {
     const correctionPrompt = [
       promptDraft.userPrompt,
       "# Correct the rejected output",
-      "Return a complete replacement JSON response using the original story and all required AC IDs. Fix these exact mapping errors:",
-      JSON.stringify(error.details?.coverage),
+      "Return a complete replacement JSON response using the original story and all required AC IDs. Fix these exact basis and mapping errors:",
+      JSON.stringify(error.details),
       "Rejected candidate (repair this, keeping valid cases where possible):",
       rejected.rawOutput,
     ].join("\n\n");
     checkInputBudget(promptDraft.systemPrompt, correctionPrompt, input.maxInputTokens);
     result = await input.provider.generateStructuredOutput({ ...request, user: correctionPrompt, redactRequestLog: true });
-    requireCoverage(contract, result.validatedOutput);
+    validateGenerationGrounding(contract, promptDraft.sourceManifest, result.validatedOutput);
   }
-  const acceptanceCriteriaCoverage = requireCoverage(contract, result.validatedOutput);
+  const acceptanceCriteriaCoverage = validateGenerationGrounding(contract, promptDraft.sourceManifest, result.validatedOutput);
+  result = { ...result, validatedOutput: normalizeGenerationSummary(result.validatedOutput, acceptanceCriteriaCoverage) };
 
   writeAuditLog({
     projectId: scope.projectId,
@@ -158,6 +149,7 @@ export async function generateTestCases(input: {
 }
 
 export function buildTestCaseGenerationPromptDraft(input: {
+  includeAttachmentVisuals?: boolean;
   scope: ProjectScope;
   targetRequirement: unknown;
   relatedWorkItems?: unknown[];
@@ -194,16 +186,25 @@ export function buildTestCaseGenerationPromptDraft(input: {
     projectKnowledgeNotice: input.projectKnowledgeNotice,
     storyAttachments: input.storyAttachments,
     options: testDesignOptions,
+    includeAttachmentVisuals: input.includeAttachmentVisuals,
     extraInstructions: input.extraInstructions,
     outputContract: testCaseOutputContract,
   });
 
+  const sourceManifest = canonicalSourceManifest([
+    ...promptPayload.includedSourceIds,
+    ...acceptanceCriteriaContract.criteria.map((criterion) => criterion.id),
+  ]);
   const inventory = [
     "# Required Acceptance Criteria Contract",
     `Version: ${acceptanceCriteriaContract.version}`,
     ...acceptanceCriteriaContract.criteria.map((criterion) => `- ${criterion.id}: ${criterion.text}`),
-    "Every ID above must appear in at least one test case's relatedAcceptanceCriteria. Use only these canonical IDs. Supplemental cases may have no AC reference.",
+    "Every ID above must appear in at least one supported test case's relatedAcceptanceCriteria. Use only these canonical IDs. Suggested coverage must have no AC references.",
     "The target case-count range is a target and may be exceeded to map every AC ID.",
+    "# Supplied Source Manifest",
+    `Output contract version: ${TEST_CASE_OUTPUT_CONTRACT_VERSION}`,
+    "Use only these exact IDs in basis.sourceReferences. A listed source is evidence only for its supplied content; presence here does not prove a test or assertion is correct.",
+    ...sourceManifest.map((id) => `- ${id}`),
   ].join("\n");
   const userPrompt = `${promptPayload.prompt}\n\n${inventory}`;
   checkInputBudget(systemPrompt, userPrompt, input.maxInputTokens);
@@ -220,6 +221,8 @@ export function buildTestCaseGenerationPromptDraft(input: {
       user: userPrompt,
     }),
     acceptanceCriteriaContract,
+    sourceManifest,
+    outputContractVersion: TEST_CASE_OUTPUT_CONTRACT_VERSION,
     testDesignOptions,
     relevantProjectKnowledgeBase: promptPayload.relevantProjectKnowledgeBase,
     includedStoryAttachmentTextIds: promptPayload.includedStoryAttachmentTextIds,
@@ -239,14 +242,16 @@ export function completeManualTestCaseGeneration(input: {
   rawOutput: string;
   targetWorkItemId?: string;
   acceptanceCriteriaContract: AcceptanceCriteriaContract;
+  sourceManifest: readonly string[];
 }) {
   const scope = assertProjectScope(input.scope);
-  const validatedOutput = parseExternalStructuredOutput({
+  let validatedOutput = parseExternalStructuredOutput({
     schemaName: "TestCaseGenerationOutput",
     schema: TestCaseGenerationOutputSchema,
     rawOutput: input.rawOutput,
   });
-  const acceptanceCriteriaCoverage = requireCoverage(input.acceptanceCriteriaContract, validatedOutput);
+  const acceptanceCriteriaCoverage = validateGenerationGrounding(input.acceptanceCriteriaContract, input.sourceManifest, validatedOutput);
+  validatedOutput = normalizeGenerationSummary(validatedOutput, acceptanceCriteriaCoverage);
 
   writeAuditLog({
     projectId: scope.projectId,
@@ -286,6 +291,11 @@ const testCaseOutputContract = {
       type: "execution type only: functional|smoke|sanity|regression|e2e|integration|unit|api|ui|security|performance|accessibility; never use a Coverage Focus value such as data-validation",
       category: "happy_path|negative|edge|boundary|integration|workflow|security|accessibility",
       tags: ["string"],
+      basis: {
+        kind: "requirement|derived|project_rule|suggested",
+        explanation: "Short source rationale; for derived explain the derivation; for suggested explain relevance and proposed assumption",
+        sourceReferences: ["Exact supplied manifest IDs; at least one for supported cases; no AC IDs for suggestions"],
+      },
       relatedAcceptanceCriteria: ["AC-001"],
       relatedBusinessRules: ["module/section/rule reference"],
       relatedModules: ["module-id"],
@@ -310,6 +320,8 @@ const testCaseOutputContract = {
     byType: { regression: 0 },
     byPriority: { "1": 0 },
     coverageEstimate: 0,
+    supportedCases: 0,
+    suggestedCases: 0,
   },
   contextUsed: ["source IDs only, such as module-id or work-item-id"],
 };

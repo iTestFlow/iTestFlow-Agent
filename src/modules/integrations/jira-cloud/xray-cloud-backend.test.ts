@@ -1,8 +1,25 @@
+import { withSuggestionOrigin } from "@/modules/test-case-design/test-case-basis";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { XrayCloudBackend } from "./xray-cloud-backend";
 
 describe("XrayCloudBackend", () => {
   beforeEach(() => vi.unstubAllGlobals());
+
+  const suggestedCase = () => withSuggestionOrigin({ localId: "case-1", targetUserStoryId: "QA-7", title: "Keyboard path", description: "Review keyboard path", steps: [{ action: "Tab through checkout", expectedResult: "Focus follows reading order" }],
+    basis: { kind: "suggested" as const, explanation: "Assume logical focus order for checkout controls.", sourceReferences: ["WI:QA-7"] } });
+
+  it("preserves suggestion origin in Xray description and leaves step assertions intact", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(json("token"))
+      .mockResolvedValueOnce(graphql({ getTests: { total: 0, results: [] } }))
+      .mockResolvedValueOnce(graphql({ createTest: { test: { issueId: "10009" }, warnings: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const testCase = suggestedCase();
+    await backend().createTestCase({ projectId: "QA", testCase });
+    const body = JSON.parse(String(fetchMock.mock.calls[2][1]?.body));
+    expect(body.variables.jira.fields.description).toBe(testCase.description);
+    expect(testCase.description).toContain("Suggested coverage — proposed assumption:");
+    expect(body.variables.steps[0].result).toBe("Focus follows reading order");
+  });
 
   it("authenticates without exposing credentials and paginates tests at Xray's 100 item bound", async () => {
     const fetchMock = vi.fn()

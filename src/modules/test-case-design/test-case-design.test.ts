@@ -32,6 +32,7 @@ const validCase = {
   type: "Integration / API",
   category: "Positive",
   relatedAcceptanceCriteria: ["AC-001"],
+  basis: { kind: "requirement" as const, explanation: "AC-001 documents checkout confirmation.", sourceReferences: ["AC-001"] },
   preconditions: "Cart has an item",
   steps: [
     { stepNumber: 1, action: "Preconditions: cart is ready", expectedResult: "Anything" },
@@ -103,7 +104,7 @@ describe("test design options and schema", () => {
       targetRequirement: requirement(),
       selectedContext: [],
       options: { targetTestCaseRange: "quick_confidence" },
-    })).resolves.toMatchObject({ validatedOutput: generated });
+    })).resolves.toMatchObject({ validatedOutput: { ...generated, summary: { ...generated.summary, coverageEstimate: 100, supportedCases: 1, suggestedCases: 0 } } });
     expect(provider.generateStructuredOutput).toHaveBeenCalledWith(
       expect.objectContaining({
         schemaName: "TestCaseGenerationOutput",
@@ -118,9 +119,10 @@ describe("test design options and schema", () => {
       rawOutput: JSON.stringify(generated),
       targetWorkItemId: "101",
       acceptanceCriteriaContract: buildAcceptanceCriteriaContract(requirement()),
+      sourceManifest: ["WI:101", "AC-001"],
     })).toMatchObject({
       provider: "external",
-      validatedOutput: generated,
+      validatedOutput: { ...generated, summary: { ...generated.summary, coverageEstimate: 100, supportedCases: 1, suggestedCases: 0 } },
     });
   });
 

@@ -5,6 +5,10 @@ import { estimateTokens, usableInputTokens } from "./token-estimate";
 import type { NormalizedTestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import type { ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema";
 import type { LlmContextSource } from "@/modules/rag/project-context-store.service";
+import { EXTRA_INSTRUCTIONS_SOURCE_ID } from "@/modules/test-case-design/test-case-basis";
+import { sourceIdForWorkItem, sourceIdForProjectKnowledge, sourceIdForStoryAttachment } from "@/modules/rag/workflow-context-controls";
+import { EXTRA_INSTRUCTIONS_SOURCE_ID } from "@/modules/test-case-design/test-case-basis";
+import { sourceIdForWorkItem, sourceIdForProjectKnowledge, sourceIdForStoryAttachment } from "@/modules/rag/workflow-context-controls";
 import { renderExtraInstructionsSection } from "@/modules/llm/extra-instructions";
 
 type CurrentProjectPromptInput = {
@@ -33,6 +37,7 @@ type MarkdownPromptInput = {
   projectKnowledgeBase?: unknown | null;
   projectKnowledgeNotice?: string | null;
   storyAttachments?: StoryAttachmentPromptContext[];
+  includeAttachmentVisuals?: boolean;
   extraInstructions?: string;
   outputContract: unknown;
   /** The caller's configured model window; sizes how much context is included. */
@@ -126,6 +131,22 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
     ].filter(Boolean) as string[],
   });
 
+  const generationAttachments = (input.storyAttachments ?? []).map((attachment) => ({
+    ...attachment,
+    visualCount: input.includeAttachmentVisuals ? attachment.visualCount : 0,
+  }));
+  const workItemSourceIds = [withoutRawAcceptanceCriteria(input.targetRequirement), ...relatedWorkItems, ...(input.selectedContext ?? [])]
+    .map(toPromptWorkItem)
+    .filter((item) => item.id && (item.title || item.description || item.acceptanceCriteria || item.content))
+    .map((item) => sourceIdForWorkItem(item.id!));
+  const knowledgeSourceIds = relevantKnowledge ? [
+    ...relevantKnowledge.modules.map((item) => sourceIdForProjectKnowledge("module", item.id)),
+    ...relevantKnowledge.businessRules.map((item) => sourceIdForProjectKnowledge("business_rule", item.id)),
+    ...relevantKnowledge.stateTransitions.map((item) => sourceIdForProjectKnowledge("state_transition", item.id)),
+    ...relevantKnowledge.glossary.map((item) => sourceIdForProjectKnowledge("glossary", item.term)),
+    ...relevantKnowledge.crossDependencies.map((item) => sourceIdForProjectKnowledge("dependency", item.id)),
+    ...relevantKnowledge.chatInsights.map((item) => sourceIdForProjectKnowledge("chat_insight", item.id)),
+  ] : [];
   const beforeAttachmentSection = [
       renderCurrentProject(input.currentProject),
       renderTargetWorkItem("User Story Under Test", withoutRawAcceptanceCriteria(input.targetRequirement)),
@@ -134,14 +155,15 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
       renderTestDesignOptions(input.options ?? {}),
       renderCoverageExpectations(),
       renderProjectKnowledgeAuthorityNotice(input.projectKnowledgeNotice),
-      renderProjectKnowledge(relevantKnowledge),
+      renderProjectKnowledge(relevantKnowledge, true),
   ].filter(Boolean);
   const afterAttachmentSection = [
       renderExtraInstructionsSection(input.extraInstructions),
+      input.extraInstructions?.trim() ? `Source ID: ${EXTRA_INSTRUCTIONS_SOURCE_ID} (explicit instructions only; focus choices are not evidence).` : undefined,
       renderOutputContract(input.outputContract),
   ].filter(Boolean);
   const attachmentSection = renderStoryAttachmentsWithinRemainingBudget({
-    attachments: input.storyAttachments ?? [],
+    attachments: generationAttachments,
     maxInputTokens: input.maxInputTokens,
     basePrompt: [...beforeAttachmentSection, ...afterAttachmentSection].join("\n\n"),
   });
@@ -150,11 +172,18 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
     prompt: [...beforeAttachmentSection, attachmentSection.markdown, ...afterAttachmentSection]
       .filter(Boolean)
       .join("\n\n"),
+    includedSourceIds: [...new Set([
+      ...workItemSourceIds,
+      ...knowledgeSourceIds,
+      ...attachmentSection.includedTextAttachmentIds.map(sourceIdForStoryAttachment),
+      ...generationAttachments.filter((attachment) => attachment.id.trim() && attachment.fileName.trim() && attachmentVisualCount(attachment) > 0).map((attachment) => sourceIdForStoryAttachment(attachment.id)),
+      ...(input.extraInstructions?.trim() ? [EXTRA_INSTRUCTIONS_SOURCE_ID] : []),
+    ])],
     relevantProjectKnowledgeBase: relevantKnowledge,
     includedStoryAttachmentTextIds: attachmentSection.includedTextAttachmentIds,
     omittedStoryAttachmentTextIds: attachmentSection.omittedTextAttachmentIds,
     storyAttachmentWarnings: buildStoryAttachmentBudgetWarnings({
-      attachments: input.storyAttachments ?? [],
+      attachments: generationAttachments,
       omittedTextAttachmentIds: attachmentSection.omittedTextAttachmentIds,
     }),
   };
@@ -219,7 +248,7 @@ export function extractWorkItemId(value: unknown) {
 
 /**
  * Floor per knowledge category, so every category is represented even on a small
- * model. These are minimums, not caps — the token budget decides how far past them to
+ * model. These are minimums, not caps â€” the token budget decides how far past them to
  * go. They were previously hard caps (6/14/6/14/6), which on a real 213-entry project
  * meant workflows saw 22% of the compiled knowledge regardless of the model's window:
  * 14 of 114 business rules reached test design, and business rules ARE the test
@@ -246,8 +275,8 @@ const KNOWLEDGE_BUDGET_SHARE = 0.35;
  *
  * Uniform round-robin is only defensible while everything fits. Once the corpus
  * outgrows the window it silently equalises categories that are not equally useful:
- * modelled on a 2,000-entry corpus, business rules — half the corpus and the single
- * most load-bearing category for test work — received about a fifth of the slots.
+ * modelled on a 2,000-entry corpus, business rules â€” half the corpus and the single
+ * most load-bearing category for test work â€” received about a fifth of the slots.
  *
  * The weights encode what each workflow actually reasons over:
  * - **Test design**: business rules and state transitions ARE the test
@@ -384,8 +413,9 @@ function isNormalizedTestDesignOptions(value: Record<string, unknown> | Normaliz
 function renderCoverageExpectations() {
   return [
     "# Coverage Expectations",
-    "- Each acceptance criterion should have at least one test case when enough information exists.",
-    "- Include positive, negative, edge, boundary, integration, workflow, role/permission, data validation, accessibility, and regression scenarios when supported by context.",
+    "- Map every canonical AC ID to at least one supported test case. Suggestions never count as AC mapping.",
+    "- Across every category, distinguish requirement, derived, project_rule, and suggested basis. Supported cases need supplied evidence; useful undocumented outcomes must be marked suggested with an explicit proposed assumption.",
+    "- Generate supported cases first, then optional suggestions within the same target count. No separate suggestion cap, minimum quota, or filler.",
     "- Use realistic test data based on the project domain.",
     "- Step 1 in every test case must start with Preconditions and use expectedResult exactly \"Preconditions are met\".",
     "- Avoid duplicate, trivial, overly broad, or non-executable test cases.",
@@ -458,7 +488,7 @@ function renderProjectKnowledgeAuthorityNotice(notice: string | null | undefined
   return notice ? ["# Knowledge Authority", notice].join("\n\n") : "";
 }
 
-function renderProjectKnowledge(knowledgeBase: ProjectKnowledgeBase | null) {
+function renderProjectKnowledge(knowledgeBase: ProjectKnowledgeBase | null, includeSourceIds = false) {
   if (!knowledgeBase) {
     return [
       "# Saved Project Knowledge",
@@ -468,12 +498,12 @@ function renderProjectKnowledge(knowledgeBase: ProjectKnowledgeBase | null) {
 
   return [
     "# Saved Project Knowledge",
-    renderModules(knowledgeBase),
-    renderBusinessRules(knowledgeBase),
-    renderStateTransitions(knowledgeBase),
-    renderGlossary(knowledgeBase),
-    renderDependencies(knowledgeBase),
-    renderChatInsights(knowledgeBase),
+    renderModules(knowledgeBase, includeSourceIds),
+    renderBusinessRules(knowledgeBase, includeSourceIds),
+    renderStateTransitions(knowledgeBase, includeSourceIds),
+    renderGlossary(knowledgeBase, includeSourceIds),
+    renderDependencies(knowledgeBase, includeSourceIds),
+    renderChatInsights(knowledgeBase, includeSourceIds),
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -637,12 +667,13 @@ function truncateTextToTokenBudget(value: string, tokenBudget: number) {
   return value.slice(0, lower).trimEnd();
 }
 
-function renderModules(knowledgeBase: ProjectKnowledgeBase) {
+function renderModules(knowledgeBase: ProjectKnowledgeBase, includeSourceIds = false) {
   if (!knowledgeBase.modules.length) return "## Modules\nNo modules were supplied.";
   return [
     "## Modules",
     ...knowledgeBase.modules.map((item) =>
       [
+        includeSourceIds ? `  - Source ID: ${sourceIdForProjectKnowledge("module", item.id)}` : undefined,
         `- ${item.id}: ${item.name}`,
         item.description ? `  - Description: ${cleanPromptText(item.description)}` : undefined,
         item.sourceWorkItemIds.length ? `  - Sources: ${item.sourceWorkItemIds.join(", ")}` : undefined,
@@ -654,12 +685,13 @@ function renderModules(knowledgeBase: ProjectKnowledgeBase) {
   ].join("\n");
 }
 
-function renderBusinessRules(knowledgeBase: ProjectKnowledgeBase) {
+function renderBusinessRules(knowledgeBase: ProjectKnowledgeBase, includeSourceIds = false) {
   if (!knowledgeBase.businessRules.length) return "## Business Rules\nNo business rules were supplied.";
   return [
     "## Business Rules",
     ...knowledgeBase.businessRules.map((item) =>
       [
+        includeSourceIds ? `  - Source ID: ${sourceIdForProjectKnowledge("business_rule", item.id)}` : undefined,
         `- ${item.id}: ${cleanPromptText(item.rule)}`,
         item.moduleName ? `  - Module: ${item.moduleName}` : undefined,
         item.sourceField ? `  - Source Field: ${item.sourceField}` : undefined,
@@ -672,12 +704,13 @@ function renderBusinessRules(knowledgeBase: ProjectKnowledgeBase) {
   ].join("\n");
 }
 
-function renderStateTransitions(knowledgeBase: ProjectKnowledgeBase) {
+function renderStateTransitions(knowledgeBase: ProjectKnowledgeBase, includeSourceIds = false) {
   if (!knowledgeBase.stateTransitions.length) return "## State Transitions\nNo state transitions were supplied.";
   return [
     "## State Transitions",
     ...knowledgeBase.stateTransitions.map((item) =>
       [
+        includeSourceIds ? `  - Source ID: ${sourceIdForProjectKnowledge("state_transition", item.id)}` : undefined,
         `- ${item.id}: ${item.workflowName}`,
         item.fromState || item.toState ? `  - Transition: ${item.fromState ?? "unspecified"} -> ${item.toState ?? "unspecified"}` : undefined,
         `  - Trigger/Condition: ${cleanPromptText(item.triggerOrCondition)}`,
@@ -691,12 +724,13 @@ function renderStateTransitions(knowledgeBase: ProjectKnowledgeBase) {
   ].join("\n");
 }
 
-function renderGlossary(knowledgeBase: ProjectKnowledgeBase) {
+function renderGlossary(knowledgeBase: ProjectKnowledgeBase, includeSourceIds = false) {
   if (!knowledgeBase.glossary.length) return "## Glossary\nNo glossary terms were supplied.";
   return [
     "## Glossary",
     ...knowledgeBase.glossary.map((item) =>
       [
+        includeSourceIds ? `  - Source ID: ${sourceIdForProjectKnowledge("glossary", item.term)}` : undefined,
         `- ${item.term} (${item.type}): ${cleanPromptText(item.definition)}`,
         item.sourceWorkItemIds.length ? `  - Sources: ${item.sourceWorkItemIds.join(", ")}` : undefined,
         item.evidence ? `  - Evidence: ${cleanPromptText(item.evidence)}` : undefined,
@@ -707,7 +741,7 @@ function renderGlossary(knowledgeBase: ProjectKnowledgeBase) {
   ].join("\n");
 }
 
-function renderChatInsights(knowledgeBase: ProjectKnowledgeBase) {
+function renderChatInsights(knowledgeBase: ProjectKnowledgeBase, includeSourceIds = false) {
   // Unlike the five compiler categories, omitted entirely rather than a "none supplied"
   // placeholder when empty: most projects will never integrate one, and a permanent
   // empty section for a feature that is off by default is noise, not information.
@@ -717,6 +751,7 @@ function renderChatInsights(knowledgeBase: ProjectKnowledgeBase) {
     "These are a human-approved synthesis, not an extracted-and-verified fact re-anchored to a source quote -- weigh them accordingly.",
     ...knowledgeBase.chatInsights.map((item) =>
       [
+        includeSourceIds ? `  - Source ID: ${sourceIdForProjectKnowledge("chat_insight", item.id)}` : undefined,
         `- ${cleanPromptText(item.content)}`,
         item.sourceWorkItemIds.length ? `  - Sources: ${item.sourceWorkItemIds.join(", ")}` : undefined,
         item.evidence ? `  - Evidence: ${cleanPromptText(item.evidence)}` : undefined,
@@ -727,12 +762,13 @@ function renderChatInsights(knowledgeBase: ProjectKnowledgeBase) {
   ].join("\n");
 }
 
-function renderDependencies(knowledgeBase: ProjectKnowledgeBase) {
+function renderDependencies(knowledgeBase: ProjectKnowledgeBase, includeSourceIds = false) {
   if (!knowledgeBase.crossDependencies.length) return "## Dependencies\nNo cross dependencies were supplied.";
   return [
     "## Dependencies",
     ...knowledgeBase.crossDependencies.map((item) =>
       [
+        includeSourceIds ? `  - Source ID: ${sourceIdForProjectKnowledge("dependency", item.id)}` : undefined,
         `- ${item.id}: ${item.sourceModule} -> ${item.targetModule}`,
         `  - Type: ${item.dependencyType}`,
         item.description ? `  - Description: ${cleanPromptText(item.description)}` : undefined,
@@ -883,7 +919,7 @@ function selectRelevantProjectKnowledge(input: {
     describe: (item: TItem) => string,
   ): TItem[] => rankKnowledgeItems(items, queryTerms, prioritySourceIds, describe);
 
-  // The semantic override is the eligible set for its category, in relevance order —
+  // The semantic override is the eligible set for its category, in relevance order â€”
   // not a reordering of everything. It arrives already cut at a relevance threshold, so
   // admitting the entries it left out would put back exactly the material the threshold
   // exists to remove: a category with nothing to say about this work item still has a
@@ -1051,7 +1087,7 @@ function rankKnowledgeItems<TItem extends { sourceWorkItemIds?: string[] }>(
     }))
     // Ranking orders; it must not exclude. Entries that share no term with the work
     // item used to be dropped here unless they were in the first three, which capped
-    // modules and dependencies at three on any model — a hard filter applied before the
+    // modules and dependencies at three on any model â€” a hard filter applied before the
     // token budget, and before semantic ranking could speak for an entry that keyword
     // overlap cannot see. Zero-scoring entries now sort last instead, so a small window
     // still never reaches them and a large one can.

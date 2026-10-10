@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   fetchWorkItemById: vi.fn(),
   verifyManualDraftToken: vi.fn(),
   verifyManualDraftContract: vi.fn(),
+  verifyManualDraftManifest: vi.fn(),
   resolveProjectScope: vi.fn(),
   completeManualTestCaseGeneration: vi.fn(),
   startWorkflowRun: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock("@/modules/test-case-design/application/test-case-generation.service", (
 vi.mock("@/modules/test-case-design/manual-draft-token", () => ({
   verifyManualDraftToken: mocks.verifyManualDraftToken,
   verifyManualDraftContract: mocks.verifyManualDraftContract,
+  verifyManualDraftManifest: mocks.verifyManualDraftManifest,
 }));
 vi.mock("@/modules/analytics/workflow-analytics.service", () => ({
   startWorkflowRun: mocks.startWorkflowRun,
@@ -54,6 +56,7 @@ function submitRequest(overrides: Record<string, unknown> = {}) {
     targetWorkItemId: "101",
     rawOutput: "external response",
     draftToken: "sealed-draft",
+    sourceManifest: ["WI:101", "AC-001"],
     contextCitations: [],
     ...overrides,
   });
@@ -69,6 +72,7 @@ describe("POST /api/test-cases/manual/submit", () => {
     mocks.requireExternalLlmEnabled.mockResolvedValue(undefined);
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
     mocks.fetchWorkItemById.mockResolvedValue(requirement());
+    mocks.verifyManualDraftManifest.mockReturnValue(["WI:101", "AC-001"]);
     mocks.verifyManualDraftToken.mockReturnValue({ contractVersion: "1", sourceHash: "prepared-hash" });
     mocks.getUserAzureAdapter.mockResolvedValue(fakeAzureAdapter({ fetchWorkItemById: mocks.fetchWorkItemById }));
     mocks.startWorkflowRun.mockReturnValue("run-1");
@@ -105,6 +109,7 @@ describe("POST /api/test-cases/manual/submit", () => {
       actor: "user-1",
       rawOutput: "external response",
       targetWorkItemId: "101",
+      sourceManifest: ["WI:101", "AC-001"],
       acceptanceCriteriaContract: buildAcceptanceCriteriaContract(requirement()),
     });
     expect(mocks.verifyManualDraftToken).toHaveBeenCalledExactlyOnceWith("sealed-draft", {
@@ -247,4 +252,15 @@ describe("POST /api/test-cases/manual/submit", () => {
     expect(response.status).not.toBe(200);
     expect(mocks.completeManualTestCaseGeneration).not.toHaveBeenCalled();
   });
+  it("rejects a changed manifest before fetching the story or accepting client citations", async () => {
+    mocks.verifyManualDraftManifest.mockImplementationOnce(() => {
+      throw new AcceptanceCriteriaError(AppErrorCode.AcceptanceCriteriaDraftInvalid, "The source manifest changed. Prepare a fresh prompt.");
+    });
+    const response = await POST(submitRequest({ sourceManifest: ["WI:forged"], contextCitations: [] }));
+    expect(response.status).toBe(403);
+    expect(mocks.verifyManualDraftManifest).toHaveBeenCalledWith(expect.anything(), ["WI:forged"]);
+    expect(mocks.fetchWorkItemById).not.toHaveBeenCalled();
+    expect(mocks.completeManualTestCaseGeneration).not.toHaveBeenCalled();
+  });
+
 });

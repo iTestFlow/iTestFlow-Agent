@@ -46,7 +46,7 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 ### Testing Lifecycle
 
 - **Requirements Analysis** finds ambiguities, risks, omissions, and testability concerns, then publishes reviewed comments through the active work-management provider.
-- **Test Case Design** generates editable positive, negative, boundary, and edge-case scenarios and publishes approved cases to Azure Test Plans or the configured Jira artifact backend.
+- **Test Case Design** generates editable positive, negative, boundary, and edge-case scenarios and publishes approved cases to Azure Test Plans or the configured Jira artifact backend. Generated cases show their requirement, derived, project-rule, or suggested basis; optional suggestions start unchecked for review.
 - **Test Gap Analysis** maps requirement details and acceptance criteria to linked test artifacts where supported, identifies missing coverage, and creates selected additions.
 - **Test Execution** expands an Azure Test Suite tree and executes its Test Plan steps through a bounded Playwright MCP agent. Results and trace artifacts remain in iTestFlow for review until a user explicitly publishes outcomes to Azure DevOps.
 - **Report Bug** converts QA notes into reviewed bugs through the active work-management provider with fields, relationships, and attachments.

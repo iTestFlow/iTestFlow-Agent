@@ -26,6 +26,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { isSupportedTestCase, testCaseBasisLabels } from "@/modules/test-case-design/test-case-basis";
 import { cn } from "@/lib/utils";
 import type { GeneratedTestCase } from "@/components/workflow/test-intelligence-types";
 import { SectionCard, ToneBadge, formatEnumLabel } from "@/components/workflow/test-intelligence-shared";
@@ -77,6 +78,7 @@ export function GeneratedTestCasesReview({
   description = "Review generated test cases, expand details, and edit only the cases that need refinement.",
   allowAdd = true,
   allowDelete = true,
+  mode = "standard",
 }: {
   testCases: GeneratedTestCase[];
   onChange: (testCases: GeneratedTestCase[]) => void;
@@ -86,7 +88,9 @@ export function GeneratedTestCasesReview({
   description?: string;
   allowAdd?: boolean;
   allowDelete?: boolean;
+  mode?: "standard" | "test-design";
 }) {
+  const testDesignMode = mode === "test-design";
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [priorityFilter, setPriorityFilter] = useState("all");
@@ -109,7 +113,10 @@ export function GeneratedTestCasesReview({
   );
   const filteredCases = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return testCases.filter((testCase) => {
+    const orderedCases = testDesignMode
+      ? [...testCases].sort((first, second) => Number(isSupportedTestCase(second)) - Number(isSupportedTestCase(first)))
+      : testCases;
+    return orderedCases.filter((testCase) => {
       if (typeFilter !== "all" && testCase.type !== typeFilter) return false;
       if (priorityFilter !== "all" && String(testCase.priority) !== priorityFilter) return false;
       if (tagFilter !== "all" && !(testCase.tags ?? []).includes(tagFilter)) return false;
@@ -118,7 +125,7 @@ export function GeneratedTestCasesReview({
       if (!query) return true;
       return searchableTestCaseText(testCase).includes(query);
     });
-  }, [editedOnly, editedSet, priorityFilter, search, selectedOnly, selectedSet, tagFilter, testCases, typeFilter]);
+  }, [editedOnly, editedSet, priorityFilter, search, selectedOnly, selectedSet, tagFilter, testCases, typeFilter, testDesignMode]);
 
   const stats = useMemo(() => {
     const invalid = testCases.filter((testCase) => !validateGeneratedTestCase(testCase).valid).length;
@@ -134,8 +141,9 @@ export function GeneratedTestCasesReview({
   }, [testCases]);
 
   const visibleIds = filteredCases.map((testCase) => testCase.id);
-  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedSet.has(id));
-  const someVisibleSelected = visibleIds.some((id) => selectedSet.has(id));
+  const selectableVisibleIds = testDesignMode ? filteredCases.filter(isSupportedTestCase).map((testCase) => testCase.id) : visibleIds;
+  const allVisibleSelected = selectableVisibleIds.length > 0 && selectableVisibleIds.every((id) => selectedSet.has(id));
+  const someVisibleSelected = selectableVisibleIds.some((id) => selectedSet.has(id));
   const filtersActive =
     Boolean(search.trim()) ||
     typeFilter !== "all" ||
@@ -166,11 +174,11 @@ export function GeneratedTestCasesReview({
 
   function toggleVisibleSelection() {
     if (allVisibleSelected) {
-      const visibleSet = new Set(visibleIds);
+      const visibleSet = new Set(selectableVisibleIds);
       onSelectedIdsChange(selectedIds.filter((id) => !visibleSet.has(id)));
       return;
     }
-    onSelectedIdsChange([...new Set([...selectedIds, ...visibleIds])]);
+    onSelectedIdsChange([...new Set([...selectedIds, ...selectableVisibleIds])]);
   }
 
   function removeSelected() {
@@ -210,6 +218,13 @@ export function GeneratedTestCasesReview({
         byType={stats.byType}
       />
 
+      {testDesignMode ? (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-border px-4 py-3 text-sm" aria-label="Test case basis counts">
+          <span>Supported: {testCases.filter(isSupportedTestCase).length}</span>
+          <span>Suggested: {testCases.filter((testCase) => testCase.basis?.kind === "suggested").length}</span>
+          <span>Selected: {testCases.filter((testCase) => selectedSet.has(testCase.id)).length}</span>
+        </div>
+      ) : null}
       <div className="space-y-3 border-b border-border p-4">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex min-w-0 flex-1 flex-col gap-2 md:flex-row md:flex-wrap md:items-center">
@@ -218,7 +233,7 @@ export function GeneratedTestCasesReview({
               <Input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search ID, title, steps, or expected results"
+                placeholder={testDesignMode ? "Search ID, title, basis, steps, or expected results" : "Search ID, title, steps, or expected results"}
                 aria-label="Search generated test cases"
                 className="h-8 pl-8"
               />
@@ -258,10 +273,11 @@ export function GeneratedTestCasesReview({
             <Checkbox
               checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false}
               onCheckedChange={toggleVisibleSelection}
-              aria-label="Select all visible test cases"
+              aria-label={testDesignMode ? "Select all supported visible" : "Select all visible test cases"}
+              disabled={testDesignMode && !selectableVisibleIds.length}
             />
-            Select all visible
-            <span className="text-xs font-normal text-muted-foreground">({filteredCases.length})</span>
+            {testDesignMode ? "Select all supported visible" : "Select all visible"}
+            <span className="text-xs font-normal text-muted-foreground">({selectableVisibleIds.length})</span>
           </label>
           <div className="flex flex-wrap gap-2">
             <Button
@@ -303,6 +319,7 @@ export function GeneratedTestCasesReview({
           <div key={testCase.id} id={`test-case-${encodeURIComponent(testCase.id)}`} className="scroll-mt-4">
           <GeneratedTestCaseReviewCard
             testCase={testCase}
+            showBasis={testDesignMode}
             onChange={updateCase}
             selected={selectedSet.has(testCase.id)}
             onSelectedChange={(selected) => {
@@ -372,6 +389,7 @@ export function GeneratedTestCaseReviewCard({
   editLabel = "Edit",
   footer,
   className,
+  showBasis = false,
 }: {
   testCase: GeneratedTestCase;
   onChange: (testCase: GeneratedTestCase) => void;
@@ -387,6 +405,7 @@ export function GeneratedTestCaseReviewCard({
   editLabel?: string;
   footer?: ReactNode;
   className?: string;
+  showBasis?: boolean;
 }) {
   const [internalExpanded, setInternalExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -458,6 +477,7 @@ export function GeneratedTestCaseReviewCard({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-xs font-semibold text-primary">{testCase.id}</span>
+                {showBasis ? <ToneBadge tone={testCase.basis?.kind === "suggested" ? "warning" : "neutral"}>{testCase.basis ? testCaseBasisLabels[testCase.basis.kind] : "Source not recorded"}</ToneBadge> : null}
                 {edited ? <ToneBadge tone="draft">Edited</ToneBadge> : null}
                 {!validation.valid ? <ToneBadge tone="error">{validation.issues.length} issue{validation.issues.length === 1 ? "" : "s"}</ToneBadge> : null}
               </div>
@@ -502,10 +522,11 @@ export function GeneratedTestCaseReviewCard({
           </div>
         </div>
 
+        {showBasis && testCase.basis ? <p className="mt-3 text-sm leading-6 text-muted-foreground">{testCase.basis.explanation}</p> : null}
         {!editing ? (
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             <PreviewSection label="Preconditions" value={testCase.preconditions || "No preconditions supplied."} />
-            <PreviewSection label="Expected outcome" value={expectedOutcome} />
+            <PreviewSection label={showBasis && testCase.basis?.kind === "suggested" ? "Proposed expected outcome" : "Expected outcome"} value={expectedOutcome} />
           </div>
         ) : null}
       </div>
@@ -524,7 +545,7 @@ export function GeneratedTestCaseReviewCard({
           {editing ? (
             <TestCaseEditForm draft={draft} onChange={setDraft} onSave={saveEditing} onCancel={cancelEditing} />
           ) : (
-            <TestCaseDetails testCase={testCase} />
+            <TestCaseDetails testCase={testCase} showBasis={showBasis} />
           )}
         </div>
       ) : null}
@@ -615,14 +636,15 @@ function PreviewSection({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TestCaseDetails({ testCase }: { testCase: GeneratedTestCase }) {
+function TestCaseDetails({ testCase, showBasis }: { testCase: GeneratedTestCase; showBasis: boolean }) {
   const executionSteps = getExecutionSteps(testCase);
   const expectedOutcome = executionSteps.at(-1)?.expectedResult;
-  const traceabilityGroups = [
+  const traceabilityGroups: Array<[string, string[] | undefined]> = [
+    ...(showBasis ? [["Basis sources", testCase.basis?.sourceReferences] as [string, string[] | undefined]] : []),
     ["Acceptance criteria", testCase.relatedAcceptanceCriteria],
     ["Business rules", testCase.relatedBusinessRules],
     ["Modules / dependencies", testCase.relatedModules],
-  ] as const;
+  ];
 
   return (
     <div className="space-y-5 p-4">
@@ -635,7 +657,7 @@ function TestCaseDetails({ testCase }: { testCase: GeneratedTestCase }) {
       </div>
 
       {testCase.testData ? <DetailSection label="Test Data" value={testCase.testData} /> : null}
-      {expectedOutcome ? <DetailSection label="Expected Outcome" value={expectedOutcome} /> : null}
+      {expectedOutcome ? <DetailSection label={showBasis && testCase.basis?.kind === "suggested" ? "Proposed expected outcome" : "Expected Outcome"} value={expectedOutcome} /> : null}
 
       {traceabilityGroups.some(([, values]) => values?.length) ? (
         <div className="grid gap-4 lg:grid-cols-3">
@@ -960,6 +982,9 @@ function searchableTestCaseText(testCase: GeneratedTestCase) {
     testCase.testData,
     testCase.type,
     testCase.category,
+    testCase.basis ? testCaseBasisLabels[testCase.basis.kind] : "Source not recorded",
+    testCase.basis?.explanation,
+    ...(testCase.basis?.sourceReferences ?? []),
     ...(testCase.tags ?? []),
     ...(testCase.relatedAcceptanceCriteria ?? []),
     ...(testCase.relatedBusinessRules ?? []),

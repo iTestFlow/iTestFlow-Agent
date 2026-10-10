@@ -580,3 +580,36 @@ describe("compiled knowledge selection at corpus scale", () => {
     expect(selection.crossDependencies).toBe(knowledge.crossDependencies.length);
   });
 });
+
+
+describe("Test Design actual source manifest", () => {
+  it("uses only rendered work items and knowledge entries, never provenance links or focus values", () => {
+    const input = { currentProject, targetRequirement, outputContract, selectedContext: [], projectKnowledgeBase: knowledgeBase(), maxInputTokens: 8000,
+      relatedWorkItemsFloor: 1, relatedWorkItems: Array.from({ length: 20 }, (_, index) => ({ id: `related-${index}`, title: "Related checkout", description: "context ".repeat(2000) })) };
+    const result = buildTestCaseGenerationMarkdownPrompt(input);
+    expect(result.includedSourceIds).toContain("WI:101");
+    expect(result.includedSourceIds).toContain("WI:related-0");
+    expect(result.includedSourceIds).not.toContain("WI:related-19");
+    expect(result.includedSourceIds).not.toContain("WI:610");
+    expect(result.includedSourceIds).not.toContain("functional");
+    const includedRules = result.relevantProjectKnowledgeBase!.businessRules.map((item) => `KB:business_rule:${item.id}`);
+    expect(result.includedSourceIds.filter((id) => id.startsWith("KB:business_rule:"))).toEqual(includedRules);
+    for (const id of includedRules) expect(result.prompt).toContain(`Source ID: ${id}`);
+  });
+  it("includes supplied images only in automatic mode and omits budget-excluded attachment text", () => {
+    const input = { currentProject, targetRequirement, outputContract, selectedContext: [], maxInputTokens: 4000,
+      storyAttachments: [
+        { id: "large", fileName: "large.txt", text: "Evidence ".repeat(10000) },
+        { id: "omitted", fileName: "omitted.txt", text: "Omitted evidence" },
+        { id: "visual", fileName: "screen.png", visualCount: 1 },
+      ] };
+    const manual = buildTestCaseGenerationMarkdownPrompt(input);
+    expect(manual.includedSourceIds).toContain("SA:large");
+    expect(manual.includedSourceIds).not.toContain("SA:omitted");
+    expect(manual.includedSourceIds).not.toContain("SA:visual");
+    const automatic = buildTestCaseGenerationMarkdownPrompt({ ...input, includeAttachmentVisuals: true });
+    expect(automatic.includedSourceIds).toContain("SA:visual");
+    expect(automatic.includedSourceIds).not.toContain("SA:omitted");
+    expect(manual.includedSourceIds).not.toContain("EXTRA:instructions");
+  });
+});

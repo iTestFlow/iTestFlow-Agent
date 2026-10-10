@@ -323,6 +323,7 @@ function buildWorkflowPromptDraft(input: {
     case "test_case_generation":
       return buildTestCaseGenerationPromptDraft({
         ...draftInput,
+        includeAttachmentVisuals: input.input.mode === "auto",
         storyAttachments: input.storyAttachments,
         options: input.input.options,
       });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { buildAzurePublishedSteps, toAzureStepsXml } from "./azure-devops-test-case-payload";
+import { buildAzurePublishedSteps, buildAzureTestCasePatch, toAzureStepsXml } from "./azure-devops-test-case-payload";
+import { withSuggestionOrigin } from "@/modules/test-case-design/test-case-basis";
 import type { TestStep } from "./azure-devops-types";
 
 const steps: TestStep[] = [
@@ -40,4 +41,13 @@ describe("buildAzurePublishedSteps", () => {
     ]);
     expect(published[1]?.expectedResult).toBe("Required test setup and data are ready for use.");
   });
+  it("carries the suggestion origin in Azure description without changing expected results", () => {
+    const testCase = withSuggestionOrigin({ localId: "optional", targetUserStoryId: "101", title: "Keyboard path", priority: 2 as const, description: "Review keyboard path", steps,
+      basis: { kind: "suggested" as const, explanation: "Assume logical focus order for checkout controls.", sourceReferences: ["WI:101"] } });
+    const patch = buildAzureTestCasePatch(testCase);
+    expect(patch.find((item) => item.path === "/fields/System.Description")?.value).toBe(testCase.description);
+    expect(testCase.description).toContain("Suggested coverage — proposed assumption:");
+    expect(patch.find((item) => item.path === "/fields/Microsoft.VSTS.TCM.Steps")?.value).toBe(toAzureStepsXml(steps));
+  });
+
 });
