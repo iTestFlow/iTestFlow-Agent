@@ -5,8 +5,9 @@ accountable for; capability level says how much intelligence the assignment
 earns. The two are chosen separately — see [delegation](delegation.md).
 
 Claude and Codex both expose a subagent primitive, and each ships a role
-adapter per role that names one of these sections: `.claude/agents/*.md` and
-`.codex/agents/*.toml`. A host without that primitive carries the same role text
+adapter per role that names one of these sections: Claude agents markdown
+adapters and Codex agents TOML adapters (installer-generated; see INSTALL.md).
+A host without that primitive carries the same role text
 in the dispatch prompt, so the resolved policy is identical either way. Adding a
 role means adding both adapters.
 
@@ -20,9 +21,13 @@ external lifecycle only within granted authority. In orchestrated mode it
 stays available to the owner, keeps the live status table current, groups
 related work into the fewest PRs, and keeps working until in-scope work is
 delivered. Follow [orchestrator follow-through](orchestrator-follow-through.md).
-Load [process-owner / Scrum-master](process-owner-scrum-master.md) in
-orchestrated mode. Its standing Scrum-master duty is to automatically inspect
-and adapt live work on that policy's scope-selected cadence.
+Load [process-owner](process-owner-scrum-master.md) in orchestrated mode
+(Scrum-master is an alias only when the user explicitly asks; "product owner"
+maps to process-owner). Its standing process-owner duty is to automatically
+inspect and adapt live work on that policy's scope-selected cadence, including
+[adaptive follow-up](process-owner-scrum-master.md#adaptive-follow-up-orchestrator-duty)
+when the owner asks for unattended babysitting or dynamic follow-ups. Status
+reports use the [status report format](process-owner-scrum-master.md#status-report-format).
 
 ## Implementer
 
@@ -37,6 +42,28 @@ Read-only. Reads the full diff, verifies claims, checks spec first and quality
 second, searches for verification gaps, and returns actionable `file:line`
 findings. Never edits. When acting as the independent adversarial pass, it is
 prompted to refute the work and is never the agent that produced it.
+
+Use these headings, in order:
+
+### regression
+
+Behavior that used to work and no longer does.
+
+### missing-adoption
+
+The required caller, host, or document does not use the new contract.
+
+### broken-verification
+
+A check does not exercise the shipped behavior.
+
+### unbound-check
+
+A check can pass while the behavior is absent.
+
+### verdict
+
+`pass` or `fail`. Fail only for one of the four headings above.
 
 ## Tester
 

@@ -39,20 +39,14 @@ tsconfig.tsbuildinfo
 .chaos-engine-hosts.*
 .chaos-engine-directory-claim-*
 graphify-out/
-.memory/*
-!.memory/
-!.memory/config.json
-!.memory/events.jsonl
-!.memory/schema/
-!.memory/schema/*.schema.json
-!.memory/memory/
-.memory/memory/*
-!.memory/memory/.gitkeep
-!.memory/relations/
-.memory/relations/*
-!.memory/relations/.gitkeep
-!.chaos-engine/
-!.chaos-engine/**
+# Durable native Memory is tracked. Runtime/private only:
+.memory/index/
+.memory/context/
+.memory/exports/
+.memory/recovery/
+.memory/.backup/
+.memory/.lock
+.memory/private/
 .chaos-engine/**/__pycache__/
 !.agents/
 !.agents/plugins/
@@ -88,6 +82,8 @@ graphify-out/
 !plugins/caveman/**
 !plugins/ponytail/
 !plugins/ponytail/**
+!plugins/icm-architect/
+!plugins/icm-architect/**
 !.mcp.json
 
 # Machine-local installer and Graphify artifacts remain untracked after the

@@ -1,6 +1,6 @@
 {
   "body_path": "memory/syntheses/product-intent.md",
-  "content_hash": "sha256:debb7fd780b2ad583e2a2521b19f32d55b4026e02b35502e7168252e5ae7f51e",
+  "content_hash": "sha256:ea6bb2a5afb9ceeea49744ae1898c9d005e53367cf549368a52245c832e84e40",
   "created_at": "2026-08-12T23:13:53+03:00",
   "evidence": [
     {
@@ -12,21 +12,7 @@
       "kind": "source"
     }
   ],
-  "facets": {
-    "category": "product-intent",
-    "load_modes": [
-      "coding",
-      "architecture",
-      "onboarding"
-    ]
-  },
-  "id": "synthesis.product-intent",
-  "scope": {
-    "branch": null,
-    "kind": "project",
-    "project": "project.itestflow-agent",
-    "task": null
-  },
+  "id": "feature.product-intent",
   "source": {
     "kind": "cli",
     "task": "Proposed bootstrap memory patch from deterministic repository analysis"
@@ -37,6 +23,6 @@
     "product-intent"
   ],
   "title": "Product intent",
-  "type": "synthesis",
+  "type": "feature",
   "updated_at": "2026-08-12T23:13:53+03:00"
 }

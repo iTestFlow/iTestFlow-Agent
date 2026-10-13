@@ -1,5 +1,10 @@
 # Delegation
 
+Cloud implementers write code directly; local runtimes are optional for narrow mechanical or offline jobs, and a local runtime never reviews its own diff.
+
+Default is single-thread: the main agent does the work itself. Delegate only
+when the owner enables delegation for the session or project.
+
 Delegation distributes work, never responsibility. Select capability from
 uncertainty, blast radius, and reversibility. Never bind policy to a vendor,
 product name, or runtime setting.
@@ -26,6 +31,24 @@ before using it.
 Spec-exact repetitive edits, inventory, formatting, deterministic
 transformation, and log or result triage. The `helper` adapters carry the
 mechanical-helper role from [roles](roles.md) to both subagent hosts.
+
+Treat a READY local FreeToken/OpenCode coder as a **mechanical one-command
+runner**, not a designer. Orchestrator does not write product chunks; it hands
+one exact command. EXIT 0 with zero tool calls is writer failure: run that
+command yourself; do not retry an oversized prompt. ChaosEngine never
+`ft launch` / `ft serve` and never pins model ids in receipts. Independent
+adversarial review stays on the host **most-intelligent** subagent, not the
+local model.
+
+
+## Research / explore firewall
+
+For research or multi-file explore, prefer an isolated subagent (or host Task)
+over dumping explore noise into the parent. Return contract and when-to-spawn
+rules live in [context firewall](context-firewall.md). Isolation is for context
+economy (HumanLayer), not org-chart role-play. Hosts without subagents distill
+in-place under the same return contract. Never treat this as always-on
+observation.
 
 ## Main-thread duties
 
@@ -66,25 +89,25 @@ the same files and cannot be sequenced, or when the work truly belongs to
 different categories. If a delegate omitted an actionable leftover, file the
 missing issue or Memory as an owner-command; do not implement the leftover work.
 
-After every dispatch and after every subagent finishes, post or update a status
-table the owner can read without reconstructing the session. Include completed,
-in progress, planned, and out of scope rows so out of scope is not silently
-dropped. Enhance with blocker, PR/issue links, HEAD SHA, and root-learning
-handoff (`findings` / `nothing durable`). Do not put secrets in the
-table.
-
-| ID / work item | Mode stream | Status | Owner / agent | Dependency | Last update | Details / evidence | Next action |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-
-Status values at least: `planned`, `in progress`, `blocked`, `review`,
-`completed`, `out of scope`.
+After every dispatch and after every subagent finishes, post or update the
+**default live status table** from
+[process-owner status report format](process-owner-scrum-master.md#status-report-format)
+so the owner can read progress without reconstructing the session. Use columns
+`Task ID | Ticket(s) | PR | Scope | Status | Elapsed | ETA` with Status
+`Done` | `InProgress` | `ToDo` (optionally `Blocked`). Include out-of-scope rows
+explicitly in Scope/Status rather than dropping them. Enhance Details in Scope
+or adjacent prose with blocker notes, HEAD SHA, and root-learning handoff
+(`findings` / `nothing durable`) when needed. Do not put secrets in the table.
 
 ## Independent adversarial review
 
 Review is optional and selected explicitly during planning; recommend it and
 default it on. If approved, review complete pull-request implementation only
 after final scope commit plus automated CI/comment fixes. Never review
-individual implementation steps. Independence remains mandatory when enabled:
+individual implementation steps. Review is mandatory, never skipped for time,
+when a PR changes an existing test contract or PR CI does not run the changed
+surface ([UI delivery](ui-delivery.md)); one reviewer, one round is enough.
+Independence remains mandatory when enabled:
 
 - The reviewer is a **separate agent instance, never the author** of the work.
 - Choose a disposable review mechanism. When the host provides reliable terminal
@@ -98,6 +121,7 @@ individual implementation steps. Independence remains mandatory when enabled:
   prose claiming the one-shot review happened is not evidence.
 - The reviewer is prompted to **refute** the work — find where it is wrong,
   unverified, or over-claimed — not to approve it.
+- The reviewer uses the headings `regression`, `missing-adoption`, `broken-verification`, `unbound-check`, and `verdict` from [roles](roles.md#reviewer).
 - The reviewer is handed **the exact revision under review** and a way to read
   it that does not touch the shared working tree: `gh pr diff <n>`,
   `git show <ref>:<path>`, or its own `git worktree add`. A read-only reviewer
@@ -115,6 +139,16 @@ individual implementation steps. Independence remains mandatory when enabled:
 
 A self-review is not a review. Neither is a delegate's own report on its own
 work.
+
+When implementation is delegated to a local runtime (FreeToken / OpenCode),
+OmniRoute, or any writer that is not the host session model, the orchestrator
+**must** still trigger independent adversarial review as a **new instance of
+the same host model** (native reviewer subagent). Never assign that review to
+the local or OmniRoute writer. Transport does not change the reviewer.
+When FreeToken is READY and the owner selected orchestrator mode, the
+orchestrator must not implement product or overlay chunks; dispatch a
+file-disjoint local writer. OPENCODE `context_length_exceeded` is a writer
+failure: shrink the prompt, do not retry the same text.
 
 ### Recording a finding
 
@@ -144,9 +178,9 @@ a row that already exists.
 | `unspecified-predicate` | the rule re-guesses a decision the ticket never made | nothing -- it needs a ruling on the issue |
 | `credit-not-in-diff` | prose credits work the diff does not contain | the credit scan in `validate_pr_closing_keywords.py` |
 | `sibling-left` | the instance was fixed and its twin was not | the docstring duplicate scan in `validate_agent_guidance.py` |
-| `fires-on-correct-work` | the gate refuses work that satisfied it | nothing yet, and it is past three: R19 refusing an out-of-repo write, R13 refusing an already-merged branch (#4569), and the three in #4559 item 6 -- so it has earned that item's check, which runs every new rule against the branch adding it |
+| `fires-on-correct-work` | the gate refuses work that satisfied it | nothing yet, and it is past three: R19 refusing an out-of-repo write, R13 refusing an already-merged branch, and three more recorded refusals -- so it has earned that item's check, which runs every new rule against the branch adding it |
 | `live-state-in-tests` | the test's answer depends on the machine | `StopTestsAreIndependentOfLiveStateTest` |
-| `wrong-width-check` | the command measured is not the command that matters | nothing -- see #4559 item 3 |
+| `wrong-width-check` | the command measured is not the command that matters | nothing yet |
 
 ### Review disposition
 

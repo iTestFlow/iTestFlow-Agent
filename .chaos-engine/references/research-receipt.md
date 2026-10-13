@@ -1,6 +1,7 @@
 # Research receipt
 
 Phase-gate map: [delivery-phase-gates.md](delivery-phase-gates.md).
+Broad research / multi-file explore: [context firewall](context-firewall.md).
 
 Load this before the first implementation mutation, except mechanical one-file
 reversible work: name the eight steps, then record store irrelevance without
@@ -28,11 +29,17 @@ Do these in order:
 8. Record a concrete plan and deferred consolidated proof commands in the issue
    for issue-backed work, otherwise in transient working context.
 
+Every receipt carries one retrieve line:
+`retrieve: used|skipped(<reason>)|exempt(harness)`. Instruction-only hosts
+(OpenCode, Cursor, Grok Bot, Copilot cloud) have no guard, so this field is
+their enforcement; the Learning Session flags a missing field instead of
+blocking ([retrieve-first](retrieve-first.md)).
+
 This list is the research receipt. Memory, MemPalace, and Graphify are advisory
 for ordinary tasks: store failure records `degraded` and never blocks work.
 Missing non-store evidence blocks implementation. Live evidence outranks every
 index or recollection; reuse proven solutions before inventing one.
-The dated [adoption matrix](../RESEARCH.md) records the portable harness
+The dated adoption matrix (repo-only `chaos-engine/RESEARCH.md`) records the portable harness
 baseline; revalidate a row when its relevant discovery, schema, or install
 contract changes.
 
@@ -67,3 +74,24 @@ and are enforced by `tests/scripts/test_chaos_engine_installer.py`,
 `tests/scripts/test_chaos_engine_hosts.py`,
 `tests/scripts/test_chaos_engine_learning.py`, and
 `tests/scripts/test_chaos_engine_research.py`.
+
+## Instruction-only hosts
+
+OpenCode and Cursor load `AGENTS.md`; Grok Bot and other independent bots start
+from [bot entry](bot-entry.md). None runs a project hook, so the
+`retrieve:` field replaces the read gate. Write the receipt to
+`.chaos-engine-state/research-receipt.md` (untracked); `tool.py retrieve`
+also fills the retrieve ledger. `learning_session.py finalize --host <id>`
+flags `missing-retrieve-receipt` when neither exists; it never blocks.
+
+Receipt shims: Copilot cloud opens it in its setup job; install and `repair --component hooks` wire the
+[receipt shim](../hooks/receipt_shim.py) for each host with a project marker or
+CLI on PATH, and uninstall removes it; it opens a pending receipt before the first
+project read, never blocks, never overwrites, and never fills `retrieve:`.
+
+| Host | Native surface | Verdict |
+| --- | --- | --- |
+| OpenCode | `.opencode/plugins/` `tool.execute.before` | Shipped: plugin runs the shim before read tools. |
+| Cursor | `.cursor/hooks.json` `beforeReadFile`, `beforeShellExecution` | Shipped: hook runs the shim and allows. |
+| Grok Bot | cloud box session, no project hook runtime | Receipt sink only. |
+| Copilot cloud | `copilot-setup-steps` job on a fresh clone | Shipped: the job runs `receipt_shim.py ensure --host copilot-cloud` before the agent starts; the overlay stays absent (`missing-overlay`). |

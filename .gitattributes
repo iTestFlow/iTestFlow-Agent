@@ -14,6 +14,7 @@
 /plugins/chaos-engine/** text eol=lf
 /plugins/caveman/** text eol=lf
 /plugins/ponytail/** text eol=lf
+/plugins/icm-architect/** text eol=lf
 /AGENTS.md text eol=lf
 /CLAUDE.md text eol=lf
 /GEMINI.md text eol=lf

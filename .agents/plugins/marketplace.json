@@ -39,6 +39,18 @@
         "path": "./plugins/ponytail",
         "source": "local"
       }
+    },
+    {
+      "category": "Productivity",
+      "name": "icm-architect",
+      "policy": {
+        "authentication": "ON_INSTALL",
+        "installation": "AVAILABLE"
+      },
+      "source": {
+        "path": "./plugins/icm-architect",
+        "source": "local"
+      }
     }
   ]
 }

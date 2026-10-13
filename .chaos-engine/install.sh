@@ -36,18 +36,17 @@ parse_chaos_engine_raw_url() {
   repository=${rest%%|*}
   path=${rest#*|}
   valid_repository "$repository" || return 1
+  # A ref may contain '/' (feature/x, refs/heads/feature/x). The installer lives
+  # either in the nested chaos-engine/ folder or at the repository root, so the
+  # ref is everything before that folder (#6495).
   case "$path" in
-    refs/heads/*|refs/tags/*)
-      ref=$(printf '%s\n' "$path" | cut -d/ -f1-3)
-      prefix=$(printf '%s\n' "$path" | cut -d/ -f4-)
+    */chaos-engine)
+      ref=${path%/chaos-engine}
+      prefix=chaos-engine
       ;;
     *)
-      ref=${path%%/*}
-      if [ "$path" = "$ref" ]; then
-        prefix=
-      else
-        prefix=${path#*/}
-      fi
+      ref=$path
+      prefix=
       ;;
   esac
   if [ -n "$prefix" ]; then
@@ -92,14 +91,23 @@ EOF
 with_maven_tools=
 maven_tools_mode=native
 interactive=
-without_flags=
+verbose=
+forwarded_flags=
 for argument in "$@"; do
   [ "$argument" = "--with-maven-tools" ] && with_maven_tools=1
   [ "$argument" = "--maven-tools-mode=docker" ] && maven_tools_mode=docker
   [ "$argument" = "--interactive" ] && interactive=1
+  [ "$argument" = "--verbose" ] && verbose=1
   case "$argument" in
-    --without-memory|--without-mempalace|--without-graphify|--without-ponytail|--without-headroom|--without-caveman)
-      without_flags="$without_flags $argument"
+    --without-memory|--without-mempalace|--without-graphify|--without-ponytail|--without-caveman)
+      forwarded_flags="$forwarded_flags $argument"
+      ;;
+    --with-maven-tools)
+      ;;
+    # Optional add-ons (--with-<name> / --without-<name>): none is installed by
+    # default; bootstrap.py validates names against the shipped manifests.
+    --with-?*|--without-?*)
+      forwarded_flags="$forwarded_flags $argument"
       ;;
   esac
 done
@@ -109,6 +117,10 @@ if command -v python3 >/dev/null 2>&1; then
 elif command -v python >/dev/null 2>&1; then
   python="python"
 else
+  python=
+fi
+# Python 3.11 is the supported floor; an older interpreter falls back to uv-managed Python.
+if [ -n "$python" ] && ! "$python" -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
   python=
 fi
 
@@ -193,8 +205,8 @@ if [ -z "$python" ]; then
   tar -xzf "$uv_archive" -C "$work"
   uv="$work/uv-${uv_target}/uv"
   [ -x "$uv" ] || fail "uv archive is missing its executable"
-  export UV_PYTHON_INSTALL_DIR="$work/python"
-  "$uv" python install --no-progress
+  export UV_PYTHON_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/chaos-engine/python"
+  "$uv" python install 3.14 --no-progress
   set -- "$uv" run --no-project --managed-python "$bootstrap" --project "$project" --repository "$repository" --branch "$branch"
 else
   set -- "$python" "$bootstrap" --project "$project" --repository "$repository" --branch "$branch"
@@ -202,8 +214,9 @@ fi
 [ -n "$with_maven_tools" ] && set -- "$@" --with-maven-tools
 [ "$maven_tools_mode" = "docker" ] && set -- "$@" --maven-tools-mode docker
 [ -n "$interactive" ] && set -- "$@" "--interactive"
+[ -n "$verbose" ] && set -- "$@" "--verbose"
 # shellcheck disable=SC2086
-for without_flag in $without_flags; do
-  set -- "$@" "$without_flag"
+for forwarded_flag in $forwarded_flags; do
+  set -- "$@" "$forwarded_flag"
 done
 "$@"

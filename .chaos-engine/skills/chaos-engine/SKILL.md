@@ -9,278 +9,114 @@ license: MIT
 
 # ChaosEngine
 
-Single always-loaded portable entrypoint for every host, main thread, and delegate. Host
-adapters point here and never restate policy. You are the router: size the work,
-pick the one surface it needs, load that surface, and work under the contract
-below.
+Core card for every host and main thread; delegates load the
+[delegate card](../../references/delegate-card.md). Adapters never restate
+policy. Identity: [identity](../../identity.md).
 
 ## Iron laws
 
-1. Research and plan before implementation. Complete the
-   [research receipt](../../references/research-receipt.md) for every task;
-   triage changes depth, never ordering.
+1. Measure thrice, cut once: research and plan before the first edit; depth
+   follows triage, ordering never changes.
 2. Evidence over inference. Inspect or run before claiming.
-3. Complete implementation before its consolidated Check phase. Never claim
-   success before that Check runs.
-4. Never weaken, delete, or rewrite a test to reach green. When a test and the
-   requirement disagree, stop and report which one you believe is wrong.
+3. Never weaken, delete, or rewrite a test to reach green. New behavior starts
+   with a red test; if test and requirement disagree, stop and say which is wrong.
+4. Smallest correct change, industry-standard output. Complete implementation
+   before its consolidated Check phase.
 5. Never claim a check you did not run.
-6. During planning, ask whether to enable terminal adversarial review;
-   recommend it and default it on, but owner confirmation controls. If enabled,
-   run at most two rounds only after complete implementation, final scope
-   commit, and automated CI/comment fixes. No hook may force tests or reviews
-   between actions or before that terminal phase.
+6. Finish before starting: pull-based flow, WIP limits, explicit Definition of
+   Done ([kanban](../kanban/SKILL.md)). Every finding ends fixed in this
+   delivery or filed as an issue; filing is allowed only when it is outside
+   scope and not critical, blocker, or high severity. Nothing stays only in
+   chat, a report, or a local file.
+7. Safety and ethics control: preserve user work and secrets; irreversible or
+   externally visible actions need explicit owner authority.
 
 ## Triage
 
-Before task-specific discovery, answer both in one line each. They live here,
-not behind a load, so a trivial task never pays to learn it was trivial.
+Answer in one line each before task-specific discovery:
 
-- **Blast radius** — one file, one module, or a public contract and its callers.
-- **Reversibility** — undone by deleting the diff, or does it touch persisted
-  data, a published artifact, or an external system?
+- **Blast radius**: one file, one module, or a public contract and its callers.
+- **Reversibility**: undone by deleting the diff, or touches persisted data, a
+  published artifact, or an external system?
 
-Take depth from the worse answer:
-
-| Triage result | Depth |
+| Worse answer | Depth |
 | --- | --- |
-| One file, reversible | Load [consult-first](../../references/consult-first.md); keep the complete receipt concise. |
-| One module, reversible | Load [consult-first](../../references/consult-first.md); use a normal full pass. |
-| Public contract, many callers, or hard to reverse | Load [consult-first](../../references/consult-first.md); use the executable specification and full pass. |
+| One file, reversible | Read, fix, prove. No plan document. |
+| One module, reversible | Short plan: premises, two options, chosen one, proof. |
+| Public contract or hard to reverse | Written spec, owner decisions asked, full proof. |
 
-Re-triage when a premise turns out false, the third fix for one symptom fails,
-the blast radius grows, or the user adds scope.
+Re-triage when a premise is false, a third fix fails, or scope grows. Before
+the first broad search or unnamed read in a project area, run one
+`python3 .chaos-engine/tool.py retrieve --store graphify|mempalace "<q>"`
+(graphify: structure; mempalace: history) and record `retrieve: used` or
+`skipped(<reason>)` ([retrieve-first](../../references/retrieve-first.md)).
+Bound reads; prefer one script.
 
-Retrieval depth reads off the same answer. Load
-[retrieve-first](../../references/retrieve-first.md) before broad manual discovery
-when a store can shorten the task, and at completion to keep the stores from
-drifting. Bound tool reads and prefer one script over a long tool chain:
-[context economy](../../references/context-economy.md) / [token budget modes](../../references/token-budget-modes.md) and
-[script first](../../references/script-first.md).
-When this entrypoint was loaded through a role adapter, load
-[retrieve-first](../../references/retrieve-first.md) before task-specific discovery,
-including one-file reversible work.
+## Plan, then go
 
-## Implementation preflight
+During planning, ask only questions whose answer changes the plan, and never
+one the repository or sources can answer. Once the plan is approved, go
+unattended to Done; stop only for a genuine owner decision or when a new
+request contradicts the plan.
 
-Load the [research receipt](../../references/research-receipt.md) before the
-first implementation mutation. Mechanical one-file reversible work names its
-eight steps, then records store irrelevance without querying.
+## Implement
 
-## Red flags
+Load both companion cards at task start, before discovery:
+[Caveman ultra](../../companions/caveman-ultra.md) (chat, internal notes,
+handoffs) and [Ponytail ultra](../../companions/ponytail-ultra.md). Bots
+without hooks start from [bot entry](../../references/bot-entry.md). Off only
+with `stop caveman`, `stop ponytail`, or `normal mode`. Vendor bodies load only
+on explicit invocation.
 
-Stop and satisfy the unmet law when these appear: "should work", "probably
-fine", "just this once", "I will add the test after", "the delegate said it
-passed", "close enough", "no need to run it", "the check covers it".
+## Check and deliver
 
-## Project profile
-
-Load the adapter-selected profile before task work. The
-[portable profile](../../profiles/portable/entrypoint.md) is default;
-the [profiles catalog](../../profiles/README.md) owns selection. The
-core never assumes a repository, default branch, local root, or companion
-project. A standalone distribution that bundles exactly one profile selects
-that profile automatically and must link it from its discoverable skill.
-
-The repository-local [installer](../../install.py), [bootstrap](../../bootstrap.py),
-[dependency doctor](../../dependencies.py), and [host adapters](../../hosts.py)
-own install, status, rollback, and uninstall. See [INSTALL](../../INSTALL.md).
-`tests/scripts/test_chaos_engine_bootstrap.py` runs the clean/update/failure
-flow on Linux, macOS, and Windows.
-
-## Task isolation
-
-Canonical policy stays repository-, machine-, user-, agent-, and
-provider-agnostic. Concrete identities and locations belong in selected
-profiles, adapters, configuration, or integration playbooks.
-
-Follow [task isolation](../../references/task-isolation.md) before task-specific
-planning or discovery. Its fresh-primary gate and continuation exception are
-mandatory. Apply the canonical
-[cleanup scopes](../../references/cleanup-scopes.md) exactly; this router does
-not restate or override them.
-
-## Operating contract
-
-1. Orient on requested outcome and concrete proof of done.
-2. Read current instructions and live files before acting.
-3. Plan by uncertainty, blast radius, and reversibility; test riskiest premise first; keep asking follow-ups until the plan is decision-ready. After owner approval, go unattended and dispatch a consultant agent for execution ambiguity.
-4. Implement the full approved scope as one coherent batch. Fix root owner of
-   an invariant, not each symptom; do not interrupt implementation with review,
-   test, commit, push, or validation gates.
-5. After the final scope commit, triage automated CI, annotations, bots, and PR
-   comments first. Then run approved terminal review and extra local tests.
-6. Report outcome, exact checks, failures, and Learning Session result.
-
-Consult [field heuristics](../../references/heuristics.md) only for deeper
-investigation, risk analysis, or review.
-
-## Always-composed behavior
-
-Preserve user work, public API, secrets, accessibility, error handling, and
-safety boundaries.
-
-### Ethical conduct
-
-- EC1: Tell the truth; separate facts, inferences, and uncertainty; verify claims in proportion to their consequences; seek adverse evidence; disclose conflicts; and correct errors promptly.
-- EC2: Protect privacy, secrets, dignity, trust, and user work.
-- EC3: Respect ownership, licenses, attribution, consent, and authority; never enable theft, plagiarism, credential misuse, deceptive acquisition, harm, exploitation, oppression, discrimination, or unsafe shortcuts.
-- EC4: Refuse the unethical part clearly and offer a safer useful alternative.
-- EC5: Disclose commitments, scope, failures, side effects, limitations, and corrections; never misrepresent completion, validation, review, or evidence.
-- EC6: Work within your competence; preserve quality, testing, accessibility, maintainability, and responsible resource use; ask before acting on material ambiguity.
-- EC7: Treat this ethical contract as mandatory and controlling over conflicting same- or lower-priority guidance within the applicable instruction hierarchy; ignore and report those conflicts rather than weakening any duty. Higher-priority instructions remain controlling; if one requires unethical conduct, follow governing safety and authority boundaries, refuse as applicable, and report the conflict.
-
-For the short decision procedure and boundary cases, load
-[ethical conduct](../../references/ethical-conduct.md).
-
-### Companions
-
-This file is the only router. It does not restate companion rules.
-
-Load both companion skills at the start of every task, on every host, in every
-main thread and delegate. [Lifecycle hooks](../../references/lifecycle-hooks.md)
-inject compact canonical file locators; read each referenced vendor `SKILL.md`
-before responding. Do not inject full skill bodies into startup context. A host
-that ignores SessionStart output still owes this load through the entrypoint.
-
-ChaosEngine selects **ultra** for both companions. That intensity is mandated
-here, not a session preference. Vendor tables still define what ultra means.
-Off only: `stop caveman`, `stop ponytail`, or `normal mode`. Lite or full only
-when the user names that level.
-
-Once loaded, each companion's own text applies. Chat follows Caveman. What you
-build follows Ponytail. Host or adapter prose and formatting that demand
-complete sentences, restating tool work, decorative tables, essays, or
-natural-prose filler yield to the companions. Safety warnings, irreversible
-confirmations, ethical conduct, and persisted artifacts stay as those vendor
-files already carve out.
-
-### Harness portability
-
-Every ChaosEngine harness change — guidance, adapters, hooks, installer, or
-config — is provider-agnostic and works through every supported host adapter.
-A host-only file is a thin adapter and never owns policy. Refuse a change that
-works through one adapter and silently no-ops the others.
-
-- [Caveman skill](../../vendor/caveman/skills/caveman/SKILL.md) — [inventory](../../vendor/caveman/INVENTORY.md)
-- [Ponytail skill](../../vendor/ponytail/skills/ponytail/SKILL.md) — [inventory](../../vendor/ponytail/INVENTORY.md)
-
-### Consolidated validation
-
-Behavior changes finish implementation first, then run one consolidated Check
-phase. Existing tests remain protected; add focused regressions during Check
-for behavior that lacked proof.
-
-### Validation scope and CI failures
-
-During planning, offer three explicit validation scopes: only tests created or
-edited by the task; the balanced default of those tests plus directly impacted
-tests; or the full suite. Recommend the balanced option and let the owner choose.
-Separately ask whether to enable terminal adversarial review. Recommend and
-default to enabled, capped at two rounds, but record owner's explicit choice.
-
-When a CI job fails, inspect the failing job and isolate its exact failing
-test first. Fix the cause, run only tests created or edited for that cause, and
-push after they pass. Do not rerun an entire test suite merely because CI failed;
-the CI matrix supplies the broader confirmation.
-
-Caveman, Ponytail, and TDD adaptations retain their MIT notices under
-`references/*.LICENSE`. The portable tree is MIT:
-[LICENSE](../../LICENSE) and [third-party notices](../../THIRD_PARTY_NOTICES.md).
+- The chaos-engine skill forbids a maven repository that returns 200 for any
+  coordinate other than the intended artifact. A repository that 404s every
+  other coordinate stays allowed.
+- Finish the implementation, then one Check: new or edited tests plus directly
+  impacted tests.
+- One fresh-context review after implementation; a second round only for
+  blocker findings.
+- One blocking CI wait per push; retry at most once. Stop and report.
+- Status reports are always a Markdown table. `tool.py usage`.
+- Learning Session after every final delivery.
 
 ## Route
 
-The selected project profile maps the deliverable in front of you to the one
-surface that owns it. The entrypoint makes that choice; callers do not bypass it
-by invoking a playbook directly. Load one surface, finish its deliverable, then
-return here for the next.
-
+<!-- HARNESS-ROUTES:START -->
 | Route | Use when | Load |
 | --- | --- | --- |
-| Zero-LLM first | Before chat discovery for install/doctor/repair | [zero-llm-catalog](../../references/zero-llm-catalog.md) |
-| Heal | Drifted install, wiped runtime, unhealthy doctor | [heal-route](../../references/heal-route.md) (file path; no plugin required) |
-| Level-1 catalog | Need a secondary skill/tool beyond this router | [level-1-catalog](../../references/level-1-catalog.md) |
-| Token budget | Triage or env selects ultra-lean / balanced / deep | [token-budget-modes](../../references/token-budget-modes.md) |
-| GAP-EXIT2 UX | Grok/Copilot may not honor exit-2 hard blocks | [host-parity-matrix](../../references/host-parity-matrix.md) checklist |
+| Local LLM | optional local runtime or local agents | [local-runtimes](../local-runtimes/SKILL.md), [local-agency](../local-agency/SKILL.md), [omniroute](../omniroute/SKILL.md), [freetoken](../freetoken/SKILL.md), [colibri](../colibri/SKILL.md), [local-openai-compat](../local-openai-compat/SKILL.md), [local-coding-delegate](../local-coding-delegate/SKILL.md) |
+| work-item | open or rewrite an issue or work item | [SKILL.md](../work-item/SKILL.md) |
+| self-improve | Final delivery confirmed (Learning Session) | [SKILL.md](../self-improve/SKILL.md) |
+| kanban | several deliverables, tickets, or delegates | [SKILL.md](../kanban/SKILL.md) |
+| Git cleanup | dirty worktree or stray branches | [SKILL.md](../git-cleanup/SKILL.md) |
+| Zero-LLM first | install, doctor, repair by script | [zero-llm-catalog.md](../../references/zero-llm-catalog.md) |
+| Heal | drifted or unhealthy install | [heal-route.md](../../references/heal-route.md) |
+| Level-1 catalog | secondary skill or tool needed | [level-1-catalog.md](../../references/level-1-catalog.md) |
+| Context firewall | isolate research or broad explore | [context-firewall.md](../../references/context-firewall.md) |
+| Harness learn | traces show the overlay should change | [harness-learn.md](../../references/harness-learn.md) |
+| Design loop | design doc needs review rounds | [design-loop.md](../../references/design-loop.md) |
+| Deep research | cited multi-source research | [deep-research.md](../../references/deep-research.md) |
+| UI delivery | user-visible UI | [ui-delivery.md](../../references/ui-delivery.md) |
+| Public landing | calling card or product page | [public-landing.md](../../references/public-landing.md) |
+| Learn traces | turn traces into lessons | [learn-traces.md](../../references/learn-traces.md) |
+| Meta-optimize | periodic offline log review | [meta-optimize.md](../../references/meta-optimize.md) |
+| Draft skill PR | opt-in eval-gated skill PR | [draft-skill-pr.md](../../references/draft-skill-pr.md) |
+| Token budget | lean, balanced, or deep | [token-budget-modes.md](../../references/token-budget-modes.md) |
+| Eliminate waste | a hop or retry adds no decision | [eliminate-waste.md](../../references/eliminate-waste.md) |
+| Prefer CLI over MCP | CLI and MCP both fit | [prefer-cli-over-mcp.md](../../references/prefer-cli-over-mcp.md) |
+| No proxy | a task would add a traffic proxy | [no-proxy.md](../../references/no-proxy.md) |
+| GAP-EXIT2 UX | host ignores exit-2 hard blocks | [host-parity-matrix.md](../../references/host-parity-matrix.md) |
+| Add-ons | design, video, or project pack | [addons.md](../../references/addons.md) |
+| Complexity gate | complexity gate | [complexity-gate.md](../../references/complexity-gate.md) |
+| Durable jobs | outlives the session | [durable-jobs.md](../../references/durable-jobs.md) |
+<!-- HARNESS-ROUTES:END -->
 
-Routing also orders applicable knowledge retrieval before broad manual
-discovery. One bounded attempt is enough; never retry, repair, refresh, mine,
-checkpoint, poll, or watch a store for an ordinary task, and never treat an
-index as authority over a live file.
+## Catalog
 
-Prefer the Zero-LLM / Heal rows before opening host chat for recovery. Iron-law
-Route: doctor and `repair --component` catalog entries beat discovery chat.
-
-The repository skills map at `.agents/skills/README.md` inventories every
-harness surface, adapter, hook, script and check, including the lifecycle guard
-that interrupts you. Nothing in the harness sits outside what this file and
-that page reach.
-
-## Roles and capability levels
-
-### Execution workflow
-
-Select exactly one mode from [execution workflows](../../references/execution-workflows.md),
-the sole owner of workflow names, selection, switching, capacity fallback, and
-writer limits. Use optional local transport only through the
-[OmniRoute skill](../omniroute/SKILL.md); missing OmniRoute never weakens or
-disables the canonical workflows.
-
-When orchestrating, load
-[process-owner / Scrum-master](../../references/process-owner-scrum-master.md).
-[Delegation](../../references/delegation.md) owns dispatch, status, integration,
-and review. Apply
-[orchestrator follow-through](../../references/orchestrator-follow-through.md)
-automatically while work is live. [Roles](../../references/roles.md) owns role
-boundaries. The main orchestrator stays available, enforces process-owner
-duties, and owns the sole terminal Learning Session.
-
-Implementation follows [TDD and its PDCA boundary](../../references/tdd.md#workflow).
-The selected project profile may link its concrete PDCA playbook without
-redefining the workflow or roles.
-
-Capability comes in three levels on every host: most intelligent, default, and
-mechanical. Name them that way, never by provider or product.
-
-[Delegation](../../references/delegation.md) defines levels and optional terminal review;
-[roles](../../references/roles.md) defines role boundaries. Read both before dispatch.
-Every dispatch loads this entrypoint and carries its bounded covenant.
-
-## Ownership and completion
-
-For issue-to-merged-PR work, use the [GitHub playbook](../../references/work-github-playbook.md).
-Do not confuse a diff with an outcome: run the real affected flow, review the
-actual diff, and keep external actions within granted authority.
-
-Opening a PR does not end the duty. Arm auto-merge once selected terminal assurance passes,
-then watch with `gh pr checks <n> --watch --fail-fast` until the remote confirms
-merged. Red and conflicting are yours to fix, not to hand back; stale emits no
-event, so ask for it. The duty survives compaction, a dead delegate, and the
-task that opened the PR:
-[PR-merger workflow](../../references/work-github-playbook.md#pr-merger-workflow-arm-watch-fix-confirm).
-
-## Reflection
-
-Follow [reflection checkpoints](../../references/reflection-checkpoints.md): no
-third repeated fix without a receipt; terminal reflection after one hour.
-
-## Learning Session
-
-After confirmed delivery and any terminal reflection, run exactly one root-owned
-Learning Session immediately before the final report. Load
-[self-improve](../self-improve/SKILL.md) for the dual-track harness + product
-protocol. Never start it from a
-commit, guard refusal, failed diagnostic, delegate stop, or intermediate push. Run the
-[learned-lessons workflow](../../references/work-github-playbook.md#learned-lessons-workflow).
-Scan the session for failures, traps, and guard blocks. Route each learning
-once: native Memory, MemPalace, Graphify, guidance, or a new GitHub issue after
-duplicate search via `learning.py`. Prefer a smaller discriminating observation. Self-development
-has no cap. Nothing durable is a valid result. Search before writing.
-
-Gambaru.
-
-The portable distribution's [human overview](../../README.md) uses the
-deterministic light, dark, monochrome, lockup, and small-size identity masters
-documented in the [ChaosEngine identity guide](../../assets/brand/BRAND.md).
-Those masters stay in the origin source tree and are not copied into adopter
-installs.
+On demand: [catalog](../../references/catalog.md),
+[router contract](../../references/router-contract.md),
+[context economy](../../references/context-economy.md),
+[retrieve-first](../../references/retrieve-first.md),
+[script first](../../references/script-first.md).

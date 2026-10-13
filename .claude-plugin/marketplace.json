@@ -12,7 +12,7 @@
         "./chaos-engine"
       ],
       "source": "./plugins/chaos-engine",
-      "version": "1.0.4265738071"
+      "version": "1.0.2778547159"
     },
     {
       "description": "Ultra-compressed communication mode.",
@@ -30,6 +30,15 @@
         "./ponytail"
       ],
       "source": "./plugins/ponytail",
+      "version": "0.1.0"
+    },
+    {
+      "description": "ICM workspaces: folder structure as agent architecture.",
+      "name": "icm-architect",
+      "skills": [
+        "./icm-architect"
+      ],
+      "source": "./plugins/icm-architect",
       "version": "0.1.0"
     }
   ]

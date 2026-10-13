@@ -11,23 +11,42 @@ param(
     [switch]$WithoutMempalace,
     [switch]$WithoutGraphify,
     [switch]$WithoutPonytail,
-    [switch]$WithoutHeadroom,
-    [switch]$WithoutCaveman
+    [switch]$WithoutCaveman,
+    # Optional add-ons: -With<Name> / -Without<Name> (for example -WithDesignSkills).
+    # None is installed by default; bootstrap.py validates names against the manifests.
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$AddOnSwitches
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $script:ChaosEngineInvocationLine = [string]$MyInvocation.Line
 
+function ConvertTo-ChaosEngineAddOnFlags([string[]]$tokens) {
+    # -WithDesignSkills -> --with-designskills; bootstrap.py maps it to the add-on name.
+    $flags = @()
+    foreach ($token in @($tokens | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $match = [regex]::Match($token, '^-(Without|With)([A-Za-z0-9]+)$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if (-not $match.Success) {
+            throw "Unknown ChaosEngine install argument: $token. Add-ons use -With<Name> or -Without<Name> (see INSTALL.md)."
+        }
+        $flags += "--" + $match.Groups[1].Value.ToLowerInvariant() + "-" + $match.Groups[2].Value.ToLowerInvariant()
+    }
+    return $flags
+}
+
 function Get-ChaosEnginePython {
+    # Python 3.11 is the supported floor; an older interpreter falls back to uv-managed Python.
+    $floor = "import sys; sys.exit(sys.version_info < (3, 11))"
     $py = Get-Command py -ErrorAction SilentlyContinue
     if ($null -ne $py) {
-        return @($py.Source, "-3")
+        & $py.Source -3 -c $floor 2>$null
+        if ($LASTEXITCODE -eq 0) { return @($py.Source, "-3") }
     }
     foreach ($name in @("python3", "python")) {
         $found = Get-Command $name -ErrorAction SilentlyContinue
         if ($null -ne $found) {
-            return @($found.Source)
+            & $found.Source -c $floor 2>$null
+            if ($LASTEXITCODE -eq 0) { return @($found.Source) }
         }
     }
     return $null
@@ -105,23 +124,18 @@ function ConvertFrom-ChaosEngineRawUrl([string]$Text) {
     if ($repository -eq "owner/repository") {
         return $null
     }
+    # A ref may contain '/' (feature/x, refs/heads/feature/x). The installer lives
+    # either in the nested chaos-engine/ folder or at the repository root, so the
+    # ref is everything before that folder (#6495).
     $rest = $match.Groups[3].Value
-    $parts = @($rest -split "/")
-    if ($parts.Length -ge 3 -and $parts[0] -eq "refs" -and $parts[1] -in @("heads", "tags")) {
-        $ref = ($parts[0..2] -join "/")
-        $prefixParts = @()
-        if ($parts.Length -gt 3) {
-            $prefixParts = $parts[3..($parts.Length - 1)]
-        }
+    if ($rest.EndsWith("/chaos-engine", [System.StringComparison]::Ordinal)) {
+        $ref = $rest.Substring(0, $rest.Length - "/chaos-engine".Length)
+        $prefix = "chaos-engine"
     }
     else {
-        $ref = $parts[0]
-        $prefixParts = @()
-        if ($parts.Length -gt 1) {
-            $prefixParts = $parts[1..($parts.Length - 1)]
-        }
+        $ref = $rest
+        $prefix = ""
     }
-    $prefix = $prefixParts -join "/"
     $bootstrapPath = "bootstrap.py"
     if (-not [string]::IsNullOrWhiteSpace($prefix)) {
         $bootstrapPath = "$prefix/bootstrap.py"
@@ -309,16 +323,18 @@ try {
     if ($WithMavenTools) { $arguments += "--with-maven-tools" }
     if ($MavenToolsMode -eq "docker") { $arguments += @("--maven-tools-mode", "docker") }
     if ($interactiveRequested) { $arguments += "--interactive" }
+    # -Verbose is the CmdletBinding common parameter; irm|iex callers use CHAOS_ENGINE_VERBOSE=1.
+    if ($PSBoundParameters.ContainsKey("Verbose")) { $arguments += "--verbose" }
     if ($WithoutMemory) { $arguments += "--without-memory" }
     if ($WithoutMempalace) { $arguments += "--without-mempalace" }
     if ($WithoutGraphify) { $arguments += "--without-graphify" }
     if ($WithoutPonytail) { $arguments += "--without-ponytail" }
-    if ($WithoutHeadroom) { $arguments += "--without-headroom" }
     if ($WithoutCaveman) { $arguments += "--without-caveman" }
+    $arguments += @(ConvertTo-ChaosEngineAddOnFlags $AddOnSwitches)
     if ($null -eq $python) {
         $uv = Install-ChaosEngineUv $work
-        $env:UV_PYTHON_INSTALL_DIR = Join-Path $work "python"
-        & $uv python install --no-progress
+        $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:LOCALAPPDATA "chaos-engine\python"
+        & $uv python install 3.14 --no-progress
         if ($LASTEXITCODE -ne 0) { throw "uv-managed Python installation failed" }
         $invoke = @($uv, "run", "--no-project", "--managed-python") + $arguments
     }

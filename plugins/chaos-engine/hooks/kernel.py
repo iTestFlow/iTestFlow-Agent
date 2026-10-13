@@ -26,6 +26,10 @@ LIFECYCLE_TRANSITIONS: Mapping[str, tuple[str, ...]] = {
     "Planned": ("Approved", "Blocked"),
     "Approved": ("Do", "Blocked"),
     "Do": ("Check", "Blocked"),
+    # A warm maven cache is not proof of a newly declared repository.
+    # jitpack.io served the docker-java POM for a coordinate that was not the
+    # intended artifact. Stay in Check until a resolve that does not reuse that
+    # cache succeeds.
     "Check": ("Act", "Blocked"),
     "Act": ("PullRequest", "Blocked"),
     "PullRequest": ("Reviewed", "Blocked"),
@@ -97,6 +101,36 @@ class HostCapability:
     # from ChaosEngine; trust the adapter and surface blocking_gap to owners.
     process_exit2_honored: bool = True
     blocking_gap: str = ""
+    # Host CLI executable doctor probes for exit-2 fidelity (#6408).
+    cli: str = ""
+
+
+
+# Plugin hook copies do not ship references/. Keep this equal to the
+# GAP-EXIT2-SENTENCE line in references/host-parity-matrix.md.
+_GAP_EXIT2_FALLBACK = (
+    "GAP-EXIT2: ChaosEngine still emits decision=block or "
+    "permissionDecision=deny and exit 2; verify host trust."
+)
+
+
+def gap_exit2_sentence() -> str:
+    """Single compensating sentence owned by host-parity-matrix.md."""
+    path = Path(__file__).resolve().parents[1] / "references" / "host-parity-matrix.md"
+    marker = "GAP-EXIT2-SENTENCE:"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return _GAP_EXIT2_FALLBACK
+    for line in lines:
+        if line.startswith(marker):
+            sentence = line[len(marker):].strip()
+            if sentence:
+                return sentence
+    raise RuntimeError("GAP-EXIT2 sentence missing from host-parity-matrix.md")
+
+
+GAP_EXIT2_SENTENCE = gap_exit2_sentence()
 
 
 def _aliases(supported: tuple[str, ...], **values: str) -> Mapping[str, str]:
@@ -164,10 +198,8 @@ HOST_CAPABILITIES: Mapping[str, HostCapability] = {
         hard_block_mechanism="decision_json",
         deny_exit_code=2,
         process_exit2_honored=False,
-        blocking_gap=(
-            "GAP-EXIT2: Grok may not honor process exit-2 as a hard block; "
-            "ChaosEngine still emits decision=block and exit 2 — verify adapter trust."
-        ),
+        blocking_gap=GAP_EXIT2_SENTENCE,
+        cli="grok",
     ),
     "copilot": HostCapability(
         ("AGENTS.md", ".github/copilot-instructions.md", ".github/skills/chaos-engine/SKILL.md"),
@@ -188,10 +220,8 @@ HOST_CAPABILITIES: Mapping[str, HostCapability] = {
         hard_block_mechanism="permission_decision",
         deny_exit_code=2,
         process_exit2_honored=False,
-        blocking_gap=(
-            "GAP-EXIT2: Copilot cloud/ide surfaces may not honor process exit-2; "
-            "denies use permissionDecision — verify host trust and static surfaces."
-        ),
+        blocking_gap=GAP_EXIT2_SENTENCE,
+        cli="copilot",
     ),
 }
 
@@ -222,11 +252,16 @@ TOOL_ALIASES = {
     "runinterminal": "PowerShell",
     "run_in_terminal": "PowerShell",
     "read": "Read",
+    "view": "Read",
     "readfile": "Read",
     "read_file": "Read",
     "readmanyfiles": "Read",
     "read_many_files": "Read",
+    "glob": "Glob",
+    "list_dir": "Glob",
+    "listdir": "Glob",
     "grep": "Grep",
+    "search": "Grep",
     "grepsearch": "Grep",
     "grep_search": "Grep",
     "edit": "Edit",
@@ -246,7 +281,7 @@ TOOL_ALIASES = {
     "apply_patch": "apply_patch",
 }
 
-_DIRECT_READ_ONLY_TOOLS = frozenset({"glob", "grep", "read"})
+_DIRECT_READ_ONLY_TOOLS = frozenset({"glob", "grep", "listdir", "read"})
 
 
 @dataclass(frozen=True)
@@ -404,6 +439,21 @@ def adapt_hook_output(
             adapted["permissionDecisionReason"] = str(reason or "Blocked by ChaosEngine.")
         elif decision == "allow":
             adapted["permissionDecision"] = "allow"
+    # GAP-EXIT2 hosts ignore exit 2. The continuation channel is the text
+    # they still surface after a Stop that returned decision=block.
+    capability = HOST_CAPABILITIES.get(host)
+    if (
+        capability is not None
+        and not capability.process_exit2_honored
+        and event_name in {"Stop", "SubagentStop"}
+        and adapted.get("decision") in {"block", "deny"}
+    ):
+        reason = str(adapted.get("reason") or "")
+        if reason:
+            adapted["additionalContext"] = reason
+            if host == "copilot":
+                adapted["permissionDecision"] = "deny"
+                adapted["permissionDecisionReason"] = reason
     return adapted
 
 

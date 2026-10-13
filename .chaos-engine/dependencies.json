@@ -2,14 +2,15 @@
   "schemaVersion": 3,
   "dependencies": {
     "uv": {"minimumVersion": "0.11.0", "executables": ["uv", "uvx"], "provider": "astral-standalone", "stableChannel": "https://api.github.com/repos/astral-sh/uv/releases/latest", "probe": ["uv", "self", "version", "--short"]},
-    "python": {"minimumVersion": "3.14.0", "executables": ["python3"], "provider": "uv-managed", "stableChannel": "https://www.python.org/api/v2/downloads/release/?is_published=true", "probe": ["python3", "--version"]},
+    "python": {"minimumVersion": "3.14.0", "maximumSeries": "3.14", "executables": ["python3"], "provider": "uv-managed", "stableChannel": "https://www.python.org/api/v2/downloads/release/?is_published=true", "probe": ["python3", "--version"]},
     "node": {"minimumVersion": "22.0.0", "executables": ["node", "npm", "npx"], "provider": "platform-package-manager", "stableChannel": "https://nodejs.org/dist/index.json", "probe": ["node", "--version"]},
     "java": {"minimumVersion": "25.0.0", "executables": ["java"], "provider": "adoptium-platform-package", "stableChannel": "https://api.adoptium.net/v3/info/release_versions?feature_version=25&release_type=ga&page_size=50", "probe": ["java", "-version"]},
     "mempalace": {"minimumVersion": "3.7.0", "executables": ["mempalace", "mempalace-mcp"], "provider": "uv-tool", "stableChannel": "https://pypi.org/pypi/mempalace/json", "probe": ["mempalace", "--version"]},
     "graphify": {"minimumVersion": "0.9.43", "executables": ["graphify"], "provider": "uv-tool", "stableChannel": "https://pypi.org/pypi/graphifyy/json", "probe": ["graphify", "--version"]},
     "memory": {"minimumVersion": "0.2.1", "executables": ["memory", "memory-mcp"], "provider": "npm-global-user", "stableChannel": "https://registry.npmjs.org/@aictx%2fmemory/latest", "probe": ["memory", "--version"]},
     "context7": {"minimumVersion": "0.1.0", "executables": ["ctx7"], "provider": "npm-global-user", "stableChannel": "https://registry.npmjs.org/ctx7/latest", "probe": ["ctx7", "--version"]},
-    "maven-tools-mcp": {"minimumVersion": "3.2.0", "executables": [], "provider": "upstream-source-jar", "stableChannel": "https://api.github.com/repos/arvindand/maven-tools-mcp/releases/latest", "probe": ["mcp", "initialize"]}
+    "maven-tools-mcp": {"minimumVersion": "3.2.0", "executables": [], "provider": "upstream-source-jar", "stableChannel": "https://api.github.com/repos/arvindand/maven-tools-mcp/releases/latest", "probe": ["mcp", "initialize"]},
+    "deja": {"minimumVersion": "0.21.2", "executables": ["deja"], "provider": "pinned-release", "stableChannel": "https://api.github.com/repos/vshulcz/deja-vu/releases/tags/v0.21.2", "probe": ["deja", "version"]}
   },
   "runtimes": {
     "uv": {"version": "0.11.29", "artifacts": {
@@ -30,27 +31,43 @@
       "macos-arm64": {"url": "https://nodejs.org/download/release/v24.19.0/node-v24.19.0-darwin-arm64.tar.gz", "sha256": "8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d"}
     }},
     "maven-tools-source": {"version": "4475ff6c61f23ea9a93cb6d5665a63235ef2ef36", "url": "https://github.com/arvindand/maven-tools-mcp/archive/4475ff6c61f23ea9a93cb6d5665a63235ef2ef36.zip", "sha256": "ceba276c3bf90bafbb4d7f109006d0cffa640466f0146826ce749c77a033bef8"},
-    "temurin": {"version": "25.0.4+7", "artifacts": {
+    "temurin": {"version": "25.0.4+7", "minimumVersion": "25.0.0", "artifacts": {
       "windows-x64": {"url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B7/OpenJDK25U-jdk_x64_windows_hotspot_25.0.4_7.zip", "sha256": "7caab7db43bf4b94a2e6252c699e70d90084f9aa7c943cd3414761fd540937ae"},
       "windows-arm64": {"url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B7/OpenJDK25U-jdk_x64_windows_hotspot_25.0.4_7.zip", "sha256": "7caab7db43bf4b94a2e6252c699e70d90084f9aa7c943cd3414761fd540937ae", "artifactArchitecture": "x64", "emulated": true},
       "linux-x64": {"url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B7/OpenJDK25U-jdk_x64_linux_hotspot_25.0.4_7.tar.gz", "sha256": "e58fcdcd637b25c03ca84cbbcefc70d11efb8f4b4cbd05decc9f661769d77f94"},
       "linux-arm64": {"url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B7/OpenJDK25U-jdk_aarch64_linux_hotspot_25.0.4_7.tar.gz", "sha256": "621f7196f0b682fb557da58bec89bd7dfe5419811fe1c0ba75c9cc8432f084c7"},
       "macos-x64": {"url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B7/OpenJDK25U-jdk_x64_mac_hotspot_25.0.4_7.tar.gz", "sha256": "a5ac9c46dad47ac06df35e36d096913195d8da1f3f71918828bcc2cfe33869b7"},
       "macos-arm64": {"url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B7/OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.4_7.tar.gz", "sha256": "5a101c54abf5a9f16c0f70d8c38ba99e6567c1ba213378f0bb04497284f051bd"}
+    }},
+    "deja": {"version": "0.21.2", "artifacts": {
+      "windows-x64": {"url": "https://github.com/vshulcz/deja-vu/releases/download/v0.21.2/deja-vu_0.21.2_windows_amd64.zip", "sha256": "a2e71c2a889bde77e5f0c838585c3e40a04694a2c985e811552bdeee1de447f6"},
+      "windows-arm64": {"url": "https://github.com/vshulcz/deja-vu/releases/download/v0.21.2/deja-vu_0.21.2_windows_arm64.zip", "sha256": "595859506a8c77eea76ef40b3a3f911f937525cb95c3480363435f4cb5f05810"},
+      "linux-x64": {"url": "https://github.com/vshulcz/deja-vu/releases/download/v0.21.2/deja-vu_0.21.2_linux_amd64.tar.gz", "sha256": "e508551088b5b693d1017391e9bbad6c10a118a2f06e3771d0fdd70bb61230e9"},
+      "linux-arm64": {"url": "https://github.com/vshulcz/deja-vu/releases/download/v0.21.2/deja-vu_0.21.2_linux_arm64.tar.gz", "sha256": "e42ebb007531c4ba7302226e1fb68d747b603bd3dc7909e2d5bd7519c8fff97a"},
+      "macos-x64": {"url": "https://github.com/vshulcz/deja-vu/releases/download/v0.21.2/deja-vu_0.21.2_darwin_amd64.tar.gz", "sha256": "b0291255ffa9f9aa3109b795074cbdf4334a389a250dc0418a9b530f8a95c7ad"},
+      "macos-arm64": {"url": "https://github.com/vshulcz/deja-vu/releases/download/v0.21.2/deja-vu_0.21.2_darwin_arm64.tar.gz", "sha256": "d75bcaab006d16b4054c993dab99bf6c298b437cffab0f77eeebff005afeceb2"}
+    }},
+    "maven": {"version": "3.9.12", "minimumVersion": "3.9.0", "artifacts": {
+      "windows-x64": {"url": "https://archive.apache.org/dist/maven/maven-3/3.9.12/binaries/apache-maven-3.9.12-bin.zip", "sha256": "305773a68d6ddfd413df58c82b3f8050e89778e777f3a745c8e5b8cbea4018ef"},
+      "windows-arm64": {"url": "https://archive.apache.org/dist/maven/maven-3/3.9.12/binaries/apache-maven-3.9.12-bin.zip", "sha256": "305773a68d6ddfd413df58c82b3f8050e89778e777f3a745c8e5b8cbea4018ef", "artifactArchitecture": "x64", "emulated": true},
+      "linux-x64": {"url": "https://archive.apache.org/dist/maven/maven-3/3.9.12/binaries/apache-maven-3.9.12-bin.tar.gz", "sha256": "fa2c9948729296c23afd18fd01a90f62cdda09a46191b54a8bc3764c2eee812e"},
+      "linux-arm64": {"url": "https://archive.apache.org/dist/maven/maven-3/3.9.12/binaries/apache-maven-3.9.12-bin.tar.gz", "sha256": "fa2c9948729296c23afd18fd01a90f62cdda09a46191b54a8bc3764c2eee812e"},
+      "macos-x64": {"url": "https://archive.apache.org/dist/maven/maven-3/3.9.12/binaries/apache-maven-3.9.12-bin.tar.gz", "sha256": "fa2c9948729296c23afd18fd01a90f62cdda09a46191b54a8bc3764c2eee812e"},
+      "macos-arm64": {"url": "https://archive.apache.org/dist/maven/maven-3/3.9.12/binaries/apache-maven-3.9.12-bin.tar.gz", "sha256": "fa2c9948729296c23afd18fd01a90f62cdda09a46191b54a8bc3764c2eee812e"}
     }}
   },
   "tools": {
     "uv": {"package": "uv==0.11.29"},
-    "mempalace": {"package": "mempalace==3.8.0", "with": ["chromadb==1.5.9"], "commands": ["mempalace", "mempalace-mcp"]},
-    "graphify": {"package": "graphifyy==0.9.43", "with": ["tree-sitter-sql==0.3.11"], "commands": ["graphify"]},
+    "mempalace": {"package": "mempalace==3.10.0", "with": ["chromadb==1.5.9"], "commands": ["mempalace", "mempalace-mcp"]},
+    "graphify": {"package": "graphifyy==0.9.88", "with": ["tree-sitter-sql==0.3.11"], "commands": ["graphify"]},
     "memory": {"package": "@aictx/memory@0.2.1", "commands": ["memory", "memory-mcp"]}
   },
   "components": {
     "tools": {"owner": "installer", "scope": "project", "lifecycle": "receipt-owned", "taskImpact": "required"},
     "memory": {"owner": "project", "scope": "project", "lifecycle": "persistent-data", "taskImpact": "advisory"},
     "mempalace": {"owner": "project", "scope": "project", "lifecycle": "persistent-data", "taskImpact": "advisory"},
-    "graphify": {"owner": "project", "scope": "repository", "lifecycle": "derived-single-writer", "taskImpact": "advisory"},
+    "graphify": {"owner": "project", "scope": "repository", "lifecycle": "derived-single-writer", "taskImpact": "required-when-indexed"},
     "maven-tools-mcp": {"owner": "installer", "scope": "user", "lifecycle": "receipt-owned", "taskImpact": "optional"},
-    "headroom": {"owner": "installer", "scope": "user", "lifecycle": "receipt-owned", "taskImpact": "optional"}
+    "deja": {"owner": "user", "scope": "user", "lifecycle": "user-managed-cache", "taskImpact": "optional"}
   }
 }

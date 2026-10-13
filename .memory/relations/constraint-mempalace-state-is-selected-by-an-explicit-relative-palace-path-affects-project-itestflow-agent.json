@@ -8,7 +8,7 @@
       "kind": "file"
     }
   ],
-  "from": "constraint.mempalace-state-is-selected-by-an-explicit-relative-palace-path",
+  "from": "gotcha.mempalace-state-is-selected-by-an-explicit-relative-palace-path",
   "id": "rel.constraint-mempalace-state-is-selected-by-an-explicit-relative-palace-path-affects-project-itestflow-agent",
   "predicate": "affects",
   "status": "active",

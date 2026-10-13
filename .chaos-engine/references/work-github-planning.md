@@ -2,6 +2,22 @@
 
 Read this half before work starts. Return to the [delivery playbook](work-github-playbook.md) for review, learning, CI, and merge.
 
+## Pattern step (before triage)
+
+Start by asking what the failing signal shares with work already filed. Search
+open and recently closed sibling trackers that carry the same signature or
+workflow, and record them on the tracker. The Related failures field is either
+those issues or the exact words `none found`.
+
+```bash
+python3 .chaos-engine/tool.py siblings nightly-failure:e2e-tests
+```
+
+`tool.py siblings` prints the `gh issue list --label nightly-failure:<workflow>`
+query and any rows `gh` returns. Do this before classifying a new root cause.
+Two nightly trackers once shared a root cause and were not linked; this step
+is what would have connected them.
+
 ## 0. Ground the scope before asking anything
 
 Never ask a question the repository can answer. Before the first question:
@@ -43,6 +59,45 @@ for implementation clarifications or for permission already granted. If executio
 hits ambiguity, dispatch a consultant agent (read-only, independent) and take
 its guidance. Absorb owner-initiated mid-flight requests.
 
+
+## Attendance mode (ask once at plan approval)
+
+During planning — next to validation-scope and terminal adversarial-review
+questions — ask the owner which **attendance mode** to use for the approved plan:
+
+| Mode | Behavior |
+| --- | --- |
+| Interactive | Ask often for decisions and guidance. |
+| Moderate | Ask on material forks; otherwise proceed. |
+| **Fully unattended** (recommend + default) | Implement, fix CI, babysit, and **merge when green** without re-asking merge permission each time. Quiet adaptive follow-up; notify only on material change or HALT. |
+
+Record the choice on the tracking issue / plan. If the owner skips the question,
+assume **fully unattended**. After plan approval, do not wait for a separate
+"merge it?" decision when CI is green and merge authority was granted (or
+implied by unattended / babysit / process-owner).
+
+### Unattended persistence (compaction is not stop)
+
+These rules live in the portable overlay so every host keeps them after
+compaction. Do not treat a compacted context as a session end.
+
+- After plan approval, stay fully unattended until every in-scope ticket is
+  merged or closed, or the owner names a true HALT. Compaction is not stop.
+- Merge with `gh pr merge --merge --auto` only (no squash, no unguarded force).
+- Do not weaken or delete tests to reach green.
+- Adversarial review (recommend on; ≤2 rounds after final scope commit + CI)
+  uses the host **most-intelligent** subagent, never the local mechanical model.
+- Nightly tracker autoclose and prove-close dispatch live in the
+  [delivery playbook](work-github-playbook.md#pr-merger-workflow-arm-watch-fix-confirm).
+  Targeted `jobs` values must not close full-matrix trackers.
+- Full-suite-only failures (pass alone or in a small `tests=` selection): before bisecting,
+  scan the same run for in-JVM unit tests of that subsystem failing with `TimeoutException`.
+  That signals shared-executor starvation (e.g. CDP handlers on virtual threads), not order.
+  Pick `tests=` globs with `pkg/**/*Test*`; `pkg.*` skips subpackages.
+- Before closing out a nightly fix, list open `nightly-failure:` trackers (`gh issue list -l` per
+  workflow) and match their failing test lines; one root cause often breaks local and cloud jobs.
+  Link each with `Related to`, then confirm each owning workflow with its own run.
+
 ### Mid-session realignment: named HALT conditions
 
 HALT and ask when a new request changes the agreed branch, PR, or merge-authority
@@ -60,6 +115,10 @@ plan. Otherwise absorb the request into the owned plan.
   and merge. Update task status as work proceeds; ordinary tasks never refresh a
   derived store.
 - Keep one issue as a work stream; only dispatch independently scoped work.
+- Linked-worktree `python3 -m unittest tests.scripts...` can import the primary
+  checkout copy of the test module if that tree is on `PYTHONPATH`. Run with
+  `PYTHONPATH=<worktree>` or `python3 <worktree>/tests/scripts/<file>.py`.
+  CI on the PR branch is the source of truth.
 
 ## 3. Work items in dependency order, front-loading risk
 
@@ -100,17 +159,21 @@ gh issue close <tracker>
 
 ## 3c. GitHub sub-issues + CE program epic auto-close
 
-CE program epics (currently #5569, or any issue labeled `ce-program-epic`) track
+CE program epics (currently, or any issue labeled `ce-program-epic`) track
 delivery through **GitHub native sub-issues**, not checkbox prose alone.
 
 - File each subtask as a real issue and attach it as a sub-issue of the epic.
 - Delivery PRs close **children only**: one `Fixes #<child>` / `Closes #<child>`
   line per completed subtask. Never put a closing keyword on the epic number.
+- Before arming auto-merge on any child or tracker PR, re-read the epic's
+  initial scope and confirm every related sub-issue is merged or explicitly
+  dropped on the tracker. Auto-merge of one green PR must not close or imply
+  the epic is done while in-scope children remain open or unimplemented.
 - Workflow `.github/workflows/epic-autoclose.yml` runs on `issues: closed`. It
   no-ops unless the closed issue's parent is an eligible epic **and** every
   tracked sub-issue is closed; then it closes the epic with a receipt comment.
 - Follow-ons that must keep the epic open must be attached as sub-issues. An
   open issue that is only mentioned in prose (for example a later wave that is
   not a formal sub-issue) does **not** block auto-close.
-- Manual dry-run: `python3 scripts/ci/epic_autoclose.py --issue <n> --dry-run`
+- Manual dry-run: `python3 scripts/ci/epic_autoclose.py --issue <n> --dry-run` (repo-only)
   or Actions → Epic Autoclose → workflow_dispatch with `dry_run=true`.

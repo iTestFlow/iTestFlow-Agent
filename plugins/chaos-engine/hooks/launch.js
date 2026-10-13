@@ -29,8 +29,8 @@ function currentRoot() {
   }
 }
 
-function guardPath() {
-  let root = currentRoot();
+function guardFrom(start) {
+  let root = start;
   while (true) {
     for (const relative of [
       ".chaos-engine/hooks/guard.py",
@@ -51,6 +51,30 @@ function guardPath() {
   }
 }
 
+// #6632: a host may run the hook outside the repository (Copilot runs repo
+// hooks from `/`); fall back to the project directory and the payload `cwd`.
+function guardPath() {
+  const found = guardFrom(currentRoot());
+  if (found) return found;
+  let payloadCwd = "";
+  try {
+    const event = JSON.parse(input.toString("utf8") || "{}");
+    payloadCwd = typeof event.cwd === "string" ? event.cwd : "";
+  } catch (error) {
+    payloadCwd = "";
+  }
+  for (const hint of [process.env.GEMINI_PROJECT_DIR, process.env.CLAUDE_PROJECT_DIR, payloadCwd]) {
+    if (!hint) continue;
+    try {
+      const candidate = guardFrom(path.resolve(hint));
+      if (candidate) return candidate;
+    } catch (error) {
+      if (!unavailableError(error)) throw error;
+    }
+  }
+  return null;
+}
+
 let input;
 try {
   input = fs.readFileSync(0);
@@ -58,6 +82,31 @@ try {
   if (unavailableError(error)) deny(CWD_UNAVAILABLE);
   throw error;
 }
+
+// Copilot registers one command per event and omits the event name from the
+// payload. argv[3] is that event (preToolUse, sessionStart, ...).
+function applyEventHint(raw) {
+  const hinted = process.argv[3] || "";
+  if (!hinted) return raw;
+  let event = {};
+  const text = raw.toString("utf8").trim();
+  if (text) {
+    try {
+      event = JSON.parse(text);
+    } catch (error) {
+      if (unavailableError(error)) deny(CWD_UNAVAILABLE);
+      return raw;
+    }
+  }
+  if (!event || typeof event !== "object" || Array.isArray(event)) return raw;
+  if (!event.hook_event_name && !event.hookEventName) {
+    event.hook_event_name = hinted;
+    return Buffer.from(JSON.stringify(event));
+  }
+  return raw;
+}
+
+input = applyEventHint(input);
 
 function matchesHook() {
   try {
@@ -72,7 +121,7 @@ function matchesHook() {
       : ["PostToolUse", "postToolUse", "PostToolUseFailure", "postToolUseFailure", "AfterTool"].includes(eventName)
         ? observational
         : null;
-    return matcher === null || new RegExp(`^(?:${matcher})$`).test(toolName);
+    return matcher === null || new RegExp(`^(?:${matcher})$`, "i").test(toolName);
   } catch (error) {
     if (unavailableError(error)) deny(CWD_UNAVAILABLE);
     return true;
@@ -89,10 +138,36 @@ if (!guard) {
   deny(GUARD_UNAVAILABLE);
 }
 
-const candidates = process.platform === "win32"
-  ? [["py", ["-3"]], ["python3", []], ["python", []]]
-  : [["python3", []], ["python", []]];
+// #6199: the managed interpreter lives in the untracked hook-python pointer,
+// never in tracked host files.
+function pointerPython(guardFile) {
+  const base = path.resolve(path.dirname(guardFile), "..", "..");
+  try {
+    const recorded = fs.readFileSync(path.join(base, ".chaos-engine-state/hook-python"), "utf8").trim();
+    return recorded && fs.existsSync(recorded) ? [[recorded, []]] : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+const candidates = [
+  ...pointerPython(guard),
+  ...(process.platform === "win32"
+    ? [["py", ["-3"]], ["python3", []], ["python", []]]
+    : [["python3", []], ["python", []]]),
+];
+// #6632: skip interpreters that are missing, older than 3.11, or the Windows
+// Store `python3`/`python` alias stub (it exits 9009 instead of running).
+function usable(command, prefix) {
+  const probe = spawnSync(command, [...prefix, "-c", "import sys;sys.exit(sys.version_info<(3,11))"], {
+    stdio: "ignore",
+    timeout: 10000,
+  });
+  return !probe.error && probe.status === 0;
+}
+
 for (const [command, prefix] of candidates) {
+  if (!usable(command, prefix)) continue;
   const result = spawnSync(command, [...prefix, guard], {
     input,
     env: { ...process.env, CHAOS_ENGINE_HOST: process.argv[2] || "unknown" },

@@ -8,6 +8,7 @@ import inspect
 
 import argparse
 import base64
+import contextlib
 from contextlib import contextmanager, nullcontext
 import hashlib
 import json
@@ -16,12 +17,39 @@ import re
 import runpy
 import secrets
 import shutil
-import subprocess  # nosec B404 - fixed list-form Maven build commands.
+import subprocess  # nosec B404 - fixed list-form tool commands.
 import sys
 import tempfile
+import time
 import types
 import zipfile
 from pathlib import Path, PurePosixPath
+
+
+def _bind_java_pack() -> dict[str, object]:
+    """Bind the java pack (installer.py) into this controller's namespace."""
+    root = Path(__file__).resolve().parent
+    spec = importlib.util.spec_from_file_location(
+        "chaos_engine_pack_binding", root / "pack_binding.py"
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("ChaosEngine pack_binding.py cannot load")
+    binding = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(binding)
+    finally:
+        sys.dont_write_bytecode = previous
+    return binding.bind_pack(globals(), root / "packs" / "java" / "installer.py")
+
+
+_JAVA_PACK = _bind_java_pack()
+repair_maven_tools = _JAVA_PACK["repair_maven_tools"]
+project_maven_ids = _JAVA_PACK["project_maven_ids"]
+maven_tools_repair_fix_next = _JAVA_PACK["maven_tools_repair_fix_next"]
+ensure_maven_tools = _JAVA_PACK["ensure_maven_tools"]
+java_pack_enabled = _JAVA_PACK["java_pack_enabled"]
 
 
 INSTALL_DIRECTORY = ".chaos-engine"
@@ -31,6 +59,11 @@ DIAGNOSTIC_SCHEMA_VERSION = 2
 CANONICAL_IDENTITY = "chaos-engine"
 DEFAULT_DISTRIBUTION = "portable"
 DISTRIBUTIONS_NAME = "distributions.json"
+# Project packs live next to the core tree (`<repo>/<dir>/ce-pack/profile.json`)
+# and install under `.chaos-engine/packs/<name>/`.
+PROJECT_PACK_GLOB = "*/ce-pack/profile.json"
+PACKS_DIRECTORY = "packs"
+_PACK_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 BRANCH_PATTERN = re.compile(r"[^\x00-\x20\x7f~^:?*\\\[\]]+")
@@ -44,6 +77,13 @@ UNINSTALL_ARCHIVE_NAME = ".chaos-engine-uninstall-recovery.zip"
 UNINSTALL_CURRENT_NAME = ".chaos-engine-uninstall-current"
 UNINSTALL_OLD_BACKUP_NAME = ".chaos-engine-uninstall-old-backup"
 DEPENDENCY_LOCK_MAGIC = b"chaos-engine-dependencies-lock-v1\n"
+# Bounded wait when another install/doctor/repair holds `.chaos-engine.lock` (#6019).
+PROJECT_LOCK_WAIT_SECONDS = 30.0
+PROJECT_LOCK_POLL_SECONDS = 0.1
+# #6328: a creator writes the lock magic right after its O_EXCL create. A reader
+# in that window sees an empty or partial magic: initialization, not a collision.
+LOCK_INIT_GRACE_SECONDS = 1.0
+LOCK_INIT_POLL_SECONDS = 0.02
 CROSS_ROLLBACK_JOURNAL_NAME = ".chaos-engine-cross-rollback"
 ACCOUNT_ROLLBACK_JOURNAL_NAME = ".chaos-engine-account-rollback"
 CAPABILITY_FIELDS = {"owner", "scope", "lifecycle", "taskImpact"}
@@ -51,12 +91,19 @@ CAPABILITY_ENUMS = {
     "owner": {"installer", "project", "user"},
     "scope": {"project", "repository", "user"},
     "lifecycle": {"receipt-owned", "persistent-data", "derived-single-writer", "user-managed-cache"},
-    "taskImpact": {"required", "advisory", "optional"},
+    "taskImpact": {"required", "required-when-indexed", "advisory", "optional"},
 }
+# #6179: components the retrieve gate depends on. Graphify is required once the
+# project has an index (the guard enforces it) and advisory before that.
+RETRIEVE_GATE_COMPONENTS = frozenset({"graphify"})
+GRAPHIFY_IGNORE_DEFAULTS = (
+    ".chaos-engine/", ".chaos-engine-runtime/", ".chaos-engine-state/", "plugins/",
+    ".claude/", ".codex/", ".gemini/", ".grok/", ".agents/", ".memory/", "graphify-out/",
+)
 CAPABILITY_COMPONENTS = {
     "core", "skills", "playbooks", "hooks", "plugins", "roles", "mcps",
     "retrieval-config", "projection-policy", "tools", "memory", "mempalace",
-    "graphify", "maven-tools-mcp", "headroom",
+    "graphify", "maven-tools-mcp", "deja",
 }
 PROJECT_SETUP_OUTPUTS = (
     ".agents/skills/graphify",
@@ -69,14 +116,15 @@ DEFAULT_BUNDLE_COMPONENTS = (
     "mempalace",
     "graphify",
     "ponytail",
-    "headroom",
     "caveman",
+    "icm-architect",
 )
+# Opt-in stores stay off until an operator flag or env turns them on (#6183).
+OPT_IN_BUNDLE_COMPONENTS = ("deja",)
 REPAIRABLE_COMPONENTS = frozenset({
     "plugins",
     "hosts",
     "core",
-    "headroom",
     "mempalace",
     "graphify",
     "memory",
@@ -85,7 +133,14 @@ REPAIRABLE_COMPONENTS = frozenset({
     "skills",
     "roles",
     "tools",
+    "maven-tools-mcp",
 })
+# #6338: the bootstrap records a verify-failure rollback here; status/doctor surface it.
+INSTALL_ROLLBACK_RELATIVE = ".chaos-engine-state/install-rollback.json"
+
+
+# #6216: branch-agnostic doctor fallback when a status carries no fix-next.
+DESYNC_FIX_NEXT_FALLBACK = "git fetch origin && git merge --ff-only @{upstream}"
 
 
 def legacy_capability_policy() -> dict[str, dict[str, str]]:
@@ -105,15 +160,46 @@ def legacy_capability_policy() -> dict[str, dict[str, str]]:
     result["memory"].update(owner="project", lifecycle="persistent-data", taskImpact="advisory")
     result["mempalace"].update(owner="project", lifecycle="persistent-data", taskImpact="advisory")
     result["graphify"].update(
-        owner="project", scope="repository", lifecycle="derived-single-writer", taskImpact="advisory"
+        owner="project", scope="repository", lifecycle="derived-single-writer",
+        taskImpact="required-when-indexed",
     )
     result["maven-tools-mcp"].update(
         owner="installer", scope="user", lifecycle="receipt-owned", taskImpact="optional"
     )
-    result["headroom"].update(
-        owner="installer", scope="user", lifecycle="receipt-owned", taskImpact="optional"
+    result["deja"].update(
+        owner="user", scope="user", lifecycle="user-managed-cache", taskImpact="optional"
     )
     return _validated_capabilities(result)
+
+
+def overlay_unchanged(
+    source: Path,
+    installed: Path,
+    distribution: str = DEFAULT_DISTRIBUTION,
+    addons: tuple[str, ...] = (),
+) -> bool:
+    """#6179: True when every staged overlay file already matches byte-for-byte."""
+    if not installed.is_dir():
+        return False
+    for path in source_files(source, distribution, addons):
+        target = installed / payload_relative(source, path)
+        try:
+            if not target.is_file() or target.read_bytes() != path.read_bytes():
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def seed_graphify_ignore(project: Path) -> Path:
+    """#6179: keep harness and generated trees out of the project graph; merge, never drop."""
+    path = project / ".graphifyignore"
+    existing = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    missing = [entry for entry in GRAPHIFY_IGNORE_DEFAULTS if entry not in existing]
+    if missing or not path.is_file():
+        lines = [*existing, *(["# ChaosEngine harness and generated trees"] if missing else []), *missing]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
 
 
 def file_sha256(path: Path) -> str:
@@ -206,61 +292,6 @@ def require_absent(path: Path, label: str) -> None:
         raise ValueError(f"{label} collision: {path}")
 
 
-_XML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
-_XML_TAG = re.compile(
-    r"<(/?)(?:[\w.-]+:)?([A-Za-z_][\w.-]*)(?:\s[^>]*)?(/?)>",
-    re.DOTALL,
-)
-_MAX_POM_BYTES = 2_000_000
-_MAVEN_ID_PARENTS = {
-    ("project", "artifactId"),
-    ("modules", "module"),
-    ("dependency", "artifactId"),
-}
-
-
-def maven_coordinate_ids(pom: Path) -> set[str]:
-    """Return project, module, and dependency artifact ids from one POM."""
-    try:
-        raw = pom.read_bytes()
-    except OSError:
-        return set()
-    if len(raw) > _MAX_POM_BYTES:
-        return set()
-    try:
-        text = _XML_COMMENT.sub("", raw.decode("utf-8"))
-    except UnicodeDecodeError:
-        return set()
-    ids: set[str] = set()
-    stack: list[str] = []
-    pending_parent: str | None = None
-    last_end = 0
-    for match in _XML_TAG.finditer(text):
-        if pending_parent is not None:
-            value = text[last_end:match.start()].strip()
-            if value:
-                ids.add(value)
-            pending_parent = None
-        closing, name, self_close = match.group(1), match.group(2), match.group(3)
-        last_end = match.end()
-        if closing:
-            if stack and stack[-1] == name:
-                stack.pop()
-            continue
-        if self_close:
-            continue
-        stack.append(name)
-        if len(stack) >= 2 and (stack[-2], stack[-1]) in _MAVEN_ID_PARENTS:
-            pending_parent = stack[-2]
-    return ids
-
-
-def project_maven_ids(project: Path) -> set[str]:
-    pom = project / "pom.xml"
-    if not pom.is_file():
-        return set()
-    return maven_coordinate_ids(pom)
-
 
 def profile_install_predicate(profile: dict[str, object]) -> set[str]:
     when = profile.get("installWhen")
@@ -276,43 +307,328 @@ def profile_install_predicate(profile: dict[str, object]) -> set[str]:
     return {item.strip() for item in raw}
 
 
-def detect_distribution(project: Path, source: Path) -> str:
-    """Select a distribution from profile predicates; default stays portable."""
-    catalog = json.loads((source / DISTRIBUTIONS_NAME).read_text(encoding="utf-8"))
-    distributions = catalog.get("distributions")
+def project_packs(source: Path) -> dict[str, Path]:
+    """Project packs shipped beside the core tree, keyed by their profile name."""
+    packs: dict[str, Path] = {}
+    for profile_path in sorted(source.parent.glob(PROJECT_PACK_GLOB)):
+        root = profile_path.parent
+        if is_link_or_reparse(root) or is_link_or_reparse(profile_path):
+            raise ValueError(f"ChaosEngine project pack is a link or reparse point: {root}")
+        try:
+            name = json.loads(profile_path.read_text(encoding="utf-8")).get("name")
+        except (OSError, ValueError, AttributeError) as error:
+            raise ValueError(f"invalid ChaosEngine project pack: {root}") from error
+        if not isinstance(name, str) or _PACK_NAME.fullmatch(name) is None:
+            raise ValueError(f"invalid ChaosEngine project pack name: {root}")
+        if name in packs or (source / PACKS_DIRECTORY / name).exists() or (source / "profiles" / name).exists():
+            raise ValueError(f"duplicate ChaosEngine pack name: {name}")
+        packs[name] = root
+    return packs
+
+
+def profile_root(source: Path, profile: str) -> Path:
+    """Core profiles live in `profiles/`; project packs are discovered beside the core."""
+    core = source / "profiles" / profile
+    if core.is_dir():
+        return core
+    pack = project_packs(source).get(profile)
+    if pack is None:
+        raise ValueError(f"ChaosEngine distribution profile is incomplete: {profile}")
+    return pack
+
+
+def payload_relative(source: Path, path: Path) -> Path:
+    """Installed relative path: core files keep theirs, pack files land in packs/<name>/."""
+    if path.is_relative_to(source):
+        return path.relative_to(source)
+    for name, root in project_packs(source).items():
+        if path.is_relative_to(root):
+            return Path(PACKS_DIRECTORY) / name / path.relative_to(root)
+    relative = external_addon_relative(source, path)
+    if relative is not None:
+        return relative
+    raise ValueError(f"path is outside the ChaosEngine payload: {path}")
+
+
+def distribution_catalog(source: Path) -> dict[str, dict[str, object]]:
+    """Core distributions plus the one each project pack declares in profile.json."""
+    try:
+        catalog = json.loads((source / DISTRIBUTIONS_NAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("ChaosEngine distribution catalog is invalid") from error
+    distributions = catalog.get("distributions") if isinstance(catalog, dict) else None
     if not isinstance(distributions, dict):
         raise ValueError("ChaosEngine distribution catalog is invalid")
+    merged = dict(distributions)
+    portable_forbidden: list[str] = []
+    for name, root in project_packs(source).items():
+        pack_profile = json.loads((root / "profile.json").read_text(encoding="utf-8"))
+        tokens = pack_profile.get("portableForbiddenTokens", [])
+        if not isinstance(tokens, list) or not all(isinstance(token, str) and token for token in tokens):
+            raise ValueError(f"invalid portableForbiddenTokens in ChaosEngine pack: {name}")
+        portable_forbidden.extend(tokens)
+        declared = pack_profile.get("distribution")
+        if declared is None:
+            continue
+        identifier = declared.get("id") if isinstance(declared, dict) else None
+        if not isinstance(identifier, str) or _PACK_NAME.fullmatch(identifier) is None:
+            raise ValueError(f"invalid distribution in ChaosEngine pack: {name}")
+        if identifier in merged:
+            raise ValueError(f"duplicate ChaosEngine distribution: {identifier}")
+        policy = {key: value for key, value in declared.items() if key != "id"}
+        policy["profile"] = name
+        merged[identifier] = policy
+    default = merged.get(DEFAULT_DISTRIBUTION)
+    if portable_forbidden and isinstance(default, dict) and isinstance(default.get("forbiddenTokens"), list):
+        # Each pack keeps its own identity out of the portable payload.
+        tokens = [*default["forbiddenTokens"], *portable_forbidden]
+        merged[DEFAULT_DISTRIBUTION] = {**default, "forbiddenTokens": list(dict.fromkeys(tokens))}
+    return merged
+
+
+def legacy_profile_layout(target: Path) -> list[str]:
+    """Pack names still installed under the pre-pack `profiles/<name>` layout."""
+    profiles = target / "profiles"
+    if not profiles.is_dir() or is_link_or_reparse(profiles):
+        return []
+    return sorted(
+        path.name
+        for path in profiles.iterdir()
+        if path.is_dir() and path.name != DEFAULT_DISTRIBUTION
+    )
+
+
+def hard_cut_message(names: list[str], *, replaced: bool = False) -> str:
+    """Migration notice for the profiles/<name> -> packs/<name> hard cut."""
+    listed = ", ".join(names)
+    moves = "; ".join(
+        f"{INSTALL_DIRECTORY}/profiles/{name} -> {INSTALL_DIRECTORY}/{PACKS_DIRECTORY}/{name}"
+        for name in names
+    )
+    return (
+        f"ChaosEngine hard cut: project packs moved ({moves}). "
+        f"The old profiles layout ({listed}) is no longer read and no shim is kept; "
+        + ("this install replaced it." if replaced else "rerun the installer to replace it.")
+    )
+
+
+def addon_catalog():
+    """The add-on catalog module that ships beside this installer."""
+    cached = globals().get("_ADDON_CATALOG")
+    if cached is not None:
+        return cached
+    module_path = Path(__file__).resolve().with_name("addon_catalog.py")
+    spec = importlib.util.spec_from_file_location("ce_addon_catalog", module_path)
+    if spec is None or spec.loader is None:
+        raise ValueError("ChaosEngine add-on catalog is missing")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    globals()["_ADDON_CATALOG"] = module
+    return module
+
+
+def is_unselected_addon(relative: Path, addons: tuple[str, ...]) -> bool:
+    """Core-tree add-ons (`addons/<name>/`) ship only when the user selected them."""
+    parts = relative.parts
+    return len(parts) >= 2 and parts[0] == addon_catalog().DIRECTORY and parts[1] not in addons
+
+
+def addon_source_files(source: Path, distribution: str, addons: tuple[str, ...]) -> list[Path]:
+    """Files of selected repository-shipped add-ons; their own content is explicitly opted in."""
+    if not addons:
+        return []
+    catalog = addon_catalog()
+    found = catalog.discover(source)
+    policy, _ = load_distribution(source, distribution)
+    pack_tokens = set()
+    for root in project_packs(source).values():
+        profile = json.loads((root / "profile.json").read_text(encoding="utf-8"))
+        pack_tokens.update(str(token).casefold() for token in profile.get("portableForbiddenTokens", []))
+    # Selecting an add-on is the explicit opt-in the pack token guard exists for;
+    # the distribution's own tokens (personal identity) still apply.
+    tokens = tuple(
+        token for token in (str(item).casefold() for item in policy["forbiddenTokens"])
+        if token not in pack_tokens
+    )
+    files: list[Path] = []
+    for name in addons:
+        for path, relative in catalog.external_files(found, name).items():
+            content = path.read_text(encoding="utf-8", errors="ignore").casefold()
+            if any(token in content for token in tokens):
+                raise ValueError(f"distribution policy rejected forbidden content: {relative.as_posix()}")
+            files.append(path)
+    return files
+
+
+def external_addon_relative(source: Path, path: Path) -> Path | None:
+    catalog = addon_catalog()
+    found = catalog.discover(source)
+    for name, entry in found.items():
+        if entry["internal"]:
+            continue
+        relative = catalog.external_files(found, name).get(path)
+        if relative is not None:
+            return relative
+    return None
+
+
+def installed_record(project: Path) -> tuple[dict[str, object], str | None]:
+    """(owned files, distribution id) of an existing install, or empty when absent."""
+    try:
+        manifest = json.loads((Path(project) / INSTALL_DIRECTORY / MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, None
+    if not isinstance(manifest, dict):
+        return {}, None
+    files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    distribution = manifest.get("distribution")
+    identifier = distribution.get("id") if isinstance(distribution, dict) else None
+    return files, identifier if isinstance(identifier, str) else None
+
+
+def addons_changed_only(
+    project: Path, source: Path, bundle: dict[str, bool], addons: tuple[str, ...]
+) -> bool:
+    """True when a rerun only changes the add-on selection of an install (#6494)."""
+    files, current = installed_record(project)
+    if not files or not (project / BUNDLE_OPTIONS_PATH).is_file():
+        return False
+    if read_bundle_options(project) != bundle:
+        return False
+    try:
+        catalog = addon_catalog()
+        recorded = set(catalog.installed(catalog.discover(source), files, current))
+    except (OSError, ValueError):
+        return False
+    return recorded != set(addons)
+
+
+def reusable_account_receipt(controller, project: Path, reporter=None) -> dict[str, object] | None:
+    """The account receipt when every recorded tool is healthy, else None (#6494)."""
+    try:
+        receipt = controller.read_account_receipt(project)
+    except (OSError, ValueError):
+        return None
+    components = receipt.get("components")
+    if not isinstance(components, dict) or not components or not all(
+        isinstance(item, dict) and item.get("status") == "healthy" for item in components.values()
+    ):
+        return None
+    if reporter is not None:
+        reporter.trace("add-on change only: reuse account dependencies")
+    return receipt
+
+
+def background_mine_allowed_for(
+    project: Path, controller, old_manifest, old_commit, commit
+) -> bool:
+    """Whether the first MemPalace mine may run detached for this install (#6498).
+
+    A fresh install may. A same-commit rerun writes no account rollback journal,
+    and the rollback image covers only the project-local palace, so a detached
+    mine into the shared palace cannot race it. An upgrade must mine first.
+    """
+    if old_manifest is None:
+        return True
+    if old_commit is None or old_commit != commit:
+        return False
+    resolver = getattr(controller, "mempalace_project_palace", None)
+    if resolver is None:
+        return False
+    try:
+        palace = Path(resolver(project)).resolve()
+    except Exception:  # noqa: BLE001 - unknown palace: keep the safe synchronous mine
+        return False
+    return palace != (project.resolve() / MEMPALACE_STATE_OUTPUT)
+
+
+def provision_account_dependencies(
+    project: Path,
+    controller,
+    host_controller,
+    specification: dict[str, object],
+    *,
+    bundle: dict[str, bool],
+    reporter=None,
+    upgrade: bool,
+    background_mine: bool | None = None,
+) -> dict[str, object]:
+    """Install or verify every account tool, then initialize the project palace."""
+    account_runner = _tracing_dependency_runner(reporter, subprocess.run)
+    install_account = controller.install_account_dependencies
+    kwargs = {}
+    try:
+        parameters = inspect.signature(install_account).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    # Require an explicit runner parameter (not bare **kwargs mocks).
+    if "runner" in parameters:
+        kwargs["runner"] = account_runner
+    # A detached mine would race the upgrade's MemPalace rollback image.
+    if "background_mine_allowed" in parameters:
+        kwargs["background_mine_allowed"] = (
+            not upgrade if background_mine is None else background_mine
+        )
+    account_receipt = install_account(project, specification, **kwargs)
+    if bundle.get("mempalace", True):
+        # #6236: inside the rollback capture window below.
+        initialize_account_project_palace(project, controller, host_controller)
+    return account_receipt
+
+
+def plan_install(
+    project: Path,
+    source: Path,
+    requested: set[str] | None = None,
+    removed: set[str] | None = None,
+    environ: dict[str, str] | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    """Distribution and add-ons for this install: explicit choices, then the recorded ones.
+
+    No add-on is ever selected because of what the project contains.
+    """
+    catalog = addon_catalog()
+    found = catalog.discover(source)
+    files, current = installed_record(project)
+    persisted = catalog.installed(found, files, current)
+    wanted = set(requested or ()) | catalog.environment_names(environ)
+    selected = catalog.resolve(found, wanted, set(removed or ()), persisted)
+    return catalog.distribution(found, selected, DEFAULT_DISTRIBUTION), tuple(selected)
+
+
+def detect_distribution(project: Path, source: Path) -> str:
+    """The distribution recorded add-ons imply; default stays portable (no auto-selection)."""
+    return plan_install(project, source)[0]
+
+
+def suggest_addons(project: Path, source: Path, selected: tuple[str, ...] = ()) -> list[str]:
+    """Add-ons whose project pack predicate matches; printed as a tip, never installed."""
     declared = project_maven_ids(project)
-    matches: list[str] = []
-    for name, policy in distributions.items():
-        if not isinstance(name, str) or not isinstance(policy, dict):
+    suggestions = []
+    for name, entry in addon_catalog().discover(source).items():
+        distribution = entry["manifest"].get("distribution")
+        if name in selected or not distribution:
             continue
-        if name == DEFAULT_DISTRIBUTION:
-            continue
-        profile_name = policy.get("profile")
+        policy = distribution_catalog(source).get(distribution)
+        profile_name = policy.get("profile") if isinstance(policy, dict) else None
         if not isinstance(profile_name, str):
             continue
-        profile_path = source / "profiles" / profile_name / "profile.json"
-        if not profile_path.is_file():
-            continue
-        profile = json.loads(profile_path.read_text(encoding="utf-8"))
-        if not isinstance(profile, dict):
-            raise ValueError(f"invalid ChaosEngine profile: {profile_name}")
+        profile = json.loads((profile_root(source, profile_name) / "profile.json").read_text(encoding="utf-8"))
         wanted = profile_install_predicate(profile)
         if wanted and wanted & declared:
-            matches.append(name)
-    if len(matches) > 1:
-        raise ValueError("multiple ChaosEngine distributions match this project")
-    if len(matches) == 1:
-        return matches[0]
-    return DEFAULT_DISTRIBUTION
+            suggestions.append(name)
+    return sorted(suggestions)
+
+
+def addon_tip(names: list[str]) -> str:
+    flags = " ".join(f"--with-{name}" for name in names)
+    return f"ChaosEngine tip: this project matches optional add-ons; add {flags} to install them."
 
 
 def load_distribution(source: Path, distribution: str) -> tuple[dict[str, object], str]:
     try:
-        catalog = json.loads((source / DISTRIBUTIONS_NAME).read_text(encoding="utf-8"))
-        policy = catalog["distributions"][distribution]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        policy = distribution_catalog(source)[distribution]
+    except (KeyError, TypeError) as error:
         raise ValueError(f"unknown ChaosEngine distribution: {distribution}") from error
     if not isinstance(policy, dict):
         raise ValueError(f"unknown ChaosEngine distribution: {distribution}")
@@ -336,8 +652,8 @@ def load_distribution(source: Path, distribution: str) -> tuple[dict[str, object
         )
     ):
         raise ValueError("ChaosEngine distribution policy is invalid")
-    profile_root = source / "profiles" / profile
-    if not all((profile_root / name).is_file() for name in ("entrypoint.md", "profile.json")):
+    root = profile_root(source, profile)
+    if not all((root / name).is_file() for name in ("entrypoint.md", "profile.json")):
         raise ValueError(f"ChaosEngine distribution profile is incomplete: {profile}")
     encoded = json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
     return policy, hashlib.sha256(encoded).hexdigest()
@@ -363,7 +679,7 @@ def load_capability_policy(source: Path, distribution: str) -> tuple[dict[str, d
     policy, _ = load_distribution(source, distribution)
     profile_name = str(policy["profile"])
     try:
-        profile = json.loads((source / "profiles" / profile_name / "profile.json").read_text(encoding="utf-8"))
+        profile = json.loads((profile_root(source, profile_name) / "profile.json").read_text(encoding="utf-8"))
         dependencies = json.loads((source / "dependencies.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError) as error:
         raise ValueError("ChaosEngine capability policy is invalid") from error
@@ -399,7 +715,79 @@ def is_origin_only(relative: Path) -> bool:
     )
 
 
-def source_files(source: Path, distribution: str = DEFAULT_DISTRIBUTION) -> tuple[Path, ...]:
+def is_nested_install_artifact(relative: Path) -> bool:
+    """Project-level residue an install run inside the portable tree leaves (#6225).
+
+    The portable tree ships no top-level dot entries, so every one of them is
+    install residue (a nested overlay, host wiring, state receipts), never payload.
+    """
+    return bool(relative.parts) and relative.parts[0].startswith(".")
+
+
+def require_disjoint_trees(source: Path, project: Path) -> None:
+    """Reject a source that contains the project or sits inside it (#6868)."""
+    path = Path(__file__).resolve().with_name("harness_mindset.py")
+    spec = importlib.util.spec_from_file_location("chaos_engine_harness_mindset_install", path)
+    if spec is None or spec.loader is None:
+        raise ValueError("ChaosEngine source and project trees must be disjoint")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.require_disjoint_trees(source, project)
+
+
+def reject_nested_project(project: Path) -> None:
+    """Refuse a project that is an overlay or a portable tree (#6225)."""
+    if INSTALL_DIRECTORY in project.parts:
+        raise ValueError(
+            f"refusing a nested install inside {INSTALL_DIRECTORY}; "
+            f"rerun with --project {project.parent}"
+        )
+    if (project / "skills/chaos-engine/SKILL.md").is_file():
+        raise ValueError(
+            "refusing a nested install inside a portable ChaosEngine tree; "
+            f"rerun with --project {project.parent}"
+        )
+
+
+def remove_nested_install_artifacts(target: Path) -> list[str]:
+    """Delete overlay top-level dot entries and drop them from the manifest (#6225).
+
+    Links are unlinked, never followed. Returns the removed entry names.
+    """
+    reject_link_or_reparse(target)
+    removed: list[str] = []
+    for entry in sorted(target.iterdir()):
+        if not entry.name.startswith("."):
+            continue
+        if is_link_or_reparse(entry) or not entry.is_dir():
+            entry.unlink()
+        else:
+            shutil.rmtree(entry)
+        removed.append(entry.name)
+    manifest_path = target / MANIFEST_NAME
+    if not removed or not manifest_path.is_file():
+        return removed
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files = manifest.get("files") if isinstance(manifest, dict) else None
+    if isinstance(files, dict):
+        manifest["files"] = {
+            key: value for key, value in files.items() if key.split("/", 1)[0] not in removed
+        }
+        temporary = target / f"{MANIFEST_NAME}.nested-{secrets.token_hex(8)}"
+        try:
+            temporary.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            temporary.replace(manifest_path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+    return removed
+
+
+def source_files(
+    source: Path, distribution: str = DEFAULT_DISTRIBUTION, addons: tuple[str, ...] = ()
+) -> tuple[Path, ...]:
     reject_link_or_reparse(source)
     if not (source / "skills/chaos-engine/SKILL.md").is_file():
         raise ValueError(f"source is not a portable ChaosEngine tree: {source}")
@@ -410,8 +798,12 @@ def source_files(source: Path, distribution: str = DEFAULT_DISTRIBUTION) -> tupl
     forbidden_tokens = tuple(str(token).casefold() for token in policy["forbiddenTokens"])
     runtime_files = frozenset(str(relative) for relative in policy["runtimeFiles"])
     files: list[Path] = []
-    for path in sorted(source.rglob("*")):
-        relative = path.relative_to(source)
+    roots = [source]
+    if not (source / "profiles" / selected_profile).is_dir():
+        roots.append(profile_root(source, selected_profile))
+    candidates = [path for root in roots for path in sorted(root.rglob("*"))]
+    for path in candidates:
+        relative = payload_relative(source, path)
         if is_generated_python_cache(relative):
             continue
         if relative.as_posix() == DISTRIBUTIONS_NAME:
@@ -422,7 +814,9 @@ def source_files(source: Path, distribution: str = DEFAULT_DISTRIBUTION) -> tupl
             and relative.parts[1] != selected_profile
         ):
             continue
-        if is_origin_only(relative):
+        if is_origin_only(relative) or is_nested_install_artifact(relative):
+            continue
+        if is_unselected_addon(relative, addons):
             continue
         if is_link_or_reparse(path):
             raise ValueError(f"source contains a link or reparse point: {relative}")
@@ -434,7 +828,8 @@ def source_files(source: Path, distribution: str = DEFAULT_DISTRIBUTION) -> tupl
                     f"distribution policy rejected forbidden content: {relative.as_posix()}"
                 )
             files.append(path)
-    packaged = {path.relative_to(source).as_posix() for path in files}
+    files.extend(addon_source_files(source, distribution, addons))
+    packaged = {payload_relative(source, path).as_posix() for path in files}
     if not runtime_files <= packaged:
         raise ValueError("ChaosEngine distribution runtime inventory is incomplete")
     return tuple(files)
@@ -485,12 +880,19 @@ def load_manifest(target: Path) -> dict[str, object]:
         validated = _validated_capabilities(capabilities)
         encoded = json.dumps(validated, sort_keys=True, separators=(",", ":")).encode()
         known = set(validated)
-        if not known <= CAPABILITY_COMPONENTS:
+        extras = known - CAPABILITY_COMPONENTS
+        # Older receipts may name optional companions this contract no longer
+        # ships. Verify the stored digest, then drop those extras so doctor
+        # does not probe or require them. Unknown required names still fail.
+        if extras and any(validated[name].get("taskImpact") != "optional" for name in extras):
             raise ValueError("ChaosEngine manifest has an invalid capability policy")
         if capability_digest != hashlib.sha256(encoded).hexdigest():
             raise ValueError("ChaosEngine manifest has an invalid capability policy")
+        for name in extras:
+            validated.pop(name, None)
+        known = set(validated)
         # Forward-compatible read: older trees may omit newly added optional
-        # components (e.g. headroom). Required components must still be present so
+        # components. Required components must still be present so
         # upgrade can keep a verifiable backup for rollback (#5613).
         missing = CAPABILITY_COMPONENTS - known
         if missing:
@@ -508,13 +910,18 @@ def is_generated_python_cache(relative: Path) -> bool:
     return "__pycache__" in relative.parts or relative.suffix == ".pyc"
 
 
+def is_generated_runtime_file(relative: Path) -> bool:
+    """Overlay runtime stamps (entry-stamp) are not packaged ownership (#6532)."""
+    return bool(relative.parts) and relative.parts[0] == "runtime"
+
+
 def installed_payload(target: Path) -> dict[str, str]:
     reject_link_or_reparse(target)
     payload: dict[str, str] = {}
     for path in sorted(target.rglob("*")):
         reject_link_or_reparse(path)
         relative = path.relative_to(target)
-        if is_generated_python_cache(relative):
+        if is_generated_python_cache(relative) or is_generated_runtime_file(relative):
             continue
         if path.is_file() and relative.as_posix() != MANIFEST_NAME:
             payload[relative.as_posix()] = file_sha256(path)
@@ -626,7 +1033,6 @@ def orphan_host_anchors_without_core(project: Path) -> bool:
     return False
 
 
-
 def orphan_core_without_hosts_receipt(project: Path) -> bool:
     """True when portable core verifies but hosts receipt is absent (#5636)."""
     target = project / INSTALL_DIRECTORY
@@ -717,16 +1123,22 @@ def upgrade_host_receipt_drift_needed(project: Path) -> bool:
     try:
         host_controller = load_installed_controller(target, "hosts")
         host_controller.verify(project, core_commit=core_commit)
+        preflight = getattr(host_controller, "preflight", None)
+        if callable(preflight):
+            preflight(project)
     except (OSError, RuntimeError, ValueError) as error:
         message = str(error)
+        if error.__cause__ is not None:
+            message = f"{message} {error.__cause__}"
         return any(
             token in message
             for token in (
                 "host adapter drift",
                 "host receipt does not match the installed core",
-                "receipt integrity drift",
                 "host receipt is missing or invalid",
                 "host anchor collision",
+                "MCP server collision",
+                "Codex configuration collision",
             )
         )
     return False
@@ -755,7 +1167,27 @@ def _quarantine_state_path(state: Path, preferred: str) -> Path:
     return destination
 
 
-def quarantine_orphaned_host_receipt(project: Path, reporter=None) -> Path | None:
+def _is_healable_host_drift(error: BaseException) -> bool:
+    """True when host preflight/verify drift should quarantine and rebind (#5685)."""
+    texts = [str(error)]
+    cause = error.__cause__
+    if cause is not None:
+        texts.append(str(cause))
+    blob = " ".join(texts)
+    return any(
+        token in blob
+        for token in (
+            "host adapter drift",
+            "host receipt does not match the installed core",
+            "MCP server collision",
+            "Codex configuration collision",
+        )
+    )
+
+
+def quarantine_orphaned_host_receipt(
+    project: Path, reporter=None, *, force: bool = False
+) -> Path | None:
     """Move orphaned/stale host receipt (+ anchors) aside for safe reinstall.
 
     Covers (#5606): phase=installed host receipt with wiped `.chaos-engine`.
@@ -763,10 +1195,12 @@ def quarantine_orphaned_host_receipt(project: Path, reporter=None) -> Path | Non
     stale host receipt/anchor (coreCommit or hostToken drift / verify failure).
     Extends (#5633): deps+core present with drifted receipt/adapters (upgrade
     host-adapter drift); quarantine then rebind preserves foreign user MCP.
+    Extends (#5685): force=True after a live preflight drift so rematerialize+
+    provision can rebind instead of CE-INSTALL-FAILED.
     Quarantining lets install rematerialize core and rebind hosts without
     undocumented file surgery.
     """
-    if not wiped_runtime_recovery_needed(project):
+    if not force and not wiped_runtime_recovery_needed(project):
         return None
     receipt = project / ".chaos-engine-hosts.json"
     state = project / ".chaos-engine-state"
@@ -962,8 +1396,15 @@ def project_setup_output_files(project: Path, relative: str) -> tuple[bool, dict
 
 def snapshot_project_setup_outputs(
     project: Path,
+    *,
+    copy_graphify_output: bool = True,
 ) -> tuple[Path, dict[str, tuple[bool, dict[str, str]]]]:
-    """Keep Graphify preimages until host setup commits under the project lock."""
+    """Keep Graphify preimages until host setup commits under the project lock.
+
+    ``copy_graphify_output=False`` records only digests for ``graphify-out`` (#6498):
+    an add-on-only rerun reuses the account stores, and only provisioning or a
+    store refresh writes that tree, so copying hundreds of MB is waste.
+    """
     snapshot = Path(tempfile.mkdtemp(prefix="chaos-engine-project-setup-"))
     before: dict[str, tuple[bool, dict[str, str]]] = {}
     try:
@@ -971,7 +1412,7 @@ def snapshot_project_setup_outputs(
             original = project / relative
             exists, files = project_setup_output_files(project, relative)
             before[relative] = (exists, files)
-            if not exists:
+            if not exists or (relative == "graphify-out" and not copy_graphify_output):
                 continue
             saved = snapshot / relative
             saved.parent.mkdir(parents=True, exist_ok=True)
@@ -1183,6 +1624,9 @@ def restore_project_setup_outputs(
                 continue
             if current_digest == published_digest and prior_digest != published_digest:
                 saved = snapshot / relative / child
+                if not saved.is_file():
+                    # #6498: digest-only preimage; keep the newer file, never crash rollback.
+                    continue
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(saved.read_bytes())
         if not prior_exists and root.exists() and root.is_dir():
@@ -1196,10 +1640,189 @@ def restore_project_setup_outputs(
                 root.rmdir()
 
 
+_LOCK_BUSY_FIX_NEXT = (
+    "wait for the listed PID(s) to finish; "
+    "do not run install one-liner in parallel with doctor/install/repair; "
+    "do not delete `.chaos-engine.lock`"
+)
+_LOCK_CMDLINE_MAX = 120
+
+
+def format_lock_holder_detail(holders):
+    """Format lock holder tuples for busy-lock errors.
+
+    Each holder is ``(pid, cmdline, elapsed_or_none)``. Empty input yields "".
+    """
+    parts = []
+    for pid, cmdline, elapsed in holders:
+        piece = f"pid={pid}"
+        text = (cmdline or "").strip()
+        if text:
+            if len(text) > _LOCK_CMDLINE_MAX:
+                text = text[: _LOCK_CMDLINE_MAX - 3] + "..."
+            piece += f" cmdline={text}"
+        if elapsed:
+            piece += f" elapsed={elapsed}"
+        parts.append(piece)
+    if not parts:
+        return ""
+    return "holder(s): " + "; ".join(parts)
+
+
+def _pid_cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+
+
+def _pid_elapsed(pid: int):
+    try:
+        ticks = os.sysconf(os.SYS_SC_CLK_TCK)
+        stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        fields = stat_text[stat_text.rfind(")") + 2 :].split()
+        starttime = int(fields[19])
+        uptime = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
+        elapsed = max(0.0, uptime - (starttime / float(ticks)))
+    except (OSError, ValueError, IndexError, AttributeError, TypeError):
+        return None
+    if elapsed < 60:
+        return f"{int(elapsed)}s"
+    if elapsed < 3600:
+        return f"{int(elapsed // 60)}m"
+    return f"{elapsed / 3600:.1f}h"
+
+
+def _pid_has_open_path(pid: int, lock_path: Path, fd_paths_by_pid=None) -> bool:
+    """Whether ``pid`` holds ``lock_path`` open (``/proc/<pid>/fd`` links; test seam)."""
+    target = os.path.realpath(lock_path)
+    if fd_paths_by_pid is not None:
+        return any(os.path.realpath(path) == target for path in fd_paths_by_pid.get(pid, ()))
+    try:
+        descriptors = list(Path(f"/proc/{pid}/fd").iterdir())
+    except OSError:
+        return False
+    for descriptor in descriptors:
+        try:
+            if os.path.realpath(os.readlink(descriptor)) == target:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def linux_flock_holders(lock_path: Path, *, locks_text=None, cmdline_by_pid=None, fd_paths_by_pid=None):
+    """Best-effort Linux flock holders for ``lock_path`` via ``/proc/locks``.
+
+    Returns a list of ``(pid, cmdline, elapsed_or_none)``. Empty on race,
+    non-Linux, or unreadable ``/proc``. ``locks_text`` / ``cmdline_by_pid``
+    are test seams that skip live ``/proc`` reads when provided.
+    """
+    if locks_text is None and (os.name == "nt" or not Path("/proc/locks").is_file()):
+        return []
+    try:
+        named = os.stat(lock_path, follow_symlinks=False)
+    except OSError:
+        return []
+    # os.major/os.minor are POSIX-only; without them only the open-fd check can match.
+    major = os.major(named.st_dev) if hasattr(os, "major") else -1
+    minor = os.minor(named.st_dev) if hasattr(os, "minor") else -1
+    inode = named.st_ino
+    holders = []
+    seen = set()
+    if locks_text is None:
+        try:
+            lines = Path("/proc/locks").read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+    else:
+        lines = str(locks_text).splitlines()
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+        identity = parts[5]
+        if identity.count(":") != 2:
+            continue
+        maj_s, min_s, ino_s = identity.split(":")
+        try:
+            if int(ino_s) != inode:
+                continue
+            pid = int(parts[4])
+            same_device = int(maj_s, 16) == major and int(min_s, 16) == minor
+        except ValueError:
+            continue
+        # overlayfs (containers) reports a different st_dev than /proc/locks; confirm by open fd.
+        if not same_device and not _pid_has_open_path(pid, lock_path, fd_paths_by_pid):
+            continue
+        if pid in seen or pid <= 0:
+            continue
+        seen.add(pid)
+        if cmdline_by_pid is not None:
+            cmdline = str(cmdline_by_pid.get(pid, ""))
+            elapsed = None
+        else:
+            cmdline = _pid_cmdline(pid)
+            elapsed = _pid_elapsed(pid)
+        holders.append((pid, cmdline, elapsed))
+    return holders
+
+
+def lock_busy_message(operation: str, lock_path: Path, *, holders=None) -> str:
+    """Build the busy-lock RuntimeError text with holder detail and fix-next."""
+    if holders is None:
+        if os.name == "nt":
+            detail = "holder unknown on Windows"
+        else:
+            detail = format_lock_holder_detail(linux_flock_holders(lock_path))
+    else:
+        detail = format_lock_holder_detail(holders)
+    message = f"another {operation} is already running"
+    if detail:
+        message = f"{message}; {detail}"
+    return f"{message}. fix-next: {_LOCK_BUSY_FIX_NEXT}"
+
+
+def read_lock_contents(
+    stream, magic: bytes, *, lock_path: Path, busy_label: str, wait_budget: float
+) -> bytes:
+    """Read a lock file, waiting out mandatory locks and a half-written magic.
+
+    Windows byte-range locks are mandatory: while another handle holds the
+    lock even reading fails, so that waits for ``wait_budget`` (#6205). Empty
+    or partial magic means the creator has not finished its first write, so
+    that waits up to ``LOCK_INIT_GRACE_SECONDS`` (#6328). Foreign bytes return
+    at once so the caller still reports a collision without delay.
+    """
+    started = time.monotonic()
+    while True:
+        stream.seek(0)
+        try:
+            contents = stream.read()
+        except PermissionError as error:
+            if time.monotonic() - started >= wait_budget:
+                raise RuntimeError(lock_busy_message(busy_label, lock_path)) from error
+            time.sleep(PROJECT_LOCK_POLL_SECONDS)
+            continue
+        initializing = contents != magic and magic.startswith(contents)
+        if not initializing or time.monotonic() - started >= LOCK_INIT_GRACE_SECONDS:
+            return contents
+        time.sleep(LOCK_INIT_POLL_SECONDS)
+
+
 @contextmanager
-def project_lock(project: Path):
+def project_lock(project: Path, *, wait_seconds: float | None = None):
+    """Exclusive project lock with bounded wait for transient dual-op collisions (#6019).
+
+    ``wait_seconds=0`` keeps the historical non-blocking fail-fast used by tests.
+    Default waits up to ``PROJECT_LOCK_WAIT_SECONDS`` with a clear stderr message.
+    """
     project = project.resolve()
     lock_path = project / LOCK_NAME
+    wait_budget = (
+        PROJECT_LOCK_WAIT_SECONDS if wait_seconds is None else max(0.0, float(wait_seconds))
+    )
     flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
     created = False
     try:
@@ -1223,27 +1846,48 @@ def project_lock(project: Path):
             lock_file.flush()
             os.fsync(lock_file.fileno())
         else:
-            lock_file.seek(0)
-            try:
-                lock_contents = lock_file.read()
-            except PermissionError as error:
-                raise RuntimeError("another ChaosEngine operation is already running") from error
+            lock_contents = read_lock_contents(
+                lock_file,
+                LOCK_MAGIC,
+                lock_path=lock_path,
+                busy_label="ChaosEngine operation",
+                wait_budget=wait_budget,
+            )
             if lock_contents != LOCK_MAGIC:
                 raise ValueError(f"ChaosEngine lock collision: {lock_path}")
         lock_file.seek(0)
-        if os.name == "nt":
-            import msvcrt  # pylint: disable=import-outside-toplevel
+        deadline = time.monotonic() + wait_budget
+        waiting_announced = False
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt  # pylint: disable=import-outside-toplevel
 
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl  # pylint: disable=import-outside-toplevel,import-error
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl  # pylint: disable=import-outside-toplevel,import-error
 
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as error:
-        lock_file.close()
-        raise RuntimeError("another ChaosEngine operation is already running") from error
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    lock_file.close()
+                    raise RuntimeError(
+                        lock_busy_message("ChaosEngine operation", lock_path)
+                    ) from error
+                if not waiting_announced:
+                    print(
+                        "ChaosEngine: waiting for another ChaosEngine operation "
+                        f"to finish (up to {wait_budget:g}s)…",
+                        file=sys.stderr,
+                    )
+                    waiting_announced = True
+                time.sleep(min(PROJECT_LOCK_POLL_SECONDS, remaining))
     except BaseException:
-        lock_file.close()
+        # OSError from flock is handled in the wait loop; other errors close here.
+        if not lock_file.closed:
+            lock_file.close()
         raise
     try:
         yield
@@ -1284,11 +1928,13 @@ def dependency_runtime_lock(runtime: Path):
             stream.flush()
             os.fsync(stream.fileno())
         else:
-            stream.seek(0)
-            try:
-                contents = stream.read()
-            except PermissionError as error:
-                raise RuntimeError("another dependency runtime operation is already running") from error
+            contents = read_lock_contents(
+                stream,
+                DEPENDENCY_LOCK_MAGIC,
+                lock_path=lock_path,
+                busy_label="dependency runtime operation",
+                wait_budget=0.0,
+            )
             if contents != DEPENDENCY_LOCK_MAGIC:
                 raise ValueError(f"dependency lock collision: {lock_path}")
         stream.seek(0)
@@ -1302,7 +1948,9 @@ def dependency_runtime_lock(runtime: Path):
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as error:
         stream.close()
-        raise RuntimeError("another dependency runtime operation is already running") from error
+        raise RuntimeError(
+            lock_busy_message("dependency runtime operation", lock_path)
+        ) from error
     except BaseException:
         stream.close()
         raise
@@ -1992,6 +2640,34 @@ def recover_transaction(project: Path) -> None:
         _recover_transaction(project)
 
 
+def sync_repository_overlay_from_source(project: Path, commit: str | None = None) -> None:
+    """After core publish, heal `.chaos-engine` from local SOURCE on origin checkouts.
+
+    When ``commit`` is a git object and local SOURCE bytes are not that commit,
+    keep the published payload (#6121).
+    """
+    match_path = Path(__file__).resolve().with_name("overlay_match.py")
+    if not match_path.is_file():
+        return
+    try:
+        import importlib.util as _ilu
+
+        spec = _ilu.spec_from_file_location("ce_overlay_match_install_sync", match_path)
+        if spec is None or spec.loader is None:
+            return
+        module = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if not getattr(module, "is_repository_checkout", lambda _p: False)(project):
+            return
+        differs = getattr(module, "owned_tree_differs_from_commit", None)
+        if commit and callable(differs) and differs(project, project / "chaos-engine", commit):
+            return
+        module.sync_overlay_from_source(project)
+    except (OSError, RuntimeError, ValueError, AttributeError, ImportError):
+        # Install-time sync is best-effort; doctor heal-once is the backstop.
+        pass
+
+
 def install(  # noqa: MC0001 - publication and compensation form one transaction.
     project: Path,
     source: Path,
@@ -1999,6 +2675,7 @@ def install(  # noqa: MC0001 - publication and compensation form one transaction
     _locked: bool = False,
     source_record: dict[str, str] | None = None,
     distribution: str = DEFAULT_DISTRIBUTION,
+    addons: tuple[str, ...] = (),
 ) -> Path:
     project = project.resolve()
     reject_link_or_reparse(source.absolute())
@@ -2015,15 +2692,15 @@ def install(  # noqa: MC0001 - publication and compensation form one transaction
             "git-digest",
         }:
             raise ValueError("ChaosEngine source record is invalid")
-    if source == project or source.is_relative_to(project) or project.is_relative_to(source):
-        raise ValueError("ChaosEngine source and project trees must be disjoint")
+    require_disjoint_trees(source, project)
+    reject_nested_project(project)
 
     if (source / MANIFEST_NAME).exists():
         raise ValueError(f"source contains the reserved manifest path: {MANIFEST_NAME}")
     _, policy_digest = load_distribution(source, distribution)
     capabilities, capability_digest = load_capability_policy(source, distribution)
-    files = source_files(source, distribution)
-    ownership = {path.relative_to(source).as_posix(): file_sha256(path) for path in files}
+    files = source_files(source, distribution, tuple(addons))
+    ownership = {payload_relative(source, path).as_posix(): file_sha256(path) for path in files}
     target = project / INSTALL_DIRECTORY
     backup = project / BACKUP_NAME
     displaced = project / NEXT_BACKUP_NAME
@@ -2054,16 +2731,17 @@ def install(  # noqa: MC0001 - publication and compensation form one transaction
                     "installed ChaosEngine distribution differs; uninstall before changing it"
                 )
             if current_commit == commit:
-                if (
-                    not legacy_distribution
-                    and current_distribution.get("policySha256") != policy_digest
-                ):
-                    raise ValueError(
-                        "same commit resolved to a different ChaosEngine distribution policy"
-                    )
-                if current["files"] != ownership:
-                    raise ValueError("same commit resolved to a different ChaosEngine payload")
-                if current["source"] == desired_source:
+                # Identical no-op only when policy + owned payload + provenance
+                # all match. Overlay sync and transport filters can rewrite owned
+                # digests while keeping the same SOURCE commit; rematerialize
+                # from the newly resolved tree instead of fail-closing (#5839).
+                # hostToken is preserved in the publish path below.
+                same_policy = legacy_distribution or (
+                    current_distribution.get("policySha256") == policy_digest
+                )
+                same_payload = current["files"] == ownership
+                same_source = current["source"] == desired_source
+                if same_policy and same_payload and same_source:
                     current_capabilities = current.get("capabilities")
                     current_capability_digest = current.get("capabilityPolicySha256")
                     manifest_changed = False
@@ -2093,15 +2771,15 @@ def install(  # noqa: MC0001 - publication and compensation form one transaction
                         finally:
                             if temporary_manifest.exists():
                                 temporary_manifest.unlink()
+                    sync_repository_overlay_from_source(project, commit)
                     return target
-                if current["source"].get("kind") != "local":  # type: ignore[union-attr]
-                    raise ValueError("same commit resolved from different ChaosEngine provenance")
+                # Drift at the same commit: fall through to rematerialize.
         if backup.exists():
             require_absent(old_backup, "obsolete backup path")
         stage = Path(tempfile.mkdtemp(prefix=f"{INSTALL_DIRECTORY}-stage-", dir=project))
         try:
             for path in files:
-                relative = path.relative_to(source)
+                relative = payload_relative(source, path)
                 destination = stage / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, destination)
@@ -2142,6 +2820,7 @@ def install(  # noqa: MC0001 - publication and compensation form one transaction
         finally:
             if stage.exists():
                 shutil.rmtree(stage)
+    sync_repository_overlay_from_source(project, commit)
     return target
 
 
@@ -2150,11 +2829,154 @@ def status(project: Path) -> dict[str, str]:
     with project_lock(project):
         manifest = verify_install(project / INSTALL_DIRECTORY)
         state = "recovery-required" if (project / JOURNAL_NAME).exists() else "healthy"
-        return {
+        commit = str(manifest["source"]["commit"])  # type: ignore[index]
+        result: dict[str, object] = {
             "status": state,
-            "commit": str(manifest["source"]["commit"]),  # type: ignore[index]
+            "commit": commit,
             "distribution": str(manifest["distribution"]["id"]),  # type: ignore[index]
         }
+        last_install = read_install_rollback(project, commit)
+        if last_install is not None:
+            result["lastInstall"] = last_install
+        return result
+
+
+def read_install_rollback(project: Path, installed_commit: str) -> dict[str, str] | None:
+    """Return the last failed install's rollback record when it matches the installed core.
+
+    The bootstrap writes it after a failed verify rolls `.chaos-engine` back, so
+    status/doctor can say the requested core was not kept (#6338). A record for a
+    different installed core is stale and ignored.
+    """
+    path = Path(project) / INSTALL_ROLLBACK_RELATIVE
+    try:
+        if is_link_or_reparse(path) or not path.is_file():
+            return None
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(record, dict) or record.get("status") != "rolled-back":
+        return None
+    requested = record.get("requestedCommit")
+    restored = record.get("restoredCommit")
+    if not all(
+        isinstance(value, str) and COMMIT_PATTERN.fullmatch(value) is not None
+        for value in (requested, restored)
+    ):
+        return None
+    if restored != installed_commit:
+        return None
+    return {"status": "rolled-back", "requestedCommit": requested, "restoredCommit": restored}
+
+
+def clear_install_rollback(project: Path) -> None:
+    """Drop a stale rollback record once a later install completes."""
+    path = Path(project) / INSTALL_ROLLBACK_RELATIVE
+    with contextlib.suppress(OSError):
+        if not is_link_or_reparse(path) and path.is_file():
+            path.unlink()
+
+
+def _restore_captured_host_snapshot(project: Path, controller, saved: object) -> None:
+    """Put a pre-upgrade host image back during compensation.
+
+    A full preflight snapshot uses restore_snapshot. The quarantine path keeps
+    only the receipt bytes (#6127). Writing those bytes back must not require
+    the image map, and must not raise "host snapshot is invalid" over the
+    original failure.
+    """
+    if not isinstance(saved, dict):
+        raise ValueError("ChaosEngine host snapshot is invalid")
+    images = saved.get("images")
+    receipt = saved.get("receipt")
+    raw = saved.get("raw")
+    if isinstance(images, dict) and isinstance(receipt, dict) and isinstance(raw, bytes):
+        try:
+            controller.restore_snapshot(project, saved)
+        except ValueError as error:
+            # A pre-swap snapshot can miss paths the new core manages. Keep the
+            # receipt bytes and let the original failure surface.
+            if "host snapshot is invalid" not in str(error):
+                raise
+            path = project / ".chaos-engine-hosts.json"
+            reject_link_or_reparse(path)
+            path.write_bytes(raw)
+        return
+    if not isinstance(raw, bytes) or not raw:
+        raise ValueError("ChaosEngine host snapshot is invalid")
+    path = project / ".chaos-engine-hosts.json"
+    reject_link_or_reparse(path)
+    path.write_bytes(raw)
+
+
+def _prior_host_receipt_image(path: Path) -> dict[str, object] | None:
+    """Read the live host receipt before quarantine unlinks it (#6126).
+
+    Compensation calls hosts.restore_snapshot, which requires both the parsed
+    receipt and the exact bytes. A raw-only image raises
+    "ChaosEngine host snapshot is invalid" and hides the original failure.
+    """
+    if not path.is_file() or is_link_or_reparse(path):
+        return None
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    image: dict[str, object] = {"raw": raw}
+    try:
+        receipt = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return image
+    if isinstance(receipt, dict):
+        image["receipt"] = receipt
+    return image
+
+
+def account_rollback_has_exact_prior_host_receipt(project: Path) -> bool:
+    """True when account rollback can read an exact prior host receipt."""
+    project = project.resolve()
+    target = project / INSTALL_DIRECTORY
+    backup = project / BACKUP_NAME
+    host_receipt = project / ".chaos-engine-hosts.json"
+    if not target.exists() or not backup.exists():
+        return False
+    if not host_receipt.exists() and not is_link_or_reparse(host_receipt):
+        return False
+    try:
+        previous_commit = str(verify_install(backup)["source"]["commit"])
+        receipt_controller = load_installed_controller(target, "hosts")
+        previous_receipt = getattr(receipt_controller, "rollback_previous_receipt", None)
+        if not callable(previous_receipt):
+            return False
+        raw = previous_receipt(project, previous_commit)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+    return isinstance(raw, bytes)
+
+
+def note_inexact_rollback_compensation(
+    errors: list[BaseException],
+    cleanup_error: BaseException,
+    reporter,
+    *,
+    core_unchanged: bool,
+) -> None:
+    """Keep the new core when rollback failed before it swapped anything.
+
+    Direct rollback() stays fail-closed. A missing-receipt error raised after
+    the core directory changed is still a compensation failure.
+    """
+    if (
+        core_unchanged
+        and isinstance(cleanup_error, ValueError)
+        and "no exact prior" in str(cleanup_error)
+    ):
+        if reporter is not None:
+            reporter.trace("kept installed core; rollback has no exact prior receipt")
+        return
+    errors.append(cleanup_error)
 
 
 def rollback(  # noqa: MC0001 - cross-resource rollback is one journaled state machine.
@@ -2309,6 +3131,19 @@ def rollback(  # noqa: MC0001 - cross-resource rollback is one journaled state m
                         previous_core_sha256,
                     )
             if target_commit != desired_commit:
+                # The previous core rejects a receipt whose host map gained a route.
+                # Restore that core's exact receipt before the tree swap loads it.
+                prior_raw = pending.get("priorHostReceipt") if isinstance(pending, dict) else None
+                if isinstance(prior_raw, bytes):
+                    current_hosts = load_installed_controller(target, "hosts")
+                    _current_receipt, current_raw = current_hosts.read_receipt(project)
+                    if current_raw != prior_raw:
+                        receipt_name = getattr(
+                            current_hosts, "RECEIPT_NAME", ".chaos-engine-hosts.json"
+                        )
+                        current_hosts.atomic_write(
+                            project, project / receipt_name, prior_raw, current_raw
+                        )
                 rollback(project, _locked=True)
             try:
                 previous_hosts = load_installed_controller(target, "hosts")
@@ -2562,11 +3397,11 @@ def staged_candidate_host_controller(
     commit: str,
     source_record: dict[str, str] | None,
     distribution: str,
+    addons: tuple[str, ...] = (),
 ):
     """Load preflight hosts only from an ownership-verified candidate stage."""
     source = source.resolve()
-    if source == project or source.is_relative_to(project) or project.is_relative_to(source):
-        raise ValueError("ChaosEngine source and project trees must be disjoint")
+    require_disjoint_trees(source, project)
     desired_source = normalize_source_record({"commit": commit, "kind": "local"})
     if source_record is not None:
         desired_source = normalize_source_record(source_record)
@@ -2579,12 +3414,12 @@ def staged_candidate_host_controller(
         raise ValueError(f"source contains the reserved manifest path: {MANIFEST_NAME}")
     _, policy_digest = load_distribution(source, distribution)
     capabilities, capability_digest = load_capability_policy(source, distribution)
-    files = source_files(source, distribution)
-    ownership = {path.relative_to(source).as_posix(): file_sha256(path) for path in files}
+    files = source_files(source, distribution, tuple(addons))
+    ownership = {payload_relative(source, path).as_posix(): file_sha256(path) for path in files}
     with tempfile.TemporaryDirectory(prefix=f"{INSTALL_DIRECTORY}-candidate-", dir=project) as name:
         stage = Path(name)
         for path in files:
-            destination = stage / path.relative_to(source)
+            destination = stage / payload_relative(source, path)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
         verify_staged_payload(stage, ownership)
@@ -2612,120 +3447,17 @@ def load_dependency_controller(installed_root: Path):
     return load_installed_controller(installed_root, "dependencies")
 
 
-def ensure_maven_tools(  # noqa: MC0001 - cross-resource provisioning is one transaction.
-    target: Path, specification: dict[str, object], *, runner=subprocess.run,
-    reporter=None, confirmer=None, opener=None, mode: str = "native",
-) -> tuple[Path, Path] | dict[str, str]:
-    hosts = load_installed_controller(target, "hosts")
-    dependencies = load_dependency_controller(target)
-    contract = specification["dependencies"]["maven-tools-mcp"]
-    resolver_options = {} if opener is None else {"opener": opener}
-    version = dependencies.resolve_stable_version(
-        "maven-tools-mcp", contract, **resolver_options
-    )
-    if mode == "docker":
-        docker = shutil.which("docker")
-        if not docker:
-            raise ValueError("explicit Maven Tools Docker mode requires healthy Docker")
-        probe = runner(
-            [docker, "version", "--format", "{{.Server.Version}}"],
-            capture_output=True, text=True, check=False, timeout=30,
-        )
-        if probe.returncode != 0:
-            raise ValueError("explicit Maven Tools Docker mode requires healthy Docker")
-        return {
-            "mode": "docker",
-            "command": str(Path(docker).resolve()),
-            "image": f"arvindand/maven-tools-mcp:{version}",
-        }
-    if mode != "native":
-        raise ValueError("unsupported Maven Tools mode")
-    tag = f"v{version}"
-    cache_status = hosts.maven_tools_cache_status(version)
-    if cache_status["status"] == "healthy":
-        existing = hosts.discover_maven_tools_runtime()
-        if existing is not None and hosts.probe_maven_tools_runtime(*existing):
-            return existing
-    elif cache_status["status"] != "absent":
-        raise ValueError("Maven Tools MCP cache is invalid")
-    java_candidates = []
-    configured = os.environ.get("CHAOSENGINE_JAVA")
-    java_home = os.environ.get("JAVA_HOME")
-    path_java = shutil.which("java")
-    if configured:
-        java_candidates.append(Path(configured).expanduser())
-    if java_home:
-        java_candidates.append(Path(java_home) / "bin" / ("java.exe" if os.name == "nt" else "java"))
-    if path_java:
-        java_candidates.append(Path(path_java))
-    java = next(
-        (
-            item.resolve()
-            for item in java_candidates
-            if item.is_file() and hosts.java_major(item.resolve()) == 25
-        ),
-        None,
-    )
-    compiler_present = getattr(hosts, "java_compiler_present", None)
-    if java is not None and callable(compiler_present) and not compiler_present(java):
-        # JRE-only Java 25 cannot compile Maven Tools; prefer managed Temurin JDK.
-        java = None
-    if java is None:
-        provision = getattr(hosts, "ensure_managed_temurin_jdk", None)
-        if callable(provision):
-            managed = provision(
-                specification, opener=opener, reporter=reporter, confirmer=confirmer,
-            )
-            if managed is not None:
-                java = managed
-    if java is None:
-        raise ValueError(
-            "Temurin JDK 25 with javac is required for Maven Tools MCP "
-            "(JRE-only Java is not enough); install Temurin 25 JDK or set CHAOSENGINE_JAVA"
-        )
-    cache_root = hosts.maven_tools_cache_root()
-    cache_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".maven-tools-source-") as source_name:
-        source = Path(source_name) / "source"
-        git = shutil.which("git")
-        if not git:
-            raise ValueError("git is required to install Maven Tools MCP")
-        if confirmer is not None:
-            confirmer(f"Download Maven Tools {tag} source with git")
-        if reporter is not None:
-            reporter.start("Install Maven Tools", detail=tag)
-        runner([
-            git, "clone", "--branch", tag, "--depth", "1",
-            "https://github.com/arvindand/maven-tools-mcp.git", str(source),
-        ], check=True, timeout=300)
-        revision = runner(
-            [git, "-C", str(source), "rev-parse", "HEAD"], check=True,
-            capture_output=True, text=True, timeout=30,
-        ).stdout.strip().casefold()
-        if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
-            raise ValueError("Maven Tools stable tag did not resolve to an immutable commit")
-        wrapper = source / ("mvnw.cmd" if os.name == "nt" else "mvnw")
-        if not wrapper.is_file():
-            raise ValueError("Maven Tools upstream wrapper is missing")
-        environment = os.environ.copy()
-        environment["JAVA_HOME"] = str(java.parent.parent)
-        if confirmer is not None:
-            confirmer("Build and install Maven Tools")
-        runner([str(wrapper), "-B", "clean", "package", "-Pci"], cwd=source, env=environment, check=True, timeout=900)
-        built = source / f"target/maven-tools-mcp-{version}.jar"
-        if not built.is_file() or built.stat().st_size == 0:
-            raise ValueError("Maven Tools build did not produce the pinned JAR")
-        with tempfile.TemporaryDirectory(prefix=".publishing-", dir=cache_root) as staging_name:
-            staging = Path(staging_name)
-            jar = staging / built.name
-            shutil.copyfile(built, jar)
-            receipt = {"version": version, "commit": revision, "jar": jar.name, "sha256": file_sha256(jar)}
-            (staging / hosts.MAVEN_TOOLS_MCP_RECEIPT).write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
-            hosts.publish_maven_tools_cache(staging)
-    runtime = hosts.discover_maven_tools_runtime()
-    if runtime is None or not hosts.probe_maven_tools_runtime(*runtime):
-        raise ValueError("Maven Tools MCP publication probe failed")
-    return runtime
+def exit2_capability(capability: object, which=shutil.which) -> str:
+    """Probe one host's exit-2 fidelity as ``verified``, ``unsupported`` or ``unknown`` (#6408).
+
+    Hosts that honor exit 2 are verified by the kernel contract tests. A thin host
+    whose CLI is installed is unsupported (the GAP-EXIT2 warning applies); when the
+    CLI is absent, nothing on this machine can run its hooks, so the state is unknown.
+    """
+    if getattr(capability, "process_exit2_honored", True):
+        return "verified"
+    cli = str(getattr(capability, "cli", "") or "")
+    return "unsupported" if cli and which(cli) else "unknown"
 
 
 def installed_kernel_status(installed_root: Path) -> dict[str, object]:
@@ -2768,6 +3500,7 @@ def installed_kernel_status(installed_root: Path) -> dict[str, object]:
                     "blockingGap": str(
                         getattr(kernel.HOST_CAPABILITIES[host], "blocking_gap", "") or ""
                     ),
+                    "exit2": exit2_capability(kernel.HOST_CAPABILITIES[host]),
                 }
                 for host in hosts
             },
@@ -2775,7 +3508,6 @@ def installed_kernel_status(installed_root: Path) -> dict[str, object]:
         }
     except (OSError, RuntimeError, ValueError) as error:
         return {"status": "recovery-required", "errors": [str(error)]}
-
 
 
 def _reporter_transition_to_provision(reporter, *, detail: str | None = None) -> None:
@@ -2845,10 +3577,127 @@ def _tracing_dependency_runner(reporter, runner):
             try:
                 reporter.trace(f"run {_safe_command_trace_line(command)}")
             except Exception:
+                # Tracing must never fail the dependency command itself.
                 pass
         return runner(*args, **kwargs)
 
+    # #6377: dependencies.py swaps the inner subprocess.run for its stall watchdog.
+    traced.inner = runner
+    traced.rewrap = lambda inner: _tracing_dependency_runner(reporter, inner)
     return traced
+
+
+RECEIPT_SHIM_HOSTS = ("cursor", "opencode")
+RECEIPT_SHIM_MARKERS = {
+    "cursor": (".cursor",),
+    "opencode": (".opencode", "opencode.json", "opencode.jsonc"),
+}
+RECEIPT_SHIM_COMMANDS = {"cursor": ("cursor", "cursor-agent"), "opencode": ("opencode",)}
+RECEIPT_SHIM_TARGETS = {
+    "cursor": ".cursor/hooks.json",
+    "opencode": ".opencode/plugins/chaos-engine-receipt.js",
+}
+
+
+def initialize_account_project_palace(project: Path, controller, host_controller) -> bool:
+    """#6236: account mode initializes the project palace doctor and MCP use.
+
+    Account `mempalace init` writes the repository's shared palace. Inside Git
+    that is not `.chaos-engine-state/mempalace`, so without this the project
+    palace stays uninitialized and doctor reports `mempalace-state` forever.
+    When both paths are the same, the account flow already owns it.
+    """
+    project_palace = (project / ".chaos-engine-state/mempalace").resolve()
+    resolve = getattr(controller, "mempalace_project_palace", None)
+    if callable(resolve):
+        try:
+            if Path(resolve(project)).resolve() == project_palace:
+                return False
+        except (OSError, RuntimeError, ValueError, KeyError):
+            # The account palace is unresolvable: initialize the project palace anyway.
+            pass
+    host_controller.initialize_mempalace_runtime(project)
+    return True
+
+
+def _consumer_mode_module():
+    """#6237: consumer-mode helper shipped next to this installer, or None."""
+    path = Path(__file__).resolve().with_name("consumer_mode.py")
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("ce_consumer_mode_installer", path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    return module
+
+
+def consumer_untouched_files(project: Path) -> list[str]:
+    """Tracked host files consumer mode left without ChaosEngine instructions."""
+    consumer = _consumer_mode_module()
+    if consumer is None or not consumer.enabled(project):
+        return []
+    hosts = load_source_controller("hosts")
+    return sorted(consumer.tracked(project, [*hosts.managed_paths(), ".graphifyignore"]))
+
+
+def _receipt_shim_module():
+    path = Path(__file__).resolve().parent / "hooks" / "receipt_shim.py"
+    spec = importlib.util.spec_from_file_location("ce_receipt_shim_installer", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"unable to load ChaosEngine receipt shim: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def receipt_shim_hosts(project: Path, *, which=None) -> tuple[str, ...]:
+    """Hosts with a project marker or a CLI on PATH that get a receipt shim (#6230)."""
+    which = which or shutil.which
+    return tuple(
+        host
+        for host in RECEIPT_SHIM_HOSTS
+        if any((project / marker).exists() for marker in RECEIPT_SHIM_MARKERS[host])
+        or any(which(command) for command in RECEIPT_SHIM_COMMANDS[host])
+    )
+
+
+def _consumer_tracked_shim_targets(project: Path) -> set[str]:
+    """#6330: consumer mode never edits a tracked file, receipt shims included."""
+    consumer = _consumer_mode_module()
+    if consumer is None or not consumer.enabled(project):
+        return set()
+    return consumer.tracked(project, RECEIPT_SHIM_TARGETS.values())
+
+
+def wire_receipt_shims(project: Path, *, which=None) -> dict[str, str]:
+    """Wire the research-receipt shim for each detected instruction-only host (#6230)."""
+    detected = receipt_shim_hosts(project, which=which)
+    module = _receipt_shim_module() if detected else None
+    tracked_targets = _consumer_tracked_shim_targets(project) if detected else set()
+    result: dict[str, str] = {}
+    for host in RECEIPT_SHIM_HOSTS:
+        if module is None or host not in detected:
+            result[host] = "absent"
+        elif RECEIPT_SHIM_TARGETS[host] in tracked_targets:
+            result[host] = "untouched-tracked"
+        else:
+            module.install(project, host)
+            result[host] = "wired"
+    return result
+
+
+def unwire_receipt_shims(project: Path, module=None) -> None:
+    """Remove the shim entries install wrote; foreign hooks stay (#6230)."""
+    module = module or _receipt_shim_module()
+    for host in RECEIPT_SHIM_HOSTS:
+        module.uninstall(project, host)
 
 
 def install_with_dependencies(  # noqa: MC0001 - owned resources share one compensation boundary.
@@ -2863,14 +3712,20 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
     reporter=None,
     confirmer=None,
     bundle_options: dict[str, bool] | None = None,
+    addons: tuple[str, ...] = (),
 ) -> Path:
     project = project.resolve()
+    reject_nested_project(project)
     source = source.absolute()
     reject_link_or_reparse(source)
     source = source.resolve()
-    with_maven_tools = with_maven_tools or (project / "pom.xml").is_file()
+    with_maven_tools = with_maven_tools or java_pack_enabled(project)
     bundle = normalize_bundle_options(bundle_options)
+    addon_change_only = addons_changed_only(project, source, bundle, addons)
     write_bundle_options(project, bundle)
+    consumer = _consumer_mode_module()
+    if consumer is not None:
+        consumer.record(project)
     source_dependencies = load_dependency_controller(source)
     account_mode = provisioner is None and hasattr(
         source_dependencies, "install_account_dependencies"
@@ -2901,6 +3756,7 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
             and not is_link_or_reparse(account_receipt_path) else None
         )
         project_setup_snapshot = None
+        project_setup_copy_deferred = False
         project_setup_before: dict[str, tuple[bool, dict[str, str]]] = {}
         project_setup_after: dict[str, dict[str, str]] | None = None
         mempalace_state_before = (False, {})
@@ -2910,16 +3766,23 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
             if old_manifest is not None:
                 old_commit = str(old_manifest["source"]["commit"])
                 with staged_candidate_host_controller(
-                    project, source, commit, source_record, distribution
+                    project, source, commit, source_record, distribution, tuple(addons)
                 ) as candidate_host_controller:
                     host_receipt_path = project / candidate_host_controller.RECEIPT_NAME
                     if host_receipt_path.exists() or is_link_or_reparse(host_receipt_path):
                         try:
                             host_snapshot = candidate_host_controller.preflight(project)
                         except ValueError as error:
-                            raise ValueError(
-                                f"ChaosEngine host adapter drift detected (receipt integrity drift): {project}"
-                            ) from error
+                            if not _is_healable_host_drift(error):
+                                raise ValueError(
+                                    "ChaosEngine host adapter drift detected "
+                                    "(receipt integrity drift)"
+                                ) from error
+                            captured = _prior_host_receipt_image(host_receipt_path)
+                            quarantine_orphaned_host_receipt(
+                                project, reporter=reporter, force=True
+                            )
+                            host_snapshot = captured
                 if generation_mode:
                     try:
                         old_dependencies = load_dependency_controller(current)
@@ -2939,8 +3802,10 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
                         old_specification_sha256 = None
                         old_core_sha256 = None
         if account_mode:
+            # #6498: an add-on-only rerun copies Graphify output only if it must provision.
+            project_setup_copy_deferred = addon_change_only and old_commit == commit
             project_setup_snapshot, project_setup_before = snapshot_project_setup_outputs(
-                project
+                project, copy_graphify_output=not project_setup_copy_deferred
             )
             mempalace_state_before = project_setup_output_files(
                 project, MEMPALACE_STATE_OUTPUT
@@ -2957,6 +3822,7 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
                 _locked=True,
                 source_record=source_record,
                 distribution=distribution,
+                addons=tuple(addons),
             )
         except BaseException:
             if project_setup_snapshot is not None:
@@ -3059,17 +3925,27 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
                         )
                 if reporter is not None:
                     reporter.trace("provision account dependencies (uv/python/node/java/tools)")
-                account_runner = _tracing_dependency_runner(reporter, subprocess.run)
-                install_account = controller.install_account_dependencies
-                kwargs = {}
-                try:
-                    parameters = inspect.signature(install_account).parameters
-                except (TypeError, ValueError):
-                    parameters = {}
-                # Require an explicit runner parameter (not bare **kwargs mocks).
-                if "runner" in parameters:
-                    kwargs["runner"] = account_runner
-                account_receipt = install_account(project, specification, **kwargs)
+                # #6494: an add-on change on the same core reuses the account tools
+                # and project stores; doctor still verifies them afterwards.
+                account_receipt = (
+                    reusable_account_receipt(controller, project, reporter)
+                    if addon_change_only and old_commit == commit else None
+                )
+                if account_receipt is None and project_setup_copy_deferred:
+                    shutil.rmtree(project_setup_snapshot, ignore_errors=True)
+                    project_setup_snapshot = None
+                    project_setup_snapshot, project_setup_before = (
+                        snapshot_project_setup_outputs(project)
+                    )
+                    project_setup_copy_deferred = False
+                if account_receipt is None:
+                    account_receipt = provision_account_dependencies(
+                        project, controller, host_controller, specification,
+                        bundle=bundle, reporter=reporter, upgrade=old_manifest is not None,
+                        background_mine=background_mine_allowed_for(
+                            project, controller, old_manifest, old_commit, commit
+                        ),
+                    )
                 account_receipt_after = (
                     account_receipt_path.read_bytes()
                     if account_receipt_path.is_file() else None
@@ -3083,24 +3959,34 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
                     rollback_mempalace_state = mempalace_rollback_image(
                         mempalace_state_before, mempalace_state_after
                     )
-            host_controller.install(
-                project,
-                core_commit=commit,
-                capability_policy_digest=installed_manifest.get("capabilityPolicySha256"),
-                dependency_runtime=dependency_generation,
-                account_commands=account_commands,
-                maven_docker=maven_docker,
-                **(
-                    {"rollback_account_receipt": account_receipt_before}
-                    if account_mode and account_receipt_before is not None
-                    else {}
-                ),
-                **(
-                    {"rollback_mempalace_state": rollback_mempalace_state}
-                    if rollback_mempalace_state is not None else {}
-                ),
-                **({"upgrade_snapshot": host_snapshot} if host_snapshot is not None else {}),
-            )
+            host_bind = {
+                "core_commit": commit,
+                "capability_policy_digest": installed_manifest.get("capabilityPolicySha256"),
+                "dependency_runtime": dependency_generation,
+                "account_commands": account_commands,
+                "maven_docker": maven_docker,
+            }
+            if account_mode and account_receipt_before is not None:
+                host_bind["rollback_account_receipt"] = account_receipt_before
+            if rollback_mempalace_state is not None:
+                host_bind["rollback_mempalace_state"] = rollback_mempalace_state
+            try:
+                host_controller.install(
+                    project,
+                    **host_bind,
+                    **({"upgrade_snapshot": host_snapshot} if host_snapshot is not None else {}),
+                )
+            except ValueError as error:
+                if not _is_healable_host_drift(error):
+                    raise
+                prior_snapshot = host_snapshot if isinstance(host_snapshot, dict) else None
+                if prior_snapshot is None or not isinstance(prior_snapshot.get("raw"), bytes):
+                    prior_snapshot = _prior_host_receipt_image(host_receipt)
+                quarantine_orphaned_host_receipt(project, reporter=reporter, force=True)
+                rebound = dict(host_bind)
+                if prior_snapshot is not None:
+                    rebound["upgrade_snapshot"] = prior_snapshot
+                host_controller.install(project, **rebound)
             if account_rollback_journal is not None:
                 recover_account_rollback_journal(project)
                 if account_rollback_journal.exists():
@@ -3109,6 +3995,9 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
             host_created = not host_existed
             if not account_mode and not generation_mode:
                 provisioner(runtime, specification)
+            consumer = _consumer_mode_module()
+            if consumer is not None and consumer.enabled(project):
+                consumer.write_exclude(project, host_controller.managed_paths())
             if not account_mode and bundle.get("mempalace", True):
                 host_controller.initialize_mempalace_runtime(project)
             if candidate is not None:
@@ -3180,7 +4069,7 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
                     compensation_errors.append(cleanup_error)
             if can_compensate and host_snapshot is not None:
                 try:
-                    host_controller.restore_snapshot(project, host_snapshot)
+                    _restore_captured_host_snapshot(project, host_controller, host_snapshot)
                 except BaseException as cleanup_error:
                     compensation_errors.append(cleanup_error)
             if (
@@ -3218,6 +4107,15 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
                     )
                 except BaseException as cleanup_error:
                     compensation_errors.append(cleanup_error)
+            core_marker = project / INSTALL_DIRECTORY / "install.py"
+            try:
+                core_before = (
+                    None
+                    if is_link_or_reparse(core_marker) or not core_marker.is_file()
+                    else core_marker.read_bytes()
+                )
+            except OSError:
+                core_before = None
             if can_compensate:
                 try:
                     backup_path = project / BACKUP_NAME
@@ -3243,7 +4141,22 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
                             expected_core_sha256=old_core_sha256,
                         )
                 except BaseException as cleanup_error:
-                    compensation_errors.append(cleanup_error)
+                    try:
+                        core_after = (
+                            None
+                            if is_link_or_reparse(core_marker) or not core_marker.is_file()
+                            else core_marker.read_bytes()
+                        )
+                    except OSError:
+                        core_after = None
+                    note_inexact_rollback_compensation(
+                        compensation_errors,
+                        cleanup_error,
+                        reporter,
+                        core_unchanged=(
+                            core_before is not None and core_before == core_after
+                        ),
+                    )
             elif old_commit is not None:
                 try:
                     prior_host_receipt = (
@@ -3268,41 +4181,56 @@ def install_with_dependencies(  # noqa: MC0001 - owned resources share one compe
         finally:
             if project_setup_snapshot is not None:
                 shutil.rmtree(project_setup_snapshot, ignore_errors=True)
-        # Default-on Headroom pin+CLI (#5620). Disable only via --without-headroom.
-        # Best-effort: never abort a successful core install if the CLI pin fails.
-        if bundle.get("headroom", True) and provisioner is None:
-            policy_path = (project / INSTALL_DIRECTORY) / "headroom_policy.py"
-            if policy_path.is_file():
-                try:
-                    spec = importlib.util.spec_from_file_location(
-                        "chaos_engine_headroom_policy_install", policy_path
-                    )
-                    if spec is not None and spec.loader is not None:
-                        module = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(module)
-                        module.ensure_installed()
-                except (OSError, RuntimeError, ValueError, TimeoutError):
-                    pass
+        sync_repository_overlay_from_source(project, commit)
+        wire_receipt_shims(project)
+        clear_install_rollback(project)
+        if not _running_under_tests():
+            refresh_stale_graph(project)
         return target
 
 
-
 def default_bundle_options() -> dict[str, bool]:
-    """Return default-on bundle enablement (True = provisioned)."""
-    return {name: True for name in DEFAULT_BUNDLE_COMPONENTS}
+    """Return bundle enablement. Default-on components are true; opt-in stays false."""
+    options = {name: True for name in DEFAULT_BUNDLE_COMPONENTS}
+    for name in OPT_IN_BUNDLE_COMPONENTS:
+        options[name] = False
+    return options
 
 
-def normalize_bundle_options(raw: object | None = None) -> dict[str, bool]:
-    """Merge operator disable flags onto the default-on bundle."""
+def normalize_bundle_options(
+    raw: object | None = None, *, honor_env: bool = True
+) -> dict[str, bool]:
+    """Merge operator flags onto bundle defaults. Env overrides a stored file, not a later CLI flag."""
     options = default_bundle_options()
-    if not isinstance(raw, dict):
-        return options
-    for name in DEFAULT_BUNDLE_COMPONENTS:
-        if name in raw:
-            options[name] = bool(raw[name])
-        without_key = f"without_{name}"
-        if without_key in raw and raw[without_key]:
-            options[name] = False
+    if isinstance(raw, dict):
+        for name in (*DEFAULT_BUNDLE_COMPONENTS, *OPT_IN_BUNDLE_COMPONENTS):
+            if name in raw:
+                options[name] = bool(raw[name])
+            if raw.get(f"with_{name}"):
+                options[name] = True
+            if raw.get(f"without_{name}"):
+                options[name] = False
+    if honor_env:
+        if os.environ.get("CHAOS_ENGINE_WITH_DEJA") == "1":
+            options["deja"] = True
+        if os.environ.get("CHAOS_ENGINE_WITHOUT_DEJA") == "1":
+            options["deja"] = False
+    return options
+
+
+def bundle_from_install_args(args: argparse.Namespace) -> dict[str, bool]:
+    """Resolve install CLI flags and deja env. Explicit CLI wins over env."""
+    raw: dict[str, object] = {}
+    for name in (*DEFAULT_BUNDLE_COMPONENTS, *OPT_IN_BUNDLE_COMPONENTS):
+        if getattr(args, f"without_{name}", False):
+            raw[f"without_{name}"] = True
+        if getattr(args, f"with_{name}", False):
+            raw[f"with_{name}"] = True
+    options = normalize_bundle_options(raw, honor_env=True)
+    if getattr(args, "with_deja", False):
+        options["deja"] = True
+    if getattr(args, "without_deja", False):
+        options["deja"] = False
     return options
 
 
@@ -3315,7 +4243,8 @@ def write_bundle_options(project: Path, options: dict[str, bool]) -> Path:
         "schemaVersion": 1,
         "identity": CANONICAL_IDENTITY,
         "defaultOn": list(DEFAULT_BUNDLE_COMPONENTS),
-        "enabled": normalize_bundle_options(options),
+        "optIn": {name: {"defaultOn": False} for name in OPT_IN_BUNDLE_COMPONENTS},
+        "enabled": normalize_bundle_options(options, honor_env=False),
     }
     target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return target
@@ -3413,6 +4342,223 @@ def required_component_statuses(document: dict[str, object]) -> dict[str, str]:
     return result
 
 
+DOCTOR_NON_ESCALATING_STATUSES = frozenset({
+    "healthy",
+    "compatible-legacy",
+    "sync-advisory",
+    "degraded",
+})
+
+# Soft/advisory statuses that must never retain install-failure heal-handoff fixNext (#5831).
+DOCTOR_SOFT_STATUSES = frozenset({
+    "compatible-legacy",
+    "sync-advisory",
+    "degraded",
+})
+
+
+def _load_stores_module():
+    import runpy
+
+    return runpy.run_path(
+        str(Path(__file__).resolve().with_name("stores.py")),
+        run_name="_chaos_engine_install_stores",
+    )
+
+
+def _apply_shared_store_doctor(project: Path, components: object) -> None:
+    """Attach shared-cache freshness. A missing cache stays the setup plan."""
+    if not isinstance(components, dict):
+        return
+    try:
+        stores = _load_stores_module()
+    except (OSError, RuntimeError, ValueError):
+        return
+    graphify = components.get("graphify")
+    if isinstance(graphify, dict) and graphify.get("status") == "healthy":
+        try:
+            row = stores["graphify_doctor_row"](project)
+        except (OSError, RuntimeError, ValueError):
+            row = None
+        if isinstance(row, dict) and row.get("status") not in {None, "healthy"}:
+            graphify.update(row)
+    mempalace = components.get("mempalace")
+    if isinstance(mempalace, dict):
+        try:
+            note = stores["home_palace_note"]()
+        except (OSError, RuntimeError, ValueError):
+            note = ""
+        if note:
+            mempalace["homePalace"] = note
+        try:
+            hint = stores["palace_migration_hint"](project)
+        except (OSError, RuntimeError, ValueError, KeyError):
+            hint = None
+        if hint:
+            mempalace["migrationHint"] = hint
+
+
+def _running_under_tests() -> bool:
+    argv = " ".join(sys.argv)
+    return "unittest" in argv or "tests/scripts" in argv
+
+
+def same_consumer_location(left: Path | str, right: Path | str) -> bool:
+    """True when two consumer paths name the same directory.
+
+    ``Path.resolve()`` rewrites a Windows 8.3 short account directory to the
+    long account name, and prefixes the macOS temporary directory with the
+    private alias. Those aliases are the same location. A different directory
+    component is not.
+    """
+
+    def parts(value: Path | str) -> list[str]:
+        text = str(value).replace("\\", "/")
+        if text.startswith("/private/"):
+            text = text[len("/private") :]
+        return [part for part in text.split("/") if part]
+
+    left_parts = parts(left)
+    right_parts = parts(right)
+    if len(left_parts) != len(right_parts):
+        return False
+    return all(
+        _path_component_equivalent(one, other)
+        for one, other in zip(left_parts, right_parts)
+    )
+
+
+def _path_component_equivalent(left: str, right: str) -> bool:
+    if left.casefold() == right.casefold():
+        return True
+    return _windows_short_name_matches(left, right) or _windows_short_name_matches(right, left)
+
+
+def _windows_short_name_matches(short: str, long: str) -> bool:
+    """8.3 stems keep the first six alphanumeric characters of the long name."""
+    match = re.fullmatch(r"(.{1,6})~\d+", short)
+    if match is None:
+        return False
+    cleaned = "".join(character for character in long if character.isalnum())
+    prefix = match.group(1)
+    if len(cleaned) <= len(prefix):
+        return False
+    return cleaned.casefold().startswith(prefix.casefold())
+
+
+def refresh_stale_graph(project: Path, *, stores=None) -> str:
+    """Rebuild an existing shared graph that no longer matches the default-branch tip.
+
+    An update + reinstall used to leave graphify degraded until a manual
+    `repair --component graphify` (#6234). A missing graph stays the setup plan,
+    and a refresh failure never fails the install; doctor still reports it.
+    """
+    try:
+        stores = stores if stores is not None else _load_stores_module()
+        row = stores["graphify_doctor_row"](project)
+        if row is None:
+            return "absent"
+        if row.get("status") == "healthy":
+            return "current"
+        stores["refresh"](project, if_stale=True, components=frozenset({"graphify"}))
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        return f"skipped: {error}"
+    return "refreshed"
+
+
+def _refresh_shared_store(project: Path, component: str) -> str:
+    """Refresh one shared store after CLI repair. Failure does not undo the CLI repair."""
+    argv = " ".join(sys.argv)
+    if "unittest" in argv or "tests/scripts" in argv:
+        return "skipped-test"
+    try:
+        stores = _load_stores_module()
+        stores["refresh"](project, if_stale=True, components=frozenset({component}))
+    except (OSError, RuntimeError, ValueError) as error:
+        return f"skipped: {error}"
+    return "current"
+
+
+def _install_store_schedule(project: Path) -> None:
+    """Write the daily timer during a real install. Tests do not touch the user timer."""
+    if os.environ.get("CHAOS_ENGINE_STORE_SCHEDULE", "1").strip().casefold() in {
+        "0", "false", "no", "off",
+    }:
+        return
+    argv = " ".join(sys.argv)
+    if "unittest" in argv or "tests/scripts" in argv:
+        return
+    try:
+        _load_stores_module()["install_schedule"](project)
+    except (OSError, RuntimeError, ValueError):
+        return
+
+
+def account_dependency_records_healthy(records: object) -> bool:
+    """True when every required account tool is healthy.
+
+    An opt-in dependency that was not provisioned (deja absent) must not flip
+    the tools component to recovery-required.
+    """
+    if not isinstance(records, dict):
+        return False
+
+    def _ok(item: object) -> bool:
+        if not isinstance(item, dict):
+            return False
+        if item.get("taskImpact") == "optional" and item.get("status") in {"absent", "skipped"}:
+            return item.get("action") != "blocked"
+        return item.get("status") == "healthy" and item.get("action") != "blocked"
+
+    return all(_ok(item) for item in records.values())
+
+
+def component_escalates_overall(item: dict[str, object]) -> bool:
+    """Return True when one component should flip overall doctor to recovery-required.
+
+    Soft statuses (compatible-legacy / sync-advisory / degraded) never escalate
+    overall health (#G1). Optional absences stay non-blocking. Hard fails on
+    advisory stores (e.g. mempalace recovery-required) still escalate so doctor
+    stays strict for broken knowledge stores.
+    """
+    status = str(item.get("status") or "unknown")
+    impact = str(item.get("taskImpact") or "required")
+    if status in DOCTOR_NON_ESCALATING_STATUSES:
+        return False
+    if impact == "optional":
+        return False
+    # Advisory absences (e.g. gh CLI) are info-only; hard advisory fails still escalate.
+    if status == "absent" and impact in {"advisory", "required-when-indexed"}:
+        return False
+    return True
+
+
+def reconcile_doctor_overall_status(result: dict[str, object]) -> None:
+    """Recompute overall status from components; soft/advisory never force recovery."""
+    components = result.get("components")
+    if not isinstance(components, dict):
+        return
+    if any(
+        isinstance(item, dict) and component_escalates_overall(item)
+        for item in components.values()
+    ):
+        result["status"] = "recovery-required"
+        return
+    # Hosts top-level may still be hard-failed (receipt drift etc.).
+    hosts = result.get("hosts")
+    if isinstance(hosts, dict):
+        host_status = str(hosts.get("status") or "healthy")
+        if host_status not in DOCTOR_NON_ESCALATING_STATUSES and host_status != "not-detected":
+            # Keep existing recovery when hosts themselves are hard-failed.
+            if host_status in {"recovery-required", "broken", "absent"}:
+                result["status"] = "recovery-required"
+                return
+    current = str(result.get("status") or "healthy")
+    if current == "recovery-required":
+        # Downgrade false escalations caused solely by soft/advisory component states.
+        result["status"] = "healthy"
+
+
 def status_subset_of_doctor(
     status_doc: dict[str, object], doctor_doc: dict[str, object]
 ) -> list[str]:
@@ -3454,13 +4600,13 @@ def attach_component_status(
             target / "skills/chaos-engine/SKILL.md",
             target / "vendor/caveman/PIN.json",
             target / "vendor/ponytail/PIN.json",
-            target / "vendor/headroom/PIN.json",
+            target / "vendor/icm-architect/PIN.json",
         ],
         "skills": [
             project / ".agents/skills/chaos-engine/SKILL.md",
             project / "plugins/caveman/skills/caveman/SKILL.md",
             project / "plugins/ponytail/skills/ponytail/SKILL.md",
-            target / "vendor/headroom/skills/headroom/SKILL.md",
+            project / "plugins/icm-architect/skills/icm-architect/SKILL.md",
             target / "skills/self-improve/SKILL.md",
         ],
         "playbooks": [target / "references/work-github-playbook.md"],
@@ -3490,6 +4636,8 @@ def attach_component_status(
             project / "plugins/caveman/.claude-plugin/plugin.json",
             project / "plugins/ponytail/.codex-plugin/plugin.json",
             project / "plugins/ponytail/.claude-plugin/plugin.json",
+            project / "plugins/icm-architect/.codex-plugin/plugin.json",
+            project / "plugins/icm-architect/.claude-plugin/plugin.json",
         ],
         "roles": [
             *(project / ".claude/agents").glob("chaos-engine-*"),
@@ -3509,48 +4657,80 @@ def attach_component_status(
         if name == "retrieval-config" and healthy:
             healthy = bool(host_controller.retrieval_configs_healthy(project))
         components[name] = {"status": "healthy" if healthy else "absent", **capabilities[name]}
+    # Learning Session Stop-gate visibility (parity with companion doctor surfaces).
+    skill = target / "skills/self-improve/SKILL.md"
+    finalize = target / "learning_session.py"
+    guard = target / "hooks/guard.py"
+    gate_source = ""
+    try:
+        gate_source = guard.read_text(encoding="utf-8") if guard.is_file() else ""
+    except OSError:
+        gate_source = ""
+    gate_installed = (
+        "def learning_session_reason" in gate_source
+        and "def confirmed_delivery_command" in gate_source
+        and "delivery-complete" in gate_source
+    )
+    learning_status = (
+        "healthy"
+        if skill.is_file() and finalize.is_file() and gate_installed
+        else "absent"
+    )
+    if isinstance(components.get("hooks"), dict):
+        components["hooks"]["learningSession"] = {
+            "status": learning_status,
+            "enforcedBy": "Stop",
+            "skillPresent": skill.is_file(),
+            "finalizePresent": finalize.is_file(),
+            "gateInstalled": gate_installed,
+            "detail": (
+                "Stop requires Learning Session after delivery-complete "
+                "(delivery-status or gh pr merge); chaos-engine untouched is not a skip"
+            ),
+        }
     for name in ("tools", "memory", "mempalace", "graphify"):
         components[name] = {"status": dependency_health, **capabilities[name]}
-    # Load from the installed tree only. Bootstrap runpy-loads install.py from a
-    # temporary download that is deleted before Verify installation; a bare import
-    # or Path(__file__) fallback would point at that cleaned-up source (#5613).
-    import importlib.util as _ilu
-
-    _hp = target / "headroom_policy.py"
-    if not _hp.is_file():
-        headroom_state = {
-            "status": "broken",
-            "detail": "Headroom policy module missing from installed core.",
-            "cliPresent": False,
-            "pin": "headroom-ai",
-        }
-    else:
-        _spec = _ilu.spec_from_file_location("chaos_engine_headroom_policy", _hp)
-        if _spec is None or _spec.loader is None:
-            headroom_state = {
-                "status": "broken",
-                "detail": "Headroom policy module could not be loaded.",
-                "cliPresent": False,
-                "pin": "headroom-ai",
-            }
-        else:
-            _headroom_policy = _ilu.module_from_spec(_spec)
-            _spec.loader.exec_module(_headroom_policy)
-            headroom_state = _headroom_policy.doctor_status()
-    components["headroom"] = {
-        **{k: v for k, v in headroom_state.items() if k in {"status", "detail", "cliPresent", "pin"}},
-        **capabilities["headroom"],
-    }
     if inspect_retrieval_state:
         mempalace_state = host_controller.mempalace_runtime_status(project)
         if mempalace_state.get("status") != "healthy":
             components["mempalace"] = {**mempalace_state, **capabilities["mempalace"]}
-    cache_state = host_controller.maven_tools_cache_status()
+        index = _mempalace_index_finding(target, project)
+        if index is not None:
+            components["mempalace"] = {**components["mempalace"], "index": index}
+        empty = _mempalace_empty_finding(project, index)
+        if empty is not None and components["mempalace"].get("status") == "healthy":
+            components["mempalace"] = {**components["mempalace"], **empty}
+    _apply_shared_store_doctor(project, components)
+    # #6336: judge the version runtime discovery selects (configured JAR, then the
+    # newest verified cache), never a pinned release the installer did not pick.
+    selected = getattr(host_controller, "selected_maven_tools_cache_status", None)
+    cache_state = (
+        selected() if callable(selected) else host_controller.maven_tools_cache_status()
+    )
     components["maven-tools-mcp"] = {
         **cache_state,
         **capabilities["maven-tools-mcp"],
     }
+    if result.get("distribution") == "repository":
+        components["maven-tools-mcp"]["taskImpact"] = "required"
+    maven_row = components["maven-tools-mcp"]
+    if maven_row.get("status") == "invalid" or (
+        maven_row.get("status") == "absent" and maven_row.get("taskImpact") == "required"
+    ):
+        # #6337: a corrupt (checksum/CRC) or missing JAR has one targeted repair.
+        maven_row["fixNext"] = maven_tools_repair_fix_next()
     bundle = read_bundle_options(project)
+    if "deja" in capabilities:
+        enabled = bool(bundle.get("deja", False))
+        components["deja"] = {
+            **capabilities["deja"],
+            "status": "absent",
+            "detail": (
+                "opt-in CLI transcript store enabled; user-managed binary, no installer wiring"
+                if enabled
+                else "opt-in CLI transcript store; off by default; not provisioned"
+            ),
+        }
     for name in ("memory", "mempalace", "graphify"):
         if not bundle.get(name, True) and name in components:
             components[name] = {
@@ -3559,20 +4739,16 @@ def attach_component_status(
                 "detail": f"Disabled via --without-{name} (default-on bundle opt-out).",
                 "taskImpact": "optional",
             }
-    if not bundle.get("headroom", True) and "headroom" in components:
-        components["headroom"] = {
-            **components["headroom"],
-            "status": "absent",
-            "detail": "Disabled via --without-headroom (default-on bundle opt-out).",
-            "taskImpact": "optional",
-            "cliPresent": False,
-        }
     result["components"] = components
-    if any(
-        item["status"] != "healthy" and item["taskImpact"] != "optional"
-        for item in components.values()
-    ):
+    drift = reflection_controller_drift(project)
+    if drift:
+        result["reflectionControllerDrift"] = drift
+    apply_merge_handoff_fix_next(project, components)
+    if any(component_escalates_overall(item) for item in components.values()):
         result["status"] = "recovery-required"
+    elif result.get("status") == "recovery-required":
+        # Soft/advisory-only findings must not keep a prior false overall escalation.
+        result["status"] = "healthy"
 
 
 def status_with_dependencies(project: Path, *, active_probes: bool = False) -> dict[str, object]:
@@ -3603,6 +4779,9 @@ def status_with_dependencies(project: Path, *, active_probes: bool = False) -> d
                 "distribution": str(manifest["distribution"]["id"]),  # type: ignore[index]
                 "policySha256": str(manifest["distribution"]["policySha256"]),  # type: ignore[index]
             }
+            last_install = read_install_rollback(project, str(result["commit"]))
+            if last_install is not None:
+                result["lastInstall"] = last_install
             result["kernel"] = installed_kernel_status(target)
             if result["kernel"]["status"] != "healthy":  # type: ignore[index]
                 result["status"] = "recovery-required"
@@ -3632,10 +4811,26 @@ def status_with_dependencies(project: Path, *, active_probes: bool = False) -> d
             if result["hosts"]["status"] != "healthy":  # type: ignore[index]
                 result["status"] = "recovery-required"
             if active_probes:
-                result["hosts"]["grok"] = host_controller.grok_runtime_status(project)  # type: ignore[index]
-                if result["hosts"]["grok"]["status"] == "recovery-required":  # type: ignore[index]
-                    result["hosts"]["status"] = "recovery-required"  # type: ignore[index]
-                    result["status"] = "recovery-required"
+                # Grok CLI trust/loaded-hooks probe is host-environment, not install-owned (#5699).
+                # Untrusted/incomplete hooks are sync-advisory only; never flip overall/hosts
+                # to recovery-required solely for Grok trust.
+                grok_probe = host_controller.grok_runtime_status(project)
+                result["hosts"]["grok"] = grok_probe  # type: ignore[index]
+                if (
+                    isinstance(grok_probe, dict)
+                    and grok_probe.get("status") == "sync-advisory"
+                    and result["hosts"].get("status") == "healthy"  # type: ignore[index]
+                ):
+                    result["hosts"]["hostEnvironment"] = {  # type: ignore[index]
+                        "status": "sync-advisory",
+                        "detail": "grok-hooks-probe",
+                        "fixNext": str(
+                            grok_probe.get("detail")
+                            or "Trust and reload Grok project hooks, then rerun doctor."
+                        ),
+                    }
+            apply_grok_lean_doctor(result, project.resolve())
+            apply_dual_grok_hook_doctor(result, project.resolve())
             removing = project / ".chaos-engine-runtime.removing"
             backup = project / ".chaos-engine-runtime.backup"
             building = project / ".chaos-engine-runtime.building"
@@ -3658,12 +4853,7 @@ def status_with_dependencies(project: Path, *, active_probes: bool = False) -> d
                 controller = load_dependency_controller(target)
                 receipt = controller.read_account_receipt(project)
                 records = receipt.get("components", {})
-                healthy = isinstance(records, dict) and all(
-                    isinstance(item, dict)
-                    and item.get("status") == "healthy"
-                    and item.get("action") != "blocked"
-                    for item in records.values()
-                )
+                healthy = account_dependency_records_healthy(records)
                 result["dependencies"] = {
                     "status": "healthy" if healthy else "recovery-required",
                     "schemaVersion": receipt["schemaVersion"],
@@ -3728,8 +4918,616 @@ def status_with_dependencies(project: Path, *, active_probes: bool = False) -> d
             return result
 
 
+MANAGED_PYTHON_MISSING_DETAIL = "managed-python-missing"
+MANAGED_PYTHON_MISSING_CODE = "CE_MANAGED_PYTHON_MISSING"
+HOOKS_PROBE_FAILED_DETAIL = "hooks-probe-failed"
+HOOKS_PROBE_FAILED_CODE = "CE_HOOKS_PROBE_FAILED"
+
+
+def resolve_managed_python(
+    generation_path: str | None,
+    account_commands: dict[str, str] | None,
+    *,
+    windows: bool | None = None,
+) -> Path | None:
+    """Resolve generation, account, then installer Python for hooks/MCP probes (#5680/#5703)."""
+    nt = os.name == "nt" if windows is None else bool(windows)
+    scripts = "Scripts" if nt else "bin"
+    names = (
+        ("python.exe", "python", "python3.exe", "python3")
+        if nt
+        else ("python", "python3")
+    )
+    if isinstance(generation_path, str) and generation_path.strip():
+        root = Path(generation_path) / "uv-tools" / "mempalace" / scripts
+        candidates: list[Path] = [root / name for name in names]
+        if nt:
+            for stem in ("python", "python3"):
+                for suffix in os.environ.get("PATHEXT", ".EXE;.CMD;.BAT;.COM").split(";"):
+                    if not suffix:
+                        continue
+                    candidates.append(root / f"{stem}{suffix}")
+                    candidates.append(root / f"{stem}{suffix.lower()}")
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                resolved = candidate.resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue
+            if resolved.is_file():
+                return resolved
+    if isinstance(account_commands, dict):
+        account_python = account_commands.get("python3")
+        if isinstance(account_python, str) and account_python.strip():
+            try:
+                candidate_python = Path(account_python).resolve(strict=True)
+            except (OSError, RuntimeError):
+                candidate_python = None
+            if candidate_python is not None and candidate_python.is_file():
+                return candidate_python
+    try:
+        installer_python = Path(sys.executable).resolve(strict=True)
+    except (OSError, RuntimeError):
+        installer_python = None
+    if installer_python is not None and installer_python.is_file():
+        return installer_python
+    return None
+
+
+def managed_python_missing_fix_next() -> str:
+    """Operator fix-next when the managed probe interpreter is absent."""
+    cli = _doctor_python_cli()
+    return (
+        f"Restore the managed MemPalace Python interpreter via "
+        f"`{cli} .chaos-engine/install.py repair --project . --component tools` "
+        f"(or re-run the ChaosEngine install one-liner), then "
+        f"`{cli} .chaos-engine/install.py doctor --project .`."
+    )
+
+
+def apply_managed_python_missing(components: object) -> None:
+    """Name both hooks and mcps when the shared interpreter is missing (#5667)."""
+    if not isinstance(components, dict):
+        return
+    fix = managed_python_missing_fix_next()
+    for name in ("hooks", "mcps"):
+        item = components.get(name)
+        if not isinstance(item, dict):
+            continue
+        item["status"] = "recovery-required"
+        item["detail"] = MANAGED_PYTHON_MISSING_DETAIL
+        item["code"] = MANAGED_PYTHON_MISSING_CODE
+        item["fixNext"] = fix
+
+
+def heal_managed_python(
+    project: Path,
+    *,
+    generation_path: str | None,
+    account_commands: dict[str, str] | None,
+) -> Path | None:
+    """One deterministic attempt to restore the probe interpreter (#5680)."""
+    project = project.resolve()
+    refreshed = account_commands
+    account_receipt = project / ".chaos-engine-dependencies.json"
+    if account_receipt.is_file() and not is_link_or_reparse(account_receipt):
+        try:
+            payload = json.loads(account_receipt.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("commands"), dict):
+            refreshed = {
+                str(key): str(value)
+                for key, value in payload["commands"].items()
+                if isinstance(key, str) and isinstance(value, str)
+            }
+    resolved = resolve_managed_python(generation_path, refreshed)
+    if resolved is not None:
+        return resolved
+    if not (project / INSTALL_DIRECTORY).is_dir():
+        return None
+    pointer = project / ".chaos-engine-runtime-current.json"
+    runtime = project / ".chaos-engine-runtime"
+    has_repair_surface = (
+        (isinstance(generation_path, str) and Path(generation_path).is_dir())
+        or (refreshed is not None and bool(refreshed.get("python3")))
+        or pointer.is_file()
+        or runtime.is_dir()
+    )
+    if not has_repair_surface:
+        return None
+    try:
+        repair_component(project, "tools")
+    except Exception:
+        return resolve_managed_python(generation_path, refreshed)
+    refreshed_after = refreshed
+    if account_receipt.is_file() and not is_link_or_reparse(account_receipt):
+        try:
+            payload = json.loads(account_receipt.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("commands"), dict):
+            refreshed_after = {
+                str(key): str(value)
+                for key, value in payload["commands"].items()
+                if isinstance(key, str) and isinstance(value, str)
+            }
+    generation_after = generation_path
+    if pointer.is_file() and not is_link_or_reparse(pointer):
+        try:
+            pointer_payload = json.loads(pointer.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pointer_payload = None
+        active = (
+            pointer_payload.get("active")
+            if isinstance(pointer_payload, dict)
+            else None
+        )
+        generation_id = active.get("generationId") if isinstance(active, dict) else None
+        if isinstance(generation_id, str) and generation_id.strip():
+            candidate = project / ".chaos-engine-runtime-generations" / generation_id
+            if candidate.is_dir():
+                generation_after = str(candidate)
+    return resolve_managed_python(generation_after, refreshed_after)
+
+
+def _attach_probe_fields(item: dict[str, object], probe: dict[str, object]) -> None:
+    """Copy bounded detail/code/fixNext from a probe result onto a component."""
+    fix_next = probe.get("fixNext")
+    detail = probe.get("detail")
+    if isinstance(fix_next, str) and fix_next.strip():
+        item["detail"] = fix_next.strip()
+        item["fixNext"] = fix_next.strip()
+    elif isinstance(detail, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", detail):
+        item["detail"] = detail
+    code = probe.get("code")
+    if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code):
+        item["code"] = code
+
+
+def apply_mcp_doctor_status(
+    result: dict[str, object],
+    components: object,
+    mcp_status: dict[str, object],
+) -> None:
+    """Map one MCP probe onto required mcps + overall doctor status (#5630/#5680)."""
+    mcp_status_value = str(mcp_status.get("status") or "recovery-required")
+    if not isinstance(components, dict) or not isinstance(components.get("mcps"), dict):
+        if mcp_status_value not in {"healthy", "compatible-legacy", "degraded", "sync-advisory"}:
+            result["status"] = "recovery-required"
+        return
+    mcps = components["mcps"]
+    if mcp_status_value == "healthy":
+        return
+    if mcp_status_value in {"compatible-legacy", "degraded", "sync-advisory"}:
+        # Memory default-branch write gate is advisory for required mcps (#5630).
+        mcps["status"] = "compatible-legacy"
+        _attach_probe_fields(mcps, mcp_status)
+        return
+    result["status"] = "recovery-required"
+    mcps["status"] = "recovery-required"
+    _attach_probe_fields(mcps, mcp_status)
+    if not mcps.get("fixNext"):
+        named = component_fix_next("mcps", mcps)
+        if named:
+            mcps["fixNext"] = named
+
+
+def apply_hooks_probe_failure(result: dict[str, object], components: object) -> None:
+    """Name a failed hook runtime probe (#5680)."""
+    result["status"] = "recovery-required"
+    if not isinstance(components, dict) or not isinstance(components.get("hooks"), dict):
+        return
+    hooks = components["hooks"]
+    hooks["status"] = "recovery-required"
+    hooks["detail"] = HOOKS_PROBE_FAILED_DETAIL
+    hooks["code"] = HOOKS_PROBE_FAILED_CODE
+    named = component_fix_next("hooks", hooks)
+    if named:
+        hooks["fixNext"] = named
+
+
+def attach_host_environment_finding(
+    component: dict[str, object],
+    *,
+    detail: str,
+    fix_next: str,
+    code: str | None = None,
+) -> None:
+    """Record a host-environment advisory without flipping install-owned component health (#5699)."""
+    finding: dict[str, object] = {
+        "status": "sync-advisory",
+        "detail": detail,
+        "fixNext": fix_next,
+    }
+    if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code):
+        finding["code"] = code
+    component["hostEnvironment"] = finding
+
+
+def apply_hooks_host_environment_probe(
+    result: dict[str, object],
+    components: object,
+) -> None:
+    """Owned hook files stay healthy; runtime host probe is advisory (#5699)."""
+    if not isinstance(components, dict) or not isinstance(components.get("hooks"), dict):
+        return
+    hooks = components["hooks"]
+    if hooks.get("status") != "healthy":
+        apply_hooks_probe_failure(result, components)
+        return
+    named = component_fix_next(
+        "hooks",
+        {
+            "status": "recovery-required",
+            "detail": HOOKS_PROBE_FAILED_DETAIL,
+            "code": HOOKS_PROBE_FAILED_CODE,
+        },
+    )
+    attach_host_environment_finding(
+        hooks,
+        detail=HOOKS_PROBE_FAILED_DETAIL,
+        fix_next=named
+        or (
+            f"Run `{_doctor_python_cli()} .chaos-engine/install.py repair "
+            "--project . --component hooks`, reload/trust hooks in the active host, "
+            f"then `{_doctor_python_cli()} .chaos-engine/install.py doctor --project .`."
+        ),
+        code=HOOKS_PROBE_FAILED_CODE,
+    )
+
+
+def apply_ce_plugin_pin_doctor(
+    result: dict[str, object],
+    components: object,
+    project: Path,
+    policy_mod: object,
+) -> None:
+    """Fail/heal when enabledPlugins includes non-CE plugins (#5783)."""
+    settings_path = project / ".claude" / "settings.json"
+    if not settings_path.is_file():
+        return
+    try:
+        payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return
+    if not isinstance(payload, dict):
+        return
+    enabled = payload.get("enabledPlugins")
+    error_fn = getattr(policy_mod, "enabled_plugins_policy_error", None)
+    pin_fn = getattr(policy_mod, "pin_enabled_plugins", None)
+    if not callable(error_fn):
+        return
+    error = error_fn(enabled if isinstance(enabled, dict) else None)
+    if not error:
+        return
+    # Heal: rewrite enable list to CE trio when marketplace name is known.
+    marketplace = "chaos-engine-project"
+    marketplaces = payload.get("extraKnownMarketplaces")
+    if isinstance(marketplaces, dict) and marketplaces:
+        marketplace = str(next(iter(marketplaces)))
+    if callable(pin_fn) and isinstance(enabled, dict):
+        payload["enabledPlugins"] = pin_fn(enabled, marketplace_name=marketplace)
+        settings_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        plugins = components.get("plugins") if isinstance(components, dict) else None
+        if isinstance(plugins, dict):
+            plugins["detail"] = f"Healed extra enabled plugins. Was: {error}"
+        return
+    result["status"] = "recovery-required"
+    if isinstance(components, dict) and isinstance(components.get("plugins"), dict):
+        components["plugins"]["status"] = "recovery-required"
+        components["plugins"]["detail"] = error
+        components["plugins"]["fixNext"] = (
+            "Enable only chaos-engine, caveman, and ponytail plugins."
+        )
+
+
+def apply_dual_grok_hook_doctor(result: dict[str, object], project: Path) -> None:
+    """Report when Claude-compat settings and native .grok hooks are both active."""
+    claude = project / ".claude" / "settings.json"
+    native = project / ".grok" / "hooks" / "lifecycle.json"
+    if not claude.is_file() or not native.is_file():
+        return
+    try:
+        claude_text = claude.read_text(encoding="utf-8", errors="ignore").casefold()
+        native_text = native.read_text(encoding="utf-8", errors="ignore").casefold()
+    except OSError:
+        return
+    if "chaos" not in claude_text or "chaos" not in native_text:
+        return
+    components = result.get("components")
+    if not isinstance(components, dict):
+        return
+    components["grok-hook-surfaces"] = {
+        "status": "sync-advisory",
+        "taskImpact": "advisory",
+        "reason": "both Claude-compat and native .grok hooks are active",
+        "code": "CE_DUAL_GROK_HOOKS",
+    }
+
+
+def apply_grok_lean_doctor(result: dict, project: Path) -> None:
+    """Attach lean-compat / lean-skills / skill-dedupe advisories (#5802/#5804/#5805)."""
+    import importlib.util as _ilu
+    import sys as _sys
+
+    path = Path(__file__).resolve().with_name("grok_lean_config.py")
+    if not path.is_file():
+        return
+    spec = _ilu.spec_from_file_location("ce_grok_lean_doctor", path)
+    if spec is None or spec.loader is None:
+        return
+    mod = _ilu.module_from_spec(spec)
+    previous = _sys.dont_write_bytecode
+    _sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        _sys.dont_write_bytecode = previous
+    hosts = result.get("hosts")
+    if not isinstance(hosts, dict):
+        hosts = {}
+        result["hosts"] = hosts
+    compat = mod.doctor_lean_compat(project, heal=True)
+    if isinstance(compat, dict) and compat.get("status") != "skipped":
+        hosts["grokLeanCompat"] = compat
+        if compat.get("status") == "sync-advisory":
+            hosts.setdefault("hostEnvironment", {})
+            env = hosts["hostEnvironment"]
+            if isinstance(env, dict) and env.get("status") != "sync-advisory":
+                hosts["hostEnvironment"] = {
+                    "status": "sync-advisory",
+                    "detail": "grok-lean-compat",
+                    "fixNext": compat.get("fixNext") or compat.get("detail"),
+                }
+    tip = mod.doctor_lean_skills_tip(project)
+    if isinstance(tip, dict) and tip.get("status") == "sync-advisory":
+        hosts["grokLeanSkills"] = tip
+    # skill dedupe best-effort (also inside grok_runtime_status)
+    dedupe = mod.doctor_grok_skill_dedupe(project)
+    if isinstance(dedupe, dict) and dedupe.get("status") != "skipped":
+        hosts["grokSkillDedupe"] = dedupe
+
+def apply_companion_and_identity_doctor(result: dict, project: Path) -> None:
+    """Doctor: self-heal companions + identity via official CE publish paths (#5806/#5807/#5811)."""
+    import importlib.util as _ilu
+
+    components = result.get("components")
+    if not isinstance(components, dict):
+        components = {}
+        result["components"] = components
+    bundle = read_bundle_options(project)
+    missing_enabled: list[str] = []
+    for name, rel in (
+        ("caveman", "plugins/caveman/skills/caveman/SKILL.md"),
+        ("ponytail", "plugins/ponytail/skills/ponytail/SKILL.md"),
+        ("icm-architect", "plugins/icm-architect/skills/icm-architect/SKILL.md"),
+    ):
+        enabled = bool(bundle.get(name, True))
+        present = (project / rel).is_file()
+        if enabled and not present:
+            missing_enabled.append(name)
+
+    healed: dict[str, object] = {}
+    if missing_enabled:
+        # Official CE companion install = rematerialize vendor pins (same bytes as install).
+        hosts_path = Path(__file__).resolve().with_name("hosts.py")
+        if hosts_path.is_file():
+            spec = _ilu.spec_from_file_location("ce_hosts_companion_heal", hosts_path)
+            if spec is not None and spec.loader is not None:
+                hosts_mod = _ilu.module_from_spec(spec)
+                try:
+                    import sys as _sys
+
+                    previous = _sys.dont_write_bytecode
+                    _sys.dont_write_bytecode = True
+                    try:
+                        spec.loader.exec_module(hosts_mod)
+                    finally:
+                        _sys.dont_write_bytecode = previous
+                    healed = hosts_mod.rematerialize_companions(
+                        project, names=tuple(missing_enabled)
+                    )
+                except (OSError, ValueError, AttributeError) as error:
+                    healed = {"status": "failed", "error": str(error), "missing": missing_enabled}
+
+    for name, rel in (
+        ("caveman", "plugins/caveman/skills/caveman/SKILL.md"),
+        ("ponytail", "plugins/ponytail/skills/ponytail/SKILL.md"),
+        ("icm-architect", "plugins/icm-architect/skills/icm-architect/SKILL.md"),
+    ):
+        enabled = bool(bundle.get(name, True))
+        present = (project / rel).is_file()
+        key = f"companion-{name}"
+        if not enabled:
+            components[key] = {
+                "status": "absent",
+                "taskImpact": "optional",
+                "detail": f"{name}-disabled-by-bundle",
+            }
+            continue
+        if present:
+            detail = f"{name}-healthy"
+            if name in missing_enabled and healed.get("status") == "healthy":
+                detail = f"{name}-self-healed-from-vendor"
+            components[key] = {
+                "status": "healthy",
+                "taskImpact": "required",
+                "detail": detail,
+            }
+            continue
+        # Heal failed — agentic handoff with official install command, not bare doctor choreography.
+        doctor = "python3 .chaos-engine/install.py doctor --project ."
+        repair = "python3 .chaos-engine/install.py repair --project . --component plugins"
+        # Portable tree must not embed origin repo URLs (forbiddenTokens).
+        oneliner = "the ChaosEngine install one-liner from INSTALL.md"
+        handoff_dir = project / ".chaos-engine-state"
+        handoff_dir.mkdir(parents=True, exist_ok=True)
+        handoff = handoff_dir / "companion-handoff.md"
+        prompt = (
+            f"Heal ChaosEngine companion `{name}` using the official CE installer path. "
+            f"From the project root run `{repair}` (preferred) or {oneliner} "
+            f"without `--without-{name}`. Then run `{doctor}`. "
+            f"Do not invent an alternate installer. See #5811."
+        )
+        try:
+            handoff.write_text(
+                "\n".join(
+                    [
+                        "# Companion handoff",
+                        "",
+                        f"- Missing: `{rel}`",
+                        f"- Official repair: `{repair}`",
+                        f"- Official install one-liner: `{oneliner}`",
+                        "",
+                        "Pasteable agent prompt:",
+                        "",
+                        f"`{prompt}`",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            # Best-effort handoff file; doctor still returns sync-advisory + agentPrompt.
+            pass
+        components[key] = {
+            "status": "sync-advisory",
+            "taskImpact": "required",
+            "detail": f"{name}-missing-after-heal-attempt",
+            "fixNext": (
+                "Complete companion heal using .chaos-engine-state/companion-handoff.md "
+                "(official repair/install), then rerun doctor. (#5806/#5811)"
+            ),
+            "agentPrompt": prompt,
+        }
+        # Keep overall status advisory when heal attempted; do not force recovery-required
+        # when an official install path is documented for the operator/agent.
+
+    identity_path = Path(__file__).resolve().with_name("identity_md.py")
+    if identity_path.is_file():
+        import sys as _sys
+
+        spec = _ilu.spec_from_file_location("ce_identity_doctor", identity_path)
+        if spec is not None and spec.loader is not None:
+            mod = _ilu.module_from_spec(spec)
+            previous = _sys.dont_write_bytecode
+            _sys.dont_write_bytecode = True
+            try:
+                spec.loader.exec_module(mod)
+            finally:
+                _sys.dont_write_bytecode = previous
+            identity = mod.ensure_identity_file(project, heal=True)
+            components["identity"] = {
+                "status": "healthy" if identity.get("status") == "healthy" else "sync-advisory",
+                "taskImpact": "advisory",
+                **{k: v for k, v in identity.items() if k != "status"},
+            }
+
+
+def apply_mcp_policy_doctor(
+    result: dict[str, object],
+    components: object,
+    project: Path,
+    policy_mod: object,
+) -> None:
+    """Project-overlay MCP conflicts fail doctor; user/global aliases are advisory (#5699)."""
+    if not isinstance(components, dict) or not isinstance(components.get("mcps"), dict):
+        return
+    mcps = components["mcps"]
+    project_error = policy_mod.project_mcp_policy_error(project)
+    if project_error:
+        result["status"] = "recovery-required"
+        mcps["status"] = "recovery-required"
+        mcps["detail"] = project_error
+        mcps["fixNext"] = policy_mod.HEAL_PROMPT
+        return
+    # #5781: when gh is healthy, strip user-host GitHub MCP during doctor/repair path.
+    repair_fn = getattr(policy_mod, "repair_user_github_mcp", None)
+    if callable(repair_fn):
+        try:
+            repaired = repair_fn()
+        except OSError:
+            repaired = None
+        if isinstance(repaired, dict) and repaired.get("stripped"):
+            mcps["githubMcpRepair"] = repaired
+            attach_host_environment_finding(
+                mcps,
+                detail=(
+                    "Disabled user-host GitHub MCP because gh auth status is healthy."
+                ),
+                fix_next=policy_mod.HEAL_PROMPT,
+            )
+        elif isinstance(repaired, dict) and repaired.get("preserved"):
+            mcps["githubMcpRepair"] = repaired
+    repair_deja = getattr(policy_mod, "repair_user_deja", None)
+    if callable(repair_deja):
+        try:
+            deja_repaired = repair_deja()
+        except OSError:
+            # Doctor continues when residue repair cannot touch the home directory.
+            deja_repaired = None
+        if isinstance(deja_repaired, dict) and (
+            deja_repaired.get("stripped") or deja_repaired.get("skillsRemoved")
+        ):
+            mcps["dejaResidueRepair"] = deja_repaired
+    repair_project_deja = getattr(policy_mod, "repair_project_deja", None)
+    if callable(repair_project_deja):
+        try:
+            repair_project_deja(project)
+        except OSError:
+            # Doctor continues when residue repair cannot touch the project directory.
+            pass
+    finding = policy_mod.user_mcp_policy_finding(project)
+    if finding and mcps.get("status") in {
+        "healthy",
+        "compatible-legacy",
+        "degraded",
+        "sync-advisory",
+    }:
+        attach_host_environment_finding(
+            mcps,
+            detail=finding,
+            fix_next=policy_mod.HEAL_PROMPT,
+        )
+    skill_error = policy_mod.user_skill_collision_error()
+    if skill_error and mcps.get("status") in {
+        "healthy",
+        "compatible-legacy",
+        "degraded",
+        "sync-advisory",
+    }:
+        attach_host_environment_finding(
+            mcps,
+            detail=skill_error,
+            fix_next=policy_mod.HEAL_PROMPT,
+        )
+    bundled = getattr(policy_mod, "overlay_bundled_skill_error", lambda _p: None)(project)
+    if bundled:
+        result["status"] = "recovery-required"
+        skills = components.get("skills")
+        if isinstance(skills, dict):
+            skills["status"] = "recovery-required"
+            skills["detail"] = bundled
+            skills["fixNext"] = (
+                "Remove vendored Grok office/game skills from the overlay catalog."
+            )
+    # #5780: document unfixable Grok host-product limits when extras cannot be deleted.
+    grok_status = getattr(policy_mod, "grok_host_product_status", None)
+    if callable(grok_status):
+        hosts = components.get("hosts")
+        if isinstance(hosts, dict):
+            hosts["grokHostProduct"] = grok_status()
+
+
 def doctor_with_dependencies(
-    project: Path, *, verify_clients: bool = True
+    project: Path, *, verify_clients: bool = True, probe_retrieve: bool = False
 ) -> dict[str, object]:
     """Verify installed files and actively execute every dependency entrypoint probe."""
     result = status_with_dependencies(project, active_probes=True)
@@ -3737,11 +5535,16 @@ def doctor_with_dependencies(
         result["clients"] = {}
         result["activationProof"] = {}
         result["phaseLedger"] = {"schemaVersion": 1, "sessions": 0, "status": "absent"}
+        result["learningMetrics"] = {"schemaVersion": 1, "status": "absent"}
+        result["ceBrief"] = {"schemaVersion": 1, "status": "absent"}
+        result["officialSelfHeal"] = {"healed": [], "failed": [], "skipped": []}
         return result
     target = project.resolve() / INSTALL_DIRECTORY
     host_controller = load_installed_controller(target, "hosts")
     dependency = result.get("dependencies")
     generation_path = dependency.get("path") if isinstance(dependency, dict) else None
+    if not isinstance(generation_path, str):
+        generation_path = None
     account_commands = None
     account_receipt = project.resolve() / ".chaos-engine-dependencies.json"
     if account_receipt.is_file() and not is_link_or_reparse(account_receipt):
@@ -3751,68 +5554,106 @@ def doctor_with_dependencies(
         if isinstance(commands, dict):
             account_commands = commands
     retrieval = host_controller.retrieval_runtime_status(project.resolve(), account_commands)
-    if retrieval.get("status") != "healthy":
-        result["status"] = "recovery-required"
+    retrieval_status = str(retrieval.get("status") or "recovery-required")
+    if retrieval_status != "healthy":
         components = result.get("components")
         if isinstance(components, dict) and isinstance(components.get("memory"), dict):
-            components["memory"]["status"] = retrieval["status"]
+            components["memory"]["status"] = retrieval_status
             if retrieval.get("reason"):
                 components["memory"]["reason"] = retrieval["reason"]
             code = retrieval.get("code")
             if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", code):
                 components["memory"]["code"] = code
-    scripts = "Scripts" if os.name == "nt" else "bin"
-    python_name = "python.exe" if os.name == "nt" else "python"
-    managed_python = (
-        Path(generation_path) / "uv-tools/mempalace" / scripts / python_name
-        if isinstance(generation_path, str) else None
-    )
-    if managed_python is None and account_commands is not None:
-        account_python = account_commands.get("python3")
-        if isinstance(account_python, str):
-            try:
-                candidate_python = Path(account_python).resolve(strict=True)
-            except (OSError, RuntimeError):
-                candidate_python = None
-            if candidate_python is not None and candidate_python.is_file():
-                managed_python = candidate_python
-    mcp_status = (
-        host_controller.mcp_runtime_status(project.resolve(), managed_python, account_commands)
-        if managed_python is not None else {"status": "recovery-required"}
-    )
-    mcp_status_value = str(mcp_status.get("status") or "recovery-required")
+        # compatible-legacy / sync-advisory / degraded must not flip overall (#G1).
+        if retrieval_status not in DOCTOR_NON_ESCALATING_STATUSES:
+            result["status"] = "recovery-required"
+    managed_python = resolve_managed_python(generation_path, account_commands)
+    if managed_python is None:
+        managed_python = heal_managed_python(
+            project.resolve(),
+            generation_path=generation_path,
+            account_commands=account_commands,
+        )
     components = result.get("components")
-    if mcp_status_value == "healthy":
-        pass
-    elif mcp_status_value in {"compatible-legacy", "degraded", "sync-advisory"}:
-        # Memory origin/main write gate during probe is advisory for required mcps
-        # (#5630); tool.py still hard-fails memory writes. Keep overall install
-        # verify from treating this alone as CE-INSTALL-FAILED recovery-required.
-        if isinstance(components, dict) and isinstance(components.get("mcps"), dict):
-            components["mcps"]["status"] = "compatible-legacy"
-            fix_next = mcp_status.get("fixNext")
-            detail = mcp_status.get("detail")
-            if isinstance(fix_next, str) and fix_next.strip():
-                components["mcps"]["detail"] = fix_next.strip()
-            elif isinstance(detail, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", detail):
-                components["mcps"]["detail"] = detail
-            code = mcp_status.get("code")
-            if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code):
-                components["mcps"]["code"] = code
+    if managed_python is None:
+        result["status"] = "recovery-required"
+        apply_managed_python_missing(components)
     else:
-        result["status"] = "recovery-required"
-        if isinstance(components, dict) and isinstance(components.get("mcps"), dict):
-            components["mcps"]["status"] = "recovery-required"
-            detail = mcp_status.get("detail")
-            if isinstance(detail, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", detail):
-                components["mcps"]["detail"] = detail
-    if managed_python is None or not host_controller.hook_runtime_healthy(
-        project.resolve(), managed_python
-    ):
-        result["status"] = "recovery-required"
-        components = result.get("components")
-        if isinstance(components, dict) and isinstance(components.get("hooks"), dict):
-            components["hooks"]["status"] = "recovery-required"
+        apply_mcp_doctor_status(
+            result,
+            components,
+            host_controller.mcp_runtime_status(
+                project.resolve(), managed_python, account_commands
+            ),
+        )
+        if not host_controller.hook_runtime_healthy(project.resolve(), managed_python):
+            # Owned hook payload stays healthy; host runtime probe is advisory (#5699).
+            apply_hooks_host_environment_probe(result, components)
+    apply_merge_handoff_fix_next(project.resolve(), components)
+    try:
+        import importlib.util as _ilu
+
+        policy_path = Path(__file__).resolve().with_name("mcp_policy.py")
+        if policy_path.is_file() and isinstance(components, dict):
+            _spec = _ilu.spec_from_file_location("ce_mcp_policy_doctor", policy_path)
+            if _spec is not None and _spec.loader is not None:
+                _mod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                apply_mcp_policy_doctor(result, components, project.resolve(), _mod)
+                apply_companion_and_identity_doctor(result, project.resolve())
+                apply_ce_plugin_pin_doctor(result, components, project.resolve(), _mod)
+                conflict = _mod.user_instruction_conflict_error(project.resolve())
+                if conflict and isinstance(components.get("hosts"), dict):
+                    result["status"] = "recovery-required"
+                    components["hosts"]["status"] = "recovery-required"
+                    components["hosts"]["detail"] = conflict
+                    components["hosts"]["fixNext"] = (
+                        "Remove duplicate ChaosEngine instruction from user/machine host config."
+                    )
+                policy_fn = getattr(host_controller, "competing_policy_errors", None)
+                policy = policy_fn(project.resolve()) if callable(policy_fn) else []
+                if policy and isinstance(components.get("hosts"), dict):
+                    result["status"] = "recovery-required"
+                    components["hosts"]["status"] = "recovery-required"
+                    components["hosts"]["detail"] = "; ".join(policy)
+                    components["hosts"]["fixNext"] = (
+                        "Reinstall host instruction markers so AGENTS.md, CLAUDE.md, "
+                        "GEMINI.md, and copilot-instructions share one policy sentence."
+                    )
+        match_path = Path(__file__).resolve().with_name("overlay_match.py")
+        if match_path.is_file() and isinstance(components, dict):
+            _spec = _ilu.spec_from_file_location("ce_overlay_match_doctor", match_path)
+            if _spec is not None and _spec.loader is not None:
+                _mod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                _mod.apply_doctor_overlay_match(result, project.resolve())
+                if hasattr(_mod, "apply_policy_hash_doctor"):
+                    _mod.apply_policy_hash_doctor(
+                        result, project.resolve(), probe_retrieve=probe_retrieve
+                    )
+                if hasattr(_mod, "apply_mempalace_backend_doctor"):
+                    _mod.apply_mempalace_backend_doctor(result, project.resolve())
+        heal_path = Path(__file__).resolve().with_name("official_self_heal.py")
+        if heal_path.is_file() and isinstance(components, dict):
+            _spec = _ilu.spec_from_file_location("ce_official_self_heal_doctor", heal_path)
+            if _spec is not None and _spec.loader is not None:
+                _mod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                _mod.apply_doctor_official_self_heal(
+                    result,
+                    project.resolve(),
+                    repair=repair_component,
+                    bundle=read_bundle_options(project.resolve()),
+                )
+                _mod.apply_official_self_heal_fix_next(project.resolve(), components)
+    except (OSError, RuntimeError, ValueError, AttributeError, ImportError, TypeError):
+        # Optional #5689/#5811 probes; missing helpers must not crash doctor.
+        pass
+    result.setdefault(
+        "officialSelfHeal",
+        {"healed": [], "failed": [], "skipped": []},
+    )
+    reconcile_doctor_overall_status(result)
     if not verify_clients:
         # Still attach activationProof from receipt when available (no live CLI probe).
         result.setdefault("activationProof", {})
@@ -3820,6 +5661,15 @@ def doctor_with_dependencies(
             "phaseLedger",
             {"schemaVersion": 1, "sessions": 0, "status": "absent"},
         )
+        result.setdefault(
+            "learningMetrics",
+            {"schemaVersion": 1, "status": "absent"},
+        )
+        result.setdefault(
+            "ceBrief",
+            {"schemaVersion": 1, "status": "absent"},
+        )
+        reconcile_doctor_overall_status(result)
         return result
     apply_plugin_client_health(
         result,
@@ -3840,6 +5690,35 @@ def doctor_with_dependencies(
                 result["phaseLedger"] = _mod.doctor_phase_ledger_summary(project)
     except (OSError, RuntimeError, ValueError, AttributeError):
         result["phaseLedger"] = {"schemaVersion": 1, "sessions": 0, "status": "absent"}
+    try:
+        metrics_path = Path(__file__).resolve().with_name("learning.py")
+        if metrics_path.is_file():
+            import importlib.util as _ilu
+
+            _spec = _ilu.spec_from_file_location(
+                "chaos_engine_learning_metrics_doctor", metrics_path
+            )
+            if _spec is not None and _spec.loader is not None:
+                _mod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                result["learningMetrics"] = _mod.doctor_learning_metrics(project)
+    except (OSError, RuntimeError, ValueError, AttributeError):
+        result["learningMetrics"] = {"schemaVersion": 1, "status": "absent"}
+    try:
+        brief_path = Path(__file__).resolve().with_name("ce_brief.py")
+        if brief_path.is_file():
+            import importlib.util as _ilu
+
+            _spec = _ilu.spec_from_file_location(
+                "chaos_engine_ce_brief_doctor", brief_path
+            )
+            if _spec is not None and _spec.loader is not None:
+                _mod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                result["ceBrief"] = _mod.doctor_ce_brief(project)
+    except (OSError, RuntimeError, ValueError, AttributeError):
+        result["ceBrief"] = {"schemaVersion": 1, "status": "absent"}
+    reconcile_doctor_overall_status(result)
     return result
 
 
@@ -3851,19 +5730,26 @@ _DIAGNOSTIC_FIELDS = {
     "status": {
         "schemaVersion", "identity", "kind", "status", "commit", "distribution",
         "policySha256", "kernel", "hosts", "dependencies", "components",
+        "reflectionControllerDrift", "lastInstall",
     },
     "doctor": {
         "schemaVersion", "identity", "kind", "status", "commit", "distribution",
         "policySha256", "kernel", "hosts", "dependencies", "components", "clients",
-        "activationProof", "phaseLedger",
+        "activationProof", "phaseLedger", "learningMetrics", "ceBrief", "officialSelfHeal",
+        "reflectionControllerDrift", "lastInstall",
     },
     "explain": {
         "schemaVersion", "identity", "kind", "host", "event", "phase", "decision",
         "diagnosticCode", "reason", "remedy", "factsUsed", "effects", "terminalReason",
     },
 }
+_DIAGNOSTIC_OPTIONAL_FIELDS = {
+    "status": frozenset({"reflectionControllerDrift", "lastInstall"}),
+    "doctor": frozenset({"reflectionControllerDrift", "lastInstall"}),
+}
 _DIAGNOSTIC_REQUIRED_FIELDS = {
-    kind: frozenset(fields) for kind, fields in _DIAGNOSTIC_FIELDS.items()
+    kind: frozenset(fields) - _DIAGNOSTIC_OPTIONAL_FIELDS.get(kind, frozenset())
+    for kind, fields in _DIAGNOSTIC_FIELDS.items()
 }
 
 
@@ -3912,10 +5798,24 @@ def validate_diagnostic_json(document: object) -> dict[str, object]:
     return document
 
 
+def apply_static_overlay_doctor(state: dict[str, object], project: Path) -> None:
+    """Give status the doctor's static policy-overlay row so --digest agrees (#6225)."""
+    match_path = Path(__file__).resolve().with_name("overlay_match.py")
+    if not match_path.is_file() or not isinstance(state.get("components"), dict):
+        return
+    spec = importlib.util.spec_from_file_location("ce_overlay_match_status", match_path)
+    if spec is None or spec.loader is None:
+        return
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if hasattr(module, "apply_policy_hash_doctor"):
+        module.apply_policy_hash_doctor(state, project, probe_retrieve=False)
+
+
 def status_json(project: Path, *, active_probes: bool = False) -> dict[str, object]:
     """Expose the stable secret-free status JSON v2 contract."""
     if active_probes:
-        state = doctor_with_dependencies(project)
+        state = doctor_with_dependencies(project, probe_retrieve=True)
     else:
         state = status_with_dependencies(project)
         # Required `plugins` must never look healthier than doctor when a native
@@ -3928,6 +5828,7 @@ def status_json(project: Path, *, active_probes: bool = False) -> dict[str, obje
             except (OSError, RuntimeError, ValueError):
                 # Status stays fail-closed via existing component/file checks.
                 pass
+        apply_static_overlay_doctor(state, project.resolve())
     payload = {
         "schemaVersion": DIAGNOSTIC_SCHEMA_VERSION,
         "identity": CANONICAL_IDENTITY,
@@ -3974,10 +5875,18 @@ def explain_json(
     })
 
 
-def uninstall_with_dependencies(  # noqa: MC0001 - coordinated host, runtime, and core teardown.
+def uninstall_with_dependencies(project: Path) -> None:
+    """Remove ChaosEngine, then its install residue (#6407). Knowledge stores stay."""
+    project = project.resolve()
+    _uninstall_with_dependencies(project)
+    for residue in (project / BUNDLE_OPTIONS_PATH, project / LOCK_NAME):
+        with contextlib.suppress(FileNotFoundError):
+            residue.unlink()
+
+
+def _uninstall_with_dependencies(  # noqa: MC0001 - coordinated host, runtime, and core teardown.
     project: Path,
 ) -> None:
-    project = project.resolve()
     with project_lock(project):
         _recover_transaction(project)
         if read_account_rollback_journal(project) is not None:
@@ -3985,6 +5894,15 @@ def uninstall_with_dependencies(  # noqa: MC0001 - coordinated host, runtime, an
         if read_cross_rollback_journal(project) is not None:
             raise ValueError("rollback recovery is required before uninstall")
         target = project / INSTALL_DIRECTORY
+        try:
+            # Loaded before core removal deletes the file it lives in (#6230).
+            receipt_shim = _receipt_shim_module()
+        except (ImportError, OSError):
+            receipt_shim = None
+        try:
+            consumer = _consumer_mode_module()
+        except (ImportError, OSError):
+            consumer = None
         runtime = project / ".chaos-engine-runtime"
         removing = project / ".chaos-engine-runtime.removing"
         backup = project / ".chaos-engine-runtime.backup"
@@ -4087,6 +6005,11 @@ def uninstall_with_dependencies(  # noqa: MC0001 - coordinated host, runtime, an
             controller.finalize_generation_remove(project)
         if host_prepared:
             host_controller.finalize_uninstall(project)
+        if receipt_shim is not None:
+            unwire_receipt_shims(project, receipt_shim)
+        if consumer is not None:
+            # #6237: remove only our marked info/exclude block.
+            consumer.remove_exclude(project)
 
 
 def finalize_dependency_tombstone(removing: Path) -> None:
@@ -4167,7 +6090,6 @@ def finalize_dependency_tombstone(removing: Path) -> None:
     removing.rmdir()
 
 
-
 def repair_component(  # noqa: MC0001 - component switch keeps one operator entrypoint.
     project: Path,
     component: str,
@@ -4196,7 +6118,15 @@ def repair_component(  # noqa: MC0001 - component switch keeps one operator entr
                     "core is missing; rerun the ChaosEngine install one-liner "
                     "(repair --component core cannot recreate an absent tree)"
                 )
+            removed = remove_nested_install_artifacts(target)
             verify_install(target)
+            if removed:
+                return {
+                    "status": "repaired",
+                    "component": name,
+                    "action": "removed-nested-overlay",
+                    "removed": removed,
+                }
             return {"status": "repaired", "component": name, "action": "verified"}
         if not target.exists():
             raise ValueError(
@@ -4225,6 +6155,23 @@ def repair_component(  # noqa: MC0001 - component switch keeps one operator entr
                 }
         # Clear stale account journals that block bind when hosts receipt is gone (#5636).
         recover_account_rollback_journal(project)
+        if name == "maven-tools-mcp":
+            host_receipt = project / ".chaos-engine-hosts.json"
+
+            def rebind() -> None:
+                if not host_receipt.exists() and not is_link_or_reparse(host_receipt):
+                    return
+                quarantine_orphaned_host_receipt(project)
+                host_controller.install(
+                    project,
+                    core_commit=repair_core_commit,
+                    capability_policy_digest=repair_capability,
+                    account_commands=account_commands,
+                )
+
+            return repair_maven_tools(
+                project, target, host_controller, runner=runner, rebind=rebind
+            )
         if name == "plugins":
             # Republish marketplace/plugins via host install preflight path, then
             # activate detected clients — no full dependency wipe.
@@ -4265,55 +6212,122 @@ def repair_component(  # noqa: MC0001 - component switch keeps one operator entr
                 capability_policy_digest=repair_capability,
                 account_commands=account_commands,
             )
-            return {"status": "repaired", "component": name, "action": "rebind"}
-        if name == "headroom":
-            policy_path = target / "headroom_policy.py"
-            if not policy_path.is_file():
-                raise ValueError("Headroom policy missing from installed core")
-            spec = importlib.util.spec_from_file_location(
-                "chaos_engine_headroom_policy_repair", policy_path
-            )
-            if spec is None or spec.loader is None:
-                raise ValueError("Headroom policy could not be loaded")
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            result = module.ensure_installed(runner=runner)
-            return {"status": "repaired", "component": name, **result}
+            payload = {"status": "repaired", "component": name, "action": "rebind"}
+            if name == "hooks":
+                payload["receiptShims"] = wire_receipt_shims(project)
+            return payload
+        if name == "memory" and hasattr(host_controller, "migrate_legacy_memory_store"):
+            migrated = host_controller.migrate_legacy_memory_store(project)
+            if isinstance(migrated, dict) and migrated.get("status") == "migrated":
+                return {
+                    "status": "repaired",
+                    "component": name,
+                    "action": "migrate-legacy-objects",
+                    "objects": migrated.get("objects"),
+                }
         if name in {"memory", "mempalace", "graphify", "tools"}:
             controller = load_dependency_controller(target)
             specification = controller.load_specification(target / "dependencies.json")
             account_receipt = project / ".chaos-engine-dependencies.json"
             if account_receipt.is_file() and hasattr(controller, "install_account_dependencies"):
                 controller.install_account_dependencies(project, specification, runner=runner)
-                return {
+                payload: dict[str, object] = {
                     "status": "repaired",
                     "component": name,
                     "action": "account-reinstall",
                 }
-            runtime = project / ".chaos-engine-runtime"
-            repair = getattr(controller, "repair", None)
-            if not callable(repair):
-                raise ValueError("dependency repair is unavailable in this distribution")
-            receipt = repair(runtime, specification, runner=runner, force=True)
-            return {
-                "status": "repaired",
-                "component": name,
-                "action": "runtime-repair",
-                "receiptStatus": receipt.get("status") if isinstance(receipt, dict) else None,
-            }
+            else:
+                runtime = project / ".chaos-engine-runtime"
+                repair = getattr(controller, "repair", None)
+                if not callable(repair):
+                    raise ValueError("dependency repair is unavailable in this distribution")
+                plan_runner = runner
+                if plan_runner is None or plan_runner is subprocess.run:
+                    plan_runner = controller.run_command
+                receipt = repair(runtime, specification, runner=plan_runner, force=True)
+                payload = {
+                    "status": "repaired",
+                    "component": name,
+                    "action": "runtime-repair",
+                    "receiptStatus": receipt.get("status") if isinstance(receipt, dict) else None,
+                }
+            if name == "mempalace":
+                # #6236: repair must create a missing or uninitialized palace.
+                try:
+                    host_controller.initialize_mempalace_runtime(project)
+                except ValueError as error:
+                    payload["palaceError"] = str(error)
+                payload["palace"] = str(
+                    host_controller.mempalace_runtime_status(project).get("status") or "unknown"
+                )
+            if name in {"mempalace", "graphify"}:
+                payload["storeRefresh"] = _refresh_shared_store(project, name)
+                _install_store_schedule(project)
+            return payload
         raise ValueError(f"repair not implemented for component: {name}")
+
+
+def linked_worktree_refusal(project: Path) -> str | None:
+    """#6178: install into the primary checkout; worktrees get the overlay materialized."""
+    if os.environ.get("CHAOS_ENGINE_ALLOW_LINKED_WORKTREE") == "1":
+        return None
+    module_path = Path(__file__).resolve().with_name("worktree_overlay.py")
+    if not module_path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("ce_worktree_overlay_install", module_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.linked_worktree_reason(Path(project))
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     commands = result.add_subparsers(dest="command", required=True)
-    install_command = commands.add_parser("install")
+    install_command = commands.add_parser(
+        "install",
+        epilog=(
+            "Optional add-ons are never installed by default. Add one with --with-<addon> "
+            "and remove it with --without-<addon> (or set CHAOS_ENGINE_ADDONS=a,b). "
+            "List them with: install.py addons --project ."
+        ),
+    )
     install_command.add_argument("--project", required=True, type=Path)
-    install_command.add_argument("--source", required=True, type=Path)
-    install_command.add_argument("--commit", required=True)
-    install_command.add_argument("--distribution", default=DEFAULT_DISTRIBUTION)
+    install_command.add_argument("--source", type=Path)
+    install_command.add_argument("--commit")
+    install_command.add_argument(
+        "--from-bundle",
+        type=Path,
+        help="Install offline from a checksum-verified `install.py bundle` zip (#6415).",
+    )
+    install_command.add_argument(
+        "--distribution", default=None, help="override the distribution the add-on selection implies"
+    )
     install_command.add_argument("--skip-tools", action="store_true")
+    install_command.add_argument(
+        "--if-changed",
+        action="store_true",
+        help="No-op when the installed overlay already matches the source byte-for-byte (#6179).",
+    )
     install_command.add_argument("--with-maven-tools", action="store_true")
+    install_command.add_argument(
+        "--consumer",
+        action="store_true",
+        help=(
+            "consumer-repository mode (#6237): never edit tracked files; hide the overlay "
+            "through .git/info/exclude (also CHAOS_ENGINE_CONSUMER=1)"
+        ),
+    )
+    mcp_choice = install_command.add_mutually_exclusive_group()
+    mcp_choice.add_argument(
+        "--with-mcp",
+        action="store_true",
+        help="also publish MCP servers whose job a ChaosEngine CLI already does (#6199)",
+    )
+    mcp_choice.add_argument(
+        "--without-mcp", action="store_true", help="withdraw a previous --with-mcp opt-in"
+    )
     install_command.add_argument(
         "--maven-tools-mode", choices=("native", "docker"), default="native"
     )
@@ -4323,6 +6337,26 @@ def parser() -> argparse.ArgumentParser:
             action="store_true",
             help=f"Disable default-on {bundle_name} provisioning.",
         )
+    deja_choice = install_command.add_mutually_exclusive_group()
+    deja_choice.add_argument(
+        "--with-deja",
+        action="store_true",
+        help="Opt in to the deja transcript store flag. Does not register MCP, hooks, or skills.",
+    )
+    deja_choice.add_argument(
+        "--without-deja",
+        action="store_true",
+        help="Keep the deja transcript store off (also CHAOS_ENGINE_WITHOUT_DEJA=1).",
+    )
+    install_command.add_argument(
+        "--lean-grok-skills",
+        action="store_true",
+        default=False,
+        help=(
+            "Recommended for ChaosEngine: merge [skills] disabled for game-* and "
+            "imagine into ~/.grok/config.toml (also CHAOS_ENGINE_LEAN_GROK_SKILLS=1)."
+        ),
+    )
     repair_command = commands.add_parser(
         "repair",
         help="Targeted zero-LLM repair for one component (no full wipe).",
@@ -4340,10 +6374,26 @@ def parser() -> argparse.ArgumentParser:
         if name in {"status", "doctor"}:
             command.add_argument("--json", action="store_true")
             command.add_argument(
+                "--agent-summary",
+                action="store_true",
+                help="Print at most four lines: pass/fail, component, hash, drift.",
+            )
+            command.add_argument(
+                "--digest",
+                action="store_true",
+                help="One line when healthy; otherwise only failing checks with fix-next (#6179).",
+            )
+            command.add_argument(
                 "--fix-next-only",
                 action="store_true",
                 help="Print only fix-next repair lines (zero-LLM / script-first).",
             )
+    addons_command = commands.add_parser(
+        "addons", help="List optional add-ons, installed and available (never installs)."
+    )
+    addons_command.add_argument("--project", required=True, type=Path)
+    addons_command.add_argument("--source", type=Path, default=Path(__file__).resolve().parent)
+    addons_command.add_argument("--json", action="store_true")
     explain = commands.add_parser("explain")
     explain.add_argument("event")
     explain.add_argument("--project", required=True, type=Path)
@@ -4356,13 +6406,17 @@ def parser() -> argparse.ArgumentParser:
     explain.add_argument("--cancelled", action="store_true")
     explain.add_argument("--timeout", action="store_true")
     explain.add_argument("--json", action="store_true")
+    bundle_command = commands.add_parser("bundle", help="Build an offline install bundle (#6415).")
+    bundle_command.add_argument("--source", required=True, type=Path)
+    bundle_command.add_argument("--commit", required=True)
+    bundle_command.add_argument("--output", required=True, type=Path)
     cache = commands.add_parser("cache")
     cache_commands = cache.add_subparsers(dest="cache_command", required=True)
     cache_status = cache_commands.add_parser("status")
-    cache_status.add_argument("--component", choices=("maven-tools-mcp",), required=True)
+    cache_status.add_argument("--component", choices=("maven-tools-mcp", "downloads"), required=True)
     cache_purge = cache_commands.add_parser("purge")
-    cache_purge.add_argument("--component", choices=("maven-tools-mcp",), required=True)
-    cache_purge.add_argument("--version", required=True)
+    cache_purge.add_argument("--component", choices=("maven-tools-mcp", "downloads"), required=True)
+    cache_purge.add_argument("--version", help="required for maven-tools-mcp")
     return result
 
 
@@ -4385,9 +6439,136 @@ def _component_severity(item: dict[str, object]) -> str:
         return "warning"
     if impact == "advisory":
         return "warning"
+    if impact == "required-when-indexed":
+        return "warning" if status == "absent" else "error"
     if impact == "optional":
         return "info"
     return "error"
+
+
+def _is_soft_doctor_status(item: dict[str, object]) -> bool:
+    """True for soft/non-escalating component statuses (#5831)."""
+    return str(item.get("status") or "") in DOCTOR_SOFT_STATUSES
+
+
+def _is_install_failure_heal_handoff_fix_next(value: object) -> bool:
+    """Detect leftover install-failure / heal-handoff operator prompts (#5831)."""
+    if not isinstance(value, str):
+        return False
+    lowered = value.casefold()
+    return (
+        "heal-handoff.md" in lowered
+        or "do not rerun the install one-liner" in lowered
+        or "do not invent an alternate companion installer" in lowered
+        or "official-self-heal-handoff.md" in lowered
+    )
+
+
+def clear_soft_status_install_failure_fix_next(components: object) -> None:
+    """Drop leftover install-failure heal-handoff fixNext from soft components (#5831).
+
+    Soft statuses keep their soft-status-specific messaging via component_fix_next
+    when fixNext is absent; they must not print a stale heal handoff after overall
+    is already healthy/soft.
+    """
+    if not isinstance(components, dict):
+        return
+    for item in components.values():
+        if not isinstance(item, dict):
+            continue
+        if not _is_soft_doctor_status(item):
+            continue
+        if _is_install_failure_heal_handoff_fix_next(item.get("fixNext")):
+            item.pop("fixNext", None)
+
+
+def _has_targeted_repair_fix_next(item: dict[str, object]) -> bool:
+    """Keep a component's own one-command repair over a generic handoff (#6337)."""
+    fix_next = item.get("fixNext")
+    return isinstance(fix_next, str) and "--component maven-tools-mcp" in fix_next
+
+
+def apply_merge_handoff_fix_next(project: Path, components: object) -> None:
+    """Point doctor fix-next at the merge handoff instead of a blind reinstall."""
+    if not isinstance(components, dict):
+        return
+    companion = Path(project) / ".chaos-engine-state" / "companion-handoff.md"
+    if companion.is_file() and not is_link_or_reparse(companion):
+        message = (
+            "Complete the agent heal using .chaos-engine-state/companion-handoff.md, "
+            "then rerun doctor. Do not invent an alternate companion installer."
+        )
+        for key, item in components.items():
+            if not isinstance(item, dict):
+                continue
+            if _is_soft_doctor_status(item):
+                continue
+            if str(key).startswith("companion-") and _component_severity(item) != "ok":
+                item["fixNext"] = message
+    official = Path(project) / ".chaos-engine-state" / "official-self-heal-handoff.md"
+    if official.is_file() and not is_link_or_reparse(official):
+        message = (
+            "Complete the agent heal using "
+            ".chaos-engine-state/official-self-heal-handoff.md (exact official "
+            "install command), then rerun doctor."
+        )
+        for name in ("memory", "mempalace", "graphify"):
+            item = components.get(name)
+            if not isinstance(item, dict):
+                continue
+            if _is_soft_doctor_status(item):
+                continue
+            if _component_severity(item) != "ok":
+                item["fixNext"] = message
+    heal = Path(project) / ".chaos-engine-state" / "heal-handoff.md"
+    if heal.is_file() and not is_link_or_reparse(heal):
+        message = (
+            "Complete the agent heal using .chaos-engine-state/heal-handoff.md, "
+            "then rerun doctor. Do not rerun the install one-liner."
+        )
+        for item in components.values():
+            if not isinstance(item, dict):
+                continue
+            if _component_severity(item) == "ok" or _is_soft_doctor_status(item):
+                continue
+            if _has_targeted_repair_fix_next(item):
+                continue
+            item["fixNext"] = message
+        clear_soft_status_install_failure_fix_next(components)
+        return
+    overlay = Path(project) / ".chaos-engine-state" / "overlay-handoff.md"
+    if overlay.is_file() and not is_link_or_reparse(overlay):
+        message = (
+            "Complete the agent overlay heal using .chaos-engine-state/overlay-handoff.md, "
+            "then rerun doctor. Do not rerun the install one-liner."
+        )
+        for item in components.values():
+            if not isinstance(item, dict):
+                continue
+            if _component_severity(item) == "ok" or _is_soft_doctor_status(item):
+                continue
+            if _has_targeted_repair_fix_next(item):
+                continue
+            item["fixNext"] = message
+        clear_soft_status_install_failure_fix_next(components)
+        return
+    handoff = Path(project) / ".chaos-engine-state" / "merge-handoff.md"
+    if not handoff.is_file() or is_link_or_reparse(handoff):
+        clear_soft_status_install_failure_fix_next(components)
+        return
+    message = (
+        "Complete the agent merge using .chaos-engine-state/merge-handoff.md, "
+        "then rerun doctor."
+    )
+    for item in components.values():
+        if not isinstance(item, dict):
+            continue
+        if _component_severity(item) == "ok" or _is_soft_doctor_status(item):
+            continue
+        if _has_targeted_repair_fix_next(item):
+            continue
+        item["fixNext"] = message
+    clear_soft_status_install_failure_fix_next(components)
 
 
 def _looks_like_fix_next(detail: object) -> bool:
@@ -4406,6 +6587,9 @@ def component_fix_next(name: str, item: dict[str, object]) -> str | None:
     impact = str(item.get("taskImpact") or "required")
     if status == "healthy" or (status == "absent" and impact == "optional"):
         return None
+    fix_next = item.get("fixNext")
+    if isinstance(fix_next, str) and fix_next.strip():
+        return fix_next.strip()
     detail = item.get("detail")
     if _looks_like_fix_next(detail):
         return str(detail).strip()
@@ -4419,6 +6603,20 @@ def component_fix_next(name: str, item: dict[str, object]) -> str | None:
         f"(or `{cli} .chaos-engine/bootstrap.py` from a source checkout), then "
         f"`{cli} .chaos-engine/install.py doctor --project .`."
     )
+    if code == MANAGED_PYTHON_MISSING_CODE or detail == MANAGED_PYTHON_MISSING_DETAIL:
+        return managed_python_missing_fix_next()
+    if code == "CE_MEMPALACE_UNINITIALIZED":
+        return (
+            f"Run `{cli} .chaos-engine/install.py repair --project . --component mempalace` "
+            f"(initializes the empty sqlite_exact palace), then "
+            f"`{cli} .chaos-engine/install.py doctor --project .`."
+        )
+    if code == HOOKS_PROBE_FAILED_CODE or detail == HOOKS_PROBE_FAILED_DETAIL:
+        return (
+            f"Run `{cli} .chaos-engine/install.py repair --project . --component hooks`, "
+            "reload/trust hooks in the active host, then "
+            f"`{cli} .chaos-engine/install.py doctor --project .`."
+        )
     if code == "CE_CORE_MISSING" or name == "core":
         return (
             "Rerun the ChaosEngine install one-liner to restore `.chaos-engine/` "
@@ -4459,10 +6657,32 @@ def component_fix_next(name: str, item: dict[str, object]) -> str | None:
         "absent",
         "broken",
     }:
+        official = item.get("officialCommand")
+        if isinstance(official, str) and official.strip():
+            return (
+                f"Run the official install for `{name}`: `{official.strip()}`, "
+                f"or `{cli} .chaos-engine/install.py repair --project . "
+                f"--component {name}`, then "
+                f"`{cli} .chaos-engine/install.py doctor --project .`."
+            )
         return (
-            f"Repair the `{name}` dependency/runtime (receipt + managed tools), "
+            f"Repair the `{name}` dependency/runtime via official install "
+            f"(`{cli} .chaos-engine/install.py repair --project . --component {name}`), "
             f"then rerun `{cli} .chaos-engine/install.py doctor --project .`. "
             + reinstall
+        )
+    if str(name).startswith("companion-") and status in {"absent", "recovery-required", "broken"}:
+        official = item.get("officialCommand")
+        if isinstance(official, str) and official.strip():
+            return (
+                f"Rematerialize companion via official CE vendor publish: "
+                f"`{official.strip()}`, then "
+                f"`{cli} .chaos-engine/install.py doctor --project .`."
+            )
+        return (
+            "Rematerialize Caveman/Ponytail from chaos-engine/vendor via "
+            "hosts.rematerialize_companions (or repair --component plugins), then "
+            f"`{cli} .chaos-engine/install.py doctor --project .`."
         )
     if name == "hooks":
         return (
@@ -4478,13 +6698,12 @@ def component_fix_next(name: str, item: dict[str, object]) -> str | None:
         )
     if name == "mcps":
         detail = item.get("detail")
-        if isinstance(detail, str) and "git fetch origin main" in detail:
+        if isinstance(detail, str) and "git fetch origin" in detail:
             return detail.strip()
         if item.get("code") == "CE_MEMORY_ORIGIN_MAIN_DESYNC" or status == "compatible-legacy":
             return (
-                "Primary checkout HEAD is not synchronized with origin/main "
-                "(Memory write gate). Fix-next: git fetch origin main && "
-                "git merge --ff-only origin/main — then rerun "
+                "Primary checkout HEAD is not synchronized with the default branch "
+                f"(Memory write gate). Fix-next: {item.get('fixNext') or DESYNC_FIX_NEXT_FALLBACK} — then rerun "
                 f"`{cli} .chaos-engine/install.py doctor --project .`. "
                 "Required mcps stay installable; memory/memory-mcp writes still hard-fail."
             )
@@ -4499,20 +6718,9 @@ def component_fix_next(name: str, item: dict[str, object]) -> str | None:
         )
     if name == "maven-tools-mcp":
         return (
-            "For Maven projects, rerun install with Maven Tools enabled "
-            "(`--with-maven-tools` or root `pom.xml`); otherwise optional absence "
-            "is fine."
-        )
-    if name == "headroom":
-        detail = item.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            return detail.strip()
-        return (
-            f"Run `{cli} .chaos-engine/install.py repair --project . "
-            "--component headroom` (or `uv tool install --python 3.13 "
-            '"headroom-ai==0.37.0"`), then `eval "$('
-            f'{cli} .chaos-engine/headroom_policy.py export-env)"` and '
-            "`headroom doctor`. Pass `--without-headroom` to keep Headroom off."
+            "For projects the java pack enables, rerun install with "
+            "`--with-maven-tools` (see packs/java/pack.md); otherwise optional "
+            "absence is fine."
         )
     if status == "migration-required":
         return (
@@ -4546,6 +6754,63 @@ def format_doctor_host_onboarding(clients: dict[str, object] | None = None) -> s
     )
 
 
+def reflection_controller_drift(project: Path) -> str:
+    """Doctor view of installed-vs-source hooks/reflection.py.
+
+    Compare the two project copies directly. Do not import the hook module:
+    doctor can run before that file sits beside install.py.
+    """
+    installed = project / ".chaos-engine" / "hooks" / "reflection.py"
+    source = project / "chaos-engine" / "hooks" / "reflection.py"
+    if not installed.is_file() or not source.is_file():
+        return ""
+    try:
+        left = installed.read_bytes()
+        right = source.read_bytes()
+    except OSError:
+        return ""
+    if left == right:
+        return ""
+    return (
+        "Reflection controller drift: `.chaos-engine/hooks/reflection.py` and "
+        "`chaos-engine/hooks/reflection.py` differ. Receipts must use the "
+        "controller the gate executes."
+    )
+
+
+def _mempalace_empty_finding(
+    project: Path, index: dict[str, object] | None
+) -> dict[str, object] | None:
+    """#6377: a finished, failed or interrupted mine that left zero drawers is degraded.
+
+    No index record means the installer never started a mine; a running mine is
+    still filling the palace. Neither is evidence of an empty index yet.
+    """
+    if not isinstance(index, dict) or index.get("status") == "running":
+        return None
+    try:
+        stores = _load_stores_module()
+        count = stores["palace_drawer_count"](stores["resolve_palace"](project))
+    except (OSError, ImportError, KeyError, RuntimeError, SyntaxError, ValueError):
+        return None
+    if count != 0:
+        return None
+    return {
+        "status": "degraded",
+        "detail": "MemPalace palace has zero drawers; retrieval returns nothing",
+        "fixNext": "python3 .chaos-engine/install.py repair --project . --component mempalace",
+    }
+
+
+def _mempalace_index_finding(target: Path, project: Path) -> dict[str, object] | None:
+    """Background initial-mine status from the installed dependency controller."""
+    try:
+        controller = load_dependency_controller(target)
+    except (OSError, ImportError, RuntimeError, SyntaxError, ValueError):
+        return None
+    reader = getattr(controller, "mempalace_index_status", None)
+    return reader(project) if callable(reader) else None
+
 
 def format_blocking_fidelity_warnings(document: dict[str, object]) -> list[str]:
     """Owner-visible warnings when a host may not honor exit-2 hard blocks (#5579)."""
@@ -4560,9 +6825,163 @@ def format_blocking_fidelity_warnings(document: dict[str, object]) -> list[str]:
         gap = str(meta.get("blockingGap") or "").strip()
         honored = meta.get("processExit2Honored", True)
         if gap and honored is False:
-            lines.append(f"warning  host/{host}: {gap}")
+            # #6325: same "[severity] name — detail" row grammar as components.
+            line = f"[warning] host/{host} — {gap}"
+            if meta.get("exit2") == "unknown":
+                # #6408: the host CLI is not installed here, so the gap is informational.
+                line = f"[info] host/{host} — exit-2 fidelity unknown: the {host} CLI is not installed on this machine."
+            # #6363: one row per (host, gap) even when detection repeats it.
+            if line not in lines:
+                lines.append(line)
     return lines
 
+
+def _dedupe_severity_rows(lines: list[str]) -> list[str]:
+    """Drop repeated ``[severity]`` rows in one report, keeping first order (#6363)."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for line in lines:
+        if line.startswith("[") and line in seen:
+            continue
+        if line.startswith("["):
+            seen.add(line)
+        result.append(line)
+    return result
+
+
+def format_unverified_dependency_findings(document: dict[str, object]) -> list[str]:
+    """Warn when a healthy tool was reused because its stable channel was unreachable."""
+    dependencies = document.get("dependencies")
+    components = dependencies.get("components") if isinstance(dependencies, dict) else None
+    if not isinstance(components, dict):
+        return []
+    lines: list[str] = []
+    for name in sorted(str(item) for item in components):
+        item = components[name]
+        if not isinstance(item, dict) or item.get("taskImpact") == "optional":
+            continue
+        if item.get("action") != "reused" or item.get("latestVersionVerified") is not False:
+            continue
+        version = item.get("installedVersion") or item.get("version") or "unknown"
+        cause = item.get("lookupError") or "unreachable"
+        lines.append(
+            f"[info] dependency/{name} — reused {version} unverified: "
+            f"stable channel lookup failed ({cause})"
+        )
+        lines.append("  fix-next: rerun install when the registry is reachable to verify the latest version")
+    return lines
+
+
+def format_host_environment_findings(document: dict[str, object]) -> list[str]:
+    """Surface install-owned-healthy host-environment advisories (#5699)."""
+    lines: list[str] = []
+    components = document.get("components")
+    if not isinstance(components, dict):
+        return lines
+    for name in sorted(str(item) for item in components):
+        item = components[name]
+        if not isinstance(item, dict):
+            continue
+        index = item.get("index")
+        if isinstance(index, dict) and index.get("status") in {"running", "interrupted", "failed"}:
+            lines.append(f"[info] {name}/index — {index.get('detail') or index.get('status')}")
+            if isinstance(index.get("fixNext"), str) and index["fixNext"].strip():
+                lines.append(f"  fix-next: {index['fixNext'].strip()}")
+        finding = item.get("hostEnvironment")
+        if not isinstance(finding, dict):
+            continue
+        if finding.get("status") not in {"sync-advisory", "compatible-legacy", "degraded"}:
+            continue
+        detail = finding.get("detail")
+        fix = finding.get("fixNext")
+        detail_text = detail if isinstance(detail, str) and detail.strip() else "advisory"
+        lines.append(f"[info] {name}/hostEnvironment — {detail_text}")
+        if isinstance(fix, str) and fix.strip():
+            lines.append(f"  fix-next: {fix.strip()}")
+    lines.extend(format_unverified_dependency_findings(document))
+    hosts = document.get("hosts")
+    if isinstance(hosts, dict):
+        finding = hosts.get("hostEnvironment")
+        if isinstance(finding, dict) and finding.get("status") == "sync-advisory":
+            detail = finding.get("detail")
+            fix = finding.get("fixNext")
+            detail_text = detail if isinstance(detail, str) and detail.strip() else "advisory"
+            lines.append(f"[info] hosts/hostEnvironment — {detail_text}")
+            if isinstance(fix, str) and fix.strip():
+                lines.append(f"  fix-next: {fix.strip()}")
+    return lines
+
+
+AGENT_SUMMARY_MAX_LINES = 4
+
+
+def _agent_summary_parts(document: dict[str, object]) -> tuple[str, str, str]:
+    """Pick one component line and a single drift token for the agent summary."""
+    components = document.get("components")
+    name = "core"
+    status = str(document.get("status") or "unknown")
+    drift = "none"
+    policy = str(document.get("policySha256") or "")
+    if policy == "0" * 64:
+        drift = "policy-hash-drift"
+    if isinstance(components, dict):
+        for candidate in sorted(str(item) for item in components):
+            item = components[candidate]
+            if not isinstance(item, dict):
+                continue
+            detail = str(item.get("detail") or "")
+            code = str(item.get("code") or "")
+            reason = str(item.get("reason") or "")
+            blob = f"{detail} {code} {reason}".casefold()
+            mismatched = item.get("coreMatchesSource") is False or "drift" in blob or "mismatch" in blob
+            if mismatched:
+                return (
+                    candidate,
+                    str(item.get("status") or "recovery-required"),
+                    detail or code or reason or "policy-hash-drift",
+                )
+        core = components.get("core")
+        if isinstance(core, dict):
+            name = "core"
+            status = str(core.get("status") or status)
+    return name, status, drift
+
+
+def format_agent_summary(document: dict[str, object]) -> str:
+    """Bounded agent-facing doctor summary. `--json` stays the full document."""
+    verdict = "pass" if str(document.get("status") or "") == "healthy" and _agent_summary_parts(document)[2] == "none" else "fail"
+    name, status, drift = _agent_summary_parts(document)
+    policy = str(document.get("policySha256") or "missing")
+    lines = [
+        f"doctor: {verdict}",
+        f"component: {name} {status}",
+        f"hash: {policy}",
+        f"drift: {drift}",
+    ]
+    return "\n".join(lines[:AGENT_SUMMARY_MAX_LINES]) + "\n"
+
+
+DOCTOR_FAILING_STATUSES = frozenset({"recovery-required", "failed"})
+
+
+def doctor_exit_code(document: dict[str, object]) -> int:
+    """Doctor exits non-zero when recovery is required, in every output mode."""
+    return 1 if str(document.get("status") or "") in DOCTOR_FAILING_STATUSES else 0
+
+
+def agent_summary_exit_code(document: dict[str, object]) -> int:
+    """Fail closed when policy hash drifted or the summary cannot stay bounded."""
+    rendered = format_agent_summary(document)
+    if len(rendered.splitlines()) > AGENT_SUMMARY_MAX_LINES:
+        return 1
+    policy = str(document.get("policySha256") or "")
+    if re.fullmatch(r"[0-9a-f]{64}", policy) is None:
+        return 1
+    if _agent_summary_parts(document)[2] != "none":
+        return 1
+    if str(document.get("status") or "") != "healthy":
+        return 1
+    return 0
 
 
 def format_fix_next_only(document: dict[str, object]) -> str:
@@ -4580,10 +6999,9 @@ def format_fix_next_only(document: dict[str, object]) -> str:
             if fix:
                 lines.append(f"{name}: {fix}")
     lines.extend(
-        line.split("warning  ", 1)[-1]
-        if line.startswith("warning  ")
-        else line
+        line.removeprefix("[warning] ").replace(" — ", ": ", 1)
         for line in format_blocking_fidelity_warnings(document)
+        if line.startswith("[warning] ")
     )
     return ("\n".join(lines) + "\n") if lines else ""
 
@@ -4602,22 +7020,52 @@ def format_health_report(document: dict[str, object], *, kind: str | None = None
             if not isinstance(item, dict):
                 continue
             rows.append((name, item, _component_severity(item)))
-    healthy = sum(1 for _n, _i, severity in rows if severity == "ok")
+    # The installer summary counts the same way (#6493): a compatible legacy store works.
+    healthy = sum(
+        1 for _n, item, severity in rows
+        if severity == "ok" or item.get("status") == "compatible-legacy"
+    )
     total = len(rows)
     failures = [(name, item, severity) for name, item, severity in rows if severity != "ok"]
     lines = [
         f"ChaosEngine {label}: {status}",
         f"commit: {commit_text}",
     ]
+    last_install = document.get("lastInstall")
+    if isinstance(last_install, dict) and last_install.get("status") == "rolled-back":
+        requested = str(last_install.get("requestedCommit") or "")[:12] or "unknown"
+        lines.append(
+            f"last install: rolled back; requested core {requested} was not kept, "
+            f"installed core is {commit_text[:12]}"
+        )
     if total:
         lines.append(f"components: {healthy}/{total} healthy")
+    usage = document.get("retrieveUsage")
+    if isinstance(usage, dict):
+        lines.append(f"retrieve hit use: {usage.get('cited', 0)}/{usage.get('records', 0)}")
+    prune = document.get("hostPrune")
+    if isinstance(prune, dict):
+        removed = prune.get("removed")
+        count = len(removed) if isinstance(removed, list) else 0
+        lines.append(f"host prune dry-run: {count} orphaned host entries")
+    advisories = format_host_environment_findings(document)
+    advisory_count = sum(1 for line in advisories if line.startswith("[info]"))
     if not failures:
-        # Keep the happy path short for first-time users.
+        # Keep the happy path short; still show host-environment advisories (#5699).
+        if advisories:
+            lines.append(f"issues: {advisory_count} info")
+            lines.append("")
+            lines.extend(advisories)
         lines.extend(format_blocking_fidelity_warnings(document))
-        return "\n".join(lines) + "\n"
+        note = document.get("reflectionControllerDrift")
+        if isinstance(note, str) and note.strip():
+            lines.append(note.strip())
+        return "\n".join(_dedupe_severity_rows(lines)) + "\n"
     counts: dict[str, int] = {"error": 0, "warning": 0, "info": 0}
     for _name, _item, severity in failures:
         counts[severity] = counts.get(severity, 0) + 1
+    if advisory_count:
+        counts["info"] = counts.get("info", 0) + advisory_count
     summary = ", ".join(
         f"{counts[key]} {key}" for key in ("error", "warning", "info") if counts.get(key)
     )
@@ -4633,8 +7081,68 @@ def format_health_report(document: dict[str, object], *, kind: str | None = None
         fix = component_fix_next(name, item)
         if fix:
             lines.append(f"  fix-next: {fix}")
+        prompt = item.get("agentPrompt")
+        if isinstance(prompt, str) and prompt.strip():
+            lines.append("  Agent prompt (copy the backtick block):")
+            lines.append(f"  `{prompt.strip()}`")
+    lines.extend(advisories)
     lines.extend(format_blocking_fidelity_warnings(document))
-    return "\n".join(lines) + "\n"
+    note = document.get("reflectionControllerDrift")
+    if isinstance(note, str) and note.strip():
+        lines.append(note.strip())
+    return "\n".join(_dedupe_severity_rows(lines)) + "\n"
+
+
+BUNDLE_MANIFEST = "chaos-engine-bundle.json"
+
+
+def build_bundle(source: Path, commit: str, output: Path) -> Path:
+    """Zip the portable source tree with a sha256 manifest for offline installs (#6415)."""
+    source_files(source)  # same source validation as install
+    files: dict[str, str] = {}
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(source.rglob("*")):
+            relative = path.relative_to(source)
+            if not path.is_file() or is_generated_python_cache(relative):
+                continue
+            reject_link_or_reparse(path)
+            files[relative.as_posix()] = file_sha256(path)
+            archive.write(path, relative.as_posix())
+        archive.writestr(BUNDLE_MANIFEST, json.dumps({"commit": commit, "files": files}, indent=2, sort_keys=True))
+    return output
+
+
+def extract_bundle(bundle: Path, destination: Path) -> tuple[Path, str]:
+    """Verify every bundle member against its manifest, then extract; fail closed on any mismatch."""
+    with zipfile.ZipFile(bundle) as archive:
+        manifest = json.loads(archive.read(BUNDLE_MANIFEST))
+        files = manifest["files"]
+        commit = str(manifest["commit"])
+        if COMMIT_PATTERN.fullmatch(commit) is None:
+            raise ValueError("bundle manifest has an invalid commit")
+        members = [name for name in archive.namelist() if name != BUNDLE_MANIFEST]
+        for name in members:
+            pure = PurePosixPath(name)
+            if pure.is_absolute() or ".." in pure.parts or "\\" in name:
+                raise ValueError(f"bundle member escapes the bundle: {name}")
+        if set(members) != set(files) or len(members) != len(set(members)):
+            raise ValueError("bundle members do not match the manifest checksum list")
+        for name in members:
+            if hashlib.sha256(archive.read(name)).hexdigest() != files[name]:
+                raise ValueError(f"bundle checksum mismatch: {name}")
+        stage = Path(tempfile.mkdtemp(prefix=".ce-bundle-", dir=destination.parent if destination.parent.exists() else None))
+        try:
+            for name in members:
+                target = stage / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(name))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(stage, destination)
+        except BaseException:
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
+    return destination, commit
 
 
 def validate_install_options(args: argparse.Namespace) -> None:
@@ -4642,24 +7150,74 @@ def validate_install_options(args: argparse.Namespace) -> None:
         raise ValueError("--with-maven-tools cannot be combined with --skip-tools")
     if getattr(args, "json", False) and getattr(args, "fix_next_only", False):
         raise ValueError("--fix-next-only cannot be combined with --json")
+    if getattr(args, "json", False) and getattr(args, "agent_summary", False):
+        raise ValueError("--agent-summary cannot be combined with --json")
+
+
+WITH_MCP_MARKER = ".chaos-engine-state/with-mcp"
+
+
+def record_mcp_opt_in(project: Path, args: argparse.Namespace) -> None:
+    """Persist `--with-mcp` / `--without-mcp` for hosts rendering and later repairs."""
+    marker = Path(project) / WITH_MCP_MARKER
+    if getattr(args, "with_mcp", False):
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("with-mcp\n", encoding="utf-8")
+    elif getattr(args, "without_mcp", False):
+        with contextlib.suppress(FileNotFoundError):
+            marker.unlink()
+
+
+MINIMUM_PYTHON = (3, 11)
+
+
+def python_floor_message(version: tuple[int, ...] | None = None) -> str:
+    """Explain the supported Python floor (3.10 reaches end of life in October 2026)."""
+    found = ".".join(str(part) for part in (version or sys.version_info)[:3])
+    return (f"ChaosEngine requires Python {MINIMUM_PYTHON[0]}.{MINIMUM_PYTHON[1]} or newer; found {found}. "
+            "Rerun the install one-liner, which provisions a supported Python through uv.\n")
 
 
 def main() -> int:
-    args = parser().parse_args()
+    if sys.version_info < MINIMUM_PYTHON:
+        sys.stderr.write(python_floor_message())
+        return 2
+    args, extra = parser().parse_known_args()
     try:
+        requested, removed, unknown = addon_catalog().split_flags(extra)
+        if unknown or ((requested or removed) and args.command != "install"):
+            parser().parse_args()  # argparse reports the unrecognized arguments and exits
         validate_install_options(args)
         if args.command == "install":
-            bundle = default_bundle_options()
-            for name in DEFAULT_BUNDLE_COMPONENTS:
-                if getattr(args, f"without_{name}", False):
-                    bundle[name] = False
+            if args.from_bundle is not None:
+                args.source, args.commit = extract_bundle(
+                    args.from_bundle, Path(tempfile.mkdtemp(prefix="chaos-engine-bundle-")) / "chaos-engine"
+                )
+            elif args.source is None or args.commit is None:
+                raise ValueError("install needs --source and --commit, or --from-bundle")
+            refusal = linked_worktree_refusal(args.project)
+            if refusal:
+                raise RuntimeError(refusal)
+            planned, addons = plan_install(args.project, args.source, requested, removed)
+            args.distribution = args.distribution or planned
+            if getattr(args, "if_changed", False) and overlay_unchanged(
+                args.source, args.project / INSTALL_DIRECTORY, args.distribution, addons
+            ):
+                print(json.dumps({"status": "unchanged", "root": str(args.project / INSTALL_DIRECTORY)}))
+                return 0
+            legacy_packs = legacy_profile_layout(args.project / INSTALL_DIRECTORY)
+            bundle = bundle_from_install_args(args)
             write_bundle_options(args.project, bundle)
+            record_mcp_opt_in(args.project, args)
+            if getattr(args, "consumer", False):
+                os.environ["CHAOS_ENGINE_CONSUMER"] = "1"
             target = (
                 install(
                     args.project,
                     args.source,
                     args.commit,
                     distribution=args.distribution,
+                    addons=addons,
                 )
                 if args.skip_tools
                 else install_with_dependencies(
@@ -4670,15 +7228,63 @@ def main() -> int:
                     with_maven_tools=args.with_maven_tools,
                     maven_tools_mode=args.maven_tools_mode,
                     bundle_options=bundle,
+                    addons=addons,
                 )
             )
-            result: object = {"status": "installed", "root": str(target), "bundle": bundle}
+            result: object = {
+                "status": "installed", "root": str(target), "bundle": bundle, "addons": list(addons)
+            }
+            tips = suggest_addons(args.project, args.source, addons)
+            if tips:
+                print(addon_tip(tips), file=sys.stderr)
+            if legacy_packs:
+                # CE-10 hard cut: the old profiles/<name> layout is replaced, never shimmed.
+                notice = hard_cut_message(legacy_packs, replaced=not legacy_profile_layout(target))
+                result["migration"] = {"hardCut": notice}
+                print(notice, file=sys.stderr)
+            consumer = _consumer_mode_module()
+            if consumer is not None and consumer.enabled(args.project):
+                consumer.record(args.project)
+                consumer.write_exclude(args.project, load_source_controller("hosts").managed_paths())
+            untouched = consumer_untouched_files(args.project)
+            if untouched:
+                # #6237 FR-2: name every tracked file consumer mode left alone.
+                result["consumerMode"] = {"untouchedTrackedFiles": untouched}
+                print(
+                    "ChaosEngine consumer mode left tracked files untouched: "
+                    + ", ".join(untouched),
+                    file=sys.stderr,
+                )
+            with contextlib.suppress(OSError):
+                if ".graphifyignore" not in untouched:
+                    seed_graphify_ignore(args.project)
+            _install_store_schedule(args.project)
         elif args.command == "repair":
             result = repair_component(args.project, args.component)
+        elif args.command == "addons":
+            catalog = addon_catalog()
+            found = catalog.discover(args.source)
+            files, current = installed_record(args.project)
+            selected = sorted(catalog.installed(found, files, current))
+            if not args.json:
+                print("\n".join(catalog.index_rows(found, selected)) or "no add-ons available")
+                return 0
+            result = {"installed": selected, "available": sorted(set(found) - set(selected))}
+        elif args.command == "bundle":
+            result = {"status": "bundled", "bundle": str(build_bundle(args.source, args.commit, args.output))}
+        elif args.command == "cache" and args.component == "downloads":
+            controller = load_source_controller("dependencies")
+            result = (
+                controller.download_cache_status()
+                if args.cache_command == "status"
+                else controller.purge_download_cache()
+            )
         elif args.command == "cache":
+            if args.cache_command == "purge" and not args.version:
+                raise ValueError("cache purge --component maven-tools-mcp needs --version")
             controller = load_source_controller("hosts")
             result = (
-                controller.maven_tools_cache_status()
+                controller.selected_maven_tools_cache_status()
                 if args.cache_command == "status"
                 else controller.purge_maven_tools_cache(args.version)
             )
@@ -4686,6 +7292,17 @@ def main() -> int:
             result = status_json(args.project)
         elif args.command == "doctor":
             result = status_json(args.project, active_probes=True)
+            followups = Path(__file__).resolve().with_name("harness_mindset.py")
+            followup_spec = importlib.util.spec_from_file_location(
+                "chaos_engine_harness_mindset_doctor", followups
+            )
+            if followup_spec is not None and followup_spec.loader is not None:
+                followup_module = importlib.util.module_from_spec(followup_spec)
+                followup_spec.loader.exec_module(followup_module)
+                result.update(followup_module.doctor_followups(args.project))
+            legacy_packs = legacy_profile_layout(args.project / INSTALL_DIRECTORY)
+            if legacy_packs:
+                result["migration"] = {"hardCut": hard_cut_message(legacy_packs)}
         elif args.command == "explain":
             result = explain_json(
                 args.project,
@@ -4823,11 +7440,20 @@ def main() -> int:
     if args.command in {"status", "doctor"} and not getattr(args, "json", False):
         if not isinstance(result, dict):
             raise TypeError("doctor/status result must be an object")
+        if getattr(args, "agent_summary", False):
+            print(format_agent_summary(result), end="")
+            return agent_summary_exit_code(result)
+        if getattr(args, "digest", False):
+            print(load_source_controller("hosts").doctor_digest(result))
+            return agent_summary_exit_code(result)
         if getattr(args, "fix_next_only", False):
             print(format_fix_next_only(result), end="")
         else:
             print(format_health_report(result, kind=args.command), end="")
         if args.command == "doctor":
+            migration = result.get("migration")
+            if isinstance(migration, dict) and migration.get("hardCut"):
+                print(f"WARNING: {migration['hardCut']}")
             clients = result.get("clients")
             print(
                 format_doctor_host_onboarding(
@@ -4835,9 +7461,10 @@ def main() -> int:
                 ),
                 end="",
             )
+            return doctor_exit_code(result)
         return 0
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
-    return 0
+    return doctor_exit_code(result) if args.command == "doctor" else 0
 
 
 if __name__ == "__main__":

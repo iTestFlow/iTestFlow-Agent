@@ -1,7 +1,6 @@
 # Context economy
 
 Owner-selectable budgets: [token budget modes](token-budget-modes.md) (`ultra-lean` | `balanced` | `deep`).
-Wire-level compression: [Headroom](headroom.md) (`agent-90` under ultra-lean).
 
 Load this when a task will make many tool calls, return large outputs, or run
 long enough that context rot becomes the next failure mode. Host compaction is
@@ -10,7 +9,7 @@ the host's job. This page teaches the agent how to stay under it.
 Patterns here reimplement published progressive-disclosure, just-in-time
 retrieval, compaction, tool-result pruning, and spill ideas. Named sources
 and licenses live in [THIRD_PARTY_NOTICES](../THIRD_PARTY_NOTICES.md) and
-[RESEARCH](../RESEARCH.md).
+RESEARCH (repo-only `chaos-engine/RESEARCH.md`).
 
 ## Smallest high-signal set
 
@@ -21,6 +20,11 @@ the next decision. Stop exploring when that decision is supported.
 - After truncation, narrow once. Do not repeat the same broad query.
 - Do not reread an unchanged input.
 - Prefer a path plus a discriminating excerpt over a full dump.
+- Failed CI logs: when the summary already names a fingerprint, read at most 40 lines around it; otherwise spill the log and keep path plus fingerprint ([CI status economy](ci-status-economy.md)).
+- Builds run in quiet mode; read pass/fail from the test-report files the build writes (JUnit XML), not from console output.
+- Scope searches to source directories; never search build, cache, or IDE-sandbox trees.
+- Locally run only the red test and directly affected modules; CI runs the rest.
+- Doctor reloads use `--agent-summary` (four lines). Keep full `--json` for humans and contract tests.
 
 ## Spill large tool output
 
@@ -36,7 +40,8 @@ transcript unless the user asked for the raw body.
 ## Distill, then continue
 
 - A subagent returns a distillate: what changed, what was proved, what remains.
-  It does not return its transcript.
+  It does not return its transcript. Research / multi-file explore follows the
+  [context firewall](context-firewall.md) (`filepath:line` + distillate only).
 - Structured notes belong at session end or after repeated failure, through the
   existing learning session. They are not a running diary.
 - On failure, change the premise or the discriminating observation. Do not
