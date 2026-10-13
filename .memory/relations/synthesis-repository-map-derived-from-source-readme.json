@@ -8,10 +8,10 @@
       "kind": "source"
     }
   ],
-  "from": "synthesis.repository-map",
+  "from": "feature.repository-map",
   "id": "rel.synthesis-repository-map-derived-from-source-readme",
-  "predicate": "derived_from",
+  "predicate": "related_to",
   "status": "active",
-  "to": "source.readme",
+  "to": "feature.readme",
   "updated_at": "2026-08-12T23:13:53+03:00"
 }

@@ -8,10 +8,10 @@
       "kind": "source"
     }
   ],
-  "from": "workflow.post-task-verification",
+  "from": "feature.post-task-verification",
   "id": "rel.workflow-post-task-verification-derived-from-source-package-json",
-  "predicate": "derived_from",
+  "predicate": "related_to",
   "status": "active",
-  "to": "source.package-json",
+  "to": "feature.package-json",
   "updated_at": "2026-08-12T23:13:53+03:00"
 }

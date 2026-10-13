@@ -1,8 +1,7 @@
 # Eval / parity fixture suite
 
 Minimal regression harness for ChaosEngine policy outcomes across the five
-hosts (Claude Code, Codex, Grok, Gemini, GitHub Copilot). Parent epic #5569 /
-issue #5584.
+hosts (Claude Code, Codex, Grok, Gemini, GitHub Copilot).
 
 Parity here means **same policy outcomes** under simulated hook runners — not
 UI chrome parity and not driving hosts as child processes.
@@ -12,8 +11,8 @@ UI chrome parity and not driving hosts as child processes.
 | Piece | Path |
 | --- | --- |
 | Fixture corpus | [`evals/parity-fixtures.json`](../evals/parity-fixtures.json) |
-| Documented runner | `python3 scripts/ci/chaos_engine_eval_parity.py` |
-| Machine report | `python3 scripts/ci/chaos_engine_eval_parity.py --json` |
+| Documented runner | `python3 scripts/ci/chaos_engine_eval_parity.py` (repo-only) |
+| Machine report | `python3 scripts/ci/chaos_engine_eval_parity.py --json` (repo-only) |
 | Unittest | `python3 -m unittest tests.scripts.test_chaos_engine_eval_parity_fixtures -v` |
 
 Each fixture declares:
@@ -31,7 +30,7 @@ runner: identical CE policy, host-native deny/context payloads.
 | ID | Policy | Expected |
 | --- | --- | --- |
 | `deny-catastrophic-rm-rf-root` | catastrophic deny | exit 2 + native deny on all hosts |
-| `allow-read-tool` | non-mutation allow | exit 0, no deny payload |
+| `allow-read-tool` | retrieve-before-read | exit 0 for a cheap one-file read. A broad search is pinned by `tests.scripts.test_retrieve_justification_gate` (retrieveOwed), not by this fixture, because a checkout with no project graph fails open and must not make the eval depend on an index. |
 | `allow-safe-echo` | non-mutation allow | exit 0 for `echo hello` |
 | `sessionstart-locator-budget` | SessionStart locator | ≤4096 bytes, companion paths, identical context |
 | `research-before-mutation-enforced` | research receipt gate | deny until preflight when env enforced |
@@ -58,6 +57,7 @@ When a fixture fails:
 CI executes the suite through the Agent Guidance Gate
 (`eval-parity-contract` in `scripts/ci/harness_pr_gate.py`) and the scheduled
 exhaustive harness in `.github/workflows/agent-plugin-acceptance.yml`.
+A `workflow_dispatch` may name installer jobs and skip that exhaustive job.
 
 ## Related
 
@@ -67,7 +67,7 @@ exhaustive harness in `.github/workflows/agent-plugin-acceptance.yml`.
 - [Zero-LLM catalog](zero-llm-catalog.md)
 
 
-## Wave C expansions (#5625)
+## Wave C expansions
 
 Additional fixtures cover triage-scaled research, SessionStart wake-pack
 (no Memory prose), and portable Learning Session finalize. Plugin activation /
@@ -75,3 +75,7 @@ status⊆doctor / memory degrade remain covered by doctor/status unit tests and
 the Wave A health-truth suite; Learning Session Stop continues to require a
 terminal finalize (portable or monorepo) with **issues-first** disposition and
 **no** auto draft PRs.
+
+## Skill compress apply gate
+
+Propose-only audits live in [`skill_compress_audit.py`](../skill_compress_audit.py). Any future apply path (S4/#8) must keep this fixture suite green and remain opt-in — never auto-merge skill mutations.

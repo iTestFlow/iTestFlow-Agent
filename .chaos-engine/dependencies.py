@@ -9,16 +9,20 @@ import ctypes.wintypes
 import errno
 import hashlib
 import json
+import math
 import os
 import platform
 import re
 import secrets
+import shlex
 import shutil
+import sqlite3
 import stat
 import subprocess  # nosec B404 - fixed list-form dependency commands from tracked spec.
 import sys
 import tarfile
 import time
+import urllib.error
 import urllib.request
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -53,25 +57,39 @@ REQUIRED_DISPATCHES = {
     "memory",
     "memory-mcp",
 }
-PINNED_MEMPALACE_PACKAGE = "mempalace==3.8.0"
-PINNED_MEMPALACE_WITH = ("chromadb==1.5.9",)
-SCHEMA3_TOOLS = {
-    "uv": {"package": "uv==0.11.29"},
-    "mempalace": {
-        "package": PINNED_MEMPALACE_PACKAGE,
-        "with": list(PINNED_MEMPALACE_WITH),
-        "commands": ["mempalace", "mempalace-mcp"],
-    },
-    "graphify": {
-        "package": "graphifyy==0.9.43",
-        "with": ["tree-sitter-sql==0.3.11"],
-        "commands": ["graphify"],
-    },
-    "memory": {
-        "package": "@aictx/memory@0.2.1",
-        "commands": ["memory", "memory-mcp"],
-    },
-}
+def _load_schema3_tools() -> dict[str, dict[str, object]]:
+    """Load the schema v3 tool contract from the dependency file beside this module."""
+    path = Path(__file__).resolve().with_name("dependencies.json")
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        cli = "py -3" if os.name == "nt" else "python3"
+        raise ValueError(
+            "ChaosEngine dependency specification is missing "
+            "(wiped or incomplete `.chaos-engine` runtime). fix-next: run the "
+            "ChaosEngine install one-liner from INSTALL.md, then "
+            f"`{cli} .chaos-engine/install.py doctor --project .`"
+        ) from error
+    document = json.loads(raw)
+    tools = document.get("tools")
+    if not isinstance(tools, dict):
+        raise ValueError("tool dependency specification is invalid")
+    loaded: dict[str, dict[str, object]] = {}
+    for name, record in tools.items():
+        if not isinstance(name, str) or not isinstance(record, dict):
+            raise ValueError("tool dependency specification is invalid")
+        loaded[name] = {
+            key: list(value) if isinstance(value, list) else value
+            for key, value in record.items()
+        }
+    return loaded
+
+
+SCHEMA3_TOOLS = _load_schema3_tools()
+PINNED_MEMPALACE_PACKAGE = str(SCHEMA3_TOOLS["mempalace"]["package"])
+PINNED_MEMPALACE_WITH = tuple(SCHEMA3_TOOLS["mempalace"]["with"])
+# Opt-in CLIs are never provisioned. A missing binary must not block account setup.
+OPTIONAL_ACCOUNT_DEPENDENCIES = frozenset({"deja"})
 WINDOWS_UV_JUNCTION_TAG = 0xA0000003
 WINDOWS_UV_ALIAS = re.compile(
     r"uv-python/cpython-(?P<version>3\.\d+)-windows-(?P<arch>x86_64|aarch64)-none"
@@ -95,6 +113,29 @@ ACCOUNT_RECEIPT_SCHEMA = 2
 ACCOUNT_RECEIPT_NAME = ".chaos-engine-dependencies.json"
 DEPENDENCY_ACTIONS = frozenset({"reused", "installed", "upgraded", "repaired", "blocked"})
 ACCOUNT_COMMAND_TIMEOUT_SECONDS = 900
+# A fresh repository mine can embed tens of thousands of drawers on CPU, far past
+# the synchronous budget, so install hands it to a detached incremental runner.
+MEMPALACE_MINE_MODE_ENV = "CHAOS_ENGINE_MEMPALACE_MINE"
+# Installer-owned paths the project palace must never mine (#6540). Mining the
+# installed harness copies cost ~150 s per install and crowded retrieval.
+MEMPALACE_OWNED_EXCLUDES = (
+    "mempalace.yaml",
+    ".memory/**",
+    "graphify-out/**",
+    ".chaos-engine/**",
+    ".chaos-engine-runtime/**",
+    ".chaos-engine-state/**",
+    "plugins/chaos-engine/**",
+    "plugins/caveman/**",
+    "plugins/ponytail/**",
+    "plugins/icm-architect/**",
+    "**/skills/chaos-engine/**",
+    ".claude/agents/chaos-engine-*",
+    ".codex/agents/chaos-engine-*",
+)
+MEMPALACE_INDEX_SUBCOMMAND = "mempalace-index"
+MEMPALACE_INDEX_STATUS_NAME = "mempalace-index.json"
+MEMPALACE_INDEX_LOG_NAME = "mempalace-index.log"
 TRANSIENT_MEMPALACE_TLS_EOF = "[SSL: UNEXPECTED_EOF_WHILE_READING]"
 _UNSTABLE_VERSION = re.compile(
     r"(?:alpha|beta|rc|pre|preview|dev|snapshot|nightly)", re.IGNORECASE
@@ -117,8 +158,26 @@ def version_key(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in parts)
 
 
+def version_at_least(actual: str | int, minimum: str | int) -> bool:
+    """True when actual is higher than or equal to the supported minimum floor."""
+    if isinstance(actual, int) and isinstance(minimum, int):
+        return actual >= minimum
+    return version_key(str(actual)) >= version_key(str(minimum))
+
+
+def _within_maximum_series(key: tuple[int, ...], maximum_series: str | None) -> bool:
+    """True when ``key`` is not newer than a major.minor series such as ``3.14``."""
+    if not maximum_series:
+        return True
+    series = version_key(maximum_series)
+    prefix = key[:len(series)]
+    if len(prefix) < len(series):
+        prefix = prefix + (0,) * (len(series) - len(prefix))
+    return prefix <= series
+
+
 def latest_compatible_stable(
-    candidates: list[dict[str, object]], *, minimum: str
+    candidates: list[dict[str, object]], *, minimum: str, maximum_series: str | None = None
 ) -> str:
     """Select newest non-yanked stable candidate satisfying the minimum version."""
     minimum_key = version_key(minimum)
@@ -131,7 +190,7 @@ def latest_compatible_stable(
             key = version_key(value)
         except ValueError:
             continue
-        if key >= minimum_key:
+        if key >= minimum_key and _within_maximum_series(key, maximum_series):
             accepted.append((key, value.lstrip("v")))
     if not accepted:
         raise ValueError("no compatible stable dependency version is available")
@@ -145,15 +204,14 @@ def dependency_action(
     healthy: bool,
     latest_version_verified: bool,
 ) -> str:
-    """Classify one dependency without guessing when the stable channel is unavailable."""
+    """Classify one dependency; a healthy install survives an unreachable stable channel."""
     if installed_version is None:
         return "installed" if latest_version_verified and resolved_version else "blocked"
     if not healthy:
         return "repaired" if latest_version_verified and resolved_version else "blocked"
-    if not latest_version_verified:
-        return "blocked"
-    if resolved_version is None:
-        return "blocked"
+    if not latest_version_verified or resolved_version is None:
+        # Registry unreachable: keep the healthy install; doctor warns (unverified).
+        return "reused"
     return (
         "reused"
         if installed_version.lstrip("v") == resolved_version.lstrip("v")
@@ -244,8 +302,16 @@ def account_tool_plan(
         options = [item for dependency in extra for item in ("--with", dependency)]
         if action in {"installed", "upgraded", "repaired"}:
             force = ["--force"] if action in {"upgraded", "repaired"} else []
+            python_pin: list[str] = []
+            if name in {"mempalace", "graphify"}:
+                python_version = (resolved_versions or {}).get("python")
+                if not isinstance(python_version, str) or not python_version.strip():
+                    raise ValueError("account tool install requires the resolved Python version")
+                # Pin the interpreter. An unpinned install follows the newest CPython ABI,
+                # and chromadb/onnxruntime have no wheel for that ABI (#6780).
+                python_pin = ["--python", python_version]
             return [[
-                uv, "tool", "install", *force, *options,
+                uv, "tool", "install", *force, *python_pin, *options,
                 resolved_package(name, package, "=="),
             ]]
         return []
@@ -279,11 +345,10 @@ def resolve_account_launcher(
     """Resolve one CreateProcess-safe launcher (Windows PATHEXT / pwsh→powershell) (#5629)."""
     if not command:
         raise ValueError("dependency launcher is empty")
-    path = Path(command)
     # Absolute or explicit path forms: pass through so mocked/account receipt
     # paths are not re-resolved (and missing fixtures stay FileNotFound at exec).
     if (
-        path.is_absolute()
+        os.path.isabs(command)
         or "/" in command
         or "\\" in command
         or (os.name == "nt" and len(command) >= 3 and command[1:3] in {":\\", ":/"})
@@ -352,16 +417,172 @@ def prerequisite_command_plan(
     return plan
 
 
+
+UV_PYTHON_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+
+def _uv_python_listing(
+    uv_command: str, project: Path, series: str | None, *, runner=subprocess.run
+) -> list[object] | None:
+    """Ask uv which CPython builds it can download; ``None`` when uv cannot be asked."""
+    command = [uv_command, "python", "list", "--only-downloads", "--all-versions", "--output-format", "json"]
+    try:
+        result = _run_account_command(
+            command + ([series] if series else []), project, runner=runner, timeout=120,
+        )
+        entries = json.loads(result.stdout or "[]")
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        return None
+    return entries if isinstance(entries, list) else None
+
+
+def _eligible_uv_python(entries: list[object], requested: str, minimum: str) -> str | None:
+    """Newest stable default CPython in ``entries`` within the minimum and the request."""
+    candidates = {
+        str(entry.get("version"))
+        for entry in entries
+        if isinstance(entry, dict)
+        and entry.get("implementation") == "cpython"
+        and entry.get("variant", "default") == "default"
+        and UV_PYTHON_VERSION.fullmatch(str(entry.get("version")))
+    }
+    eligible = [
+        version for version in candidates
+        if version_key(version) <= version_key(requested) and version_at_least(version, minimum)
+    ]
+    return max(eligible, key=version_key) if eligible else None
+
+
+def uv_downloadable_python(
+    uv_command: str, requested: str, minimum: str, project: Path, *, runner=subprocess.run
+) -> str | None:
+    """#6325: newest CPython uv can download, never newer than the stable channel.
+
+    python.org can publish a patch (for example 3.14.8) days before uv's
+    download metadata knows it, and ``uv python install 3.14.8`` then fails.
+    A whole new minor can lag the same way: uv may list only a release
+    candidate for it, so the search widens to the older minors that still
+    satisfy the minimum. Returns ``None`` when uv cannot be asked, so callers
+    keep the request.
+    """
+    match = UV_PYTHON_VERSION.fullmatch(requested or "")
+    if match is None:
+        return None
+    series = f"{match.group(1)}.{match.group(2)}"
+    entries = _uv_python_listing(uv_command, project, series, runner=runner)
+    if entries is None:
+        return None
+    found = _eligible_uv_python(entries, requested, minimum)
+    if found is not None:
+        return found
+    wider = _uv_python_listing(uv_command, project, None, runner=runner)
+    return _eligible_uv_python(wider, requested, minimum) if wider else None
+
+
+def clamp_python_to_uv_downloads(
+    record: dict[str, object], uv_command: str, project: Path, *, minimum: str,
+    runner=subprocess.run,
+) -> str:
+    """#6325: lower a python.org-resolved request to what uv can download now."""
+    action = str(record.get("action"))
+    requested = str(record.get("resolvedVersion") or "")
+    if action not in {"installed", "upgraded", "repaired"}:
+        return action
+    available = uv_downloadable_python(uv_command, requested, minimum, project, runner=runner)
+    if available is None or version_key(available) >= version_key(requested):
+        return action
+    record["upstreamResolvedVersion"] = requested
+    record["resolvedVersion"] = available
+    record["downloadLag"] = f"python.org lists {requested}; uv downloads {available}"
+    installed = record.get("installedVersion")
+    if (
+        record.get("healthy") is True
+        and isinstance(installed, str)
+        and installed.lstrip("v") == available
+    ):
+        record["action"] = "reused"
+    return str(record["action"])
+
+
+
+def plan_downloadable_python(
+    record: dict[str, object], specification: dict[str, object], uv_command: str,
+    project: Path, *, runner=subprocess.run,
+) -> tuple[str, list[list[str]]]:
+    """#6325: return the python action and its uv command after the download clamp."""
+    contract = specification["dependencies"]["python"]  # type: ignore[index]
+    action = clamp_python_to_uv_downloads(
+        record, uv_command, project,
+        minimum=str(contract.get("minimumVersion") or "0"),  # type: ignore[union-attr]
+        runner=runner,
+    )
+    if action == "reused":
+        return action, []
+    version = str(record.get("resolvedVersion") or "")
+    return action, [["uv", "python", "install", version, "--no-progress"]]
+
+
+_GH_CLI_TOKEN: list[str | None] = []
+
+
+def _github_api_token() -> str | None:
+    """#6235: same order as bootstrap: GITHUB_TOKEN, GH_TOKEN, bounded `gh auth token`."""
+    for key in ("GITHUB_TOKEN", "GH_TOKEN"):
+        value = os.environ.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if os.environ.get("CHAOS_ENGINE_GH_AUTH", "").strip().casefold() in {"0", "false", "no", "off"}:
+        return None
+    if not _GH_CLI_TOKEN:
+        token = None
+        executable = shutil.which("gh")
+        if executable:
+            try:
+                completed = subprocess.run(  # nosec B603 - resolved gh binary, fixed argv.
+                    [executable, "auth", "token", "--hostname", "github.com"],
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5, check=False,
+                )
+                value = (completed.stdout or "").strip()
+                if completed.returncode == 0 and value and not any(c.isspace() for c in value):
+                    token = value
+            except (OSError, subprocess.SubprocessError, ValueError):
+                token = None
+        _GH_CLI_TOKEN.append(token)
+    return _GH_CLI_TOKEN[0]
+
+
+NETWORK_ATTEMPTS = 3
+NETWORK_BACKOFF_SECONDS = 2.0
+
+
+def _open_with_retry(opener, target, *, timeout: float):
+    """Open one URL, retrying transient network failures so a single blip cannot fail setup."""
+    last_error: OSError | None = None
+    for attempt in range(NETWORK_ATTEMPTS):
+        if attempt:
+            time.sleep(NETWORK_BACKOFF_SECONDS * attempt)
+        try:
+            return opener(target, timeout=timeout)
+        except urllib.error.HTTPError as error:
+            if error.code < 500 and error.code != 429:
+                raise
+            last_error = error
+        except OSError as error:
+            last_error = error
+    assert last_error is not None
+    raise last_error
+
+
 def _read_json_url(url: str, *, opener=urllib.request.urlopen) -> object:
     headers = {"Accept": "application/json", "User-Agent": "ChaosEngine-installer"}
-    github_token = os.environ.get("GITHUB_TOKEN")
-    if github_token and url.startswith("https://api.github.com/"):
+    github_token = _github_api_token() if url.startswith("https://api.github.com/") else None
+    if github_token:
         headers["Authorization"] = f"Bearer {github_token}"
     request = urllib.request.Request(
         url,
         headers=headers,
     )
-    with opener(request, timeout=30) as response:
+    with _open_with_retry(opener, request, timeout=30) as response:
         payload = response.read(MAX_CONTROL_BYTES + 1)
     if len(payload) > MAX_CONTROL_BYTES:
         raise ValueError("stable-channel response exceeds the size limit")
@@ -418,7 +639,7 @@ def resolve_stable_version(
     elif name == "java":
         releases = payload.get("versions") if isinstance(payload, dict) else None
         if not isinstance(releases, list):
-            raise ValueError("Java stable-channel response is invalid")
+            raise ValueError("JDK stable-channel response is invalid")
         candidates = [
             {"version": match.group(0), "yanked": False}
             for item in releases
@@ -431,7 +652,11 @@ def resolve_stable_version(
         prerelease = payload.get("prerelease") if isinstance(payload, dict) else True
         draft = payload.get("draft") if isinstance(payload, dict) else True
         candidates = [{"version": tag, "yanked": bool(prerelease or draft)}]
-    return latest_compatible_stable(candidates, minimum=minimum)
+    maximum = contract.get("maximumSeries")
+    maximum_series = maximum if isinstance(maximum, str) and maximum else None
+    return latest_compatible_stable(
+        candidates, minimum=minimum, maximum_series=maximum_series
+    )
 
 
 def _version_from_output(output: str) -> str | None:
@@ -453,6 +678,8 @@ def probe_account_dependency(
     if not isinstance(probe, list) or not all(isinstance(item, str) for item in probe):
         raise ValueError(f"dependency probe contract is invalid: {name}")
     command = [executable_path, *probe[1:]]
+    if os.name == "nt" and executable_path.lower().endswith((".cmd", ".bat")):
+        command = ["cmd", "/c", *command]
     environment = {
         key: value
         for key, value in os.environ.items()
@@ -549,6 +776,16 @@ def discover_account_commands(
             components[name] = {"status": "not-applicable", "siblings": sibling_paths}
             continue
         if len(sibling_paths) != len(names):
+            if name in OPTIONAL_ACCOUNT_DEPENDENCIES:
+                components[name] = {
+                    "status": "absent",
+                    "healthy": False,
+                    "version": None,
+                    "taskImpact": "optional",
+                    "detail": "optional-absent",
+                    "siblings": sibling_paths,
+                }
+                continue
             components[name] = {
                 "status": "missing",
                 "healthy": False,
@@ -574,6 +811,28 @@ def discover_account_commands(
     return components, commands
 
 
+def _resolve_stable_version_or_error(
+    name: str, contract: dict[str, object], *, opener=urllib.request.urlopen
+) -> tuple[str | None, str | None]:
+    """Resolve the stable version, or return the lookup error type after network retries."""
+    try:
+        return resolve_stable_version(name, contract, opener=opener), None
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        return None, type(error).__name__
+
+
+def describe_blocked_dependencies(actions: dict[str, dict[str, object]]) -> str:
+    """Name each blocked required dependency with its cause."""
+    parts = []
+    for name in sorted(actions):
+        record = actions[name]
+        if record.get("action") != "blocked" or record.get("taskImpact") == "optional":
+            continue
+        error = record.get("lookupError")
+        parts.append(f"{name} (stable-channel lookup failed: {error})" if error else name)
+    return ", ".join(parts)
+
+
 def resolve_account_actions(
     specification: dict[str, object],
     local: dict[str, dict[str, object]],
@@ -583,12 +842,29 @@ def resolve_account_actions(
     """Combine local health with independently attempted stable-channel resolution."""
     validate_runtime_specification(specification)
     contracts = specification["dependencies"]
-    pinned_mempalace_version = PINNED_MEMPALACE_PACKAGE.removeprefix("mempalace==")
+    pinned_mempalace_version = _pinned_package_identity(
+        specification["tools"]["mempalace"]["package"]
+    )[1]
     resolved: dict[str, dict[str, object]] = {}
     for name, contract in contracts.items():  # type: ignore[union-attr]
         if name == "maven-tools-mcp":
             continue
         record = local.get(name, {})
+        if name in OPTIONAL_ACCOUNT_DEPENDENCIES:
+            present = record.get("healthy") is True and record.get("status") != "absent"
+            resolved[name] = {
+                **record,
+                "provider": contract.get("provider"),
+                "source": contract.get("stableChannel"),
+                "installedVersion": record.get("version") if present else None,
+                "resolvedVersion": record.get("version") if present else None,
+                "latestVersionVerified": bool(present),
+                "action": "reused" if present else "skipped",
+                "status": "healthy" if present else "absent",
+                "taskImpact": "optional",
+                "probe": record.get("detail", "optional-absent"),
+            }
+            continue
         latest = None
         verified = False
         lookup_error = None
@@ -596,11 +872,10 @@ def resolve_account_actions(
             latest = pinned_mempalace_version
             verified = True
         else:
-            try:
-                latest = resolve_stable_version(name, contract, opener=opener)
-                verified = True
-            except (OSError, ValueError, json.JSONDecodeError) as error:
-                lookup_error = type(error).__name__
+            latest, lookup_error = _resolve_stable_version_or_error(
+                name, contract, opener=opener
+            )
+            verified = lookup_error is None
         installed = record.get("version") if isinstance(record.get("version"), str) else None
         healthy = record.get("healthy") is True
         action = dependency_action(
@@ -647,6 +922,58 @@ def read_account_receipt(project: Path) -> dict[str, object]:
     return receipt
 
 
+def optional_account_dependency_enabled(project: Path, name: str) -> bool:
+    """True only when the operator opted in. Missing bundle options stay off."""
+    if name not in OPTIONAL_ACCOUNT_DEPENDENCIES:
+        return True
+    path = project / ".chaos-engine-state" / "bundle-options.json"
+    if not path.is_file():
+        return False
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    enabled = document.get("enabled") if isinstance(document, dict) else None
+    return isinstance(enabled, dict) and enabled.get(name) is True
+
+
+def select_account_receipt_components(
+    project: Path,
+    actions: dict[str, dict[str, object]],
+    local: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    """Receipt rows for required tools, plus an opt-in tool only when it is healthy."""
+    selected: dict[str, dict[str, object]] = {}
+    for name, record in actions.items():
+        observed = local.get(name, {})
+        if name in OPTIONAL_ACCOUNT_DEPENDENCIES:
+            installed_healthy = (
+                observed.get("healthy") is True and observed.get("status") == "healthy"
+            )
+            if not optional_account_dependency_enabled(project, name) or not installed_healthy:
+                continue
+        selected[name] = {
+            **record,
+            **observed,
+            "installedVersion": observed.get("version"),
+            "scope": "user",
+            "action": record["action"],
+            "probe": observed.get("detail", "passed"),
+        }
+    return selected
+
+
+def account_receipt_commands(
+    components: dict[str, dict[str, object]], commands: dict[str, str]
+) -> dict[str, str]:
+    """Drop an opt-in executable when its component was omitted from the receipt."""
+    published = dict(commands)
+    for name in OPTIONAL_ACCOUNT_DEPENDENCIES:
+        if name not in components:
+            published.pop(name, None)
+    return published
+
+
 def write_account_receipt(
     project: Path,
     components: dict[str, dict[str, object]],
@@ -674,32 +1001,141 @@ def write_account_receipt(
     return receipt
 
 
+def mempalace_project_palace(project: Path) -> Path:
+    """Return the shared sqlite_exact palace, or the project palace outside Git."""
+    import runpy
+
+    path = Path(__file__).resolve().with_name("stores.py")
+    if path.is_file():
+        namespace = runpy.run_path(str(path), run_name="_chaos_engine_stores_palace")
+        return namespace["resolve_palace"](project)
+    return project.resolve() / ".chaos-engine-state/mempalace"
+
+
+def mempalace_project_cli(executable: str, action: str, project: Path) -> list[str]:
+    """Pin init/mine to sqlite_exact at the exact project palace (#5854).
+
+    ``--palace`` / global ``--backend`` must precede the subcommand (MemPalace
+    argparse). Do not pass ``--auto-mine``: empty or Downloads-like folders must
+    not be mined as a corpus. Init without ``--auto-mine`` still prompts to mine;
+    account runners use ``stdin=DEVNULL`` so that prompt EOFs and declines.
+    ``ensure_mempalace_exact_target`` heals the database when the CLI skips it.
+    """
+    if action not in {"init", "mine"}:
+        raise ValueError(f"unsupported MemPalace project action: {action}")
+    palace = str(mempalace_project_palace(project))
+    command = [
+        executable,
+        "--palace",
+        palace,
+        "--backend",
+        "sqlite_exact",
+        action,
+        ".",
+    ]
+    if action == "init":
+        command.extend(["--yes", "--no-llm"])
+    return command
+
+
+def mempalace_project_setup_action(command: list[str]) -> str | None:
+    """Return init/mine when argv is a project-owned palace setup command."""
+    if len(command) < 3:
+        return None
+    index = 1
+    while index < len(command) and command[index].startswith("-"):
+        flag = command[index]
+        if flag in {"--palace", "--backend"}:
+            index += 2
+            continue
+        index += 1
+    if index + 1 >= len(command):
+        return None
+    action = command[index]
+    if action in {"init", "mine"} and command[index + 1] == ".":
+        return action
+    return None
+
+
 def project_setup_plan(project: Path, commands: dict[str, str]) -> list[list[str]]:
     """Plan current-folder initialization without resetting existing project data."""
     project = project.resolve()
     planned: list[list[str]] = []
     mempalace = commands.get("mempalace")
-    if mempalace and not (project / "tools/repository-map/resolve_mempalace.py").is_file():
+    if mempalace:
         configured = mempalace_project_configuration_exists(project)
-        if configured and not mempalace_project_setup_complete(project):
-            planned.append([mempalace, "mine", "."])
+        index = mempalace_index_status(project) if configured else None
+        resume = index is not None and index["status"] in {"failed", "interrupted"}
+        if configured and (resume or not mempalace_project_setup_complete(project)):
+            if index is None or index["status"] != "running":
+                planned.append(mempalace_project_cli(mempalace, "mine", project))
         elif not configured:
-            planned.append([mempalace, "init", ".", "--yes", "--no-llm", "--auto-mine"])
+            planned.append(mempalace_project_cli(mempalace, "init", project))
     graphify = commands.get("graphify")
     if graphify:
-        if not (project / "graphify-out/graph.json").is_file():
-            planned.append([graphify, "extract", ".", "--code-only"])
+        graph_out = project / "graphify-out"
+        store_path = Path(__file__).resolve().with_name("stores.py")
+        if store_path.is_file():
+            import runpy
+
+            namespace = runpy.run_path(str(store_path), run_name="_chaos_engine_stores_graph")
+            graph_out = namespace["resolve_graph_out"](project)
+        if not (graph_out / "graph.json").is_file():
+            command = [graphify, "extract", ".", "--code-only"]
+            if graph_out.resolve() != (project / "graphify-out").resolve():
+                command.extend(["--out", str(graph_out.parent)])
+            planned.append(command)
     memory = commands.get("memory")
     if memory and not (project / ".memory/config.json").is_file():
         planned.append([memory, "init", "--no-view"])
     return planned
 
 
+def git_head_is_unborn(project: Path) -> bool:
+    """True inside a Git work tree whose HEAD has no commit yet (``git init`` only)."""
+    git = shutil.which("git")
+    if git is None:
+        return False
+    try:
+        inside = subprocess.run(  # nosec B603 - fixed git argv, no shell.
+            [git, "rev-parse", "--git-dir"],
+            cwd=project, capture_output=True, text=True, check=False, timeout=30,
+        )
+        if inside.returncode != 0:
+            return False
+        head = subprocess.run(  # nosec B603 - fixed git argv, no shell.
+            [git, "rev-parse", "--verify", "--quiet", "HEAD"],
+            cwd=project, capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return head.returncode != 0
+
+
+def memory_init_environment(project: Path) -> dict[str, str]:
+    """Let ``memory init`` succeed in a repository with no commits (#6496).
+
+    Memory reads ``git rev-parse HEAD`` during init and fails with
+    MemoryGitOperationFailed on an unborn HEAD. Hiding Git for that one call
+    makes Memory initialize exactly as in a plain folder; the files it writes
+    match a Git-mode init, and the runtime ignore rules come from the
+    ChaosEngine-owned .gitignore block.
+    """
+    if not git_head_is_unborn(project):
+        return {}
+    return {"GIT_DIR": os.devnull}
+
+
 def mempalace_project_setup_complete(project: Path) -> bool:
-    """Return whether a valid configuration already has exact local state."""
-    project = project.resolve()
-    palace = project / ".chaos-engine-state/mempalace"
-    return (palace / "sqlite_exact.sqlite3").is_file()
+    """Return whether a valid configuration already has mined exact state (#6377)."""
+    import runpy
+
+    palace = mempalace_project_palace(project)
+    path = Path(__file__).resolve().with_name("stores.py")
+    if not path.is_file():
+        return (palace / "sqlite_exact.sqlite3").is_file()
+    namespace = runpy.run_path(str(path), run_name="_chaos_engine_stores_count")
+    return bool(namespace["palace_drawer_count"](palace))
 
 
 def mempalace_project_configuration_exists(project: Path) -> bool:
@@ -718,22 +1154,306 @@ def mempalace_project_setup_environment(
     project: Path, command: list[str]
 ) -> dict[str, str]:
     """Bind non-resolver initialization to its one exact project-owned palace."""
-    if command[1:3] not in (["init", "."], ["mine", "."]):
+    if mempalace_project_setup_action(command) is None:
         return {}
+    palace = str(mempalace_project_palace(project))
     return {
-        "MEMPALACE_PALACE_PATH": str(
-            project.resolve() / ".chaos-engine-state/mempalace"
-        ),
+        "MEMPALACE_PALACE_PATH": palace,
         "MEMPALACE_BACKEND": "sqlite_exact",
+        "MEMPALACE_BACKEND_EXPLICIT": "sqlite_exact",
     }
+
+
+def ensure_mempalace_exact_target(project: Path) -> Path:
+    """Create sqlite_exact when CLI init/mine did not (#5854).
+
+    ``mempalace init`` writes ``mempalace.yaml`` and may add ``.mempalace/origin.json``
+    without creating the sqlite_exact database. User config.json ``backend`` also
+    outranks ``MEMPALACE_BACKEND``, so mine can persist Chroma instead. Heal by
+    creating the empty exact schema next to any allowed sidecar files.
+    """
+    palace = mempalace_project_palace(project)
+    database = palace / "sqlite_exact.sqlite3"
+    if database.is_file() and not is_link_or_reparse(database):
+        return database
+    if palace.exists():
+        if is_link_or_reparse(palace) or not palace.is_dir():
+            raise RuntimeError("MemPalace init did not create the exact target")
+        if not _project_palace_accepts_home_adopt(palace):
+            raise RuntimeError("MemPalace init did not create the exact target")
+    palace.mkdir(parents=True, exist_ok=True)
+    if is_link_or_reparse(palace) or not palace.is_dir():
+        raise RuntimeError("MemPalace init did not create the exact target")
+    if database.exists() or is_link_or_reparse(database):
+        raise RuntimeError("MemPalace init did not create the exact target")
+    connection = sqlite3.connect(database)
+    try:
+        connection.executescript(
+            """
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE collections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                dimension INTEGER,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE documents (
+                collection_id INTEGER NOT NULL,
+                id TEXT NOT NULL,
+                document TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                embedding BLOB NOT NULL,
+                dim INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (collection_id, id),
+                FOREIGN KEY(collection_id) REFERENCES collections(id) ON DELETE CASCADE
+            );
+            CREATE INDEX idx_documents_collection ON documents(collection_id);
+            INSERT INTO collections(name, created_at)
+            VALUES ('mempalace_drawers', CURRENT_TIMESTAMP);
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    if not database.is_file():
+        raise RuntimeError("MemPalace init did not create the exact target")
+    return database
+
+
+def default_mempalace_palace() -> Path:
+    """MemPalace default palace when CLI/env palace binding is ignored."""
+    return Path.home() / ".mempalace" / "palace"
+
+
+def _project_palace_accepts_home_adopt(palace: Path) -> bool:
+    if not palace.exists():
+        return True
+    if is_link_or_reparse(palace) or not palace.is_dir():
+        return False
+    names = {child.name for child in palace.iterdir()}
+    return names <= {".mined", ".mempalace"}
+
+
+def adopt_mempalace_default_palace(project: Path) -> None:
+    """Copy sqlite_exact files from ~/.mempalace/palace when the project target is vacant."""
+    palace = mempalace_project_palace(project)
+    if (palace / "sqlite_exact.sqlite3").is_file():
+        return
+    if not _project_palace_accepts_home_adopt(palace):
+        return
+    source = default_mempalace_palace()
+    exact = source / "sqlite_exact.sqlite3"
+    if is_link_or_reparse(source) or not exact.is_file() or is_link_or_reparse(exact):
+        return
+    palace.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "sqlite_exact.sqlite3",
+        "sqlite_exact.sqlite3-wal",
+        "sqlite_exact.sqlite3-shm",
+    ):
+        candidate = source / name
+        if candidate.is_file() and not is_link_or_reparse(candidate):
+            shutil.copy2(candidate, palace / name)
+
+
+def prepare_mempalace_project_target(project: Path) -> Path:
+    """Adopt or create the exact palace so retrieval works before any mine."""
+    adopt_mempalace_default_palace(project)
+    palace = mempalace_project_palace(project)
+    if not (palace / "sqlite_exact.sqlite3").is_file():
+        ensure_mempalace_exact_target(project)
+    if not (palace / "sqlite_exact.sqlite3").is_file():
+        raise RuntimeError("MemPalace init did not create the exact target")
+    return palace
+
+
+def apply_owned_mempalace_excludes(project: Path) -> bool:
+    """Append owned excludes to an installer-created config; never touch a user's (#6540)."""
+    configuration = project.resolve() / "mempalace.yaml"
+    if is_link_or_reparse(configuration) or not configuration.is_file():
+        return False
+    text = configuration.read_text(encoding="utf-8")
+    if re.search(r"(?m)^exclude_patterns\s*:", text):
+        return False
+    block = "exclude_patterns:\n" + "".join(
+        f"  - '{pattern}'\n" for pattern in MEMPALACE_OWNED_EXCLUDES
+    )
+    separator = "" if not text or text.endswith("\n") else "\n"
+    configuration.write_text(text + separator + block, encoding="utf-8")
+    return True
+
+
+def missing_owned_mempalace_excludes(project: Path) -> list[str]:
+    """Owned patterns a configuration does not list (advisory for user configs)."""
+    configuration = project.resolve() / "mempalace.yaml"
+    try:
+        text = configuration.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    return [
+        pattern for pattern in MEMPALACE_OWNED_EXCLUDES
+        if not re.search(rf"(?m)^\s*-\s*['\"]?{re.escape(pattern)}['\"]?\s*$", text)
+    ]
 
 
 def mark_mempalace_project_setup(project: Path) -> None:
     """Mark only a successful sqlite_exact project setup as mined."""
-    palace = project.resolve() / ".chaos-engine-state/mempalace"
-    if not (palace / "sqlite_exact.sqlite3").is_file():
-        raise RuntimeError("MemPalace init did not create the exact target")
+    palace = prepare_mempalace_project_target(project)
     (palace / ".mined").write_bytes(b"current\n")
+
+
+def mempalace_index_paths(project: Path) -> tuple[Path, Path]:
+    """Return the background index status and log beside (never inside) the palace."""
+    parent = mempalace_project_palace(project).parent
+    return parent / MEMPALACE_INDEX_STATUS_NAME, parent / MEMPALACE_INDEX_LOG_NAME
+
+
+def mempalace_mine_mode(environ=None) -> str:
+    """Return background (default) or the explicit foreground override."""
+    value = (os.environ if environ is None else environ).get(MEMPALACE_MINE_MODE_ENV, "")
+    return "foreground" if value.strip().casefold() == "foreground" else "background"
+
+
+def _process_alive(pid: int) -> bool:
+    """Probe a pid without signalling it (Windows os.kill would terminate it)."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        code = ctypes.wintypes.DWORD(0)
+        try:
+            ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        finally:
+            kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == 259
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _write_index_status(project: Path, document: dict[str, object]) -> None:
+    status_path, _log = mempalace_index_paths(project)
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    scratch = status_path.with_name(f".{status_path.name}.{os.getpid()}.tmp")
+    scratch.write_text(json.dumps(document, sort_keys=True) + "\n", encoding="utf-8")
+    scratch.replace(status_path)
+
+
+def _index_document(state: str, command: list[str], **extra: object) -> dict[str, object]:
+    document: dict[str, object] = {
+        "schemaVersion": 1,
+        "status": state,
+        "command": list(command),
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    document.update(extra)
+    return document
+
+
+def _rerun_hint(command: object) -> str:
+    if isinstance(command, list) and all(isinstance(part, str) for part in command):
+        return (
+            "rerun the ChaosEngine installer (the mine resumes incrementally) or run: "
+            + shlex.join(command)
+        )
+    return "rerun the ChaosEngine installer; the mine resumes incrementally"
+
+
+def mempalace_index_status(project: Path, *, alive=None) -> dict[str, object] | None:
+    """Classify the background initial mine for doctor: running/complete/failed/interrupted."""
+    status_path, log_path = mempalace_index_paths(project)
+    try:
+        document = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    state = document.get("status")
+    command = document.get("command")
+    if state == "complete":
+        return {"status": "complete", "detail": "MemPalace initial index complete"}
+    if state == "running":
+        pid = document.get("pid")
+        probe = _process_alive if alive is None else alive
+        if not isinstance(pid, int) or probe(pid):
+            return {
+                "status": "running",
+                "detail": (
+                    "MemPalace initial index running in background; "
+                    "retrieval is partial until it finishes"
+                ),
+                "fixNext": f"no action needed; runner log: {log_path}",
+            }
+        return {
+            "status": "interrupted",
+            "detail": "MemPalace initial index stopped before finishing",
+            "fixNext": _rerun_hint(command),
+        }
+    detail = document.get("detail")
+    return {
+        "status": "failed",
+        "detail": "MemPalace initial index failed"
+        + (f": {detail}" if isinstance(detail, str) and detail else ""),
+        "fixNext": _rerun_hint(command),
+    }
+
+
+def start_background_mempalace_mine(
+    command: list[str], project: Path, *, extra_environment: dict[str, str] | None = None,
+    spawner=subprocess.Popen,
+) -> None:
+    """Prepare the exact palace, then detach the incremental mine from install."""
+    prepare_mempalace_project_target(project)
+    _status_path, log_path = mempalace_index_paths(project)
+    _write_index_status(project, _index_document("running", command, log=str(log_path)))
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment.update(extra_environment or {})
+    argv = [sys.executable, str(Path(__file__).resolve()), MEMPALACE_INDEX_SUBCOMMAND,
+            str(project.resolve()), "--", *command]
+    options: dict[str, object] = {"cwd": str(project), "env": environment,
+                                  "stdin": subprocess.DEVNULL, "stderr": subprocess.STDOUT,
+                                  "close_fds": True}
+    if os.name == "nt":
+        options["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000
+    else:
+        options["start_new_session"] = True
+    with open(log_path, "ab") as log:
+        spawner(argv, stdout=log, **options)  # nosec B603 - fixed list-form argv.
+
+
+def run_mempalace_index(project: Path, command: list[str], *, runner=subprocess.run) -> int:
+    """Detached runner body: mine incrementally, then record complete or failed."""
+    _status_path, log_path = mempalace_index_paths(project)
+    _write_index_status(
+        project, _index_document("running", command, pid=os.getpid(), log=str(log_path))
+    )
+    try:
+        _run_transient_mempalace_mine(command, project, runner=runner)
+        mark_mempalace_project_setup(project)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        _write_index_status(project, _index_document("failed", command, detail=str(error)[:400]))
+        return 1
+    _write_index_status(project, _index_document("complete", command))
+    return 0
+
+
+def mempalace_index_entry(argv: list[str]) -> int:
+    """``dependencies.py mempalace-index <project> -- <mine argv>``."""
+    if len(argv) < 4 or argv[0] != MEMPALACE_INDEX_SUBCOMMAND or argv[2] != "--":
+        print("usage: dependencies.py mempalace-index <project> -- <command>", file=sys.stderr)
+        return 2
+    return run_mempalace_index(Path(argv[1]), argv[3:])
 
 
 def detected_package_provider(system: str | None = None, *, which=shutil.which) -> str:
@@ -773,6 +1493,7 @@ def _run_account_command(
     extra_environment: dict[str, str] | None = None,
     timeout: float = ACCOUNT_COMMAND_TIMEOUT_SECONDS,
     which=shutil.which,
+    stdin=None,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     search_path = _account_search_path()
@@ -789,16 +1510,18 @@ def _run_account_command(
         )
     except FileNotFoundError as error:
         raise RuntimeError(missing_executable_diagnostic(command[0], error)) from error
+    run_kwargs: dict[str, object] = {
+        "cwd": project,
+        "env": environment,
+        "capture_output": True,
+        "text": True,
+        "check": False,
+        "timeout": timeout,
+    }
+    if stdin is not None:
+        run_kwargs["stdin"] = stdin
     try:
-        result = runner(
-            resolved,
-            cwd=project,
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
+        result = runner(resolved, **run_kwargs)
     except FileNotFoundError as error:
         raise RuntimeError(missing_executable_diagnostic(resolved[0], error)) from error
     except OSError as error:
@@ -826,12 +1549,32 @@ class _AccountCommandError(RuntimeError):
         self.full_output = f"{stderr}\n{stdout}"
 
 
+
+def run_until_stalled(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """Run without a wall-clock cap; stores.py stops it only when it stalls (#6377)."""
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location(
+        "chaos_engine_stores_watchdog", Path(__file__).with_name("stores.py")
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("stores.py watchdog is unavailable")
+    module = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.run_until_stalled(args, **kwargs)
+
+
 def _run_transient_mempalace_mine(
     command: list[str], project: Path, *, runner=subprocess.run,
     extra_environment: dict[str, str] | None = None,
+    budget: float = float("inf"),
 ) -> subprocess.CompletedProcess[str]:
-    """Retry a transient MemPalace TLS EOF within one setup timeout budget."""
-    deadline = time.monotonic() + ACCOUNT_COMMAND_TIMEOUT_SECONDS
+    """Mine with no wall-clock cap (stall watchdog, #6377); retry a transient TLS EOF."""
+    if runner is subprocess.run:
+        runner = run_until_stalled
+    elif getattr(runner, "inner", None) is subprocess.run and callable(getattr(runner, "rewrap", None)):
+        runner = runner.rewrap(run_until_stalled)
+    deadline = time.monotonic() + budget
     for attempt in range(3):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -842,7 +1585,8 @@ def _run_transient_mempalace_mine(
                 project,
                 runner=runner,
                 extra_environment=extra_environment,
-                timeout=remaining,
+                # subprocess cannot wait on float("inf"); None means no wall-clock cap.
+                timeout=remaining if math.isfinite(remaining) else None,
             )
         except _AccountCommandError as error:
             if attempt == 2 or TRANSIENT_MEMPALACE_TLS_EOF not in error.full_output.upper():
@@ -852,6 +1596,106 @@ def _run_transient_mempalace_mine(
                 raise
             time.sleep(delay)
     raise AssertionError("bounded MemPalace retry did not return or raise")
+
+
+
+GRAPHIFY_EMPTY_OUTPUT_FINGERPRINT = "graphify-empty-output-after-version"
+GRAPHIFY_ABSORBED_SUBCOMMANDS = frozenset({"extract", "install"})
+
+
+def is_graphify_empty_output(command: list[str], error: BaseException) -> bool:
+    """#6166 classifier: graphify(.exe) extract/install exited non-zero with empty streams."""
+    if not command:
+        return False
+    name = Path(command[0]).name.casefold()
+    return (
+        name in {"graphify", "graphify.exe"}
+        and len(command) >= 2
+        and command[1] in GRAPHIFY_ABSORBED_SUBCOMMANDS
+        and "no process output" in str(error)
+    )
+
+
+def record_known_flake(fingerprint: str, *, environ=None) -> str:
+    """Emit one fingerprint line (stderr + GitHub job summary) so babysitters skip full logs."""
+    environ = os.environ if environ is None else environ
+    line = f"chaos-engine: known flake absorbed: {fingerprint} (#6166)"
+    print(line, file=sys.stderr)
+    summary = environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        try:
+            with open(summary, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except OSError:
+            return line
+    return line
+
+
+def _run_project_setup_command(
+    command: list[str],
+    project: Path,
+    *,
+    runner=subprocess.run,
+    extra_environment: dict[str, str] | None = None,
+    stdin=None,
+) -> subprocess.CompletedProcess[str]:
+    """Run one project-setup command.
+
+    Windows reupgrade can launch graphify.exe for ``extract`` or
+    ``install --platform agents`` and get a non-zero exit with empty streams
+    even though ``--version`` still works (#6127, #6166). Retry once (after
+    clearing a partial graphify-out for ``extract``, including a shared
+    ``--out`` target). If the launcher is still healthy, keep the upgrade
+    moving and emit the ``graphify-empty-output-after-version`` fingerprint;
+    graphify output is derived data. A non-zero exit that prints a diagnostic
+    stays red.
+    """
+    try:
+        return _run_account_command(
+            command,
+            project,
+            runner=runner,
+            extra_environment=extra_environment,
+            stdin=stdin,
+        )
+    except _AccountCommandError as error:
+        if not is_graphify_empty_output(command, error):
+            raise
+        partial = project / "graphify-out"
+        if "--out" in command:
+            try:
+                out_parent = Path(command[command.index("--out") + 1])
+            except (ValueError, IndexError):
+                out_parent = None
+            if out_parent is not None:
+                partial = out_parent / "graphify-out"
+        if (
+            command[1] == "extract"
+            and partial.exists()
+            and not (partial / "graph.json").is_file()
+        ):
+            shutil.rmtree(partial, ignore_errors=True)
+        try:
+            return _run_account_command(
+                command,
+                project,
+                runner=runner,
+                extra_environment=extra_environment,
+                stdin=stdin,
+            )
+        except _AccountCommandError as retry_error:
+            if "no process output" not in str(retry_error):
+                raise
+            version = _run_account_command(
+                [command[0], "--version"],
+                project,
+                runner=runner,
+                extra_environment=extra_environment,
+            )
+            if version.returncode != 0:
+                raise retry_error
+            record_known_flake(GRAPHIFY_EMPTY_OUTPUT_FINGERPRINT)
+            return version
 
 
 def install_account_dependencies(  # noqa: MC0001 - preflight then ordered account mutation.
@@ -865,6 +1709,8 @@ def install_account_dependencies(  # noqa: MC0001 - preflight then ordered accou
     provider: str | None = None,
     allow_root: bool = False,
     now: datetime | None = None,
+    mine_spawner=None,
+    background_mine_allowed: bool = True,
 ) -> dict[str, object]:
     """Install/upgrade required tools for the invoking account, then initialize cwd."""
     project = project.resolve()
@@ -888,11 +1734,9 @@ def install_account_dependencies(  # noqa: MC0001 - preflight then ordered accou
     actions = resolve_account_actions(
         specification, local, opener=opener
     )
-    blocked = sorted(
-        name for name, record in actions.items() if record.get("action") == "blocked"
-    )
+    blocked = describe_blocked_dependencies(actions)
     if blocked:
-        raise RuntimeError("dependency setup blocked: " + ", ".join(blocked))
+        raise RuntimeError("dependency setup blocked: " + blocked)
 
     selected_system = system or (
         "windows" if os.name == "nt" else "macos" if sys.platform == "darwin" else "linux"
@@ -914,6 +1758,13 @@ def install_account_dependencies(  # noqa: MC0001 - preflight then ordered accou
             which=which,
         )
         for name in ("uv", "python", "node", "java"):
+            if name == "python" and prerequisite_actions["python"] != "reused":
+                prerequisite_actions["python"], prerequisite_commands["python"] = (
+                    plan_downloadable_python(
+                        actions["python"], specification, commands.get("uv", "uv"),
+                        project, runner=runner,
+                    )
+                )
             for command in prerequisite_commands[name]:
                 if command[0] == "uv" and commands.get("uv"):
                     command = [commands["uv"], *command[1:]]
@@ -1029,7 +1880,7 @@ def install_account_dependencies(  # noqa: MC0001 - preflight then ordered accou
         resolved_versions={
             name: actions[name].get("resolvedVersion")
             if isinstance(actions[name].get("resolvedVersion"), str) else None
-            for name in tool_actions
+            for name in (*tool_actions, "python")
         },
     ).items():
         for command in planned:
@@ -1045,32 +1896,60 @@ def install_account_dependencies(  # noqa: MC0001 - preflight then ordered accou
     ]
     if unhealthy:
         raise RuntimeError("dependency verification failed: " + ", ".join(unhealthy))
+    # An injected runner without mine_spawner keeps the mine synchronous.
+    # install.py wraps subprocess.run for tracing (``.inner``); unwrap before deciding.
+    # Upgrades snapshot MemPalace state for rollback, so the mine must finish first.
+    background_mine = background_mine_allowed and mempalace_mine_mode() == "background" and (
+        mine_spawner is not None
+        or runner is subprocess.run
+        or getattr(runner, "inner", None) is subprocess.run
+    )
+    user_configuration = mempalace_project_configuration_exists(project)
     for command in project_setup_plan(project, commands):
         environment = mempalace_project_setup_environment(project, command)
-        if command == [commands.get("mempalace"), "mine", "."]:
+        if command[0] == commands.get("memory") and command[1:2] == ["init"]:
+            environment.update(memory_init_environment(project))
+        action = mempalace_project_setup_action(command)
+        # MemPalace init prompts to mine unless --auto-mine; decline via EOF.
+        stdin = subprocess.DEVNULL if action == "init" else None
+        if action == "mine" and user_configuration:
+            missing = missing_owned_mempalace_excludes(project)
+            if missing:
+                print(
+                    "chaos-engine: mempalace.yaml is yours, so it is left as is; add these "
+                    "exclude_patterns to skip mining installed harness copies: "
+                    + ", ".join(missing),
+                    file=sys.stderr,
+                )
+        if action == "mine" and background_mine:
+            start_background_mempalace_mine(
+                command, project, extra_environment=environment,
+                spawner=mine_spawner or subprocess.Popen,
+            )
+            continue
+        if action == "mine":
             _run_transient_mempalace_mine(
                 command, project, runner=runner, extra_environment=environment
             )
         else:
-            _run_account_command(
-                command, project, runner=runner, extra_environment=environment
+            _run_project_setup_command(
+                command,
+                project,
+                runner=runner,
+                extra_environment=environment,
+                stdin=stdin,
             )
-        if command[1:3] in (["init", "."], ["mine", "."]):
+        if action == "init" and not user_configuration:
+            apply_owned_mempalace_excludes(project)
+        if action in {"init", "mine"}:
             mark_mempalace_project_setup(project)
 
-    final_components: dict[str, dict[str, object]] = {}
-    for name, record in actions.items():
-        observed = local.get(name, {})
-        final_components[name] = {
-            **record,
-            **observed,
-            "installedVersion": observed.get("version"),
-            "scope": "user",
-            "action": record["action"],
-            "probe": observed.get("detail", "passed"),
-        }
+    final_components = select_account_receipt_components(project, actions, local)
     return write_account_receipt(
-        project, final_components, commands, now=now
+        project,
+        final_components,
+        account_receipt_commands(final_components, commands),
+        now=now,
     )
 
 
@@ -1101,6 +1980,47 @@ def select_runtime_artifact(
     return dict(artifact)
 
 
+def _pinned_package_identity(package: object) -> tuple[str, str] | None:
+    """Return (name, version) for a uv ``name==version`` or npm ``name@version`` pin."""
+    if not isinstance(package, str) or not package or any(character.isspace() for character in package):
+        return None
+    if "==" in package:
+        name, version = package.split("==", 1)
+    elif package.startswith("@") and package.count("@") >= 2:
+        name, version = package.rsplit("@", 1)
+    elif "@" in package and not package.startswith("@"):
+        name, version = package.rsplit("@", 1)
+    else:
+        return None
+    if not name or not version:
+        return None
+    return name, version
+
+
+def _schema3_tools_match(tools: dict[str, object]) -> bool:
+    """Same tool set, commands, and extras. Package versions may move; names may not."""
+    if set(tools) != set(SCHEMA3_TOOLS):
+        return False
+    for name, expected in SCHEMA3_TOOLS.items():
+        actual = tools.get(name)
+        if not isinstance(actual, dict) or set(actual) != set(expected):
+            return False
+        for key, value in expected.items():
+            if key == "package":
+                expected_identity = _pinned_package_identity(value)
+                actual_identity = _pinned_package_identity(actual.get("package"))
+                if (
+                    expected_identity is None
+                    or actual_identity is None
+                    or expected_identity[0] != actual_identity[0]
+                ):
+                    return False
+                continue
+            if actual.get(key) != value:
+                return False
+    return True
+
+
 def validate_runtime_specification(specification: dict[str, object]) -> None:
     if specification.get("schemaVersion") not in {2, 3}:
         raise ValueError("dependency specification schema is unsupported")
@@ -1114,7 +2034,7 @@ def validate_runtime_specification(specification: dict[str, object]) -> None:
             raise ValueError("account dependency specification is invalid")
         if not isinstance(tools, dict):
             raise ValueError("tool dependency specification is invalid")
-        if tools != SCHEMA3_TOOLS:
+        if not _schema3_tools_match(tools):
             raise ValueError("tool dependency specification is not the exact schema v3 contract")
         for name, contract in dependencies.items():
             if (
@@ -1182,9 +2102,64 @@ def node_dispatch(generation: Path, script: Path) -> dict[str, object]:
     }
 
 
+def download_cache_root() -> Path:
+    """Return the user-level, project-independent artifact cache keyed by sha256 (#6416)."""
+    override = os.environ.get("CHAOS_ENGINE_CACHE_DIR")
+    if override:
+        base = Path(override)
+    elif os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local") / "chaos-engine"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library/Caches/chaos-engine"
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "chaos-engine"
+    return base / "downloads"
+
+
+def download_cache_status() -> dict[str, object]:
+    """Report the shared download cache size."""
+    root = download_cache_root()
+    entries = [path for path in root.glob("*") if path.is_file()] if root.is_dir() else []
+    return {"root": str(root), "artifacts": len(entries), "bytes": sum(path.stat().st_size for path in entries)}
+
+
+def purge_download_cache() -> dict[str, object]:
+    """Empty the shared download cache."""
+    root = download_cache_root()
+    removed = 0
+    for path in root.glob("*") if root.is_dir() else ():
+        if path.is_file():
+            path.unlink()
+            removed += 1
+    return {"root": str(root), "removed": removed}
+
+
+def _cached_artifact(expected: str, destination: Path) -> bool:
+    entry = download_cache_root() / expected
+    if not entry.is_file() or hashlib.sha256(entry.read_bytes()).hexdigest() != expected:
+        return False
+    shutil.copyfile(entry, destination)
+    return True
+
+
+def _remember_artifact(expected: str, source: Path) -> None:
+    root = download_cache_root()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        partial = root / f".{expected}.{os.getpid()}.part"
+        shutil.copyfile(source, partial)
+        os.replace(partial, root / expected)
+    except OSError:
+        return  # the cache is an optimisation; a read-only home must not fail the install
+
+
 def _download_artifact(
     url: str, destination: Path, expected: str, opener=urllib.request.urlopen, *, reporter=None
 ) -> None:
+    if _cached_artifact(expected, destination):
+        if reporter is not None:
+            reporter.trace(f"cache hit {expected[:12]} → {destination.name}")
+        return
     if reporter is not None:
         # Keep Provision as the sole running phase; refresh detail/trace only.
         if getattr(reporter, "current_operation", None) != "Provision dependencies":
@@ -1196,7 +2171,7 @@ def _download_artifact(
     digest = hashlib.sha256()
     total = 0
     try:
-        with opener(url, timeout=60) as response, destination.open("xb") as stream:
+        with _open_with_retry(opener, url, timeout=60) as response, destination.open("xb") as stream:
             length = None
             headers = getattr(response, "headers", None)
             if headers is not None:
@@ -1224,6 +2199,7 @@ def _download_artifact(
     except BaseException:
         destination.unlink(missing_ok=True)
         raise
+    _remember_artifact(expected, destination)
 
 
 def _safe_archive_members(archive: Path) -> list[tuple[str, bytes, int]]:
@@ -1292,7 +2268,7 @@ def install_exact_node(
     suffix = ".zip" if system == "windows" else ".tar.gz" if system == "macos" else ".tar.xz"
     filename = f"node-v{version}-{platform_name}-{architecture}{suffix}"
     base = f"https://nodejs.org/download/release/v{version}"
-    with opener(f"{base}/SHASUMS256.txt", timeout=30) as response:
+    with _open_with_retry(opener, f"{base}/SHASUMS256.txt", timeout=30) as response:
         checksums = response.read(MAX_CONTROL_BYTES + 1)
     if len(checksums) > MAX_CONTROL_BYTES:
         raise ValueError("Node checksum manifest exceeds the size limit")
@@ -1378,7 +2354,7 @@ def install_exact_java(
         "https://github.com/adoptium/temurin25-binaries/releases/download/"
         f"{tag}/{filename}"
     )
-    with opener(f"{url}.sha256.txt", timeout=30) as response:
+    with _open_with_retry(opener, f"{url}.sha256.txt", timeout=30) as response:
         checksum = response.read(MAX_CONTROL_BYTES + 1)
     if len(checksum) > MAX_CONTROL_BYTES:
         raise ValueError("Temurin checksum manifest exceeds the size limit")
@@ -1396,7 +2372,7 @@ def install_exact_java(
     if executable.is_file():
         return str(executable.resolve())
     if root.exists() or is_link_or_reparse(root):
-        raise ValueError("existing Java account runtime is invalid")
+        raise ValueError("existing JDK account runtime is invalid")
     parent = root.parent
     parent.mkdir(parents=True, exist_ok=True)
     transaction = parent / f".{feature}-{build}.{secrets.token_hex(8)}.building"
@@ -1413,7 +2389,7 @@ def install_exact_java(
     finally:
         archive.unlink(missing_ok=True)
     if not executable.is_file():
-        raise ValueError("installed Java account runtime is incomplete")
+        raise ValueError("installed JDK account runtime is incomplete")
     return str(executable.resolve())
 
 
@@ -2566,7 +3542,7 @@ def generation_install_plan(
         raise ValueError("Python runtime specification is invalid")
     if not isinstance(graphify, dict) or not isinstance(mempalace, dict):
         raise ValueError("tool dependency specification is invalid")
-    uv_commands = [[uv, "--version"]] if Path(uv).is_file() else [
+    uv_commands = [[uv, "--version"]] if os.path.isfile(uv) else [
         [sys.executable, "-m", "venv", "--copies", str(bootstrap)],
         [executable(bootstrap / scripts, "python"), "-m", "pip", "install", "--no-cache-dir", "--upgrade", str(tools["uv"]["package"])],  # type: ignore[index]
     ]
@@ -3615,6 +4591,16 @@ def finalize_generation_remove(project: Path) -> None:
     removing_path.unlink()
 
 
+def _project_runtime_python_pin(specification: dict[str, object]) -> str:
+    """Series passed to project-runtime ``uv tool install --python`` (#6782)."""
+    dependencies = specification.get("dependencies")
+    contract = dependencies.get("python") if isinstance(dependencies, dict) else None
+    series = contract.get("maximumSeries") if isinstance(contract, dict) else None
+    if not isinstance(series, str) or re.fullmatch(r"3\.\d+", series.strip()) is None:
+        raise ValueError("project runtime install requires the Python maximum series")
+    return series.strip()
+
+
 def install_plan(runtime: Path, specification: dict[str, object]) -> dict[str, list[list[str]]]:
     if specification.get("schemaVersion") == 3:
         validate_runtime_specification(specification)
@@ -3630,16 +4616,19 @@ def install_plan(runtime: Path, specification: dict[str, object]) -> dict[str, l
     mempalace = tools["mempalace"]
     if not isinstance(graphify, dict) or not isinstance(mempalace, dict):
         raise ValueError("tool dependency specification is invalid")
+    # Pin the interpreter series. An unpinned install follows the newest CPython
+    # ABI, and chromadb/onnxruntime have no wheel for that ABI (#6782).
+    python_pin = _project_runtime_python_pin(specification)
     return {
         "uv": [
             [sys.executable, "-m", "venv", "--copies", str(environment)],
             [executable(scripts, "python"), "-m", "pip", "install", "--upgrade", str(tools["uv"]["package"])],  # type: ignore[index]
         ],
         "mempalace": [
-            [uv, "tool", "install", "--managed-python", "--link-mode", "copy", "--with", str(mempalace["with"][0]), str(mempalace["package"])],
+            [uv, "tool", "install", "--managed-python", "--python", python_pin, "--link-mode", "copy", "--with", str(mempalace["with"][0]), str(mempalace["package"])],
         ],
         "graphify": [
-            [uv, "tool", "install", "--managed-python", "--link-mode", "copy", "--with", str(graphify["with"][0]), str(graphify["package"])],  # type: ignore[index]
+            [uv, "tool", "install", "--managed-python", "--python", python_pin, "--link-mode", "copy", "--with", str(graphify["with"][0]), str(graphify["package"])],  # type: ignore[index]
         ],
         "memory": [
             [npm, "install", "--prefix", str(npm_prefix), str(tools["memory"]["package"])],  # type: ignore[index]
@@ -3707,6 +4696,25 @@ def run_command(command: list[str], environment: dict[str, str]) -> subprocess.C
     )
 
 
+def invoke_tool_runner(runner, command: list[str], environment: dict[str, str]):
+    """Call (command, environment) runners; adapt subprocess.run (env= kwargs)."""
+    try:
+        return runner(command, environment)
+    except TypeError as error:
+        if "bufsize" not in str(error):
+            raise
+        merged = os.environ.copy()
+        merged.update(environment)
+        return runner(  # nosec B603
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=merged,
+            timeout=300,
+        )
+
+
 def execute_plan(
     runtime: Path,
     specification: dict[str, object],
@@ -3719,7 +4727,7 @@ def execute_plan(
         completed[tool] = []
         for command in commands:
             try:
-                result = runner(command, environment)
+                result = invoke_tool_runner(runner, command, environment)
             except (OSError, subprocess.SubprocessError) as error:
                 raise RuntimeError(f"{tool} install command failed: {command[0]}") from error
             completed[tool].append((result.stdout or result.stderr).strip())
@@ -3729,7 +4737,7 @@ def execute_plan(
         probes[tool] = []
         for command in commands:
             try:
-                result = runner(command, environment)
+                result = invoke_tool_runner(runner, command, environment)
             except (OSError, subprocess.SubprocessError) as error:
                 raise RuntimeError(f"{tool} entrypoint probe failed: {command[0]}") from error
             probes[tool].append((result.stdout or result.stderr).strip())
@@ -4086,7 +5094,7 @@ def doctor(
     environment = tool_environment(runtime)
     for commands in probe_plan(runtime).values():
         for command in commands:
-            runner(command, environment)
+            invoke_tool_runner(runner, command, environment)
     return {
         "status": "healthy",
         "freshness": freshness(receipt, now),
@@ -4261,4 +5269,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == [MEMPALACE_INDEX_SUBCOMMAND]:
+        raise SystemExit(mempalace_index_entry(sys.argv[1:]))
     raise SystemExit(main())

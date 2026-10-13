@@ -1,8 +1,8 @@
 ---
 name: self-improve
-description: >
-  ChaosEngine Learning Session self-improve skill. Dual-track harness +
-  product lessons via learning.py. Trigger on self-improve or learning session.
+description: >-
+  Use when running ChaosEngine Learning Session self-improve. Harness lessons
+  are GitHub issues only. Product lessons may queue after delivery or on request.
 ---
 
 # self-improve — ChaosEngine learning & adapting
@@ -13,52 +13,109 @@ Lean CE-native skill informed by Task Observer methodology
 
 ## When
 
-- **Primary:** root-owned Learning Session after confirmed delivery.
+- **Primary:** root-owned Learning Session after every final delivery (owner approval, publish done, final PR merged), automatic: lessons diff against the skills, one spec issue, ONE PR (`skip-release-notes`, auto-merge MERGE) babysat to merged.
 - **Secondary:** explicit operator request mid-session.
-- **Not:** every casual turn — keep always-on cost low.
+- **Not:** every casual turn, and never the Learning Session PR's own merge.
+- A lesson already shipped in the delivery pull request is not a new issue. Finalize with nothing durable.
+
+If `assess` refuses `novel_success` under the one-incident rule, still
+finalize: file or update the durable lesson tickets, then complete finalize
+without inventing a second incident for the same success signal.
 
 ## Dual track
 
-1. **Harness** — skills, hooks, MemPalace, Graphify, Headroom, installer/doctor.
+1. **Harness** — skills, hooks, MemPalace, Graphify, installer/doctor. GitHub
+   issue only. Never a local queue and never chat.
 2. **Product** — enhancements for the product under development (queued issues).
 
 Details: [references/observation-taxonomy.md](references/observation-taxonomy.md).
+Product track: [references/product-track.md](references/product-track.md)
+(product issues/evals + ChaosGauge link; CLI/doctor/silent-verify over essay tickets).
 Activation: [references/activation.md](references/activation.md).
 Adopt/reject research: [references/research-adopt-reject.md](references/research-adopt-reject.md).
+Roadmap: [../../references/self-improve-master-plan.md](../../references/self-improve-master-plan.md).
+Research/explore isolation (harness): [../../references/context-firewall.md](../../references/context-firewall.md).
 
 ## How (wraps learning.py)
 
 1. Classify each finding (harness vs product; category allow-list).
 2. Write minimal fields only: `category`, `title`, `lesson`, `proposedChange`,
    `benefit`, `estimatedTokens`.
-3. Queue through `learning.py` so privacy gates + GitHub filing invariants hold.
+3. File a harness lesson as a GitHub issue. Queue only a product lesson
+   through `learning.py --track product`.
 4. Never auto-install skill patches; stage proposals for human/CI review.
 5. "Nothing durable" is a valid outcome.
+6. A lessons pull request lands only when it states the concrete outcome the
+   lesson would have changed: time, a defect, or a failure avoided. The body
+   has a `## Outcome changed` section with that statement. A title starting
+   with `Lesson` or `Lessons` is a lessons PR. The PR body gate rejects one
+   that lacks the section. A candidate that fails the bar is one append-only
+   line in `.chaos-engine-state/lesson-notes.log` (`record_lesson_note`), not
+   a pull request. Zero-trigger rule retirement is
+   [rule-retirement](../../references/rule-retirement.md).
+7. Refine this protocol when traces show skipped Learning Sessions, local
+   writers reviewing their own diffs, or queue-only lessons that never became
+   issues. Self-development has no cap.
 
 Example:
 
+A harness example is a GitHub issue, not a queue file. A product example:
+
 ```bash
-cat > /tmp/learning-candidate.json <<'EOF'
-{
-  "category": "tooling",
-  "title": "Doctor headroom fix-next missing",
-  "lesson": "Operators lacked a single install command after pin landed",
-  "proposedChange": "Surface uv tool install pin in doctor fix-next",
-  "benefit": "Faster Headroom provisioning on adopter hosts",
-  "estimatedTokens": 120
-}
-EOF
 python3 .chaos-engine/learning.py queue \
+  --track product \
   --state .chaos-engine-state/learning \
   --upstream Owner/ExampleRepo \
-  --candidate /tmp/learning-candidate.json
+  --candidate .chaos-engine-state/learning-candidate.json
 ```
+
+## Metrics / verify (zero-LLM)
+
+```bash
+python3 .chaos-engine/learning.py metrics
+python3 .chaos-engine/silent_verify.py session-start-budget
+python3 .chaos-engine/retrieve.py heuristics --top 3
+python3 .chaos-engine/significance.py list
+python3 .chaos-engine/skill_compress_audit.py audit --skill self-improve
+python3 .chaos-engine/meta_optimize.py review
+python3 .chaos-engine/draft_skill_pr.py status
+```
+
+SessionStart stays locator-only; prefer CLI over MCP for the same job.
+Mid-session: mark **significant** friction only via `significance.py` (soft
+fail/deny hooks already write tiny state notes) — never Task Observer.
+Skill bodies: `skill_compress_audit.py` proposes compress diffs only; never auto-apply.
+Periodic: `meta_optimize.py review` (offline cadence — not continuous).
+Draft skill PRs: `draft_skill_pr.py` opt-in only (default OFF; never auto-merge).
+That covers the automated drafter only; the Learning Session's own lessons PR
+runs the normal PR gates and auto-merges.
+See [meta-optimize](../../references/meta-optimize.md) and
+[draft-skill-pr](../../references/draft-skill-pr.md).
 
 ## Local smoke
 
 ```bash
 # From a temp project with ChaosEngine installed, or the source tree:
 python3 -c "from pathlib import Path; assert Path('chaos-engine/skills/self-improve/SKILL.md').is_file()"
-# Queue one harness + one product candidate (privacy-safe fixtures) via learning.py
-# then confirm queue.json grew by two items without secrets/paths.
+# Confirm learning.py queue --track harness exits non-zero and writes no queue.json.
 ```
+
+
+## Token retrospective
+
+Helper: [`session_token_usage.py`](../../session_token_usage.py).
+
+During the session, record coarse usage (no model/provider ids, prompts, or paths):
+
+```bash
+python3 .chaos-engine/session_token_usage.py record \
+  --session-id "$SESSION_ID" --channel local --runtime-class freetoken \
+  --prompt-tokens 1200 --completion-tokens 400
+python3 .chaos-engine/session_token_usage.py record \
+  --session-id "$SESSION_ID" --channel cloud --runtime-class host-session \
+  --prompt-tokens 8000 --completion-tokens 1500
+```
+
+`learning_session.py finalize` attaches a privacy-safe local vs cloud token
+summary with a ballpark USD estimate. Include that retrospective in the
+user-facing Learning Session closing notes.

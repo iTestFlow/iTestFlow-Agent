@@ -1,7 +1,7 @@
 # Delivery workflow phase gates
 
 Maps the ChaosEngine delivery loop to **hooks** (machine-checkable) vs **skills**
-(judgment). Parent epic #5569 / issue #5583.
+(judgment).
 
 | Phase | Guarantee owner | Hook / surface | Skill judgment |
 | --- | --- | --- | --- |
@@ -35,14 +35,35 @@ Hosts that honor exit-2 / native deny (`HostCapability.process_exit2_honored`)
 hard-block; others still emit deny payloads (see [host-parity-matrix](host-parity-matrix.md)
 GAP-EXIT2).
 
+## Delivery is merge
+
+Implemented repository changes are not complete when the files exist only in
+the working tree or on a local branch. By default, finish the delivery:
+
+1. Commit on a `ChaosEngine/…` branch taken from the fetched default branch.
+2. Push that branch.
+3. Open a pull request. This repository allows merge commits only.
+4. Watch required checks and merge the pull request. A green local test is not
+   a merge.
+
+Stop short of that sequence only when the owner explicitly asked for a local
+change, a draft, or a plan, or when a hard external blocker (credentials,
+denied permission, or a required check that cannot be fixed in this session)
+is stated with evidence.
+
 ## Invariants
 
 - Skills still own thoroughness of the eight-step receipt content.
 - Hooks only prove that a preflight marker exists before mutation when enforced.
 - Safety denials and session-identity rules remain higher priority than this gate.
+- Learning Session Stop gate fires after confirmed delivery only when a trigger
+  fired (failure, surprise, owner ask). Harness lessons, findings, and potential
+  enhancements are GitHub issues only. Do not write them to a local queue or
+  into chat. Product lessons may report `product queued N` or `nothing durable`.
+- Harness parity: lasting policy lives in the portable overlay, not one agent.
 
 
-## Triage-scaled research gate (#5623)
+## Triage-scaled research gate
 
 The zero-LLM phase ledger (`.chaos-engine-state/phase-ledger.json`) records
 triage and phase markers without an LLM:

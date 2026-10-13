@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 COMPANION_NAMES = ("caveman", "ponytail")
+ADVISORY_COMPANION_NAMES = ("icm-architect",)
 # Hard budget for SessionStart additionalContext (#5580). Locators only.
 SESSION_START_MAX_BYTES = 4096
 TOKEN_BUDGET_DEFAULT = "balanced"
@@ -63,12 +64,6 @@ def token_budget_guidance(mode: str | None = None) -> str:
     return str(TOKEN_BUDGET_MODES[selected]["guidance"])
 
 
-HEADROOM_PROFILE_BY_BUDGET = {
-    "ultra-lean": "agent-90",
-    "balanced": "balanced",
-    "deep": "coding",
-}
-
 # Triage (blast radius) → default token budget when env unset (#5621).
 # Env CHAOS_ENGINE_TOKEN_BUDGET remains the owner override.
 TRIAGE_TO_TOKEN_BUDGET = {
@@ -93,43 +88,6 @@ def triage_token_budget(triage: str | None) -> str:
     }
     raw = aliases.get(raw, raw)
     return TRIAGE_TO_TOKEN_BUDGET.get(raw, TOKEN_BUDGET_DEFAULT)
-
-
-def zero_llm_session_guidance() -> str:
-    """Prefer doctor/repair catalog before chat discovery (locator-only)."""
-    return (
-        "Zero-LLM first: references/zero-llm-catalog.md "
-        "(doctor / repair --component / --fix-next-only) before chat discovery."
-    )
-
-
-def level1_catalog_guidance() -> str:
-    """Point at the Level-1 progressive-disclosure surface catalog."""
-    return "Level-1 catalog: references/level-1-catalog.md."
-
-
-def heal_route_guidance() -> str:
-    """Router Heal surface always reachable by file path."""
-    return "Heal: references/heal-route.md (install one-liner / repair --component)."
-
-def headroom_session_guidance(mode: str | None = None) -> str:
-    """Compact SessionStart line for Headroom profile (locator-only)."""
-    selected = mode or TOKEN_BUDGET_DEFAULT
-    if selected not in HEADROOM_PROFILE_BY_BUDGET:
-        selected = TOKEN_BUDGET_DEFAULT
-    profile = HEADROOM_PROFILE_BY_BUDGET[selected]
-    return f"Headroom {profile}/{selected}; beacon=off."
-
-
-
-def wake_pack_session_guidance() -> str:
-    """Locator only — never dump wake-pack or Memory/MemPalace prose (#5624)."""
-    return "Wake pack: `.chaos-engine-state/wake-pack.md` (locator only)."
-
-
-def self_improve_session_guidance() -> str:
-    """Cheap SessionStart locator — full protocol runs at Learning Session."""
-    return "Learning: skills/self-improve/SKILL.md."
 
 
 ULTRA_SELECTOR = (
@@ -171,18 +129,6 @@ def _search_roots() -> list[Path]:
     return list(dict.fromkeys(candidates))
 
 
-def _read_companion(name: str) -> str | None:
-    for root in _search_roots():
-        for relative in _skill_relatives(name):
-            path = root / relative
-            try:
-                if path.is_file():
-                    return path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-    return None
-
-
 def _workspace_locator(path: Path) -> str:
     """Return a companion path resolvable from the active project root."""
     anchors = (
@@ -200,31 +146,108 @@ def _workspace_locator(path: Path) -> str:
     return path.as_posix()
 
 
-def session_start_context(token: str | None, activation: str) -> str:
-    """Return compact activation; agents load canonical skills from owned paths."""
+SESSION_START_LEAN_MAX_BYTES = 600
+COMPANION_CARDS = {
+    "caveman": "companions/caveman-ultra.md",
+    "ponytail": "companions/ponytail-ultra.md",
+}
+
+
+def _locate(relatives: tuple[str, ...]) -> str | None:
+    for root in _search_roots():
+        for relative in relatives:
+            path = root / relative
+            if path.is_file():
+                return _workspace_locator(path)
+    return None
+
+
+def stopped_companion_names(text: str) -> frozenset[str]:
+    """Ultra cards stay on until ``stop caveman``, ``stop ponytail``, or ``normal mode``."""
+    folded = str(text or "").casefold()
+    if "normal mode" in folded:
+        return frozenset(COMPANION_CARDS)
+    stopped = set()
+    if "stop caveman" in folded:
+        stopped.add("caveman")
+    if "stop ponytail" in folded:
+        stopped.add("ponytail")
+    return frozenset(stopped)
+
+
+def _companion_opt_out_path(session_id: str) -> Path:
+    safe = "".join(character for character in str(session_id) if character.isalnum() or character in "-_")[:80]
+    return Path.cwd() / ".chaos-engine-state" / "companion-opt-out" / (safe or "session")
+
+
+def record_companion_opt_out(session_id: str, text: str) -> frozenset[str]:
+    """Remember a stop phrase for this session. A later SessionStart reads it."""
+    stopped = stopped_companion_names(text)
+    if not stopped:
+        return read_stopped_companions(session_id)
+    path = _companion_opt_out_path(session_id)
+    current = set(read_stopped_companions(session_id))
+    current.update(stopped)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(" ".join(sorted(current)) + "\n", encoding="utf-8")
+    return frozenset(current)
+
+
+def read_stopped_companions(session_id: str) -> frozenset[str]:
+    path = _companion_opt_out_path(session_id)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return frozenset()
+    return frozenset(part for part in text.split() if part in COMPANION_CARDS)
+
+
+def session_start_context(token: str | None, activation: str, session_id: str = "") -> str:
+    """Return the compact SessionStart locator line set (<= 600 bytes)."""
     parts = [f"ChaosEngine: {activation}"]
     if token:
         parts.append(f"Reflection session token (never track it): {token}")
-    parts.append(ULTRA_SELECTOR)
-    budget = resolve_token_budget_mode()
-    parts.append(token_budget_guidance(budget))
-    parts.append(headroom_session_guidance(budget))
-    parts.append(zero_llm_session_guidance())
-    parts.append(level1_catalog_guidance())
-    parts.append(heal_route_guidance())
-    parts.append(wake_pack_session_guidance())
-    parts.append(self_improve_session_guidance())
-    for name in COMPANION_NAMES:
-        for root in _search_roots():
-            path = next(
-                (root / candidate for candidate in _skill_relatives(name) if (root / candidate).is_file()),
-                None,
+    stopped = read_stopped_companions(session_id)
+    cards = [
+        _locate((card, f".chaos-engine/{card}", f"chaos-engine/{card}"))
+        or f".chaos-engine/{card}"
+        for name, card in COMPANION_CARDS.items()
+        if name not in stopped
+    ]
+    parts.append(
+        "Companions (caveman=ultra; ponytail=ultra; off only: stop caveman, stop ponytail, "
+        "normal mode): " + ", ".join(f"`{card}`" for card in cards)
+    )
+    for name in ADVISORY_COMPANION_NAMES:
+        path = next(
+            (
+                root / candidate
+                for root in _search_roots()
+                for candidate in _skill_relatives(name)
+                if (root / candidate).is_file()
+            ),
+            None,
+        )
+        if path is not None:
+            parts.append(
+                f"Advisory companion (design/structure): load `{_workspace_locator(path)}` "
+                "for ICM / workspace-structure work."
             )
-            if path is not None:
-                locator = _workspace_locator(path)
-                parts.append(f"Required companion: read and follow `{locator}` before responding.")
-                break
-    return "\n\n".join(parts)
+    identity = _locate(("identity.md", ".chaos-engine/identity.md", "chaos-engine/identity.md"))
+    parts.append(f"Identity: `{identity or '.chaos-engine/identity.md'}`")
+    parts.append(f"Token budget: {resolve_token_budget_mode()}")
+    rendered = "\n".join(parts)
+    with contextlib.suppress(Exception):
+        counters_path = Path(__file__).resolve().parents[1] / "learning_counters.py"
+        if counters_path.is_file():
+            import importlib.util as _ilu
+
+            _spec = _ilu.spec_from_file_location("ce_learning_counters_ss", counters_path)
+            if _spec is not None and _spec.loader is not None:
+                _mod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                _mod.record_session_start_bytes(len(rendered.encode("utf-8")))
+    return rendered
 
 
 def _reject_json_constant(value: str):

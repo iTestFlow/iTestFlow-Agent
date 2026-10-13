@@ -9,7 +9,7 @@ fifteen hops that restate the same question.
 This reimplements a published code-mode idea as portable guidance: write or
 run one program against the workspace instead of orchestrating each primitive
 by hand. No upstream runtime is required. Named sources and licenses live in
-[THIRD_PARTY_NOTICES](../THIRD_PARTY_NOTICES.md) and [RESEARCH](../RESEARCH.md).
+[THIRD_PARTY_NOTICES](../THIRD_PARTY_NOTICES.md) and RESEARCH (repo-only `chaos-engine/RESEARCH.md`).
 
 ## When a script is the smaller move
 
@@ -19,6 +19,7 @@ Use a script or focused test when you would otherwise:
 - parse a large log, report, or JSON document by hand;
 - apply the same mechanical edit in several files;
 - prove a behavior that a short executable already can fail.
+- watch an open PR: one `scripts/agents/watch_pr_checks.py --until-merged` run, not a chat poll.
 
 Mechanical one-file edits still inspect the target, apply the change, and
 report it. Do not invent a script for a single obvious line.
@@ -35,6 +36,9 @@ report it. Do not invent a script for a single obvious line.
 
 ## Boundaries
 
+- `rg` with no path reads stdin. In a non-TTY agent shell that blocks until the
+  tool times out. Pass a path (`rg PATTERN .`) or run `run_rg`, which adds `.`
+  and does not read stdin. A command that already names a path searches that path.
 - Prefer the standard library and tools already in the project.
 - Do not add a dependency to avoid a few lines.
 - Do not replace an owned test with an untracked scratch file when the test

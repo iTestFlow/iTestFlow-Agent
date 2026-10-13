@@ -15,18 +15,43 @@ depth off that answer rather than judging it twice.
 | One module, reversible | Select stores relevant to the subsystem or affected callers. |
 | Public contract, many callers, or hard to reverse | Use every relevant store, then verify every useful hit against live files. |
 
-Memory, MemPalace, and Graphify are advisory for ordinary tasks. Irrelevance is
-recorded as `skipped`; a missing, corrupt, stale, timed-out, or inaccessible
-store is `degraded`. Neither state blocks implementation or completion.
+Graph and memory first, when it pays. Before broad discovery in a task area,
+run one bounded retrieve (`--store graphify` for what calls or depends on this;
+`--store mempalace` for what happened around this).
+One retrieve per task area, not per file. A cheap read does not wait for a store. A broad search is allowed and owes one retrieve for that session.
+Skip it for harness files (everything in
+[harness-index.json](../harness-index.json)), for running a script, for files
+you named or that are already in the diff, and when the store is empty or
+degraded or has no project nodes for the path.
+In those cases record `skipped(<reason>)` once and continue.
+
+Hook hosts enforce this through the portable guard: running a script is not
+reading it, harness paths are exempt, the project root is walked up from the
+event `cwd`, and a graph with no project nodes fails open as
+`skipped(no-project-index)`. Instruction-only hosts (OpenCode, Cursor, Grok
+Bot, Copilot cloud) record `retrieve: used|skipped(<reason>)|exempt(harness)`
+in the [research receipt](research-receipt.md). The session ledger
+lives in one [citation ledger](../hooks/retrieve_justification.py) for every
+host; `skipped` and `degraded` count as that session's retrieve and do not
+cite a path.
+A cheap read does not wait for a store. A broad search is allowed and owes one retrieve for that session. A MemPalace
+backend-mismatch is recorded once: do not retrieve MemPalace again, do not
+write `~/.mempalace`, and do not turn it into a recovery essay. It is blocking,
+not a Graphify-only fallback: follow the receipt `fixNext` (doctor, then
+`repair --component mempalace`), then rerun retrieve with `--recheck`.
+A used receipt includes `hits` (repo-relative path and line, at most 8) and
+`excerpt` (800 bytes when hits exist, otherwise 4096). Read the cited line
+range. Do not turn the path into an absolute path or read the whole file.
 
 ## What each store is for
 
 | Question you actually have | Store |
 | --- | --- |
-| Has this constraint or gotcha already bitten us? | native Memory — `memory search`, then `memory inspect <id>` |
+| Has this constraint or gotcha already bitten us? | native Memory — `memory query`, then `memory inspect <id>` |
 | What happened around this before, and what does it touch? | MemPalace |
 | What calls or depends on this? | [Graphify](graphify.md) — unclassified extract skips are coverage, not a failed install |
-| What does the code do right now? | targeted `rg` and exact reads |
+| What does the code do right now? | targeted `rg` and exact reads; a cheap read does not wait for a store |
+| What did a past agent session run or decide here? | deja (opt-in) — `python3 .chaos-engine/retrieve.py --store deja "<question>"`; not SessionStart, per-prompt, or per-tool. The token A/B table is [details/deja-token-ab-table.md](details/deja-token-ab-table.md); `defaultOn` stays false unless both median and mean drop |
 
 Only the last one settles a disagreement. A retrieved claim is a lead: confirm
 it against the file on disk before acting, and never let an index outrank what
@@ -40,10 +65,10 @@ only after a live authoritative source confirms it. SessionStart deliberately
 injects no Memory or MemPalace prose, because untargeted recall has neither the
 task scope nor the evidence needed to earn authority.
 
-Use a bounded `memory search`, then inspect only the selected records. Never
+Use a bounded `memory query`, then inspect only the selected records. Never
 compile or inject a whole-store context pack.
 
-## Retrieve orchestrator (#5624)
+## Retrieve orchestrator
 
 One store, one bounded query, receipt status `used` | `skipped` | `degraded`:
 
@@ -58,6 +83,19 @@ Owner-curated wake pack (≤~120 tokens) lives at
 `wake-pack.mempalace-draft.md` only — never silent overwrite. SessionStart
 injects the wake-pack **locator**, never Memory/MemPalace prose.
 
+## Heuristics once per task
+
+Learning Session may extract ≤N privacy-safe heuristics into
+`.chaos-engine-state/heuristics/`. SessionStart injects the **locator
+only**. At triage / task start, retrieve once:
+
+```text
+python3 .chaos-engine/retrieve.py heuristics --top 3
+```
+
+Never re-inject full heuristic prose on every Pre/PostToolUse. Keep
+`SESSION_START_MAX_BYTES`.
+
 ## Bounded retrieval
 
 After a plan is approved, the MemPalace attempt in the research receipt is
@@ -66,8 +104,10 @@ with a concrete irrelevance reason, or `degraded`. Do not skip the attempt.
 
 When a store can answer a concrete question, query it before broad discovery.
 Allow one attempt through the existing host timeout, with no retries, repair,
-refresh, mining, checkpointing, polling, or watching. Ordinary tasks launch no
-background store processes. SessionStart launches no optional retrieval tool
+refresh, mining, checkpointing, polling, or watching. Shell opens of a path use
+the same citation ledger as `read_file`. One skipped or degraded retrieve
+in that session clears retrieveOwed and does not clear another session. Do not auto-migrate `~/.mempalace`.
+Ordinary tasks launch no background store processes. SessionStart launches no optional retrieval tool
 and injects only tracked locators; any store failure is silent to task control.
 
 Install, upgrade, explicit maintenance, `status`, and `doctor` are not ordinary
@@ -80,7 +120,10 @@ The [learning session](work-github-playbook.md#learned-lessons-workflow) routes
 each learning to its home. That is where a *fact* goes. It does not make the
 task responsible for keeping derived stores usable:
 
-- `memory remember` for a durable fact or decision, with the evidence.
+- `memory save --stdin` for a durable fact, decision, or gotcha, with the
+  evidence (intent-first JSON: `{task, nodes, stale, supersede, delete}`).
+  Do **not** hand-edit `.memory/**` JSON or markdown sidecars; if save rejects,
+  report the reason and fix the input.
 - A structural change may be flagged for the configured Graphify maintenance
   owner; the task does not refresh or watch it.
 - A cross-session relation may be written when useful; the task never mines the

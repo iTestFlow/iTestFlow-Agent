@@ -5,15 +5,19 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 import email.utils
 import hashlib
 import json
 import os
+import platform
+import fnmatch
 import re
 import shlex
 import runpy
 import shutil
+import subprocess  # nosec B404 - fixed `gh auth token` argv, never a shell.
 import sys
 import tempfile
 import textwrap
@@ -27,12 +31,63 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 
 
+def _tree_parts(path: Path) -> tuple[str, ...]:
+    """Same comparison install.py uses. Inlined: curl|bash runs this file alone."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path.absolute()
+    text = os.fspath(resolved)
+    if text.startswith("\\\\?\\") or text.startswith("//?/"):
+        text = text[4:]
+    parts = tuple(part for part in re.split(r"[\\/]", text) if part not in {"", "."})
+    if os.name == "nt":
+        parts = tuple(part.casefold() for part in parts)
+    return parts
+
+
+def _path_is_inside(child: Path, parent: Path) -> bool:
+    left = _tree_parts(child)
+    right = _tree_parts(parent)
+    return left == right or (len(left) > len(right) and left[: len(right)] == right)
+
+
+def disjoint_download_parent(project: Path) -> Path:
+    """
+    Directory for the portable source download, never inside ``project``.
+
+    Windows TEMP lives under the user profile. Installing into that profile, or
+    any project that contains TEMP, used to fail with
+    "ChaosEngine source and project trees must be disjoint" (#6868).
+    """
+    project = project.resolve()
+    candidates = [Path(tempfile.gettempdir())]
+    if project.parent != project:
+        candidates.append(project.parent)
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.append(Path(local))
+    candidates.append(Path.home() / ".cache")
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if _path_is_inside(resolved, project):
+            continue
+        return resolved
+    raise ValueError("ChaosEngine source and project trees must be disjoint")
+
+
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+GITHUB_URL = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_FILES = 2000
+DOWNLOAD_WORKERS = 8
 MAX_READ_ATTEMPTS = 4
 MAX_RETRY_AFTER_SECONDS = 60.0
 RETRY_BASE_SECONDS = 1.0
@@ -41,23 +96,23 @@ CYBERNETIC_RED = "\x1b[38;2;255;59;77m"
 ION_BLUE = "\x1b[38;2;47;125;255m"
 OPTICAL_WHITE = "\x1b[38;2;242;247;255m"
 BRAND_ASCII = (
-    "  ,-----.          ---+       /",
-    "  |                   |      /",
-    "  |  *      /      ---+     /",
-    "  |                   |    /",
-    "  `-----'          ---+   /",
+    "  ,-----.            ---+",
+    "  |                     |",
+    "  |  *               ---+",
+    "  |                     |",
+    "  `-----'            ---+",
     "         ChaosEngine",
 )
 BRAND_UNICODE = (
-    "  █▀▀▀▀▀▄           ───┐        ╱",
-    "  █                    │       ╱",
-    "  █   ◆      ╱      ───┤      ╱",
-    "  █                    │     ╱",
-    "  █▄▄▄▄▄▀           ───┘    ╱",
+    "  █▀▀▀▀▀▄             ───┐",
+    "  █                      │",
+    "  █   ◆               ───┤",
+    "  █                      │",
+    "  █▄▄▄▄▄▀             ───┘",
     "          ChaosEngine",
 )
 BRAND_NARROW = (
-    "  /C|*|E/",
+    "  C|*|Ǝ",
     "  ChaosEngine",
 )
 TRACE_LIMIT = 12 if (
@@ -65,6 +120,167 @@ TRACE_LIMIT = 12 if (
     or os.environ.get("CHAOS_ENGINE_QUIET") == "1"
 ) else 40
 STALL_SECONDS = 8.0
+HEARTBEAT_SECONDS = 15.0
+LIVE_TRACE_CONCISE = 4
+SPINNER_UNICODE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+SPINNER_ASCII = "-\\|/"
+# (unicode, ascii) pairs. Meaning never rides on color alone: every glyph has a
+# distinct ASCII fallback and a word (STATUS_WORDS) next to it where it matters.
+STATUS_GLYPHS = {
+    "ok": ("✓", "+"),
+    "fail": ("✗", "x"),
+    "warn": ("!", "!"),
+    "info": ("i", "i"),
+    "pending": ("·", " "),
+    "running": ("◉", "*"),
+}
+STATUS_WORDS = {
+    "ok": "done",
+    "fail": "failed",
+    "warn": "warning",
+    "info": "info",
+    "pending": "pending",
+    "running": "running",
+}
+UNHEALTHY_DOCTOR_STATUSES = frozenset(
+    {"degraded", "recovery-required", "broken", "failed", "unhealthy"}
+)
+UNICODE_PROBE = "✓✗◉·…█▀▄┬├┴╱◆⠋"
+
+
+def status_glyph(kind: str, *, unicode: bool) -> str:
+    """Return one status glyph with its ASCII fallback (#6325)."""
+    fancy, plain = STATUS_GLYPHS[kind]
+    return fancy if unicode else plain
+
+
+def terminal_color_enabled(*, tty: bool, environ=None) -> bool:
+    """Color only on a real terminal; honor NO_COLOR (no-color.org) and TERM=dumb."""
+    environ = os.environ if environ is None else environ
+    return bool(tty) and environ.get("TERM") != "dumb" and not environ.get("NO_COLOR")
+
+
+def ascii_forced(environ=None) -> bool:
+    """`CHAOS_ENGINE_ASCII=1` forces ASCII glyphs even on a UTF-8 terminal."""
+    environ = os.environ if environ is None else environ
+    return environ.get("CHAOS_ENGINE_ASCII") == "1"
+
+
+def verbose_enabled(environ=None) -> bool:
+    """`CHAOS_ENGINE_VERBOSE=1` (or `--verbose`) streams every trace line."""
+    environ = os.environ if environ is None else environ
+    return environ.get("CHAOS_ENGINE_VERBOSE") == "1"
+
+
+def stream_supports_unicode(stream) -> bool:
+    """True when the stream can encode the installer glyph set and ASCII is not forced."""
+    if ascii_forced():
+        return False
+    try:
+        UNICODE_PROBE.encode(getattr(stream, "encoding", None) or "utf-8")
+    except (LookupError, UnicodeEncodeError):
+        return False
+    return True
+
+
+def stream_is_tty(stream) -> bool:
+    if os.environ.get("TERM") == "dumb":
+        return False
+    isatty = getattr(stream, "isatty", None)
+    try:
+        return bool(isatty()) if callable(isatty) else False
+    except (OSError, ValueError):
+        return False
+
+
+def harden_stream_encoding(stream) -> None:
+    """Windows legacy consoles (cp1252/cp437) must never crash on a glyph or path."""
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        UNICODE_PROBE.encode(getattr(stream, "encoding", None) or "utf-8")
+        return
+    except (LookupError, UnicodeEncodeError):
+        pass
+    try:
+        reconfigure(errors="replace")
+    except (AttributeError, OSError, ValueError):
+        return
+MAX_ISSUE_URL_CHARS = 7800
+MAX_ISSUE_BODY_CHARS = 60000
+HEAL_HANDOFF_RELATIVE = ".chaos-engine-state/heal-handoff.md"
+ISSUE_FORM_FIELD_IDS = (
+    "error_code",
+    "cause",
+    "failed_phase",
+    "unhealthy",
+    "platform",
+    "os_name",
+    "os_version",
+    "architecture",
+    "python_version",
+    "machine",
+    "doctor_details",
+    "hosts_receipt",
+    "core_dir",
+    "install_py",
+    "install_trace",
+    "install_trace_snippet",
+    "console_log",
+    "doctor_json",
+    "status_command",
+    "doctor_command",
+    "additional",
+)
+REQUIRED_ISSUE_FORM_FIELDS = (
+    "error_code",
+    "cause",
+    "failed_phase",
+    "unhealthy",
+    "platform",
+    "os_name",
+    "os_version",
+    "architecture",
+    "python_version",
+    "machine",
+    "doctor_details",
+    "hosts_receipt",
+    "core_dir",
+    "install_py",
+    "install_trace",
+    "status_command",
+    "doctor_command",
+)
+OPTIONAL_ISSUE_FORM_FIELDS = (
+    "install_trace_snippet",
+    "console_log",
+    "doctor_json",
+    "additional",
+)
+ISSUE_FORM_LABELS = {
+    "error_code": "Error code",
+    "cause": "Cause",
+    "failed_phase": "Failed phase",
+    "unhealthy": "Unhealthy components",
+    "platform": "Platform",
+    "os_name": "OS name",
+    "os_version": "OS version",
+    "architecture": "Architecture",
+    "python_version": "Python version",
+    "machine": "Machine",
+    "doctor_details": "Doctor details",
+    "hosts_receipt": "Hosts receipt",
+    "core_dir": "Core dir",
+    "install_py": "install.py",
+    "install_trace": "Install trace (repo-relative)",
+    "install_trace_snippet": "Install trace snippet",
+    "console_log": "Full console log",
+    "doctor_json": "Full doctor JSON",
+    "status_command": "Status command",
+    "doctor_command": "Doctor command",
+    "additional": "Additional context",
+}
 
 
 def install_trace_path(project: Path) -> Path:
@@ -79,6 +295,474 @@ def write_install_trace(project: Path, result: dict[str, object], traces: list[t
         encoding="utf-8",
     )
     return path
+
+
+def runtime_environment() -> dict[str, str]:
+    """Bounded OS/Python facts for installer failure reports (#5703)."""
+    return {
+        "os_name": platform.system()[:40],
+        "os_version": platform.release()[:40],
+        "architecture": platform.machine()[:40] or "unknown",
+        "python_version": sys.version.split()[0][:32],
+        "machine": platform.platform(terse=True)[:80],
+    }
+
+
+def doctor_failure_payload(error: BaseException) -> dict[str, object]:
+    """Keep status/code/detail/fix-next only; never persist paths or secrets."""
+    doctor = getattr(error, "doctor", None)
+    if not isinstance(doctor, dict):
+        return {}
+    components: dict[str, object] = {}
+    raw = doctor.get("components")
+    if isinstance(raw, dict):
+        for name, item in raw.items():
+            if not isinstance(name, str) or not isinstance(item, dict):
+                continue
+            trimmed = {
+                key: item[key]
+                for key in ("status", "taskImpact", "detail", "code", "fixNext")
+                if isinstance(item.get(key), str)
+            }
+            if trimmed:
+                components[name] = trimmed
+    commit = doctor.get("commit")
+    return {
+        "status": doctor.get("status") if isinstance(doctor.get("status"), str) else "unknown",
+        "commit": commit if isinstance(commit, str) else None,
+        "components": components,
+    }
+
+
+FAILURE_ARTIFACT_NAMES = (
+    "heal-handoff.md",
+    "official-self-heal-handoff.md",
+    "install-trace.json",
+    "install-console.log",
+    "doctor-failure.json",
+)
+
+
+def present_state_artifacts(project: Path) -> list[str]:
+    """Return repo-relative failure artifacts that currently exist on disk."""
+    state = Path(project) / ".chaos-engine-state"
+    present: list[str] = []
+    for name in FAILURE_ARTIFACT_NAMES:
+        path = state / name
+        if path.is_file() and not path.is_symlink():
+            present.append(f".chaos-engine-state/{name}")
+    return present
+
+
+def write_failure_artifacts(
+    project: Path,
+    reporter: InstallReporter | None,
+    error: BaseException,
+) -> tuple[str, str]:
+    """Write attachable console and doctor artifacts under .chaos-engine-state/."""
+    state = Path(project) / ".chaos-engine-state"
+    state.mkdir(parents=True, exist_ok=True)
+    traces: list[str] = []
+    if reporter is not None:
+        traces = [f"[+{ended:.3f}] {message}" for ended, message in reporter.traces]
+    (state / "install-console.log").write_text(
+        ("\n".join(traces) + "\n") if traces else "no installer console traces\n",
+        encoding="utf-8",
+    )
+    payload = doctor_failure_payload(error)
+    if not payload:
+        payload = {
+            "status": "failed",
+            "commit": None,
+            "components": {},
+            "cause": one_line_cause(error)[:240],
+        }
+    (state / "doctor-failure.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return (
+        ".chaos-engine-state/install-console.log",
+        ".chaos-engine-state/doctor-failure.json",
+    )
+
+
+def redact_report_text(text: str) -> str:
+    """Redact paths and secret assignments from multi-line installer reports."""
+    text = re.sub(
+        r"(?<!:)(?:[A-Za-z]:[\\/]|\\\\[^\s\\/]+[\\/]|/(?:(?:media|mnt|Volumes)(?:/\S+?)?/(?:Users|home)|home|Users|tmp|var|private)/)\S+",
+        "[path]",
+        text,
+    )
+    return re.sub(
+        r"(?i)\b(token|secret|password|api_key)=\S+",
+        lambda match: f"{match.group(1)}=<redacted>",
+        text,
+    )
+
+
+def github_auth_token() -> str | None:
+    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = os.environ.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def resolve_issue_token(explicit: str | None) -> str | None:
+    """API filing is opt-in and never uses GitHub Actions GITHUB_TOKEN."""
+    if explicit is not None:
+        return explicit.strip() or None
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return None
+    if os.environ.get("CHAOS_ENGINE_FILE_ISSUE") != "1":
+        return None
+    return github_auth_token()
+
+
+def upgrade_query_extras(error: BaseException) -> dict[str, str]:
+    extras: dict[str, str] = {}
+    commit = getattr(error, "observed_upgrade_commit", None)
+    if isinstance(commit, str) and COMMIT.fullmatch(commit):
+        extras["observed_commit"] = commit
+    components = getattr(error, "observed_upgrade_components", ())
+    labels: list[str] = []
+    if isinstance(components, tuple):
+        for component in components[:32]:
+            if not isinstance(component, tuple) or len(component) != 2:
+                continue
+            name, status = component
+            if (
+                isinstance(name, str)
+                and isinstance(status, str)
+                and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", name)
+                and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", status)
+            ):
+                labels.append(f"{name}:{status}")
+    if labels:
+        extras["candidate_components"] = ",".join(labels)
+    details = getattr(error, "observed_upgrade_component_details", ())
+    detail_labels: list[str] = []
+    if isinstance(details, tuple):
+        for component in details[:32]:
+            if not isinstance(component, tuple) or len(component) != 2:
+                continue
+            name, detail = component
+            if (
+                isinstance(name, str)
+                and isinstance(detail, str)
+                and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", name)
+                and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", detail)
+            ):
+                detail_labels.append(f"{name}:{detail}")
+    if detail_labels:
+        extras["candidate_component_details"] = ",".join(detail_labels)
+    return extras
+
+
+def encode_issue_form_url(
+    repository: str,
+    title: str,
+    fields: dict[str, str],
+    extra: dict[str, str] | None = None,
+) -> str:
+    """Pack required fields first; optional logs only while under the URL cap."""
+    repository = normalize_repository(repository)  # never github.com/https://... (#6234)
+    packed = {
+        key: fields[key]
+        for key in REQUIRED_ISSUE_FORM_FIELDS
+        if isinstance(fields.get(key), str) and fields[key]
+    }
+    if extra:
+        packed.update({key: value for key, value in extra.items() if value})
+    optional = {
+        key: fields[key]
+        for key in OPTIONAL_ISSUE_FORM_FIELDS
+        if isinstance(fields.get(key), str) and fields[key]
+    }
+
+    def render(current: dict[str, str]) -> str:
+        query = {"template": "chaos-engine-installer.yml", "title": title, **current}
+        return f"https://github.com/{repository}/issues/new?{urllib.parse.urlencode(query)}"
+
+    url = render(packed)
+    for key, value in optional.items():
+        candidate = dict(packed)
+        candidate[key] = value
+        encoded = render(candidate)
+        if len(encoded) <= MAX_ISSUE_URL_CHARS:
+            packed = candidate
+            url = encoded
+            continue
+        shrink = value
+        while len(shrink) > 64:
+            shrink = shrink[: len(shrink) // 2] + "\n…truncated…"
+            candidate[key] = shrink
+            encoded = render(candidate)
+            if len(encoded) <= MAX_ISSUE_URL_CHARS:
+                packed = candidate
+                url = encoded
+                break
+    return url
+
+
+def issue_form_markdown(fields: dict[str, str]) -> str:
+    sections: list[str] = []
+    for key in ISSUE_FORM_FIELD_IDS:
+        value = fields.get(key, "")
+        if not isinstance(value, str) or not value.strip():
+            continue
+        label = ISSUE_FORM_LABELS.get(key, key)
+        fence = "json" if key == "doctor_json" else ""
+        if key in {"console_log", "doctor_json", "install_trace_snippet"}:
+            sections.append(f"### {label}\n\n```{fence}\n{value.rstrip()}\n```\n")
+        else:
+            sections.append(f"### {label}\n\n{value.strip()}\n")
+    body = "\n".join(sections).strip() + "\n"
+    if len(body) > MAX_ISSUE_BODY_CHARS:
+        body = body[: MAX_ISSUE_BODY_CHARS - 20] + "\n…truncated…\n"
+    return body
+
+
+def create_installer_github_issue(
+    repository: str,
+    title: str,
+    body: str,
+    token: str,
+    opener=urllib.request.urlopen,
+) -> str | None:
+    payload = json.dumps({"title": title, "body": body}).encode("utf-8")
+    request_obj = urllib.request.Request(
+        f"https://api.github.com/repos/{repository}/issues",
+        data=payload,
+        method="POST",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "ChaosEngine-bootstrap",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with opener(request_obj, timeout=30) as response:
+            document = response.read(MAX_RESPONSE_BYTES)
+    except (OSError, TimeoutError, urllib.error.URLError, urllib.error.HTTPError):
+        return None
+    try:
+        value = json.loads(document.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    html = value.get("html_url") if isinstance(value, dict) else None
+    if isinstance(html, str) and html.startswith("https://github.com/"):
+        return html
+    return None
+
+
+def core_install_py(project: Path) -> bool:
+    return (Path(project) / ".chaos-engine" / "install.py").is_file()
+
+
+def heal_issue_reference(issue_url: str) -> str:
+    """Prefer a short issue locator inside copy-paste agent prompts."""
+    if not issue_url or "issues/new?" in issue_url:
+        return "the GitHub issue URL printed above"
+    return issue_url
+
+
+def _artifact_read_clause(artifacts: list[str] | None) -> str:
+    """Name only the artifacts the caller proved exist (or the legacy trio)."""
+    if artifacts is None:
+        return (
+            ".chaos-engine-state/heal-handoff.md and the local install-trace.json, "
+            "install-console.log, and doctor-failure.json"
+        )
+    if not artifacts:
+        return "any local installer artifacts under .chaos-engine-state/"
+    if len(artifacts) == 1:
+        return artifacts[0]
+    if len(artifacts) == 2:
+        return f"{artifacts[0]} and {artifacts[1]}"
+    return ", ".join(artifacts[:-1]) + f", and {artifacts[-1]}"
+
+
+def heal_handoff_prompt(
+    doctor_command: str,
+    issue_url: str,
+    *,
+    artifacts: list[str] | None = None,
+) -> str:
+    cli = "py -3" if os.name == "nt" else "python3"
+    issue_ref = heal_issue_reference(issue_url)
+    read_clause = _artifact_read_clause(artifacts)
+    if doctor_command == "not available":
+        restore = (
+            "Restore the portable core with the documented ChaosEngine install one-liner"
+        )
+        if artifacts:
+            restore += f", then read {read_clause}"
+        elif artifacts is None:
+            restore += ", then read .chaos-engine-state/heal-handoff.md"
+        return (
+            "Continue ChaosEngine install in this folder. Load ChaosEngine if present. "
+            f"{restore}. "
+            f"Open {issue_ref} and comment findings, solutions, and troubleshooting steps. "
+            "Ask the user whether they want to attempt a fix by opening an upstream PR "
+            "linked to that issue."
+        )
+    return (
+        "Continue ChaosEngine install in this folder. Load ChaosEngine. "
+        f"Read {read_clause}. "
+        "Do not rerun the install one-liner unless the portable core is missing. "
+        "Continue unhealthy components with "
+        f"{cli} .chaos-engine/install.py repair --project . --component <name> "
+        f"and {doctor_command} until required components are healthy. "
+        f"Open {issue_ref} and comment findings, solutions, and troubleshooting steps. "
+        "Ask the user whether they want to attempt a fix by opening an upstream PR "
+        "linked to that issue."
+    )
+
+
+def _is_reparse(path: Path) -> bool:
+    """True for a symlink or a Windows reparse point. Does not follow links."""
+    try:
+        if path.is_symlink():
+            return True
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return bool(attributes & 0x400)
+
+
+def _regular_file_bytes(path: Path) -> bytes | None:
+    """Return file bytes only when the path itself is a regular file."""
+    try:
+        if _is_reparse(path) or not path.is_file():
+            return None
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def clear_stale_install_failure_artifacts(project: Path) -> None:
+    """Drop a previous run's failure handoff after this install is healthy."""
+    state = Path(project) / ".chaos-engine-state"
+    if _is_reparse(state):
+        return
+    try:
+        if not state.is_dir():
+            return
+    except OSError:
+        return
+    for name in (
+        "heal-handoff.md",
+        "doctor-failure.json",
+        "install-console.log",
+        "install-rollback.json",
+    ):
+        path = state / name
+        try:
+            if _is_reparse(path) or not path.is_file():
+                continue
+            path.unlink()
+        except OSError:
+            continue
+
+
+INSTALL_ROLLBACK_RELATIVE = ".chaos-engine-state/install-rollback.json"
+
+
+def installed_core_commit(project: Path) -> str | None:
+    """Read the installed core commit straight from `.chaos-engine/manifest.json`."""
+    raw = _regular_file_bytes(Path(project) / ".chaos-engine" / "manifest.json")
+    if raw is None:
+        return None
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    source = manifest.get("source") if isinstance(manifest, dict) else None
+    commit = source.get("commit") if isinstance(source, dict) else None
+    return commit if isinstance(commit, str) and COMMIT.fullmatch(commit) else None
+
+
+def record_install_rollback(project: Path, requested: str, restored: str) -> None:
+    """Persist a verify-failure rollback so status/doctor can name it (#6338)."""
+    target = Path(project) / INSTALL_ROLLBACK_RELATIVE
+    try:
+        if _is_reparse(target.parent) or _is_reparse(target):
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "status": "rolled-back",
+                    "requestedCommit": requested,
+                    "restoredCommit": restored,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        # Best-effort evidence; the failure output still names the rollback.
+        return
+
+
+def install_rollback_summary(error: BaseException) -> str | None:
+    """One line saying a failed install rolled the core back, and to which commit."""
+    restored = getattr(error, "rolled_back_to", None)
+    if not isinstance(restored, str) or COMMIT.fullmatch(restored) is None:
+        return None
+    requested = getattr(error, "rolled_back_from", None)
+    requested_text = (
+        f"requested core {requested[:12]}"
+        if isinstance(requested, str) and COMMIT.fullmatch(requested)
+        else "the new core"
+    )
+    return (
+        f"Rolled back: {requested_text} was not kept; the previous core "
+        f"{restored[:12]} is installed again, so status/doctor report {restored[:12]}."
+    )
+
+
+def _inexact_prior_rollback(error: BaseException) -> bool:
+    """True when rollback cannot restore an exact prior receipt."""
+    return isinstance(error, ValueError) and "no exact prior" in str(error)
+
+
+def write_heal_handoff(project: Path, fields: dict[str, str], issue_url: str) -> Path:
+    target = Path(project) / HEAL_HANDOFF_RELATIVE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing = [
+        rel
+        for rel in present_state_artifacts(project)
+        if rel != HEAL_HANDOFF_RELATIVE
+    ]
+    listed = [HEAL_HANDOFF_RELATIVE, *existing]
+    lines = [
+        "# Heal handoff",
+        "",
+        "The portable core is installed. Continue with one agent step.",
+        "",
+        f"Issue: {issue_url}",
+        "",
+        f"Error code: {fields.get('error_code', '')}",
+        f"Failed phase: {fields.get('failed_phase', '')}",
+        f"Unhealthy: {fields.get('unhealthy', '')}",
+        f"Doctor details: {fields.get('doctor_details', '')}",
+        f"Doctor: `{fields.get('doctor_command', '')}`",
+        "",
+        "Local artifacts:",
+        "",
+        *[f"- `{rel}`" for rel in listed],
+        "",
+        "Do not rerun the install one-liner unless `.chaos-engine/install.py` is missing.",
+        "",
+    ]
+    target.write_text("\n".join(lines), encoding="utf-8")
+    return target
 
 
 def brand_lines(*, width: int = 80, color: bool = False, unicode: bool = False) -> list[str]:
@@ -111,7 +795,7 @@ def _component_blocks_health(value: object) -> bool:
     status = value.get("status")
     if status == "healthy":
         return False
-    # Memory origin/main desync is advisory for required mcps during install verify (#5630).
+    # Memory default-branch desync is advisory for required mcps during install verify (#5630).
     if status in {"compatible-legacy", "degraded", "sync-advisory"}:
         return False
     if value.get("taskImpact") == "optional" and status == "absent":
@@ -214,6 +898,7 @@ class InstallHealthError(RuntimeError):
         self.observed_commit = commit if isinstance(commit, str) and COMMIT.fullmatch(commit) else None
         self.observed_components = observed_blocking_components(components)
         self.observed_component_details = observed_blocking_component_details(components)
+        self.doctor = doctor if isinstance(doctor, dict) else {}
 
 
 
@@ -267,8 +952,12 @@ class InstallReporter:
         self._thread: threading.Thread | None = None
         self._lines = 0
         self._tty = self._stderr_is_tty()
-        self._color = self._tty and "NO_COLOR" not in os.environ
-        self._unicode = self._encodable("✓◉·…█▀▄┬├┴╱◆")
+        self._color = terminal_color_enabled(tty=self._tty)
+        self._unicode = self._encodable(UNICODE_PROBE) and not ascii_forced()
+        self._verbose = verbose_enabled()
+        self._frame = 0
+        self._last_heartbeat: float | None = None
+        self.failed_operation: str | None = None
         if self._tty and os.name == "nt" and not self._enable_windows_vt():
             self._color = False
         if os.environ.get("CHAOS_ENGINE_BRAND_SHOWN") != "1":
@@ -299,8 +988,12 @@ class InstallReporter:
             with self._lock:
                 self._render_locked()
         else:
-            self.stream.write(self._truncate(f"Install root: {self.project_root}") + "\n")
-            self.stream.write(self._truncate(f"Source: {self.source_label}") + "\n")
+            self.stream.write(
+                self._truncate(_align_report("Project", self.project_root)) + "\n"
+            )
+            self.stream.write(
+                self._truncate(_align_report("Source", self.source_label)) + "\n"
+            )
             self.stream.flush()
 
     def trace(self, message: str) -> None:
@@ -309,7 +1002,7 @@ class InstallReporter:
             self.trace_count += 1
             if self._tty:
                 self._render_locked()
-            else:
+            elif self._verbose:
                 self.stream.write(self._truncate(f"  {message}") + "\n")
                 self.stream.flush()
 
@@ -342,6 +1035,13 @@ class InstallReporter:
         suffix = "…" if self._unicode else "..."
         return value[: max(0, width - len(suffix))] + suffix
 
+    def _aligned_live_row(self, label: str, value: str) -> str:
+        plain = self._truncate(_align_report(label, value))
+        prefix = f"  {label:<10} "
+        if not plain.startswith(prefix):
+            return plain
+        return _align_report(label, plain[len(prefix) :], color=self._color)
+
     def _wrap(self, value: str) -> list[str]:
         width = self._width()
         if len(value) <= width:
@@ -356,7 +1056,11 @@ class InstallReporter:
         ) or [indent]
 
     def _paint(self, value: str, color: str) -> str:
-        return f"\x1b[{color}m{value}\x1b[0m" if self._color else value
+        if not self._color:
+            return value
+        if color.startswith("\x1b"):
+            return f"{color}{value}\x1b[0m"
+        return f"\x1b[{color}m{value}\x1b[0m"
 
     def _duration(self, seconds: float) -> str:
         seconds = max(0, round(seconds))
@@ -416,7 +1120,9 @@ class InstallReporter:
                     if detail and self._unicode
                     else (f" - {detail}" if detail else "")
                 )
-                self.stream.write(self._truncate(f"START {operation}{suffix}") + "\n")
+                self.stream.write(
+                    self._truncate(f"{self._step_label(operation)}START {operation}{suffix}") + "\n"
+                )
                 self.stream.flush()
 
     def complete(self, operation: str, *, remaining: tuple[str, ...] = ()) -> None:
@@ -439,11 +1145,37 @@ class InstallReporter:
             if self._tty:
                 self._render_locked()
             else:
-                self.stream.write(f"DONE  {operation}\n")
+                self.stream.write(f"{self._step_label(operation)}DONE  {operation}\n")
                 self.stream.write(
                     f"[+{self._duration(now - self.started)}] PASS {operation} "
                     f"({self._duration(duration)})\n"
                 )
+                self.stream.flush()
+
+    @property
+    def color_enabled(self) -> bool:
+        """Whether this reporter paints ANSI color (TTY, NO_COLOR unset, VT ready)."""
+        return self._color
+
+    def enable_verbose(self) -> None:
+        """Stream every trace line (`--verbose`)."""
+        self._verbose = True
+
+    def fail(self) -> None:
+        """Mark the running step failed so the last frame never says `running` (#6325)."""
+        with self._lock:
+            operation = self.current_operation or (self._in_flight[-1] if self._in_flight else None)
+            if operation is None:
+                return
+            self._pause_current(self.clock())
+            self.failed_operation = operation
+            self.history.append((self.clock() - self.started, "FAIL", operation, 0.0))
+            self.traces.append((self.clock() - self.started, f"FAIL {operation}"))
+            self.trace_count += 1
+            if self._tty:
+                self._render_locked()
+            else:
+                self.stream.write(f"{self._step_label(operation)}FAIL  {operation}\n")
                 self.stream.flush()
 
     def begin_download(self, total: int | None, *, detail: str | None = None) -> None:
@@ -481,7 +1213,46 @@ class InstallReporter:
     def _ticker(self) -> None:
         while not self._stop.wait(1.0):
             with self._lock:
-                self._render_locked()
+                self._frame += 1
+                if self._tty:
+                    self._render_locked()
+                else:
+                    self._heartbeat_locked()
+
+    def _heartbeat_locked(self) -> None:
+        """Pipes/CI get one plain line per stall window, never ANSI redraw frames."""
+        now = self.clock()
+        if not self._transfer_stalled(now):
+            return
+        if self._last_heartbeat is not None and now - self._last_heartbeat < HEARTBEAT_SECONDS:
+            return
+        self._last_heartbeat = now
+        operation = self.current_operation or "install"
+        self.stream.write(
+            self._truncate(
+                f"  ... waiting for data ({operation}, +{self._duration(now - self.started)})"
+            )
+            + "\n"
+        )
+        self.stream.flush()
+
+    def _operations(self) -> list[str]:
+        return list(
+            dict.fromkeys(
+                [
+                    *self.completed_operations,
+                    *self._in_flight,
+                    *([self.current_operation] if self.current_operation else []),
+                    *self.remaining_operations,
+                ]
+            )
+        )
+
+    def _step_label(self, operation: str) -> str:
+        operations = self._operations()
+        if operation not in operations:
+            return ""
+        return f"[{operations.index(operation) + 1}/{len(operations)}] "
 
     def _transfer_stalled(self, now: float) -> bool:
         return bool(
@@ -511,58 +1282,68 @@ class InstallReporter:
         return f"{value:.1f} {units[-1]}"
 
     def _render_locked(self) -> None:
-        operations = list(
-            dict.fromkeys(
-                [
-                    *self.completed_operations,
-                    *self._in_flight,
-                    *([self.current_operation] if self.current_operation else []),
-                    *self.remaining_operations,
-                ]
-            )
-        )
+        operations = self._operations()
         now = self.clock()
         elapsed = max(0.0, now - self.started)
-        check, active, empty = (("✓", "◉", " ") if self._unicode else ("x", "*", " "))
+        frames = SPINNER_UNICODE if self._unicode else SPINNER_ASCII
+        check = status_glyph("ok", unicode=self._unicode)
+        active = frames[self._frame % len(frames)]
+        empty = status_glyph("pending", unicode=self._unicode)
+        name_width = max((len(item) for item in operations), default=0)
         lines = [""]
         if self.project_root:
-            lines.append(self._truncate(f"  Install root: {self.project_root}"))
+            lines.append(self._aligned_live_row("Project", self.project_root))
         if self.source_label:
-            lines.append(self._truncate(f"  Source: {self.source_label}"))
+            lines.append(self._aligned_live_row("Source", self.source_label))
         if self.project_root or self.source_label:
             lines.append("")
         for item in operations:
             if item in self.completed_operations:
                 duration = self._duration(self._completed_elapsed.get(item, 0.0))
-                lines.append(self._paint(self._truncate(f"  [{check}] {item}  {duration}"), "32"))
+                lines.append(
+                    self._paint(self._truncate(f"  [{check}] {item:<{name_width}}  {duration}"), "32")
+                )
+            elif item == self.failed_operation:
+                failed = status_glyph("fail", unicode=self._unicode)
+                lines.append(
+                    self._paint(self._truncate(f"  [{failed}] {item:<{name_width}}  failed"), "31")
+                )
             elif item == self.current_operation or item in self._in_flight:
-                lines.append(self._paint(self._truncate(f"  [{active}] {item}  running"), "36"))
+                lines.append(
+                    self._paint(
+                        self._truncate(f"  [{active}] {item:<{name_width}}  running"),
+                        ION_BLUE,
+                    )
+                )
             else:
-                lines.append(self._truncate(f"  [{empty}] {item}"))
+                lines.append(self._paint(self._truncate(f"  [{empty}] {item}"), "2"))
         separator = " · " if self._unicode else " | "
-        metrics = [f"Elapsed {self._duration(elapsed)}"]
+        done = sum(1 for item in operations if item in self.completed_operations)
+        total = len(operations)
+        metrics = [f"{done}/{total}", f"Elapsed {self._duration(elapsed)}"]
         rate = self._download_rate()
         if rate is not None:
             metrics.append(self._size(rate))
         if self._transfer_stalled(now):
             metrics.append("waiting for data")
-        log = self.traces[-TRACE_LIMIT:] or [
+        limit = TRACE_LIMIT if self._verbose else min(TRACE_LIMIT, LIVE_TRACE_CONCISE)
+        log = self.traces[-limit:] or [
             (ended, f"{result} {operation} ({self._duration(duration)})")
-            for ended, result, operation, duration in self.history[-TRACE_LIMIT:]
+            for ended, result, operation, duration in self.history[-limit:]
         ]
         trace_path = self.trace_path or Path(".chaos-engine-state/install-trace.json")
         lines.extend(
-            self._paint(line, "36")
+            self._paint(line, "2")
             for line in self._wrap(
                 f"  Trace (last {len(log)} of {self.trace_count}; full log: {trace_path.as_posix()})"
             )
         )
         for ended, message in log:
             lines.extend(self._wrap(f"  [+{self._duration(ended)}] {message}"))
-        lines.append(self._paint("  Summary", "36"))
-        lines.append(self._paint(self._truncate("  " + separator.join(metrics)), "36"))
+        lines.append(self._paint("  Status", ION_BLUE))
+        lines.append(self._paint(self._truncate("  " + separator.join(metrics)), ION_BLUE))
         if self.detail:
-            lines.append(self._paint(self._truncate(f"  {self.detail}"), "36"))
+            lines.append(self._paint(self._truncate(f"  {self.detail}"), ION_BLUE))
         if self._lines:
             self.stream.write(f"\x1b[{self._lines}F")
         rendered = "\n".join(line + "\x1b[K" for line in lines) + "\n"
@@ -577,6 +1358,7 @@ class InstallReporter:
         clients: dict[str, object],
         *,
         repository: str,
+        include_heal_handoff: bool = False,
     ) -> None:
         commit = doctor.get("commit") if isinstance(doctor, dict) else None
         if not isinstance(commit, str) or len(commit) != 40:
@@ -584,41 +1366,99 @@ class InstallReporter:
         doctor_status = doctor.get("status") if isinstance(doctor, dict) else None
         if not isinstance(doctor_status, str) or not doctor_status:
             doctor_status = "unknown"
+        if doctor_status == "healthy" and not include_heal_handoff:
+            clear_stale_install_failure_artifacts(project)
         components = doctor.get("components") if isinstance(doctor, dict) else None
-        healthy = 0
-        total = 0
-        if isinstance(components, dict):
-            for item in components.values():
-                if not isinstance(item, dict):
-                    continue
-                total += 1
-                if item.get("status") in {"healthy", "absent"}:
-                    healthy += 1
-        client_names = sorted(clients) if isinstance(clients, dict) else []
+        healthy, total, attention = doctor_component_counts(components)
+        elapsed = self._duration(max(0.0, self.clock() - self.started))
+        extra: list[str] = []
+        handoff = project / ".chaos-engine-state" / "merge-handoff.md"
+        if handoff.is_file() and not handoff.is_symlink():
+            doctor_cli = "py -3" if os.name == "nt" else "python3"
+            doctor_command = f"{doctor_cli} .chaos-engine/install.py doctor --project ."
+            prompt = (
+                "Merge ChaosEngine host configuration using "
+                ".chaos-engine-state/merge-handoff.md. Follow "
+                "chaos-engine/references/installer-program.md deterministic merge. "
+                "Preserve every foreign handler and MCP server. Apply only the listed "
+                f"owned blocks. Then run {doctor_command} and follow each fix-next."
+            )
+            extra.extend(
+                [
+                    "Merge handoff",
+                    "Core is installed. Some host files were left unchanged. Details: "
+                    + handoff.as_posix(),
+                    f"`{prompt}`",
+                ]
+            )
+        overlay_handoff = project / ".chaos-engine-state" / "overlay-handoff.md"
+        if overlay_handoff.is_file() and not overlay_handoff.is_symlink():
+            doctor_cli = "py -3" if os.name == "nt" else "python3"
+            doctor_command = f"{doctor_cli} .chaos-engine/install.py doctor --project ."
+            prompt = (
+                "Heal ChaosEngine overlay using .chaos-engine-state/overlay-handoff.md. "
+                "Copy only the listed owned files from chaos-engine/ to .chaos-engine/ "
+                "(byte-identical; create parents as needed). Preserve every foreign "
+                "overlay bit. Rewrite .chaos-engine/manifest.json files digests to match "
+                f"the overlay. Then run {doctor_command} and follow each fix-next."
+            )
+            extra.extend(
+                [
+                    "Overlay handoff",
+                    "Core is installed. Owned overlay bytes still diverge from local SOURCE. "
+                    "Details: .chaos-engine-state/overlay-handoff.md",
+                    "Agent prompt (copy the backtick block):",
+                    f"`{prompt}`",
+                ]
+            )
+        heal = project / HEAL_HANDOFF_RELATIVE
+        if include_heal_handoff and heal.is_file() and not heal.is_symlink():
+            issue_url = "the GitHub issue linked in .chaos-engine-state/heal-handoff.md"
+            try:
+                for line in heal.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("Issue: "):
+                        issue_url = line.split("Issue: ", 1)[1].strip()
+                        break
+            except OSError:
+                # Keep the fallback issue locator when the handoff file cannot be read.
+                pass
+            doctor_cli = "py -3" if os.name == "nt" else "python3"
+            doctor_command = f"{doctor_cli} .chaos-engine/install.py doctor --project ."
+            prompt = heal_handoff_prompt(
+                doctor_command,
+                issue_url,
+                artifacts=present_state_artifacts(project),
+            )
+            extra.extend(
+                [
+                    "Heal handoff",
+                    "Core is installed. Continue with one agent step. Details: "
+                    + HEAL_HANDOFF_RELATIVE,
+                    "Open issue:" if "issues/new?" in issue_url else "GitHub issue:",
+                    issue_url,
+                    "Agent prompt (copy the backtick block):",
+                    f"`{prompt}`",
+                ]
+            )
         self.close()
-        self.stream.write(self._paint("  Summary", "36") + "\n")
         self.stream.write(
-            "Installation Successful! You can now start a new agent session using Codex, Claude, Grok, Gemini, or Copilot. Just ask it to use chaos-engine and you should be good to go!\n"
-        )
-        if commit is not None:
-            self.stream.write(f"Resolved commit: {commit}\n")
-        if total:
-            self.stream.write(
-                f"Doctor: {doctor_status} ({healthy}/{total} components healthy)\n"
-            )
-        else:
-            self.stream.write(f"Doctor: {doctor_status}\n")
-        if client_names:
-            self.stream.write(f"Clients: {', '.join(client_names)}\n")
-        self.stream.write(format_first_session_brief(clients=clients if isinstance(clients, dict) else {}))
-        self.stream.write(
-            format_host_onboarding_cards(
-                detected=detect_install_hosts(),
-                activated=clients if isinstance(clients, dict) else {},
+            format_install_report(
+                project=project,
+                doctor_status=doctor_status,
+                healthy=healthy,
+                total=total,
+                attention=attention,
+                commit=commit,
+                clients=clients if isinstance(clients, dict) else {},
+                repository=repository,
+                source_label=self.source_label,
+                elapsed=elapsed,
+                extra_blocks=extra,
+                color=self._color,
+                unicode=self._unicode,
+                width=self._width(),
             )
         )
-        self.stream.write(f"{installer_user_guide_url(repository)}\n")
-        self.stream.write(f"Full install trace: {install_trace_path(project).as_posix()}\n")
         self.stream.flush()
 
     def close(self) -> None:
@@ -638,8 +1478,21 @@ class InstallReporter:
 
 
 
+def _report_style(value: str, color: str, *, enabled: bool) -> str:
+    if not enabled:
+        return value
+    if color.startswith("\x1b"):
+        return f"{color}{value}\x1b[0m"
+    return f"\x1b[{color}m{value}\x1b[0m"
+
+
+def _align_report(label: str, value: str, *, color: bool = False) -> str:
+    painted = _report_style(f"{label:<10}", ION_BLUE, enabled=color)
+    return f"  {painted} {value}"
+
+
 def format_first_session_brief(*, clients: dict[str, object] | None = None) -> str:
-    """Return the post-install first-session brief (landed / untracked / next 3)."""
+    """Return the First-session brief heading followed by three numbered next steps."""
     client_names = sorted(clients) if isinstance(clients, dict) else []
     if client_names:
         open_host = (
@@ -654,16 +1507,196 @@ def format_first_session_brief(*, clients: dict[str, object] | None = None) -> s
         )
     lines = [
         "First-session brief:",
-        "  Landed: portable core (`.chaos-engine/`), lifecycle hooks, five host adapters,",
-        "    Caveman + Ponytail + Headroom companions, self-improve skill, Memory / MemPalace / Graphify store tooling.",
-        "  Untracked: generated indexes, caches, receipts, and runtimes",
-        "    (`.chaos-engine-runtime*`, dependency/host receipts, `graphify-out`, local tool caches).",
-        "    Canonical adapters and config stay trackable.",
-        "  Next:",
+        "  To get started:",
         f"    1. {open_host}",
         "    2. Ask the agent to load / use the `chaos-engine` skill.",
         "    3. Run a small sample task (for example: ask doctor status, or a one-file reversible edit).",
     ]
+    return "\n".join(lines) + "\n"
+
+
+def format_landed_untracked_lines() -> list[str]:
+    """Return Landed/Untracked receipt lines (folded under Guide/Trace)."""
+    return [
+        "  Landed: portable core (`.chaos-engine/`), lifecycle hooks, five host adapters,",
+        "    Caveman + Ponytail companions, self-improve skill, Memory / MemPalace / Graphify store tooling.",
+        "  Untracked: generated indexes, caches, receipts, and runtimes",
+        "    (`.chaos-engine-runtime*`, dependency/host receipts, `graphify-out`, local tool caches).",
+        "    Canonical adapters and config stay trackable.",
+    ]
+
+
+def doctor_component_counts(components: object) -> tuple[int, int, tuple[str, ...]]:
+    """Count components the way `install.py doctor` does (#6493).
+
+    A component is healthy when doctor counts it healthy: status ``healthy`` or
+    ``compatible-legacy``, or ``absent`` for an optional component. Degraded and
+    advisory rows are named instead of being counted as healthy.
+    """
+    healthy = 0
+    total = 0
+    attention: list[str] = []
+    if isinstance(components, dict):
+        for name in sorted(str(item) for item in components):
+            item = components[name]
+            if not isinstance(item, dict):
+                continue
+            total += 1
+            status = str(item.get("status") or "unknown")
+            impact = str(item.get("taskImpact") or "required")
+            if status in {"healthy", "compatible-legacy"} or (
+                status == "absent" and impact == "optional"
+            ):
+                healthy += 1
+            else:
+                attention.append(f"{name} {status}")
+    return healthy, total, tuple(attention)
+
+
+def final_install_doctor(target: Path, project: Path, fallback: dict[str, object]) -> dict[str, object]:
+    """Run `install.py doctor`'s exact checks from the installed core (#6493).
+
+    The downloaded installer's folder is already deleted at this point, so its
+    sibling probes (companions, identity, overlay, shared-store freshness) would
+    be skipped silently and the summary would count fewer, healthier components.
+    """
+    run = installed_core_doctor(target)
+    if run is None:
+        return fallback
+    try:
+        document = run(project, probe_retrieve=True)
+    except (OSError, RuntimeError, ValueError, TypeError, ImportError):
+        return fallback
+    return document if isinstance(document, dict) else fallback
+
+
+def installed_core_doctor(target: Path):
+    """Return the installed core's ``doctor_with_dependencies``, or None (#6499).
+
+    The downloaded installer's folder is gone after install, so only the installed
+    core still sees every sibling probe that ``install.py doctor`` runs.
+    """
+    core = Path(target) / "install.py"
+    if not core.is_file():
+        return None
+    try:
+        run = runpy.run_path(str(core)).get("doctor_with_dependencies")
+    except (OSError, RuntimeError, ValueError, TypeError, ImportError, SyntaxError):
+        return None
+    return run if callable(run) else None
+
+
+def verify_gate_doctor(installer, target: Path, project: Path) -> dict[str, object]:
+    """Verify gate from the installed core so it checks what ``install.py doctor`` does (#6499)."""
+    run = installed_core_doctor(target) or installer.doctor_with_dependencies
+    return run(project, verify_clients=False)
+
+
+def _doctor_glyph_kind(doctor_status: str) -> str:
+    if doctor_status == "healthy":
+        return "ok"
+    if doctor_status in UNHEALTHY_DOCTOR_STATUSES:
+        return "warn"
+    return "info"
+
+
+def format_install_report(
+    *,
+    project: Path,
+    doctor_status: str,
+    healthy: int,
+    total: int,
+    commit: str | None,
+    clients: dict[str, object],
+    attention: tuple[str, ...] = (),
+    repository: str,
+    source_label: str | None,
+    elapsed: str,
+    extra_blocks: list[str] | None = None,
+    color: bool = False,
+    unicode: bool = False,
+    width: int = 80,
+) -> str:
+    """Render the finish receipt: headline, aligned facts, numbered next steps (#6325)."""
+    unhealthy = doctor_status in UNHEALTHY_DOCTOR_STATUSES
+    tone = "33" if unhealthy else "32"
+    title = "Installed with warnings" if unhealthy else "Installation Successful!"
+    glyph = status_glyph("warn" if unhealthy else "ok", unicode=unicode)
+    headline = (
+        f"{_report_style(glyph, tone, enabled=color)} "
+        f"{_report_style(title, tone, enabled=color)}"
+    )
+    lines = ["", f"  {headline}  ({elapsed})"]
+    if width >= 48:
+        rule = "──" if unicode else "--"
+        lines.append("  " + _report_style(rule * 18, ION_BLUE, enabled=color))
+    lines.append("")
+    lines.append(_align_report("Project", str(Path(project)), color=color))
+    if source_label:
+        lines.append(_align_report("Source", source_label, color=color))
+    if commit is not None:
+        short = commit[:12] + ("…" if unicode else "...") if len(commit) == 40 else commit
+        lines.append(_align_report("Commit", short, color=color))
+    doctor_glyph = status_glyph(_doctor_glyph_kind(doctor_status), unicode=unicode)
+    doctor_value = f"{doctor_glyph} {doctor_status}"
+    if total:
+        doctor_value += f"  {healthy}/{total} components"
+    if attention:
+        doctor_value += f" (needs attention: {', '.join(attention)})"
+    lines.append(_align_report("Doctor", doctor_value, color=color))
+    client_names = sorted(clients) if isinstance(clients, dict) else []
+    lines.append(
+        _align_report("Hosts", ", ".join(client_names) or "none activated yet", color=color)
+    )
+    lines.append("")
+    started = format_first_session_brief(clients=clients).rstrip("\n")
+    if color:
+        started = started.replace(
+            "To get started:",
+            _report_style("To get started:", ION_BLUE, enabled=True),
+            1,
+        )
+    lines.append(started)
+    if extra_blocks:
+        lines.append("")
+        for block in extra_blocks:
+            if block in {"Merge handoff", "Heal handoff"}:
+                paint = "31" if block == "Heal handoff" else ION_BLUE
+                lines.append("  " + _report_style(block, paint, enabled=color))
+            else:
+                lines.append(block)
+    lines.append("")
+    lines.append(
+        format_host_onboarding_cards(
+            detected=detect_install_hosts(),
+            activated=clients,
+            color=color,
+        ).rstrip("\n")
+    )
+    lines.append("")
+    guide = installer_user_guide_url(repository)
+    guide_shown = guide
+    if color and unicode:
+        guide_shown = f"\x1b]8;;{guide}\x1b\\{guide}\x1b]8;;\x1b\\"
+    lines.append(_align_report("Guide", guide_shown, color=color))
+    trace = install_trace_path(Path(project)).as_posix()
+    # Stable machine-readable receipt lines (agents and tests parse these).
+    receipt = []
+    if commit is not None:
+        receipt.append(f"Resolved commit: {commit}")
+    if total:
+        receipt.append(f"Doctor: {doctor_status} ({healthy}/{total} components healthy)")
+    else:
+        receipt.append(f"Doctor: {doctor_status}")
+    if client_names:
+        receipt.append(f"Clients: {', '.join(client_names)}")
+    receipt.append(f"Full install trace: {trace}")
+    lines.append(_align_report("Receipt", _report_style(receipt[0], "2", enabled=color), color=color))
+    lines.extend(
+        "             " + _report_style(item, "2", enabled=color) for item in receipt[1:]
+    )
+    lines.extend(format_landed_untracked_lines())
+    lines.append("")
     return "\n".join(lines) + "\n"
 
 
@@ -721,8 +1754,8 @@ HOST_ONBOARDING_CARDS = {
             "`projectTrusted` is false run `/hooks-trust`, then reload hooks."
         ),
         "gap": (
-            "Hook trust is host-gated; doctor reports recovery-required until trusted "
-            "hooks load."
+            "Hook trust is host-gated; doctor stays healthy and reports sync-advisory "
+            "until the operator runs `/hooks-trust` when using Grok."
         ),
     },
     "gemini": {
@@ -757,29 +1790,55 @@ def format_host_onboarding_cards(
     *,
     detected: list[tuple[str, str, bool]] | None = None,
     activated: dict[str, object] | None = None,
+    color: bool = False,
 ) -> str:
-    """Render five host onboarding cards with enablement path and explicit gaps."""
+    """Render a rustup-style host table; how/gap only for one actionable host."""
     detected_map = {
         host_id: found for host_id, _label, found in (detected or [])
     }
     activated_names = {
         str(name).casefold() for name in (activated or {})
     }
-    lines = ["Host onboarding cards:"]
-    for host_id, _command, _label in HOST_DETECT_COMMANDS:
-        card = HOST_ONBOARDING_CARDS[host_id]
-        markers: list[str] = []
-        if detected_map.get(host_id):
-            markers.append("detected")
-        if host_id in activated_names or any(
+
+    def _is_activated(host_id: str) -> bool:
+        return host_id in activated_names or any(
             name == host_id or name.startswith(f"{host_id}-")
             for name in activated_names
-        ):
-            markers.append("activated")
-        marker_text = f" [{', '.join(markers)}]" if markers else ""
-        lines.append(f"  {card['label']}{marker_text} — {card['path']}")
-        lines.append(f"    how: {card['how']}")
-        lines.append(f"    gap: {card['gap']}")
+        )
+
+    actionable: str | None = None
+    for host_id, _command, _label in HOST_DETECT_COMMANDS:
+        if detected_map.get(host_id) and not _is_activated(host_id):
+            actionable = host_id
+            break
+    if actionable is None:
+        for host_id, _command, _label in HOST_DETECT_COMMANDS:
+            if not detected_map.get(host_id) and not _is_activated(host_id):
+                actionable = host_id
+                break
+    heading = _report_style("Hosts", ION_BLUE, enabled=color)
+    lines = ["Host onboarding cards:", f"  {heading}"]
+    for host_id, _command, _label in HOST_DETECT_COMMANDS:
+        card = HOST_ONBOARDING_CARDS[host_id]
+        found = bool(detected_map.get(host_id))
+        if _is_activated(host_id):
+            status = "activated"
+        elif host_id == "copilot" and found:
+            status = "IDE signal"
+        elif found:
+            status = "detected"
+        else:
+            status = "not on PATH"
+        status_cell = f"{status:<14}"
+        if color and status == "activated":
+            status_cell = _report_style(status_cell, "32", enabled=True)
+        elif color:
+            status_cell = _report_style(status_cell, "2", enabled=True)
+        path = card["path"].replace("file/hook injection", "file/hook")
+        lines.append(f"    {card['label']:<16} {status_cell} {path}")
+        if host_id == actionable:
+            lines.append(f"      how: {card['how']}")
+            lines.append(f"      gap: {card['gap']}")
     return "\n".join(lines) + "\n"
 
 
@@ -809,31 +1868,41 @@ def run_first_run_wizard(
     hosts = detect_install_hosts(which=which)
     present = [label for _host_id, label, found in hosts if found]
     absent = [label for _host_id, label, found in hosts if not found]
+    unicode = stream_supports_unicode(output)
+    found_glyph = status_glyph("ok", unicode=unicode)
+    missing_glyph = status_glyph("pending", unicode=unicode)
     output.write("ChaosEngine first-run wizard\n")
-    output.write(f"Project: {project}\n")
-    output.write(f"Upstream: {repository}\n")
+    output.write(_align_report("Project", str(project)) + "\n")
+    output.write(_align_report("Source", repository) + "\n")
+    output.write("\n  1. What gets installed\n")
     output.write(
-        "This install will add the portable ChaosEngine core, lifecycle hooks, "
-        "Memory, MemPalace, Graphify CLI, five host adapters, and the Caveman + "
-        "Ponytail companion skills (on by default; your off-switches still win).\n"
+        "     The portable ChaosEngine core, lifecycle hooks, Memory, MemPalace,\n"
+        "     Graphify CLI, five host adapters, and the Caveman + Ponytail companion\n"
+        "     skills (on by default; your off-switches still win).\n"
     )
     if with_maven_tools:
-        output.write("Maven Tools MCP will also be installed for this project.\n")
+        output.write("     Maven Tools MCP will also be installed for this project.\n")
+    output.write("\n  2. Hosts\n")
     if present:
-        output.write("Detected host CLIs: " + ", ".join(present) + "\n")
+        output.write("     Detected host CLIs: " + ", ".join(present) + "\n")
     else:
         output.write(
-            "No host CLIs detected yet (Claude Code, Codex, Grok, Gemini, or IDE). "
-            "Adapters still install for all five hosts.\n"
+            "     No host CLIs detected yet (Claude Code, Codex, Grok, Gemini, or IDE).\n"
+            "     Adapters still install for all five hosts.\n"
         )
     if absent:
-        output.write("Not detected on PATH: " + ", ".join(absent) + "\n")
-    output.write("Next after install:\n")
+        output.write("     Not detected on PATH: " + ", ".join(absent) + "\n")
+    for _host_id, label, found in hosts:
+        glyph = found_glyph if found else missing_glyph
+        status = "on PATH" if found else "not on PATH"
+        output.write(f"       {glyph} {label:<16} {status}\n")
+    output.write("\n  3. Next after install\n")
     for host_id, label, found in hosts:
-        marker = "*" if found else "-"
-        output.write(f"  {marker} {label}: {HOST_NEXT_ACTIONS[host_id]}\n")
+        glyph = found_glyph if found else missing_glyph
+        output.write(f"     {glyph} {label}: {HOST_NEXT_ACTIONS[host_id]}\n")
+    output.write("\n")
     output.flush()
-    confirm_operation("Install companions (Caveman + Ponytail + Headroom pin) with the core", input_stream=input_stream, output=output)
+    confirm_operation("Install companions (Caveman + Ponytail) with the core", input_stream=input_stream, output=output)
     confirm_operation("Continue ChaosEngine install", input_stream=input_stream, output=output)
 
 
@@ -863,12 +1932,95 @@ def parse_retry_after(value: str) -> float | None:
     return delay
 
 
+GITHUB_TOKEN_HOSTS = frozenset(
+    {"api.github.com", "github.com", "codeload.github.com", "raw.githubusercontent.com"}
+)
+GH_AUTH_TIMEOUT_SECONDS = 5
+RATE_LIMIT_FAILURE = "GitHub API rate limit reached"
+_GH_CLI_TOKEN: list[str | None] = []
+_GH_CLI_LOCK = threading.Lock()
+
+
+def _gh_cli_token() -> str | None:
+    """`gh auth token` once per process, bounded; None when gh is absent or signed out."""
+    if os.environ.get("CHAOS_ENGINE_GH_AUTH", "").strip().casefold() in {"0", "false", "no", "off"}:
+        return None
+    with _GH_CLI_LOCK:
+        if not _GH_CLI_TOKEN:
+            _GH_CLI_TOKEN.append(_read_gh_cli_token())
+        return _GH_CLI_TOKEN[0]
+
+
+def _read_gh_cli_token() -> str | None:
+    executable = shutil.which("gh")
+    if not executable:
+        return None
+    try:
+        completed = subprocess.run(  # nosec B603 - resolved gh binary, fixed argv.
+            [executable, "auth", "token", "--hostname", "github.com"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=GH_AUTH_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    token = (completed.stdout or "").strip()
+    if completed.returncode != 0 or not token or any(character.isspace() for character in token):
+        return None
+    return token
+
+
+def github_request_token() -> tuple[str | None, str]:
+    """#6235: GITHUB_TOKEN, then GH_TOKEN, then `gh auth token`, else anonymous.
+
+    Returns the token and the name of its source. The value is only ever put
+    in an Authorization header; it is never printed, traced, or written.
+    """
+    for key in ("GITHUB_TOKEN", "GH_TOKEN"):
+        value = os.environ.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip(), key
+    token = _gh_cli_token()
+    return (token, "gh auth token") if token else (None, "anonymous")
+
+
 def request(url: str) -> urllib.request.Request:
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "ChaosEngine-bootstrap"}
-    token = os.environ.get("GITHUB_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    if (urllib.parse.urlsplit(url).hostname or "").casefold() in GITHUB_TOKEN_HOSTS:
+        token, _source = github_request_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
     return urllib.request.Request(url, headers=headers)
+
+
+def rate_limit_failure(error: BaseException, url: str) -> str | None:
+    """Actionable message for a GitHub 403/429 whose quota is spent, else None."""
+    if not isinstance(error, urllib.error.HTTPError) or error.code not in {403, 429}:
+        return None
+    headers = error.headers
+    if headers is None or str(headers.get("X-RateLimit-Remaining", "")).strip() != "0":
+        return None
+    reset = str(headers.get("X-RateLimit-Reset", "")).strip()
+    when = ""
+    if reset.isdigit():
+        minutes = max(0, round((int(reset) - time.time()) / 60))
+        when = f"; it resets at {time.strftime('%H:%M UTC', time.gmtime(int(reset)))} (in about {minutes} min)"
+    host = urllib.parse.urlsplit(url).hostname or "GitHub"
+    _token, source = github_request_token()
+    if source == "anonymous":
+        return (
+            f"{RATE_LIMIT_FAILURE}: the anonymous quota for {host} is spent{when}. "
+            'Fix: export GITHUB_TOKEN="$(gh auth token)" '
+            "(PowerShell: $env:GITHUB_TOKEN = gh auth token), or run `gh auth login` "
+            "so the installer uses your GitHub login automatically; then rerun the same install command."
+        )
+    return (
+        f"{RATE_LIMIT_FAILURE}: the quota of the token from {source} for {host} is spent{when}. "
+        "Fix: wait for the reset, or export GITHUB_TOKEN with a different token; "
+        "then rerun the same install command."
+    )
 
 
 def valid_branch(branch: str) -> bool:
@@ -934,6 +2086,9 @@ def read_response(
                 if isinstance(error, urllib.error.HTTPError):
                     error.close()
             if delay is None or attempt + 1 == MAX_READ_ATTEMPTS:
+                limited = rate_limit_failure(error, url)
+                if limited is not None:
+                    raise RuntimeError(limited) from error
                 raise RuntimeError(
                     "unable to resolve latest ChaosEngine from the configured upstream"
                 ) from error
@@ -943,7 +2098,17 @@ def read_response(
     return value
 
 
+def normalize_repository(value: str) -> str:
+    """Accept `owner/name` or `https://github.com/owner/name[.git]` (#6230).
+
+    Anything else is returned unchanged so `resolve_latest` rejects it.
+    """
+    match = GITHUB_URL.fullmatch(value.strip())
+    return match.group(1) if match else value
+
+
 def resolve_latest(repository: str, branch: str | None, opener=urllib.request.urlopen) -> tuple[str, str]:
+    repository = normalize_repository(repository)
     components = repository.split("/")
     if (
         REPOSITORY.fullmatch(repository) is None
@@ -982,6 +2147,96 @@ def resolve_latest(repository: str, branch: str | None, opener=urllib.request.ur
     return commit, branch
 
 
+def is_pack_path(path: PurePosixPath) -> bool:
+    """A project pack or add-on manifest file that ships beside the core.
+
+    `<dir>/ce-pack/...` is a project pack; `<dir>/ce-addons/...` holds optional
+    add-on manifests. Files an add-on includes from elsewhere are fetched only
+    after the user selected it (`download_addon_files`).
+    """
+    return len(path.parts) >= 3 and path.parts[1] in {"ce-pack", "ce-addons"}
+
+
+ADDON_FLAG = re.compile(r"--(with|without)-([a-z][a-z0-9-]*)")
+
+
+def split_addon_flags(arguments: list[str]) -> tuple[set[str], set[str], list[str]]:
+    """`--with-<addon>` / `--without-<addon>` are validated against manifests after download."""
+    requested: set[str] = set()
+    removed: set[str] = set()
+    rest: list[str] = []
+    for argument in arguments:
+        match = ADDON_FLAG.fullmatch(argument)
+        if match is None:
+            rest.append(argument)
+            continue
+        (requested if match.group(1) == "with" else removed).add(match.group(2))
+    return requested, removed, rest
+
+
+def download_addon_files(
+    repository: str,
+    commit: str,
+    destination: Path,
+    source: Path,
+    addons: tuple[str, ...],
+    *,
+    opener=urllib.request.urlopen,
+    reporter: InstallReporter | None = None,
+) -> int:
+    """Fetch files selected repository-shipped add-ons include from outside their folder."""
+    catalog_path = source / "addon_catalog.py"
+    if not addons or not catalog_path.is_file():
+        return 0
+    catalog = types.SimpleNamespace(**runpy.run_path(str(catalog_path)))
+    found = catalog.discover(source)
+    patterns = []
+    for name in addons:
+        entry = found[name]
+        if entry["internal"] or not entry["manifest"].get("include"):
+            continue
+        manifest_path = PurePosixPath(Path(entry["root"]).relative_to(destination).as_posix()) / catalog.MANIFEST
+        patterns.extend(catalog.repository_paths(manifest_path, entry["manifest"]))
+    if not patterns:
+        return 0
+    encoded_repository = "/".join(urllib.parse.quote(part, safe="") for part in repository.split("/"))
+    document = read_response(
+        opener, f"https://api.github.com/repos/{encoded_repository}/git/trees/{commit}?recursive=1"
+    )
+    value = json.loads(document)
+    if not isinstance(value, dict) or value.get("truncated") is not False:
+        raise ValueError("GitHub returned an incomplete ChaosEngine source tree")
+    selected = []
+    for entry in value.get("tree", []):
+        path = PurePosixPath(str(entry.get("path", "")))
+        if entry.get("type") != "blob" or ".." in path.parts or path.is_absolute():
+            continue
+        if destination.joinpath(*path.parts).is_file():
+            continue
+        for base, pattern in patterns:
+            if path.is_relative_to(base) and fnmatch.fnmatchcase(path.relative_to(base).as_posix(), pattern):
+                size = entry.get("size")
+                if not isinstance(size, int) or size < 0 or size > MAX_FILE_BYTES:
+                    raise ValueError("ChaosEngine source file exceeds the download limit")
+                selected.append(path)
+                break
+    if len(selected) > MAX_FILES:
+        raise ValueError("ChaosEngine add-on contains too many files")
+    for path in selected:
+        encoded_path = "/".join(urllib.parse.quote(part, safe="") for part in path.parts)
+        content = read_response(
+            opener,
+            f"https://raw.githubusercontent.com/{encoded_repository}/{commit}/{encoded_path}",
+            limit=MAX_FILE_BYTES,
+        )
+        target = destination.joinpath(*path.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    if reporter is not None:
+        reporter.trace(f"download {len(selected)} add-on files")
+    return len(selected)
+
+
 def download_source(
     repository: str,
     commit: str,
@@ -1016,7 +2271,7 @@ def download_source(
         path = PurePosixPath(entry["path"])
         if path.is_absolute() or ".." in path.parts or not path.parts:
             raise ValueError("ChaosEngine source tree contains an unsafe path")
-        if path.parts[0] != "chaos-engine":
+        if path.parts[0] != "chaos-engine" and not is_pack_path(path):
             continue
         if entry.get("type") == "tree":
             continue
@@ -1025,6 +2280,10 @@ def download_source(
         size = entry.get("size")
         if not isinstance(size, int) or size < 0 or size > MAX_FILE_BYTES:
             raise ValueError("ChaosEngine source file exceeds the download limit")
+        if is_pack_path(path):
+            selected.append((path, size))
+            total += size
+            continue
         relative = PurePosixPath(*path.parts[1:])
         if not relative.parts:
             raise ValueError("ChaosEngine source tree has an unexpected layout")
@@ -1033,7 +2292,7 @@ def download_source(
             "STANDALONE.md",
         }:
             continue
-        selected.append((relative, size))
+        selected.append((path, size))
         total += size
 
     if not selected:
@@ -1048,19 +2307,29 @@ def download_source(
 
     source = destination / "chaos-engine"
     source.mkdir()
-    for relative, expected_size in selected:
-        encoded_path = "/".join(urllib.parse.quote(part, safe="") for part in relative.parts)
+    mkdir_lock = threading.Lock()
+
+    def fetch_blob(item: tuple[PurePosixPath, int]) -> None:
+        repository_path, expected_size = item
+        encoded_path = "/".join(urllib.parse.quote(part, safe="") for part in repository_path.parts)
         content = read_response(
             opener,
-            f"https://raw.githubusercontent.com/{encoded_repository}/{commit}/chaos-engine/{encoded_path}",
+            f"https://raw.githubusercontent.com/{encoded_repository}/{commit}/{encoded_path}",
             limit=MAX_FILE_BYTES,
             progress=None if reporter is None else reporter.downloaded,
         )
         if len(content) != expected_size:
             raise ValueError("ChaosEngine source file does not match the resolved tree")
-        target = source.joinpath(*relative.parts)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target = destination.joinpath(*repository_path.parts)
+        with mkdir_lock:
+            target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
+
+    workers = max(1, min(DOWNLOAD_WORKERS, len(selected)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(fetch_blob, item) for item in selected]
+        for future in as_completed(futures):
+            future.result()
     if not (source / "skills/chaos-engine/SKILL.md").is_file():
         raise ValueError("ChaosEngine source tree is incomplete")
     return source
@@ -1097,6 +2366,8 @@ def install_latest(
     reporter: InstallReporter | None = None,
     terminal_factory=interactive_terminal,
     bundle_options: dict[str, bool] | None = None,
+    addons_requested: set[str] | None = None,
+    addons_removed: set[str] | None = None,
 ) -> dict[str, object]:
     if skip_tools and with_maven_tools:
         raise ValueError("--with-maven-tools cannot be combined with --skip-tools")
@@ -1140,7 +2411,9 @@ def install_latest(
         reporter.start("Resolve source", remaining=remaining("Resolve source"))
         commit, resolved_branch = resolve_latest(repository, branch, opener=opener)
         reporter.complete("Resolve source", remaining=remaining("Resolve source"))
-        temporary = tempfile.TemporaryDirectory(prefix="chaos-engine-bootstrap-")
+        temporary = tempfile.TemporaryDirectory(
+            prefix="chaos-engine-bootstrap-", dir=disjoint_download_parent(project)
+        )
         source_url = f"https://github.com/{repository}/tree/{commit}/chaos-engine"
         confirm("Download source")
         reporter.start("Download source", remaining=remaining("Download source"), detail=source_url)
@@ -1149,7 +2422,20 @@ def install_latest(
         )
         reporter.complete("Download source", remaining=remaining("Download source"))
         installer = load_installer(source)
+        addons: tuple[str, ...] = ()
+        plan = getattr(installer, "plan_install", None)
+        planned = plan(project, source, addons_requested or set(), addons_removed or set()) if callable(plan) else None
+        if isinstance(planned, tuple) and len(planned) == 2 and isinstance(planned[0], str):
+            distribution = distribution or planned[0]
+            addons = tuple(planned[1])
+            if addons:
+                download_addon_files(
+                    repository, commit, Path(temporary.name), source, addons, opener=opener, reporter=reporter
+                )
+        elif addons_requested or addons_removed:
+            raise ValueError("this ChaosEngine revision does not support optional add-ons")
         distribution = resolve_distribution(installer, project, source, distribution)
+        addon_options = {"addons": addons} if addons else {}
         if distribution == "portable":
             provenance = {
                 "kind": "git-digest",
@@ -1164,12 +2450,15 @@ def install_latest(
                 "branch": resolved_branch,
                 "commit": commit,
             }
+        legacy_layout = getattr(installer, "legacy_profile_layout", None)
+        legacy_packs = legacy_layout(project / ".chaos-engine") if callable(legacy_layout) else []
         confirm("Install core")
         reporter.start("Install core", remaining=remaining("Install core"))
         reporter.trace(f"install core commit={commit} distribution={distribution}")
         if skip_tools:
             target = installer.install(
-                project, source, commit, source_record=provenance, distribution=distribution
+                project, source, commit, source_record=provenance, distribution=distribution,
+                **addon_options,
             )
             reporter.complete("Install core", remaining=remaining("Install core"))
         else:
@@ -1190,6 +2479,7 @@ def install_latest(
                 reporter=reporter,
                 confirmer=confirm,
                 bundle_options=bundle_options,
+                **addon_options,
             )
             if with_maven_tools and "Install Maven Tools" in getattr(
                 reporter, "_in_flight", ()
@@ -1208,6 +2498,14 @@ def install_latest(
                 reporter.current_operation == "Install core"
             ):
                 reporter.complete("Install core", remaining=remaining("Install core"))
+        suggest = getattr(installer, "suggest_addons", None)
+        tips = suggest(project, source, addons) if callable(suggest) else []
+        if tips:
+            print(installer.addon_tip(tips), file=sys.stderr)
+        if legacy_packs:
+            # CE-10 hard cut: name the replaced profiles/<name> layout once.
+            replaced = not legacy_layout(project / ".chaos-engine")
+            print(installer.hard_cut_message(legacy_packs, replaced=replaced), file=sys.stderr)
         temporary.cleanup()
     except BaseException:
         reporter.close()
@@ -1224,10 +2522,66 @@ def install_latest(
     host_controller = installer.load_installed_controller(target, "hosts")
     try:
         reporter.start("Verify installation", remaining=remaining("Verify installation"))
-        doctor = installer.doctor_with_dependencies(project, verify_clients=False)
+        migrate = getattr(host_controller, "migrate_legacy_memory_store", None)
+        if callable(migrate):
+            migrate(project)
+        doctor = verify_gate_doctor(installer, target, project)
         if _required_install_unhealthy(doctor):
-            raise InstallHealthError("Verify installation", doctor)
-        reporter.complete("Verify installation", remaining=remaining("Verify installation"))
+            health_error = InstallHealthError("Verify installation", doctor)
+            if not prior_install and core_install_py(project):
+                reporter.complete(
+                    "Verify installation", remaining=remaining("Verify installation")
+                )
+                try:
+                    confirm("Activate clients")
+                    reporter.start(
+                        "Activate clients", remaining=remaining("Activate clients")
+                    )
+                    if interactive:
+                        clients = host_controller.activate_detected_plugins(
+                            project, confirmer=confirm
+                        )
+                    else:
+                        clients = host_controller.activate_detected_plugins(project)
+                    reporter.complete("Activate clients", remaining=())
+                except Exception:
+                    clients = {"clients": {}}
+                prefix = installer_cli_prefix(project) or "python3 .chaos-engine/install.py"
+                fields = installer_issue_fields(
+                    "CE-INSTALL-FAILED",
+                    health_error,
+                    reporter,
+                    project,
+                    f"{prefix} status --project . --json",
+                    f"{prefix} doctor --project . --json",
+                )
+                issue_url = publish_installer_issue(
+                    repository, "CE-INSTALL-FAILED", fields
+                )
+                write_heal_handoff(project, fields, issue_url)
+                doctor["clients"] = clients.get("clients", {})
+                if terminal_context is not None:
+                    terminal_context.__exit__(None, None, None)
+                reporter.success(
+                    project,
+                    doctor,
+                    doctor["clients"],
+                    repository=repository,
+                    include_heal_handoff=True,
+                )
+                reporter.close()
+                return {
+                    "status": "heal-handoff",
+                    "root": str(target),
+                    "commit": commit,
+                    "clients": clients,
+                    "doctor": doctor,
+                    "issueUrl": issue_url,
+                }
+            raise health_error
+        reporter.complete(
+            "Verify installation", remaining=remaining("Verify installation")
+        )
         confirm("Activate clients")
         reporter.start("Activate clients", remaining=remaining("Activate clients"))
         if interactive:
@@ -1235,6 +2589,7 @@ def install_latest(
         else:
             clients = host_controller.activate_detected_plugins(project)
         reporter.complete("Activate clients", remaining=())
+        doctor = final_install_doctor(target, project, doctor)
         doctor["clients"] = clients.get("clients", {})
     except BaseException as error:
         reporter.close()
@@ -1243,8 +2598,39 @@ def install_latest(
             error.observed_upgrade_components = error.observed_components
             error.observed_upgrade_component_details = error.observed_component_details
         if not isinstance(error, (KeyboardInterrupt, InstallCancelled)):
-            if prior_install and (project / ".chaos-engine.backup").exists():
-                installer.rollback(project)
+            backup = project / ".chaos-engine.backup"
+            keep_core = False
+            if prior_install and backup.exists():
+                probe = getattr(
+                    installer, "account_rollback_has_exact_prior_host_receipt", None
+                )
+                if callable(probe):
+                    try:
+                        keep_core = probe(project) is False
+                    except (OSError, ValueError):
+                        # A probe failure must not replace the verify error.
+                        keep_core = True
+            if prior_install and backup.exists() and not keep_core:
+                core_marker = project / ".chaos-engine" / "install.py"
+                core_before = _regular_file_bytes(core_marker)
+                try:
+                    installer.rollback(project)
+                except ValueError as rollback_error:
+                    # A missing receipt raised before any swap keeps the new core.
+                    # A swap that already replaced the core must stay visible.
+                    core_unchanged = (
+                        core_before is not None
+                        and _regular_file_bytes(core_marker) == core_before
+                    )
+                    if not (_inexact_prior_rollback(rollback_error) and core_unchanged):
+                        raise
+                else:
+                    # #6338: say which core is installed after the rollback.
+                    restored = installed_core_commit(project)
+                    if restored is not None:
+                        error.rolled_back_to = restored  # type: ignore[attr-defined]
+                        error.rolled_back_from = commit  # type: ignore[attr-defined]
+                        record_install_rollback(project, commit, restored)
         if terminal_context is not None:
             terminal_context.__exit__(*sys.exc_info())
         raise
@@ -1264,11 +2650,16 @@ def install_latest(
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--project", type=Path, default=Path.cwd())
-    result.add_argument("--repository", required=True)
+    result.add_argument("--repository", required=True, type=normalize_repository)
     result.add_argument("--branch")
     result.add_argument("--distribution")
     result.add_argument("--skip-tools", action="store_true", help=argparse.SUPPRESS)
     result.add_argument("--with-maven-tools", action="store_true")
+    result.add_argument(
+        "--consumer",
+        action="store_true",
+        help="consumer-repository mode: keep the overlay out of git status via .git/info/exclude",
+    )
     result.add_argument(
         "--maven-tools-mode", choices=("native", "docker"), default="native"
     )
@@ -1277,15 +2668,32 @@ def parser() -> argparse.ArgumentParser:
         "mempalace",
         "graphify",
         "ponytail",
-        "headroom",
         "caveman",
     ):
         result.add_argument(
             f"--without-{bundle_name}",
             action="store_true",
-            help=f"Disable default-on {bundle_name} (Memory/MemPalace/Graphify/Ponytail/Headroom/Caveman).",
+            help=f"Disable default-on {bundle_name} (Memory/MemPalace/Graphify/Ponytail/Caveman).",
         )
+    result.add_argument(
+        "--lean-grok-skills",
+        action="store_true",
+        default=False,
+        help=(
+            "Recommended for ChaosEngine: disable Grok bundled game-* and imagine "
+            "skills via ~/.grok/config.toml (or CHAOS_ENGINE_LEAN_GROK_SKILLS=1)."
+        ),
+    )
+    result.epilog = (
+        "Optional add-ons are never installed by default: add one with --with-<addon>, "
+        "remove it with --without-<addon>, or set CHAOS_ENGINE_ADDONS=a,b."
+    )
     result.add_argument("--interactive", action="store_true")
+    result.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Stream every trace line (same as CHAOS_ENGINE_VERBOSE=1).",
+    )
     return result
 
 
@@ -1322,11 +2730,18 @@ def classify_install_error(error: BaseException) -> str:
         return "CE-INSTALL-UNSUPPORTED-PLATFORM"
     if "entrypoint probe failed" in detail:
         return "CE-INSTALL-PROBE-FAILED"
+    if RATE_LIMIT_FAILURE in detail:
+        return "CE-GITHUB-RATE-LIMIT"
     return "CE-INSTALL-FAILED"
 
 
 def one_line_cause(error: BaseException) -> str:
     text = str(error).strip() or error.__class__.__name__
+    cause = getattr(error, "__cause__", None)
+    if isinstance(cause, BaseException):
+        extra = str(cause).strip() or cause.__class__.__name__
+        if extra and extra not in text:
+            text = f"{text} | cause: {extra}"
     if isinstance(error, FileNotFoundError) or getattr(error, "winerror", None) == 2:
         missing = None
         if getattr(error, "filename", None):
@@ -1341,7 +2756,7 @@ def one_line_cause(error: BaseException) -> str:
             )
     text = " ".join(text.split())
     # Non-HTML [path] so GitHub issue forms cannot strip the marker and leave a
-    # mount prefix such as /media/.../OS after redacting /Users/...
+    # removable-media mount prefix after redacting a user home directory
     text = re.sub(
         r"(?<!:)(?:[A-Za-z]:[\\/]|\\\\[^\s\\/]+[\\/]|/(?:(?:media|mnt|Volumes)(?:/\S+?)?/(?:Users|home)|home|Users|tmp|var|private)/)\S+",
         "[path]",
@@ -1354,13 +2769,204 @@ def one_line_cause(error: BaseException) -> str:
     )
 
 
+def installer_issue_fields(
+    code: str,
+    error: BaseException,
+    reporter: InstallReporter | None,
+    project: Path | None,
+    status_command: str,
+    doctor_command: str,
+) -> dict[str, str]:
+    """Build every installer issue-form field from local, redacted evidence."""
+    runtime = runtime_environment()
+    payload = doctor_failure_payload(error)
+    doctor_details = "not reported"
+    if payload.get("components"):
+        labels: list[str] = []
+        components = payload["components"]
+        if isinstance(components, dict):
+            for name, item in components.items():
+                if not isinstance(item, dict):
+                    continue
+                mark = item.get("code") or item.get("detail") or item.get("status")
+                if isinstance(mark, str):
+                    labels.append(f"{name}:{mark}")
+        if labels:
+            doctor_details = ",".join(labels)[:240]
+    hosts_receipt = "unknown"
+    core_dir = "unknown"
+    install_py = "unknown"
+    install_trace = "not available"
+    install_trace_snippet = ""
+    console_log = ""
+    doctor_json = ""
+    if project is not None:
+        try:
+            root = Path(project).resolve()
+            hosts_receipt = (
+                "present" if (root / ".chaos-engine-hosts.json").is_file() else "absent"
+            )
+            core_dir = "present" if (root / ".chaos-engine").is_dir() else "absent"
+            install_py = (
+                "present" if (root / ".chaos-engine" / "install.py").is_file() else "absent"
+            )
+            trace = install_trace_path(root)
+            if trace.is_file():
+                install_trace = ".chaos-engine-state/install-trace.json"
+                raw = redact_report_text(trace.read_text(encoding="utf-8"))
+                lines = [line.strip() for line in raw.splitlines() if line.strip()]
+                install_trace_snippet = " | ".join(lines[-6:])[:400]
+            console_rel, doctor_rel = write_failure_artifacts(root, reporter, error)
+            console_path = root / console_rel
+            if console_path.is_file():
+                console_log = redact_report_text(console_path.read_text(encoding="utf-8"))
+            if doctor_rel != "not available":
+                doctor_path = root / doctor_rel
+                if doctor_path.is_file():
+                    doctor_json = redact_report_text(doctor_path.read_text(encoding="utf-8"))
+        except OSError:
+            # Keep default field values when install artifacts cannot be read.
+            pass
+    return {
+        "error_code": code,
+        "cause": one_line_cause(error)[:240],
+        "failed_phase": getattr(error, "phase", None)
+        or (reporter.current_operation if reporter else "unknown")
+        or "unknown",
+        "unhealthy": ", ".join(getattr(error, "unhealthy", ())) or "not reported",
+        "platform": sys.platform,
+        "os_name": runtime["os_name"] or "unknown",
+        "os_version": runtime["os_version"] or "unknown",
+        "architecture": runtime["architecture"] or "unknown",
+        "python_version": runtime["python_version"] or "unknown",
+        "machine": runtime["machine"] or "unknown",
+        "doctor_details": doctor_details or "not reported",
+        "hosts_receipt": hosts_receipt,
+        "core_dir": core_dir,
+        "install_py": install_py,
+        "install_trace": install_trace,
+        "install_trace_snippet": install_trace_snippet,
+        "console_log": console_log,
+        "doctor_json": doctor_json,
+        "status_command": status_command,
+        "doctor_command": doctor_command,
+        "additional": " ".join(
+            part
+            for part in (
+                "Auto-filled by the ChaosEngine installer.",
+                install_rollback_summary(error),
+            )
+            if part
+        ),
+    }
+
+
+def publish_installer_issue(
+    repository: str,
+    code: str,
+    fields: dict[str, str],
+    *,
+    opener=urllib.request.urlopen,
+    token: str | None = None,
+    extra: dict[str, str] | None = None,
+) -> str:
+    title = f"[ChaosEngine installer] {code}"
+    repository = normalize_repository(repository)
+    resolved = resolve_issue_token(token)
+    if resolved:
+        created = create_installer_github_issue(
+            repository, title, issue_form_markdown(fields), resolved, opener=opener
+        )
+        if created:
+            return created
+    return encode_issue_form_url(repository, title, fields, extra=extra)
+
+
+def next_fix_hint(code: str, error: BaseException, prefix: str | None) -> str:
+    """Return exactly one actionable fix-next for every failure (#6325)."""
+    cause = one_line_cause(error).casefold()
+    rerun = "then rerun the same install one-liner."
+    rules = (
+        (
+            isinstance(error, InstallHealthError) or "doctor did not report" in cause,
+            "paste the heal prompt below into any supported host in this folder.",
+        ),
+        (
+            code == "CE-GITHUB-RATE-LIMIT",
+            'export GITHUB_TOKEN="$(gh auth token)" (or GH_TOKEN, or run '
+            f"`gh auth login`), {rerun}",
+        ),
+        (
+            "maven tools" in cause
+            and any(token in cause for token in ("checksum", "crc", "receipt validation")),
+            f"run `{prefix or 'python3 .chaos-engine/install.py'} repair --project . "
+            "--component maven-tools-mcp` (discards the corrupt cached JAR, then reuses "
+            "a healthy version or reinstalls), then rerun doctor.",
+        ),
+        ("checksum" in cause, f"check network/proxy interference, {rerun}"),
+        (
+            "timed out" in cause or "temporary failure" in cause or "network" in cause,
+            f"restore network connectivity, {rerun}",
+        ),
+        (
+            "python" in cause and ("not found" in cause or "required" in cause),
+            "install Python 3 (or leave it absent so the wrapper bootstraps uv), "
+            + rerun,
+        ),
+        (
+            "core is missing" in cause or "ce_core_missing" in cause,
+            "rerun the same install one-liner so ChaosEngine can restore "
+            ".chaos-engine under the existing host receipt (or uninstall, then install).",
+        ),
+        (
+            "no download found" in cause,
+            "the requested runtime is not downloadable yet; update ChaosEngine "
+            f"(newer releases fall back to the newest downloadable patch), {rerun}",
+        ),
+    )
+    for matched, hint in rules:
+        if matched:
+            return hint
+    if prefix:
+        return f"run `{prefix} doctor --project .` and follow each fix-next, {rerun}"
+    return f"attach the install trace to the issue below, {rerun}"
+
+
+def terminal_issue_link(issue_url: str, *, saved: bool, live: bool) -> str:
+    """Keep a multi-kilobyte prefilled URL off an interactive screen (#6325)."""
+    if not live or not saved or len(issue_url) <= 300:
+        return issue_url
+    label = issue_url.split("?", 1)[0] + " (prefilled installer report)"
+    return (
+        f"\x1b]8;;{issue_url}\x1b\\{label}\x1b]8;;\x1b\\\n"
+        f"Full URL: {HEAL_HANDOFF_RELATIVE}"
+    )
+
+
 def emit_install_failure(
     code: str,
     error: BaseException,
     repository: str,
     reporter: InstallReporter | None = None,
     project: Path | None = None,
-) -> None:
+    opener=urllib.request.urlopen,
+    token: str | None = None,
+) -> str | None:
+    unicode = stream_supports_unicode(sys.stderr)
+    color = (
+        reporter.color_enabled
+        if reporter is not None
+        else terminal_color_enabled(tty=stream_is_tty(sys.stderr))
+    )
+    prefix = installer_cli_prefix(project)
+    print(file=sys.stderr)
+    print(
+        "  "
+        + _report_style(status_glyph("fail", unicode=unicode), "31", enabled=color)
+        + " "
+        + _report_style(f"Installation failed ({code})", "31", enabled=color),
+        file=sys.stderr,
+    )
     print(file=sys.stderr)
     if code == "CE-INSTALL-CANCELLED":
         print(f"{code}: installation interrupted", file=sys.stderr)
@@ -1368,35 +2974,10 @@ def emit_install_failure(
         print("Rerun the same install command to continue.", file=sys.stderr)
     else:
         print(f"{code}: {one_line_cause(error)}", file=sys.stderr)
-        cause = one_line_cause(error).casefold()
-        if isinstance(error, InstallHealthError) or "doctor did not report" in cause:
-            print(
-                "Next fix: run doctor (below), repair the listed unhealthy components, "
-                "then rerun the same install one-liner.",
-                file=sys.stderr,
-            )
-        elif "checksum" in cause:
-            print(
-                "Next fix: check network/proxy interference, then rerun the same install one-liner.",
-                file=sys.stderr,
-            )
-        elif "timed out" in cause or "temporary failure" in cause or "network" in cause:
-            print(
-                "Next fix: restore network connectivity, then rerun the same install one-liner.",
-                file=sys.stderr,
-            )
-        elif "python" in cause and ("not found" in cause or "required" in cause):
-            print(
-                "Next fix: install Python 3 (or leave it absent so the wrapper bootstraps uv), "
-                "then rerun the same install one-liner.",
-                file=sys.stderr,
-            )
-        elif "core is missing" in cause or "ce_core_missing" in cause:
-            print(
-                "Next fix: rerun the same install one-liner so ChaosEngine can restore "
-                ".chaos-engine under the existing host receipt (or uninstall, then install).",
-                file=sys.stderr,
-            )
+        rollback_line = install_rollback_summary(error)
+        if rollback_line:
+            print(rollback_line, file=sys.stderr)
+        print(f"Next fix: {next_fix_hint(code, error, prefix)}", file=sys.stderr)
     print(file=sys.stderr)
     if project is not None:
         try:
@@ -1413,12 +2994,23 @@ def emit_install_failure(
             )
             trace = root / ".chaos-engine-state" / "install-trace.json"
             if trace.is_file():
-                print(f"Install trace: {trace}", file=sys.stderr)
+                print(
+                    "Install trace: .chaos-engine-state/install-trace.json",
+                    file=sys.stderr,
+                )
+                print(
+                    "Attach .chaos-engine-state/install-trace.json to the GitHub issue.",
+                    file=sys.stderr,
+                )
+            print(
+                "Attach .chaos-engine-state/install-console.log and "
+                ".chaos-engine-state/doctor-failure.json when present.",
+                file=sys.stderr,
+            )
         except OSError:
             # Best-effort diagnostics only; path resolution/stat failures must not hide the install error.
             pass
     print(f"Help: {installer_help_url(repository)}", file=sys.stderr)
-    prefix = installer_cli_prefix(project)
     status_command = f"{prefix} status --project . --json" if prefix else None
     doctor_command = f"{prefix} doctor --project . --json" if prefix else None
     if prefix:
@@ -1427,147 +3019,78 @@ def emit_install_failure(
     else:
         print("Installer CLI is not on disk.", file=sys.stderr)
         print("Rerun the same install command to continue.", file=sys.stderr)
-        status_command = "not available; .chaos-engine/install.py is not on disk"
-        doctor_command = status_command
+        status_command = "not available"
+        doctor_command = "not available"
     if code != "CE-INSTALL-CANCELLED":
-        observed_upgrade_commit = getattr(error, "observed_upgrade_commit", None)
-        if (
-            not isinstance(observed_upgrade_commit, str)
-            or COMMIT.fullmatch(observed_upgrade_commit) is None
-        ):
-            observed_upgrade_commit = None
-        observed_upgrade_components = getattr(error, "observed_upgrade_components", ())
-        if not isinstance(observed_upgrade_components, tuple):
-            observed_upgrade_components = ()
-        candidate_component_labels: list[str] = []
-        for component in observed_upgrade_components[:32]:
-            if not isinstance(component, tuple) or len(component) != 2:
-                continue
-            name, status = component
-            if (
-                isinstance(name, str)
-                and isinstance(status, str)
-                and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", name)
-                and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", status)
-            ):
-                candidate_component_labels.append(f"{name}:{status}")
-        candidate_components = ",".join(candidate_component_labels)
-        observed_upgrade_component_details = getattr(
-            error, "observed_upgrade_component_details", ()
+        fields = installer_issue_fields(
+            code,
+            error,
+            reporter,
+            project,
+            status_command or "not available",
+            doctor_command or "not available",
         )
-        if not isinstance(observed_upgrade_component_details, tuple):
-            observed_upgrade_component_details = ()
-        candidate_detail_labels: list[str] = []
-        for component in observed_upgrade_component_details[:32]:
-            if not isinstance(component, tuple) or len(component) != 2:
-                continue
-            name, detail = component
-            if (
-                isinstance(name, str)
-                and isinstance(detail, str)
-                and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", name)
-                and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", detail)
-            ):
-                candidate_detail_labels.append(f"{name}:{detail}")
-        candidate_component_details = ",".join(candidate_detail_labels)
-        hosts_receipt = "unknown"
-        core_dir = "unknown"
-        install_py = "unknown"
-        install_trace = "not available"
-        install_trace_snippet = "not available"
-        if project is not None:
-            try:
-                root = Path(project).resolve()
-                hosts_receipt = (
-                    "present" if (root / ".chaos-engine-hosts.json").is_file() else "absent"
-                )
-                core_dir = "present" if (root / ".chaos-engine").is_dir() else "absent"
-                install_py = (
-                    "present"
-                    if (root / ".chaos-engine" / "install.py").is_file()
-                    else "absent"
-                )
-                trace = install_trace_path(root)
-                if trace.is_file():
-                    install_trace = trace.as_posix()
-                    raw = trace.read_text(encoding="utf-8")
-                    lines = [line.strip() for line in raw.splitlines() if line.strip()]
-                    snippet = " | ".join(lines[-6:])[:400]
-                    if snippet:
-                        install_trace_snippet = re.sub(
-                            r"(?i)\b(token|secret|password|api_key)=\S+",
-                            lambda match: f"{match.group(1)}=<redacted>",
-                            snippet,
-                        )
-            except OSError:
-                # Best-effort diagnostics only; path resolution/stat failures must not hide the install error.
-                pass
-        body = "\n".join(
-            (
-                f"Error code: {code}",
-                f"Cause: {one_line_cause(error)[:240]}",
-                f"Failed phase: {getattr(error, 'phase', None) or (reporter.current_operation if reporter else 'unknown')}",
-                "Unhealthy components: "
-                + (", ".join(getattr(error, "unhealthy", ())) or "not reported"),
-                "Observed candidate commit: " + (observed_upgrade_commit or "not available"),
-                "Observed candidate components: " + (candidate_components or "not available"),
-                "Observed candidate component details: "
-                + (candidate_component_details or "not available"),
-                "Current action: "
-                + ((reporter.current_operation if reporter else None) or "none"),
-                "History: "
-                + (
-                    "; ".join(
-                        f"{result} {operation} ({reporter._duration(duration)})"
-                        for _, result, operation, duration in reporter.history[-5:]
-                    )
-                    if reporter and reporter.history
-                    else "none"
-                ),
-                f"Hosts receipt: {hosts_receipt}",
-                f"Core dir: {core_dir}",
-                f"install.py: {install_py}",
-                f"Install trace: {install_trace}",
-                f"Install trace snippet: {install_trace_snippet}",
-                f"Platform: {sys.platform}",
-                f"Status command: {status_command}",
-                f"Doctor command: {doctor_command}",
-            )
+        issue_url = publish_installer_issue(
+            repository,
+            code,
+            fields,
+            opener=opener,
+            token=token,
+            extra=upgrade_query_extras(error),
         )
-        query = urllib.parse.urlencode(
-            {
-                "template": "chaos-engine-installer.yml",
-                "title": f"[ChaosEngine installer] {code}",
-                "error_code": code,
-                "cause": one_line_cause(error)[:240],
-                "failed_phase": getattr(error, "phase", None)
-                or (reporter.current_operation if reporter else "unknown"),
-                "unhealthy": ", ".join(getattr(error, "unhealthy", ())) or "not reported",
-                "observed_commit": observed_upgrade_commit or "",
-                "candidate_components": candidate_components,
-                "candidate_component_details": candidate_component_details,
-                "platform": sys.platform,
-                "hosts_receipt": hosts_receipt,
-                "core_dir": core_dir,
-                "install_py": install_py,
-                "install_trace": install_trace,
-                "install_trace_snippet": install_trace_snippet,
-                "status_command": status_command or "",
-                "doctor_command": doctor_command or "",
-            }
+        if project is not None and core_install_py(project):
+            write_heal_handoff(project, fields, issue_url)
+        artifacts = present_state_artifacts(project) if project is not None else []
+        prompt = heal_handoff_prompt(
+            fields["doctor_command"], issue_url, artifacts=artifacts
         )
+        if "issues/new?" in issue_url:
+            print("Open issue:", file=sys.stderr)
+        else:
+            print("GitHub issue:", file=sys.stderr)
         print(
-            "Next step: click this link to open a GitHub issue with this report:",
+            terminal_issue_link(
+                issue_url,
+                saved=project is not None and core_install_py(project),
+                live=stream_is_tty(sys.stderr) and color and unicode,
+            ),
             file=sys.stderr,
         )
-        print(f"https://github.com/{repository}/issues/new?{query}", file=sys.stderr)
+        print(file=sys.stderr)
+        print("Agent prompt (copy the backtick block):", file=sys.stderr)
+        print(f"`{prompt}`", file=sys.stderr)
+        if os.environ.get("CHAOS_ENGINE_DEBUG") == "1":
+            traceback.print_exc()
+        return issue_url
     if os.environ.get("CHAOS_ENGINE_DEBUG") == "1":
         traceback.print_exc()
+    return None
+
+
+MINIMUM_PYTHON = (3, 11)
+
+
+def python_floor_message(version: tuple[int, ...] | None = None) -> str:
+    """Explain the supported Python floor (3.10 reaches end of life in October 2026)."""
+    found = ".".join(str(part) for part in (version or sys.version_info)[:3])
+    return (f"ChaosEngine requires Python {MINIMUM_PYTHON[0]}.{MINIMUM_PYTHON[1]} or newer; found {found}. "
+            "Rerun the install one-liner, which provisions a supported Python through uv.\n")
 
 
 def main() -> int:
+    harden_stream_encoding(sys.stderr)
+    if sys.version_info < MINIMUM_PYTHON:
+        sys.stderr.write(python_floor_message())
+        return 2
     reporter = InstallReporter()
-    args = parser().parse_args()
+    args, extra = parser().parse_known_args()
+    addons_requested, addons_removed, unknown = split_addon_flags(extra)
+    if unknown:
+        parser().parse_args()  # argparse reports the unrecognized arguments and exits
+    if getattr(args, "verbose", False):
+        reporter.enable_verbose()
+    if getattr(args, "consumer", False):
+        os.environ["CHAOS_ENGINE_CONSUMER"] = "1"
     try:
         bundle_options = {
             name: not getattr(args, f"without_{name}", False)
@@ -1576,7 +3099,6 @@ def main() -> int:
                 "mempalace",
                 "graphify",
                 "ponytail",
-                "headroom",
                 "caveman",
             )
         }
@@ -1591,11 +3113,14 @@ def main() -> int:
             interactive=args.interactive,
             reporter=reporter,
             bundle_options=bundle_options,
+            addons_requested=addons_requested,
+            addons_removed=addons_removed,
         )
         write_install_trace(Path(args.project).resolve(), result, reporter.traces)
     except BaseException as error:
         if isinstance(error, SystemExit):
             raise
+        reporter.fail()
         reporter.close()
         code = classify_install_error(error)
         write_install_trace(

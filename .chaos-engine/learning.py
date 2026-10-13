@@ -47,7 +47,7 @@ PRIVATE = (
 )
 LIMITS = {"title": 100, "lesson": 400, "proposedChange": 300, "benefit": 300}
 QUEUED_KEYS = ALLOWED_KEYS | {"id", "status", "upstream"}
-OPTIONAL_ITEM_KEYS = {"lastError", "issueUrl", "fallbackUrl"}
+OPTIONAL_ITEM_KEYS = {"lastError", "issueUrl", "fallbackUrl", "origin", "trust", "verifiedBy", "verifiedAt"}
 THREAD_LOCK = threading.RLock()
 
 
@@ -262,7 +262,35 @@ def write_queue(state: Path, document: dict[str, object]) -> None:
             temporary.unlink()
 
 
-def queue_learning(state: Path, candidate: dict[str, object], upstream: str) -> dict[str, object]:
+
+def _provenance():
+    import importlib.util as _ilu
+
+    path = Path(__file__).resolve().with_name("memory_provenance.py")
+    spec = _ilu.spec_from_file_location("chaos_engine_memory_provenance_learning", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("memory_provenance.py missing")
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+HARNESS_LOCAL_REFUSAL = (
+    "ChaosEngine harness learning, findings, and potential enhancements "
+    "are GitHub issues only. Do not write them to a local queue or into chat."
+)
+
+
+def queue_learning(
+    state: Path,
+    candidate: dict[str, object],
+    upstream: str,
+    *,
+    track: str | None = None,
+    origin: str = "learning-session",
+) -> dict[str, object]:
+    if track != "product":
+        raise ValueError(HARNESS_LOCAL_REFUSAL)
     state = Path(state)
     safe = validate_candidate(candidate, upstream)
     learning_id = hashlib.sha256(canonical(safe)).hexdigest()
@@ -274,7 +302,12 @@ def queue_learning(state: Path, candidate: dict[str, object], upstream: str) -> 
         for item in items:
             if isinstance(item, dict) and item.get("id") == learning_id:
                 return item
-        item = {"id": learning_id, "status": "queued", **safe}
+        item = {
+            "id": learning_id,
+            "status": "queued",
+            **safe,
+            **_provenance().stamp_fields(origin=origin),
+        }
         items.append(item)
         write_queue(state, document)
         return item
@@ -404,6 +437,157 @@ def _submit_learning_locked(state: Path, learning_id: str, *, runner=subprocess.
     return item
 
 
+def default_learning_state(project: Path | None = None) -> Path:
+    here = (project or Path.cwd()).resolve()
+    for candidate in (here, *here.parents):
+        if (candidate / ".chaos-engine" / "install.py").is_file() or (
+            candidate / "chaos-engine" / "install.py"
+        ).is_file():
+            return candidate / ".chaos-engine-state" / "learning"
+    return here / ".chaos-engine-state" / "learning"
+
+
+def _count_learning_sessions(project: Path) -> dict[str, object]:
+    root = project / ".chaos-engine-state" / "learning-session"
+    if not root.is_dir():
+        return {"completions": 0, "dispositions": {}}
+    completions = 0
+    dispositions: dict[str, int] = {}
+    for path in sorted(root.glob("*.completion.json")):
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(document, dict):
+            continue
+        completions += 1
+        disposition = str(document.get("disposition") or "unknown")
+        dispositions[disposition] = dispositions.get(disposition, 0) + 1
+    return {"completions": completions, "dispositions": dispositions}
+
+
+def _queue_metric_counts(document: dict[str, object]) -> dict[str, object]:
+    queued = 0
+    submitted = 0
+    estimated_tokens = 0
+    categories: dict[str, int] = {}
+    issue_numbers: list[int] = []
+    items = document.get("items") if isinstance(document, dict) else []
+    if not isinstance(items, list):
+        items = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status")
+        if status == "queued":
+            queued += 1
+        elif status == "submitted":
+            submitted += 1
+        tokens = item.get("estimatedTokens")
+        if isinstance(tokens, int) and not isinstance(tokens, bool):
+            estimated_tokens += tokens
+        category = item.get("category")
+        if isinstance(category, str):
+            categories[category] = categories.get(category, 0) + 1
+        url = item.get("issueUrl")
+        if isinstance(url, str):
+            match = re.search(r"/issues/([1-9][0-9]*)$", url)
+            if match:
+                issue_numbers.append(int(match.group(1)))
+    total = queued + submitted
+    return {
+        "queued": queued,
+        "submitted": submitted,
+        "total": total,
+        "submittedRate": round((submitted / total) if total else 0.0, 4),
+        "estimatedTokens": estimated_tokens,
+        "categories": categories,
+        "issueNumbers": issue_numbers[-32:],
+    }
+
+
+def _load_optional_summary(module_name: str, attribute: str, root: Path) -> dict[str, object]:
+    path = Path(__file__).resolve().with_name(module_name)
+    if not path.is_file():
+        return {}
+    try:
+        import importlib.util as _ilu
+
+        spec = _ilu.spec_from_file_location(f"chaos_engine_{module_name}_metrics", path)
+        if spec is None or spec.loader is None:
+            return {}
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        value = getattr(mod, attribute)(root)
+        return value if isinstance(value, dict) else {}
+    except (OSError, RuntimeError, ValueError, AttributeError):
+        return {}
+
+
+def learning_metrics(
+    state: Path | None = None,
+    *,
+    project: Path | None = None,
+) -> dict[str, object]:
+    """Zero-LLM closed-loop metrics over queue + session ledgers (#5653)."""
+    root = (project or Path.cwd()).resolve()
+    for candidate in (root, *root.parents):
+        if (candidate / ".chaos-engine" / "install.py").is_file() or (
+            candidate / "chaos-engine" / "install.py"
+        ).is_file():
+            root = candidate
+            break
+    learning_state = Path(state) if state is not None else default_learning_state(root)
+    try:
+        document = queue_document(learning_state)
+    except ValueError:
+        document = {"items": []}
+    counts = _queue_metric_counts(document)
+    sessions = _count_learning_sessions(root)
+    counters = _load_optional_summary("learning_counters.py", "load_counters", root)
+    heuristics = _load_optional_summary("heuristics.py", "doctor_heuristics_summary", root)
+    return {
+        "schemaVersion": 1,
+        "kind": "learning-metrics",
+        **counts,
+        "learningSessions": sessions,
+        "sessionStartBytesLast": counters.get("sessionStartBytesLast", 0),
+        "sessionStartBytesMax": counters.get("sessionStartBytesMax", 0),
+        "sessionStartCount": counters.get("sessionStartCount", 0),
+        "denials": counters.get("denials", 0),
+        "deliveryDigests": counters.get("deliveryDigests", []),
+        "learningSessionDigests": counters.get("learningSessionDigests", []),
+        "heuristics": heuristics,
+        "status": "healthy" if counts["total"] or sessions.get("completions") else "absent",
+    }
+
+
+def doctor_learning_metrics(project: Path | None = None) -> dict[str, object]:
+    """Bounded doctor --json learningMetrics surface (no secrets)."""
+    metrics = learning_metrics(project=project)
+    try:
+        provenance = _provenance().doctor_provenance_summary(project)
+    except (OSError, ImportError, ValueError):
+        provenance = {"schemaVersion": 1, "status": "absent", "quarantined": 0}
+    return {
+        "schemaVersion": metrics.get("schemaVersion", 1),
+        "status": metrics.get("status"),
+        "queued": metrics.get("queued"),
+        "submitted": metrics.get("submitted"),
+        "submittedRate": metrics.get("submittedRate"),
+        "estimatedTokens": metrics.get("estimatedTokens"),
+        "learningSessions": metrics.get("learningSessions"),
+        "sessionStartBytesLast": metrics.get("sessionStartBytesLast"),
+        "sessionStartBytesMax": metrics.get("sessionStartBytesMax"),
+        "denials": metrics.get("denials"),
+        "heuristics": metrics.get("heuristics"),
+        "provenance": provenance,
+        "deliveryDigestCount": len(metrics.get("deliveryDigests") or []),
+        "learningSessionDigestCount": len(metrics.get("learningSessionDigests") or []),
+    }
+
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     commands = result.add_subparsers(dest="command", required=True)
@@ -411,10 +595,14 @@ def parser() -> argparse.ArgumentParser:
     queue.add_argument("--state", required=True, type=Path)
     queue.add_argument("--upstream", required=True)
     queue.add_argument("--candidate", required=True, type=Path)
+    queue.add_argument("--track", choices=("harness", "product"))
     submit = commands.add_parser("submit")
     submit.add_argument("--state", required=True, type=Path)
     submit.add_argument("--id", required=True)
     submit.add_argument("--yes", action="store_true")
+    metrics = commands.add_parser("metrics", aliases=("summary",))
+    metrics.add_argument("--state", type=Path, default=None)
+    metrics.add_argument("--project", type=Path, default=None)
     return result
 
 
@@ -423,7 +611,11 @@ def main() -> int:
     try:
         if args.command == "queue":
             candidate = json.loads(args.candidate.read_text(encoding="utf-8"))
-            result = queue_learning(args.state, candidate, args.upstream)
+            result = queue_learning(
+                args.state, candidate, args.upstream, track=args.track
+            )
+        elif args.command in {"metrics", "summary"}:
+            result = learning_metrics(args.state, project=args.project)
         else:
             result = submit_learning(args.state, args.id, confirmed=args.yes)
     except (OSError, ValueError, json.JSONDecodeError) as error:

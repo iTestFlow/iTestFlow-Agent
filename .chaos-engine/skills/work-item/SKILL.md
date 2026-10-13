@@ -1,8 +1,8 @@
 ---
 name: work-item
 description: >-
-  Use when opening or rewriting a work item on any git-based SCM.
-  Source-control agnostic; GitHub, GitLab, and Azure Boards are adapters only.
+  Use when opening or rewriting a work item on any git-based SCM. Source-control
+  agnostic; GitHub, GitLab, and Azure Boards are adapters only.
 license: MIT
 ---
 
@@ -10,7 +10,7 @@ license: MIT
 
 Load this skill when the deliverable is **open or rewrite a work item**. Do not
 vendor Spec Kit or create `.specify/`. Keep GitHub PR delivery on
-`work-github-playbook.md`.
+`work-github-playbook.md`. One GitHub issue tracks the full plan. When the owner names a currently active PR, deliver the plan and the user-issue fix in that same PR.
 
 Contract and adapters: [work-item.md](../../references/work-item.md).
 

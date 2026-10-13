@@ -1,0 +1,13 @@
+{
+  "author": {
+    "name": "Jake Van Clief",
+    "url": "https://github.com/RinDig"
+  },
+  "description": "Design or restructure processes, ideas, and folders into ICM workspaces (folder structure as agent architecture).",
+  "homepage": "https://github.com/RinDig/icm-architect",
+  "license": "MIT",
+  "name": "icm-architect",
+  "repository": "https://github.com/RinDig/icm-architect",
+  "skills": "./skills/",
+  "version": "0.1.0"
+}

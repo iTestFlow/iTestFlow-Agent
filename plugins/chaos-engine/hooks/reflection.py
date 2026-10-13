@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -374,8 +375,64 @@ def active_entries(session_id: str) -> list[dict]:
     return active
 
 
+def _receipt_commit_state(session_id: str) -> tuple[int, bool]:
+    """Return (commit credit, whether a valid receipt has cleared a window)."""
+    active: list[dict] = []
+    credit = 0
+    saw = False
+    for item in entries(session_id):
+        kind = item.get("kind")
+        if kind == "reflection-receipt":
+            if _receipt_clears_active(session_id, item, active):
+                active = []
+                credit = 1
+                saw = True
+        elif kind == "task-failure" and item.get("attempted") is not False:
+            active.append(item)
+        elif kind == "reflection-trigger":
+            active.append(item)
+        elif kind == "failure-disposition" and item.get("disposition") == "non-attempt":
+            active = [
+                candidate
+                for candidate in active
+                if candidate.get("failureId") != item.get("failureId")
+            ]
+        elif kind == "task-activity" and item.get("activity") == "fix-commit" and credit:
+            credit = 0
+    return credit, saw
+
+
+def reflection_controller_drift(start: Path) -> str:
+    """Report when the installed reflection controller and source copy differ."""
+    project = None
+    for candidate in (start, *start.parents):
+        installed = candidate / ".chaos-engine" / "hooks" / "reflection.py"
+        source = candidate / "chaos-engine" / "hooks" / "reflection.py"
+        if installed.is_file() or source.is_file():
+            project = candidate
+            break
+    if project is None:
+        return ""
+    installed = project / ".chaos-engine" / "hooks" / "reflection.py"
+    source = project / "chaos-engine" / "hooks" / "reflection.py"
+    if not installed.is_file() or not source.is_file():
+        return ""
+    try:
+        left = installed.read_bytes()
+        right = source.read_bytes()
+    except OSError:
+        return ""
+    if left == right:
+        return ""
+    return (
+        "Reflection controller drift: `.chaos-engine/hooks/reflection.py` and "
+        "`chaos-engine/hooks/reflection.py` differ. Receipts must use the "
+        "controller the gate executes."
+    )
+
+
 def pending_checkpoint(session_id: str) -> dict | None:
-    """Reduce ledger records to the currently required reflection checkpoint."""
+    """Open a receipt on the third attempted failure, then allow one commit."""
     active = active_entries(session_id)
     explicit = next((item for item in reversed(active) if item.get("kind") == "reflection-trigger"), None)
     if explicit is not None:
@@ -387,13 +444,15 @@ def pending_checkpoint(session_id: str) -> dict | None:
             ),
             "attemptCount": len(active),
         }
-    if len(active) < 2:
+    # A receipt authorizes the next mutation. One later failure does not
+    # reopen the checkpoint (#6309). Three new attempted failures still do.
+    if len(active) < 3:
         return None
     fingerprints = [str(item.get("fingerprint", "manual")) for item in active]
     same = len(set(fingerprints)) == 1
     return {
         "depth": "deep" if same else "task",
-        "trigger": "repeated-fingerprint" if same else "second-failure",
+        "trigger": "repeated-fingerprint" if same else "third-fix",
         "failureFingerprints": sorted(set(fingerprints)),
         "attemptCount": len(active),
     }
@@ -414,26 +473,68 @@ def session_elapsed_seconds(session_id: str, now: datetime | None = None) -> flo
 
 
 def has_valid_terminal_receipt(session_id: str) -> bool:
+    """One accepted long-session receipt covers the rest of the session.
+
+    Later tool activity and later failures do not demand another summary.
+    The active-failure list still clears on that receipt, matching
+    ``active_entries``, so the receipt's digest can validate.
+    """
     active: list[dict] = []
     terminal = False
     for item in entries(session_id):
         kind = item.get("kind")
-        if kind == "task-failure" and item.get("attempted") is not False:
-            active.append(item)
-            terminal = False
-        elif kind == "reflection-trigger":
-            active.append(item)
-            terminal = False
-        elif kind in {"task-activity", "platform-outcome", "failure-disposition"}:
-            terminal = False
-        elif kind == "reflection-receipt" and _receipt_clears_active(
-            session_id, item, active
-        ):
+        if kind == "reflection-receipt" and _receipt_clears_active(session_id, item, active):
+            active = []
             if item.get("trigger") == "long-session-completion":
                 terminal = True
-            else:
-                active = []
+        elif kind == "task-failure" and item.get("attempted") is not False:
+            active.append(item)
+        elif kind == "reflection-trigger":
+            active.append(item)
+        elif kind == "failure-disposition" and item.get("disposition") == "non-attempt":
+            active = [
+                candidate
+                for candidate in active
+                if candidate.get("failureId") != item.get("failureId")
+            ]
     return terminal
+
+
+def accept_terminal_reflection(session_id: str) -> bool:
+    """Record that this session's terminal reflection was accepted.
+
+    The ledger stores acceptance only. It does not store the reflection text.
+    One acceptance covers every later stop in the session.
+    """
+    if has_valid_terminal_receipt(session_id):
+        return True
+    if not isinstance(session_id, str) or not session_id.strip():
+        return False
+    if _ensure_session_token(session_id) is None:
+        return False
+    active = active_entries(session_id)
+    entry = {
+        "schemaVersion": SCHEMA_VERSION,
+        "kind": "reflection-receipt",
+        "sessionHash": _session_hash(session_id),
+        "checkpointDigest": _checkpoint_digest(active),
+        "taskId": "terminal-reflection",
+        "trigger": "long-session-completion",
+        "failureFingerprints": [],
+        "failedAssumption": "none",
+        "approachesCompared": ["repeat the same reflection", "record one acceptance"],
+        "chosenExperiment": "record one acceptance",
+        "changedApproach": "later stops skip this demand",
+        "proofCommandOrCheck": "terminal reflection labels present",
+        "proofOutcome": "accepted",
+        "durableDisposition": "nothing-durable",
+        "noDeferredOrRiskWork": True,
+        "observedAt": datetime.now(UTC).isoformat(),
+    }
+    entry["receiptHash"] = _receipt_hash(session_id, entry)
+    if not isinstance(entry["receiptHash"], str):
+        return False
+    return append_entry(session_id, entry)
 
 
 def _safe_text(name: str, value: object, *, allow_github_issue: bool = False) -> str:
@@ -451,7 +552,7 @@ def _validate_receipt_shape(receipt: dict) -> None:
         "schemaVersion", "taskId", "trigger", "failureFingerprints",
         "failedAssumption", "approachesCompared", "chosenExperiment",
         "changedApproach", "proofCommandOrCheck", "proofOutcome",
-        "durableDisposition", "issue",
+        "durableDisposition", "issue", "trackingIssues", "noDeferredOrRiskWork",
     }
     unknown = set(receipt) - allowed_fields
     if unknown:
@@ -517,6 +618,34 @@ def record_receipt(session_id: str, receipt: dict, session_token: str) -> dict:
         if not _GITHUB_ISSUE_URL.fullmatch(issue):
             raise ValueError("issue must be a GitHub issue URL")
         entry["issue"] = issue
+    no_deferred = receipt.get("noDeferredOrRiskWork")
+    if no_deferred is not None and not isinstance(no_deferred, bool):
+        raise ValueError("noDeferredOrRiskWork must be a boolean")
+    tracking = receipt.get("trackingIssues", [])
+    if tracking is None:
+        tracking = []
+    if not isinstance(tracking, list):
+        raise ValueError("trackingIssues must be a list of GitHub issue URLs")
+    cleaned_issues = []
+    for item in tracking:
+        url = _safe_text("trackingIssues", item, allow_github_issue=True)
+        if not _GITHUB_ISSUE_URL.fullmatch(url):
+            raise ValueError("trackingIssues must be GitHub issue URLs")
+        cleaned_issues.append(url)
+    if cleaned_issues:
+        entry["trackingIssues"] = cleaned_issues
+    if trigger == "long-session-completion":
+        if no_deferred is True:
+            entry["noDeferredOrRiskWork"] = True
+        elif not cleaned_issues:
+            raise ValueError(
+                "long-session-completion requires trackingIssues GitHub URLs "
+                "for leftover risks and out-of-scope work, or noDeferredOrRiskWork true"
+            )
+        else:
+            entry["noDeferredOrRiskWork"] = False
+    elif no_deferred is True:
+        entry["noDeferredOrRiskWork"] = True
     entry["receiptHash"] = _receipt_hash(session_id, entry)
     if not append_entry(session_id, entry):
         raise OSError("could not append reflection receipt")
@@ -557,6 +686,29 @@ def record_research_preflight(session_id: str, note: str = "research-receipt") -
     )
 
 
+def _bind_option_values(argv: list[str], flags: tuple[str, ...]) -> list[str]:
+    """Join ``--flag value`` when value looks like an option.
+
+    ``secrets.token_urlsafe`` can start with ``-``. Python 3.14 argparse then
+    refuses the separate argv as ``expected one argument`` (#6556).
+    """
+    bound: list[str] = []
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if (
+            item in flags
+            and index + 1 < len(argv)
+            and not str(argv[index + 1]).startswith("--")
+        ):
+            bound.append(f"{item}={argv[index + 1]}")
+            index += 2
+            continue
+        bound.append(item)
+        index += 1
+    return bound
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="operation", required=True)
@@ -584,7 +736,8 @@ def main(argv: list[str] | None = None) -> int:
     research.add_argument("--session-id", required=True)
     research.add_argument("--agent-id")
     research.add_argument("--note", default="research-receipt")
-    arguments = parser.parse_args(argv)
+    source = sys.argv[1:] if argv is None else argv
+    arguments = parser.parse_args(_bind_option_values(list(source), ("--session-token",)))
     session_id = scope_session_id(arguments.session_id, arguments.agent_id)
     if arguments.operation == "research-preflight":
         recorded = record_research_preflight(session_id, arguments.note)

@@ -14,7 +14,9 @@ state still fails closed for mutation and fail-open as an advisory.
 
 After this gate, freeze the base commit, create a dedicated `ChaosEngine/*`
 branch and linked worktree rooted at it, and perform planning, discovery, and
-implementation there. SessionStart creates or reuses one sibling detached
+implementation there. Commit the fix on that branch before the next turn.
+Uncommitted edits on the primary checkout are not delivery, and the
+fresh-primary gate may discard them. SessionStart creates or reuses one sibling detached
 session worktree named from the host session_id; the agent then creates the
 `ChaosEngine/*` branch inside it. Stop never deletes that worktree. SessionEnd
 removes it only after merge is recorded and the tree is clean, keeping the
@@ -27,6 +29,15 @@ fresh-default exception. Fetch when a remote exists, verify the named branch
 and its intended base, preserve its work, and isolate the continuation in a
 dedicated worktree; never silently restart it from the default branch. Resume
 or compact of the same session_id reuses the existing session worktree.
+
+Delivering into a consumer repository (third-party or adopter code where
+ChaosEngine was installed for the session) uses a separate worktree by default:
+`git worktree add <path> -b <branch> origin/<default>`. A default install leaves
+`.chaos-engine/`, host directories such as `.claude/` and `.grok/`,
+`.mcp.json`, and `AGENTS.md`/`.gitignore` edits in the primary checkout;
+none of them belong in the consumer PR. Prefer `install --consumer`: it edits
+no tracked file and hides the overlay through `.git/info/exclude`. Before each
+commit, `git status --porcelain` lists only task files.
 
 Resolve repository identity, upstream, default branch, primary-checkout path,
 and store commands from the selected profile, adapters, configuration, or
