@@ -296,6 +296,81 @@ describe("provider HTTP adapters", () => {
       .toHaveProperty("thinkingConfig.thinkingBudget", 0);
   });
 
+  it.each(["gemini-3-flash-preview", "gemini-2.5-flash"])("constrains %s test generation with the native numeric coverage schema", async (model) => {
+    const output = {
+      testCases: [{
+        id: "TC-PC-001", title: "Validate product search", description: "Search returns matching products.",
+        priority: 1, type: "functional", category: "happy_path", preconditions: "Products page is open.",
+        basis: { kind: "requirement", explanation: "Required by AC-001.", sourceReferences: ["AC-001"] },
+        relatedAcceptanceCriteria: ["AC-001"],
+        steps: [{ stepNumber: 1, action: "Preconditions: Open Products page.", expectedResult: "Preconditions are met" }],
+      }],
+      summary: { totalCases: 1, byType: { functional: 1 }, byPriority: { "1": 1 }, coverageEstimate: 100 },
+      contextUsed: ["AC-001"],
+    };
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(output) }] }, finishReason: "STOP" }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new GeminiProvider({ provider: "gemini", model, apiKey: "key", retryAttempts: 0 });
+
+    await expect(provider.generateStructuredOutput({
+      schemaName: "TestCaseGenerationOutput", schema: TestCaseGenerationOutputSchema,
+      system: "Generate product search tests.", user: "Cover AC-001.",
+    })).resolves.toMatchObject({ validatedOutput: output });
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(requestBody.generationConfig.responseMimeType).toBe("application/json");
+    const sentSchema = requestBody.generationConfig.responseJsonSchema;
+    expect(sentSchema).toMatchObject({ type: "object", required: ["testCases", "summary"] });
+    expect(sentSchema.properties.summary.properties.coverageEstimate).toEqual({ type: "number", minimum: 0, maximum: 100 });
+    expect(sentSchema.properties.summary.properties.byType).toMatchObject({ type: "object", additionalProperties: { type: "integer", minimum: 0 } });
+    expect(sentSchema.properties.testCases.items.properties.priority.enum).toEqual([1, 2, 3, 4]);
+    expect(sentSchema.properties.testCases.items.properties.basis.properties.kind.enum).toContain("suggested");
+    expect(requestBody.systemInstruction.parts[0].text).toContain("number from 0 to 100, without quotes or a percent sign");
+  });
+
+  it("keeps Gemini coverage validation strict even when generation finishes with STOP", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new GeminiProvider({ provider: "gemini", model: "gemini-3-flash-preview", apiKey: "key", retryAttempts: 0 });
+    for (const coverageEstimate of ["95", "95%", "high", -1, 101]) {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: JSON.stringify({
+          testCases: [], summary: { totalCases: 0, coverageEstimate }, contextUsed: [],
+        }) }] }, finishReason: "STOP" }],
+      }), { status: 200 }));
+      await expect(provider.generateStructuredOutput({
+        schemaName: "TestCaseGenerationOutput", schema: TestCaseGenerationOutputSchema,
+        system: "Generate tests.", user: "Cover product search.",
+      })).rejects.toMatchObject({
+        code: "schema_validation",
+        message: expect.stringContaining("coverageEstimate"),
+        technicalContext: { finishReason: "STOP" },
+      });
+    }
+  });
+
+  it("uses the supplied native schema for Gemini sibling structured operations", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: "{}" }] }, finishReason: "STOP" }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new GeminiProvider({ provider: "gemini", model: "gemini-3-flash-preview", apiKey: "key", retryAttempts: 0 });
+    for (const [schemaName, schema, scoreField] of [
+      ["RequirementAnalysisOutput", RequirementAnalysisOutputSchema, "completenessScore"],
+      ["ExistingTestCaseReviewOutput", ExistingTestCaseReviewOutputSchema, "coverageScore"],
+    ] as const) {
+      await expect(provider.generateStructuredOutput({ schemaName, schema, system: "Analyze the requirement.", user: "Return structured data." }))
+        .rejects.toMatchObject({ code: "schema_validation" });
+      const sentSchema = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body)).generationConfig.responseJsonSchema;
+      expect(sentSchema).toMatchObject({ type: "object" });
+      const scoreSchema = scoreField === "completenessScore"
+        ? sentSchema.properties.summary.properties[scoreField] : sentSchema.properties[scoreField];
+      expect(scoreSchema).toMatchObject({ type: "number", minimum: 0, maximum: 100 });
+    }
+  });
+
   it("normalizes Anthropic base URLs and cached-token usage", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       content: [{ text: "claude answer" }],

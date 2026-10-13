@@ -1,10 +1,12 @@
 import "server-only";
 
 import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import { DEFAULT_TEXT_OUTPUT_TOKENS, DEFAULT_RETRY_ATTEMPTS } from "../llm-defaults";
 import { withStructuredOutputInstruction } from "../prompts";
 import { BaseJsonProvider, type LLMProviderCallResult } from "./base-json-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
+import { unwrapZodEffects } from "./structured-output-json-schema";
 import {
   redactLLMImagePayload,
   validateLLMImageInputs,
@@ -78,6 +80,7 @@ export class GeminiProvider extends BaseJsonProvider {
       generationConfig: {
         maxOutputTokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
         responseMimeType: "application/json",
+        responseJsonSchema: zodToJsonSchema(unwrapZodEffects(input.schema), { $refStrategy: "none" }),
         ...geminiStructuredOutputOptions(this.model),
       },
       systemInstruction: {
