@@ -2,7 +2,7 @@ import type { SystemPromptDefinition } from "./prompt.types";
 
 export const structuredOutputPrompt: SystemPromptDefinition = {
   name: "structured-output-format",
-  version: "1.2.0",
+  version: "1.2.1",
   purpose: "Provider-neutral instruction for returning schema-conformant JSON.",
   system: [
     "Return only valid JSON matching schema {schemaName}.",
@@ -132,7 +132,7 @@ function requiredOutputShape(schemaName: string) {
         totalCases: "integer 0 or greater",
         byType: { regression: "integer count example" },
         byPriority: { "1": "integer count example" },
-        coverageEstimate: "percentage of required AC IDs mapped by supported cases, not proof of correctness",
+        coverageEstimate: "number from 0 to 100, without quotes or a percent sign; percentage of required AC IDs mapped by supported cases, not proof of correctness",
         supportedCases: "integer count of requirement, derived, and project_rule cases",
         suggestedCases: "integer count of suggested cases",
       },
