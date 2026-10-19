@@ -436,6 +436,7 @@ Review established controls, documented UI transitions, and concrete usability r
     title: "Responsive Layout",
     body: `
 Review whether the established target screen and critical actions remain usable across relevant viewports. Combine routine viewport checks; keep separate cases only for materially different screen or layout failures.
+Where applicable to the established screen, consider content overflow, fixed elements obscuring critical actions, and usability at supported zoom levels.
 `.trim(),
   },
   {
@@ -443,6 +444,7 @@ Review whether the established target screen and critical actions remain usable 
     title: "Localization, Language, and RTL/LTR",
     body: `
 Review only languages, text-direction, and locale-sensitive capabilities established by the packet. Focus selection does not establish language switching or RTL support. Combine routine language or formatting variants.
+Where supported, consider mixed RTL/LTR content, translated-text expansion, and documented number, date, and currency formatting.
 `.trim(),
   },
   {
@@ -450,6 +452,7 @@ Review only languages, text-direction, and locale-sensitive capabilities establi
     title: "Accessibility",
     body: `
 Review established interactive controls and dynamic feedback for concrete keyboard, focus, and screen-reader risks. Combine related checks within a coherent interaction. Apply section 1 to undocumented outcomes; do not invent a compliance standard.
+Where applicable to established controls, consider accessible names, modal focus trapping/restoration, dynamic announcements, and information conveyed only by color.
 `.trim(),
   },
 ];
@@ -496,7 +499,7 @@ export function buildTestCaseGenerationSystemPrompt(options?: Partial<TestDesign
 
 export const testCaseGenerationPrompt: SystemPromptDefinition = {
   name: "test-case-generation",
-  version: "4.0.7",
+  version: "4.0.8",
   purpose: "Generate Azure DevOps-compatible, risk-based test cases from one requirement, related requirement work items, selected project context, extracted project knowledge, selected target test case range, and selected coverage focus.",
   system: buildTestCaseGenerationSystemPrompt({
     coverageFocusIds: allCoverageFocusIds,
