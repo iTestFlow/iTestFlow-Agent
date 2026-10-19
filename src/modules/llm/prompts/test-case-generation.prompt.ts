@@ -59,19 +59,25 @@ Use only the information provided in the test design packet.
 
 # 1. Grounding, Scope, and Anti-Hallucination Rules
 
+The User Story Under Test defines the coverage boundary for supported cases and suggestions. Use related work items and project context to clarify applicable rules, prerequisites, and interactions with that story. Their presence does not bring their complete workflows into this test suite.
+
+Scope, evidence, and consolidation rules take precedence over case-count targets and coverage-focus checklists. Return fewer cases when those rules leave fewer distinct objectives.
+
+When another workflow is only setup, use its resulting state as a precondition. A prerequisite alone is not an impact connection. For example, a checkout story may start with a registered, signed-in customer; include registration or sign-in scenarios only when the target story covers them or the supplied information shows a concrete interaction that the target story could affect.
+
 Every case must have basis.kind, basis.explanation, and basis.sourceReferences. Basis is independent of execution type and applies equally to every coverage category.
 
 Classify each case:
 * requirement: directly documented behavior from the supplied requirement, title/description, or acceptance criteria.
-* derived: a necessary implication of a supplied rule. Explain the derivation; for example, a documented minimum of 3 implies that 2 is below the minimum, but does not imply an undocumented error message.
+* derived: a necessary implication of a supplied rule. Explain the derivation; for example, a documented minimum of 3 implies that 2 is below the minimum, but does not imply an undocumented error message. A story's actor or precondition describes the covered flow; it does not by itself define or prohibit behavior outside that flow. If several outcomes could satisfy the supplied rule, choosing one is an assumption and must use suggested basis.
 * project_rule: an explicit applicable rule in supplied project knowledge, related work items, an attachment, or extra instructions.
-* suggested: relevant optional coverage whose expected outcome is a proposed assumption, not a documented requirement. Explain both why it matters here and the proposed assumption in a short basis.explanation. Leave relatedAcceptanceCriteria empty and do not cite AC IDs in basis.sourceReferences.
+* suggested: relevant optional coverage within the target story's boundary whose expected outcome is a proposed assumption, not a documented requirement. Explain both why it matters here and the proposed assumption in a short basis.explanation. Leave relatedAcceptanceCriteria empty and do not cite AC IDs in basis.sourceReferences.
 
 The first three kinds are supported cases and must cite at least one exact supplied source-manifest ID in basis.sourceReferences. Cite only content actually present in this packet or included images, not omitted retrieval results, provenance-only links, or unseen attachment portions. Sources use WI:<id>, KB:<category>:<key>, SA:<id>, AC-xxx, or the explicit extra-instructions ID when listed.
 
 A selected focus, platform convention, or best practice is never requirement evidence. For example, an undocumented keyboard or focus-order outcome is suggested coverage; a supplied keyboard requirement or applicable project rule can support it. Do not claim standards or compliance levels absent from the packet.
 
-Generate supported cases first, followed by useful suggestions. Suggestions have no separate cap and share the existing target case-count range. There is no suggestion quota or filler minimum. Skip suggestions that need invented screens, controls, roles, workflows, or missing setup to become executable.
+Generate supported cases first, followed by useful suggestions addressing a concrete, meaningful failure or usability risk within the target story. Suggestions have no separate cap and share the existing target case-count range. There is no suggestion quota or filler minimum. Skip suggestions that need invented screens, controls, roles, workflows, or missing setup to become executable; separate screens do not imply a combined screen, and a selected localization focus does not establish language-switching support. Omit generic cosmetic checks unless supplied requirements define observable criteria or a distinct, significant risk justifies them. For an undocumented suggestion, basis.explanation must name the failure and user impact; "best practice", "good UX", or "regression risk" alone is insufficient.
 
 Supported test cases must be grounded only in the supplied requirement, acceptance criteria, related work items, selected project context, saved project knowledge, business rules, glossary, and required output contract.
 
@@ -97,7 +103,9 @@ Use exact terminology from the project glossary when glossary terms are provided
 
 Do not automatically apply rules from similar modules, products, journeys, user types, channels, countries, previous requirements, previous stories, or legacy flows unless the supplied context explicitly states that those rules are shared, global, inherited, or applicable to the target requirement.
 
-Only classify a case as supported when the expected result can be derived from the supplied context. A relevant proposed outcome may instead appear as suggested coverage with its assumption stated in basis.explanation.
+Only classify a case as supported when the expected result follows from the supplied context. Plausible UX conventions, preferred UI policies, and best practices are not necessary implications of a requirement. A relevant proposed outcome must instead use suggested basis with its assumption stated in basis.explanation.
+
+Check every asserted outcome, not just the case's main objective or source ID. Remove incidental undocumented expectations from supported cases, keeping the documented behavior and its verification intact. A successful-fetch rule does not define the UI for a failed or empty response, such as an error message, retry control, or removal of the loading indicator. If an assumed outcome is itself a meaningful optional risk worth testing, classify that case as suggested, leave its AC references empty, and preserve required AC coverage in supported cases.
 
 If missing information prevents a coherent executable suggestion, skip it. Otherwise set basis.kind to "suggested" and explain the proposed assumption in basis.explanation; never present it as documented behavior.
 
@@ -131,90 +139,35 @@ Use these rules only to improve the generated test cases.
 
 ## 2.1 Internal Test Design Process
 
-Before producing the final JSON, internally perform the following reasoning process:
-
-1. Understand the target requirement, acceptance criteria, business flow, and expected user outcome.
-2. Map the requirement against supplied business rules, project knowledge, related work items, glossary terms, and selected context.
-3. Identify the highest-value and highest-risk scenarios supported by the context.
-4. Detect relevant functional, integration, workflow, state, permission, data, UI interaction, responsive layout, localization, RTL/LTR, accessibility, security, and regression risks.
-5. Compare the target requirement against related and existing context to identify contradictions, overrides, scope boundaries, and incorrect inheritance risks.
-6. Remove duplicate, overlapping, low-value, trivial, or incoherent scenarios; set basis.kind to "suggested" for useful proposed outcomes.
-7. Prioritize the final test cases by business impact, customer impact, risk, regression impact, and automation value.
-8. Apply the selected Target Test Case Range and Coverage Focus rules before finalizing the output.
-
-Do not output this reasoning process.
-
-Use it only to improve the generated test cases.
+Before drafting cases, select distinct objectives using section 2.2 and use the enabled coverage focuses to review those objectives for meaningful risks. Draft executable setup, actions, and assertions only for retained objectives. Apply the grounding rules to every asserted outcome and verify required state changes as described in section 2.4. Do not output this internal reasoning.
 
 ---
 
 ## 2.2 Scenario Selection and Consolidation Rules
 
-Every canonical acceptance-criterion ID in the selected story's contract must appear in relatedAcceptanceCriteria of at least one supported test case. Do not omit an ID because a different coverage focus or count range was selected.
+Every canonical acceptance-criterion ID must appear in relatedAcceptanceCriteria of at least one supported case whose actions and assertions actually verify it. One coherent case may cover multiple criteria.
 
-A single test case may cover multiple related acceptance criteria if they belong to the same logical behavior, workflow, or user outcome.
+Decide what each candidate adds before expanding it into steps:
 
-Generate the smallest practical set of high-value test cases that provides meaningful coverage of the documented requirements, business rules, risks, workflows, integrations, scope boundaries, and regression impact.
+* Keep a target-story objective, an applicable documented rule, or a documented interaction affected by the target story. Keep optional risks only when they concern established capabilities, have a concrete failure and user impact, and use suggested basis for assumed outcomes. An additional case must expose a materially different behavior, screen, condition, or failure that the retained cases do not already test.
+* Merge candidates that repeat the same screen, actor, trigger, condition, and outcome. Add their useful assertions and the actions needed to verify them to the existing flow. Preserve required record, state, data-retention, consistency, and documented regression checks. Routine product/quantity values, response delays, wording, or coverage labels do not justify repeating the flow. A record-inspection assertion belongs with the flow that creates or changes the record, rather than in a duplicate verification-only case.
+* Skip unrelated workflows without a supplied impact connection, suggestions requiring invented controls or capabilities, and candidates that add no distinct objective after merging. Keep prerequisite workflows in setup. Remove incidental undocumented expectations from supported cases; retain an assumed outcome only as a meaningful suggestion under section 1.
 
-Do not generate test cases by mechanically converting every checklist item, field, UI element, rule, or coverage category into a separate test case.
+Keep separate cases for independently required screens or materially different roles, states, outcomes, integrations, and failure conditions. Shared setup or similar expected-result wording alone is not duplication. Preserve useful positive, negative, boundary, integration, and regression coverage within this rule; minor overlap is acceptable.
 
-Use the scenario families below to identify relevant risks, then select meaningful, distinct supported cases and clearly labelled optional suggestions.
+Steps must exercise the claimed condition. An independence or concurrency check needs overlapping operations and observations while another operation remains pending. A repeated-submission check must actually attempt repeated submission. A routine longer delay belongs in the existing pending-to-completion case.
 
-When supported by the supplied context, evaluate scenario families related to:
-
-* Core requirement coverage: main business flows, acceptance criteria, business rules, documented positive behavior, documented alternate behavior, and user outcomes.
-* Data and validation risks: required, optional, null, missing, invalid, duplicate, expired, stale, malformed, boundary, configuration-driven, calculated, date/time, timer, timezone, and validity-period behavior.
-* Workflow, state, and permission risks: state transitions, eligibility, roles, access control, restricted actions, disabled or unavailable actions, and workflow bypass risks.
-* Integration and API risks: API behavior, UI/API consistency, data mapping, upstream or downstream dependencies, success, failure, timeout, retry, recovery, and partial failure behavior.
-* Failure, resilience, and concurrency risks: empty states, error handling, interrupted workflows, race conditions, concurrent updates, stale responses, delayed responses, and out-of-order responses.
-* UI, layout, localization, and accessibility risks: interaction behavior, loading states, dynamic content, responsive layout, desktop/tablet/mobile behavior, zoom, orientation, language, RTL/LTR, and accessibility behavior.
-* Regression and scope-boundary risks: contradictions, overrides, shared components, reused workflows, configuration changes, previous documented behavior, and incorrect inheritance from related modules or legacy flows.
-* Automation and maintainability risks: stable setup, observable assertions, deterministic data, reusable preconditions, and UI/API/hybrid automation feasibility.
-
-Do not force every scenario family. Include optional suggestions only when relevant, executable, and explicit about their proposed assumptions.
-
-Use only documented or clearly implied integration points; set basis.kind to "suggested" for undocumented proposed outcomes.
-
-When both UI and API behavior are documented, design tests that verify consistency between UI-visible results and backend/API response data.
-
-Do not create separate test cases for every minor UI label, field, element, viewport, or variation unless it represents a distinct risk, acceptance criterion, business rule, workflow branch, integration behavior, validation rule, role, state, boundary, platform, setup, failure impact, or user outcome.
-
-Avoid duplicate test cases, trivial validations, overly broad scenarios, and vague expected results.
-
-Do not create multiple test cases that validate the same behavior through slightly different wording.
-
-Merge overlapping scenarios unless they validate different risks, inputs, states, roles, permissions, boundaries, integrations, platforms, layouts, or outcomes.
+Return the justified set even below the selected minimum; do not create one case per coverage focus or category.
 
 ---
 
 ## 2.3 Cross-Context, Scope Boundary, and Regression Rules
 
-Compare the target requirement against the provided project context, including previous requirements, related work items, business rules, configuration rules, data dictionaries, workflows, state transitions, integration contracts, UI behavior, and existing documented behavior.
+For related-workflow or scope-boundary coverage, basis.explanation must identify the target behavior or change, the affected documented behavior, and their concrete interaction or shared state. Test that interaction, not the related story's complete workflow. A supplied rule override can justify checking both its intended scope and affected existing behavior.
 
-Generate test cases for contradictions, overrides, scope boundaries, and regression risks only when supported by the supplied information.
+A prerequisite, related work item, similar feature, shared module, or statement that workflows are separate or unchanged does not by itself establish impact. Do not invent changes to registration, authentication, shared code, or other internals to justify another case.
 
-Pay special attention to differences in:
-
-* Configuration values
-* Validity periods
-* Workflow transitions
-* Validation rules
-* UI behavior
-* User eligibility
-* Role and permission behavior
-* Data mapping
-* API contracts
-* Integration behavior
-* State transitions
-* Existing documented behavior
-
-If the new requirement intentionally overrides an older rule, create a test case to verify that the new behavior applies only in the correct scope and does not break existing documented flows.
-
-Generate boundary or scope validation test cases where there is a meaningful risk that unrelated rules from similar modules, products, journeys, user types, channels, countries, or previous requirements may be incorrectly inherited by the target requirement.
-
-Include regression scenarios for documented existing behavior that could be affected by the change, especially shared workflows, reused components, state transitions, validations, calculations, permissions, integrations, data dependencies, and configuration rules.
-
-Do not create regression, conflict, or inheritance-risk test cases for unrelated context unless the supplied information creates a clear risk or dependency.
+Apply the same boundary to suggestions. These rules work without existing tests: do not assume another story is already tested, and never omit required target-story coverage because no test inventory exists.
 
 ---
 
@@ -238,6 +191,12 @@ Do not split one simple behavior into multiple test cases unless different input
 Do not create tests for internal implementation details unless they are visible through documented API behavior, UI behavior, logs, audit records, integrations, acceptance criteria, or business rules.
 
 Expected results must be specific, observable, and verifiable.
+
+For each required outcome, include an explicit inspection action and matching assertion. For record creation, change, or non-creation, capture the relevant business-state baseline before the trigger, then compare afterward and correlate the difference with this attempt. A confirmation screen, displayed reference, or lookup of an existing matching record alone does not prove that this attempt created a new record.
+
+For checkout, use an isolated test shopper with no other checkout in progress. Before payment, record that shopper's existing order references and cart contents. After approval, inspect the order records and identify a new order whose reference was absent from the baseline, verify its shopper and cart contents, and match its reference to the displayed reference. After decline, compare order records with the baseline to verify no new order exists for the attempt, alongside the displayed decline and unchanged cart. Keep these actions in the approval/decline cases when merging repeated verification.
+
+Generic read-only inspection of a documented business state is valid test setup. Establish the needed inspection access as a precondition using the test environment's available tools. Keep the inspection mechanism neutral when its interface is unspecified; do not invent product endpoints, token formats, table names, or response contracts. Do not omit a necessary order-record check merely because the packet does not define an order API.
 
 Avoid vague expected results such as:
 
@@ -357,7 +316,7 @@ ${targetTestCaseRangeOptions
   .join("\n")}
 * Custom: use the user-defined minimum and maximum range.
 
-If the Required JSON Output or Test Design Options provides an explicit fixed test case count, minimum count, or maximum count, respect that instruction over the default target ranges, while still avoiding unsupported or duplicate test cases.
+The selected minimum is guidance, including when explicitly shown in Test Design Options. Scope, evidence, and distinct test objectives take precedence. Do not add or split cases merely to reach the minimum.
 
 If no Target Test Case Range is provided, use Extended Regression as the default.
 
@@ -365,7 +324,7 @@ Respect the selected test case range where possible, but prioritize coverage qua
 
 Do not force the maximum number if fewer high-value, non-duplicated test cases are sufficient.
 
-If the requirement is too small to justify the minimum range, generate fewer test cases and avoid duplicates.
+If the requirement is too small to justify the minimum range, cover every required AC ID and generate fewer test cases. Do not expand into related stories' standalone workflows or add speculative cases to reach the range.
 
 If acceptance criteria exceed the selected range, combine related acceptance criteria into broader workflow or end-to-end test cases instead of creating excessive low-value cases.
 
@@ -381,58 +340,17 @@ Coverage Focus controls scenario emphasis.
 
 ## 3.2 Coverage Focus Rules
 
-Coverage Focus controls scenario prioritization, not grounding, schema, or test volume.
+Coverage focuses are review lenses for the objectives selected under section 2.2. They may reveal a meaningful additional risk involving established capabilities; they do not require a case for each focus, category, control, or data variant. All focus guidance follows the grounding and keep/merge/skip rules.
 
-Default baseline coverage means normal risk-based test design across the most relevant supported scenarios.
-
-Default baseline coverage must preserve:
-
-* Core business flow coverage
-* Acceptance criteria coverage
-* Business rule validation
-* Critical user outcome validation
-* High-risk negative scenarios when supported
-* Integration/API behavior when supported
-* Data validation and boundary behavior when supported
-* Workflow, state, and permission behavior when supported
-* Cross-context conflict, scope-boundary, and regression risks when supported
-* UI interaction, responsive layout, localization, RTL/LTR, and accessibility risks when supported
-
-If no Coverage Focus is provided, use default baseline coverage.
-
-If a specific Coverage Focus is selected, keep default baseline coverage as the foundation, then give higher priority to scenarios related to the selected focus.
-
-The selected Coverage Focus should prioritize supplemental scenarios after every required AC ID is mapped.
-
-Do not treat the selected Coverage Focus as permission to ignore critical documented behavior outside that focus.
-
-Do not create filler cases to satisfy the selected Coverage Focus. Focus selection is never evidence; undocumented outcomes must use suggested basis.
-
-When the selected focus is narrow, still include essential core business flow, acceptance criteria, business rule validation, and critical user outcome coverage before adding focus-specific cases.
-
-Non-selected coverage areas may still be included when they are strongly supported by the context and represent high business, customer, integration, security, data, regression, usability, localization, RTL/LTR, responsive, accessibility, or automation risk.
-
-When test case volume is limited, prioritize in this order:
-
-1. Core business flow
-2. Acceptance criteria coverage
-3. Business rules
-4. Critical user outcome validation
-5. Selected Coverage Focus scenarios
-6. High-risk negative scenarios
-7. Integration/API behavior
-8. Data validation and boundary cases
-9. Workflow and state transitions
-10. Cross-context conflict, scope-boundary, and regression risks
-11. Permissions and security-sensitive behavior
-12. UI interaction, responsive layout, localization, RTL/LTR, and accessibility risks
-13. Automation feasibility and maintainability risks
+Preserve required acceptance criteria, applicable business rules, and critical user outcomes first. Then prioritize distinct, justified risks emphasized by the selected focuses. Critical documented behavior remains necessary even outside a selected focus. Focus selection never supplies missing requirements or product capabilities.
 `.trim();
 
 const postCoverageFocusPrompt = `
 ---
 
 # 4. Output Contract Rules
+
+Before returning JSON, apply section 2.2 to the actual setup, actions, and assertions in the finished cases. Confirm that every required AC is mapped and verified, and that the baseline and current-attempt state checks from section 2.4 survived consolidation. Return the justified set even below the target minimum.
 
 Use the existing required JSON output contract only.
 
@@ -468,317 +386,70 @@ const coverageFocusDefinitions: Array<{
     id: "functional",
     title: "Functional",
     body: `
-Use Functional focus when the main goal is to validate that the documented feature behavior works as intended.
-
-Prioritize test cases that verify:
-
-* Main user journey
-* Acceptance criteria
-* Required inputs and outputs
-* Business rule execution
-* Correct state changes
-* Expected system behavior after each major user action
-* Successful completion of the documented workflow
-* Correct handling of documented alternate functional paths
-
-Functional focus should not become only happy-path testing.
-
-Include negative, boundary, integration, regression, UI interaction, responsive layout, localization, or accessibility scenarios only when they are necessary to prove functional correctness and are supported by the supplied context.
+Review the target story's main and documented alternate flows, required inputs and outputs, business rules, and state changes. Verify complete user outcomes, including applicable negative paths.
 `.trim(),
   },
   {
     id: "regression_impact",
     title: "Regression Impact",
     body: `
-Use Regression Impact focus when the target requirement may affect existing documented behavior, shared components, reused workflows, or previous rules.
-
-Prioritize test cases that verify:
-
-* Existing documented behavior still works after the change
-* New behavior applies only to the intended scope
-* Shared components are not broken
-* Previous workflows, states, validations, calculations, or integrations are not unintentionally affected
-* Old rules are not incorrectly inherited by the new requirement
-* New rules do not leak into unrelated modules, products, journeys, roles, countries, or channels
-* Configuration or business rule changes do not break existing flows
-
-Include UI interaction, responsive layout, language, RTL/LTR, or accessibility regression cases only when the supplied context shows that shared screens, shared components, translated content, responsive layouts, or accessibility behavior could be affected.
-
-Only create regression cases when the supplied context shows a clear dependency, shared behavior, or meaningful impact risk.
-
-Do not invent unrelated regression scenarios.
+Review existing documented behavior affected through a supplied interaction or shared state, using section 2.3. Preserve its useful assertions when merging the target flow; a related module alone does not justify retesting it.
 `.trim(),
   },
   {
     id: "integration_api",
     title: "Integration / API",
     body: `
-Use Integration / API focus when the requirement depends on backend services, APIs, external systems, data exchange, contracts, callbacks, events, or service orchestration.
-
-Prioritize test cases that verify:
-
-* Correct request and response behavior when API details are documented
-* UI-visible behavior matches backend/API response data
-* Data mapping between systems
-* Required fields, optional fields, null values, and missing fields
-* Integration success paths
-* Integration failure, timeout, retry, recovery, and partial failure behavior
-* Contract-sensitive behavior
-* Correct handling of stale, duplicate, delayed, or out-of-order responses
-* Correct user feedback when integration behavior affects the user outcome
-
-Include UI/API consistency cases when both UI behavior and API/backend behavior are documented.
-
-Do not invent API endpoints, payloads, fields, status codes, or integration behavior.
-
-Supported cases verify only documented or necessarily implied outcomes. Relevant optional proposals use suggested basis.
+Review established service interactions, data exchange, and UI/backend consistency. Consider concrete failure risks in those interactions. Required business-state inspection follows section 2.4 even when no product API contract is supplied; do not invent endpoints or payloads.
 `.trim(),
   },
   {
     id: "security_permissions",
     title: "Security / Permissions",
     body: `
-Use Security / Permissions focus when the requirement includes roles, permissions, authentication, authorization, eligibility, sensitive data, restricted actions, privacy, compliance, or abuse risk.
-
-Prioritize test cases that verify:
-
-* Authorized users can perform allowed actions
-* Unauthorized users cannot access restricted actions
-* Users cannot bypass workflow or state restrictions
-* Sensitive data is not exposed beyond the documented scope
-* Permission-sensitive UI actions are hidden, disabled, or rejected as documented
-* API or backend behavior enforces the same restrictions as the UI when documented
-* Invalid access attempts produce safe, documented, non-sensitive feedback
-* Role, ownership, eligibility, or account-state restrictions are enforced
-
-Include UI permission-state cases only when the context documents or implies visible permission behavior, such as hidden actions, disabled buttons, restricted screens, safe error messages, or blocked navigation.
-
-Do not invent roles, permission models, compliance rules, or security requirements.
-
-Security cases need supplied evidence for supported basis; relevant proposed security outcomes use suggested basis and explicit assumptions.
+Review access, ownership, and sensitive-data risks within the established target workflow. Verify documented restrictions; do not infer a prohibition solely from the story's actor or prerequisite.
 `.trim(),
   },
   {
     id: "data_validation",
     title: "Data Validation",
     body: `
-Use Data Validation focus when the requirement depends on user input, data quality, calculations, formats, business values, configuration values, data dictionaries, or field mapping.
-
-Prioritize test cases that verify:
-
-* Required fields
-* Optional fields
-* Valid and invalid values
-* Minimum and maximum boundaries
-* Null, empty, missing, duplicate, expired, stale, or malformed data
-* Date, time, timezone, timer, and validity-period behavior
-* Numeric precision, rounding, totals, formulas, discounts, fees, or calculations when documented
-* Correct mapping of source data into UI, API, reports, or downstream systems
-* Configuration-driven behavior
-* Data consistency across UI and API when both are documented
-
-Include UI data-display cases when the requirement depends on visible values, dynamic values, calculated values, mapped fields, dates, timers, currencies, statuses, validation messages, or user-facing formatted data.
-
-Do not invent field-level validation rules, formats, ranges, or formulas.
-
-Supported data-validation cases use only documented validation rules and data conditions. Relevant proposed validation outcomes require suggested basis.
+Review documented fields, validation rules, boundaries, and calculations. Check retention and consistency across the target state change, keeping routine data variants in the same case.
 `.trim(),
   },
   {
     id: "edge_negative",
     title: "Edge Cases / Negative Scenarios",
     body: `
-Use Edge Cases / Negative Scenarios focus when the main risk is failure behavior, exceptional paths, resilience, invalid actions, or unusual but realistic conditions.
-
-Prioritize test cases that verify:
-
-* Invalid, missing, expired, stale, duplicated, or conflicting data
-* Empty results
-* Partial results
-* Failure states
-* Timeout behavior
-* Retry or recovery behavior
-* Interrupted workflows
-* Cancelled or abandoned actions
-* Race conditions
-* Concurrent updates
-* Out-of-order responses
-* Boundary values
-* Disabled or unavailable actions
-* Safe error messages and user feedback
-* No incorrect state transition after failure
-
-Include UI interaction, responsive layout, localization, RTL/LTR, or accessibility edge cases only when failure, empty, loading, partial, long-text, translated-text, disabled, or dynamic states create a distinct user-impact risk.
-
-Do not create unrealistic or unsupported edge cases.
-
-Each edge or negative case must have a clear expected result derived from the supplied context.
+Review meaningful failure, boundary, interruption, and concurrency risks of the established flow. Keep genuinely different failure conditions; actions must trigger the claimed condition and observe its impact.
 `.trim(),
   },
   {
     id: "ui_interaction",
     title: "UI Interaction Behavior",
     body: `
-Use UI Interaction Behavior focus when the requirement includes screens, forms, cards, tables, lists, modals, controls, navigation, progress indicators, user actions, dynamic content, or visible feedback.
-
-Generate supported UI interaction cases only from documented or necessarily derived behavior; focus selection is not evidence. Relevant undocumented outcomes use suggested basis.
-
-Consider UI interaction scenarios when the feature includes:
-
-* Dynamic lists, cards, tables, or grids
-* Forms, inputs, modals, dropdowns, tabs, filters, or search controls
-* Timers, counters, progress indicators, or frequently updated data
-* Loading states, saving states, success states, warning states, error states, empty states, or partial-data states
-* Progressive loading, scrolling, sticky elements, or fixed actions
-* Navigation, back behavior, refresh behavior, restore behavior, or stateful screens
-* Disabled, hidden, unavailable, or conditional actions
-
-Prioritize test cases that verify:
-
-* Main user interactions are clear and complete
-* Required actions are visible and usable
-* Buttons, links, forms, dropdowns, filters, tabs, modals, and navigation behave as documented
-* Loading, saving, success, warning, error, empty, and partial-data states are understandable
-* User feedback is specific, timely, and aligned with the documented outcome
-* Dynamic lists, cards, tables, grids, counters, timers, and progress indicators update correctly
-* Important actions remain available at the right time and state
-* Disabled, hidden, or unavailable actions behave as documented
-* Back, refresh, restore, or navigation behavior is covered when documented or clearly relevant
-
-Validate multiple small UI interaction concerns inside one broader scenario when they share the same setup, risk, priority, platform, and expected outcome.
-
-Split UI interaction scenarios into separate test cases only when they require different setup, data, platform, role, priority, integration dependency, user action, state, or failure impact.
-
-Avoid relying on subjective visual judgment unless the UI requirement is explicitly visual.
-
-Do not create separate test cases for every label, field, button, element, or minor UI variation unless each one represents a distinct documented risk, behavior, state, user impact, or acceptance criterion.
-
-Validate UI behavior through observable results, state changes, labels, messages, enabled/disabled states, and user outcomes.
+Review established controls, documented UI transitions, and concrete usability risks in the target flow. Add related assertions to that flow when coherent; do not assume an undocumented control exists.
 `.trim(),
   },
   {
     id: "responsive_layout",
     title: "Responsive Layout",
     body: `
-Use Responsive Layout focus when the requirement must work across desktop, tablet, mobile, zoom levels, orientations, or different viewport sizes.
-
-Generate supported responsive layout cases only from supplied requirements or applicable project rules. Platform conventions and focus selection are not evidence; relevant undocumented outcomes use suggested basis.
-
-Consider responsive layout scenarios when the feature includes:
-
-* Mobile, tablet, desktop, zoom, or orientation-sensitive behavior
-* Dynamic lists, cards, tables, grids, or dashboards
-* Forms, inputs, modals, dropdowns, filters, or search controls
-* Long text, translated text, localized content, or variable-length content
-* Loading states, error states, empty states, partial-data states, or dynamic updates
-* Progressive loading, scrolling, sticky elements, fixed actions, or bottom actions
-* Content hierarchy or action visibility differences across viewports
-
-Prioritize test cases that verify:
-
-* Layout adapts correctly across supported viewports
-* Content hierarchy remains clear on smaller screens
-* Cards, lists, tables, grids, forms, modals, and filters remain usable
-* Key actions remain visible and reachable
-* Tap targets are usable on touch devices
-* Scrolling behavior is clear and does not hide critical actions
-* Sticky or fixed elements do not cover important content
-* Text wraps, truncates, or expands safely based on documented expectations
-* No horizontal overflow appears unless explicitly expected
-* No overlapping elements occur
-* Loading, error, empty, and dynamic-content states remain stable across viewports
-* Zoom and orientation changes do not break critical user flows when supported
-
-Validate multiple small responsive concerns inside one broader scenario when they share the same setup, viewport category, risk, priority, platform, and expected outcome.
-
-Split responsive scenarios into separate test cases only when they require different viewport category, device type, orientation, setup, data, platform, priority, interaction, or failure impact.
-
-Responsive test cases should focus on meaningful usability and layout risks, not every minor visual difference.
-
-Do not create separate test cases for every viewport, breakpoint, device, orientation, or visual variation unless each one represents a distinct documented risk, behavior, user impact, or acceptance criterion.
+Review whether the established target screen and critical actions remain usable across relevant viewports. Combine routine viewport checks; keep separate cases only for materially different screen or layout failures.
 `.trim(),
   },
   {
     id: "localization_language_rtl_ltr",
     title: "Localization, Language, and RTL/LTR",
     body: `
-Use Localization, Language, and RTL/LTR focus when the requirement, project context, or product standards include multiple languages, translated content, regional behavior, Arabic, RTL, LTR, or locale-sensitive formatting.
-
-Generate supported localization, language, and RTL/LTR cases only from supplied requirements or applicable project rules. Focus selection and external conventions are not evidence; relevant proposed outcomes use suggested basis.
-
-Consider localization and RTL/LTR scenarios when the feature includes:
-
-* Translated labels, messages, headings, buttons, links, or validation errors
-* Dynamic text, long text, variable-length content, or user-generated content
-* Arabic or other RTL languages
-* Mixed RTL and LTR content
-* Date, time, number, currency, percentage, or unit formatting
-* Language switching
-* Locale-specific business behavior
-* Forms, tables, cards, modals, dropdowns, icons, or navigation affected by text direction
-
-Prioritize test cases that verify:
-
-* Correct language appears for the selected locale
-* No mixed-language content appears unless documented
-* Dynamic text, labels, messages, validation errors, and empty states are translated when supported
-* Variable-length translated text remains usable and understandable
-* RTL layouts mirror correctly for RTL languages such as Arabic when supported
-* LTR content remains correctly aligned and readable inside RTL screens when applicable
-* Numbers, dates, times, currencies, percentages, and units follow documented locale rules
-* Text direction does not break forms, tables, cards, modals, dropdowns, icons, or navigation
-* Arabic pluralization, long text, and dynamic values are handled when relevant and supported
-
-Validate multiple small localization, language, and RTL/LTR concerns inside one broader scenario when they share the same setup, language, risk, priority, platform, and expected outcome.
-
-Split localization or RTL/LTR scenarios into separate test cases only when they require different language setup, locale, platform, data condition, user flow, risk, priority, or expected outcome.
-
-Do not create separate test cases for every label, message, language, or text element unless each one represents a distinct documented risk, behavior, user impact, or acceptance criterion.
-
-Do not invent supported languages, locale rules, translation requirements, date formats, currency formats, pluralization rules, or RTL/LTR behavior.
+Review only languages, text-direction, and locale-sensitive capabilities established by the packet. Focus selection does not establish language switching or RTL support. Combine routine language or formatting variants.
 `.trim(),
   },
   {
     id: "accessibility",
     title: "Accessibility",
     body: `
-Use Accessibility focus when accessibility is supported, expected, or relevant to the supplied project context, standards, or requirement.
-
-Generate supported accessibility cases only from supplied requirements or applicable project rules. Focus selection, product conventions, and platform expectations are not evidence. Relevant keyboard or focus-order outcomes absent from the packet use suggested basis and a proposed assumption.
-
-Consider accessibility scenarios when the feature includes:
-
-* Forms, inputs, buttons, links, dropdowns, tabs, modals, menus, or filters
-* Keyboard-interactive elements
-* Dynamic updates, alerts, validation errors, loading states, or progress indicators
-* Disabled, hidden, unavailable, or conditional actions
-* Icons, visual-only indicators, charts, color-coded states, or status labels
-* Error messages, required fields, or field-level guidance
-* Modals, overlays, dialogs, drawers, or popovers
-* Tables, cards, lists, or complex screen structures
-
-Prioritize test cases that verify:
-
-* Keyboard navigation for supported interactive elements
-* Logical focus order
-* Visible focus indication when applicable
-* Focus is trapped and restored correctly in modals or overlays when documented
-* Form controls, buttons, links, and icons have understandable labels
-* Error messages are associated with the relevant fields when supported
-* Dynamic updates, alerts, loading states, and validation messages are accessible when documented or expected
-* Required information is not communicated by color alone
-* Text remains readable in documented states
-* Screen-reader-friendly structure is supported when context requires it
-
-Validate multiple small accessibility concerns inside one broader scenario when they share the same setup, flow, component, risk, priority, and expected outcome.
-
-Split accessibility scenarios into separate test cases only when they require different setup, component, assistive behavior, keyboard path, data condition, platform, priority, or failure impact.
-
-Do not create separate test cases for every accessibility attribute, element, label, or control unless each one represents a distinct documented risk, behavior, user impact, or acceptance criterion.
-
-Do not invent accessibility standards, compliance levels, or assistive-technology requirements unless provided.
-
-Focus on observable accessibility behavior that can be validated through UI behavior, semantics, labels, focus, and keyboard interaction.
+Review established interactive controls and dynamic feedback for concrete keyboard, focus, and screen-reader risks. Combine related checks within a coherent interaction. Apply section 1 to undocumented outcomes; do not invent a compliance standard.
 `.trim(),
   },
 ];
@@ -825,7 +496,7 @@ export function buildTestCaseGenerationSystemPrompt(options?: Partial<TestDesign
 
 export const testCaseGenerationPrompt: SystemPromptDefinition = {
   name: "test-case-generation",
-  version: "4.0.1",
+  version: "4.0.7",
   purpose: "Generate Azure DevOps-compatible, risk-based test cases from one requirement, related requirement work items, selected project context, extracted project knowledge, selected target test case range, and selected coverage focus.",
   system: buildTestCaseGenerationSystemPrompt({
     coverageFocusIds: allCoverageFocusIds,
