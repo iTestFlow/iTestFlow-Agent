@@ -37,7 +37,7 @@ type CredentialStatusResponse = {
 
 type ModelOption = { id: string; displayName: string }
 
-const PROVIDERS: Provider[] = ["openai", "gemini", "anthropic"]
+const PROVIDERS: Provider[] = ["openai", "gemini", "anthropic", "xai"]
 
 export function AiGenerationSection() {
   return (
@@ -178,6 +178,7 @@ function AiProviderCard() {
           <option value="openai">OpenAI</option>
           <option value="gemini">Gemini</option>
           <option value="anthropic">Anthropic</option>
+          <option value="xai">xAI (Grok)</option>
         </NativeSelect>
       </Field>
 
