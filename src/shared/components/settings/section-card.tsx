@@ -18,7 +18,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
 
 export type StatusTone = "success" | "warning" | "destructive" | "muted" | "info"
-export type Provider = "openai" | "gemini" | "anthropic"
+export type Provider = "openai" | "gemini" | "anthropic" | "xai"
 
 /** A titled settings card with an optional right-aligned action/badge slot. */
 export function SectionCard({
@@ -240,5 +240,7 @@ export function defaultBaseUrlPlaceholder(provider: Provider) {
       return "https://generativelanguage.googleapis.com/v1beta"
     case "anthropic":
       return "https://api.anthropic.com"
+    case "xai":
+      return "https://api.x.ai/v1"
   }
 }
