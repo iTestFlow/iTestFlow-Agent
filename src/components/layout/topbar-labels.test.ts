@@ -107,6 +107,7 @@ describe("providerLabel", () => {
     expect(providerLabel("openai")).toBe("OpenAI");
     expect(providerLabel("gemini")).toBe("Gemini");
     expect(providerLabel("anthropic")).toBe("Anthropic");
+    expect(providerLabel("xai")).toBe("xAI");
   });
 
   it('passes unknown values through and falls back to "LLM" for empty ones', () => {
@@ -114,6 +115,15 @@ describe("providerLabel", () => {
     expect(providerLabel("")).toBe("LLM");
     expect(providerLabel(null)).toBe("LLM");
     expect(providerLabel(undefined)).toBe("LLM");
+  });
+});
+
+describe("modelDisplayLabel for xAI", () => {
+  it("labels Grok models and recognizes the provider", () => {
+    expect(modelDisplayLabel("xai", "grok-4")).toBe("Grok: 4");
+    expect(modelDisplayLabel("xai", null)).toBe("Grok");
+    expect(humanizeModelId("grok-code-fast-1", "xai")).toBe("Code Fast 1");
+    expect(isProvider("xai")).toBe(true);
   });
 });
 
