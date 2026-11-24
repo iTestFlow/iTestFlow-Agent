@@ -75,7 +75,7 @@ For module boundaries and the living source map, see [PROJECT_ARCHITECTURE.md](P
 - PostgreSQL 16, either from `docker compose up -d postgres` or a native/server instance
 - An enabled work-management provider: Azure DevOps (organization URL and PAT) or Jira Cloud (site and API token/OAuth)
 - Azure DevOps permissions for work items, comments, Test Plans, Test Suites, test cases, and links when Azure workflows are enabled
-- One LLM provider: OpenAI, Gemini, or Anthropic
+- One LLM provider: OpenAI, Gemini, Anthropic, or xAI (Grok)
 - Optional Jira Cloud site and API-token or Atlassian OAuth configuration when enabling Jira Cloud
 
 ### Install and Run
