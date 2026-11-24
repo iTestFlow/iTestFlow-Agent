@@ -73,7 +73,7 @@ const UpdateSchema = z
     azurePat: z.string().trim().min(1).optional(),
     llm: z
       .object({
-        provider: z.enum(["openai", "gemini", "anthropic"]),
+        provider: z.enum(["openai", "gemini", "anthropic", "xai"]),
         model: z.string().trim().min(1, "Select an LLM model."),
         apiKey: z.string().trim().min(1, "Enter an LLM API key."),
         baseUrl: z.string().trim().url().optional(),
@@ -87,7 +87,7 @@ const UpdateSchema = z
 
 const ModelUpdateSchema = z.object({
   llm: z.object({
-    provider: z.enum(["openai", "gemini", "anthropic"]),
+    provider: z.enum(["openai", "gemini", "anthropic", "xai"]),
     model: z.string().trim().min(1, "Select an LLM model."),
   }),
 });
