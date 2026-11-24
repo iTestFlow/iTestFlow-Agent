@@ -10,6 +10,7 @@ import { AnthropicProvider } from "./anthropic-provider";
 import { fetchWithTransientRetry } from "./fetch-with-transient-retry";
 import { GeminiProvider } from "./gemini-provider";
 import { OpenAIProvider } from "./openai-provider";
+import { XAIProvider } from "./xai-provider";
 import { RequirementAnalysisOutputSchema } from "../../requirement-analysis/schemas/requirement-analysis.schema";
 import { TestCaseGenerationOutputSchema } from "../../test-case-design/schemas/test-case.schema";
 import { ExistingTestCaseReviewOutputSchema } from "../../existing-test-case-review/schemas/existing-test-case-review.schema";
@@ -254,6 +255,55 @@ describe("provider HTTP adapters", () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(init.body))).toMatchObject({ model: "gpt-test", max_tokens: 50 });
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer key");
+  });
+
+  it("sends xAI requests to api.x.ai with the xAI label and OpenAI-compatible mapping", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "{\"value\":1}" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 4, completion_tokens: 6, total_tokens: 10 },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new XAIProvider({
+      provider: "xai", model: "grok-test", apiKey: "xai-key", retryAttempts: 0,
+    });
+    await expect(provider.generateText({ system: "s", user: "u", maxTokens: 50 })).resolves.toMatchObject({
+      text: "{\"value\":1}",
+      tokenUsage: { input: 4, output: 6, total: 10 },
+    });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.x.ai/v1/chat/completions");
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toMatchObject({ model: "grok-test", max_tokens: 50 });
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer xai-key");
+  });
+
+  it("uses json_schema response_format and honors a custom base URL for xAI", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ value: 2 }) }, finish_reason: "stop" }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new XAIProvider({
+      provider: "xai", model: "grok-test", apiKey: "xai-key", baseUrl: "https://proxy.example/v1", retryAttempts: 0,
+    });
+    const result = await provider.generateStructuredOutput({
+      system: "s", user: "u", schema: visionSchema, schemaName: "Value",
+    });
+    expect(result.validatedOutput).toEqual({ value: 2 });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.example/v1/chat/completions");
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.response_format).toMatchObject({ type: "json_schema", json_schema: { name: "Value", strict: true } });
+  });
+
+  it("labels xAI failures as xAI and checks the key before calling", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("bad key", { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new XAIProvider({
+      provider: "xai", model: "grok-test", apiKey: "xai-key", retryAttempts: 0,
+    });
+    await expect(provider.generateText({ system: "s", user: "u" })).rejects.not.toThrow(/OpenAI/);
+    const missingKey = new XAIProvider({ provider: "xai", model: "grok-test", retryAttempts: 0 });
+    await expect(missingKey.generateText({ system: "s", user: "u" })).rejects.toThrow(/xAI API key is not configured/);
+    await expect(provider.testConnection()).resolves.toBe(false);
+    expect(fetchMock.mock.calls.at(-1)?.[0]).toBe("https://api.x.ai/v1/models/grok-test");
   });
 
   it("self-corrects OpenAI max_tokens once and remembers it", async () => {

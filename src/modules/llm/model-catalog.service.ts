@@ -3,12 +3,13 @@ import "server-only";
 import { z } from "zod";
 import type { LLMProviderName } from "./llm-types";
 import { normalizeProviderBaseUrl } from "./provider-base-url";
+import { XAI_DEFAULT_BASE_URL } from "./providers/xai-provider";
 import { AppError, AppErrorCode, isAppError } from "@/modules/shared/errors/app-error";
 import { friendlyErrorMessage } from "@/modules/shared/errors/error-response";
 
 const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
 
-export const LLMProviderNameSchema = z.enum(["openai", "gemini", "anthropic"]);
+export const LLMProviderNameSchema = z.enum(["openai", "gemini", "anthropic", "xai"]);
 
 export const ListLLMModelsInputSchema = z.object({
   provider: LLMProviderNameSchema,
@@ -28,6 +29,7 @@ export async function listLLMModels(input: z.infer<typeof ListLLMModelsInputSche
       case "openai":   return await listOpenAIModels(input);
       case "gemini":   return await listGeminiModels(input);
       case "anthropic": return await listAnthropicModels(input);
+      case "xai":      return await listXAIModels(input);
     }
   } catch (error) {
     if (isAppError(error)) throw error;
@@ -55,6 +57,21 @@ async function listOpenAIModels(input: z.infer<typeof ListLLMModelsInputSchema>)
     .filter((id): id is string => Boolean(id))
     .sort(sortModelIds)
     .map((id) => ({ id, displayName: id, source: "openai" as const }));
+}
+
+async function listXAIModels(input: z.infer<typeof ListLLMModelsInputSchema>): Promise<LLMModelOption[]> {
+  const response = await fetch(`${input.baseUrl ?? XAI_DEFAULT_BASE_URL}/models`, {
+    headers: { Authorization: `Bearer ${input.apiKey}` },
+  });
+  if (!response.ok) throw await modelFetchError("xai", response);
+  const json = (await response.json()) as { data?: Array<{ id?: string }> };
+  return uniqueModels(
+    (json.data ?? [])
+      .map((m) => m.id)
+      .filter((id): id is string => Boolean(id))
+      .sort(sortModelIds)
+      .map((id) => ({ id, displayName: id, source: "xai" as const })),
+  );
 }
 
 async function listGeminiModels(input: z.infer<typeof ListLLMModelsInputSchema>): Promise<LLMModelOption[]> {

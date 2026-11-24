@@ -1676,7 +1676,7 @@ function parseCachedProjectKnowledgeBatch(value: unknown): ProjectKnowledgeExtra
   const record = value as Record<string, unknown>;
   const validated = ProjectKnowledgeBaseSchema.safeParse(record.validatedOutput);
   if (!validated.success) return null;
-  if (!["openai", "gemini", "anthropic"].includes(String(record.provider))) return null;
+  if (!["openai", "gemini", "anthropic", "xai"].includes(String(record.provider))) return null;
   if (typeof record.model !== "string" || typeof record.rawOutput !== "string") return null;
   const omissionReasons = record.omissionReasons && typeof record.omissionReasons === "object" && !Array.isArray(record.omissionReasons)
     ? Object.fromEntries(Object.entries(record.omissionReasons as Record<string, unknown>)

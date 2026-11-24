@@ -19,6 +19,7 @@ import { addTokenUsage, hasTokenUsage } from "./token-usage";
 import { AnthropicProvider } from "./providers/anthropic-provider";
 import { GeminiProvider } from "./providers/gemini-provider";
 import { OpenAIProvider } from "./providers/openai-provider";
+import { XAIProvider } from "./providers/xai-provider";
 import { isMaxTokensRenameError, withMaxCompletionTokens } from "./providers/provider-param-compat";
 
 describe("LLM utility contracts", () => {
@@ -105,6 +106,7 @@ describe("LLM utility contracts", () => {
     expect(createLLMProvider({ provider: "openai", model: "gpt" })).toBeInstanceOf(OpenAIProvider);
     expect(createLLMProvider({ provider: "gemini", model: "gemini" })).toBeInstanceOf(GeminiProvider);
     expect(createLLMProvider({ provider: "anthropic", model: "claude" })).toBeInstanceOf(AnthropicProvider);
+    expect(createLLMProvider({ provider: "xai", model: "grok" })).toBeInstanceOf(XAIProvider);
     expect(() => createLLMProvider({ provider: "other" as never, model: "x" })).toThrow("Unsupported");
   });
 
@@ -118,6 +120,19 @@ describe("LLM utility contracts", () => {
       { id: "gpt-z", displayName: "gpt-z", source: "openai" },
     ]);
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.openai.com/v1/models");
+  });
+
+  it("loads xAI models from api.x.ai with a bearer token", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      data: [{ id: "grok-b" }, { id: "grok-a" }, { id: "grok-a" }, {}],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(listLLMModels({ provider: "xai", apiKey: "xai-secret" })).resolves.toEqual([
+      { id: "grok-a", displayName: "grok-a", source: "xai" },
+      { id: "grok-b", displayName: "grok-b", source: "xai" },
+    ]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.x.ai/v1/models");
+    expect((fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>).Authorization).toBe("Bearer xai-secret");
   });
 
   it("returns a friendly model-catalog error when Gemini rejects an API key", async () => {

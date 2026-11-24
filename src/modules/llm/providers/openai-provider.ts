@@ -23,9 +23,18 @@ export class OpenAIProvider extends BaseJsonProvider {
   // newer models work without a per-model allow-list while GPT-4o/4.1-class models keep `max_tokens`.
   private maxTokensRenamed = false;
 
+  // Providers that speak the OpenAI chat-completions dialect (for example xAI) override these two.
+  protected get defaultBaseUrl(): string {
+    return "https://api.openai.com/v1";
+  }
+
+  protected get providerLabel(): string {
+    return "OpenAI";
+  }
+
   async testConnection(): Promise<boolean> {
     if (!this.config.apiKey || !this.config.model) return false;
-    const response = await fetch(`${this.config.baseUrl ?? "https://api.openai.com/v1"}/models/${this.model}`, {
+    const response = await fetch(`${this.config.baseUrl ?? this.defaultBaseUrl}/models/${this.model}`, {
       headers: {
         Authorization: `Bearer ${this.config.apiKey}`,
       },
@@ -34,7 +43,7 @@ export class OpenAIProvider extends BaseJsonProvider {
   }
 
   protected async callTextModel(input: GenerateTextInput): Promise<LLMProviderCallResult> {
-    if (!this.config.apiKey) throw new Error("OpenAI API key is not configured.");
+    if (!this.config.apiKey) throw new Error(`${this.providerLabel} API key is not configured.`);
     const requestBody = {
       model: this.model,
       max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
@@ -51,7 +60,7 @@ export class OpenAIProvider extends BaseJsonProvider {
         rawOutput: "",
         requestBody: redactLLMImagePayload(requestBody),
         responseBody: errorText,
-        errorMessage: `OpenAI request failed: ${errorText}`,
+        errorMessage: `${this.providerLabel} request failed: ${errorText}`,
       };
     }
     const json = await response.json();
@@ -65,7 +74,7 @@ export class OpenAIProvider extends BaseJsonProvider {
   }
 
   protected async callModel<TSchema extends z.ZodTypeAny>(input: GenerateStructuredOutputInput<TSchema>): Promise<LLMProviderCallResult> {
-    if (!this.config.apiKey) throw new Error("OpenAI API key is not configured.");
+    if (!this.config.apiKey) throw new Error(`${this.providerLabel} API key is not configured.`);
     const messages = [
       { role: "system", content: withStructuredOutputInstruction(input.system, input.schemaName) },
       { role: "user", content: openAIUserContent(input.user, input.images) },
@@ -95,20 +104,20 @@ export class OpenAIProvider extends BaseJsonProvider {
           messages,
         };
         const fallbackResponse = await this.requestChatCompletion(fallbackRequestBody, input.signal);
-        return openAIStructuredCallResult(fallbackResponse, fallbackRequestBody);
+        return openAIStructuredCallResult(fallbackResponse, fallbackRequestBody, this.providerLabel);
       }
       return {
         rawOutput: "{}",
         requestBody: redactLLMImagePayload(requestBody),
         responseBody: errorText,
-        errorMessage: `OpenAI request failed: ${errorText}`,
+        errorMessage: `${this.providerLabel} request failed: ${errorText}`,
       };
     }
-    return openAIStructuredCallResult(response, requestBody);
+    return openAIStructuredCallResult(response, requestBody, this.providerLabel);
   }
 
   protected async callToolModel(input: GenerateToolCallInput): Promise<LLMProviderCallResult> {
-    if (!this.config.apiKey) throw new Error("OpenAI API key is not configured.");
+    if (!this.config.apiKey) throw new Error(`${this.providerLabel} API key is not configured.`);
     const requestBody = {
       model: this.model,
       max_tokens: input.maxTokens ?? DEFAULT_TEXT_OUTPUT_TOKENS,
@@ -123,7 +132,7 @@ export class OpenAIProvider extends BaseJsonProvider {
     const response = await this.requestChatCompletion(requestBody, input.signal);
     if (!response.ok) {
       const errorText = await response.text();
-      return { rawOutput: "", requestBody, responseBody: errorText, errorMessage: `OpenAI request failed: ${errorText}` };
+      return { rawOutput: "", requestBody, responseBody: errorText, errorMessage: `${this.providerLabel} request failed: ${errorText}` };
     }
     const json = await response.json();
     const calls = json?.choices?.[0]?.message?.tool_calls;
@@ -149,7 +158,7 @@ export class OpenAIProvider extends BaseJsonProvider {
   }
 
   private async requestChatCompletion(requestBody: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
-    const url = `${this.config.baseUrl ?? "https://api.openai.com/v1"}/chat/completions`;
+    const url = `${this.config.baseUrl ?? this.defaultBaseUrl}/chat/completions`;
     const headers = {
       ...this.headers(),
       Authorization: `Bearer ${this.config.apiKey as string}`,
@@ -186,6 +195,7 @@ export class OpenAIProvider extends BaseJsonProvider {
 async function openAIStructuredCallResult(
   response: Response,
   requestBody: Record<string, unknown>,
+  providerLabel: string,
 ): Promise<LLMProviderCallResult> {
   if (!response.ok) {
     const errorText = await response.text();
@@ -193,7 +203,7 @@ async function openAIStructuredCallResult(
       rawOutput: "{}",
       requestBody: redactLLMImagePayload(requestBody),
       responseBody: errorText,
-      errorMessage: `OpenAI request failed: ${errorText}`,
+      errorMessage: `${providerLabel} request failed: ${errorText}`,
     };
   }
   const json = await response.json();

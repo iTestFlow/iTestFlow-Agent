@@ -1,7 +1,7 @@
 // Display-label parsers for the topbar LLM status chip. Pure string logic
 // extracted from topbar.tsx so it can be unit tested outside the client component.
 
-export type Provider = "openai" | "gemini" | "anthropic"
+export type Provider = "openai" | "gemini" | "anthropic" | "xai"
 
 type JiraCredentialSummary = {
   status: "active" | "invalid" | "reauthorization_required" | "revoked" | "not_connected"
@@ -44,13 +44,15 @@ export function providerLabel(value?: string | null) {
       return "Gemini"
     case "anthropic":
       return "Anthropic"
+    case "xai":
+      return "xAI"
     default:
       return value ? value : "LLM"
   }
 }
 
 export function isProvider(value?: string | null): value is Provider {
-  return value === "openai" || value === "gemini" || value === "anthropic"
+  return value === "openai" || value === "gemini" || value === "anthropic" || value === "xai"
 }
 
 export function humanizeModelId(model: string, provider?: string | null) {
@@ -58,6 +60,7 @@ export function humanizeModelId(model: string, provider?: string | null) {
     gemini: /^gemini[-_]/i,
     anthropic: /^claude[-_]/i,
     openai: /^openai[-_]/i,
+    xai: /^grok[-_]/i,
   }
   const modelName = (model.split("/").pop() ?? model)
     .replace(provider ? vendorPrefixes[provider] ?? /$^/ : /$^/, "")
@@ -99,6 +102,10 @@ export function modelDisplayLabel(provider?: string | null, model?: string | nul
     const conciseModel = model?.match(/^(gpt-[\w.]+|o\d(?:-[\w.]+)?)/i)?.[1]
     if (conciseModel) return `${providerName}: ${humanizeModelId(conciseModel, provider)}`
     return model ? `${providerName}: ${humanizeModelId(model, provider)}` : providerName
+  }
+
+  if (provider === "xai") {
+    return model ? `Grok: ${humanizeModelId(model, provider)}` : "Grok"
   }
 
   return model ? `${providerName}: ${humanizeModelId(model, provider)}` : providerName

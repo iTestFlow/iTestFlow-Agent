@@ -366,6 +366,7 @@ function providerLabel(value: string) {
   if (normalized.includes("openai")) return "OpenAI";
   if (normalized.includes("gemini") || normalized.includes("google")) return "Gemini";
   if (normalized.includes("anthropic") || normalized.includes("claude")) return "Anthropic";
+  if (normalized === "xai" || normalized.includes("grok")) return "xAI";
   return value;
 }
 
@@ -374,6 +375,7 @@ function detectProvider(value: string) {
   if (text.includes("openai")) return "openai";
   if (text.includes("gemini") || text.includes("googleapis") || text.includes("generativelanguage")) return "gemini";
   if (text.includes("anthropic") || text.includes("claude")) return "anthropic";
+  if (/\bxai\b|api\.x\.ai|grok/.test(text)) return "xai";
   return undefined;
 }
 

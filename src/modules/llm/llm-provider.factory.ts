@@ -4,6 +4,7 @@ import type { LLMProvider, LLMProviderConfig } from "./llm-types";
 import { AnthropicProvider } from "./providers/anthropic-provider";
 import { GeminiProvider } from "./providers/gemini-provider";
 import { OpenAIProvider } from "./providers/openai-provider";
+import { XAIProvider } from "./providers/xai-provider";
 
 export function createLLMProvider(config: LLMProviderConfig): LLMProvider {
   switch (config.provider) {
@@ -13,6 +14,8 @@ export function createLLMProvider(config: LLMProviderConfig): LLMProvider {
       return new GeminiProvider(config);
     case "anthropic":
       return new AnthropicProvider(config);
+    case "xai":
+      return new XAIProvider(config);
     default:
       throw new Error(`Unsupported LLM provider: ${(config as { provider: string }).provider}`);
   }
